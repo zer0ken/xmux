@@ -254,7 +254,10 @@ impl ViewScreen {
     fn word(self) -> &'static str {
         match self {
             ViewScreen::SelfSession => "running xmux",
-            other => crate::ui::tree::host_state_word(other == ViewScreen::Unreachable),
+            other => crate::ui::tree::host_state_word(
+                false,
+                other == ViewScreen::Unreachable,
+            ),
         }
     }
 }
@@ -291,13 +294,14 @@ fn siblings(
         .iter()
         .filter(|g| g.source != source && crate::session::machine_of(&g.source) == machine)
         .map(|g| {
+            let locked = g.err.as_deref().is_some_and(crate::mux::is_locked);
             let word = if state.scanning.contains(&g.source) {
                 "still scanning".to_string()
             } else if g.err.is_some() {
-                crate::ui::tree::host_state_word(true).to_string()
+                crate::ui::tree::host_state_word(locked, true).to_string()
             } else {
                 match g.sessions.len() {
-                    0 => crate::ui::tree::host_state_word(false).to_string(),
+                    0 => crate::ui::tree::host_state_word(false, false).to_string(),
                     1 => "1 session".to_string(),
                     n => format!("{n} sessions"),
                 }
