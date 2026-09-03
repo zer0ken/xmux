@@ -1021,6 +1021,25 @@ async fn an_unselected_unreachable_card_keeps_the_warning_mark() {
 }
 
 #[tokio::test]
+async fn a_locked_host_card_reads_locked_with_the_lock_mark() {
+    let mut h = Harness::from_sources(&["prod"]);
+    h.sw.apply_source_result(
+        "prod".into(),
+        vec![],
+        Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.draw();
+    // The card carries the `*` lock mark on its host row (the screen state and
+    // reason are Task 6's own assertions).
+    let tree = h.nav_text();
+    assert!(
+        tree.lines().any(|l| l.contains("prod") && l.contains('*')),
+        "the locked host row carries the `*` mark:\n{tree}"
+    );
+}
+
+#[tokio::test]
 async fn a_card_claims_a_mux_only_when_it_is_confirmed() {
     // A host-state card claims no mux it cannot back with an answer. A bare-id host
     // (its mux is a config assumption, never probed until the enumeration answers)
