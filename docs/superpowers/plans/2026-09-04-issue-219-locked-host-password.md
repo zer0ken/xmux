@@ -1011,3 +1011,24 @@ fn spawn_unlock(
 - **Windows**: unlock is unavailable where there is no ControlMaster (`unlock_argv` returns `None`; the locked view states it). The locked classification still works on Windows; only the unlock path is gated. This is a defined platform boundary, not a guess about Windows ssh behavior.
 - **The Enter routing special case**: Enter on a locked card opens the unlock input in addition to focusing the terminal. The gate is `current_host_locked()`, which reads the same `RowRef` the render reads, so the routing and the screen cannot disagree.
 - **Comment/document rules**: all src comments English, current-state only, no history narration, no em-dash/en-dash. Korean docs in neutral technical register.
+
+## Execution notes (simplifications applied)
+
+The implementation was simplified after the plan, per the review pass. The three
+changes keep the feature complete while cutting dead code and a security surface:
+
+- **`Liveness::Locked` dropped.** `Liveness` is written but never read in
+  production (the tree derives the locked/unreachable state from the group `err`
+  directly), so the added variant and its three-way `from_scan_err` were dead.
+  The locked classification lives where it is read: `is_locked` at the tree,
+  chrome, and state sites.
+- **In-memory secret store dropped.** `state.secrets` / `StoredSecret` / the
+  relock prefill are gone. The password rides only the transient
+  `Command::RunUnlock` and the PTY writer, then is dropped; a relocked host asks
+  for the credentials again. The id is still carried across the two input steps
+  on the `Input` itself (never guessed), and `Action::Unlock` (a state-less
+  pass-through) was removed in favour of emitting `Command::RunUnlock` directly.
+- **The ControlMaster-socket success check dropped.** The pty-spawned child exits
+  with 0 after a successful auth (verified by the live gate against a real
+  password-only account), so the child's zero exit alone is the success signal.
+- **FR-B25 was taken** (nav sides), so the requirement landed as FR-B26.
