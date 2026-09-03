@@ -117,6 +117,33 @@ impl Transport for Ssh {
         Some(v)
     }
 
+    /// The unlock: force a NEW master over the SAME control socket every other ssh
+    /// shares, with no BatchMode so it can prompt, and run `true` so the master
+    /// lingers via `ControlPersist` after auth. `None` on Windows, where ssh has no
+    /// ControlMaster socket to leave authenticated.
+    fn unlock_argv(&self, user: &str) -> Option<Vec<String>> {
+        if self.os == "windows" {
+            return None; // no ControlMaster socket to leave authenticated
+        }
+        let mut v = vec![
+            "ssh".to_string(),
+            "-o".into(),
+            "ControlMaster=yes".into(),
+            "-o".into(),
+            format!("ControlPath={}", self.control_path),
+            "-o".into(),
+            "ControlPersist=60s".into(),
+            "-o".into(),
+            format!("ConnectTimeout={CONNECT_TIMEOUT}"),
+            "-l".into(),
+            user.to_string(),
+            "--".into(),
+            self.alias.clone(),
+            "true".into(),
+        ];
+        Some(v)
+    }
+
     fn clone_box(&self) -> Box<dyn Transport> {
         Box::new(self.clone())
     }
@@ -199,6 +226,33 @@ mod tests {
         assert!(
             got.iter().any(|s: &String| s.contains("BatchMode=yes")),
             "{got:?}"
+        );
+    }
+
+    #[test]
+    fn ssh_unlock_argv_forces_a_master_with_the_same_control_path() {
+        let got = ssh("prod", "linux", "/tmp/cm.sock")
+            .unlock_argv("alice")
+            .unwrap();
+        assert_eq!(got[0], "ssh");
+        let joined = got.join(" ");
+        assert!(joined.contains("ControlMaster=yes"), "{joined}");
+        assert!(joined.contains("ControlPath=/tmp/cm.sock"), "{joined}");
+        assert!(joined.contains("-l alice"), "{joined}");
+        assert!(
+            !joined.contains("BatchMode"),
+            "the unlock must be able to prompt: {joined}"
+        );
+        assert_eq!(got.last().unwrap(), "true");
+        assert!(joined.ends_with("-- prod true"), "{joined}");
+    }
+
+    #[test]
+    fn ssh_unlock_argv_is_none_on_windows() {
+        assert_eq!(
+            ssh("prod", "windows", "").unlock_argv("alice"),
+            None,
+            "no ControlMaster on Windows to reuse"
         );
     }
 

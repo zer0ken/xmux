@@ -78,6 +78,13 @@ pub trait Transport: Send + Sync {
         None
     }
 
+    /// The argv that establishes a password-authenticated ControlMaster for this
+    /// machine (the unlock), or `None` when the machine has no reusable master (a
+    /// local/WSL machine with no password, or Windows ssh without ControlMaster).
+    fn unlock_argv(&self, _user: &str) -> Option<Vec<String>> {
+        None
+    }
+
     /// Clones into a fresh box — a spawned poll task needs an owned transport, and a
     /// trait object cannot derive `Clone`.
     fn clone_box(&self) -> Box<dyn Transport>;
@@ -123,6 +130,9 @@ impl Transport for Box<dyn Transport> {
     }
     fn raw_shell_argv(&self, remote_cmd: &str) -> Option<Vec<String>> {
         (**self).raw_shell_argv(remote_cmd)
+    }
+    fn unlock_argv(&self, user: &str) -> Option<Vec<String>> {
+        (**self).unlock_argv(user)
     }
     fn clone_box(&self) -> Box<dyn Transport> {
         (**self).clone_box()
