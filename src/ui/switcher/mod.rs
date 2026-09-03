@@ -928,10 +928,6 @@ impl Switcher {
                 sessions,
             }),
         }
-        // A result that is no longer LOCKED (a host that died, or one that answered)
-        // has no use for its in-memory secret: drop it so the run keeps none for a
-        // host that is not waiting on a password.
-        state.forget_unlocked_secrets();
         self.rebuild(state);
         self.restore_focus(prior, state);
     }

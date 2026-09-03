@@ -21,10 +21,6 @@ pub struct State {
     /// SHOWN: the unreachable screen states it, because one failed sweep and a host that
     /// has not answered since launch are different problems behind the same message.
     pub failure_runs: HashMap<String, u32>,
-    /// In-memory unlock secrets per source (id + password), kept for the run only:
-    /// reused when the same host relocks, cleared when the host dies (not locks),
-    /// and never rendered or serialized. `dump`/`status`/logs carry none of it.
-    pub(crate) secrets: HashMap<String, StoredSecret>,
     /// Active fuzzy-filter text (drives the visible tree + the hint_bar).
     pub filter: String,
     /// What the tree selection points at - the session/window to show.
@@ -70,44 +66,7 @@ pub struct State {
     pub(crate) chrome: crate::ui::chrome::Chrome,
 }
 
-/// The run's in-memory unlock secret for one source: the id and password the user
-/// submitted. Kept only while the run lasts and only for a host still locked;
-/// never serialized, logged, or rendered (the password field draws masked).
-#[derive(Clone)]
-pub(crate) struct StoredSecret {
-    pub(crate) user: String,
-    pub(crate) secret: String,
-}
-
 impl State {
-    /// The stored secret for `source`, if one is kept for the run.
-    pub(crate) fn secret_for(&self, source: &str) -> Option<&StoredSecret> {
-        self.secrets.get(source)
-    }
-
-    /// The username an unlock starts with: the stored secret's user, else empty.
-    /// The user always confirms the id before it is used (nothing is guessed).
-    pub(crate) fn current_unlock_user(&self, source: &str) -> String {
-        self.secrets
-            .get(source)
-            .map(|s| s.user.clone())
-            .unwrap_or_default()
-    }
-
-    /// Drops the secret of every host that is no longer LOCKED (a host that died is
-    /// not waiting on a password). Called after a result applies a group's `err`, the
-    /// single place failure text lands.
-    pub(crate) fn forget_unlocked_secrets(&mut self) {
-        self.secrets.retain(|source, _| {
-            self.groups
-                .iter()
-                .find(|g| &g.source == source)
-                .is_some_and(|g| {
-                    g.err.as_deref().is_some_and(crate::mux::is_locked)
-                })
-        });
-    }
-
     /// True while a modal owns the screen (the help popup or the inline input) is
     /// open. These drive [`ModalKind::Popup`]; the context
     /// menu is separate (pointer-anchored).
@@ -329,27 +288,6 @@ impl State {
             // inventory change arrives later as the OpResult.
             Action::CreateSession { source, name } => {
                 vec![Command::RunOp(MuxOp::Create { source, name })]
-            }
-            // The unlock stores the in-memory secret (the run's reuse) and hands the
-            // worker its id+password in the same command - the secret never sits in a
-            // durable place, and the worker consumes it straight from the command.
-            Action::Unlock {
-                source,
-                user,
-                password,
-            } => {
-                self.secrets.insert(
-                    source.clone(),
-                    StoredSecret {
-                        user: user.clone(),
-                        secret: password.clone(),
-                    },
-                );
-                vec![Command::RunUnlock {
-                    source,
-                    user,
-                    password,
-                }]
             }
         }
     }
@@ -1256,49 +1194,6 @@ mod tests {
             name: name.into(),
             ..Default::default()
         }
-    }
-
-    #[test]
-    fn unlock_action_stores_the_secret_and_emits_the_run_command() {
-        let mut state = crate::state::State::default();
-        let cmds = state.apply(crate::model::Action::Unlock {
-            source: "pwbox".into(),
-            user: "alice".into(),
-            password: "hunter2".into(),
-        });
-        assert!(matches!(
-            &cmds[..],
-            [crate::model::Command::RunUnlock { user, password, .. }]
-                if user == "alice" && password == "hunter2"
-        ));
-        assert_eq!(
-            state
-                .secret_for("pwbox")
-                .map(|s| (s.user.clone(), s.secret.clone())),
-            Some(("alice".to_string(), "hunter2".to_string()))
-        );
-        assert_eq!(state.current_unlock_user("pwbox"), "alice");
-    }
-
-    #[test]
-    fn a_host_that_becomes_unreachable_forgets_its_secret() {
-        let mut state = crate::state::State::default();
-        state.apply(crate::model::Action::Unlock {
-            source: "pwbox".into(),
-            user: "alice".into(),
-            password: "hunter2".into(),
-        });
-        // A non-locked failure (dead host) clears the secret; a locked failure keeps it.
-        state.groups = vec![crate::ui::tree::Group {
-            source: "pwbox".into(),
-            err: Some("ssh: connect to host x: Connection refused".into()),
-            sessions: vec![],
-        }];
-        state.forget_unlocked_secrets();
-        assert!(
-            state.secret_for("pwbox").is_none(),
-            "unreachable forgets the secret"
-        );
     }
 
     #[test]

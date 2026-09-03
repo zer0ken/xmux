@@ -95,14 +95,6 @@ pub enum Action {
     /// mutating intent xmux keeps: a reachable host with no sessions offers nothing to
     /// switch to, so starting the first one is part of switching, not mux editing.
     CreateSession { source: String, name: String },
-    /// Unlock a locked host: store the user's id+password in memory (the run's
-    /// secret, reused on retry) and run the off-loop unlock worker. The password is
-    /// never persisted and never leaves the process except into the unlock ssh's pty.
-    Unlock {
-        source: String,
-        user: String,
-        password: String,
-    },
 }
 
 /// A side effect for the run loop to carry out. `apply` returns these; the loop is

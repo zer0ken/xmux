@@ -147,26 +147,25 @@ pub(crate) async fn unlock_host(
     });
 
     loop {
-        match rx.recv_timeout(timeout) {
-            Ok(chunk) => {
-                let text = String::from_utf8_lossy(&chunk);
-                for action in answerer.feed(&text) {
-                    match action {
-                        PromptWrite::HostKey => {
-                            let _ = writer.write_all(b"yes\n");
-                        }
-                        PromptWrite::Password => {
-                            let _ = writer.write_all(&answerer.secret_with_newline());
-                        }
-                        PromptWrite::Done(o) => return o,
-                    }
-                }
-            }
+        let chunk = match rx.recv_timeout(timeout) {
+            Ok(chunk) => chunk,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let _ = child.kill();
                 return UnlockOutcome::Timeout;
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        let text = String::from_utf8_lossy(&chunk);
+        for action in answerer.feed(&text) {
+            match action {
+                PromptWrite::HostKey => {
+                    let _ = writer.write_all(b"yes\n");
+                }
+                PromptWrite::Password => {
+                    let _ = writer.write_all(&answerer.secret_with_newline());
+                }
+                PromptWrite::Done(o) => return o,
+            }
         }
         // The child exited: its exit code is the definitive auth verdict.
         if let Some(exit) = child.try_wait().ok().flatten() {
@@ -176,6 +175,12 @@ pub(crate) async fn unlock_host(
                 exit.exit_code()
             )));
         }
+    }
+    // The pty master closed (the reader thread ended): reap the child for its code
+    // before declaring the unlock closed, so an exited-but-unreaped child still
+    // reports Ok, and the answerer's auth-failure text (if any) still decides.
+    if let Some(exit) = child.try_wait().ok().flatten() {
+        answerer.confirm_exit(exit.exit_code());
     }
     answerer
         .outcome()
@@ -202,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn answerer_ignores_a_plain_password_prompt_before_the_first_reply() {
+    fn answerer_answers_each_prompt_at_most_once() {
         // The same "assword:" pattern that answers a prompt must not fire twice:
         // after the password is written, a normal idle chunk draws no write.
         let mut a = Answerer::new("hunter2".into());
@@ -236,5 +241,56 @@ mod tests {
         let writes =
             a.feed("Permission denied (publickey,password).");
         assert_eq!(writes, vec![PromptWrite::Done(UnlockOutcome::AuthFailed)]);
+    }
+
+    /// The live gate: drives the REAL unlock code path against a password host named
+    /// by env (`XMUX_LIVE_HOST`/`XMUX_LIVE_USER`/`XMUX_LIVE_PASSWORD`), then proves a
+    /// `BatchMode=yes` ssh over the same ControlPath reuses the established master.
+    /// Skipped (not just ignored) when the env is absent, so a routine `cargo test`
+    /// never depends on a live host.
+    #[tokio::test]
+    #[ignore = "live gate: set XMUX_LIVE_HOST/USER/PASSWORD on a password host"]
+    async fn live_unlock_establishes_a_reusable_master() {
+        let (host, user, password) = match (
+            std::env::var("XMUX_LIVE_HOST"),
+            std::env::var("XMUX_LIVE_USER"),
+            std::env::var("XMUX_LIVE_PASSWORD"),
+        ) {
+            (Ok(h), Ok(u), Ok(p)) => (h, u, p),
+            _ => return,
+        };
+        let cp = format!("/tmp/xmux-live-{host}.sock");
+        let _ = std::fs::remove_file(&cp);
+        // The same transport shape xmux builds for the host.
+        let transport =
+            crate::transport::ssh_as(host.clone(), host.clone(), cp.clone(), "linux".into());
+        let outcome =
+            unlock_host(&*transport, &user, &password, std::time::Duration::from_secs(30)).await;
+        assert_eq!(
+            outcome,
+            UnlockOutcome::Ok,
+            "the unlock must establish the master on {host}"
+        );
+        // A BatchMode ssh over the same socket reuses it: no auth prompt, exit 0.
+        let status = std::process::Command::new("ssh")
+            .args([
+                "-o",
+                &format!("ControlPath={cp}"),
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                "--",
+                &host,
+                "true",
+            ])
+            .status()
+            .expect("spawn ssh");
+        assert!(
+            status.success(),
+            "a BatchMode ssh must reuse the unlocked master on {host}"
+        );
     }
 }

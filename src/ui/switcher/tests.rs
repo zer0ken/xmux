@@ -1075,6 +1075,11 @@ async fn locked_host_unlock_flow_goes_user_then_masked_password() {
         matches!(&h.state.modal, Some(Modal::Input(i)) if i.mode == InputMode::Password),
         "Enter on the id moves to the masked password step"
     );
+    // The masked step carries the id the User step submitted (nothing is guessed).
+    assert!(
+        h.hint_bar_text().contains("alice@pwbox"),
+        "the password step names the submitted id"
+    );
     // Typing the password renders masked, never the plaintext.
     for c in "hunter2".chars() {
         h.ch(c).await;
@@ -1086,10 +1091,8 @@ async fn locked_host_unlock_flow_goes_user_then_masked_password() {
         "no plaintext reaches the hint bar:\n{bar}"
     );
     h.key(KeyCode::Enter).await;
-    // Submitting closes the input and stores the in-memory run secret (the
-    // off-loop worker runs under the app, Task 11).
+    // Submitting closes the input (the off-loop worker runs under the app, Task 11).
     assert!(h.state.modal.is_none(), "submitting closes the input");
-    assert_eq!(h.state.current_unlock_user("pwbox"), "alice");
 }
 
 #[tokio::test]
@@ -1114,7 +1117,7 @@ async fn unlock_success_kicks_a_rescan_and_a_failure_keeps_the_host_locked() {
     );
     assert!(h.sw.take_rescan_kick(), "a successful unlock re-scans the roster");
     assert_eq!(h.state.groups[0].err, None, "the host is back to scanning");
-    // A failed unlock stays locked (the secret stays in memory for a retry).
+    // A failed unlock stays locked; a retry re-enters the credentials.
     h.sw.apply_source_result(
         "pwbox".into(),
         vec![],
@@ -1128,7 +1131,7 @@ async fn unlock_success_kicks_a_rescan_and_a_failure_keeps_the_host_locked() {
         &mut h.state,
     );
     assert!(h.sw.current_host_locked(), "auth failure keeps the card locked");
-    assert_eq!(h.state.current_unlock_user("pwbox"), "");
+    // A retry re-enters the credentials; the host stays locked until one works.
 }
 
 #[tokio::test]
