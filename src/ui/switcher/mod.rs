@@ -22,7 +22,7 @@ use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
 
 use crate::ui::ops::OpFollow;
-pub use crate::ui::ops::{run_op, OpResult, Ops};
+pub use crate::ui::ops::{run_op, run_unlock, OpResult, Ops};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const NAV_WIDTH: u16 = 48;
@@ -708,7 +708,7 @@ impl Switcher {
         self.rows.get(self.selected).map(|r| &r.reference)
     }
 
-    fn current_source(&self) -> Option<String> {
+    pub(crate) fn current_source(&self) -> Option<String> {
         match self.current_ref()? {
             RowRef::Host { source, .. } | RowRef::Section { source, .. } => Some(source.clone()),
             RowRef::Session { sess } => Some(sess.source.clone()),
@@ -717,6 +717,19 @@ impl Switcher {
 
     fn current_host_unreachable(&self) -> bool {
         matches!(self.current_ref(), Some(RowRef::Host { unreachable, .. }) if *unreachable)
+    }
+
+    /// True when the selected host answered the network but refused the credentials. Its
+    /// terminal-view panel carries the unlock input, so a keystroke typed while the
+    /// terminal view is focused edits that panel's fields rather than reaching a session.
+    pub(crate) fn current_host_locked(&self) -> bool {
+        matches!(self.current_ref(), Some(RowRef::Host { locked, .. }) if *locked)
+    }
+
+    /// True when the selected host is not a valid action target: it is unreachable
+    /// (dead) or locked (auth-failed). Creating under it is refused either way.
+    fn current_host_blocked(&self) -> bool {
+        self.current_host_unreachable() || self.current_host_locked()
     }
 
     /// Which host screen the terminal view shows in place of the grid, or `None` when it
@@ -735,11 +748,15 @@ impl Switcher {
         let Some(RowRef::Host {
             source,
             unreachable,
+            locked,
             ..
         }) = self.current_ref()
         else {
             return None;
         };
+        if *locked {
+            return Some(ViewScreen::Locked);
+        }
         if *unreachable {
             return Some(ViewScreen::Unreachable);
         }

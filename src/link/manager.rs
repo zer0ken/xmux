@@ -1,5 +1,5 @@
-//! `HostManager`: owns each host's metadata channel — a `-CC` `HostClient` or a
-//! poll task — plus `control_argv`, the composed control-child argv.
+//! `HostManager`: owns each host's metadata channel - a `-CC` `HostClient` or a
+//! poll task - plus `control_argv`, the composed control-child argv.
 
 use std::collections::HashMap;
 
@@ -42,7 +42,7 @@ impl HostManager {
     }
 
     /// Ensures `id`'s metadata channel is live, picking the channel from the host's
-    /// `event_source()` — the ONE place that reads it. CONTROL → spawn a `-CC` client
+    /// `event_source()` - the ONE place that reads it. CONTROL → spawn a `-CC` client
     /// (connect sequence queued by `HostClient::spawn`); POLL → spawn a self-looping
     /// poll task at the mux's interval. A no-op (`Ok(false)`) if already live.
     pub fn ensure(
@@ -55,7 +55,7 @@ impl HostManager {
         // A finished poll task leaves a dead JoinHandle in the map (the loop is otherwise
         // infinite, so this only happens if its body panicked). Drop it so this re-ensure
         // (startup, selection move, or the reconnect sweep) respawns it instead of treating
-        // the corpse as live — this is what makes the reconnect sweep a real liveness check.
+        // the corpse as live - this is what makes the reconnect sweep a real liveness check.
         if self.polls.get(id).is_some_and(|h| h.is_finished()) {
             self.polls.remove(id);
         }
@@ -105,10 +105,17 @@ impl HostManager {
         self.clients.get(host)
     }
 
+    /// True when `host` has a live metadata channel of either kind - a control client or
+    /// a poll task. The reconnect sweep reads it to tell a channel that dropped from one
+    /// still running, so it re-probes only the dropped ones.
+    pub fn is_live(&self, host: &str) -> bool {
+        self.clients.contains_key(host) || self.polls.contains_key(host)
+    }
+
     /// Immediate re-enumeration on demand (`r` / menu reconnect). A CONTROL host
     /// re-issues list-sessions; a POLL host's task is aborted and respawned so the next
     /// enumeration fires NOW instead of at the next interval. Branches on which channel
-    /// the manager holds — it does NOT read the mux's event source.
+    /// the manager holds - it does NOT read the mux's event source.
     pub fn rescan(&mut self, id: &str, host: &crate::model::Host, cols: u16, rows: u16) {
         if let Some(c) = self.clients.get(id) {
             c.list_sessions();
@@ -182,7 +189,7 @@ mod tests {
     use super::*;
 
     // LIVE: connects to the real `jupiter06` over ssh and verifies the control-mode
-    // METADATA path end-to-end — connect → list-sessions resolves → inventory has the
+    // METADATA path end-to-end - connect → list-sessions resolves → inventory has the
     // host's real sessions. Uses PIPES (not a ConPTY), so it works headlessly even
     // inside a mux. `#[ignore]` because it needs network + the host reachable:
     //   cargo test -p xmux host::tests::live_jupiter06 -- --ignored --nocapture
@@ -292,7 +299,7 @@ mod tests {
     /// A constructible LOCAL `Source` for the manager tests: its runner defaults to the
     /// real exec runner and its `cmd.exe` binary is a real local program, so if `ensure`
     /// ever did spawn it the process would exist rather than fail to launch. In these
-    /// tests it stays dormant — `ensure` on an already-present host returns `Ok(false)`
+    /// tests it stays dormant - `ensure` on an already-present host returns `Ok(false)`
     /// and a poll host's task is aborted before its runner is exercised.
     fn ssh_host(alias: &str, bin: &str, os: &str, control_path: &str) -> crate::model::Host {
         crate::model::Host::new(
@@ -352,7 +359,7 @@ mod tests {
     #[test]
     fn control_argv_is_the_transport_over_backend_composition() {
         // The mux payload comes from Mux::control_argv (NOT a hardcoded literal),
-        // and the machine wrapping comes from Transport::control_argv — the two compose.
+        // and the machine wrapping comes from Transport::control_argv - the two compose.
         for host in [
             local_host("tmux", None),
             local_host("tmux", Some("/tmp/tmux-1000/work")),
@@ -403,7 +410,7 @@ mod tests {
     #[tokio::test]
     async fn manager_ensure_poll_host_owns_poll_task_lifecycle() {
         // A poll host (psmux, EventSource::Poll) gets a self-looping poll TASK owned by
-        // the manager — not a control client. ensure is idempotent while the task lives;
+        // the manager - not a control client. ensure is idempotent while the task lives;
         // reap aborts it so a later ensure re-spawns it. get() returns None throughout
         // (a poll host has no `-CC` control client, only the poll task).
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();

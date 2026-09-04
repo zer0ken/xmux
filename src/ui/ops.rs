@@ -29,6 +29,16 @@ pub trait Ops: Send + Sync {
     /// unreachable (the message is shown as the host's failure reason).
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>>;
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session>;
+    /// Unlock a locked source: run the off-loop ssh prompt-answer and return the
+    /// verdict. `Ok` establishes the one authenticated ControlMaster every later
+    /// channel reuses; the app reacts to the outcome (a rescan on success, a flash
+    /// on failure).
+    async fn unlock(
+        &self,
+        source: &str,
+        user: &str,
+        password: &str,
+    ) -> crate::link::unlock::UnlockOutcome;
 }
 
 /// The outcome of a [`MuxOp`]. [`State::fold_op_result`] folds it into the
@@ -38,8 +48,20 @@ pub trait Ops: Send + Sync {
 /// [`State::fold_op_result`]: crate::state::State::fold_op_result
 #[derive(Debug, Clone)]
 pub enum OpResult {
-    Created { session: Session },
-    Failed { message: String },
+    Created {
+        session: Session,
+    },
+    Failed {
+        message: String,
+    },
+    /// The unlock worker's verdict. Not an inventory mutation: the app reacts to it
+    /// (re-probe the unlocked machine on success, a flash on failure), never a fold into
+    /// the tree. `source` names the host that was unlocked, so success re-probes only its
+    /// machine rather than the whole roster.
+    Unlock {
+        source: String,
+        outcome: crate::link::unlock::UnlockOutcome,
+    },
 }
 
 /// What the switcher must do after [`State::fold_op_result`] applies an op's
@@ -55,6 +77,12 @@ pub enum OpFollow {
     Reselect(Address),
     /// No inventory change - flash this message (a failed op).
     Flash(String),
+    /// The unlock verdict: re-probe the unlocked `source`'s machine on success (only it
+    /// could have changed reach state), flash the failure reason otherwise.
+    UnlockResult {
+        source: String,
+        outcome: crate::link::unlock::UnlockOutcome,
+    },
 }
 
 /// Runs a [`MuxOp`] against the live mux and returns its [`OpResult`]. Pure over
@@ -67,5 +95,15 @@ pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
                 message: format!("create failed: {e}"),
             },
         },
+    }
+}
+
+/// Runs the unlock against the live transport and returns its [`OpResult`]. Pure
+/// over `ops` (no switcher state), so it runs in a detached task off the event loop
+/// like [`run_op`].
+pub async fn run_unlock(source: &str, user: &str, password: &str, ops: &dyn Ops) -> OpResult {
+    OpResult::Unlock {
+        source: source.to_string(),
+        outcome: ops.unlock(source, user, password).await,
     }
 }

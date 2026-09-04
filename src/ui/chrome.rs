@@ -233,6 +233,11 @@ pub(crate) enum BarFill {
 /// that has no grid to mirror. Two are host states with no session to show; the third is
 /// the one session that has a grid and must not be shown anyway. There is no variant for
 /// a host still scanning - an in-flight state is the nav's to show, so the view keeps the
+/// The mark a locked host wears: on its nav card, flush after the host name, and on its
+/// panel headline. A locked host is a failure the user can act on (the password unlock),
+/// so it keeps the warning colour like the unreachable `⚠`.
+pub(crate) const LOCK_MARK: &str = "⚿";
+
 /// grid it already has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ViewScreen {
@@ -242,6 +247,9 @@ pub(crate) enum ViewScreen {
     SelfSession,
     /// The host could not be reached.
     Unreachable,
+    /// The host answered the network but refused the credentials (`Permission
+    /// denied`): a locked host is reachable and awaiting the password unlock.
+    Locked,
     /// The host answered and is serving no session.
     Empty,
 }
@@ -254,7 +262,8 @@ impl ViewScreen {
     fn word(self) -> &'static str {
         match self {
             ViewScreen::SelfSession => "running xmux",
-            other => crate::ui::tree::host_state_word(other == ViewScreen::Unreachable),
+            ViewScreen::Locked => "locked",
+            other => crate::ui::tree::host_state_word(false, other == ViewScreen::Unreachable),
         }
     }
 }
@@ -291,13 +300,14 @@ fn siblings(
         .iter()
         .filter(|g| g.source != source && crate::session::machine_of(&g.source) == machine)
         .map(|g| {
+            let locked = g.err.as_deref().is_some_and(crate::mux::is_locked);
             let word = if state.scanning.contains(&g.source) {
                 "still scanning".to_string()
             } else if g.err.is_some() {
-                crate::ui::tree::host_state_word(true).to_string()
+                crate::ui::tree::host_state_word(locked, true).to_string()
             } else {
                 match g.sessions.len() {
-                    0 => crate::ui::tree::host_state_word(false).to_string(),
+                    0 => crate::ui::tree::host_state_word(false, false).to_string(),
                     1 => "1 session".to_string(),
                     n => format!("{n} sessions"),
                 }
@@ -642,8 +652,9 @@ impl Chrome {
         state: &crate::state::State,
         address: &crate::session::Address,
         kind: ViewScreen,
+        focused: bool,
     ) {
-        let lines = self.view_screen_lines(state, address, kind, area.width);
+        let lines = self.view_screen_lines(state, address, kind, area.width, focused);
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
@@ -669,7 +680,9 @@ impl Chrome {
                     )
                 }
             }
-            ViewScreen::Unreachable | ViewScreen::Empty => self.source_label(&address.source),
+            ViewScreen::Unreachable | ViewScreen::Locked | ViewScreen::Empty => {
+                self.source_label(&address.source)
+            }
         }
     }
 
@@ -682,6 +695,7 @@ impl Chrome {
         address: &crate::session::Address,
         kind: ViewScreen,
         width: u16,
+        focused: bool,
     ) -> Vec<Line<'static>> {
         let pal = crate::ui::palette::get();
         let p = &self.ui_prefix;
@@ -706,7 +720,7 @@ impl Chrome {
                  which moves your own client and paints xmux inside itself"
                     .into(),
             ));
-        } else if kind == ViewScreen::Unreachable {
+        } else if kind == ViewScreen::Unreachable || kind == ViewScreen::Locked {
             // WHAT failed, then WHEN, then what was asked of the host and how, then who
             // put it on the list, then how it is configured, then what else on that same
             // machine answered, then where the whole history is written. Read top to
@@ -788,6 +802,14 @@ impl Chrome {
             if !self.log_path.is_empty() {
                 rows.push((ScreenCell::Label("log"), self.log_path.clone()));
             }
+            if kind == ViewScreen::Locked {
+                rows.push((
+                    ScreenCell::Label("unlock"),
+                    "Enter a username, then the masked password; xmux answers the ssh \
+                     prompt and establishes one authenticated connection the rest reuses"
+                        .into(),
+                ));
+            }
             rows.push((ScreenCell::Gap, String::new()));
         } else {
             // Creating under an unreachable host is refused, so `n` is offered only where
@@ -842,19 +864,66 @@ impl Chrome {
         let rule = Span::styled("│ ", Style::default().fg(pal.decoration));
         let state_style = Style::default().fg(match kind {
             ViewScreen::Unreachable => pal.error,
+            ViewScreen::Locked => pal.warning,
             ViewScreen::Empty | ViewScreen::SelfSession => pal.decoration,
         });
+        // The locked panel wears the key mark on its headline; the other screens carry
+        // no mark (their state word alone names them).
+        let headline = if kind == ViewScreen::Locked {
+            format!(" {LOCK_MARK} {}", self.headline(address, kind))
+        } else {
+            format!(" {}", self.headline(address, kind))
+        };
         let mut out = vec![
             Line::from(""),
             Line::from(Span::styled(
-                format!(" {}", self.headline(address, kind)),
+                headline,
                 Style::default()
                     .fg(pal.secondary)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(format!(" {}", kind.word()), state_style)),
-            Line::from(""),
         ];
+        // The locked panel OWNS the unlock input: the username and masked password sit at
+        // its top, edited in place from the terminal view (no modal, no nav). The active
+        // field shows a cursor only while the terminal view is focused, so the panel says
+        // whether it is taking keys.
+        if kind == ViewScreen::Locked {
+            let draft = state.unlock.as_ref().filter(|d| d.source == source);
+            let (user, password, field) = draft
+                .map_or(("", "", crate::state::UnlockField::User), |d| {
+                    (d.user.as_str(), d.password.as_str(), d.field)
+                });
+            let cursor = |active: bool| {
+                if active && focused {
+                    "▊"
+                } else {
+                    ""
+                }
+            };
+            let field_line = |label: &str, shown: String, active: bool| {
+                Line::from(vec![
+                    Span::styled(format!(" {label:<9} "), Style::default().fg(pal.decoration)),
+                    Span::styled(
+                        format!("{shown}{}", cursor(active)),
+                        Style::default().fg(pal.secondary),
+                    ),
+                ])
+            };
+            let masked: String = "•".repeat(password.chars().count());
+            out.push(Line::from(""));
+            out.push(field_line(
+                "user:",
+                user.to_string(),
+                field == crate::state::UnlockField::User,
+            ));
+            out.push(field_line(
+                "password:",
+                masked,
+                field == crate::state::UnlockField::Password,
+            ));
+        }
+        out.push(Line::from(""));
         for (cell, value) in rows {
             if matches!(cell, ScreenCell::Gap) {
                 out.push(Line::from(""));

@@ -83,8 +83,8 @@ UI elements a user perceives as distinct things:
 - view screen - what fills the terminal-view region in place of a mux, for a selection
   with no grid to show there. Where a card states the selection's STATE, the screen
   states WHY: it is the one surface with the room to hold a tool's diagnostic whole.
-  One screen in three states, so a reader of any of them reads the others: the subject
-  as the headline (a host for the two host states, the session address for
+  One screen in four states, so a reader of any of them reads the others: the subject
+  as the headline (a host for the three host states, the session address for
   `own session`), under it the state word, then the rows that apply. A row is the key-column row the help also uses - a
   right-aligned cell, the `│` rule, the value - where a bold cell is a key that can be
   pressed here and a muted cell names a datum. No value on a screen is shortened to fit
@@ -96,7 +96,12 @@ UI elements a user perceives as distinct things:
   the socket, and the session-listing command itself, spelled so it can be run by hand),
   then the provider that put the host on the roster, the ssh stanza it was reached
   through, what the OTHER muxes on that same machine answered, and the log file holding
-  the full history - then the rescan key. The EMPTY state's rows are the keys that start a session or rescan. A host
+  the full history - then the rescan key. The LOCKED state states the same failure
+  facts and adds the unlock fields at the panel's top (a username and a masked password,
+  typed into the panel from the terminal view; xmux answers the ssh prompt and
+  establishes one authenticated connection the rest reuses); the host stays locked on any
+  failed unlock and re-probes only itself on a successful
+  one. The EMPTY state's rows are the keys that start a session or rescan. A host
   still scanning gets no screen: an in-flight state is the nav's to show. The
   `own session` state's rows are why it is refused, and no key, because nothing pressed
   here would make it showable.
@@ -265,10 +270,22 @@ UI elements a user perceives as distinct things:
   card never spins, because a session is a plain session card the moment its host
   resolves.
 - status - a host-state card's state once it has SETTLED: the unreachable host's `⚠`
-  mark riding after its host name, or nothing at all on a reachable empty host
+  mark riding after its host name, the locked host's `*` mark, or nothing at all on
+  a reachable empty host
   (whose screen states "no sessions"); a card still scanning carries the spinner
   instead, because its spinner already says so. Not to be confused with the hint bar
   (below) or the `chrome`.
+- locked - a host that answered the network but refused the credentials, a state
+  apart from unreachable: ssh's own auth-failure line (`Permission denied
+  (publickey,…)`) is the only text that earns it, so a host that merely died is
+  never locked. Its card keeps the `⚿` mark (warning, like unreachable's `⚠`), is
+  never hidden by hide-unreachable (it is the one entry to the unlock), and shows
+  the locked panel naming the reason. That panel OWNS the unlock: its top carries a
+  username and a masked password field, typed into from the terminal view (Enter
+  advances user→password then submits), which runs one PTY prompt-answer ssh that leaves
+  the one authenticated ControlMaster every later channel reuses. It is not a modal and
+  nothing in the nav drives it. The submitted credentials live only in the transient
+  command and the PTY writer: never stored, logged, rendered, or serialized.
 - address column - the leftmost column set of every card, holding the one thing that
   answers "where is this": the dim 1-based number `prefix <digit>` jumps to, or, on the
   SELECTED card, the selection mark - the number there would be the address of where you
@@ -316,15 +333,25 @@ UI elements a user perceives as distinct things:
   source for SESSIONS).
   THIS BOX is resolved before the first paint (a local probe is milliseconds), once, and
   threaded into the construction of both the source list and the runtime registry, so the
-  two cannot disagree on which sources exist. A REMOTE host is probed AFTER launch
-  instead (one ssh round trip per
-  mux, which nothing may wait for): one task per host, the answer arrives as a source
-  event, and the loop adds a scanning card for every mux the host does not already
-  serve. That add is
+  two cannot disagree on which sources exist. A REMOTE machine is asked only AFTER it is
+  found to CONNECT: discovery leads with a bounded machine `reachability` probe, and mux
+  discovery (one task per machine, which nothing may wait for) fires only for a connected
+  one. The answer arrives as a source event, and the loop adds a scanning card for every
+  mux the machine does not already serve. That add is
   ADD-ONLY: an added source's id is always qualified (`prod:zellij`) and the mux already
   served keeps the id it was painted with, because that id is what the deterministic
   order, the
   persisted selection, and typed ctl targets are keyed to.
+- reachability - a machine's connect state, decided by ONE probe (`ssh <machine>
+  true`, or an inline connect for this box) that leads discovery, bounded so a large
+  roster never floods the network at once. Its three outcomes gate everything after:
+  `connected` goes on to `mux discovery`, detection, and the metadata channels;
+  `locked` (ssh's `Permission denied (` auth-failure signature) and `unreachable` (any
+  other failure) classify the machine's cards and open no channel. The probe reads
+  ssh's own failure text, so the reason a card shows is the machine's, not a guess; a
+  connected probe also warms the shared ControlMaster its later channels reuse. Distinct
+  from `mux discovery` (which muxes a connected machine serves) and `discovery` (a
+  source's sessions).
 - roster - which HOSTS xmux offers, assembled from PROVIDERS, EVERY one on unless
   `[discovery]` turns it off: `~/.ssh/config` aliases, the online peers of this
   machine's tailnet, and this machine's WSL distributions. Every provider yields plain ssh

@@ -11,6 +11,7 @@ pub mod manage;
 mod manager;
 mod poll;
 mod reader;
+pub mod unlock;
 mod writer;
 
 pub use client::HostClient;

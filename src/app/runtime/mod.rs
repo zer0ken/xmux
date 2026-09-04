@@ -224,6 +224,11 @@ fn dispatch_commands(
             Command::ToggleAutoHide => toggle_auto_hide(auto_hide_nav, xmux_dir),
             Command::Quit => quit = true,
             Command::RunOp(op) => spawn_op(op, op_sink.0, op_sink.1),
+            Command::RunUnlock {
+                source,
+                user,
+                password,
+            } => spawn_unlock(source, user, password, op_sink.0, op_sink.1),
             // Settled-selection effects come only from Action::Tick, dispatched by the
             // run loop with registry/host access - never from a key/ctl action here.
             Command::PersistLastSession(_) | Command::Attach(_) => {}
@@ -674,6 +679,12 @@ fn ensure_current_host(
     // through every ensure_current_host caller for a size the user never sees.
     let (cols, rows) =
         terminal_view_size(cols, rows, crate::ui::switcher::NavSize::visible(nav_width));
+    // A locked selected host gets no control channel from here: opening a `-CC` that
+    // dies on auth would overwrite its locked reason with "connection closed". The
+    // reconnect sweep re-probes its reachability instead.
+    if switcher.current_host_locked() {
+        return;
+    }
     if let Some(id) = switcher.current_host() {
         if let Some(host) = hosts.get(&id) {
             if host.detected {
@@ -706,10 +717,11 @@ fn spawn_host_detection(
 /// already reaches it so the probes travel the same axes as everything else. The answer
 /// is emitted as `HostEvent::MuxesFound`.
 ///
-/// Fire and forget, and deliberately AFTER launch: a remote probe is an ssh round trip
-/// per mux, and the app must be on screen before any of that. Nothing waits for it, so a
-/// machine that never answers costs a task and no more. A permit is held on `gate` for
-/// the whole probe, so at most [`MUX_DISCOVERY_CONCURRENCY`] machines answer at once.
+/// Fire and forget, and deliberately AFTER a machine connects: a remote probe is an ssh
+/// round trip per mux, and only a reachable machine is worth asking. Nothing waits for
+/// it, so a machine that never answers costs a task and no more. A permit is held on
+/// `gate` (the shared probe gate) for the whole probe, so at most [`PROBE_CONCURRENCY`]
+/// probe tasks run at once.
 fn spawn_mux_discovery(
     machine: String,
     transport: Box<dyn crate::transport::Transport>,
@@ -755,44 +767,82 @@ fn spawn_roster_resolve(
     });
 }
 
-/// How many machines may probe their muxes at once. Discovery is off the loop and
-/// streamed, so nothing on screen waits on any one answer; bounding the probes keeps a
-/// re-scan from flooding the machine with a subprocess per candidate per host at once.
-const MUX_DISCOVERY_CONCURRENCY: usize = 3;
+/// How many probe tasks may run at once, from a machine's reachability probe onward
+/// (that probe, and the mux discovery a connected machine goes on to). The shared gate
+/// bounds them together so a launch or re-scan over a large roster never floods the
+/// network with a subprocess per machine all at the same instant.
+const PROBE_CONCURRENCY: usize = 12;
 
-/// Starts mux discovery for every machine that left its mux list to xmux, once, right
-/// after the first paint. One task per MACHINE (not per source): the answer is about the
-/// machine, and each mux it reports beyond the one already served becomes a source.
-///
-/// The per-machine probes are bounded by a [`tokio::sync::Semaphore`]: at most
-/// [`MUX_DISCOVERY_CONCURRENCY`] machines answer at once, so a re-scan does not flood
-/// the machine with a subprocess per candidate per host all at the same instant. A
-/// strict one-at-a-time probe would serialize on a slow host and delay every machine
-/// behind it.
-fn discover_machine_muxes(
-    cfg: &crate::provision::config::Config,
+/// Runs one machine's REACHABILITY probe off the loop - `ssh <opts> <machine> true`,
+/// bounded by the shared `gate` - and carries the outcome back as
+/// [`HostEvent::MachineProbed`]. A zero exit is connected (`err` `None`); ssh's own
+/// failure line is the reason otherwise, classified locked (its auth-failure signature)
+/// or unreachable at the card. The `true` also warms the shared ControlMaster socket the
+/// connected machine's later channels reuse without re-authenticating.
+fn spawn_machine_probe(
+    machine: String,
+    transport: Box<dyn crate::transport::Transport>,
+    tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+    gate: std::sync::Arc<tokio::sync::Semaphore>,
+    rescan: bool,
+) {
+    use crate::model::source::Runner;
+    tokio::spawn(async move {
+        let Ok(_permit) = gate.acquire().await else {
+            return;
+        };
+        let (name, args) = transport.exec_argv(false, &["true".to_string()]);
+        let err = match crate::model::source::ExecRunner.run(&name, &args).await {
+            Ok(_) => None,
+            Err(e) => Some(e.to_string()),
+        };
+        let _ = tx.send(HostEvent::MachineProbed {
+            machine,
+            err,
+            rescan,
+        });
+    });
+}
+
+/// Probes ONE machine's reachability, named by any source `id` it serves. A local or
+/// WSL machine is on this box, so it is reachable without an ssh round trip and connects
+/// inline; a remote machine is probed off the loop under `gate`.
+fn probe_machine(
+    id: &str,
     hosts: &crate::model::Hosts,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+    gate: &std::sync::Arc<tokio::sync::Semaphore>,
+    rescan: bool,
 ) {
-    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(MUX_DISCOVERY_CONCURRENCY));
+    let Some(host) = hosts.get(id) else {
+        return;
+    };
+    let machine = crate::session::machine_of(id).to_string();
+    if !host.transport.is_remote() {
+        let _ = tx.send(HostEvent::MachineProbed {
+            machine,
+            err: None,
+            rescan,
+        });
+        return;
+    }
+    spawn_machine_probe(machine, host.transport.clone(), tx, gate.clone(), rescan);
+}
+
+/// Probes the reachability of every MACHINE the roster serves, once each (deduped by
+/// machine), bounded by the shared `gate`. This is discovery's front: a connected
+/// machine goes on to mux discovery and its channels, a locked or unreachable one
+/// classifies its cards without opening any.
+fn probe_machines(
+    hosts: &crate::model::Hosts,
+    tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+    gate: &std::sync::Arc<tokio::sync::Semaphore>,
+    rescan: bool,
+) {
     let mut seen: HashSet<&str> = HashSet::new();
     for id in hosts.ids() {
-        let machine = crate::session::machine_of(id);
-        // This box is resolved BEFORE the first paint (a local probe is milliseconds), so
-        // its list is already complete; only remote machines are probed here.
-        if crate::session::is_local_source(id) || !seen.insert(machine) {
-            continue;
-        }
-        if !cfg.mux_is_auto(machine) {
-            continue;
-        }
-        if let Some(host) = hosts.get(id) {
-            spawn_mux_discovery(
-                machine.to_string(),
-                host.transport.clone(),
-                tx.clone(),
-                gate.clone(),
-            );
+        if seen.insert(crate::session::machine_of(id)) {
+            probe_machine(id, hosts, tx.clone(), gate, rescan);
         }
     }
 }
@@ -855,71 +905,43 @@ fn apply_scan_result(
 }
 
 /// Consumes a pending re-scan kick (set by `r` or a menu "reconnect"): runs the shared
-/// discovery pass over the current hosts with the rescan flag, so a re-scan refreshes
-/// WHICH MACHINES exist (re-resolves the roster) and re-enumerates sessions, exactly the
-/// work a fresh launch runs. A no-op when no kick is pending. Shared by the key and menu
-/// paths.
+/// discovery pass with the rescan flag, so a re-scan refreshes WHICH MACHINES exist
+/// (re-resolves the roster) and re-probes every machine's reachability, exactly the work
+/// a fresh launch runs. A no-op when no kick is pending. Shared by the key and menu paths.
 fn kick_rescan(
-    env: &Env,
     switcher: &mut crate::ui::switcher::Switcher,
+    env: &Env,
     hosts: &crate::model::Hosts,
-    detecting: &mut HashSet<String>,
-    mgr: &mut HostManager,
-    size: (u16, u16),
+    mgr: &HostManager,
+    gate: &std::sync::Arc<tokio::sync::Semaphore>,
 ) {
     if !switcher.take_rescan_kick() {
         return;
     }
-    run_discovery(env, hosts, detecting, mgr, size, true);
+    run_discovery(env, hosts, mgr, gate, true);
 }
 
-/// The shared discovery pass a fresh launch and a re-scan both run, so the two are
-/// functionally identical: (re)resolve the roster (rescan only), then for each source
-/// detect its mux (or re-list its sessions once known) and ask each auto machine which
-/// muxes it serves, all concurrently over the async runtime.
+/// The shared discovery pass a fresh launch and a re-scan both run: probe every
+/// machine's reachability, and on a re-scan re-resolve the roster too. A machine's
+/// answer (`HostEvent::MachineProbed`) drives the rest - a connected machine detects and
+/// dispatches its sources and, if auto, discovers its muxes; a locked or unreachable one
+/// classifies its cards - so this pass opens no channel itself.
 ///
-/// On a re-scan `rescan` is true: the roster is re-resolved (a slow provider then delays
-/// no card already on screen, since the standing sources are re-enumerated regardless)
-/// and detected hosts are re-listed; at launch they are first dispatched onto their
-/// metadata channel instead.
-///
-/// Mux discovery asks each auto machine which muxes it serves, and the answer must not
-/// outlive the roster it was asked against - so it is asked only once per roster. At
-/// launch the roster was resolved before this pass, so discovery fires here; on a
-/// re-scan the freshly resolved roster answers as `RosterResolved` and fires it there.
-/// Firing it in both places would probe every auto machine against the old roster and
-/// again against the new one, doubling the re-scan's subprocess burst.
+/// On a re-scan the roster is re-resolved concurrently; when it lands (`RosterResolved`),
+/// the freshly ADDED machines are probed, so a machine that just came online turns into a
+/// card without a restart. The machines standing right now are probed here regardless, so
+/// a slow provider delays no card already on screen.
 fn run_discovery(
     env: &Env,
     hosts: &crate::model::Hosts,
-    detecting: &mut HashSet<String>,
-    mgr: &mut HostManager,
-    size: (u16, u16),
+    mgr: &HostManager,
+    gate: &std::sync::Arc<tokio::sync::Semaphore>,
     rescan: bool,
 ) {
-    let (cols, rows) = size;
     if rescan {
-        // Answers back on the host bus as `RosterResolved`; the sources standing right now
-        // are re-enumerated below regardless, so a slow provider delays no card already
-        // on screen.
         spawn_roster_resolve(env.xmux_dir.clone(), env.local_socket.clone(), mgr.events());
     }
-    for id in hosts.ids() {
-        if let Some(host) = hosts.get(id) {
-            if host.detected {
-                if rescan {
-                    mgr.rescan(id, host, cols, rows);
-                } else {
-                    dispatch_detected_host(mgr, hosts, id, cols, rows);
-                }
-                continue;
-            }
-        }
-        scan_or_dispatch_host(mgr, hosts, detecting, id, cols, rows);
-    }
-    if !rescan {
-        discover_machine_muxes(&env.roster().cfg, hosts, mgr.events());
-    }
+    probe_machines(hosts, mgr.events(), gate, rescan);
 }
 
 /// Refetches a host's inventory after a `%`-change notification: re-runs
@@ -1105,24 +1127,15 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // Build the world state (Runtime) + the loop's I/O (the receivers `select!` polls).
     let (mut rt, mut io) = Runtime::new(env);
     // Kick the shared discovery pass at launch - the same one a re-scan runs, so a fresh
-    // launch and a re-scan are functionally identical. Each host's first scan streams its
-    // rows in without waiting for a selection move: control hosts connect a `-CC` client,
-    // poll hosts start their self-looping enumeration task, both owned by the manager, and
-    // each auto machine is asked which muxes it has (a mux nobody wrote down appears as
-    // its machine answers). Deliberately off `Runtime::new` so a headless unit test can
-    // build a `Runtime` without launching real detection probes / control clients.
-    // PTYs are attached as each source's sessions arrive (see [`sync_source_terminals`]).
-    // Runtime::new has already resolved the initial nav position from the [ui] settings
-    // and the persisted pin, so the first sizing reads the runtime's one nav value.
-    let init_size = terminal_view_size(rt.cols, rt.body_rows, rt.nav_size());
-    run_discovery(
-        &rt.env,
-        &rt.hosts,
-        &mut rt.detecting,
-        &mut rt.mgr,
-        init_size,
-        false,
-    );
+    // launch and a re-scan are functionally identical. Each machine's reachability is
+    // probed first (bounded), and a connected one streams its rows in without waiting for
+    // a selection move: control hosts connect a `-CC` client, poll hosts start their
+    // self-looping enumeration task, both owned by the manager, and each auto machine is
+    // asked which muxes it has (a mux nobody wrote down appears as its machine answers).
+    // Deliberately off `Runtime::new` so a headless unit test can build a `Runtime`
+    // without launching real probes / control clients. PTYs are attached as each source's
+    // sessions arrive (see [`sync_source_terminals`]).
+    run_discovery(&rt.env, &rt.hosts, &rt.mgr, &rt.probe_gate, false);
     // Take the worker's reply receiver out so the loop can `select!` on it while `&mut rt`
     // is borrowed for the arm body (the send half stays on `rt.worker`).
     let mut worker_events = rt.worker.take_events();
@@ -1266,6 +1279,10 @@ struct Runtime {
     ops: Arc<dyn crate::ui::switcher::Ops>,
     hosts: crate::model::Hosts,
     mgr: HostManager,
+    /// Bounds the discovery probe fan-out (each machine's reachability probe and the mux
+    /// discovery a connected machine runs) at [`PROBE_CONCURRENCY`], shared across the
+    /// launch pass, every re-scan, and the roster-add path so they never flood together.
+    probe_gate: Arc<tokio::sync::Semaphore>,
     registry: AttachRegistry,
     /// The off-loop attach worker. Its reply receiver is taken out in `run_app`
     /// ([`DisplayWorker::take_events`]); this keeps only the send half (`ensure`).
@@ -1340,6 +1357,24 @@ fn spawn_op(
     let tx = op_tx.clone();
     tokio::spawn(async move {
         let result = crate::ui::switcher::run_op(&op, ops.as_ref()).await;
+        let _ = tx.send(result);
+    });
+}
+
+/// Runs the unlock off the loop the way [`spawn_op`] runs a mux op: the PTY
+/// prompt-answer is blocking I/O with its own timeout, so it must never freeze the
+/// loop; its [`OpResult::Unlock`] folds back through the same op channel.
+fn spawn_unlock(
+    source: String,
+    user: String,
+    password: String,
+    ops: &Arc<dyn crate::ui::switcher::Ops>,
+    op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+) {
+    let ops = ops.clone();
+    let tx = op_tx.clone();
+    tokio::spawn(async move {
+        let result = crate::ui::switcher::run_unlock(&source, &user, &password, ops.as_ref()).await;
         let _ = tx.send(result);
     });
 }

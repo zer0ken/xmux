@@ -205,12 +205,15 @@ pub(crate) enum RowRef {
     /// card, and the `{host}/{mux}` it used to carry now lives on the section title
     /// above it.
     Session { sess: Session },
-    /// A host with no session to show (scanning / unreachable / empty) - the only
-    /// host-level entry, sunk to the bottom of the list. `scanning` is the in-flight
-    /// state: the card's unresolved level shows a spinner instead of a settled mux.
+    /// A host with no session to show (scanning / unreachable / locked / empty) -
+    /// the only host-level entry, sunk to the bottom of the list. `scanning` is the
+    /// in-flight state: the card's unresolved level shows a spinner instead of a
+    /// settled mux. `locked` refines `unreachable`: the host answered the network
+    /// but refused the credentials, so its card is the entry to the unlock view.
     Host {
         source: String,
         unreachable: bool,
+        locked: bool,
         scanning: bool,
     },
 }
@@ -255,6 +258,9 @@ pub(crate) fn drop_hidden_unreachable(
         .filter(|g| {
             g.err.is_none()
                 || scanning.contains(&g.source)
+                // A locked host is actionable (its unlock view is the one entry
+                // point), so hiding never drops it, whatever the filter says.
+                || crate::mux::is_locked(g.err.as_deref().unwrap_or_default())
                 || (!filter.is_empty() && fuzzy_match(filter, &g.source))
         })
         .cloned()
@@ -346,9 +352,12 @@ fn push_session_card(rows: &mut Vec<Row>, sess: &Session, mux_of_source: &dyn Fn
 /// unreachable and the empty states, so the screen a user reaches from a card can
 /// never name the same state two ways. The card itself no longer prints this word:
 /// an unreachable card carries the `⚠` mark on its host row, and a reachable empty
-/// host reads as the host row alone, so the word is the screen's alone.
-pub(crate) fn host_state_word(unreachable: bool) -> &'static str {
-    if unreachable {
+/// host reads as the host row alone, so the word is the screen's alone. `locked`
+/// names the auth-failed host; it precedes `unreachable` (a locked host is one).
+pub(crate) fn host_state_word(locked: bool, unreachable: bool) -> &'static str {
+    if locked {
+        "locked"
+    } else if unreachable {
         "⚠ unreachable"
     } else {
         "no sessions"
@@ -408,6 +417,7 @@ pub(crate) fn flatten(
     for g in groups {
         let is_scanning = scanning.contains(&g.source);
         let unreachable = g.err.is_some();
+        let locked = g.err.as_deref().is_some_and(crate::mux::is_locked);
         if !unreachable && !g.sessions.is_empty() {
             continue;
         }
@@ -429,6 +439,7 @@ pub(crate) fn flatten(
             reference: RowRef::Host {
                 source: g.source.clone(),
                 unreachable,
+                locked,
                 scanning: is_scanning,
             },
         });
@@ -1091,5 +1102,63 @@ mod tests {
         ];
         let rows = flatten(&groups, &HashSet::new(), "", true, &mux_of_source);
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn flatten_marks_a_locked_host_as_locked() {
+        let groups = vec![Group {
+            source: "pwbox".into(),
+            err: Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
+            sessions: vec![],
+        }];
+        let rows = flatten(&groups, &HashSet::new(), "", false, &mux_of_source);
+        match &rows[0].reference {
+            RowRef::Host {
+                locked,
+                unreachable,
+                ..
+            } => {
+                assert!(*locked);
+                assert!(*unreachable, "a locked host is still a failure (err set)");
+            }
+            _ => panic!("expected a host card, got a non-host row"),
+        }
+    }
+
+    #[test]
+    fn drop_hidden_unreachable_keeps_a_locked_host() {
+        // hide=true prunes unreachable hosts, but a locked host is actionable (its
+        // unlock view is the one entry point), so it must survive the prune.
+        let groups = vec![
+            Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![sess("local", "web")],
+            },
+            Group {
+                source: "pwbox".into(),
+                err: Some("Permission denied (publickey,password).".into()),
+                sessions: vec![],
+            },
+            Group {
+                source: "deadhost".into(),
+                err: Some("refused".into()),
+                sessions: vec![],
+            },
+        ];
+        let kept = drop_hidden_unreachable(&groups, &HashSet::new(), "");
+        let sources: Vec<&str> = kept.iter().map(|g| g.source.as_str()).collect();
+        assert_eq!(
+            sources,
+            vec!["local", "pwbox"],
+            "locked survives, dead does not: {sources:?}"
+        );
+    }
+
+    #[test]
+    fn host_state_word_names_locked() {
+        assert_eq!(host_state_word(true, false), "locked");
+        assert_eq!(host_state_word(false, true), "⚠ unreachable");
+        assert_eq!(host_state_word(false, false), "no sessions");
     }
 }

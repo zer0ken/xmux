@@ -127,8 +127,9 @@ impl Switcher {
                 input.restore_filter = Some(state.filter.clone());
                 state.modal = Some(Modal::Input(Box::new(input)));
             }
-            // New is opened by `open_new`, Jump by `open_jump` (both capture context
-            // the mode alone does not carry).
+            // New is opened by `open_new` and Jump by `open_jump` (both capture context
+            // the mode alone does not carry). The unlock is not a modal: it lives in the
+            // locked panel (see `State::feed_unlock`).
             InputMode::New | InputMode::Jump => {}
         }
     }
@@ -142,8 +143,8 @@ impl Switcher {
     pub(super) fn open_new(&mut self, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         self.dismiss_modals(state);
-        if self.current_host_unreachable() {
-            state.flash("host unreachable, cannot create here");
+        if self.current_host_blocked() {
+            state.flash("host locked or unreachable, cannot create here");
             return;
         }
         let Some(source) = self.current_source() else {
@@ -408,7 +409,16 @@ impl Switcher {
     /// owns the inventory fold ([`State::fold_op_result`](crate::state::State::fold_op_result));
     /// the switcher only rebuilds its rows + restores the cursor per the returned
     /// [`OpFollow`].
-    pub fn apply_op_result(&mut self, result: OpResult, state: &mut crate::state::State) {
+    ///
+    /// Returns the source whose MACHINE the app should re-probe: `Some` only on a
+    /// successful unlock, because that machine's reach state (locked → connected) is the
+    /// only thing that changed, so re-probing the whole roster would be wasteful. Every
+    /// other result returns `None`.
+    pub fn apply_op_result(
+        &mut self,
+        result: OpResult,
+        state: &mut crate::state::State,
+    ) -> Option<String> {
         match state.fold_op_result(result) {
             OpFollow::Reselect(addr) => {
                 self.rebuild(state);
@@ -416,10 +426,34 @@ impl Switcher {
                     self.user_moved = true;
                     self.set_selected(i, state);
                 }
+                None
             }
             OpFollow::Flash(message) => {
                 state.flash(message);
+                None
             }
+            // A successful unlock established the authenticated ControlMaster: only THIS
+            // machine's reach changed, so the app re-probes just it (never the roster).
+            // Any failure stays locked and flashes why; the user retypes the password.
+            OpFollow::UnlockResult { source, outcome } => match outcome {
+                crate::link::unlock::UnlockOutcome::Ok => Some(source),
+                crate::link::unlock::UnlockOutcome::AuthFailed => {
+                    state.flash("authentication failed");
+                    None
+                }
+                crate::link::unlock::UnlockOutcome::Timeout => {
+                    state.flash("unlock timed out");
+                    None
+                }
+                crate::link::unlock::UnlockOutcome::Unavailable => {
+                    state.flash("unlock unavailable on this platform");
+                    None
+                }
+                crate::link::unlock::UnlockOutcome::Failed(msg) => {
+                    state.flash(format!("unlock failed: {msg}"));
+                    None
+                }
+            },
         }
     }
 

@@ -16,6 +16,14 @@ impl Ops for NoopOps {
     async fn new_session(&self, _source: &str, _name: &str) -> anyhow::Result<Session> {
         unreachable!("noop_ops is only constructed, never called")
     }
+    async fn unlock(
+        &self,
+        _source: &str,
+        _user: &str,
+        _password: &str,
+    ) -> crate::link::unlock::UnlockOutcome {
+        unreachable!("noop_ops is only constructed, never called")
+    }
 }
 pub(crate) fn noop_ops() -> Arc<dyn Ops> {
     Arc::new(NoopOps)

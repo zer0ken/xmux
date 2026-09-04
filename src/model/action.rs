@@ -120,6 +120,12 @@ pub enum Command {
     /// `OpResult` back through the existing op channel, so an ssh round-trip never
     /// freezes rendering.
     RunOp(MuxOp),
+    /// Run the off-loop ssh unlock for a locked host with the submitted id+password.
+    RunUnlock {
+        source: String,
+        user: String,
+        password: String,
+    },
 }
 
 /// A slow (network) mux action - the descriptor [`Command::RunOp`] carries and
@@ -204,6 +210,12 @@ pub enum EventEffect {
     /// by `list-clients`) on the Host, behind the loop's reach. With the tty known, a
     /// session switch is an in-place `switch-client -c <tty>`. `None` clears a stale tty.
     RecordDisplayTty { host: String, tty: Option<String> },
+    /// `MachineProbed` (connected): resolve every source `machine` serves onto its
+    /// metadata channel and, when the machine left its mux list to xmux, ask which
+    /// muxes it serves. The loop owns it because it needs the host registry (the
+    /// machine's sources), the manager (the channels), and the shared probe gate. On a
+    /// re-scan a live channel re-enumerates; at launch it is ensured.
+    MachineConnected { machine: String, rescan: bool },
 }
 
 // Hand-written: `Box<dyn Mux>` is not `Debug`, so `DispatchScanned` cannot derive
@@ -259,6 +271,11 @@ impl std::fmt::Debug for EventEffect {
                 .debug_struct("RecordDisplayTty")
                 .field("host", host)
                 .field("tty", tty)
+                .finish(),
+            EventEffect::MachineConnected { machine, rescan } => f
+                .debug_struct("MachineConnected")
+                .field("machine", machine)
+                .field("rescan", rescan)
                 .finish(),
         }
     }

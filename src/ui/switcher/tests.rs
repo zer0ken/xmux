@@ -14,6 +14,7 @@ use super::tests_support::auto_nav;
 #[derive(Default)]
 struct RecordOps {
     created: Mutex<Vec<String>>,
+    unlocked: Mutex<Vec<String>>,
 }
 
 #[async_trait::async_trait]
@@ -35,6 +36,15 @@ impl Ops for RecordOps {
             windows: 1,
             ..Default::default()
         })
+    }
+    async fn unlock(
+        &self,
+        source: &str,
+        _user: &str,
+        _password: &str,
+    ) -> crate::link::unlock::UnlockOutcome {
+        self.unlocked.lock().unwrap().push(source.to_string());
+        crate::link::unlock::UnlockOutcome::Ok
     }
 }
 
@@ -1020,6 +1030,117 @@ async fn an_unselected_unreachable_card_keeps_the_warning_mark() {
         h.nav_fg_of("⚠"),
         Some(crate::ui::palette::get().warning),
         "the mark keeps the warning colour on an unselected card"
+    );
+}
+
+#[tokio::test]
+async fn a_locked_host_card_reads_locked_with_the_lock_mark() {
+    let mut h = Harness::from_sources(&["prod"]);
+    h.sw.apply_source_result(
+        "prod".into(),
+        vec![],
+        Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.draw();
+    // The card carries the lock mark on its host row (the screen state and reason are
+    // the panel's own assertions).
+    let tree = h.nav_text();
+    assert!(
+        tree.lines()
+            .any(|l| l.contains("prod") && l.contains(crate::ui::chrome::LOCK_MARK)),
+        "the locked host row carries the lock mark:\n{tree}"
+    );
+}
+
+#[tokio::test]
+async fn locked_host_panel_draws_the_unlock_fields_masked() {
+    // The unlock is a feature of the locked panel in the terminal view, not a modal: the
+    // username and masked password sit in the panel, driven from `State::unlock`. The
+    // panel renders the id in the clear and the password as bullets, and no plaintext
+    // reaches the frame.
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.state.unlock = Some(crate::state::UnlockDraft {
+        source: "pwbox".into(),
+        user: "alice".into(),
+        password: "hunter2".into(),
+        field: crate::state::UnlockField::Password,
+    });
+    h.draw();
+    let screen = h.text();
+    assert!(
+        h.state.modal.is_none(),
+        "the unlock is not a modal:\n{screen}"
+    );
+    assert!(
+        screen.contains("alice"),
+        "the panel shows the entered id:\n{screen}"
+    );
+    assert!(screen.contains('•'), "the password draws masked:\n{screen}");
+    assert!(
+        !screen.contains("hunter2"),
+        "no plaintext reaches the rendered frame:\n{screen}"
+    );
+}
+
+#[tokio::test]
+async fn unlock_success_reprobes_only_that_machine_and_a_failure_keeps_it_locked() {
+    use crate::link::unlock::UnlockOutcome;
+    use crate::ui::ops::OpResult;
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.draw();
+    // Drain the launch kick a fresh switcher arms, so what is asserted below is the
+    // unlock's own effect, not the first-frame scan.
+    h.sw.take_rescan_kick();
+    // A successful unlock returns the unlocked source so the app re-probes ONLY that
+    // machine (its reach changed locked→connected), and it does NOT arm a whole-roster
+    // re-scan - that would re-probe every host for one that changed.
+    let reprobe = h.sw.apply_op_result(
+        OpResult::Unlock {
+            source: "pwbox".into(),
+            outcome: UnlockOutcome::Ok,
+        },
+        &mut h.state,
+    );
+    assert_eq!(
+        reprobe.as_deref(),
+        Some("pwbox"),
+        "success re-probes the unlocked machine"
+    );
+    assert!(
+        !h.sw.take_rescan_kick(),
+        "success does not re-scan the whole roster"
+    );
+    // A failed unlock stays locked and re-probes nothing.
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    let reprobe = h.sw.apply_op_result(
+        OpResult::Unlock {
+            source: "pwbox".into(),
+            outcome: UnlockOutcome::AuthFailed,
+        },
+        &mut h.state,
+    );
+    assert_eq!(reprobe, None, "a failure re-probes nothing");
+    assert!(
+        h.sw.current_host_locked(),
+        "auth failure keeps the card locked"
     );
 }
 

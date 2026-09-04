@@ -23,6 +23,10 @@ use tokio::sync::mpsc;
 const SCAN_CONCURRENCY: usize = 8;
 const SCAN_TIMEOUT: Duration = Duration::from_secs(6); // must exceed the ssh connect timeout (5s)
 const DETAIL_TIMEOUT: Duration = Duration::from_secs(6);
+/// The unlock's whole budget: ssh connect (5s) + host-key/password answering + a
+/// margin for a slow login prompt. Bounds the PTY exchange so it cannot hang the
+/// off-loop task that runs it.
+const UNLOCK_TIMEOUT_SECS: u64 = 20;
 
 /// Everything a config resolution decides about WHICH sources exist.
 ///
@@ -573,6 +577,25 @@ impl Ops for EnvOps {
             windows: 1,
             ..Default::default()
         })
+    }
+
+    async fn unlock(
+        &self,
+        source: &str,
+        user: &str,
+        password: &str,
+    ) -> crate::link::unlock::UnlockOutcome {
+        let Ok(src) = self.source(source) else {
+            return crate::link::unlock::UnlockOutcome::Unavailable;
+        };
+        let host = src.host();
+        crate::link::unlock::unlock_host(
+            &*host.transport,
+            user,
+            password,
+            std::time::Duration::from_secs(UNLOCK_TIMEOUT_SECS),
+        )
+        .await
     }
 }
 

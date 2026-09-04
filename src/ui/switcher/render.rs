@@ -165,9 +165,14 @@ impl Switcher {
         // next step. One call for both, because they are one screen in two states.
         if let Some(kind) = self.current_view_screen(state) {
             let address = self.view_screen_address(state, kind);
-            state
-                .chrome
-                .render_view_screen(frame, term_area, state, &address, kind);
+            state.chrome.render_view_screen(
+                frame,
+                term_area,
+                state,
+                &address,
+                kind,
+                terminal_focused,
+            );
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }
@@ -687,6 +692,7 @@ impl Switcher {
         // sure of, and the mux it shows is a settled fact even while its sessions stream.
         if let RowRef::Host {
             unreachable,
+            locked,
             scanning,
             ..
         } = &row.reference
@@ -700,7 +706,15 @@ impl Switcher {
                 host.to_string(),
                 Style::default().fg(color_secondary()),
             ));
-            if *unreachable {
+            if *locked {
+                // The lock mark rides the host row flush after the host name. A locked
+                // host is a failure the user can act on, so it keeps the warning colour
+                // like the unreachable mark.
+                line.push(Span::styled(
+                    crate::ui::chrome::LOCK_MARK,
+                    Style::default().fg(palette::get().warning),
+                ));
+            } else if *unreachable {
                 // The mark rides the host row flush after the host name.
                 // Danger keeps its colour: an unreachable host is still a failure, the
                 // card just says so with a mark instead of a second row of text.
