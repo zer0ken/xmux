@@ -385,14 +385,14 @@ pub(crate) fn help_lines(
             format!("{p} Tab"),
             "toggle focus between nav and terminal".into(),
         ),
-        HelpRow::Key(format!("{p} {nav_pair} · {p} Esc"), "focus the nav".into()),
+        HelpRow::Key(format!("{p} {nav_pair}"), "focus the nav".into()),
         HelpRow::Key(
             format!("{p} C-←/→"),
             "resize nav width (side); h/l too. repeats briefly".into(),
         ),
         HelpRow::Key(
             format!("{p} C-↑/↓"),
-            "resize nav height (portrait); repeats briefly".into(),
+            "resize nav height (top/bottom); repeats briefly".into(),
         ),
         HelpRow::Key(
             format!("{p} t"),
@@ -406,7 +406,10 @@ pub(crate) fn help_lines(
         HelpRow::Key("click a view".into(), "focus that view".into()),
         HelpRow::Key("drag the view border".into(), "resize the nav".into()),
         HelpRow::Key(format!("{p} q"), "quit".into()),
-        HelpRow::Key(format!("{p} {p}"), format!("send a literal {p} to the mux")),
+        HelpRow::Key(
+            format!("{p} {p}"),
+            format!("send a literal {p} to the mux (terminal focus)"),
+        ),
         HelpRow::Gap,
         // Terminal section - no configurable keys; keep as literals.
         HelpRow::Head("terminal (focused)".into()),
@@ -754,12 +757,12 @@ mod tests {
         let left = flat(&lines);
         assert!(left.contains("Enter · C-g →/↓"), "{left}");
         assert!(left.contains("C-g →/↓"), "{left}");
-        assert!(left.contains("C-g ←/↑ · C-g Esc"), "{left}");
+        assert!(left.contains("C-g ←/↑"), "{left}");
         let (_t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Right);
         let right = flat(&lines);
         assert!(right.contains("Enter · C-g ←/↑"), "{right}");
         assert!(right.contains("C-g ←/↑"), "{right}");
-        assert!(right.contains("C-g →/↓ · C-g Esc"), "{right}");
+        assert!(right.contains("C-g →/↓"), "{right}");
     }
 
     #[test]

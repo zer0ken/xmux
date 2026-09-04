@@ -820,7 +820,10 @@ impl Chrome {
             ));
         }
         if kind != ViewScreen::SelfSession {
-            rows.push((ScreenCell::Key(format!("{p} r")), "rescan this host".into()));
+            rows.push((
+                ScreenCell::Key(format!("{p} r")),
+                "re-scan every host".into(),
+            ));
         }
 
         // One column width for keys and labels alike: every row of a screen meets the

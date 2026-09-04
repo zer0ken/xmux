@@ -2271,7 +2271,7 @@ async fn both_host_screens_share_one_grammar() {
             "{label}: every row meets one rule column, got {rules:?}"
         );
         assert!(
-            view.contains("rescan this host"),
+            view.contains("re-scan every host"),
             "{label}: both screens offer the rescan key:\n{view}"
         );
     }
