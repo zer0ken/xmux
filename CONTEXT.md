@@ -331,15 +331,25 @@ UI elements a user perceives as distinct things:
   source for SESSIONS).
   THIS BOX is resolved before the first paint (a local probe is milliseconds), once, and
   threaded into the construction of both the source list and the runtime registry, so the
-  two cannot disagree on which sources exist. A REMOTE host is probed AFTER launch
-  instead (one ssh round trip per
-  mux, which nothing may wait for): one task per host, the answer arrives as a source
-  event, and the loop adds a scanning card for every mux the host does not already
-  serve. That add is
+  two cannot disagree on which sources exist. A REMOTE machine is asked only AFTER it is
+  found to CONNECT: discovery leads with a bounded machine `reachability` probe, and mux
+  discovery (one task per machine, which nothing may wait for) fires only for a connected
+  one. The answer arrives as a source event, and the loop adds a scanning card for every
+  mux the machine does not already serve. That add is
   ADD-ONLY: an added source's id is always qualified (`prod:zellij`) and the mux already
   served keeps the id it was painted with, because that id is what the deterministic
   order, the
   persisted selection, and typed ctl targets are keyed to.
+- reachability - a machine's connect state, decided by ONE probe (`ssh <machine>
+  true`, or an inline connect for this box) that leads discovery, bounded so a large
+  roster never floods the network at once. Its three outcomes gate everything after:
+  `connected` goes on to `mux discovery`, detection, and the metadata channels;
+  `locked` (ssh's `Permission denied (` auth-failure signature) and `unreachable` (any
+  other failure) classify the machine's cards and open no channel. The probe reads
+  ssh's own failure text, so the reason a card shows is the machine's, not a guess; a
+  connected probe also warms the shared ControlMaster its later channels reuse. Distinct
+  from `mux discovery` (which muxes a connected machine serves) and `discovery` (a
+  source's sessions).
 - roster - which HOSTS xmux offers, assembled from PROVIDERS, EVERY one on unless
   `[discovery]` turns it off: `~/.ssh/config` aliases, the online peers of this
   machine's tailnet, and this machine's WSL distributions. Every provider yields plain ssh

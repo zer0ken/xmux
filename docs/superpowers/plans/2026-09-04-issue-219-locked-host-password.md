@@ -482,7 +482,7 @@ fn a_password_input_renders_only_bullets_for_its_buffer() {
 }
 ```
 ```rust
-// switcher/tests.rs — the two-step unlock input flow
+// switcher/tests.rs - the two-step unlock input flow
 #[tokio::test]
 async fn locked_host_enter_opens_the_user_input_then_the_masked_password_input() {
     let mut h = Harness::new(sample());
@@ -1032,3 +1032,29 @@ changes keep the feature complete while cutting dead code and a security surface
   with 0 after a successful auth (verified by the live gate against a real
   password-only account), so the child's zero exit alone is the success signal.
 - **FR-B25 was taken** (nav sides), so the requirement landed as FR-B26.
+
+### The classification path was reordered (supersedes Task 2)
+
+Live testing on a real remote (a tailnet peer with key auth disabled) showed the
+locked host reading as unreachable. Task 2's premise, that the control reader would
+see ssh's `Permission denied (` line and surface it as the exit reason, was wrong for
+a remote: the `-CC` child is a PIPED spawn whose stderr is drained, and ssh writes an
+auth failure to stderr, not the stdout the reader parses. The reader read zero lines,
+hit EOF, and the exit fell back to "connection closed", which `is_locked` does not
+match.
+
+The fix reorders discovery so classification no longer depends on the control stream:
+
+- **A machine reachability probe leads.** Each machine is probed once (`ssh <machine>
+  true`) through the exec runner, which captures stderr, bounded at 12. Its outcome
+  classifies the machine: a zero exit is connected, ssh's auth-failure line is locked,
+  any other failure is unreachable. Only a connected machine goes on to mux discovery,
+  detection, and its metadata channels; a failed one classifies its cards and opens no
+  channel.
+- **A failed detection opens no channel.** `DispatchScanned` ensures a channel only
+  when the mux resolved, so a doomed control child never spawns to die and overwrite
+  the machine's real reason with "connection closed".
+- **The reader's connection-failure capture was removed** (`is_connection_failure`,
+  `last_failure`, and their two tests). It was dead for a piped remote spawn, and the
+  machine probe is now the single reachability classifier. The reader keeps only the
+  protocol `%error` reason (a reachable-but-empty mux).

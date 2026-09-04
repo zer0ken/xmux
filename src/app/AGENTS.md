@@ -50,11 +50,13 @@ the card numbers it needs.
   in both directions, since each mux answers whether its client can be read at
   all. What follows from the two naming different sessions is one comparison made
   on every loop pass, the same for every mux.
-- `runtime/` also owns MUX DISCOVERY's async half: one fire-and-forget probe per
-  remote host that named no mux, spawned right after the startup scans, whose
-  answers become new sources through an effect. It is the loop's job because only
-  the loop holds the source registry (what a host already serves, and where a
-  new source goes) and the manager that kicks the new source's first scan.
+- `runtime/` also owns DISCOVERY's async half. It leads with a per-machine
+  REACHABILITY probe (bounded): a machine that connects goes on to detection, its
+  metadata channels, and, when it named no mux, MUX DISCOVERY (a fire-and-forget probe
+  whose answers become new sources through an effect); a machine that fails classifies
+  its cards locked or unreachable and opens no channel. It is the loop's job because
+  only the loop holds the source registry (what a host already serves, and where a new
+  source goes) and the manager that kicks the new source's first scan.
 - Input routing has a pure, stateless core (key resolution, mouse chains, the
   predicates, the input outcome types); the stateful handlers are runtime methods
   that call into it. The prefix is tracked as ready (an interaction is live): the end
