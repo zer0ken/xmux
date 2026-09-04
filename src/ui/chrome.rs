@@ -233,9 +233,9 @@ pub(crate) enum BarFill {
 /// that has no grid to mirror. Two are host states with no session to show; the third is
 /// the one session that has a grid and must not be shown anyway. There is no variant for
 /// a host still scanning - an in-flight state is the nav's to show, so the view keeps the
-/// The mark a locked host wears: on its nav card, flush after the host name, and on its
-/// panel headline. A locked host is a failure the user can act on (the password unlock),
-/// so it keeps the warning colour like the unreachable `⚠`.
+/// The mark a locked host wears on its nav card, flush after the host name. A locked
+/// host is a failure the user can act on (the password unlock), so it keeps the warning
+/// colour like the unreachable `⚠`.
 pub(crate) const LOCK_MARK: &str = "?";
 
 /// grid it already has.
@@ -890,13 +890,7 @@ impl Chrome {
             ViewScreen::Locked => pal.warning,
             ViewScreen::Empty | ViewScreen::SelfSession => pal.decoration,
         });
-        // The locked panel wears the key mark on its headline; the other screens carry
-        // no mark (their state word alone names them).
-        let headline = if kind == ViewScreen::Locked {
-            format!(" {LOCK_MARK} {}", self.headline(address, kind))
-        } else {
-            format!(" {}", self.headline(address, kind))
-        };
+        let headline = format!(" {}", self.headline(address, kind));
         let mut out = vec![
             Line::from(""),
             Line::from(Span::styled(
