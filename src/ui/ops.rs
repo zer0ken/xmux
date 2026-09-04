@@ -55,8 +55,11 @@ pub enum OpResult {
         message: String,
     },
     /// The unlock worker's verdict. Not an inventory mutation: the app reacts to it
-    /// (a rescan on success, a flash on failure), never a fold into the tree.
+    /// (re-probe the unlocked machine on success, a flash on failure), never a fold into
+    /// the tree. `source` names the host that was unlocked, so success re-probes only its
+    /// machine rather than the whole roster.
     Unlock {
+        source: String,
         outcome: crate::link::unlock::UnlockOutcome,
     },
 }
@@ -74,8 +77,12 @@ pub enum OpFollow {
     Reselect(String),
     /// No inventory change - flash this message (a failed op).
     Flash(String),
-    /// The unlock verdict: re-scan the roster on success, flash the failure reason.
-    UnlockResult(crate::link::unlock::UnlockOutcome),
+    /// The unlock verdict: re-probe the unlocked `source`'s machine on success (only it
+    /// could have changed reach state), flash the failure reason otherwise.
+    UnlockResult {
+        source: String,
+        outcome: crate::link::unlock::UnlockOutcome,
+    },
 }
 
 /// Runs a [`MuxOp`] against the live mux and returns its [`OpResult`]. Pure over
@@ -96,6 +103,7 @@ pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
 /// like [`run_op`].
 pub async fn run_unlock(source: &str, user: &str, password: &str, ops: &dyn Ops) -> OpResult {
     OpResult::Unlock {
+        source: source.to_string(),
         outcome: ops.unlock(source, user, password).await,
     }
 }

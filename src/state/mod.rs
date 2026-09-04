@@ -64,6 +64,52 @@ pub struct State {
     /// precedent) and fed by the app each frame; the switcher's `render` reads it off
     /// `&state`.
     pub(crate) chrome: crate::ui::chrome::Chrome,
+    /// The unlock draft for the locked host whose panel is on screen: the username and
+    /// masked password the user is typing INTO the locked panel (the terminal view), and
+    /// which of the two fields the keys edit. It is NOT a modal - it never routes through
+    /// the nav input path - it is a feature of the locked panel, driven only while the
+    /// terminal view holds a locked host. `source` pins it to that host so moving to
+    /// another card starts a fresh draft. The password lives here and in the transient
+    /// unlock command only; it is drawn masked and never logged or serialized.
+    pub unlock: Option<UnlockDraft>,
+}
+
+/// Which field of the locked panel's unlock draft the keys edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnlockField {
+    #[default]
+    User,
+    Password,
+}
+
+/// The username and password being typed into a locked host's panel. Held on
+/// [`State`] (not the modal set) because the unlock is a feature of the locked panel in
+/// the terminal view, so nothing in the nav path drives it.
+#[derive(Debug, Clone, Default)]
+pub struct UnlockDraft {
+    /// The locked source this draft belongs to; a different current source resets it.
+    pub source: String,
+    pub user: String,
+    pub password: String,
+    pub field: UnlockField,
+}
+
+impl UnlockDraft {
+    /// Appends a typed character to the active field.
+    fn push(&mut self, c: char) {
+        match self.field {
+            UnlockField::User => self.user.push(c),
+            UnlockField::Password => self.password.push(c),
+        }
+    }
+
+    /// Deletes the last character of the active field.
+    fn backspace(&mut self) {
+        match self.field {
+            UnlockField::User => self.user.pop(),
+            UnlockField::Password => self.password.pop(),
+        };
+    }
 }
 
 impl State {
@@ -89,6 +135,57 @@ impl State {
     /// [`Focus`]: crate::app::focus::Focus
     pub(crate) fn modal_kind(&self) -> Option<crate::app::focus::ModalKind> {
         crate::ui::modal::modal_kind(&self.modal)
+    }
+
+    /// Feeds terminal-view keystrokes into the locked panel's unlock draft for
+    /// `source`, editing the active field. Enter advances user→password and then submits
+    /// (returns the off-loop [`RunUnlock`](crate::model::Command::RunUnlock) with the
+    /// entered id and password) once both are non-empty; Tab toggles the field;
+    /// Backspace deletes. A draft for a different source is reset first, so moving to
+    /// another locked card never carries a stale entry. On submit the password is taken
+    /// out of the draft (it rides only the transient command), so nothing keeps it.
+    pub fn feed_unlock(&mut self, source: &str, bytes: &[u8]) -> Option<crate::model::Command> {
+        // An escape sequence (arrow/function keys) is a key, not text: ignore the whole
+        // chunk so its bytes never land in a field. Plain typing never starts with ESC.
+        if bytes.first() == Some(&0x1b) {
+            return None;
+        }
+        let draft = match &mut self.unlock {
+            Some(d) if d.source == source => d,
+            _ => {
+                self.unlock = Some(UnlockDraft {
+                    source: source.to_string(),
+                    ..Default::default()
+                });
+                self.unlock.as_mut().unwrap()
+            }
+        };
+        let mut submit = false;
+        for c in String::from_utf8_lossy(bytes).chars() {
+            match c {
+                '\r' | '\n' => match draft.field {
+                    UnlockField::User => draft.field = UnlockField::Password,
+                    UnlockField::Password => submit = true,
+                },
+                '\t' => {
+                    draft.field = match draft.field {
+                        UnlockField::User => UnlockField::Password,
+                        UnlockField::Password => UnlockField::User,
+                    }
+                }
+                '\u{7f}' | '\u{8}' => draft.backspace(),
+                c if c.is_control() => {}
+                c => draft.push(c),
+            }
+        }
+        if submit && !draft.user.is_empty() && !draft.password.is_empty() {
+            return Some(crate::model::Command::RunUnlock {
+                source: draft.source.clone(),
+                user: draft.user.clone(),
+                password: std::mem::take(&mut draft.password),
+            });
+        }
+        None
     }
 
     /// Builds the inventory from a complete snapshot: every host is resolved
@@ -496,9 +593,9 @@ impl State {
                 OpFollow::Reselect(addr)
             }
             OpResult::Failed { message } => OpFollow::Flash(message),
-            // The unlock verdict is no inventory mutation: the switcher reacts to
-            // it (a roster re-scan on success, a flash on failure).
-            OpResult::Unlock { outcome } => OpFollow::UnlockResult(outcome),
+            // The unlock verdict is no inventory mutation: the app reacts to it (re-probe
+            // the unlocked machine on success, a flash on failure).
+            OpResult::Unlock { source, outcome } => OpFollow::UnlockResult { source, outcome },
         }
     }
 
@@ -1524,6 +1621,68 @@ mod tests {
             effects.is_empty(),
             "a failed enumeration keeps attachments - no sync effect: {effects:?}"
         );
+    }
+
+    #[test]
+    fn feed_unlock_types_two_fields_and_submits_on_the_second_enter() {
+        // The locked panel's input: characters land in the active field, Enter advances
+        // user→password then submits the RunUnlock, and the password is taken out of the
+        // draft on submit so nothing keeps it.
+        let mut s = State::default();
+        assert!(
+            s.feed_unlock("prod", b"alice").is_none(),
+            "typing the id waits"
+        );
+        assert!(
+            s.feed_unlock("prod", b"\r").is_none(),
+            "the first Enter only moves to the password field"
+        );
+        assert!(
+            s.feed_unlock("prod", b"hunter2").is_none(),
+            "typing the password waits"
+        );
+        let cmd = s
+            .feed_unlock("prod", b"\r")
+            .expect("the second Enter submits");
+        match cmd {
+            crate::model::Command::RunUnlock {
+                source,
+                user,
+                password,
+            } => {
+                assert_eq!(source, "prod");
+                assert_eq!(user, "alice");
+                assert_eq!(password, "hunter2");
+            }
+            other => panic!("expected RunUnlock, got {other:?}"),
+        }
+        assert_eq!(
+            s.unlock.as_ref().unwrap().password,
+            "",
+            "the submitted password is taken out of the draft"
+        );
+    }
+
+    #[test]
+    fn feed_unlock_backspace_edits_and_a_new_source_resets_the_draft() {
+        let mut s = State::default();
+        s.feed_unlock("prod", b"aliceX");
+        s.feed_unlock("prod", b"\x7f"); // backspace deletes the X
+        assert_eq!(s.unlock.as_ref().unwrap().user, "alice");
+        // Moving to another locked host starts a fresh draft (no stale id carried).
+        s.feed_unlock("stage", b"bob");
+        let d = s.unlock.as_ref().unwrap();
+        assert_eq!(d.source, "stage");
+        assert_eq!(d.user, "bob");
+    }
+
+    #[test]
+    fn feed_unlock_ignores_escape_sequences() {
+        // An arrow key (ESC [ A) is a key, not text: none of its bytes land in a field.
+        let mut s = State::default();
+        s.feed_unlock("prod", b"ab");
+        s.feed_unlock("prod", b"\x1b[A");
+        assert_eq!(s.unlock.as_ref().unwrap().user, "ab");
     }
 
     #[test]

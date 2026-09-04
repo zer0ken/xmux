@@ -57,14 +57,10 @@ impl Runtime {
                 // its Commands; collect them and dispatch the whole batch below.
                 Some(Action::NavKey(k)) => key_cmds.extend(switcher.handle_key(k, state)),
                 Some(Action::FocusTerminal) => {
+                    // Enter focuses the terminal view. For a locked host that view holds
+                    // the locked panel, whose own fields take the keys once focused; the
+                    // unlock is a feature of that panel, not a modal this opens.
                     focus_terminal = true;
-                    // Enter on a LOCKED host opens the unlock input instead of only
-                    // focusing the terminal (which would just show the locked screen):
-                    // the id step is prefilled from the run's saved secret, and the
-                    // user confirms it.
-                    if switcher.current_host_locked() {
-                        switcher.open_unlock_user(state);
-                    }
                 }
                 Some(Action::Quit) => quit = true,
                 Some(Action::Width(d)) => width_delta = d,
@@ -550,12 +546,37 @@ impl Runtime {
             // TermInput intercepts the prefix (→ nav / quit / help / resize / literal).
             for action in self.term_input.feed(&non_mouse, self.nav_position) {
                 match action {
-                    // Forward keystrokes to the VISIBLE session (`displayed`), not the
-                    // selection: until the new session is ready the prior one is on screen,
-                    // so input must reach what the user actually sees (no blind typing).
-                    Action::Forward(f) => self
-                        .registry
-                        .input(&display_key(&self.hosts, &self.state.displayed), f),
+                    // A LOCKED host has no PTY: its panel in the terminal view owns the
+                    // keys. Route them to the unlock draft (edit the user/password field,
+                    // or submit on Enter) instead of a session. Otherwise forward to the
+                    // VISIBLE session (`displayed`), not the selection: until a new session
+                    // is ready the prior one is on screen, so input must reach what the user
+                    // actually sees (no blind typing).
+                    Action::Forward(f) => {
+                        if self.switcher.current_host_locked() {
+                            if let Some(source) = self.switcher.current_source() {
+                                if let Some(cmd) = self.state.feed_unlock(&source, &f) {
+                                    let (cq, cwc) = dispatch_commands(
+                                        vec![cmd],
+                                        &mut self.switcher,
+                                        &mut self.state,
+                                        &mut self.nav_width_natural,
+                                        &mut self.auto_hide_nav,
+                                        &self.env.xmux_dir,
+                                        (&self.ops, &self.op_tx),
+                                    );
+                                    *quit |= cq;
+                                    if cwc {
+                                        *width_changed = true;
+                                    }
+                                }
+                                *dirty = true;
+                            }
+                        } else {
+                            self.registry
+                                .input(&display_key(&self.hosts, &self.state.displayed), f);
+                        }
+                    }
                     Action::FocusNav(rest) => {
                         *focus_nav = true;
                         *nav_replay = rest;

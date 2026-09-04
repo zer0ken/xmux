@@ -1040,18 +1040,22 @@ async fn a_locked_host_card_reads_locked_with_the_lock_mark() {
         &mut h.state,
     );
     h.draw();
-    // The card carries the `*` lock mark on its host row (the screen state and
-    // reason are Task 6's own assertions).
+    // The card carries the lock mark on its host row (the screen state and reason are
+    // the panel's own assertions).
     let tree = h.nav_text();
     assert!(
-        tree.lines().any(|l| l.contains("prod") && l.contains('*')),
-        "the locked host row carries the `*` mark:\n{tree}"
+        tree.lines()
+            .any(|l| l.contains("prod") && l.contains(crate::ui::chrome::LOCK_MARK)),
+        "the locked host row carries the lock mark:\n{tree}"
     );
 }
 
 #[tokio::test]
-async fn locked_host_unlock_flow_goes_user_then_masked_password() {
-    use crate::ui::modal::{InputMode, Modal};
+async fn locked_host_panel_draws_the_unlock_fields_masked() {
+    // The unlock is a feature of the locked panel in the terminal view, not a modal: the
+    // username and masked password sit in the panel, driven from `State::unlock`. The
+    // panel renders the id in the clear and the password as bullets, and no plaintext
+    // reaches the frame.
     let mut h = Harness::from_sources(&["pwbox"]);
     h.sw.apply_source_result(
         "pwbox".into(),
@@ -1059,53 +1063,31 @@ async fn locked_host_unlock_flow_goes_user_then_masked_password() {
         Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
+    h.state.unlock = Some(crate::state::UnlockDraft {
+        source: "pwbox".into(),
+        user: "alice".into(),
+        password: "hunter2".into(),
+        field: crate::state::UnlockField::Password,
+    });
     h.draw();
-    // The unlock entry opens the USERNAME step (wiring Enter to it is the app's
-    // job, Task 11; here the step is driven directly).
-    h.sw.open_unlock_user(&mut h.state);
+    let screen = h.text();
     assert!(
-        matches!(&h.state.modal, Some(Modal::Input(i)) if i.mode == InputMode::User),
-        "the username step is open"
-    );
-    for c in "alice".chars() {
-        h.ch(c).await;
-    }
-    h.key(KeyCode::Enter).await;
-    assert!(
-        matches!(&h.state.modal, Some(Modal::Input(i)) if i.mode == InputMode::Password),
-        "Enter on the id moves to the masked password step"
-    );
-    // The masked step carries the id the User step submitted (nothing is guessed).
-    assert!(
-        h.hint_bar_text().contains("alice@pwbox"),
-        "the password step names the submitted id"
-    );
-    // Typing the password renders masked, never the plaintext.
-    for c in "hunter2".chars() {
-        h.ch(c).await;
-    }
-    let bar = h.hint_bar_text();
-    assert!(
-        bar.contains('•'),
-        "the password input draws bullets:\n{bar}"
+        h.state.modal.is_none(),
+        "the unlock is not a modal:\n{screen}"
     );
     assert!(
-        !bar.contains("hunter2"),
-        "no plaintext reaches the hint bar:\n{bar}"
+        screen.contains("alice"),
+        "the panel shows the entered id:\n{screen}"
     );
-    // The whole rendered frame (dump_screen) carries only bullets, never the secret.
+    assert!(screen.contains('•'), "the password draws masked:\n{screen}");
     assert!(
-        !h.text().contains("hunter2"),
-        "no plaintext reaches the rendered frame:\n{}",
-        h.text()
+        !screen.contains("hunter2"),
+        "no plaintext reaches the rendered frame:\n{screen}"
     );
-    h.key(KeyCode::Enter).await;
-    // Submitting closes the input (the off-loop worker runs under the app, Task 11).
-    assert!(h.state.modal.is_none(), "submitting closes the input");
 }
 
 #[tokio::test]
-async fn unlock_success_kicks_a_rescan_and_a_failure_keeps_the_host_locked() {
+async fn unlock_success_reprobes_only_that_machine_and_a_failure_keeps_it_locked() {
     use crate::link::unlock::UnlockOutcome;
     use crate::ui::ops::OpResult;
     let mut h = Harness::from_sources(&["pwbox"]);
@@ -1116,37 +1098,47 @@ async fn unlock_success_kicks_a_rescan_and_a_failure_keeps_the_host_locked() {
         &mut h.state,
     );
     h.draw();
-    // A successful unlock clears the locked state and arms a roster re-scan (the
-    // re-enumeration runs over the freshly established ControlMaster).
-    h.sw.apply_op_result(
+    // Drain the launch kick a fresh switcher arms, so what is asserted below is the
+    // unlock's own effect, not the first-frame scan.
+    h.sw.take_rescan_kick();
+    // A successful unlock returns the unlocked source so the app re-probes ONLY that
+    // machine (its reach changed locked→connected), and it does NOT arm a whole-roster
+    // re-scan - that would re-probe every host for one that changed.
+    let reprobe = h.sw.apply_op_result(
         OpResult::Unlock {
+            source: "pwbox".into(),
             outcome: UnlockOutcome::Ok,
         },
         &mut h.state,
     );
-    assert!(
-        h.sw.take_rescan_kick(),
-        "a successful unlock re-scans the roster"
+    assert_eq!(
+        reprobe.as_deref(),
+        Some("pwbox"),
+        "success re-probes the unlocked machine"
     );
-    assert_eq!(h.state.groups[0].err, None, "the host is back to scanning");
-    // A failed unlock stays locked; a retry re-enters the credentials.
+    assert!(
+        !h.sw.take_rescan_kick(),
+        "success does not re-scan the whole roster"
+    );
+    // A failed unlock stays locked and re-probes nothing.
     h.sw.apply_source_result(
         "pwbox".into(),
         vec![],
         Some("Permission denied (publickey,password).".into()),
         &mut h.state,
     );
-    h.sw.apply_op_result(
+    let reprobe = h.sw.apply_op_result(
         OpResult::Unlock {
+            source: "pwbox".into(),
             outcome: UnlockOutcome::AuthFailed,
         },
         &mut h.state,
     );
+    assert_eq!(reprobe, None, "a failure re-probes nothing");
     assert!(
         h.sw.current_host_locked(),
         "auth failure keeps the card locked"
     );
-    // A retry re-enters the credentials; the host stays locked until one works.
 }
 
 #[tokio::test]

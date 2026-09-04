@@ -708,7 +708,7 @@ impl Switcher {
         self.rows.get(self.selected).map(|r| &r.reference)
     }
 
-    fn current_source(&self) -> Option<String> {
+    pub(crate) fn current_source(&self) -> Option<String> {
         match self.current_ref()? {
             RowRef::Host { source, .. } | RowRef::Section { source, .. } => Some(source.clone()),
             RowRef::Session { sess } => Some(sess.source.clone()),
@@ -719,9 +719,9 @@ impl Switcher {
         matches!(self.current_ref(), Some(RowRef::Host { unreachable, .. }) if *unreachable)
     }
 
-    /// True when the selected host answered the network but refused the credentials:
-    /// its card is the entry to the unlock input, and the app opens that input on
-    /// Enter instead of focusing the terminal.
+    /// True when the selected host answered the network but refused the credentials. Its
+    /// terminal-view panel carries the unlock input, so a keystroke typed while the
+    /// terminal view is focused edits that panel's fields rather than reaching a session.
     pub(crate) fn current_host_locked(&self) -> bool {
         matches!(self.current_ref(), Some(RowRef::Host { locked, .. }) if *locked)
     }

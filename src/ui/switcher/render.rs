@@ -165,9 +165,14 @@ impl Switcher {
         // next step. One call for both, because they are one screen in two states.
         if let Some(kind) = self.current_view_screen(state) {
             let headline = self.view_screen_headline(state, kind);
-            state
-                .chrome
-                .render_view_screen(frame, term_area, state, &headline, kind);
+            state.chrome.render_view_screen(
+                frame,
+                term_area,
+                state,
+                &headline,
+                kind,
+                terminal_focused,
+            );
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }
@@ -702,12 +707,11 @@ impl Switcher {
                 Style::default().fg(color_secondary()),
             ));
             if *locked {
-                // The `*` lock mark rides the host row flush after the host name (a
-                // standard character, width 1, so no wide-glyph drift). A locked host
-                // is a failure the user can act on, so it keeps the warning colour
+                // The lock mark rides the host row flush after the host name. A locked
+                // host is a failure the user can act on, so it keeps the warning colour
                 // like the unreachable mark.
                 line.push(Span::styled(
-                    "*",
+                    crate::ui::chrome::LOCK_MARK,
                     Style::default().fg(palette::get().warning),
                 ));
             } else if *unreachable {

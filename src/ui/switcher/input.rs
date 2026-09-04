@@ -127,52 +127,11 @@ impl Switcher {
                 input.restore_filter = Some(state.filter.clone());
                 state.modal = Some(Modal::Input(Box::new(input)));
             }
-            // New is opened by `open_new`, Jump by `open_jump`, and the unlock steps
-            // by `open_unlock_user` / `open_unlock_password` (all capture context the
-            // mode alone does not carry).
-            InputMode::New | InputMode::Jump | InputMode::User | InputMode::Password => {}
+            // New is opened by `open_new` and Jump by `open_jump` (both capture context
+            // the mode alone does not carry). The unlock is not a modal: it lives in the
+            // locked panel (see `State::feed_unlock`).
+            InputMode::New | InputMode::Jump => {}
         }
-    }
-
-    /// The unlock entry: the USERNAME step of the two-step unlock input. The id is
-    /// never guessed or prefilled - the user always types it, so what is submitted
-    /// here is exactly what the unlock uses.
-    pub(crate) fn open_unlock_user(&mut self, state: &mut crate::state::State) {
-        state.chrome.flash.clear();
-        self.dismiss_modals(state);
-        let Some(source) = self.current_source() else {
-            return;
-        };
-        state.modal = Some(crate::ui::modal::Modal::Input(Box::new(
-            crate::ui::modal::Input::new(
-                crate::ui::modal::InputMode::User,
-                format!(" username for {source}"),
-                String::new(),
-                Some(source),
-            ),
-        )));
-    }
-
-    /// The masked PASSWORD step of the unlock, carrying the id the User step just
-    /// submitted; the buffer renders masked either way.
-    fn open_unlock_password(
-        &mut self,
-        source: Option<String>,
-        user: &str,
-        state: &mut crate::state::State,
-    ) -> Vec<crate::model::Command> {
-        let Some(source) = source else {
-            return Vec::new();
-        };
-        let mut input = crate::ui::modal::Input::new(
-            crate::ui::modal::InputMode::Password,
-            format!(" password for {user}@{source}"),
-            String::new(),
-            Some(source),
-        );
-        input.unlock_user = Some(user.to_string());
-        state.modal = Some(crate::ui::modal::Modal::Input(Box::new(input)));
-        Vec::new()
     }
 
     /// The `n` action: a new SESSION on the selected card's host/mux. Every card
@@ -304,7 +263,7 @@ impl Switcher {
         state.chrome.flash.clear();
         match ev.code {
             KeyCode::Enter => {
-                let (mode, val, source, unlock_user) = {
+                let (mode, val, source) = {
                     let Some(Modal::Input(input)) = &state.modal else {
                         return Vec::new();
                     };
@@ -312,7 +271,6 @@ impl Switcher {
                         input.mode,
                         input.buffer.trim().to_string(),
                         input.source.clone(),
-                        input.unlock_user.clone(),
                     )
                 };
                 match mode {
@@ -341,11 +299,6 @@ impl Switcher {
                             InputMode::Filter => Vec::new(),
                             InputMode::New => self.queue_create(source, &val, state),
                             InputMode::Jump => Vec::new(),
-                            // The unlock steps: User opens the masked password step
-                            // carrying the id; Password submits the unlock with the
-                            // carried id (never a guessed one).
-                            InputMode::User => self.open_unlock_password(source, &val, state),
-                            InputMode::Password => self.queue_unlock(source, unlock_user, &val),
                         }
                     }
                 }
@@ -450,33 +403,22 @@ impl Switcher {
         })
     }
 
-    /// Submits the unlock: the id carried from the User step plus the entered
-    /// password become the off-loop `RunUnlock` command. The password is never
-    /// persisted or rendered (the field draws masked), and nothing is guessed - the
-    /// id is exactly what was submitted in the User step.
-    fn queue_unlock(
-        &mut self,
-        source: Option<String>,
-        user: Option<String>,
-        password: &str,
-    ) -> Vec<Command> {
-        let (Some(source), Some(user)) = (source, user) else {
-            return Vec::new();
-        };
-        vec![Command::RunUnlock {
-            source,
-            user,
-            password: password.to_string(),
-        }]
-    }
-
     /// Applies a completed [`MuxOp`](crate::model::MuxOp)'s [`OpResult`] to the
     /// in-memory tree. The result is applied on the event loop after `run_op`
     /// returns off-loop, so a slow ssh round-trip never blocks rendering. State
     /// owns the inventory fold ([`State::fold_op_result`](crate::state::State::fold_op_result));
     /// the switcher only rebuilds its rows + restores the cursor per the returned
     /// [`OpFollow`].
-    pub fn apply_op_result(&mut self, result: OpResult, state: &mut crate::state::State) {
+    ///
+    /// Returns the source whose MACHINE the app should re-probe: `Some` only on a
+    /// successful unlock, because that machine's reach state (locked → connected) is the
+    /// only thing that changed, so re-probing the whole roster would be wasteful. Every
+    /// other result returns `None`.
+    pub fn apply_op_result(
+        &mut self,
+        result: OpResult,
+        state: &mut crate::state::State,
+    ) -> Option<String> {
         match state.fold_op_result(result) {
             OpFollow::Reselect(addr) => {
                 self.rebuild(state);
@@ -484,26 +426,32 @@ impl Switcher {
                     self.user_moved = true;
                     self.set_selected(i, state);
                 }
+                None
             }
             OpFollow::Flash(message) => {
                 state.flash(message);
+                None
             }
-            // A successful unlock established the authenticated ControlMaster: a
-            // roster re-scan then re-enumerates the host over it. Any failure stays
-            // locked and flashes why (the secret is still in memory for a retry).
-            OpFollow::UnlockResult(outcome) => match outcome {
-                crate::link::unlock::UnlockOutcome::Ok => self.request_rescan(state),
+            // A successful unlock established the authenticated ControlMaster: only THIS
+            // machine's reach changed, so the app re-probes just it (never the roster).
+            // Any failure stays locked and flashes why; the user retypes the password.
+            OpFollow::UnlockResult { source, outcome } => match outcome {
+                crate::link::unlock::UnlockOutcome::Ok => Some(source),
                 crate::link::unlock::UnlockOutcome::AuthFailed => {
                     state.flash("authentication failed");
+                    None
                 }
                 crate::link::unlock::UnlockOutcome::Timeout => {
                     state.flash("unlock timed out");
+                    None
                 }
                 crate::link::unlock::UnlockOutcome::Unavailable => {
                     state.flash("unlock unavailable on this platform");
+                    None
                 }
                 crate::link::unlock::UnlockOutcome::Failed(msg) => {
                     state.flash(format!("unlock failed: {msg}"));
+                    None
                 }
             },
         }

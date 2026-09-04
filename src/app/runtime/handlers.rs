@@ -1149,9 +1149,27 @@ impl Runtime {
             }
             Cmd::RawBytes(bytes) => {
                 if !bytes.is_empty() {
-                    // Inject into the VISIBLE session (`displayed`), matching the interactive
-                    // keystroke path.
-                    if let Some(host) = self.hosts.get(&self.state.displayed.source) {
+                    // A LOCKED host has no PTY: its panel owns the keys, exactly as the
+                    // interactive terminal-focus path routes them (see `input.rs`). So the
+                    // ctl raw surface drives the unlock the same way a keyboard does.
+                    if self.switcher.current_host_locked() {
+                        if let Some(source) = self.switcher.current_source() {
+                            if let Some(cmd) = self.state.feed_unlock(&source, &bytes) {
+                                let _ = dispatch_commands(
+                                    vec![cmd],
+                                    &mut self.switcher,
+                                    &mut self.state,
+                                    &mut self.nav_width_natural,
+                                    &mut self.auto_hide_nav,
+                                    &self.env.xmux_dir,
+                                    (&self.ops, &self.op_tx),
+                                );
+                            }
+                            self.dirty = true;
+                        }
+                    } else if let Some(host) = self.hosts.get(&self.state.displayed.source) {
+                        // Inject into the VISIBLE session (`displayed`), matching the
+                        // interactive keystroke path.
                         let mut driver = crate::driver::driver_for(host);
                         let ctx = crate::driver::DriverCtx {
                             registry: &mut self.registry,
@@ -1197,9 +1215,30 @@ impl Runtime {
                 .is_some_and(|d| std::time::Instant::now() < d)
     }
 
-    /// The op-result arm: fold a finished create back into the nav/state.
+    /// The op-result arm: fold a finished create back into the nav/state. A successful
+    /// unlock returns the unlocked source; only THAT machine's reach changed (locked →
+    /// connected), so re-probe just it - over the warm master the unlock left - instead of
+    /// the whole roster.
     pub(super) fn on_op_result(&mut self, result: crate::ui::switcher::OpResult) {
-        self.switcher.apply_op_result(result, &mut self.state);
+        if let Some(source) = self.switcher.apply_op_result(result, &mut self.state) {
+            probe_machine(
+                &source,
+                &self.hosts,
+                self.mgr.events(),
+                &self.probe_gate,
+                false,
+            );
+            // The unlock is done: clear the draft so the panel keeps no typed id.
+            if self
+                .state
+                .unlock
+                .as_ref()
+                .is_some_and(|d| d.source == source)
+            {
+                self.state.unlock = None;
+            }
+            self.dirty = true;
+        }
     }
 
     /// Drives one debounce beat: folds the clock and the runtime attach facts into

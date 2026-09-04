@@ -233,6 +233,11 @@ pub(crate) enum BarFill {
 /// that has no grid to mirror. Two are host states with no session to show; the third is
 /// the one session that has a grid and must not be shown anyway. There is no variant for
 /// a host still scanning - an in-flight state is the nav's to show, so the view keeps the
+/// The mark a locked host wears: on its nav card, flush after the host name, and on its
+/// panel headline. A locked host is a failure the user can act on (the password unlock),
+/// so it keeps the warning colour like the unreachable `⚠`.
+pub(crate) const LOCK_MARK: &str = "⚿";
+
 /// grid it already has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ViewScreen {
@@ -647,8 +652,9 @@ impl Chrome {
         state: &crate::state::State,
         source: &str,
         kind: ViewScreen,
+        focused: bool,
     ) {
-        let lines = self.view_screen_lines(state, source, kind, area.width);
+        let lines = self.view_screen_lines(state, source, kind, area.width, focused);
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
@@ -686,6 +692,7 @@ impl Chrome {
         source: &str,
         kind: ViewScreen,
         width: u16,
+        focused: bool,
     ) -> Vec<Line<'static>> {
         let pal = crate::ui::palette::get();
         let p = &self.ui_prefix;
@@ -856,17 +863,63 @@ impl Chrome {
             ViewScreen::Locked => pal.warning,
             ViewScreen::Empty | ViewScreen::SelfSession => pal.decoration,
         });
+        // The locked panel wears the key mark on its headline; the other screens carry
+        // no mark (their state word alone names them).
+        let headline = if kind == ViewScreen::Locked {
+            format!(" {LOCK_MARK} {}", self.headline(source, kind))
+        } else {
+            format!(" {}", self.headline(source, kind))
+        };
         let mut out = vec![
             Line::from(""),
             Line::from(Span::styled(
-                format!(" {}", self.headline(source, kind)),
+                headline,
                 Style::default()
                     .fg(pal.secondary)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(format!(" {}", kind.word()), state_style)),
-            Line::from(""),
         ];
+        // The locked panel OWNS the unlock input: the username and masked password sit at
+        // its top, edited in place from the terminal view (no modal, no nav). The active
+        // field shows a cursor only while the terminal view is focused, so the panel says
+        // whether it is taking keys.
+        if kind == ViewScreen::Locked {
+            let draft = state.unlock.as_ref().filter(|d| d.source == source);
+            let (user, password, field) = draft
+                .map_or(("", "", crate::state::UnlockField::User), |d| {
+                    (d.user.as_str(), d.password.as_str(), d.field)
+                });
+            let cursor = |active: bool| {
+                if active && focused {
+                    "▊"
+                } else {
+                    ""
+                }
+            };
+            let field_line = |label: &str, shown: String, active: bool| {
+                Line::from(vec![
+                    Span::styled(format!(" {label:<9} "), Style::default().fg(pal.decoration)),
+                    Span::styled(
+                        format!("{shown}{}", cursor(active)),
+                        Style::default().fg(pal.secondary),
+                    ),
+                ])
+            };
+            let masked: String = "•".repeat(password.chars().count());
+            out.push(Line::from(""));
+            out.push(field_line(
+                "user:",
+                user.to_string(),
+                field == crate::state::UnlockField::User,
+            ));
+            out.push(field_line(
+                "password:",
+                masked,
+                field == crate::state::UnlockField::Password,
+            ));
+        }
+        out.push(Line::from(""));
         for (cell, value) in rows {
             if matches!(cell, ScreenCell::Gap) {
                 out.push(Line::from(""));
