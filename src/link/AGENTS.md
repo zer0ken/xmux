@@ -66,9 +66,11 @@ and the composed control argv.
   for as long as xmux runs, so a line per tick is a file filled by one silent host. The
   rule is a value the loop folds outcomes into, so it is tested rather than read out of a
   log file afterwards.
-- The reader surfaces the connection child's OWN failure line (ssh's auth-failure,
-  refused, timed-out, or host-key text) as the exit reason when no protocol `%error`
-  names one, so an auth failure is told from a host that died silently.
+- A remote host's REACHABILITY (connected, locked, or unreachable) is classified by a
+  machine probe (`ssh <machine> true`) before any channel opens, not by the control
+  reader. The reader's exit reason carries only a protocol `%error` (a "no sessions" /
+  "no server" empty mux), so a reachable-but-empty host is told from one that answered;
+  a control channel opens only for a machine already known to connect.
 - The unlock establishes the ONE authenticated master: a single PTY prompt-answer ssh
   (`ControlMaster=yes` over the shared control socket) answers the host-key and password
   prompts, and every later `BatchMode` channel reuses the socket it leaves. The secret

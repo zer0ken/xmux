@@ -19,16 +19,15 @@ pub fn run_reader<E: FnMut(HostEvent)>(
     in_flight: &InFlight,
     mut emit: E,
 ) {
-    // num, kind, body — the open `%begin` block, if any.
+    // num, kind, body - the open `%begin` block, if any.
     let mut block: Option<(u64, PendingReply, Vec<String>)> = None;
     // The last %error block's text, so a never-connected exit carries a meaningful
-    // reason (notably "no sessions" / "no server running" → reachable-but-empty).
+    // reason (notably "no sessions" / "no server running" → reachable-but-empty). A
+    // remote host's REACHABILITY (locked / unreachable) is classified upstream by the
+    // machine probe, not here: this control channel opens only for a machine already
+    // known to connect, and ssh's own auth-failure line goes to the drained stderr, not
+    // this stdout stream.
     let mut last_error: Option<String> = None;
-    // The connection child's OWN failure line (ssh writes "Permission denied (…)"
-    // / "Connection refused" / … to the stream before dying), surfaced as the
-    // Exited reason only when no protocol %error named one - so an auth failure
-    // is told from a host that died silently.
-    let mut last_failure: Option<String> = None;
     for line in lines {
         // The entry DCS `\x1bP1000p` ([research §1]) introduces control mode. It may
         // arrive on its own line or glued to the first `%begin`. Strip it; a lone DCS
@@ -51,7 +50,7 @@ pub fn run_reader<E: FnMut(HostEvent)>(
             if close {
                 let (_, kind, body) = block.take().unwrap();
                 // Remember an error block's text ("no sessions" / "no server running"
-                // / …) so a control client that dies before connecting carries it —
+                // / …) so a control client that dies before connecting carries it -
                 // the app then tells a reachable-but-empty mux from a dead host.
                 if is_err {
                     let t = body.join(" ").trim().to_string();
@@ -70,7 +69,7 @@ pub fn run_reader<E: FnMut(HostEvent)>(
             Line::Begin { num, control } => {
                 // A block replying to a command WE sent (flags bit 0 set) pops the
                 // correlation FIFO; a spontaneous block (startup banner, another
-                // client's command, a hook — flags bit 0 clear) consumes ZERO FIFO
+                // client's command, a hook - flags bit 0 clear) consumes ZERO FIFO
                 // entries, so it can never shift our replies. This is robust across
                 // tmux versions (3.4 emits a separate flags=0 banner; 3.5a glues the
                 // DCS to the first flags=1 reply and trails a flags=0 block).
@@ -88,43 +87,24 @@ pub fn run_reader<E: FnMut(HostEvent)>(
             // %output is the per-pane PIXEL stream; the per-session PTY attachments
             // own pixels now, and the control client runs with `refresh-client -f
             // no-output`, so it should not arrive. If an older mux that lacks the
-            // flag sends it anyway, discard it (just note the channel is live) — the
+            // flag sends it anyway, discard it (just note the channel is live) - the
             // control client is metadata-only.
             Line::Output { .. } | Line::ExtendedOutput { .. } => clear_connecting(state),
             Line::Notification(n) => dispatch_notif(host, proto, n, &last_error, &mut emit),
-            // Stray frame/body outside a block.
-            Line::End { .. } | Line::Error { .. } => {}
-            Line::Body(line) => {
-                if is_connection_failure(line) {
-                    last_failure = Some(line.trim().to_string());
-                }
-            }
+            // Stray frame/body outside a block (a mux never speaks a reach failure here;
+            // that is the machine probe's word).
+            Line::End { .. } | Line::Error { .. } | Line::Body(_) => {}
         }
     }
     // Iterator ended = child stdout EOF.
     emit(HostEvent::Exited {
         host: host.to_string(),
-        reason: last_error.or(last_failure),
+        reason: last_error,
     });
 }
 
-/// True when `line` is the ssh connection child's own failure line (an auth
-/// failure, a refused/timed-out connect, or a host-key trust failure) rather than
-/// mux protocol content. The control stream for a REMOTE host is the ssh child's
-/// pty, so its death messages arrive here as raw body lines.
-fn is_connection_failure(line: &str) -> bool {
-    let l = line.to_lowercase();
-    l.contains("permission denied")
-        || l.contains("connection refused")
-        || l.contains("connection timed out")
-        || l.contains("no route to host")
-        || l.contains("network is unreachable")
-        || l.contains("host key verification failed")
-        || l.contains("name or service not known")
-}
-
 /// Resolves a closed `%begin…%end` block by parsing its body and carrying the result
-/// on a `HostEvent` — the loop folds it into `model::Host.inventory` (the single
+/// on a `HostEvent` - the loop folds it into `model::Host.inventory` (the single
 /// owner); the reader holds no inventory. `proto` supplies the mux-specific parse of a
 /// `list-clients` body (the display-client tty), so the reader names no tmux wire detail.
 fn resolve_block<E: FnMut(HostEvent)>(
@@ -151,7 +131,7 @@ fn resolve_block<E: FnMut(HostEvent)>(
         }
         PendingReply::DisplayClientTty => {
             // A `list-clients` body: the mux protocol parses out the display attach's tty
-            // — the reader names no wire detail.
+            // - the reader names no wire detail.
             emit(HostEvent::DisplayTty {
                 host: host.to_string(),
                 tty: proto.parse_display_client_tty(body),
@@ -197,7 +177,7 @@ mod tests {
         }
     }
 
-    /// The sessions the reader carried on its first `Inventory` event — the parsed
+    /// The sessions the reader carried on its first `Inventory` event - the parsed
     /// list-sessions result the loop folds into `model::Host.inventory`.
     fn carried_sessions(events: &[HostEvent]) -> Vec<Session> {
         events
@@ -330,7 +310,7 @@ mod tests {
     fn session_window_changed_is_inert() {
         // A session's ACTIVE WINDOW switched (`%session-window-changed $id @win`). The
         // card names no window any more, so the notification must NOT trigger a blanket
-        // Changed refetch and must emit no window event at all — the display PTY follows
+        // Changed refetch and must emit no window event at all - the display PTY follows
         // the mux's own state as a live mirror.
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
@@ -434,7 +414,7 @@ mod tests {
         );
         assert!(
             !events.iter().any(|e| matches!(e, HostEvent::Exited { .. })),
-            "it must NOT reap the host (no Exited) — that is the supervisor's tty-matched job"
+            "it must NOT reap the host (no Exited) - that is the supervisor's tty-matched job"
         );
     }
 
@@ -634,34 +614,10 @@ mod tests {
     }
 
     #[test]
-    fn exited_reason_falls_back_to_the_connection_failure_line() {
-        // A remote control child whose ssh dies on auth prints its own failure line
-        // to the pty stream; with no protocol %error, that line IS the exit reason
-        // (the app then tells locked from unreachable).
-        let state = test_state(80, 24);
-        let in_flight: InFlight = Default::default();
-        let mut reason = None;
-        run_reader(
-            "pwbox",
-            test_control_proto(),
-            vec!["pwtest@127.0.0.1: Permission denied (publickey,password).".to_string()]
-                .into_iter(),
-            &state,
-            &in_flight,
-            |ev| {
-                if let HostEvent::Exited { reason: r, .. } = ev {
-                    reason = r;
-                }
-            },
-        );
-        assert_eq!(
-            reason.as_deref(),
-            Some("pwtest@127.0.0.1: Permission denied (publickey,password).")
-        );
-    }
-
-    #[test]
-    fn exited_reason_keeps_no_connection_failure_when_only_protocol_or_idle_lines_arrive() {
+    fn exited_reason_stays_none_when_only_idle_body_lines_arrive() {
+        // A control child that dies after only idle/body lines carries no reason: a
+        // remote host's reach failure is the machine probe's word, never a body line
+        // here. (A `%error` block, tested above, is the one thing that names a reason.)
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
         let mut reason = None;
@@ -677,10 +633,7 @@ mod tests {
                 }
             },
         );
-        assert_eq!(
-            reason, None,
-            "idle/protocol body lines are not a connection failure"
-        );
+        assert_eq!(reason, None, "idle/protocol body lines name no exit reason");
     }
 
     #[test]
