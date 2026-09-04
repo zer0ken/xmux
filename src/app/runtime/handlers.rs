@@ -264,16 +264,17 @@ impl Runtime {
                     }
                 }
             }
-            EventEffect::DispatchScanned { source, detected } => {
+            EventEffect::DispatchScanned {
+                source, detected, ..
+            } => {
                 // A detection probe resolved: (re)identify the mux, then dispatch the
                 // now-detected host onto its metadata channel (control client or poll task).
+                // A probe that could not identify one has ALREADY settled the card as
+                // unreachable in apply_event (when it was still scanning), so opening a
+                // doomed control child would just die and overwrite that reason with a
+                // bare "connection closed". The reconnect sweep retries detection.
                 detecting.remove(&source);
                 apply_scan_result(hosts, &source, detected);
-                // Only a host whose mux resolved gets a channel. A probe that could not
-                // identify one (the mux the machine runs is not the assumed one, or a
-                // slow host timed out) leaves it undetected; opening a doomed control
-                // child would just die and overwrite the machine's reason with a bare
-                // "connection closed". The reconnect sweep retries detection.
                 if hosts.get(&source).is_some_and(|h| h.detected) {
                     let (vc, vr) = terminal_view_size(cols, rows, nav);
                     dispatch_detected_host(mgr, hosts, &source, vc, vr);
@@ -1521,6 +1522,11 @@ impl Runtime {
         // closed" unreachable instead of locked. A live channel is left alone; a connected
         // probe re-ensures the channel through the `MachineConnected` effect. An UNDETECTED
         // host retries detection.
+        // While the initial scan is still settling, every undetected source already has
+        // its one detection probe in flight (raised by the discovery pass): the sweep
+        // must not run a second scan for the same probe. The undetected-host retry
+        // stands down until the scan clears, then retries at its own cadence.
+        let scan_settled = self.state.scanning.is_empty();
         let mut reprobed: HashSet<String> = HashSet::new();
         for id in &ids {
             let detected = self.hosts.get(id).map(|h| h.detected).unwrap_or(false);
@@ -1530,7 +1536,7 @@ impl Runtime {
                 {
                     probe_machine(id, &self.hosts, self.mgr.events(), &self.probe_gate, false);
                 }
-            } else {
+            } else if scan_settled {
                 scan_or_dispatch_host(&mut self.mgr, &self.hosts, &mut self.detecting, id, vc, vr);
             }
         }

@@ -466,8 +466,29 @@ impl State {
                 // loop's to know, so the whole decision is the loop's.
                 vec![EventEffect::ApplyRoster { roster }]
             }
-            HostEvent::Scanned { source, detected } => {
-                vec![EventEffect::DispatchScanned { source, detected }]
+            HostEvent::Scanned {
+                source,
+                detected,
+                err,
+            } => {
+                // A detection probe on a CONNECTED machine resolved to no mux (the
+                // configured mux is not there): settle the card out of scanning as
+                // unreachable with the probe's error, exactly like the MachineProbed
+                // err path. Only while the card is STILL scanning, so a stray detection
+                // failure (the reconnect sweep retrying a settled host) cannot overwrite
+                // a locked/unreachable reason already on the card. The host stays
+                // undetected, so the sweep's retry recovers it when the mux appears.
+                if detected.is_none() && self.scanning.contains(&source) {
+                    let reason = err
+                        .clone()
+                        .unwrap_or_else(|| "mux not detected".to_string());
+                    switcher.apply_source_result(source.clone(), Vec::new(), Some(reason), self);
+                }
+                vec![EventEffect::DispatchScanned {
+                    source,
+                    detected,
+                    err,
+                }]
             }
             HostEvent::MachineProbed {
                 machine,
@@ -1789,13 +1810,15 @@ mod tests {
     #[test]
     fn apply_event_scanned_emits_dispatch_carrying_the_detection() {
         // The detection box + the host-channel dispatch are loop-owned; apply_event
-        // forwards the descriptor (no detection here = still undetected).
+        // forwards the descriptor. The host already has sessions (not scanning), so a
+        // failed detection does not settle it - only a still-scanning card settles.
         let (mut state, mut sw) = with_switcher(one_session_scan());
         let mut connected = HashSet::new();
         let effects = state.apply_event(
             HostEvent::Scanned {
                 source: "jup".into(),
                 detected: None,
+                err: Some("command failed (exit 127): sh: tmux: not found".into()),
             },
             &mut sw,
             &mut connected,
@@ -1803,9 +1826,99 @@ mod tests {
         assert!(
             matches!(
                 effects.as_slice(),
-                [EventEffect::DispatchScanned { source, detected: None }] if source == "jup"
+                [EventEffect::DispatchScanned {
+                    source,
+                    detected: None,
+                    ..
+                }] if source == "jup"
             ),
             "Scanned forwards a DispatchScanned effect: {effects:?}"
+        );
+        let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+        assert!(
+            g.err.is_none(),
+            "a settled host keeps its state; a stray detection failure does not touch it"
+        );
+    }
+
+    #[test]
+    fn a_connected_machines_failed_detection_settles_the_scanning_card() {
+        // A host that reached the connection stage (a local/WSL machine connected
+        // inline, or a remote whose machine probe succeeded) but whose mux detection
+        // failed must leave the scanning state: it settles as unreachable with the
+        // probe's error instead of spinning forever (issue 226).
+        let mut state = State::from_sources(vec!["jup".into()]);
+        let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        assert!(state.scanning.contains("jup"), "precondition: scanning");
+        let effects = state.apply_event(
+            HostEvent::Scanned {
+                source: "jup".into(),
+                detected: None,
+                err: Some("command failed (exit 127): sh: tmux: not found".into()),
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            !state.scanning.contains("jup"),
+            "the failed detection settles the card out of scanning"
+        );
+        let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+        assert_eq!(
+            g.err.as_deref(),
+            Some("command failed (exit 127): sh: tmux: not found"),
+            "the card carries the detection error"
+        );
+        assert!(g.sessions.is_empty());
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [EventEffect::DispatchScanned {
+                    source,
+                    detected: None,
+                    ..
+                }] if source == "jup"
+            ),
+            "the detection box still forwards to the loop: {effects:?}"
+        );
+    }
+
+    #[test]
+    fn a_stray_detection_failure_does_not_overwrite_a_settled_card() {
+        // The reconnect sweep retries detection for undetected hosts even after they
+        // settled unreachable/locked. That later failure must NOT overwrite the card's
+        // existing reason - only a still-scanning card settles on detection failure.
+        let mut state = State::from_sources(vec!["jup".into()]);
+        let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let _ = state.apply_event(
+            HostEvent::MachineProbed {
+                machine: "jup".into(),
+                err: Some("hrlee@jup: Permission denied (publickey,password).".into()),
+                rescan: false,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            !state.scanning.contains("jup"),
+            "the machine probe settled the card first"
+        );
+        let _ = state.apply_event(
+            HostEvent::Scanned {
+                source: "jup".into(),
+                detected: None,
+                err: Some("command failed (exit 255)".into()),
+            },
+            &mut sw,
+            &mut connected,
+        );
+        let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+        assert_eq!(
+            g.err.as_deref(),
+            Some("hrlee@jup: Permission denied (publickey,password)."),
+            "a settled reason is not overwritten by a stray detection failure"
         );
     }
 
