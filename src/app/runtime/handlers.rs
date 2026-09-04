@@ -410,17 +410,13 @@ impl Runtime {
         // One read of the roster for the whole construction, so every product below is
         // built from ONE answer about which machines exist.
         let roster = env.roster();
-        let nav_pos_setting = roster.cfg.ui.nav_position_setting();
+        let nav_default = roster.cfg.ui.nav_position();
         let nav_position_pinned = crate::ui::prefs::load_nav_position(&env.xmux_dir);
-        // The initial position: resolved once here so the first frame and the first PTY
-        // sizing already split the screen the way the settings and pin say. The loop-top
-        // reconcile below re-resolves it every frame from the same inputs.
-        let nav_position = crate::ui::switcher::resolve_nav_position(
-            &nav_pos_setting,
-            nav_position_pinned,
-            ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1)),
-            nav_width_natural,
-        );
+        // The initial position: a pinned side wins, else the [ui] default. Resolved once
+        // here so the first frame and the first PTY sizing already split the screen the
+        // way the pin and default say; the loop-top reconcile re-resolves it every frame
+        // from the same inputs.
+        let nav_position = nav_position_pinned.unwrap_or(nav_default);
         let auto_hide_nav = crate::ui::prefs::load_auto_hide_nav(&env.xmux_dir)
             .unwrap_or_else(|| roster.cfg.ui_auto_hide_nav());
 
@@ -539,7 +535,7 @@ impl Runtime {
             nav_height,
             nav_position,
             nav_position_pinned,
-            nav_pos_setting,
+            nav_default,
             applied_nav_height: u16::MAX,
             auto_hide_nav,
             mouse_state: MouseState::default(),
@@ -623,15 +619,9 @@ impl Runtime {
             prefix_active,
             self.nav_width_natural,
         );
-        // The nav's attachment side is resolved here too, every frame: pinned > auto
-        // (wide/narrow) > force > wide. The wide/narrow judgment reads the area and the
-        // natural width only, never the resolved position, so nothing oscillates.
-        let want_position = crate::ui::switcher::resolve_nav_position(
-            &self.nav_pos_setting,
-            self.nav_position_pinned,
-            ratatui::layout::Rect::new(0, 0, self.cols, self.body_rows.saturating_add(1)),
-            self.nav_width_natural,
-        );
+        // The nav's attachment side is resolved here too, every frame: a pinned side
+        // wins, else the [ui] default. The nav never moves on its own.
+        let want_position = self.nav_position_pinned.unwrap_or(self.nav_default);
         // Resize when ANY dimension of the split moved: the width (focus / hide / prefix
         // h·l in a column), the band height (border drag / resize keys), or the side the
         // nav is attached to. All change the mux terminal region, so all must resize the
@@ -1497,9 +1487,9 @@ impl Runtime {
         self.state
             .chrome
             .set_hint_bar_style(crate::ui::chrome::parse_hint_bar_style(&ui.hint_bar_style));
-        // The nav-position settings take effect at the next loop top, where the reconcile
-        // re-resolves the position from them.
-        self.nav_pos_setting = ui.nav_position_setting();
+        // The new nav-position default takes effect at the next loop top, where the
+        // reconcile re-resolves the position from it.
+        self.nav_default = ui.nav_position();
         true
     }
 

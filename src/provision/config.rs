@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use crate::ui::switcher::{NavPosition, NavPositionSetting};
+use crate::ui::switcher::NavPosition;
 use serde::Deserialize;
 
 /// The on-disk `config.toml` structure. All fields are optional.
@@ -155,25 +155,12 @@ pub struct UiConfig {
     /// startup, like `auto-hide-nav`'s initial state, and there is no live toggle.
     #[serde(rename = "hide-unreachable", default = "default_hide_unreachable")]
     pub hide_unreachable: bool,
-    /// Whether the nav's attachment follows the wide/narrow turnover. False pins the
-    /// `force-nav-position` (or the wide default) regardless of the aspect.
-    #[serde(rename = "auto-nav-position", default = "default_true")]
-    pub auto_nav_position: bool,
-    /// The nav placement when the terminal view is the wider (the column layout):
-    /// `left` | `top` | `right` | `bottom`. An unknown word falls back to `left`.
-    #[serde(rename = "wide-nav-position", default = "default_wide_nav_position")]
-    pub wide_nav_position: String,
-    /// The nav placement when the turnover picks the band layout. An unknown word
-    /// falls back to `top`.
-    #[serde(
-        rename = "narrow-nav-position",
-        default = "default_narrow_nav_position"
-    )]
-    pub narrow_nav_position: String,
-    /// The nav placement while `auto-nav-position` is off. Empty (default) = unset,
-    /// which falls back to the wide placement.
-    #[serde(rename = "force-nav-position", default)]
-    pub force_nav_position: String,
+    /// The nav placement when nothing is pinned by `prefix p`: `left` | `top` | `right`
+    /// | `bottom`. An unknown word falls back to `left`. The nav never moves on its own;
+    /// `prefix p` pins a side (persisted to `~/.xmux/nav_position`) and this default
+    /// applies while no pin is set.
+    #[serde(rename = "nav-position", default = "default_nav_position")]
+    pub nav_position: String,
     /// The tree|terminal view border colour OVERRIDES, named after tmux's pane-border
     /// options: the focused side is `view-active-border-style`, the unfocused side
     /// `view-border-style`, the drag-hover cue `view-border-hover-style`. Values use
@@ -236,27 +223,15 @@ fn default_hide_unreachable() -> bool {
     true
 }
 
-fn default_wide_nav_position() -> String {
+fn default_nav_position() -> String {
     "left".to_string()
 }
 
-fn default_narrow_nav_position() -> String {
-    "top".to_string()
-}
-
 impl UiConfig {
-    /// The nav-position settings the per-frame resolution starts from. Each placement
-    /// word is parsed here and an unknown one falls back to its own default, so the
-    /// resolver never sees a garbage value. An empty force means none is forced.
-    pub fn nav_position_setting(&self) -> NavPositionSetting {
-        NavPositionSetting {
-            auto: self.auto_nav_position,
-            wide: NavPosition::parse(&self.wide_nav_position)
-                .unwrap_or(NavPositionSetting::default().wide),
-            narrow: NavPosition::parse(&self.narrow_nav_position)
-                .unwrap_or(NavPositionSetting::default().narrow),
-            force: NavPosition::parse(&self.force_nav_position),
-        }
+    /// The default nav placement when nothing is pinned. Parsed here so the runtime
+    /// never sees a garbage value; an unknown word falls back to `left`.
+    pub fn nav_position(&self) -> NavPosition {
+        NavPosition::parse(&self.nav_position).unwrap_or(NavPosition::Left)
     }
 }
 
@@ -271,11 +246,7 @@ impl Default for UiConfig {
             prefix: default_prefix(),
             auto_hide_nav: false,
             hide_unreachable: default_hide_unreachable(),
-            auto_nav_position: true,
-            wide_nav_position: default_wide_nav_position(),
-            narrow_nav_position: default_narrow_nav_position(),
-            // Empty = unset: the force falls back to the wide placement.
-            force_nav_position: String::new(),
+            nav_position: default_nav_position(),
             // Empty = unset: the effective colour is ViewBorderColors::default().
             view_active_border_style: String::new(),
             view_border_style: String::new(),
@@ -909,7 +880,7 @@ pub fn host_stanza(config_text: &str, alias: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::switcher::{NavPosition, NavPositionSetting};
+    use crate::ui::switcher::NavPosition;
     use std::io::Write;
 
     fn write_temp(content: &str, name: &str) -> std::path::PathBuf {
@@ -1605,34 +1576,21 @@ bogus = "nope"
     }
 
     #[test]
-    fn ui_nav_position_setting() {
-        // Missing file → the defaults: auto on, left wide, top narrow, no force.
+    fn ui_nav_position() {
+        // Missing file → the default (left).
         let missing = std::env::temp_dir().join("xmux-navpos-absent-xyz.toml");
         let cfg = load(&missing).unwrap();
-        assert_eq!(cfg.ui.nav_position_setting(), NavPositionSetting::default());
+        assert_eq!(cfg.ui.nav_position(), NavPosition::Left);
 
-        // All four keys parsed.
-        let path = write_temp(
-            "[ui]\nauto-nav-position = false\nwide-nav-position = \"right\"\nnarrow-nav-position = \"bottom\"\nforce-nav-position = \"top\"\n",
-            "navpos-all.toml",
-        );
+        // A configured word is parsed.
+        let path = write_temp("[ui]\nnav-position = \"right\"\n", "navpos-right.toml");
         let cfg = load(&path).unwrap();
-        let s = cfg.ui.nav_position_setting();
-        assert!(!s.auto);
-        assert_eq!(s.wide, NavPosition::Right);
-        assert_eq!(s.narrow, NavPosition::Bottom);
-        assert_eq!(s.force, Some(NavPosition::Top));
+        assert_eq!(cfg.ui.nav_position(), NavPosition::Right);
 
-        // Unknown words fall back to their own defaults; an empty force means none.
-        let path = write_temp(
-            "[ui]\nwide-nav-position = \"diagonal\"\nnarrow-nav-position = \"side\"\nforce-nav-position = \"\"\n",
-            "navpos-garbage.toml",
-        );
+        // An unknown word falls back to the default.
+        let path = write_temp("[ui]\nnav-position = \"diagonal\"\n", "navpos-garbage.toml");
         let cfg = load(&path).unwrap();
-        let s = cfg.ui.nav_position_setting();
-        assert_eq!(s.wide, NavPositionSetting::default().wide);
-        assert_eq!(s.narrow, NavPositionSetting::default().narrow);
-        assert_eq!(s.force, None);
+        assert_eq!(cfg.ui.nav_position(), NavPosition::Left);
     }
 
     #[test]

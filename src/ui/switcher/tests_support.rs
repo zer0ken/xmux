@@ -29,15 +29,17 @@ pub(crate) fn noop_ops() -> Arc<dyn Ops> {
     Arc::new(NoopOps)
 }
 
-/// The nav the default settings resolve for `area`: the position the loop would pick
-/// with no [ui] overrides and nothing pinned (a left column wide, a band narrow).
-/// The render-path tests use this so a portrait backend paints the band without any
-/// test having to state the placement.
+/// The stacking that fits `area`, chosen for the render tests: a left column when a side
+/// column leaves the terminal view wider than tall, a top band otherwise. Test-only: the
+/// production position never derives from the screen (a `prefix p` pin or the `[ui]
+/// nav-position` default decides), so the render tests ask for the fitting stacking here
+/// explicitly and a portrait backend still paints the band without stating the placement.
 pub(crate) fn auto_nav(width: u16, area: Rect) -> NavSize {
-    NavSize::visible(width).with_position(resolve_nav_position(
-        &NavPositionSetting::default(),
-        None,
-        area,
-        width,
-    ))
+    let band = area.width.saturating_sub(width.saturating_add(1)) as u32 <= area.height as u32 * 2;
+    let position = if band {
+        NavPosition::Top
+    } else {
+        NavPosition::Left
+    };
+    NavSize::visible(width).with_position(position)
 }

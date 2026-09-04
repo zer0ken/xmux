@@ -133,7 +133,7 @@ fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
 
 /// Applies one step of the `prefix p` cycle to the pin and saves it at once (the same
 /// moment `toggle_auto_hide` saves its toggle). `None` (the fifth step) stores "auto",
-/// which returns the nav to following the [ui] settings.
+/// which returns the nav to following the `[ui] nav-position` default.
 fn cycle_nav_position(
     pinned: &mut Option<crate::ui::switcher::NavPosition>,
     effective: crate::ui::switcher::NavPosition,
@@ -1313,9 +1313,10 @@ struct Runtime {
     /// The keyboard/config pin on the nav position (`prefix p`): `Some(side)` overrides
     /// the [ui] resolution outright, `None` follows it. Persisted on every change.
     nav_position_pinned: Option<crate::ui::switcher::NavPosition>,
-    /// The [ui] nav-position settings the loop-top resolution reads. Refreshed when a
-    /// live config apply lands; the reconcile at the next loop top applies the new value.
-    nav_pos_setting: crate::ui::switcher::NavPositionSetting,
+    /// The `[ui] nav-position` default the loop-top resolution falls back to when
+    /// nothing is pinned. Refreshed when a live config apply lands; the reconcile at the
+    /// next loop top applies the new value.
+    nav_default: crate::ui::switcher::NavPosition,
     /// The `nav_height` last applied to the PTY sizes, so the loop-top reconcile resizes the
     /// mux terminals when the band height changes (not only on a width change). `u16::MAX`
     /// forces the first reconcile to size them.

@@ -241,19 +241,10 @@ no function, and no test, so renaming code is never a documentation change.
   puts the next card below in one place and one column over in another, and a key that
   moved by column would mean two different things in the two layouts.
 - **FR-B15** - Which side the nav rides on is resolved each frame in one order: a
-  placement pinned at runtime, then the auto settings, then the forced placement, then the
-  wide default. While the auto settings are in force, the wide/narrow choice between them
-  is decided by ONE test, always measured as if the
-  nav kept its side column: the terminal that column would leave is the window width less
-  the nav and its border, over the window's full height, and while that is WIDER than tall
-  the wide placement applies. The moment it is not (square included) the narrow one does.
-  Wider than tall is judged in the proportions the
-  user SEES: a terminal row is about two columns tall, so the rows count double. The test
-  is the position resolution's FIXED criterion: it reads the window and the nav's natural
-  width, never the resolved placement, so the answer cannot feed back into the question
-  and nothing oscillates at the boundary. Measuring the LIVE terminal would flip the
-  test's own input, since moving to a band hands those columns back and takes rows
-  instead.
+  placement pinned at runtime wins outright, else the `[ui] nav-position` default applies.
+  The nav never moves on its own; only `prefix p` (a pin, saved to `~/.xmux/nav_position`
+  the moment it changes) or a config change moves it, and a pin change resizes the mux
+  terminals at the next loop top.
 - **FR-B16** - The nav's width, the band's height, and the side it rides on are all
   live: the saved prefs seed them, the resize keys and `prefix p` step them, a border drag
   sets the size, and auto-hide takes
@@ -343,13 +334,13 @@ no function, and no test, so renaming code is never a documentation change.
   never hides, whatever stale failure it carries. A host that goes unreachable mid-run
   hides from that result on and returns when a scan answers.
 - **FR-B25** - The nav attaches on one of FOUR sides of the terminal view - a left or
-  right column, a top or bottom band - and the placement is a user choice at three layers:
-  four `[ui]` settings (`auto-nav-position`, `wide-nav-position`, `narrow-nav-position`,
-  `force-nav-position`) name the defaults (`true`, `left`, `top`, unset), the per-frame
-  resolution order is pinned > auto > force > wide (FR-B15), and `prefix p` moves the nav
-  one side clockwise (left → top → right → bottom → automatic), saving the pinned value
-  to `~/.xmux/nav_position` the moment it changes, where it beats the settings until the
-  key cycles back to automatic. The mirror symmetry is shape-only: the layout INSIDE the
+  right column, a top or bottom band - and the placement is a user choice at two layers:
+  a single `[ui] nav-position` setting (default `left`) names the placement when nothing
+  is pinned, and `prefix p` moves the nav one side clockwise (left → top → right →
+  bottom → default), saving the pinned value to `~/.xmux/nav_position` the moment it
+  changes, where it beats the setting until the key cycles back to the default. The nav
+  never moves on its own: a pinned side wins outright, else the default applies. The
+  mirror symmetry is shape-only: the layout INSIDE the
   nav region is identical at all four placements (a right column is the left column's
   list, a bottom band the top band's down-then-right flow), only what sits on which side
   of the view border flips, and the status line stays the nav region's bottom row in all

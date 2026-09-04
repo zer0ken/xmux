@@ -146,23 +146,8 @@ UI elements a user perceives as distinct things:
   whole value rather than picking fields out of the runtime: the effective width
   has one owner, and a resize cannot reach the renderer and miss the PTY sizing. The set
   width and the on-screen width differ only while the nav is hidden, and that is exactly
-  why both travel: the regions are cut from what is on screen, the layout turnover is
-  measured from what the user set.
-- layout turnover - the one test that picks between the wide and the narrow placement of
-  the position resolution, measured as
-  if the nav kept its side column: the terminal that column would leave is the window
-  width less the nav and its border, over the window's full height. Wider than tall keeps
-  the wide placement; square or taller takes the narrow one.
-  Wider than tall in the proportions the user SEES, not in cell counts: a row is about two
-  columns tall, so the rows count double and 60 columns over 30 rows is square. Comparing
-  the counts directly kept the column until the terminal was half as wide as it
-  looked. The as-if is the point too: going to a band hands those columns back to the
-  terminal and takes rows instead, so a test measuring the LIVE terminal would flip its own
-  input and the placement would oscillate on one cell of resize. The test is the
-  resolution's fixed criterion - it reads the window and the nav's natural width, never
-  the resolved placement - so nothing feeds back into its own question. Hiding the nav is
-  not a resize either, since the side travels with the hidden nav, so the nav comes back
-  the shape it left and the resize keys keep driving the same axis while it is gone.
+  why both travel: the regions are cut from what is on screen, the set width is the
+  one the nav returns to when unhidden.
 - column flow - how a band lays its rows out: down a column, then right, identical for a
   top and a bottom band. A
   column takes whole SECTIONS (a `{host}/{mux}` title over its session cards), so a

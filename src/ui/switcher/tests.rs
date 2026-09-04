@@ -3411,36 +3411,6 @@ async fn flash_clears_on_next_key_restoring_the_hint_bar() {
 }
 
 #[test]
-fn the_layout_turns_over_where_the_side_terminal_stops_being_wider_than_tall() {
-    use ratatui::layout::Rect;
-    // The test is the aspect of the terminal AS IF the tree kept its side column: with a
-    // 48-wide tree that terminal is `w - 49` columns over the window's full height. It
-    // stays a column while that is wider than tall, and turns over the moment it is not - in
-    // the proportions the user SEES, so a row counts as two columns.
-    //
-    // Measuring the LIVE terminal instead would oscillate: going to the band hands it the tree's
-    // columns back and takes the band's rows, which lands it back on the other side of
-    // the same test.
-    for (w, h, want) in [
-        (150u16, 50u16, ViewLayout::Column), // 101 cells over 50 rows = 101 x 100: wider
-        (149, 50, ViewLayout::Band),         // 100 x 100: square, so the band takes over
-        (140, 50, ViewLayout::Band),         // 91 x 100: taller than wide
-        (74, 12, ViewLayout::Column),        // 25 x 24: one column wider than tall
-        (73, 12, ViewLayout::Band),          // 24 x 24: square, on a small window too
-    ] {
-        assert_eq!(
-            view_layout(Rect::new(0, 0, w, h), 48),
-            want,
-            "{w}x{h} with a 48-wide tree leaves a side terminal {} cells over {h} rows, \
-             which is {} by {} once a row counts as two columns",
-            w.saturating_sub(49),
-            w.saturating_sub(49),
-            h * 2
-        );
-    }
-}
-
-#[test]
 fn hiding_the_nav_leaves_the_layout_where_it_was() {
     use ratatui::layout::Rect;
     // Auto-hide takes the nav's width away for as long as the terminal holds focus. The
