@@ -1515,13 +1515,21 @@ impl Runtime {
         // Snapshot the ids so the loops can re-borrow `hosts` (incl. &mut) without holding
         // the `ids()` borrow across the body.
         let ids: Vec<String> = self.hosts.ids().to_vec();
-        // Self-heal sweep: a DETECTED host re-ensures its metadata channel; an UNDETECTED
-        // one retries detection.
+        // Self-heal sweep. A DETECTED host whose metadata channel DROPPED is re-established
+        // through the machine probe (deduped per machine), not a blind re-ensure: a host
+        // that silently relocked - its key removed, or its ControlMaster closed - would
+        // otherwise re-spawn a `-CC` that dies with no reason and reads as "connection
+        // closed" unreachable instead of locked. A live channel is left alone; a connected
+        // probe re-ensures the channel through the `MachineConnected` effect. An UNDETECTED
+        // host retries detection.
+        let mut reprobed: HashSet<String> = HashSet::new();
         for id in &ids {
             let detected = self.hosts.get(id).map(|h| h.detected).unwrap_or(false);
             if detected {
-                if let Some(host) = self.hosts.get(id) {
-                    let _ = self.mgr.ensure(id, host, vc, vr);
+                if !self.mgr.is_live(id)
+                    && reprobed.insert(crate::session::machine_of(id).to_string())
+                {
+                    probe_machine(id, &self.hosts, self.mgr.events(), &self.probe_gate, false);
                 }
             } else {
                 scan_or_dispatch_host(&mut self.mgr, &self.hosts, &mut self.detecting, id, vc, vr);

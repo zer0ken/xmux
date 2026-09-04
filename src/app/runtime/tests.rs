@@ -248,6 +248,36 @@ async fn machine_connected_dispatches_a_detected_control_host() {
     .teardown_all();
 }
 
+#[tokio::test]
+async fn a_relocked_hosts_reconnect_reprobes_instead_of_spawning_a_doomed_channel() {
+    // A host that connected once (detected) then relocked - its key removed, or its
+    // ControlMaster closed - has its metadata channel dropped. The reconnect sweep must
+    // NOT blindly re-ensure a `-CC` that dies with no reason and reads as "connection
+    // closed" unreachable; it re-probes reachability instead, which classifies it locked.
+    // The observable: no control channel is spawned for it here.
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut hosts = crate::model::Hosts::default();
+    let mut host = crate::model::Host::new(
+        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
+        crate::mux::for_binary("tmux").unwrap(),
+    );
+    host.detected = true; // it connected once
+    hosts.insert(host);
+    rt.hosts = hosts;
+    rt.switcher.apply_source_result(
+        "jup".into(),
+        vec![],
+        Some("hrlee@jup: Permission denied (publickey,password).".into()),
+        &mut rt.state,
+    );
+    assert!(rt.mgr.get("jup").is_none(), "precondition: no channel");
+    rt.on_reconnect();
+    assert!(
+        rt.mgr.get("jup").is_none(),
+        "a detected-but-dropped host is re-probed, not re-ensured into a doomed -CC"
+    );
+}
+
 #[test]
 fn terminal_view_size_zero_tree_is_full_width() {
     // Hidden tree (sentinel 0): full cols, no view border subtracted.
