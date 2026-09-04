@@ -554,16 +554,22 @@ impl Chrome {
         self.log_path = path;
     }
 
-    /// The vertical rule between the tree (left) and terminal (right). It splits into
-    /// a top and bottom half: the accent half marks WHICH view holds focus -
-    /// top = tree (left), bottom = terminal (right) - and the other half stays dim. A single
-    /// vertical rule cannot lean left/right, so the accent half's position carries the
-    /// signal (adapting tmux's active-pane border). Replaces the per-pane box borders.
-    /// The glyph also encodes auto-hide-nav mode: ║ (double) when on, │ when off - so
-    /// a visible tree that will vanish on blur is distinguishable from a pinned one.
+    /// The rule between the tree and the terminal view. It splits into two halves and the
+    /// accent half marks WHICH view holds focus: in a column the vertical rule splits
+    /// top/bottom and in a band the horizontal rule splits left/right, with the nav's half
+    /// facing the nav's side and the terminal's half the other. A single rule cannot lean
+    /// toward either view, so the accent half's position carries the signal (adapting
+    /// tmux's active-pane border). The nav riding the RIGHT or BOTTOM swaps which half is
+    /// which, the same flip that turns the focus-arrow pair around, so the accent always
+    /// agrees with the arrows the cheatsheet and help modal name. Replaces the per-pane
+    /// box borders. The glyph also encodes auto-hide-nav mode: ║ (double) when on, │ when
+    /// off - so a visible tree that will vanish on blur is distinguishable from a pinned one.
     pub(crate) fn render_view_border(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         let active = self.colors.active;
         let inactive = self.colors.inactive;
+        // The nav on the right or below flips the half assignment (and the focus arrows),
+        // so the accent follows the placement instead of a fixed left/top convention.
+        let swapped = !self.nav_position.forward_arrows_face_terminal();
         // Band layout: the view border runs HORIZONTALLY between the nav band and the
         // terminal. Split left/right to cue focus (nav half lit = nav focus, terminal
         // half = terminal focus), mirroring the vertical rule's top/bottom split.
@@ -583,10 +589,17 @@ impl Chrome {
                 vec![Span::styled(g, Style::default().fg(active))]
             } else {
                 let left_cols = n.div_ceil(2);
-                let (left, right) = if terminal_focused {
+                let (nav_half, term_half) = if terminal_focused {
                     (inactive, active)
                 } else {
                     (active, inactive)
+                };
+                // Left/top: nav half on the left, terminal half on the right; right/bottom
+                // (swapped): the terminal half takes the left and the nav half the right.
+                let (left, right) = if swapped {
+                    (term_half, nav_half)
+                } else {
+                    (nav_half, term_half)
                 };
                 (0..n)
                     .map(|x| {
@@ -619,10 +632,17 @@ impl Chrome {
             vec![active; area.height as usize]
         } else {
             let top_rows = area.height.div_ceil(2); // top takes the extra row on odd heights
-            let (top, bottom) = if terminal_focused {
-                (inactive, active) // terminal focused → accent on the bottom (terminal side)
+            let (nav_half, term_half) = if terminal_focused {
+                (inactive, active)
             } else {
-                (active, inactive) // tree focused → accent on the top (tree side)
+                (active, inactive)
+            };
+            // Left/top: nav half on top, terminal half below; right/bottom (swapped): the
+            // terminal half takes the top and the nav half the bottom.
+            let (top, bottom) = if swapped {
+                (term_half, nav_half)
+            } else {
+                (nav_half, term_half)
             };
             (0..area.height)
                 .map(|y| if y < top_rows { top } else { bottom })

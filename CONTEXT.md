@@ -66,8 +66,9 @@ UI elements a user perceives as distinct things:
   `view-active-border-style` / `view-border-hover-style`. These keys are OVERRIDES:
   unset (empty), that side keeps the fixed colour; a non-empty key replaces it.
 - active view border - the view border half painted the active color to mark which
-  view holds focus (tmux `pane-active-border-style`; the top half is the active
-  color for nav focus, the bottom half for terminal focus).
+  view holds focus (tmux `pane-active-border-style`; the halves follow the nav
+  position - the nav's half sits toward the nav's side, and the nav riding the right
+  or below swaps the halves, the same flip as the focus-arrow pair).
 - view border lines - the view border's line-drawing style (tmux
   `pane-border-lines`): `single │` (default), `double ║` (auto-hide-nav on),
   `heavy ┃` (hover - the drag-resize grab cue).

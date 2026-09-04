@@ -4321,6 +4321,94 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
 }
 
 #[tokio::test]
+async fn view_border_accent_flips_with_the_nav_on_the_right_or_bottom() {
+    // The accent half follows the nav position: with the nav on the RIGHT the vertical
+    // rule's halves swap (nav focus → bottom, terminal focus → top), and with the nav
+    // BELOW the horizontal rule's halves swap (nav focus → right, terminal focus →
+    // left) - the same flip that turns the focus-arrow pair around. The hover cue
+    // (whole-rule highlight) is untouched by the placement.
+    let pal = crate::ui::palette::get();
+    let fg = |buf: &Buffer, x: u16, y: u16| buf[(x, y)].fg;
+
+    // Column with the nav pinned right: the 1-col border at x=91, terminal to its left.
+    let right = NavSize::visible(NAV_WIDTH).with_position(NavPosition::Right);
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    state.chrome.set_nav_position(NavPosition::Right);
+    let x = 91;
+    let (top, bottom) = (2u16, 27u16);
+
+    // Nav focused: accent on the bottom (nav's side on the right), muted on top.
+    term.draw(|f| sw.render(f, None, false, right, &state))
+        .unwrap();
+    let buf = term.backend().buffer().clone();
+    assert_eq!(
+        fg(&buf, x, bottom),
+        pal.primary,
+        "right nav focus: bottom half primary"
+    );
+    assert_eq!(
+        fg(&buf, x, top),
+        pal.disabled,
+        "right nav focus: top half disabled"
+    );
+
+    // Terminal focused: the halves swap back, accent on the top.
+    term.draw(|f| sw.render(f, None, true, right, &state))
+        .unwrap();
+    let buf = term.backend().buffer().clone();
+    assert_eq!(
+        fg(&buf, x, top),
+        pal.primary,
+        "right terminal focus: top half primary"
+    );
+    assert_eq!(
+        fg(&buf, x, bottom),
+        pal.disabled,
+        "right terminal focus: bottom half disabled"
+    );
+
+    // Band with the nav pinned bottom: the 1-row border at y=59 across 40 columns.
+    let bottom = NavSize::visible(NAV_WIDTH).with_position(NavPosition::Bottom);
+    let mut term = Terminal::new(TestBackend::new(40, 100)).unwrap();
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    state.chrome.set_nav_position(NavPosition::Bottom);
+    let (y, left, right_col) = (59u16, 0u16, 39u16);
+
+    // Nav focused: accent on the right (nav's side below), muted on the left.
+    term.draw(|f| sw.render(f, None, false, bottom, &state))
+        .unwrap();
+    let buf = term.backend().buffer().clone();
+    assert_eq!(
+        fg(&buf, right_col, y),
+        pal.primary,
+        "bottom nav focus: right half primary"
+    );
+    assert_eq!(
+        fg(&buf, left, y),
+        pal.disabled,
+        "bottom nav focus: left half disabled"
+    );
+
+    // Terminal focused: the halves swap back, accent on the left.
+    term.draw(|f| sw.render(f, None, true, bottom, &state))
+        .unwrap();
+    let buf = term.backend().buffer().clone();
+    assert_eq!(
+        fg(&buf, left, y),
+        pal.primary,
+        "bottom terminal focus: left half primary"
+    );
+    assert_eq!(
+        fg(&buf, right_col, y),
+        pal.disabled,
+        "bottom terminal focus: right half disabled"
+    );
+}
+
+#[tokio::test]
 async fn view_border_highlights_on_hover() {
     // Hover swaps the rule to the HEAVY vertical (┃) - box-drawing has no bold form,
     // so the thicker glyph IS the weight cue - and recolours it brighter. No fill.
