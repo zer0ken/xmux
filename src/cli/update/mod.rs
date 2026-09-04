@@ -189,8 +189,7 @@ fn run_cargo(args: &Args, platform: Platform) -> Result<(), String> {
                 std::env::current_exe().map_err(|e| format!("cannot locate own binary: {e}"))?;
             clean_stale_sidecars(&target);
             let current = env!("CARGO_PKG_VERSION");
-            let agent = ureq::AgentBuilder::new().build();
-            let latest = release::latest_version(&agent)?;
+            let latest = release::latest_version()?;
             if !release::is_newer(&latest, current) {
                 println!("xmux is already up to date ({current})");
                 return Ok(());

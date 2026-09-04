@@ -82,15 +82,27 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-pub(crate) fn latest_version(agent: &ureq::Agent) -> Result<String, String> {
-    let resp = agent
-        .get(LATEST_API)
-        .call()
-        .map_err(|e| format!("cannot query the latest release: {e}"))?;
-    let mut text = String::new();
-    resp.into_reader()
-        .read_to_string(&mut text)
-        .map_err(|e| format!("cannot read the latest release: {e}"))?;
+/// Runs `curl` with `args`, returning stdout on success and curl's stderr on
+/// failure. `-f` turns HTTP errors into a non-zero exit, so a 404 or 5xx page
+/// never lands in the returned bytes as if it were a release.
+fn curl(args: &[&str]) -> Result<Vec<u8>, String> {
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "120"])
+        .args(args)
+        .output()
+        .map_err(|e| format!("cannot run curl: {e}"))?;
+    if out.status.success() {
+        Ok(out.stdout)
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+pub(crate) fn latest_version() -> Result<String, String> {
+    let text = String::from_utf8(
+        curl(&[LATEST_API]).map_err(|e| format!("cannot query the latest release: {e}"))?,
+    )
+    .map_err(|e| format!("cannot read the latest release: {e}"))?;
     let json: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("cannot parse the latest release: {e}"))?;
     json["tag_name"]
@@ -99,17 +111,13 @@ pub(crate) fn latest_version(agent: &ureq::Agent) -> Result<String, String> {
         .ok_or_else(|| "the latest release has no version tag".to_string())
 }
 
-fn download_to(agent: &ureq::Agent, url: &str, dest: &Path) -> Result<(), String> {
-    let resp = agent
-        .get(url)
-        .call()
-        .map_err(|e| format!("cannot download {url}: {e}"))?;
-    let mut reader = resp.into_reader();
-    let mut out =
-        std::fs::File::create(dest).map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
-    std::io::copy(&mut reader, &mut out)
-        .map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
-    Ok(())
+fn download_to(url: &str, dest: &Path) -> Result<(), String> {
+    let dest_arg = dest
+        .to_str()
+        .ok_or_else(|| format!("cannot write {}: path is not UTF-8", dest.display()))?;
+    curl(&["-o", dest_arg, url])
+        .map(|_| ())
+        .map_err(|e| format!("cannot download {url}: {e}"))
 }
 
 /// Download URL for a release asset.
@@ -170,8 +178,7 @@ fn extract_tar(archive: &Path, dest_dir: &Path) -> Result<(), String> {
 /// upgrade of the running binary.
 pub fn update(args: &super::Args, platform: Platform) -> Result<(), String> {
     let current = env!("CARGO_PKG_VERSION");
-    let agent = ureq::AgentBuilder::new().build();
-    let latest = latest_version(&agent)?;
+    let latest = latest_version()?;
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     let asset =
@@ -199,12 +206,12 @@ pub fn update(args: &super::Args, platform: Platform) -> Result<(), String> {
     let archive = dir.join(&asset);
     let url = download_url(&latest, &asset);
     println!("downloading {asset} …");
-    if let Err(e) = download_to(&agent, &url, &archive) {
+    if let Err(e) = download_to(&url, &archive) {
         let _ = std::fs::remove_dir_all(&dir);
         return Err(e);
     }
 
-    let sums = fetch_checksums(&agent, &latest)?;
+    let sums = fetch_checksums(&latest)?;
     let expected = sums
         .get(&asset)
         .ok_or_else(|| format!("no checksum recorded for {asset}"))?;
@@ -236,16 +243,11 @@ pub fn update(args: &super::Args, platform: Platform) -> Result<(), String> {
     Ok(())
 }
 
-fn fetch_checksums(agent: &ureq::Agent, version: &str) -> Result<HashMap<String, String>, String> {
+fn fetch_checksums(version: &str) -> Result<HashMap<String, String>, String> {
     let url = format!("{DOWNLOAD_BASE}/v{version}/SHA256SUMS");
-    let resp = agent
-        .get(&url)
-        .call()
-        .map_err(|e| format!("cannot download checksums: {e}"))?;
-    let mut text = String::new();
-    resp.into_reader()
-        .read_to_string(&mut text)
-        .map_err(|e| format!("cannot read checksums: {e}"))?;
+    let text =
+        String::from_utf8(curl(&[&url]).map_err(|e| format!("cannot download checksums: {e}"))?)
+            .map_err(|e| format!("cannot read checksums: {e}"))?;
     Ok(parse_checksums(&text))
 }
 
