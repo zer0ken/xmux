@@ -373,6 +373,36 @@ impl State {
             HostEvent::Scanned { source, detected } => {
                 vec![EventEffect::DispatchScanned { source, detected }]
             }
+            HostEvent::MachineProbed {
+                machine,
+                err,
+                rescan,
+            } => match err {
+                Some(reason) => {
+                    // The machine did not connect: every source it serves carries the
+                    // same failure line, so each card classifies locked (ssh's
+                    // auth-failure signature) or unreachable. No channel is opened - the
+                    // loop's connected path is gated on this probe succeeding.
+                    let sources: Vec<String> = self
+                        .groups
+                        .iter()
+                        .map(|g| g.source.clone())
+                        .filter(|s| crate::session::machine_of(s) == machine)
+                        .collect();
+                    for source in sources {
+                        switcher.apply_source_result(
+                            source,
+                            Vec::new(),
+                            Some(reason.clone()),
+                            self,
+                        );
+                    }
+                    Vec::new()
+                }
+                // Connected: which sources to resolve and how lives in the host
+                // registry, so the whole decision is the loop's.
+                None => vec![EventEffect::MachineConnected { machine, rescan }],
+            },
             HostEvent::Sessions {
                 source,
                 sessions,
@@ -1493,6 +1523,98 @@ mod tests {
         assert!(
             effects.is_empty(),
             "a failed enumeration keeps attachments - no sync effect: {effects:?}"
+        );
+    }
+
+    #[test]
+    fn machine_probe_connected_forwards_the_connect_to_the_loop() {
+        // A machine that answered `true` carries no reason; which of its sources to
+        // resolve, and how, lives in the host registry, so the whole decision is the
+        // loop's.
+        let mut state = State::from_sources(vec!["prod".into()]);
+        let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let effects = state.apply_event(
+            HostEvent::MachineProbed {
+                machine: "prod".into(),
+                err: None,
+                rescan: false,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            matches!(
+                &effects[..],
+                [EventEffect::MachineConnected { machine, rescan: false }] if machine == "prod"
+            ),
+            "{effects:?}"
+        );
+    }
+
+    #[test]
+    fn machine_probe_auth_failure_marks_every_source_of_the_machine_locked() {
+        // The reachability probe is the single classification site: an auth failure
+        // (ssh's `Permission denied (` signature) marks EVERY source the machine serves
+        // locked, and folds nothing itself for the loop to run - no channel is opened.
+        let mut state = State::from_sources(vec!["prod".into(), "prod:zellij".into(), "db".into()]);
+        let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let effects = state.apply_event(
+            HostEvent::MachineProbed {
+                machine: "prod".into(),
+                err: Some(
+                    "command failed (exit 255): user@prod: Permission denied (publickey,password)."
+                        .into(),
+                ),
+                rescan: false,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(
+            effects.is_empty(),
+            "a failed probe opens no channel: {effects:?}"
+        );
+        for source in ["prod", "prod:zellij"] {
+            let g = state
+                .groups
+                .iter()
+                .find(|g| g.source == source)
+                .unwrap_or_else(|| panic!("{source} group"));
+            assert!(
+                g.err.as_deref().is_some_and(crate::mux::is_locked),
+                "{source} classifies locked: {:?}",
+                g.err
+            );
+        }
+        let other = state.groups.iter().find(|g| g.source == "db").unwrap();
+        assert!(other.err.is_none(), "another machine is untouched");
+    }
+
+    #[test]
+    fn machine_probe_unreachable_marks_the_machine_unreachable_not_locked() {
+        // A reach failure (refused/timeout/no route) is unreachable, never locked: only
+        // ssh's auth-failure signature earns locked, so a host that merely died stays a
+        // plain unreachable card.
+        let mut state = State::from_sources(vec!["prod".into()]);
+        let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let _ = state.apply_event(
+            HostEvent::MachineProbed {
+                machine: "prod".into(),
+                err: Some("ssh: connect to host prod port 22: Connection refused".into()),
+                rescan: false,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        let g = state.groups.iter().find(|g| g.source == "prod").unwrap();
+        assert!(g.err.is_some(), "the card is unreachable");
+        assert!(
+            !g.err.as_deref().is_some_and(crate::mux::is_locked),
+            "a reach failure is not locked: {:?}",
+            g.err
         );
     }
 

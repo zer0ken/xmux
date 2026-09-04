@@ -1,4 +1,4 @@
-//! `Hosts`: the app loop's runtime host registry — every host keyed by id, in display
+//! `Hosts`: the app loop's runtime host registry - every host keyed by id, in display
 //! order (local first). The single owner of each machine's `Host`, so display and host
 //! management cannot disagree about which machines exist.
 
@@ -169,7 +169,7 @@ impl Hosts {
         self.map.get_mut(id)
     }
 
-    /// Host ids in display order (local first) — the render projection iterates these.
+    /// Host ids in display order (local first) - the render projection iterates these.
     pub fn ids(&self) -> &[String] {
         &self.order
     }
@@ -181,7 +181,7 @@ impl Hosts {
     /// Routes one `HostEvent` (the metadata reader's output) to the host it names,
     /// folding Host-owned liveness state. The sessions carried by `Connected`/`Inventory`
     /// are folded into `model::Host.inventory` by the run loop (or via `Host::enumerate`);
-    /// this sets liveness. An unknown host id is a no-op — there is no second registry to
+    /// this sets liveness. An unknown host id is a no-op - there is no second registry to
     /// grow a ghost host.
     pub fn apply_host_event(&mut self, ev: &crate::link::HostEvent) {
         use crate::link::HostEvent::*;
@@ -213,12 +213,17 @@ impl Hosts {
                     h.record_display_tty(tty.clone());
                 }
             }
-            // Poll-host data carriers (enumeration results), the detection probe, and a
-            // machine's mux-discovery answer. Their sessions/mux/source set are applied by
-            // the caller (apply_source_result / apply_scan_result / the discovery-add
-            // effect); they fold no Host-owned liveness here. A discovery answer names a
+            // Poll-host data carriers (enumeration results), the detection probe, a
+            // machine's mux-discovery answer, and a machine's reachability probe. Their
+            // sessions/mux/source set are applied by the caller (apply_source_result /
+            // apply_scan_result / the discovery-add and machine-probe effects); they fold
+            // no Host-owned liveness here. A discovery or machine-probe answer names a
             // MACHINE, not a host in this map, so it could not route here anyway.
-            Scanned { .. } | Sessions { .. } | MuxesFound { .. } | RosterResolved { .. } => {}
+            Scanned { .. }
+            | Sessions { .. }
+            | MuxesFound { .. }
+            | RosterResolved { .. }
+            | MachineProbed { .. } => {}
         }
     }
 }
@@ -587,7 +592,7 @@ mod tests {
         // hosts in the SAME order as the `source::build` list it replaces: local first,
         // then ssh specs in config order (ssh-config aliases, then config-only hosts).
         // Seeding `State` from `hosts.ids()` is therefore byte-identical to the retired
-        // `env.srcs` seed — a reordered or dropped host would be a live regression.
+        // `env.srcs` seed - a reordered or dropped host would be a live regression.
         // A config-only host (declared in config.toml, not ssh-config) with a mux override.
         let cfg = Config {
             hosts: vec![crate::provision::config::HostConfig {

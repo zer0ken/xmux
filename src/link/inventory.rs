@@ -9,7 +9,7 @@ use crate::session::Session;
 
 /// One host's session inventory, seeded from list-sessions and
 /// kept live by notifications. The app reads it to (re)build the tree. This is
-/// a METADATA channel only — the per-session PTY attachments own the pixels.
+/// a METADATA channel only - the per-session PTY attachments own the pixels.
 pub struct HostInventory {
     pub sessions: Vec<Session>,
 }
@@ -49,38 +49,38 @@ pub enum HostCmd {
 /// A parsed event the reader emits to the app's `select!` loop.
 pub enum HostEvent {
     /// First list-sessions returned. Carries the parsed sessions so the loop folds
-    /// them into `model::Host.inventory` (the single owner) — the reader keeps no
+    /// them into `model::Host.inventory` (the single owner) - the reader keeps no
     /// shared inventory of its own.
     Connected {
         host: String,
         sessions: Vec<Session>,
     },
-    /// A list-sessions reply resolved — carries the parsed sessions for the loop to
+    /// A list-sessions reply resolved - carries the parsed sessions for the loop to
     /// fold into `model::Host.inventory` and re-apply to the tree.
     Inventory {
         host: String,
         sessions: Vec<Session>,
     },
     /// A `%`-notification reports the server's session/window STRUCTURE CHANGED
-    /// (added, closed, renamed, or the set of sessions) — the app must REFETCH
+    /// (added, closed, renamed, or the set of sessions) - the app must REFETCH
     /// (re-run list-sessions), since the notification carries only an
     /// id, not the new structure. Resyncs the nav (#5).
     Changed { host: String },
-    /// `%exit` / EOF — reap.
+    /// `%exit` / EOF - reap.
     Exited {
         host: String,
         reason: Option<String>,
     },
-    /// `%client-detached <client>` — some client of this host detached. The reader
+    /// `%client-detached <client>` - some client of this host detached. The reader
     /// does not know which client is xmux's display attach (that tty lives on the
     /// supervisor's `Host.display_tty`), so it forwards the client tty; the supervisor
     /// reaps the display attach ONLY when `client` matches `Host.display_tty`.
     ClientDetached { host: String, client: String },
-    /// `%client-session-changed <client> $id <name>` — some client's attached session
+    /// `%client-session-changed <client> $id <name>` - some client's attached session
     /// changed (another client, not this -CC metadata connection's own). The reader does
     /// not know which client is xmux's display attach (that tty lives on `Host.display_tty`),
     /// so it forwards the client tty + the new session name; the supervisor follows the nav
-    /// selection ONLY when `client` matches `Host.display_tty` — i.e. xmux's OWN display PTY
+    /// selection ONLY when `client` matches `Host.display_tty` - i.e. xmux's OWN display PTY
     /// was moved to another session by the mux itself (e.g. the user's `prefix`+`s`).
     ClientSessionChanged {
         host: String,
@@ -88,8 +88,8 @@ pub enum HostEvent {
         session: String,
     },
     /// A `list-clients` probe over the -CC control connection resolved: this host's
-    /// display-client tty — the client the mux protocol identifies as xmux's display
-    /// attach — or `None` if it has not registered yet. Captured OUT-OF-BAND over
+    /// display-client tty - the client the mux protocol identifies as xmux's display
+    /// attach - or `None` if it has not registered yet. Captured OUT-OF-BAND over
     /// the control connection, not via an in-band attach-shell marker (a Windows
     /// ConPTY consumes the marker's OSC before the pump can read it). Recorded on
     /// `Host.display_tty` so a later `switch-client -c <tty>` targets xmux's own client.
@@ -119,15 +119,28 @@ pub enum HostEvent {
     /// A POLL host re-enumerated its sessions. A poll host has no host-level control
     /// stream, so its [`HostManager`](super::HostManager)-owned poll task emits this onto the
     /// same bus. `err` carries a transient enumeration failure (shown in the tree; attachments
-    /// are kept — the keep-alive guarantee).
+    /// are kept - the keep-alive guarantee).
     Sessions {
         source: String,
         sessions: Vec<Session>,
         err: Option<String>,
     },
+    /// A MACHINE'S REACHABILITY probe resolved: `ssh <machine> true` (or an inline
+    /// connect for a local/WSL machine). `err` is `None` when the machine connected,
+    /// else ssh's own failure line - its auth-failure signature classifies the machine
+    /// LOCKED and any other failure UNREACHABLE. Emitted once per machine, bounded, so
+    /// only a connected machine goes on to mux discovery and a metadata channel; a
+    /// locked or unreachable one classifies its cards without opening one. `rescan` is
+    /// true when a re-scan raised the probe, so a connected machine re-enumerates its
+    /// live channel instead of only ensuring it.
+    MachineProbed {
+        machine: String,
+        err: Option<String>,
+        rescan: bool,
+    },
 }
 /// The reader's shared liveness flag the app also reads. The parsed inventory is no
-/// longer held here — the reader carries sessions/panes on `HostEvent`s and the loop
+/// longer held here - the reader carries sessions/panes on `HostEvent`s and the loop
 /// folds them into `model::Host.inventory` (the single owner).
 pub struct ReaderState {
     pub connecting: Arc<AtomicBool>,

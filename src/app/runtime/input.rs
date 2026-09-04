@@ -1,7 +1,7 @@
 use super::*;
 
 impl Runtime {
-    /// Processes a batch of NAV-focus input bytes through ONE path — used for both real
+    /// Processes a batch of NAV-focus input bytes through ONE path - used for both real
     /// stdin and bytes replayed after a terminal→nav switch. Handles prefix arming
     /// (`C-g` then `q` → quit, `h`/`Ctrl+←` → shrink the nav, `l`/`Ctrl+→` → grow the nav),
     /// Enter → focus terminal (unless an inline input is open),
@@ -23,7 +23,7 @@ impl Runtime {
             mgr,
             env,
             hosts,
-            detecting,
+            probe_gate,
             ops,
             op_tx,
             nav_width_natural,
@@ -95,7 +95,7 @@ impl Runtime {
             *width_changed = true;
         }
         ensure_current_host(mgr, hosts, switcher, cols, rows, nav_width);
-        kick_rescan(env, switcher, hosts, detecting, mgr, (cols, rows));
+        kick_rescan(switcher, env, hosts, mgr, probe_gate);
         (
             focus_terminal,
             quit,
@@ -107,11 +107,11 @@ impl Runtime {
     }
 }
 
-/// Applies ONE parsed SGR mouse event to the gesture state + nav/registry — the body
+/// Applies ONE parsed SGR mouse event to the gesture state + nav/registry - the body
 /// of the inline `while i < bytes.len()` mouse branch, lifted verbatim. Runs the modal/
 /// gesture gates (view border drag, popup drag, modal swallow, view border grab, idle
 /// hover) in the SAME order, then the focus×position routing. Mutates `st`
-/// (the gesture latches), `state.focus` (mid-loop focus toggles — routing re-reads focus
+/// (the gesture latches), `state.focus` (mid-loop focus toggles - routing re-reads focus
 /// per event, so deferring would change behavior), and the byte-loop accumulators
 /// (`mouse_focus_toggle`, `wheel_scrolled`). Returns whether a redraw is
 /// needed for this event.
@@ -257,7 +257,7 @@ impl Runtime {
             st.dragging_view_border = true; // grabbed the view border
             return dirty;
         }
-        // Idle motion (motion bit set, no button held) — reported only
+        // Idle motion (motion bit set, no button held) - reported only
         // because any-motion tracking (1003h) is on. Over the view border it
         // lights the hover cue and is consumed (nothing under it to forward).
         // Elsewhere it falls through to the routing below, so a hover over the
@@ -285,7 +285,7 @@ impl Runtime {
                 // Plain wheel → scroll the selection LINEARLY through every row
                 // (move_selection), like any list. NOT sibling-cycle: arrows do
                 // that (move_sibling), but it wraps within a level, so a 2-sibling
-                // level just bounces — the "two notches per move" report.
+                // level just bounces - the "two notches per move" report.
                 switcher.mouse_scroll(down, state);
                 *wheel_scrolled = true;
                 dirty = true;
@@ -378,7 +378,7 @@ impl Runtime {
     /// The whole `stdin_rx` arm body, lifted. Scans the read for SGR mouse sequences
     /// (routed via [`Runtime::handle_mouse_event`]) vs a non-mouse byte stream, runs the
     /// lost-release watchdogs, the resize-repeat window, and the help-modal / nav-focus /
-    /// terminal-view focus routing — in the SAME order as the inline arm. The final focus
+    /// terminal-view focus routing - in the SAME order as the inline arm. The final focus
     /// toggles (+ replay) run on `self.state.focus`, so the caller only acts on the returned
     /// `dirty`/`quit`. No behavior change.
     pub(super) fn handle_stdin_bytes(
@@ -406,7 +406,7 @@ impl Runtime {
         // prevents them from reaching handle_nav_bytes (which would mis-decode them)
         // or TermInput's prefix logic. Split into: mouse events + non-mouse byte stream.
         // Edge case: a sequence split across reads parses as None and falls into
-        // non_mouse — rare in practice; no cross-read buffering in v1.
+        // non_mouse - rare in practice; no cross-read buffering in v1.
         // The terminal region from the one shared geometry, so a click lands on exactly
         // what was drawn in either layout (in a band the terminal sits below the nav, not
         // to the right of it).
@@ -437,7 +437,7 @@ impl Runtime {
         }
         // Watchdog: a view border drag is normally ended by the button-up event, but a
         // release can be lost (split across reads, released off-window, or a terminal
-        // that omits it) — which would strand `dragging_view_border` and eat all later
+        // that omits it) - which would strand `dragging_view_border` and eat all later
         // mouse input. Any non-mouse byte (a keystroke, or the split release's own
         // leftover bytes) ends the drag and persists the final width, so the user is
         // never trapped past the next input.
@@ -448,7 +448,7 @@ impl Runtime {
             crate::ui::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
             crate::ui::prefs::save_nav_height(&self.env.xmux_dir, self.nav_height);
         }
-        // Watchdog: same recovery for a popup border-drag — a lost button-up
+        // Watchdog: same recovery for a popup border-drag - a lost button-up
         // must not strand `popup_drag` and eat all later mouse input.
         if self.switcher.popup_drag_active() && !non_mouse.is_empty() {
             self.switcher.end_popup_drag();
@@ -472,7 +472,7 @@ impl Runtime {
         // Resize-repeat: while the window from a prefix-driven resize is open, a
         // bare Ctrl+←/→ (no prefix, in either focus) keeps resizing and refreshes
         // the window. Gated on NOT being mid-prefix (an armed prefix's next key is
-        // a command, not a repeat — else skipping the input path would leave the
+        // a command, not a repeat - else skipping the input path would leave the
         // prefix armed and mis-read the following key). A pure-mouse read (empty
         // non_mouse) leaves the window untouched. Leading Ctrl-arrows are peeled off
         // (handles a coalesced autorepeat burst); any remaining bytes end the window
@@ -512,8 +512,8 @@ impl Runtime {
             && self.switcher.feed_help_key(&non_mouse, &mut self.state)
         {
             // The help modal is modal (tmux view-mode style): while open it
-            // captures every key in EITHER focus — q/Esc closes it, the rest are
-            // swallowed — so nothing leaks to the nav or the terminal view. Above the
+            // captures every key in EITHER focus - q/Esc closes it, the rest are
+            // swallowed - so nothing leaks to the nav or the terminal view. Above the
             // nav/terminal split so the behavior is identical regardless of focus.
             *dirty = true;
         } else if !consumed_by_repeat
@@ -612,12 +612,11 @@ impl Runtime {
                             *width_changed = true;
                         }
                         kick_rescan(
-                            &self.env,
                             &mut self.switcher,
+                            &self.env,
                             &self.hosts,
-                            &mut self.detecting,
-                            &mut self.mgr,
-                            (self.cols, self.body_rows),
+                            &self.mgr,
+                            &self.probe_gate,
                         );
                         *dirty = true;
                     }

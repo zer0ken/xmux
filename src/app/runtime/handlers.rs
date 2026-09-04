@@ -34,6 +34,7 @@ impl Runtime {
             env,
             mgr,
             hosts,
+            probe_gate,
             registry,
             switcher,
             state,
@@ -247,28 +248,79 @@ impl Runtime {
                     }
                     switcher.remove_source(id, state);
                 }
-                let (vc, vr) = terminal_view_size(cols, rows, nav);
                 for id in &delta.added {
                     tracing::info!(source = %id, "roster offered a new source");
                     switcher.add_source(id.clone(), state);
-                    scan_or_dispatch_host(mgr, hosts, detecting, id, vc, vr);
                 }
-                // Which muxes a machine serves is answered by PROBING it, and the answer
-                // outlives no roster resolution, so re-ask. Without this a machine the
-                // roster just named back shows only the mux config assumed for it, while
-                // the same machine carried every mux it runs a moment earlier. Asking
-                // every machine (not only the added ones) is what makes a re-scan notice a
-                // mux installed since launch; a mux already served is skipped where the
-                // answer lands, so re-asking adds no duplicate card.
-                discover_machine_muxes(&env.roster().cfg, hosts, mgr.events());
+                // Probe each ADDED machine's reachability (deduped by machine): a machine
+                // the roster just named turns into a connected card that streams its
+                // sessions, or a locked/unreachable one, exactly as at launch. The machines
+                // that were already standing keep the channels they hold; the concurrent
+                // re-probe of all machines that the re-scan already started reclassifies
+                // those, so nothing is probed twice for one re-scan.
+                let mut probed: HashSet<&str> = HashSet::new();
+                for id in &delta.added {
+                    if probed.insert(crate::session::machine_of(id)) {
+                        probe_machine(id, hosts, mgr.events(), probe_gate, false);
+                    }
+                }
             }
             EventEffect::DispatchScanned { source, detected } => {
                 // A detection probe resolved: (re)identify the mux, then dispatch the
                 // now-detected host onto its metadata channel (control client or poll task).
                 detecting.remove(&source);
                 apply_scan_result(hosts, &source, detected);
+                // Only a host whose mux resolved gets a channel. A probe that could not
+                // identify one (the mux the machine runs is not the assumed one, or a
+                // slow host timed out) leaves it undetected; opening a doomed control
+                // child would just die and overwrite the machine's reason with a bare
+                // "connection closed". The reconnect sweep retries detection.
+                if hosts.get(&source).is_some_and(|h| h.detected) {
+                    let (vc, vr) = terminal_view_size(cols, rows, nav);
+                    dispatch_detected_host(mgr, hosts, &source, vc, vr);
+                }
+            }
+            EventEffect::MachineConnected { machine, rescan } => {
+                // The machine's reachability probe connected: resolve every source it
+                // serves onto its metadata channel (a re-scan re-enumerates a live one; a
+                // launch detects then ensures it), and, when the machine left its mux list
+                // to xmux, ask which muxes it serves so the ones nobody wrote down appear.
                 let (vc, vr) = terminal_view_size(cols, rows, nav);
-                dispatch_detected_host(mgr, hosts, &source, vc, vr);
+                let sources: Vec<String> = hosts
+                    .ids()
+                    .iter()
+                    .filter(|id| crate::session::machine_of(id) == machine)
+                    .cloned()
+                    .collect();
+                for source in &sources {
+                    let detected = hosts.get(source).is_some_and(|h| h.detected);
+                    if detected {
+                        if rescan {
+                            if let Some(host) = hosts.get(source) {
+                                mgr.rescan(source, host, vc, vr);
+                            }
+                        } else {
+                            dispatch_detected_host(mgr, hosts, source, vc, vr);
+                        }
+                    } else {
+                        scan_or_dispatch_host(mgr, hosts, detecting, source, vc, vr);
+                    }
+                }
+                // Mux discovery is a machine-level question, asked once per connect and
+                // only when the machine left its list to xmux. This box's muxes were
+                // resolved before the first paint, so it is never re-probed here.
+                if !crate::session::is_local_source(&machine)
+                    && env.roster().cfg.mux_is_auto(&machine)
+                {
+                    if let Some(host) = sources.first().and_then(|id| hosts.get(id)) {
+                        spawn_mux_discovery(
+                            machine,
+                            host.transport.clone(),
+                            mgr.events(),
+                            probe_gate.clone(),
+                        );
+                    }
+                }
             }
             EventEffect::SyncPollSessions { source, sessions } => {
                 // A poll host's SUCCESSFUL enumeration (the nav group is already applied).
@@ -471,6 +523,7 @@ impl Runtime {
             ops,
             hosts,
             mgr,
+            probe_gate: Arc::new(tokio::sync::Semaphore::new(PROBE_CONCURRENCY)),
             registry,
             worker,
             switcher,
@@ -1006,12 +1059,11 @@ impl Runtime {
                 // scanning skeleton and then never re-enumerates, so the nav spins until
                 // the user happens to press a key.
                 kick_rescan(
-                    &self.env,
                     &mut self.switcher,
+                    &self.env,
                     &self.hosts,
-                    &mut self.detecting,
-                    &mut self.mgr,
-                    (self.cols, self.body_rows),
+                    &self.mgr,
+                    &self.probe_gate,
                 );
                 if sync_selection_from_switcher(&mut self.state, &self.switcher) {
                     self.dirty = true;

@@ -196,6 +196,58 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
     );
 }
 
+#[tokio::test]
+async fn dispatch_scanned_without_a_resolved_mux_opens_no_channel() {
+    // A detection probe that resolved no mux (the host is unreachable or does not run
+    // the assumed mux) must NOT open a control channel: a doomed child would die and
+    // overwrite the machine's real reason (locked / unreachable) with "connection
+    // closed". So a `DispatchScanned { detected: None }` leaves the host channel-less.
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut hosts = crate::model::Hosts::default();
+    hosts.insert(crate::model::Host::new(
+        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
+        crate::mux::for_binary("tmux").unwrap(),
+    )); // undetected
+    rt.hosts = hosts;
+    rt.run_event_effect(crate::model::EventEffect::DispatchScanned {
+        source: "jup".into(),
+        detected: None,
+    });
+    assert!(
+        rt.mgr.get("jup").is_none(),
+        "a host whose mux did not resolve gets no control channel"
+    );
+}
+
+#[tokio::test]
+async fn machine_connected_dispatches_a_detected_control_host() {
+    // A machine that connected resolves each source it serves onto its metadata channel.
+    // A detected tmux host gets a `-CC` control client (the child spawns and dies at once
+    // on a host that is not really there, which is fine for the map-insert check).
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut hosts = crate::model::Hosts::default();
+    let mut host = crate::model::Host::new(
+        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
+        crate::mux::for_binary("tmux").unwrap(),
+    );
+    host.detected = true;
+    hosts.insert(host);
+    rt.hosts = hosts;
+    rt.run_event_effect(crate::model::EventEffect::MachineConnected {
+        machine: "jup".into(),
+        rescan: false,
+    });
+    assert!(
+        rt.mgr.get("jup").is_some(),
+        "the connected machine's detected control source got a channel"
+    );
+    std::mem::replace(
+        &mut rt.mgr,
+        HostManager::new(tokio::sync::mpsc::unbounded_channel().0),
+    )
+    .teardown_all();
+}
+
 #[test]
 fn terminal_view_size_zero_tree_is_full_width() {
     // Hidden tree (sentinel 0): full cols, no view border subtracted.
@@ -702,14 +754,13 @@ async fn r_rescan_rebuilds_nav_and_kicks_discovery() {
         "request_rescan raised the rescan kick"
     );
 
-    // The loop consumes the kick and re-lists each host.
+    // The loop consumes the kick and re-probes each machine.
     kick_rescan(
-        &rt.env,
         &mut rt.switcher,
+        &rt.env,
         &rt.hosts,
-        &mut rt.detecting,
-        &mut rt.mgr,
-        (80, 24),
+        &rt.mgr,
+        &rt.probe_gate,
     );
     assert!(
         !rt.switcher.take_rescan_kick(),
@@ -1298,6 +1349,7 @@ fn test_rt(env: Env) -> Runtime {
         worker,
         switcher,
         state,
+        probe_gate: std::sync::Arc::new(tokio::sync::Semaphore::new(PROBE_CONCURRENCY)),
         attach_seq: 0,
         driver_pty_tx: pty_tx,
         op_tx,
