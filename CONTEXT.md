@@ -278,7 +278,7 @@ UI elements a user perceives as distinct things:
 - locked - a host that answered the network but refused the credentials, a state
   apart from unreachable: ssh's own auth-failure line (`Permission denied
   (publickey,…)`) is the only text that earns it, so a host that merely died is
-  never locked. Its card keeps the `⚿` mark (warning, like unreachable's `⚠`), is
+  never locked. Its card keeps the `?` mark (warning, like unreachable's `⚠`), is
   never hidden by hide-unreachable (it is the one entry to the unlock), and shows
   the locked panel naming the reason. That panel OWNS the unlock: its top carries a
   username and a masked password field, typed into from the terminal view (Enter
