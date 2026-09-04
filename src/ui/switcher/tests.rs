@@ -402,9 +402,9 @@ fn two_window_scan() -> Scan {
 }
 
 #[test]
-fn up_down_and_hjkl_move_linearly() {
-    // The card list has no levels: ↑/↓ (and k/j) step ONE card along it, and h/l are
-    // inert (they resize the nav behind the prefix instead).
+fn arrows_and_hjkl_navigate() {
+    // The card list has no levels: ↑/↓ (and k/j) step ONE card along it, and ←/→
+    // (and h/l) step one category, the same way on every placement.
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let start = sw.selected;
@@ -431,22 +431,26 @@ fn up_down_and_hjkl_move_linearly() {
         &mut state,
     );
     assert_ne!(sw.selected, next, "→ is not ↓");
+    let next_category = sw.selected;
     sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut state);
     assert_eq!(
         sw.selected, start,
         "← returns to the first source's first card"
     );
-    // h/l are inert on the card list (they resize the nav behind the prefix).
+    // h/l mirror ←/→: the OTHER step, one category at a time, not a card step.
     sw.handle_key(
         KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
         &mut state,
     );
-    assert_eq!(sw.selected, start, "l is inert");
+    assert_eq!(sw.selected, next_category, "l == →: a category step");
     sw.handle_key(
         KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
         &mut state,
     );
-    assert_eq!(sw.selected, start, "h is inert");
+    assert_eq!(
+        sw.selected, start,
+        "h == ←: back to the first source's first card"
+    );
 }
 
 // --- tests --------------------------------------------------------------

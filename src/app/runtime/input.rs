@@ -3,7 +3,8 @@ use super::*;
 impl Runtime {
     /// Processes a batch of NAV-focus input bytes through ONE path - used for both real
     /// stdin and bytes replayed after a terminal→nav switch. Handles prefix arming
-    /// (`C-g` then `q` → quit, `h`/`Ctrl+←` → shrink the nav, `l`/`Ctrl+→` → grow the nav),
+    /// (`C-g` then `q` → quit, `h`/`Ctrl+←` → move the border left, `l`/`Ctrl+→` → right,
+    /// the nav width following the placement),
     /// Enter → focus terminal (unless an inline input is open),
     /// ←/→ navigate the nav; then the off-loop op dispatch, ensure-current-host, and
     /// the `r` re-scan. Returns `(focus_terminal, quit, width_delta, toggle_auto_hide)`.
@@ -196,10 +197,10 @@ impl Runtime {
                     crate::ui::prefs::save_nav_width(&env.xmux_dir, *nav_width_natural);
                 }
             } else if !is_wheel {
-                // The resize KEYS keep the nav's own semantics whatever the placement (h
-                // narrows, l widens); the DRAG mirrors its math per side: a band drags the
-                // height (from the top edge, or the bottom edge when pinned there), a
-                // column the width (from the left edge, or the right one).
+                // The DRAG measures from the near edge: a band drags the height (from the
+                // top edge, or the bottom edge when pinned there), a column the width (from
+                // the left edge, or the right one) - the same per-side math the resize keys
+                // follow (their direction is the border's movement).
                 if top_layout {
                     let target = view_border_drag_height(
                         ev.row,
@@ -325,12 +326,24 @@ impl Runtime {
     /// Applies a nav-resize delta on ONE axis, gated to the layout that actually shows that
     /// axis so a key never resizes a dimension the user cannot see: `horizontal` (←/→ · h/l)
     /// resizes the WIDTH only in a column, `!horizontal` (↑/↓) the HEIGHT only in a band; the
-    /// perpendicular axis is a no-op. Height is seeded from the effective auto height the
-    /// first time (while `nav_height == 0`) so a relative step starts from what is on screen,
-    /// clamped so the terminal keeps room, and persisted; width defers to `apply_width_delta`
-    /// (the caller schedules the debounced persist). Returns whether the size changed.
+    /// perpendicular axis is a no-op. The delta is the key's SCREEN direction (+1 = right /
+    /// down), and the nav-size effect follows the placement: on the left or above that
+    /// direction grows the nav, on the right or below it shrinks it, because the border's
+    /// far edge is the nav's in the first case and its near edge in the second. So the key
+    /// always points where the border actually moves, the same flip as the focus-arrow pair
+    /// and the border drag. Height is seeded from the effective auto height the first time
+    /// (while `nav_height == 0`) so a relative step starts from what is on screen, clamped so
+    /// the terminal keeps room, and persisted; width defers to `apply_width_delta` (the
+    /// caller schedules the debounced persist). Returns whether the size changed.
     pub(super) fn resize_axis(&mut self, horizontal: bool, delta: i32) -> bool {
         let top = self.switcher.layout() == crate::ui::switcher::ViewLayout::Band;
+        // With the nav on the right or below the same screen direction resizes the nav the
+        // other way, so flip the delta to keep the key's direction on the border's movement.
+        let delta = if self.nav_position.forward_arrows_face_terminal() {
+            delta
+        } else {
+            -delta
+        };
         match (horizontal, top) {
             (true, false) => {
                 apply_width_delta(delta, &mut self.nav_width_natural, &self.env.ui_prefix)

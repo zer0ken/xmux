@@ -177,7 +177,8 @@ pub(crate) fn resolve_nav_key(
             KeyCode::Right if ctrl => Some(Action::Width(1)),
             KeyCode::Char('h') => Some(Action::Width(-1)),
             KeyCode::Char('l') => Some(Action::Width(1)),
-            // prefix Ctrl+↑/↓ resize the nav HEIGHT (the vertical axis, band layout); ↓ grows.
+            // prefix Ctrl+↑/↓ step the nav HEIGHT (the vertical axis, band layout); the delta
+            // is the key's screen direction, and the placement turns it into grow or shrink.
             KeyCode::Up if ctrl => Some(Action::Height(-1)),
             KeyCode::Down if ctrl => Some(Action::Height(1)),
             KeyCode::Char('t') => Some(Action::ToggleAutoHide),

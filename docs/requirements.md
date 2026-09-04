@@ -346,9 +346,10 @@ no function, and no test, so renaming code is never a documentation change.
   of the view border flips, and the status line stays the nav region's bottom row in all
   four - with a bottom attachment that is the bottom row of the screen. The view border
   drag mirrors its math per side (a right border measures the width from the right edge,
-  a bottom border the height from the bottom edge), while the resize keys keep the nav's
-  own size semantics whatever the placement. A position change leaves the terminal view
-  the remainder whole, with the selection and the focus kept, resizes the mux terminals
+  a bottom border the height from the bottom edge), and the resize keys follow the same
+  rule: the key moves the border the way it points, so the nav size follows the placement
+  (it grows on a left or top nav and shrinks on a right or bottom one). A position change
+  leaves the terminal view the remainder whole, with the selection and the focus kept, resizes the mux terminals
   for the new split, and repaints the whole screen, since the border jumps to the
   opposite side. The focus arrow pairs follow the placement (FR-B14), and the cheatsheet
   and help modal name the pair the current placement makes active.

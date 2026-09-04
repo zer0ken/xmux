@@ -3027,6 +3027,105 @@ fn resize_keys_adjust_height_in_top_layout() {
 }
 
 #[test]
+fn resize_keys_flip_direction_on_the_right_and_bottom() {
+    use crate::ui::switcher::{NavPosition, Scan, Switcher, ViewLayout, NAV_WIDTH};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // The resize key's direction is the border's movement, so with the nav on the
+    // right or below the SAME key grows the nav the other way: in a right column the
+    // →/l key (delta +1) shrinks the nav, and in a bottom band the ↓ key (delta +1)
+    // shrinks the height - the same flip as the focus-arrow pair.
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.cols = 140;
+    rt.body_rows = 29;
+    rt.nav_position = NavPosition::Right;
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    {
+        let sw = &mut rt.switcher;
+        let st = &rt.state;
+        term.draw(|f| {
+            sw.render(
+                f,
+                None,
+                false,
+                crate::ui::switcher::NavSize::visible(NAV_WIDTH).with_position(NavPosition::Right),
+                st,
+            )
+        })
+        .unwrap();
+    }
+    assert_eq!(
+        rt.switcher.layout(),
+        ViewLayout::Column,
+        "landscape → Column"
+    );
+    let w0 = rt.nav_width_natural;
+    assert!(
+        rt.resize_axis(true, 1),
+        "→/l on the right changes the width"
+    );
+    assert_eq!(
+        rt.nav_width_natural,
+        w0 - 1,
+        "→/l on the right shrinks (the border moves right)"
+    );
+    assert!(
+        rt.resize_axis(true, -1),
+        "←/h on the right changes the width"
+    );
+    assert_eq!(
+        rt.nav_width_natural, w0,
+        "←/h on the right grows (the border moves left)"
+    );
+    assert!(!rt.resize_axis(false, 1), "height is a no-op in a column");
+
+    // The same flip on the band: a bottom nav's ↓ key shrinks the height.
+    rt.nav_position = NavPosition::Bottom;
+    rt.cols = 40;
+    rt.body_rows = 59;
+    rt.nav_height = 0; // auto
+    let mut term = Terminal::new(TestBackend::new(40, 60)).unwrap();
+    {
+        let sw = &mut rt.switcher;
+        let st = &rt.state;
+        term.draw(|f| {
+            sw.render(
+                f,
+                None,
+                false,
+                crate::ui::switcher::NavSize::visible(NAV_WIDTH).with_position(NavPosition::Bottom),
+                st,
+            )
+        })
+        .unwrap();
+    }
+    assert_eq!(rt.switcher.layout(), ViewLayout::Band, "portrait → Band");
+    let auto = crate::ui::switcher::default_nav_height(59);
+    assert!(
+        rt.resize_axis(false, 1),
+        "↓ on the bottom changes the height"
+    );
+    assert_eq!(
+        rt.nav_height,
+        auto - 1,
+        "↓ on the bottom shrinks (the border moves down)"
+    );
+    assert!(
+        rt.resize_axis(false, -1),
+        "↑ on the bottom changes the height"
+    );
+    assert_eq!(
+        rt.nav_height, auto,
+        "↑ on the bottom grows (the border moves up)"
+    );
+    assert!(!rt.resize_axis(true, 1), "width is a no-op in a band");
+}
+
+#[test]
 fn loop_top_resolves_the_pinned_nav_position() {
     use crate::ui::switcher::{Scan, Switcher, ViewLayout};
     use ratatui::backend::TestBackend;

@@ -62,7 +62,7 @@ back to the default.
 | Key | Action |
 |---|---|
 | `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends) |
-| `←` / `→` | move to the previous / next category, landing on its first card (wraps) |
+| `←` / `→` (or `h` / `l`) | move to the previous / next category, landing on its first card (wraps) |
 | `PageUp` / `PageDown` | jump ten cards (wraps, like the card step) |
 | `Home` / `End` | jump to the first / last card |
 
@@ -125,10 +125,16 @@ nav or the terminal view holds focus.
 | `prefix ?` | toggle the keybinding help |
 | `prefix t` | toggle auto-hide-nav (focusing the screen then gives it the full width) |
 | `prefix p` | move the nav one side clockwise (left → top → right → bottom → default) |
-| `prefix h` / `prefix l` | narrow / widen the nav (down to just past the resting `C-g` status line) |
-| `prefix Ctrl-←` / `prefix Ctrl-→` | narrow / widen the nav (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
-| `prefix Ctrl-↑` / `prefix Ctrl-↓` | shrink / grow the nav band's height in a band layout (then a bare `Ctrl-↑`/`Ctrl-↓` keeps resizing for a moment) |
+| `prefix h` / `prefix l` | move the view border left / right (the nav width follows the placement; the floor is just past the resting `C-g` status line) |
+| `prefix Ctrl-←` / `prefix Ctrl-→` | move the view border left / right (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
+| `prefix Ctrl-↑` / `prefix Ctrl-↓` | move the band's view border up / down in a band layout (then a bare `Ctrl-↑`/`Ctrl-↓` keeps resizing for a moment) |
 | `prefix prefix` | send one literal prefix byte to the focused session's pane |
+
+The resize keys move the view border the way the key points, so whether the nav grows or
+shrinks follows the placement: on a left or top nav the border is the nav's far edge, so
+moving it outward grows the nav; on a right or bottom nav the border is the nav's near
+edge, so the same movement shrinks it. The width floor is just past the resting `C-g`
+status line.
 
 ## The status line
 

@@ -83,15 +83,15 @@ impl Switcher {
         // forwards a digit here behind the prefix).
         match ev.code {
             KeyCode::Enter => {}
-            // ↑/↓ and ←/→ name the two things the list is made of: ↑/↓ walk the cards,
-            // ←/→ walk the categories, landing on the first card of the previous/next
-            // one. Neither is defined by where a card sits on screen, so both mean the
-            // same thing in the side column and in the portrait band, which flows its
-            // cards down a column and then right.
+            // ↑/↓ and ←/→ (and the vim hjkl pair) name the two things the list is made of:
+            // ↑/↓ walk the cards, ←/→ walk the categories, landing on the first card of the
+            // previous/next one. Neither is defined by where a card sits on screen, so both
+            // mean the same thing in the side column and in the portrait band, which flows
+            // its cards down a column and then right.
             KeyCode::Up | KeyCode::Char('k') => self.nav_vertical(-1, state),
             KeyCode::Down | KeyCode::Char('j') => self.nav_vertical(1, state),
-            KeyCode::Left => self.nav_horizontal(-1, state),
-            KeyCode::Right => self.nav_horizontal(1, state),
+            KeyCode::Left | KeyCode::Char('h') => self.nav_horizontal(-1, state),
+            KeyCode::Right | KeyCode::Char('l') => self.nav_horizontal(1, state),
             KeyCode::PageUp => self.move_selection(-10, state),
             KeyCode::PageDown => self.move_selection(10, state),
             KeyCode::Home => self.move_to(0, state),
