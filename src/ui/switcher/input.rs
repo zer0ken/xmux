@@ -423,9 +423,9 @@ impl Switcher {
         }
     }
 
-    pub(super) fn row_of_session(&self, address: &str) -> Option<usize> {
+    pub(super) fn row_of_session(&self, address: &crate::session::Address) -> Option<usize> {
         self.rows
             .iter()
-            .position(|r| session_addr_of(&r.reference).as_deref() == Some(address))
+            .position(|r| session_addr_of(&r.reference).as_ref() == Some(address))
     }
 }

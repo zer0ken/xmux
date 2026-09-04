@@ -78,20 +78,11 @@ impl Transport for Ssh {
     }
 
     /// A REMOTE interactive attach requests a pty (`-t`, no BatchMode) and runs
-    /// `[<pre_select> ; ] exec <attach>`: the `exec` replaces the ssh login shell so
-    /// the connection closes cleanly on detach, and folding `pre_select` into the SAME
-    /// connection means no second connection to hang on a stalled remote or lose the
-    /// selection to interactive auth.
-    fn interactive_attach_argv(
-        &self,
-        mux_attach_argv: &[String],
-        pre_select: Option<&[String]>,
-    ) -> (String, Vec<String>) {
+    /// `exec <attach>`: the `exec` replaces the ssh login shell so the connection
+    /// closes cleanly on detach.
+    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> (String, Vec<String>) {
         let attach = remote_command(mux_attach_argv);
-        let remote_cmd = match pre_select {
-            Some(sel) => format!("{} ; exec {}", remote_command(sel), attach),
-            None => format!("exec {attach}"),
-        };
+        let remote_cmd = format!("exec {attach}");
         let mut args = self.ssh_opts(true);
         args.push(remote_cmd);
         ("ssh".into(), args)
@@ -203,29 +194,12 @@ mod tests {
     }
 
     #[test]
-    fn interactive_attach_remote_without_pre_select_execs_over_ssh_tty() {
+    fn interactive_attach_remote_execs_over_ssh_tty() {
         let (n, a) = ssh("prod", "linux", "")
-            .interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]), None);
+            .interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]));
         assert_eq!(n, "ssh");
         assert!(a.iter().any(|s| s == "-t"), "{a:?}");
         assert!(!a.join(" ").contains("BatchMode"), "{a:?}");
         assert_eq!(a.last().unwrap(), "exec tmux attach -t api");
-    }
-
-    #[test]
-    fn interactive_attach_remote_folds_pre_select_into_one_connection() {
-        // The window pre-selection and the attach run over a SINGLE `ssh -t`, so there is
-        // no second connection to hang on a stalled remote or to lose the selection to
-        // interactive auth. The remote command is `<select-window> ; exec <attach>`.
-        let (n, a) = ssh("prod", "linux", "").interactive_attach_argv(
-            &argv(&["tmux", "attach", "-t", "api"]),
-            Some(&argv(&["tmux", "select-window", "-t", "api:2"])),
-        );
-        assert_eq!(n, "ssh");
-        assert!(a.iter().any(|s| s == "-t"), "{a:?}");
-        assert_eq!(
-            a.last().unwrap(),
-            "tmux select-window -t 'api:2' ; exec tmux attach -t api"
-        );
     }
 }

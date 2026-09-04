@@ -20,7 +20,6 @@ use crate::display::attach::{self, OsExecer};
 use crate::link::control;
 use crate::model::source::Source;
 use crate::provision::env::{self, ls_lines_one, Env};
-use crate::session;
 
 #[derive(Parser)]
 #[command(
@@ -43,21 +42,23 @@ struct Cli {
 enum Command {
     /// List every reachable session (scriptable).
     Ls,
-    /// Attach one session directly, e.g. `xmux attach prod/api`.
+    /// Attach one session directly, e.g. `xmux attach prod api`.
     Attach {
-        /// `<source>/<session>` target.
-        target: String,
+        /// The source (host) to attach on, e.g. `prod`.
+        source: String,
+        /// The session name on that source, e.g. `api`.
+        session: String,
     },
     /// Diagnose configuration and source reachability.
     Doctor,
     /// List every running instance (name, pid, cwd, tty, displayed session, focus).
     Instances,
-    /// Send a command to a running instance, e.g. `xmux send amber-otter switch prod/api`.
+    /// Send a command to a running instance, e.g. `xmux send amber-otter switch prod api`.
     Send {
         /// The instance name, or any unambiguous prefix of one (`xmux instances` lists
         /// them). With exactly one instance running, `-` targets it.
         id: String,
-        /// The command to send (e.g. `switch prod/api`, `focus terminal`, `dump`);
+        /// The command to send (e.g. `switch prod api`, `focus terminal`, `dump`);
         /// empty reads commands from stdin, one per line.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -97,8 +98,8 @@ pub async fn run() -> i32 {
             Ok(env) => run_ls(&env).await,
             Err(code) => code,
         },
-        Some(Command::Attach { target }) => match interactive_env().await {
-            Ok(env) => run_direct_attach(&env, &target).await,
+        Some(Command::Attach { source, session }) => match interactive_env().await {
+            Ok(env) => run_direct_attach(&env, &source, &session).await,
             Err(code) => code,
         },
         Some(Command::Doctor) => {
@@ -233,26 +234,16 @@ async fn run_ls(env: &Env) -> i32 {
     }
 }
 
-/// Attaches one `<source>/<session>` without the tree.
-async fn run_direct_attach(env: &Env, addr: &str) -> i32 {
-    let target = match session::parse_target(addr) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("xmux: {e}");
-            return 1;
-        }
-    };
-    let Some(src) = env.source(&target.source) else {
+/// Attaches one `source`/`session` without the tree.
+async fn run_direct_attach(env: &Env, source: &str, session: &str) -> i32 {
+    let Some(src) = env.source(source) else {
         eprintln!(
             "xmux: unknown source {:?} (not local or an ssh-config host)",
-            target.source
+            source
         );
         return 1;
     };
-    if let Err(e) = attach::run_attach(
-        &OsExecer,
-        &src.host().interactive_attach_command(&target.name, None),
-    ) {
+    if let Err(e) = attach::run_attach(&OsExecer, &src.host().interactive_attach_command(session)) {
         eprintln!("xmux: attach failed: {e}");
         return 1;
     }

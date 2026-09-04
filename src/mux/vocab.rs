@@ -60,19 +60,6 @@ pub fn new_session(bin: &str, name: &str) -> Vec<String> {
     v
 }
 
-/// Builds a `"session:window"` target.
-pub fn window_target(session: &str, window: i64) -> String {
-    format!("{session}:{window}")
-}
-
-/// The session-name part of a `-t` target: everything before the first `:`
-/// (`api:2` → `api`, `api` → `api`). tmux/psmux session names cannot contain `:`
-/// (it separates `session:window`), so the split is unambiguous. Used to validate
-/// an active-pane probe against the session that `%session-changed` reports.
-pub fn session_name(target: &str) -> &str {
-    target.split(':').next().unwrap_or(target)
-}
-
 /// Quotes a `-t` target for a CONTROL-MODE command line (the tmux/psmux command
 /// parser, not a shell). A name of only safe characters passes through bare;
 /// anything else (space, quote, metachar) is single-quoted with embedded single
@@ -88,11 +75,6 @@ pub fn quote_target(t: &str) -> String {
     } else {
         format!("'{}'", t.replace('\'', "'\\''"))
     }
-}
-
-/// Makes the target window active in its session.
-pub fn select_window(bin: &str, target: &str) -> Vec<String> {
-    argv(&[bin, "select-window", "-t", target])
 }
 
 /// Splits raw mux output into non-blank lines, tolerating both `\r\n` and `\n`.
@@ -235,27 +217,6 @@ mod tests {
                 "-F",
                 "#{session_name}"
             ])
-        );
-    }
-
-    #[test]
-    fn target_builders() {
-        assert_eq!(window_target("editor", 2), "editor:2");
-    }
-
-    #[test]
-    fn session_name_strips_window_suffix() {
-        assert_eq!(session_name("api"), "api");
-        assert_eq!(session_name("api:2"), "api");
-        assert_eq!(session_name("0:1"), "0");
-        assert_eq!(session_name(""), "");
-    }
-
-    #[test]
-    fn select_window_argv() {
-        assert_eq!(
-            select_window("tmux", "if:3"),
-            sv(&["tmux", "select-window", "-t", "if:3"])
         );
     }
 

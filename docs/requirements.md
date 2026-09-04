@@ -364,8 +364,8 @@ no function, and no test, so renaming code is never a documentation change.
 
 ## C. Switching (the keystone)
 
-- **FR-C1** - A same-server pick lands on the picked session, pre-selecting the
-  chosen window. Each mux's driver owns the in-place-vs-reattach decision, and it
+- **FR-C1** - A same-server pick lands on the picked session. Each mux's driver owns
+  the in-place-vs-reattach decision, and it
   turns on whether that mux can name xmux's OWN client: one that can moves that
   client with `switch-client` and repaints (instant, nothing torn down); one that
   cannot reattaches by session name, which is the only address that can reach no
@@ -387,10 +387,7 @@ no function, and no test, so renaming code is never a documentation change.
   reached through, what the OTHER muxes on that same machine answered (which is what says
   whether the machine or the mux is down), and the log file holding the full history; a reachable-but-serverless source reads `(empty)`, a once-connected source keeps its last-known cards on a transient drop, and
   the reconnect sweep self-heals; a dropped display client is reaped and re-attached.
-- **FR-C4** - A switch lands on the picked window. A fresh first attach folds the
-  window into the attach argv (ssh folds the pre-selection into one `ssh -t`);
-  a live client is moved server-side by a dispatched `select-window`.
-- **FR-C5** - No silent loss: every dispatched switch/select command logs its exact argv
+- **FR-C4** - No silent loss: every dispatched switch/select command logs its exact argv
   and result; a failed attach is logged at warn level and returns to the nav rather
   than being swallowed; each driver logs its show decision and the grid-changed effect.
 
@@ -451,18 +448,19 @@ nothing to switch to until one exists.
 
 - **FR-F1** - A per-instance local socket (`ctl-<name>.sock`) drives the running app
   headlessly. Its navigation/display verbs (`ping`, `dump`, `status`,
-  `switch <source>/<session>`, `focus <terminal|nav>`, `rescan`, `quit`,
+  `switch <source> <session>`, `focus <terminal|nav>`, `rescan`, `quit`,
   `width <delta>` (a signed column delta, not an absolute width), `toggle-auto-hide`)
-  and its one session-lifecycle verb, `new-session` (sessions addressed
-  `<source>/<session>`), resolve to a domain action. There are no kill/rename/window
+  and its one session-lifecycle verb, `new-session` (a session named by its source
+  and session separately), resolve to a domain action. There are no kill/rename/window
   verbs: xmux aggregates and switches, so editing a session stays with the mux. Raw
   key/text injection stays behind the unstable `raw:` namespace (`raw:key` /
   `raw:keys` / `raw:text`). A command-level failure replies `err: …` and `xmux send`
-  exits non-zero. A `switch` to a `<source>/<session>` address the inventory does not
+  exits non-zero. A `switch` to a source/session pair the inventory does not
   list is such a failure: it replies `err:` naming which half is missing (the source,
-  or a session under a present source), so the reply reflects the address resolution.
-- **FR-F2** - There is one unified socket, not a separate app socket: `switch <address>`
-  is a first-class ctl verb resolving to the same switch action a key press does.
+  or a session under a present source), so the reply reflects the resolution.
+- **FR-F2** - There is one unified socket, not a separate app socket: `switch
+  <source> <session>` is a first-class ctl verb resolving to the same switch action a
+  key press does.
 - **FR-F3** - Every instance takes a NAME at startup: an auto-generated
   `<adjective>-<noun>` whose walk skips names live instances hold (a crashed
   instance's undialable marker is reused), or an explicit `--name` validated to 1-32
@@ -483,15 +481,15 @@ nothing to switch to until one exists.
   a remote shell command (POSIX single-quote escaping).
 - **FR-G3** - Mux session env (`TMUX`/`TMUX_PANE`/`PSMUX*`) is stripped for listing so a
   command run from inside a mux is not refused as nesting; lookalikes survive.
-- **FR-G4** - A remote attach folds the window pre-selection into the single
-  `ssh -t` connection (no second connection to hang or lose), and the mux axis supplies
-  the attach argv (local psmux routes to its per-session server).
+- **FR-G4** - A remote attach runs the mux-supplied attach argv in one `ssh -t`
+  connection (no second connection to hang or lose; local psmux routes to its
+  per-session server).
 - **FR-G5** - A command bound for a WSL distribution is exec'd there rather than handed
   to the launcher as a command LINE, so Windows quoting is never re-read as shell syntax
   and the POSIX quoting of FR-G2 stays the only boundary a session name crosses. The
   command then runs in a LOGIN shell, because a mux installed under the user's own home is
-  not on the bare environment's `PATH`. A distribution's attach folds its pre-selection
-  into one command exactly as FR-G4's remote attach does.
+  not on the bare environment's `PATH`. A distribution's attach runs one command
+  exactly as FR-G4's remote attach does.
 
 ---
 
@@ -508,7 +506,7 @@ nothing to switch to until one exists.
   visible match. *(FR-B4, FR-B6)*
 - **UC-5, the remote is down and I am not left in the dark.** An unreachable source shows
   `⚠ unreachable`; a failed attach is logged and the nav stays usable.
-  *(FR-A2, FR-B7, FR-C5)*
+  *(FR-A2, FR-B7, FR-C4)*
 - **UC-6, deep in a remote, get back home.** Native detach (`prefix d`) inside the
   remote returns control to the local app's split view; pick local or another host.
   *(FR-C2, FR-D1)*

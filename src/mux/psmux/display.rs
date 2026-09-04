@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::app::runtime::{host_selection_key, request_attach, terminal_view_size};
 use crate::display::grid::Grid;
-use crate::driver::{lower_select_window, DriverCtx, MuxDriver};
+use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
 /// Per-session mux (psmux): one server per session, displayed through ONE per-host PTY
@@ -52,7 +52,6 @@ impl MuxDriver for PsmuxDriver {
             return false;
         }
         let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav);
-        let control = ctx.mgr.get(&sel.source);
         let Some(host) = ctx.hosts.get_mut(&sel.source) else {
             return false;
         };
@@ -113,10 +112,6 @@ impl MuxDriver for PsmuxDriver {
             tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
             host.display.set_shows(&key, &sel.session);
         }
-
-        if let Some(win) = sel.window {
-            lower_select_window(host, control, &sel.session, win);
-        }
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
     }
@@ -147,7 +142,6 @@ impl MuxDriver for PsmuxDriver {
 mod tests {
     use super::*;
     use crate::display::registry::AttachRegistry;
-    use crate::link::HostManager;
     use crate::model::Selection;
 
     /// The reattach guard's whole decision table. The rows that REATTACH are what keep
@@ -234,12 +228,10 @@ mod tests {
         let (mut hosts, mut registry) = a_client_reporting("vfy-ps-a", "vfy-ps-b");
         let worker = a_display_worker();
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
         let sel = Selection {
             source: "local".into(),
             session: "vfy-ps-b".into(),
-            window: None,
         };
 
         let mut driver = PsmuxDriver;
@@ -248,7 +240,6 @@ mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
@@ -285,12 +276,10 @@ mod tests {
         let (mut hosts, mut registry) = a_client_reporting("vfy-ps-b", "vfy-ps-b");
         let worker = a_display_worker();
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
         let sel = Selection {
             source: "local".into(),
             session: "vfy-ps-a".into(),
-            window: None,
         };
 
         let mut driver = PsmuxDriver;
@@ -299,7 +288,6 @@ mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
@@ -356,13 +344,11 @@ mod tests {
         let mut registry = AttachRegistry::new();
         registry.insert("local", crate::display::attachment::fake_attachment(99));
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
             source: "local".into(),
             session: "target".into(),
-            window: None,
         };
 
         let mut driver = PsmuxDriver;
@@ -371,7 +357,6 @@ mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
@@ -424,7 +409,6 @@ mod tests {
         let mut registry = AttachRegistry::new();
         registry.insert("local", crate::display::attachment::fake_attachment(7));
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let mut driver = PsmuxDriver;
@@ -434,7 +418,6 @@ mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
@@ -461,7 +444,6 @@ mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
@@ -503,13 +485,11 @@ mod tests {
         let mut registry = AttachRegistry::new();
         registry.insert("local", crate::display::attachment::fake_attachment(42)); // the live client
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
             source: "local".into(),
             session: "target".into(),
-            window: None,
         };
         let mut driver = PsmuxDriver;
         {
@@ -517,7 +497,6 @@ mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
@@ -571,13 +550,11 @@ mod tests {
         let mut registry = AttachRegistry::new();
         registry.insert("local", crate::display::attachment::fake_attachment(42));
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
             source: "local".into(),
             session: "target".into(),
-            window: None,
         };
         let mut driver = PsmuxDriver;
         {
@@ -585,7 +562,6 @@ mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,

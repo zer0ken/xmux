@@ -23,7 +23,7 @@ pub struct State {
     pub failure_runs: HashMap<String, u32>,
     /// Active fuzzy-filter text (drives the visible tree + the hint_bar).
     pub filter: String,
-    /// What the tree selection points at - the session/window to show.
+    /// What the tree selection points at - the session to show.
     pub selection: Selection,
     /// The address whose content is confirmed live in the on-screen terminal view -
     /// the single display truth, and the target of both rendering and input. The
@@ -45,9 +45,8 @@ pub struct State {
     /// the EOF of every failed attach into the next attempt; a selection move, a
     /// cleared display, or a re-confirmed display starts a new count.
     pub attach_retries: u32,
-    /// The session address last persisted as the user's last-selected, so it is
-    /// not rewritten on every window step within the same session.
-    pub last_saved_session: String,
+    /// The session last persisted as the user's last-selected.
+    pub last_saved_session: crate::session::Address,
     /// The app's focus state machine - which pane keys go to and whether a
     /// modal is open. The single source of truth for focus.
     pub focus: crate::app::focus::Focus,
@@ -121,27 +120,27 @@ impl State {
         }
     }
 
-    /// Resolves a `<source>/<session>` switch address against the current inventory -
-    /// the set the nav shows. `Ok` when a session with exactly that address is listed;
+    /// Resolves a `switch` target against the current inventory - the set the nav
+    /// shows. `Ok` when a session with exactly that source and session is listed;
     /// `Err` names which half is missing (an absent source, or a present source with no
     /// matching session). The answer the ctl `switch` verb replies with: resolution,
     /// not attach success, which is async and confirms later.
-    pub fn resolve_switch_address(&self, address: &str) -> Result<(), String> {
-        let target = crate::session::parse_target(address)?;
-        let found = self
-            .groups
-            .iter()
-            .any(|g| g.sessions.iter().any(|s| s.address() == address));
+    pub fn resolve_switch_address(&self, address: &crate::session::Address) -> Result<(), String> {
+        let found = self.groups.iter().any(|g| {
+            g.sessions
+                .iter()
+                .any(|s| s.source == address.source && s.name == address.session)
+        });
         if found {
             return Ok(());
         }
-        if self.groups.iter().any(|g| g.source == target.source) {
+        if self.groups.iter().any(|g| g.source == address.source) {
             Err(format!(
                 "no such session {:?} on source {:?}",
-                target.name, target.source
+                address.session, address.source
             ))
         } else {
-            Err(format!("no such source {:?}", target.source))
+            Err(format!("no such source {:?}", address.source))
         }
     }
 
@@ -161,7 +160,7 @@ impl State {
         use crate::model::{Action, Command, FocusTarget, MuxOp};
         use std::time::Duration;
         match action {
-            Action::Switch { address } => vec![Command::SelectAddress(address)],
+            Action::Switch(address) => vec![Command::SelectAddress(address)],
             Action::Focus(FocusTarget::Terminal) => {
                 self.focus
                     .set_view_focus(crate::app::focus::ViewFocus::Terminal);
@@ -261,9 +260,9 @@ impl State {
                 // Persist the settled session as last-selected - INDEPENDENT of the
                 // attach gate, so it records even when the attach is suppressed (e.g.
                 // an in-flight attach on the same shared host while the selection moves to
-                // another of its sessions). Only on an address change, so stepping
-                // between windows of one session does not rewrite it.
-                let addr = self.selection.address();
+                // another of its sessions). Only on an address change.
+                let addr =
+                    crate::session::Address::new(&self.selection.source, &self.selection.session);
                 if addr != self.last_saved_session {
                     self.last_saved_session = addr.clone();
                     cmds.push(Command::PersistLastSession(addr));
@@ -477,9 +476,9 @@ impl State {
     }
 }
 
-/// Debounce before a settled selection move attaches/switches its session+window.
-/// Rapid navigation must NOT switch-client / select-window per step: each switch
-/// makes the remote mux send a full-screen repaint, and a storm of repaints floods
+/// Debounce before a settled selection move attaches/switches its session.
+/// Rapid navigation must NOT switch-client per step: each switch makes the remote
+/// mux send a full-screen repaint, and a storm of repaints floods
 /// the draw - the single-threaded loop then spends all its time redrawing, which IS
 /// the freeze. Deferring the attach until the selection settles keeps per-step redraws
 /// to a cheap tree-only diff. The single source of this value: both `apply`'s `Tick`
@@ -499,6 +498,7 @@ mod tests {
     use super::*;
     use crate::app::focus::Focus;
     use crate::model::{Action, Command, FocusTarget, Selection};
+    use crate::session::Address;
     use std::time::Duration;
 
     #[test]
@@ -508,7 +508,7 @@ mod tests {
         assert!(s.displayed.is_empty());
         assert!(s.attach_deadline.is_none());
         assert!(!s.attach_pending);
-        assert_eq!(s.last_saved_session, "");
+        assert_eq!(s.last_saved_session, Address::default());
         assert!(s.focus.is_nav_focused());
         assert!(s.modal.is_none());
         assert!(!s.is_modal_popup_open());
@@ -520,7 +520,6 @@ mod tests {
         Selection {
             source: "jup".into(),
             session: session.into(),
-            window: None,
         }
     }
 
@@ -561,7 +560,7 @@ mod tests {
         assert_eq!(
             fired,
             vec![
-                Command::PersistLastSession("jup/api".into()),
+                Command::PersistLastSession(Address::new("jup", "api")),
                 Command::Attach(sel("api")),
             ],
             "the settled selection attaches exactly once"
@@ -621,7 +620,7 @@ mod tests {
         assert_eq!(
             fired,
             vec![
-                Command::PersistLastSession("jup/db".into()),
+                Command::PersistLastSession(Address::new("jup", "db")),
                 Command::Attach(sel("db")),
             ],
             "only the trailing selection attaches"
@@ -636,7 +635,7 @@ mod tests {
         let mut s = State {
             selection: sel("api"),
             displayed: sel("api"),
-            last_saved_session: "jup/api".into(), // already persisted → no persist command
+            last_saved_session: Address::new("jup", "api"), // already persisted → no persist command
             attach_deadline: Some(t0),
             ..State::default()
         };
@@ -667,7 +666,7 @@ mod tests {
         let mut s = State {
             selection: sel("api"),
             displayed: sel("db"),
-            last_saved_session: "jup/api".into(), // already persisted → no persist command
+            last_saved_session: Address::new("jup", "api"), // already persisted → no persist command
             ..State::default()
         };
         let armed = s.apply(Action::Tick {
@@ -728,7 +727,7 @@ mod tests {
             groups: one_session_scan().groups,
             selection: sel("api"),
             displayed: sel("api"),
-            last_saved_session: "jup/api".into(), // already persisted → no persist command
+            last_saved_session: Address::new("jup", "api"), // already persisted → no persist command
             attach_deadline: Some(t0),
             ..State::default()
         };
@@ -757,7 +756,7 @@ mod tests {
             groups: one_session_scan().groups,
             selection: sel("api"),
             displayed: sel("api"),
-            last_saved_session: "jup/api".into(), // already persisted → no persist command
+            last_saved_session: Address::new("jup", "api"), // already persisted → no persist command
             ..State::default()
         };
         let armed = s.apply(Action::Tick {
@@ -794,7 +793,7 @@ mod tests {
             groups: one_session_scan().groups,
             selection: sel("api"),
             displayed: sel("api"),
-            last_saved_session: "jup/api".into(),
+            last_saved_session: Address::new("jup", "api"),
             ..State::default()
         };
         s.groups[0].sessions.clear(); // the enumeration dropped the session
@@ -827,7 +826,7 @@ mod tests {
             groups: one_session_scan().groups,
             selection: sel("api"),
             displayed: sel("api"),
-            last_saved_session: "jup/api".into(),
+            last_saved_session: Address::new("jup", "api"),
             ..State::default()
         };
         let mut now = t0;
@@ -868,7 +867,7 @@ mod tests {
             groups: one_session_scan().groups,
             selection: sel("api"),
             displayed: sel("api"),
-            last_saved_session: "jup/api".into(),
+            last_saved_session: Address::new("jup", "api"),
             ..State::default()
         };
         s.attach_retries = ATTACH_RECOVERY_LIMIT; // exhausted
@@ -919,7 +918,7 @@ mod tests {
         );
         assert_eq!(
             cmds,
-            vec![Command::PersistLastSession("jup/db".into())],
+            vec![Command::PersistLastSession(Address::new("jup", "db"))],
             "the settled session is still persisted while the attach is suppressed"
         );
     }
@@ -950,7 +949,7 @@ mod tests {
         assert_eq!(
             b_cmds,
             vec![
-                Command::PersistLastSession("jup/b".into()),
+                Command::PersistLastSession(Address::new("jup", "b")),
                 Command::Attach(sel("b")),
             ],
         );
@@ -969,14 +968,14 @@ mod tests {
             display_astray: false,
         });
         assert!(
-            c_cmds.contains(&Command::PersistLastSession("jup/c".into())),
+            c_cmds.contains(&Command::PersistLastSession(Address::new("jup", "c"))),
             "C must be persisted even though its attach is suppressed by in_flight: {c_cmds:?}"
         );
         assert!(
             !c_cmds.iter().any(|c| matches!(c, Command::Attach(_))),
             "C's attach is suppressed while B's attach is in flight (no storm): {c_cmds:?}"
         );
-        assert_eq!(s.last_saved_session, "jup/c");
+        assert_eq!(s.last_saved_session, Address::new("jup", "c"));
     }
 
     #[test]
@@ -1097,15 +1096,16 @@ mod tests {
     fn apply_switch_emits_select_address_command() {
         let mut s = State::default();
         assert_eq!(
-            s.apply(Action::Switch {
-                address: "jup/db".into()
-            }),
-            vec![Command::SelectAddress("jup/db".into())]
+            s.apply(Action::Switch(crate::session::Address::new("jup", "db"))),
+            vec![Command::SelectAddress(crate::session::Address::new(
+                "jup", "db"
+            ))]
         );
     }
 
     #[test]
     fn resolve_switch_address_reports_which_half_is_missing() {
+        use crate::session::Address;
         let s = State::from_scan(Scan {
             groups: vec![
                 Group {
@@ -1129,25 +1129,34 @@ mod tests {
             ],
         });
         // A session the inventory lists resolves.
-        assert_eq!(s.resolve_switch_address("jup/api"), Ok(()));
         assert_eq!(
-            s.resolve_switch_address("local:psmux/swtarget"),
+            s.resolve_switch_address(&Address::new("jup", "api")),
+            Ok(())
+        );
+        assert_eq!(
+            s.resolve_switch_address(&Address::new("local:psmux", "swtarget")),
             Ok(()),
-            "the qualified source address the nav actually uses resolves"
+            "the qualified source pair the nav actually uses resolves"
         );
         // A session missing under an existing source is a session error.
-        let err = s.resolve_switch_address("jup/nope").unwrap_err();
+        let err = s
+            .resolve_switch_address(&Address::new("jup", "nope"))
+            .unwrap_err();
         assert!(err.starts_with("no such session"), "{err}");
         // A source that does not exist is a source error - the issue's `local/swtarget`
         // when the real source is `local:psmux`, and a wholly unknown host.
-        let err = s.resolve_switch_address("local/swtarget").unwrap_err();
-        assert!(err.starts_with("no such source"), "{err}");
         let err = s
-            .resolve_switch_address("nosuchhost/nosuchsession")
+            .resolve_switch_address(&Address::new("local", "swtarget"))
             .unwrap_err();
         assert!(err.starts_with("no such source"), "{err}");
-        // An address with no `/` is invalid, not a missing source.
-        assert!(s.resolve_switch_address("noslash").is_err());
+        let err = s
+            .resolve_switch_address(&Address::new("nosuchhost", "nosuchsession"))
+            .unwrap_err();
+        assert!(err.starts_with("no such source"), "{err}");
+        // An address with no source on the roster is a source error, not a parse one.
+        assert!(s
+            .resolve_switch_address(&Address::new("noslash", ""))
+            .is_err());
     }
 
     #[test]

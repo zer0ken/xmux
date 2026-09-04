@@ -67,7 +67,7 @@ holds the modal state plus its popup geometry and forwards to that module.
 
 ## Invariants
 
-- The selection is the source / session / window the display SHOULD show.
+- The selection is the source / session the display SHOULD show.
 - The displayed address is the one whose content is confirmed live on screen; it
   is set only at confirmation, by a synchronous in-place switch or by the display
   becoming ready. The terminal view always renders the displayed grid, so on a
@@ -92,8 +92,8 @@ holds the modal state plus its popup geometry and forwards to that module.
   budget of consecutive attempts that a moved selection or a re-confirmed display
   refills. A session that is gone makes every re-attach end in EOF in turn, so an
   unbounded recovery would never stop retrying it.
-- The last saved session address prevents rewriting preferences on every window
-  step within the same session.
+- The last saved session address prevents rewriting preferences on every step
+  within the same session.
 - This layer branches on nothing mux-specific: both apply sites fold intents and
   events over the state without a match on mux kind. Per-mux behavior lives behind
   the mux and driver seam the run loop reaches; the mux enters here only as domain

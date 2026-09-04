@@ -62,8 +62,6 @@ behaves as though there were none to read.
 
 - Every action argv carries `--session <name>`. An action without it targets the
   caller's own session, and xmux is outside every session.
-- `go-to-tab` counts tabs from ONE while xmux and zellij's own position count from
-  zero. The shift happens in the window-selection plan and nowhere else.
 - The attach is plain `attach <name>`, never `attach -c`: showing a session must
   not create or resurrect one. A session that died between the scan and the attach
   fails the attach, which is the end-of-stream the death signal is waiting for.

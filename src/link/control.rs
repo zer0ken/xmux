@@ -256,8 +256,9 @@ pub enum CtlRequest {
 /// keystroke surface is `raw:key` / `raw:keys` / `raw:text`. Anything else is
 /// `Unknown` (the dispatcher replies `err: ...`). ctl speaks the DOMAIN here, not
 /// internal key names (C-CTL): the wire never references an input Action/KeyCode
-/// again. A session is addressed `<source>/<session>` (as `switch` and the nav
-/// use). There are no kill/rename/window verbs: xmux aggregates and switches, so
+/// again. A session is named by its source and session separately (`switch <source>
+/// <session>`, `new-session <source> [name]`); nothing on the wire joins the two.
+/// There are no kill/rename/window verbs: xmux aggregates and switches, so
 /// editing a session stays with the mux that owns it.
 pub fn parse_ctl_op(line: &str) -> CtlRequest {
     let req = parse_request(line);
@@ -269,9 +270,12 @@ pub fn parse_ctl_op(line: &str) -> CtlRequest {
         "rescan" => CtlRequest::Op(Action::Rescan),
         "quit" => CtlRequest::Op(Action::Quit),
         "toggle-auto-hide" => CtlRequest::Op(Action::ToggleAutoHide),
-        "switch" if !req.arg.trim().is_empty() => CtlRequest::Op(Action::Switch {
-            address: req.arg.trim().to_string(),
-        }),
+        "switch" => match split_first(&req.arg) {
+            (source, session) if !source.is_empty() && !session.is_empty() => CtlRequest::Op(
+                Action::Switch(crate::session::Address::new(source, session)),
+            ),
+            _ => unknown(),
+        },
         "focus" => match FocusTarget::from_str(&req.arg) {
             Some(t) => CtlRequest::Op(Action::Focus(t)),
             None => unknown(),
@@ -281,11 +285,11 @@ pub fn parse_ctl_op(line: &str) -> CtlRequest {
             Err(_) => unknown(),
         },
         // Session lifecycle. Each maps to the SAME domain `Action` a keypress
-        // produces; only the addressing is parsed here. `new-session`/`new-window`
-        // take an optional name (empty ⇒ auto-named: by the mux, or by the manage
-        // layer for a mux that cannot name its own). `KillSession` /
-        // `RenameSession` carry a `Session` built from the address via `parse_target`
-        // (the op uses only its source + name - see `ui::ops::run_op`).
+        // produces; only the addressing is parsed here. `switch` and `new-session`
+        // split the first token off as the SOURCE and keep the rest as the session
+        // name, so a name containing spaces needs no quoting. `new-session` takes an
+        // optional name (empty ⇒ auto-named: by the mux, or by the manage layer for a
+        // mux that cannot name its own).
         "new-session" if !req.arg.trim().is_empty() => {
             let (source, name) = split_first(&req.arg);
             CtlRequest::Op(Action::CreateSession { source, name })
@@ -304,7 +308,7 @@ pub fn parse_ctl_op(line: &str) -> CtlRequest {
 }
 
 /// Splits an arg into (first whitespace-delimited token, verbatim remainder). The
-/// remainder keeps its inner spaces (a session/window name may contain them) and is
+/// remainder keeps its inner spaces (a session name may contain them) and is
 /// empty when the arg is a single token. Both halves are trimmed of surrounding space.
 fn split_first(arg: &str) -> (String, String) {
     let arg = arg.trim();
@@ -497,10 +501,16 @@ mod tests {
     fn parse_ctl_op_semantic_verbs() {
         use crate::model::{Action, FocusTarget};
         assert_eq!(
-            parse_ctl_op("switch jup/api"),
-            CtlRequest::Op(Action::Switch {
-                address: "jup/api".into()
-            })
+            parse_ctl_op("switch jup api"),
+            CtlRequest::Op(Action::Switch(crate::session::Address::new("jup", "api")))
+        );
+        // The rest after the first token is the session name, spaces and all.
+        assert_eq!(
+            parse_ctl_op("switch jup my session"),
+            CtlRequest::Op(Action::Switch(crate::session::Address::new(
+                "jup",
+                "my session"
+            )))
         );
         assert_eq!(
             parse_ctl_op("focus terminal"),
@@ -592,7 +602,11 @@ mod tests {
     fn parse_ctl_op_rejects_malformed() {
         assert!(
             matches!(parse_ctl_op("switch"), CtlRequest::Unknown(_)),
-            "switch needs an address"
+            "switch needs a source and a session"
+        );
+        assert!(
+            matches!(parse_ctl_op("switch jup"), CtlRequest::Unknown(_)),
+            "switch with no session is refused"
         );
         assert!(matches!(
             parse_ctl_op("focus sideways"),

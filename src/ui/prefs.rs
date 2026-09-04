@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use crate::session::Address;
 use crate::ui::switcher::NavPosition;
 
 /// The file under the xmux dir holding the last-selected session address.
@@ -95,12 +96,16 @@ pub fn save_nav_height(xmux_dir: &Path, height: u16) {
     let _ = std::fs::write(xmux_dir.join(NAV_HEIGHT_FILE), height.to_string());
 }
 
-/// Persists `address` (`source/session`) as the last-selected session. Best-effort:
-/// a write failure is ignored, and so is the value on the next run - the launch
-/// preselect is the first session to answer the scan (FR-D5), so nothing reads this
-/// file back.
-pub fn save_last_session(xmux_dir: &Path, address: &str) {
-    let _ = std::fs::write(xmux_dir.join(LAST_SESSION_FILE), address);
+/// Persists the last-selected session as two fields (the source line, then the
+/// session line), so a session name holding any character survives without a
+/// delimiter grammar. Best-effort: a write failure is ignored, and so is the value
+/// on the next run - the launch preselect is the first session to answer the scan
+/// (FR-D5), so nothing reads this file back.
+pub fn save_last_session(xmux_dir: &Path, address: &Address) {
+    let _ = std::fs::write(
+        xmux_dir.join(LAST_SESSION_FILE),
+        format!("{}\n{}", address.source, address.session),
+    );
 }
 
 #[cfg(test)]
@@ -114,12 +119,18 @@ mod tests {
     }
 
     #[test]
-    fn save_writes_the_address() {
+    fn save_writes_the_two_fields() {
         let dir = temp_dir("roundtrip");
-        save_last_session(&dir, "jupiter00/infer");
+        save_last_session(&dir, &Address::new("jupiter00", "infer"));
         assert_eq!(
             std::fs::read_to_string(dir.join(LAST_SESSION_FILE)).unwrap(),
-            "jupiter00/infer"
+            "jupiter00\ninfer"
+        );
+        // A session name holding a space or a slash stays whole on its own line.
+        save_last_session(&dir, &Address::new("prod", "my session"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(LAST_SESSION_FILE)).unwrap(),
+            "prod\nmy session"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

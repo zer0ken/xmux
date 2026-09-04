@@ -63,10 +63,10 @@ and nothing in `transport/` imports a mux type or a source.
   No match on the kind is scattered across call sites; the trait object carries
   the choice everywhere else.
 - The transport dispatches four shapes and no more: a non-interactive command, an
-  attach into the terminal handover (local socket injection, or a shell session
-  that folds the window pre-selection ahead of the attach, which lives here and
-  never in the mux or the caller), a control-mode child, and a raw shell command
-  (which only the shell-based implementations answer).
+  attach into the terminal handover (local socket injection, or a shell session that
+  folds the attach argv ahead of the handover, which lives here and never in the mux
+  or the caller), a control-mode child, and a raw shell command (which only the
+  shell-based implementations answer).
 - An implementation that needs a terminal for the control child arranges one on the HOST
   side, the way the ssh implementation forces a pty. It never rewrites a mux flag to work
   around a pipe: which control payload runs is the mux's word, not the

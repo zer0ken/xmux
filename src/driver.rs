@@ -1,6 +1,6 @@
-//! The mux DRIVER boundary: the supervisor passes INTENT (display this
-//! session+window) and reads back a grid; HOW (attach / switch-client / reattach
-//! / select-window) lives behind `MuxDriver`. `DriverCtx` injects the
+//! The mux DRIVER boundary: the supervisor passes INTENT (display this session)
+//! and reads back a grid; HOW (attach / switch-client / reattach) lives behind
+//! `MuxDriver`. `DriverCtx` injects the
 //! supervisor-owned spawn capability + registry so the driver owns the DECISION
 //! and per-host display STATE while the PTY infrastructure stays in the loop.
 //!
@@ -14,34 +14,29 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::app::runtime::run_lowered;
 use crate::display::grid::Grid;
 use crate::display::registry::AttachRegistry;
 use crate::display::DisplayWorker;
-use crate::link::HostManager;
 use crate::model::Selection;
 use crate::model::{Host, Hosts};
 
-/// A supervisor INTENT: show this session (and optionally land on a window). The
-/// generic shape the supervisor knows; the driver maps it onto mux mechanics.
+/// A supervisor INTENT: show this session. The generic shape the supervisor knows;
+/// the driver maps it onto mux mechanics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
     pub session: String,
-    pub window: Option<i64>,
 }
 
 impl Target {
     pub fn from_selection(sel: &Selection) -> Self {
         Target {
             session: sel.session.clone(),
-            window: sel.window,
         }
     }
     pub fn into_selection(&self, source: &str) -> Selection {
         Selection {
             source: source.to_string(),
             session: self.session.clone(),
-            window: self.window,
         }
     }
 }
@@ -56,7 +51,6 @@ pub struct DriverCtx<'a> {
     pub registry: &'a mut AttachRegistry,
     pub hosts: &'a mut Hosts,
     pub worker: &'a DisplayWorker,
-    pub mgr: &'a HostManager,
     /// The off-loop event sink (a clone of the loop's `PtyEvent` channel). A driver may
     /// spawn a read-only probe that feeds a `PtyEvent` back to the loop — e.g. the psmux
     /// driver captures its display client's tty with an off-loop `list-clients` probe.
@@ -74,8 +68,8 @@ pub struct DriverCtx<'a> {
 pub trait MuxDriver {
     /// The mux identity this driver speaks for, for diagnostics + driver selection tests.
     fn kind(&self) -> &str;
-    /// Make the selected session live and landed on its window. Returns true when the
-    /// selection has a session to show (so the caller can confirm the display truth).
+    /// Make the selected session live. Returns true when the selection has a session
+    /// to show (so the caller can confirm the display truth).
     fn show(&mut self, sel: &Selection, ctx: &mut DriverCtx) -> bool;
     /// The grid the supervisor renders for the selection, if a live attach exists.
     fn grid(&self, sel: &Selection, ctx: &DriverCtx) -> Option<Arc<Mutex<Grid>>>;
@@ -177,27 +171,6 @@ pub(crate) fn session_truth_source(host: &Host) -> Option<(String, &str)> {
     Some((crate::app::runtime::host_selection_key(host), var))
 }
 
-/// Moves the session's active window server-side (the real attached client follows).
-/// Over the host's open `-CC` connection if any (no fresh ssh handshake), else a dispatched
-/// select-window subprocess. Shared by both drivers' window-row handling.
-pub(crate) fn lower_select_window(
-    host: &Host,
-    control: Option<&crate::link::HostClient>,
-    session: &str,
-    win: i64,
-) {
-    let target = crate::mux::window_target(session, win);
-    if let Some(client) = control {
-        client.select_window_on(&target);
-    } else {
-        let mux_argv = host.mux.select_window_plan(&target);
-        let (cmd, args) = host.transport.exec_argv(false, &mux_argv);
-        let mut argv = vec![cmd];
-        argv.extend(args);
-        run_lowered(crate::transport::LoweredSwitch::Local(argv));
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -218,11 +191,9 @@ pub(crate) mod tests {
         let sel = Selection {
             source: "jup".into(),
             session: "api".into(),
-            window: Some(2),
         };
         let t = Target::from_selection(&sel);
         assert_eq!(t.session, "api");
-        assert_eq!(t.window, Some(2));
         assert_eq!(t.into_selection("jup"), sel);
     }
 
@@ -367,13 +338,11 @@ pub(crate) mod tests {
         let mut registry = AttachRegistry::new();
         registry.insert("local", crate::display::attachment::fake_attachment(99));
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
             source: "local".into(),
             session: "target".into(),
-            window: None,
         };
 
         // Through the Mux dispatch (driver_for → host.mux.driver()) + the concrete
@@ -384,7 +353,6 @@ pub(crate) mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,

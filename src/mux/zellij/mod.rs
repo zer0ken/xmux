@@ -25,22 +25,6 @@ pub struct Zellij {
     pub bin: String,
 }
 
-impl Zellij {
-    /// The argv addressing one zellij `action` at `session` from OUTSIDE it. zellij's
-    /// actions default to the session the caller is inside; `--session` names the
-    /// target instead, which is how xmux (never inside one) reaches any of them.
-    fn action(&self, session: &str, verb: &[&str]) -> Vec<String> {
-        let mut v = vec![
-            self.bin.clone(),
-            "--session".to_string(),
-            session.to_string(),
-            "action".to_string(),
-        ];
-        v.extend(verb.iter().map(|s| s.to_string()));
-        v
-    }
-}
-
 #[async_trait]
 impl Mux for Zellij {
     /// zellij has no server-socket flag and refuses an unexpected one before it reads
@@ -158,21 +142,6 @@ impl Mux for Zellij {
             interval_ms: ZELLIJ_POLL_MS,
         }
     }
-
-    fn select_window_plan(&self, target: &str) -> Vec<String> {
-        // `go-to-tab` counts tabs from ONE while xmux (and zellij's own `position`)
-        // count from zero, so the index is shifted here, at the one place that speaks
-        // zellij's argv. The target is `<session>:<index>` from `mux::window_target`;
-        // the split is on the LAST colon because zellij forbids only `/` in a session
-        // name, so a colon inside one is legal.
-        let (session, index) = match target.rsplit_once(':') {
-            Some((s, i)) => (s, i.parse::<i64>().unwrap_or(0)),
-            None => (target, 0),
-        };
-        let one_based = index.saturating_add(1).max(1).to_string();
-        self.action(session, &["go-to-tab", &one_based])
-    }
-
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         // `attach -b` is zellij's create-detached: it starts the session's server
         // without attaching this process to it. It prints nothing and requires the name
@@ -264,26 +233,6 @@ mod tests {
         assert_eq!(
             zellij().attach_plan("api"),
             argv(&["zellij", "attach", "api"])
-        );
-    }
-
-    #[test]
-    fn selecting_a_window_shifts_to_zellij_one_based_tabs() {
-        // `go-to-tab` counts from one; xmux and zellij's own `position` count from zero.
-        let m = zellij();
-        assert_eq!(
-            m.select_window_plan(&crate::mux::window_target("api", 0)),
-            argv(&["zellij", "--session", "api", "action", "go-to-tab", "1"])
-        );
-        assert_eq!(
-            m.select_window_plan(&crate::mux::window_target("api", 2)),
-            argv(&["zellij", "--session", "api", "action", "go-to-tab", "3"])
-        );
-        // zellij forbids only `/` in a session name, so a colon inside one is legal and
-        // the session/index split has to be on the LAST colon.
-        assert_eq!(
-            m.select_window_plan(&crate::mux::window_target("a:b", 1)),
-            argv(&["zellij", "--session", "a:b", "action", "go-to-tab", "2"])
         );
     }
 

@@ -110,17 +110,6 @@ impl Mux for Screen {
             interval_ms: SCREEN_POLL_MS,
         }
     }
-
-    fn select_window_plan(&self, target: &str) -> Vec<String> {
-        // `select_window_plan` receives a `session:window` target; screen addresses a
-        // session with `-S` and a window by `select <index>`.
-        let (session, index) = match target.rsplit_once(':') {
-            Some((s, i)) => (s, i.parse::<i64>().unwrap_or(0)),
-            None => (target, 0),
-        };
-        vocab::select_window(&self.bin, session, index)
-    }
-
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         vocab::new_session(&self.bin, name)
     }
@@ -200,14 +189,6 @@ mod tests {
         assert!(
             !screen().assigns_new_session_name(),
             "the create prints nothing, so stdout is never a name and an empty              request is named by the manage layer"
-        );
-    }
-
-    #[test]
-    fn selecting_a_window_uses_s_select() {
-        assert_eq!(
-            screen().select_window_plan(&crate::mux::window_target("dev", 2)),
-            argv(&["screen", "-S", "dev", "-X", "select", "2"])
         );
     }
 

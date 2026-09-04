@@ -67,7 +67,7 @@ impl AttachRegistry {
     }
 
     /// Wipes `addr`'s grid to blank (a no-op if not attached). Called when the
-    /// displayed session/window switches so the previous content's cells do not
+    /// displayed session switches so the previous content's cells do not
     /// linger as residue behind the mux's fresh repaint.
     pub fn clear_grid(&self, addr: &str) {
         if let Some(att) = self.map.get(addr) {
