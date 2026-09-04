@@ -29,11 +29,14 @@ pub enum Action {
     Quit,
     /// `prefix ?` — toggle the keys help modal. Focus stays on the terminal view.
     ShowHelp,
-    /// `prefix h`/`l` or `prefix Ctrl+←/→` — adjust the nav WIDTH by this signed delta
-    /// (the horizontal axis; applied only in a column layout).
+    /// `prefix h`/`l` or `prefix Ctrl+←/→` — the nav WIDTH step on the horizontal axis
+    /// (applied only in a column layout). The delta is the key's SCREEN direction (+1 =
+    /// right, -1 = left): the border moves that way, so it grows the nav on the left and
+    /// shrinks it on the right.
     Width(i32),
-    /// `prefix Ctrl+↑/↓` — adjust the nav HEIGHT by this signed delta (the vertical axis;
-    /// applied only in a band layout). +1 grows (taller), -1 shrinks.
+    /// `prefix Ctrl+↑/↓` — the nav HEIGHT step on the vertical axis (applied only in a band
+    /// layout). The delta is the key's SCREEN direction (+1 = down, -1 = up): the border
+    /// moves that way, so it grows the nav above and shrinks it below.
     Height(i32),
     /// `prefix t` — toggle auto-hide-nav mode.
     ToggleAutoHide,

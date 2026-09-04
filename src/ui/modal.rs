@@ -362,7 +362,7 @@ pub(crate) fn help_lines(
         HelpRow::Head("navigation".into()),
         HelpRow::Key("↑/↓ · j/k".into(), "move one card".into()),
         HelpRow::Key(
-            "←/→".into(),
+            "←/→ · h/l".into(),
             "previous / next host/mux (host cards as one)".into(),
         ),
         HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
