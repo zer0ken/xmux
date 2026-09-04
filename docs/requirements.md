@@ -365,7 +365,7 @@ no function, and no test, so renaming code is never a documentation change.
   a state apart from unreachable: the classification reads only ssh's own failure line
   (`Permission denied (publickey,…)`), so a host that merely died stays unreachable.
   The locked host keeps its card whatever hide-unreachable says (it is the one entry to
-  the unlock), renders the `⚿` mark, and shows the locked panel with the auth-failure
+  the unlock), renders the `?` mark, and shows the locked panel with the auth-failure
   reason. The locked panel OWNS the unlock: its top carries a username and a masked
   password field, and focusing the panel in the terminal view types into them (Enter
   advances user→password then submits, neither ever guessed or prefilled). It is not a

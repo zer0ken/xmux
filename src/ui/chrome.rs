@@ -236,7 +236,7 @@ pub(crate) enum BarFill {
 /// The mark a locked host wears: on its nav card, flush after the host name, and on its
 /// panel headline. A locked host is a failure the user can act on (the password unlock),
 /// so it keeps the warning colour like the unreachable `⚠`.
-pub(crate) const LOCK_MARK: &str = "⚿";
+pub(crate) const LOCK_MARK: &str = "?";
 
 /// grid it already has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

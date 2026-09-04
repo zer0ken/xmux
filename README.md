@@ -132,7 +132,7 @@ nav shows; commands name a session by its source and its session separately (e.g
 `switch prod api`). Remote hosts are
 probed after the app is up, so a discovered source appears as its host answers.
 A remote host that answers the network but refuses your credentials shows
-`locked` (a ⚿ mark). Focus its panel in the terminal view and type the
+`locked` (a `?` mark). Focus its panel in the terminal view and type the
 username and the masked password into it; xmux establishes one authenticated
 connection the rest of the session reuses, and re-probes just that host.
 
