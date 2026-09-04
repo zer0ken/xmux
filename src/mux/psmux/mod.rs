@@ -117,7 +117,7 @@ impl Mux for Psmux {
         // `new-session -A -s <name>` (attach-if-exists, no `-d`) routes to the
         // session's OWN server and attaches the REAL session (verified: `-A -s
         // <existing>` finds it without creating a duplicate; cf. the `-CC` form in
-        // 679bf3b). Window selection stays separate via `select_window_plan`.
+        // 679bf3b).
         vec![
             self.bin.clone(),
             "new-session".to_string(),

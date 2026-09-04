@@ -226,9 +226,10 @@ enabled to use them).
 
 ## Automation
 
-A running xmux instance listens on a local control socket. Sessions are addressed
-`<source>/<session>`. It speaks navigation/display verbs - `ping`, `status`,
-`dump`, `rescan`, `switch <source>/<session>`, `focus <nav|terminal>`,
+A running xmux instance listens on a local control socket. A command names a
+session by its source and its session separately. It speaks navigation/display
+verbs - `ping`, `status`,
+`dump`, `rescan`, `switch <source> <session>`, `focus <nav|terminal>`,
 `width <delta>` (a signed column delta, not an absolute width),
 `toggle-auto-hide`, `quit` - and one session-lifecycle verb:
 
@@ -246,10 +247,10 @@ displayed session, and focus. `xmux send <name> <command>` drives one:
 
 ```
 xmux instances
-xmux send amber-otter switch prod/api
+xmux send amber-otter switch prod api
 xmux send am focus terminal          # any unambiguous name prefix works
 xmux send - dump                     # `-` when exactly one is running
-printf 'switch prod/api\nfocus terminal\n' | xmux send amber-otter
+printf 'switch prod api\nfocus terminal\n' | xmux send amber-otter
 ```
 
 An unknown name, an ambiguous prefix, or `-` with several instances running is an
@@ -258,7 +259,7 @@ switches the wrong terminal. With no command, `send` reads them from stdin, one 
 line. A refused command exits non-zero so a script can detect it. A `switch` to a
 `<source>/<session>` address the instance's current inventory does not list is a
 refused command too: it replies `err:` naming which half is missing (the source, or
-a session under a present source), so a script learns the address did not resolve
+a session under a present source), so a script learns the switch did not resolve
 instead of a blind `ok`.
 
 A low-level `raw:` namespace (`raw:key`, `raw:keys`, `raw:text`) injects keystrokes

@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::app::runtime::{host_selection_key, request_attach, terminal_view_size};
 use crate::display::grid::Grid;
-use crate::driver::{lower_select_window, DriverCtx, MuxDriver};
+use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
 /// Per-session mux (zellij): one server per session, displayed through ONE per-host
@@ -30,7 +30,6 @@ impl MuxDriver for ZellijDriver {
             return false;
         }
         let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav);
-        let control = ctx.mgr.get(&sel.source);
         let Some(host) = ctx.hosts.get_mut(&sel.source) else {
             return false;
         };
@@ -40,8 +39,7 @@ impl MuxDriver for ZellijDriver {
         let pre_mismatch = !already_on;
 
         if live && already_on {
-            // The live attachment already shows this session, so only a window row can
-            // need moving: `go-to-tab` on the session's own server, no teardown.
+            // The live attachment already shows this session; nothing to move, no teardown.
             tracing::info!(
                 host = %sel.source,
                 model = "per-session",
@@ -50,9 +48,6 @@ impl MuxDriver for ZellijDriver {
                 session = %sel.session,
                 "display_show"
             );
-            if let Some(win) = sel.window {
-                lower_select_window(host, control, &sel.session, win);
-            }
             crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
             return true;
         }
@@ -90,10 +85,6 @@ impl MuxDriver for ZellijDriver {
         );
         tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
         host.display.set_shows(&key, &sel.session);
-
-        if let Some(win) = sel.window {
-            lower_select_window(host, control, &sel.session, win);
-        }
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
     }
@@ -124,7 +115,6 @@ impl MuxDriver for ZellijDriver {
 mod tests {
     use super::*;
     use crate::display::registry::AttachRegistry;
-    use crate::link::HostManager;
     use crate::model::Selection;
 
     /// A headless zellij host with one live display attachment already on record: the
@@ -162,18 +152,15 @@ mod tests {
             }),
         );
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
         let sel = Selection {
             source: "local".into(),
             session: session.into(),
-            window: None,
         };
         let mut ctx = DriverCtx {
             registry,
             hosts,
             worker: &worker,
-            mgr: &mgr,
             pty_tx: &cap_tx,
             attach_seq: &mut attach_seq,
             cols: 80,

@@ -62,11 +62,12 @@ pub struct Env {
     roster: std::sync::RwLock<Roster>,
     pub ui_prefix: String,
     pub xmux_dir: PathBuf,
-    /// The ADDRESS of the session xmux is ITSELF running in (`local:psmux/xmus`), or
-    /// `None` when it is not inside a mux or the session could not be named. The one
-    /// session the terminal view refuses to mirror; see [`crate::display::attach::own_mux_session`].
-    /// Fixed for the run: the environment that names it cannot change under one.
-    pub own_session: Option<String>,
+    /// The [`crate::session::Address`] of the session xmux is ITSELF running in
+    /// (`local:psmux` + `xmus`), or `None` when it is not inside a mux or the session
+    /// could not be named. The one session the terminal view refuses to mirror; see
+    /// [`crate::display::attach::own_mux_session`]. Fixed for the run: the environment
+    /// that names it cannot change under one.
+    pub own_session: Option<crate::session::Address>,
     /// The local mux server socket parsed from `$TMUX` (`-S` target), threaded into
     /// the local host's transport by `Hosts::build`. `None` on the default socket.
     pub local_socket: Option<String>,
@@ -242,15 +243,16 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
     )
 }
 
-/// The address of the session xmux is running in, resolved against the LOCAL sources.
+/// The [`crate::session::Address`] of the session xmux is running in, resolved against
+/// the LOCAL sources.
 ///
 /// The mux names the session; this pairs it with the source id that mux answers as on
-/// this machine, because an address is a source and a session and the refusal has to match
-/// the card exactly. A mux xmux does not serve here leaves it unresolved, which blocks
-/// nothing - the same as not being inside a mux at all.
-fn own_session_address(srcs: &[Source]) -> Option<String> {
+/// this machine, because the refusal has to match the card exactly. A mux xmux does not
+/// serve here leaves it unresolved, which blocks nothing - the same as not being inside
+/// a mux at all.
+fn own_session_address(srcs: &[Source]) -> Option<crate::session::Address> {
     let (kind, session) = crate::display::attach::own_mux_session()?;
-    Some(crate::session::address_of(
+    Some(crate::session::Address::new(
         own_source_id(srcs, &kind)?,
         &session,
     ))
@@ -340,7 +342,7 @@ impl Env {
         roster: Roster,
         ui_prefix: String,
         xmux_dir: PathBuf,
-        own_session: Option<String>,
+        own_session: Option<crate::session::Address>,
         local_socket: Option<String>,
     ) -> Self {
         Env {
@@ -487,7 +489,7 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
     let addr_w = g
         .sessions
         .iter()
-        .map(|s| s.address().len())
+        .map(|s| s.address().display().len())
         .max()
         .unwrap_or(0);
     let nw_w = g
@@ -502,7 +504,7 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
         .map(|s| {
             format!(
                 "{:<addr_w$}  {:<nw_w$}  attached={}",
-                s.address(),
+                s.address().display(),
                 window_word(s.windows),
                 s.attached
             )

@@ -266,7 +266,7 @@ impl ControlProtocol for TmuxControl {
 
     fn connect_lines(&self) -> Vec<String> {
         // SUPPRESS %output - this control connection is a metadata / change-event /
-        // `select-window` channel ONLY; the per-session PTY attaches own the pixels, so
+        // `switch-client` channel ONLY; the per-session PTY attaches own the pixels, so
         // streaming pane output here is pure waste (and risks flooding the loop).
         // `no-output` keeps notifications flowing but stops %output. An older mux that
         // lacks the flag just %errors it (correlated as Ignore) - harmless.
@@ -277,10 +277,6 @@ impl ControlProtocol for TmuxControl {
         // SESSION_FORMAT contains TABs; single-quote it so tmux's line parser keeps it
         // as one arg (an unquoted tab would split the format).
         format!("list-sessions -F '{SESSION_FORMAT}'\n")
-    }
-
-    fn select_window_line(&self, target: &str) -> String {
-        format!("select-window -t {}\n", quote_target(target))
     }
 
     fn switch_client_line(&self, display_tty: &str, session: &str) -> String {

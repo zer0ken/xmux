@@ -640,33 +640,36 @@ impl Chrome {
         frame: &mut Frame,
         area: Rect,
         state: &crate::state::State,
-        source: &str,
+        address: &crate::session::Address,
         kind: ViewScreen,
     ) {
-        let lines = self.view_screen_lines(state, source, kind, area.width);
+        let lines = self.view_screen_lines(state, address, kind, area.width);
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
     /// The name a view screen carries at its top, in the grammar the nav cards use:
     /// `{host}/{mux}` for a host's screen, and that with the session under it for the
-    /// session xmux is itself running in. What arrives is the ADDRESS the screen was
-    /// reached by, which is the source id and, for the session screen, its session name.
-    fn headline(&self, address: &str, kind: ViewScreen) -> String {
-        if address.is_empty() {
+    /// session xmux is itself running in. What arrives is the [`crate::session::Address`]
+    /// the screen was reached by, which is the source id and, for the session screen, its
+    /// session name - the two halves are already separate, so nothing is re-split.
+    fn headline(&self, address: &crate::session::Address, kind: ViewScreen) -> String {
+        if address.source.is_empty() {
             return String::new();
         }
         match kind {
-            // A source id carries no `/`, so the first one parts it from the session name
-            // (which may carry more).
-            ViewScreen::SelfSession => match address.split_once('/') {
-                Some((source, session)) => format!(
-                    "{}{}{session}",
-                    self.source_label(source),
-                    crate::session::MUX_LABEL_SEP
-                ),
-                None => self.source_label(address),
-            },
-            ViewScreen::Unreachable | ViewScreen::Empty => self.source_label(address),
+            ViewScreen::SelfSession => {
+                if address.session.is_empty() {
+                    self.source_label(&address.source)
+                } else {
+                    format!(
+                        "{}{}{}",
+                        self.source_label(&address.source),
+                        crate::session::MUX_LABEL_SEP,
+                        address.session
+                    )
+                }
+            }
+            ViewScreen::Unreachable | ViewScreen::Empty => self.source_label(&address.source),
         }
     }
 
@@ -676,12 +679,13 @@ impl Chrome {
     fn view_screen_lines(
         &self,
         state: &crate::state::State,
-        source: &str,
+        address: &crate::session::Address,
         kind: ViewScreen,
         width: u16,
     ) -> Vec<Line<'static>> {
         let pal = crate::ui::palette::get();
         let p = &self.ui_prefix;
+        let source = address.source.as_str();
         // The rows in reading order: WHY the state is what it is, then what to press
         // about it. An unreachable host's why is the reason its own transport gave plus
         // the ssh stanza it was reached through, which is what a fix needs; a reachable
@@ -843,7 +847,7 @@ impl Chrome {
         let mut out = vec![
             Line::from(""),
             Line::from(Span::styled(
-                format!(" {}", self.headline(source, kind)),
+                format!(" {}", self.headline(address, kind)),
                 Style::default()
                     .fg(pal.secondary)
                     .add_modifier(Modifier::BOLD),

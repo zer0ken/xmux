@@ -15,7 +15,7 @@ use super::{run_reader, run_writer, HostCmd, HostEvent, InFlight, PendingReply, 
 /// One control-mode (`-CC`) host process: a piped child plus its reader and writer
 /// OS threads. The app holds the `cmd_tx` to drive it and reads `connecting` for the
 /// spinner; the session/window inventory is carried on `HostEvent`s and owned by
-/// `model::Host.inventory`. This is a METADATA / change-event / `select-window`
+/// `model::Host.inventory`. This is a METADATA / change-event / `switch-client`
 /// channel only — the per-session PTY attachments own the pixels.
 pub struct HostClient {
     /// Stable host id (the source name), echoed back on every `HostEvent`.
@@ -121,7 +121,7 @@ impl HostClient {
 
         // Connect sequence: size the client, then run the mux's connect preamble
         // (it SUPPRESSES %output — this control connection is a metadata / change-event /
-        // `select-window` channel ONLY; the per-session PTY attaches own the pixels), then
+        // `switch-client` channel ONLY; the per-session PTY attaches own the pixels), then
         // list sessions (the correlated query whose block resolves the inventory).
         let _ = cmd_tx.send(HostCmd::Resize { cols, rows });
         for line in proto.connect_lines() {
@@ -165,17 +165,6 @@ impl HostClient {
             line: self.proto.display_clients_line(),
             reply: PendingReply::DisplayClientTty,
         });
-    }
-
-    /// Make `target` (`session:window`) the active window of its session
-    /// (`select-window -t <target>`) over this control client. Used to
-    /// programmatically switch a window for a window-row selection: the real
-    /// attached PTY client follows because the session's active window changes
-    /// server-side (#4).
-    pub fn select_window_on(&self, target: &str) {
-        let _ = self
-            .cmd_tx
-            .send(HostCmd::Send(self.proto.select_window_line(target)));
     }
 
     /// Move xmux's display client (`display_tty`) to `session` over THIS control

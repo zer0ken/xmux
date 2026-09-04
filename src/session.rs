@@ -1,6 +1,7 @@
 //! The cross-environment data types: a [`Session`] living on a source (mux
-//! server), its windows-and-panes detail, and the `<source>/<name>` address that
-//! targets one session across the server boundary.
+//! server), its windows-and-panes detail, the [`Address`] pair (a source and a
+//! session) that targets one across the server boundary, and the address-grammar
+//! helpers that spell a source id.
 
 /// The reserved MACHINE name for this machine. A local source id is this alone, or this
 /// qualified by a mux (see [`source_id`]).
@@ -82,6 +83,36 @@ pub fn is_local_source(source: &str) -> bool {
     machine_of(source) == LOCAL_SOURCE
 }
 
+/// A source and a session as one value: the pair every internal path carries separately
+/// instead of a joined `source/session` string. The joined spelling exists only at the
+/// text boundary (the ctl/CLI wire, the persisted file) and at UI render time
+/// ([`Address::display`]); code between them carries the two halves.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Address {
+    pub source: String,
+    pub session: String,
+}
+
+impl Address {
+    pub fn new(source: impl Into<String>, session: impl Into<String>) -> Self {
+        Address {
+            source: source.into(),
+            session: session.into(),
+        }
+    }
+
+    /// The joined `source/session` spelling, for UI display and the text wire only.
+    pub fn display(&self) -> String {
+        format!("{}/{}", self.source, self.session)
+    }
+}
+
+impl From<&Session> for Address {
+    fn from(s: &Session) -> Self {
+        Address::new(&s.source, &s.name)
+    }
+}
+
 /// One mux session as seen on a source.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Session {
@@ -98,43 +129,9 @@ pub struct Session {
 }
 
 impl Session {
-    /// The cross-environment target string, `"<source>/<name>"`.
-    pub fn address(&self) -> String {
-        address_of(&self.source, &self.name)
-    }
-}
-
-/// Joins a source and session name into a `"<source>/<name>"` address - the single
-/// spelling of the address grammar (the inverse of [`source_of`] / [`parse_target`]).
-pub fn address_of(source: &str, name: &str) -> String {
-    format!("{source}/{name}")
-}
-
-/// The source half of a `"<source>/<name>"` address: everything before the first
-/// `/` (the same split rule as [`parse_target`]). A string with no `/` is returned
-/// whole. Does not validate - use [`parse_target`] when both halves are required.
-pub fn source_of(addr: &str) -> &str {
-    addr.split('/').next().unwrap_or(addr)
-}
-
-/// Splits a `"<source>/<name>"` address on the FIRST `/` so a session name
-/// containing `/` is preserved. Both halves must be non-empty.
-pub fn parse_target(addr: &str) -> Result<Session, String> {
-    match addr.find('/') {
-        None => Err(format!("invalid target {addr:?}: want <source>/<session>")),
-        Some(i) => {
-            let (source, name) = (&addr[..i], &addr[i + 1..]);
-            if source.is_empty() || name.is_empty() {
-                return Err(format!(
-                    "invalid target {addr:?}: source and session must be non-empty"
-                ));
-            }
-            Ok(Session {
-                source: source.to_string(),
-                name: name.to_string(),
-                ..Default::default()
-            })
-        }
+    /// The cross-environment target as the separate [`Address`] pair.
+    pub fn address(&self) -> Address {
+        Address::from(self)
     }
 }
 
@@ -163,7 +160,22 @@ mod tests {
             name: "editor".into(),
             ..Default::default()
         };
-        assert_eq!(s.address(), "local/editor");
+        assert_eq!(s.address().source, "local");
+        assert_eq!(s.address().session, "editor");
+    }
+
+    #[test]
+    fn address_is_the_separate_pair_and_displays_joined() {
+        let a = Address::new("jup", "api");
+        assert_eq!(a.source, "jup");
+        assert_eq!(a.session, "api");
+        assert_eq!(a.display(), "jup/api");
+        // A session name holding a `/` or a space survives as the pair; only the
+        // display spelling joins them.
+        let b = Address::new("jup", "my/session");
+        assert_eq!(b.session, "my/session");
+        assert_eq!(b.display(), "jup/my/session");
+        assert_eq!(Address::default().display(), "/");
     }
 
     #[test]
@@ -221,43 +233,18 @@ mod tests {
 
     #[test]
     fn a_qualified_source_still_addresses_a_session() {
-        // The address grammar splits on the FIRST `/`, and a source id carries no `/`,
-        // so qualifying it leaves both halves recoverable - including a zellij session
-        // name holding a colon.
+        // The pair carries the two halves separately, so a qualified source and a
+        // zellij session name holding a colon survive as they are - no grammar to
+        // re-split.
         let s = Session {
             source: "local:zellij".into(),
             name: "a:b".into(),
             ..Default::default()
         };
-        assert_eq!(s.address(), "local:zellij/a:b");
-        let back = parse_target(&s.address()).unwrap();
-        assert_eq!(back.source, "local:zellij");
-        assert_eq!(back.name, "a:b");
-        assert_eq!(source_of(&s.address()), "local:zellij");
-    }
-
-    #[test]
-    fn parse_target_cases() {
-        // (input, want_source, want_name, want_err)
-        let cases: &[(&str, &str, &str, bool)] = &[
-            ("local/editor", "local", "editor", false),
-            ("prod/api", "prod", "api", false),
-            ("host/a/b", "host", "a/b", false), // session names may contain "/"
-            ("noslash", "", "", true),
-            ("", "", "", true),
-            ("/leading", "", "", true),  // empty source
-            ("trailing/", "", "", true), // empty name
-        ];
-        for &(input, want_source, want_name, want_err) in cases {
-            match parse_target(input) {
-                Err(_) => assert!(want_err, "parse_target({input:?}) errored unexpectedly"),
-                Ok(got) => {
-                    assert!(!want_err, "parse_target({input:?}) = {got:?}, want error");
-                    assert_eq!(got.source, want_source, "source for {input:?}");
-                    assert_eq!(got.name, want_name, "name for {input:?}");
-                }
-            }
-        }
+        let a = s.address();
+        assert_eq!(a.source, "local:zellij");
+        assert_eq!(a.session, "a:b");
+        assert_eq!(a.display(), "local:zellij/a:b");
     }
 
     #[test]
@@ -266,19 +253,14 @@ mod tests {
     }
 
     #[test]
-    fn source_of_returns_the_source_half() {
-        // The source is everything before the first `/` (same split rule as
-        // parse_target), so a session name containing `/` keeps its source.
-        assert_eq!(source_of("jup/api"), "jup");
-        assert_eq!(source_of("local/a/b"), "local");
-        // No `/`: the whole string is the source (mirrors split's fallback).
-        assert_eq!(source_of("noslash"), "noslash");
-    }
-
-    #[test]
-    fn address_of_joins_source_and_name() {
-        assert_eq!(address_of("jup", "api"), "jup/api");
-        // Round-trips with source_of on the source half.
-        assert_eq!(source_of(&address_of("jup", "api")), "jup");
+    fn address_from_session_round_trips() {
+        let s = Session {
+            source: "jup".into(),
+            name: "api".into(),
+            ..Default::default()
+        };
+        let a: Address = Address::from(&s);
+        assert_eq!(a.source, "jup");
+        assert_eq!(a.session, "api");
     }
 }

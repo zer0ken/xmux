@@ -21,7 +21,7 @@
 //! sessions has nothing to switch TO until one exists.
 
 use crate::model::Selection;
-use crate::session::Session;
+use crate::session::{Address, Session};
 use std::time::Instant;
 
 /// A domain intent. The single input the [`State::apply`](crate::state::State::apply)
@@ -29,12 +29,10 @@ use std::time::Instant;
 /// selection derive.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    /// Move the display target to this `source/session` address (the ctl `switch`
-    /// verb - its only producer). Selects the addressed SESSION; a `:window` suffix is
-    /// not honored, since the switcher matches session rows by their `source/session`
-    /// address. Moves the selection; the attach commits on a later `Tick` once the
-    /// selection settles.
-    Switch { address: String },
+    /// Move the display target to this `source/session` pair (the ctl `switch` verb -
+    /// its only producer). Selects the addressed SESSION. Moves the selection; the
+    /// attach commits on a later `Tick` once the selection settles.
+    Switch(Address),
     /// Move focus between the nav view and the terminal view.
     Focus(FocusTarget),
     /// Flip the view focus (Nav ⇄ Terminal) - produced only by a left click on the
@@ -102,8 +100,8 @@ pub enum Action {
 /// the single domain-mutation site.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    /// Move the switcher selection to this `source/session[:window]` address.
-    SelectAddress(String),
+    /// Move the switcher selection to this session's row.
+    SelectAddress(Address),
     /// Re-enumerate every host (the `r` re-scan), via the switcher.
     Rescan,
     /// Adjust the natural nav width by this signed delta and schedule the debounced
@@ -111,8 +109,8 @@ pub enum Command {
     AdjustNavWidth(i32),
     /// Toggle auto-hide-nav mode and persist it.
     ToggleAutoHide,
-    /// Persist this session address as the user's last-selected.
-    PersistLastSession(String),
+    /// Persist this session as the user's last-selected.
+    PersistLastSession(Address),
     /// Attach (or switch to) the selected session - the settled-selection effect.
     Attach(Selection),
     /// Exit the app run loop.

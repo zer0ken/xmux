@@ -47,13 +47,8 @@ impl Transport for Local {
     }
 
     /// A LOCAL interactive attach hands the terminal to the bare attach argv (with
-    /// `-S <socket>` injection) and IGNORES `pre_select` — a local source pre-selects
-    /// the window with a separate instant command.
-    fn interactive_attach_argv(
-        &self,
-        mux_attach_argv: &[String],
-        _pre_select: Option<&[String]>,
-    ) -> (String, Vec<String>) {
+    /// `-S <socket>` injection).
+    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> (String, Vec<String>) {
         self.exec_argv(true, mux_attach_argv)
     }
 
@@ -147,21 +142,16 @@ mod tests {
     }
 
     #[test]
-    fn interactive_attach_local_ignores_pre_select_and_injects_socket() {
-        // A LOCAL interactive attach hands the terminal to a bare mux attach argv (the
-        // window is pre-selected by a separate instant local command, so the pre-select
-        // is ignored here). A non-default socket is injected via -S, exactly as exec_argv.
+    fn interactive_attach_local_injects_socket() {
+        // A LOCAL interactive attach hands the terminal to a bare mux attach argv. A
+        // non-default socket is injected via -S, exactly as exec_argv.
         let mux_attach = argv(&["psmux", "new-session", "-A", "-s", "dev"]);
-        let (n, a) = local(None).interactive_attach_argv(&mux_attach, None);
-        assert_eq!(n, "psmux");
-        assert_eq!(a, argv(&["new-session", "-A", "-s", "dev"]));
-        // A pre-select is ignored for local (it happens via a separate command).
-        let (n, a) = local(None).interactive_attach_argv(&mux_attach, Some(&argv(&["psmux", "x"])));
+        let (n, a) = local(None).interactive_attach_argv(&mux_attach);
         assert_eq!(n, "psmux");
         assert_eq!(a, argv(&["new-session", "-A", "-s", "dev"]));
         // Non-default socket is injected before the attach args.
         let (n, a) = local(Some("/tmp/tmux-1000/work"))
-            .interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]), None);
+            .interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]));
         assert_eq!(n, "tmux");
         assert_eq!(
             a,

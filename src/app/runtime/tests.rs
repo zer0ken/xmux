@@ -44,34 +44,30 @@ fn selection_from_session_row_target() {
     let sel = selection_from_target(&t);
     assert_eq!(sel.source, "jupiter06");
     assert_eq!(sel.session, "api");
-    assert_eq!(sel.window, None);
-    assert_eq!(sel.address(), "jupiter06/api");
+    assert_eq!(
+        crate::session::Address::new(&sel.source, &sel.session).display(),
+        "jupiter06/api"
+    );
     assert!(!sel.is_empty());
 }
 
 #[test]
-fn selection_from_window_row_target() {
-    // A window-row target `session:window` keeps the session as the PTY key and
-    // carries the window index for select-window.
+fn selection_keeps_a_colon_inside_the_session_name() {
+    // A session name holding a colon (a zellij session may) is the session whole, as
+    // the card carries it - no suffix is parted off.
     let t = TerminalViewTarget {
-        source: "jupiter06".into(),
-        target: "api:2".into(),
+        source: "local:zellij".into(),
+        target: "a:b".into(),
     };
     let sel = selection_from_target(&t);
-    assert_eq!(sel.session, "api");
-    assert_eq!(sel.window, Some(2));
-    assert_eq!(
-        sel.address(),
-        "jupiter06/api",
-        "address is source/session, not the window"
-    );
+    assert_eq!(sel.session, "a:b");
+    assert_eq!(sel.source, "local:zellij");
 }
 
 #[test]
 fn selection_from_empty_target_is_empty() {
     let sel = selection_from_target(&TerminalViewTarget::default());
     assert!(sel.is_empty());
-    assert_eq!(sel.window, None);
 }
 
 #[test]
@@ -90,13 +86,11 @@ fn display_key_is_per_host_for_shared_and_reattach_psmux() {
     let rsel = Selection {
         source: "jup".into(),
         session: "api".into(),
-        window: None,
     };
     assert_eq!(display_key(&hosts, &rsel), "jup", "shared → per-host key");
     let lsel = Selection {
         source: "local".into(),
         session: "work".into(),
-        window: None,
     };
     assert_eq!(
         display_key(&hosts, &lsel),
@@ -695,8 +689,6 @@ fn current_grid_returns_none_for_empty_displayed() {
     let mut registry = AttachRegistry::new();
     let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
     let worker = crate::display::DisplayWorker::new(ptx);
-    let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::link::HostEvent>();
-    let mgr = HostManager::new(etx);
     let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
     let mut attach_seq = 0u64;
     let displayed = Selection::default();
@@ -706,7 +698,6 @@ fn current_grid_returns_none_for_empty_displayed() {
             registry: &mut registry,
             hosts: &mut hosts,
             worker: &worker,
-            mgr: &mgr,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
             cols: 80,
@@ -743,19 +734,15 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
     let mut attach_seq = 0u64;
     // No control client registered ⇒ select_attach falls back to the dispatched-switch
     // path (this test exercises attach/in-flight latching, not the switch transport).
-    let (etx, _erx) = tokio::sync::mpsc::unbounded_channel::<crate::link::HostEvent>();
-    let mgr = HostManager::new(etx);
     let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
     let sel_a = Selection {
         source: "jup".into(),
         session: "a".into(),
-        window: None,
     };
     let sel_b = Selection {
         source: "jup".into(),
         session: "b".into(),
-        window: None,
     };
 
     // First attach (session a): requests off-loop, latches display.current[jup]=a, marks in-flight.
@@ -765,7 +752,6 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
             registry: &mut registry,
             hosts: &mut hosts,
             worker: &worker,
-            mgr: &mgr,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
             cols: 80,
@@ -787,7 +773,6 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
             registry: &mut registry,
             hosts: &mut hosts,
             worker: &worker,
-            mgr: &mgr,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
             cols: 80,
@@ -818,18 +803,15 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
     );
     let mut registry = AttachRegistry::new();
     let mut attach_seq = 0u64;
-    let mgr = empty_manager();
     let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
     let sel_test2 = Selection {
         source: "local".into(),
         session: "test2".into(),
-        window: None,
     };
     let sel_test = Selection {
         source: "local".into(),
         session: "test".into(),
-        window: None,
     };
 
     assert!(select_attach(
@@ -838,7 +820,6 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
             registry: &mut registry,
             hosts: &mut hosts,
             worker: &worker,
-            mgr: &mgr,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
             cols: 80,
@@ -881,7 +862,6 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
             registry: &mut registry,
             hosts: &mut hosts,
             worker: &worker,
-            mgr: &mgr,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
             cols: 80,
@@ -923,13 +903,11 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
     let mut registry = AttachRegistry::new();
     registry.insert("local", crate::display::attachment::fake_attachment(99));
     let mut attach_seq = 0u64;
-    let mgr = empty_manager();
     let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
     let sel = Selection {
         source: "local".into(),
         session: "target".into(),
-        window: None,
     };
 
     assert!(select_attach(
@@ -938,7 +916,6 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
             registry: &mut registry,
             hosts: &mut hosts,
             worker: &worker,
-            mgr: &mgr,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
             cols: 80,
@@ -961,7 +938,6 @@ fn should_attach_fires_on_change_and_recovery_never_storms_in_flight() {
     let a = Selection {
         source: "h".into(),
         session: "api".into(),
-        window: None,
     };
     let b = Selection {
         session: "db".into(),
@@ -1059,13 +1035,11 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
     );
     let mut registry = AttachRegistry::new();
     let mut attach_seq = 7u64;
-    let mgr = empty_manager();
     let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
     let sel = Selection {
         source: "local".into(),
         session: "target".into(),
-        window: None,
     };
 
     assert!(select_attach(
@@ -1074,7 +1048,6 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
             registry: &mut registry,
             hosts: &mut hosts,
             worker: &worker,
-            mgr: &mgr,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
             cols: 80,
@@ -1085,10 +1058,6 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
 
     let h = hosts.get("local").unwrap();
     assert_eq!(h.display.in_flight_seq("local"), Some(8));
-}
-
-fn empty_manager() -> HostManager {
-    HostManager::new(tokio::sync::mpsc::unbounded_channel().0)
 }
 
 /// A headless `Runtime` for exercising the `&mut self` arm/effect methods: a fake
@@ -1468,7 +1437,7 @@ async fn a_mux_side_switch_in_terminal_focus_moves_the_nav_to_that_session() {
     // stays where it is.
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address("jup/api", &state); // deterministic start (ignore any last_session)
+    switcher.select_address(&crate::session::Address::new("jup", "api"), &state); // deterministic start (ignore any last_session)
     let mut rt = test_rt(fake_env_with_sources(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.hosts.get_mut("jup").unwrap().display_tty =
@@ -1533,7 +1502,7 @@ async fn a_switch_onto_a_session_with_no_card_yet_moves_the_nav_when_its_card_ap
     // after the enumeration that brings the card in moves the nav there.
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address("jup/api", &state);
+    switcher.select_address(&crate::session::Address::new("jup", "api"), &state);
     let mut rt = test_rt(fake_env_with_sources(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.hosts.get_mut("jup").unwrap().display_tty =
@@ -1584,7 +1553,7 @@ async fn a_card_appearing_for_a_session_the_client_has_left_moves_nothing() {
     // older move to arrive late, because no move was ever written down.
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address("jup/api", &state);
+    switcher.select_address(&crate::session::Address::new("jup", "api"), &state);
     let mut rt = test_rt(fake_env_with_sources(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.hosts.get_mut("jup").unwrap().display_tty =
@@ -1675,7 +1644,7 @@ fn the_client_reports(rt: &mut Runtime, id: u64, session: &str) {
 fn a_settled_psmux_runtime() -> Runtime {
     let mut state = crate::state::State::from_scan(psmux_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address("local/a", &state);
+    switcher.select_address(&crate::session::Address::new("local", "a"), &state);
     let mut rt = test_rt(fake_env_with_sources(&[]));
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
@@ -1766,7 +1735,7 @@ fn zellij_scan() -> crate::ui::switcher::Scan {
 fn a_settled_zellij_runtime() -> Runtime {
     let mut state = crate::state::State::from_scan(zellij_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address("local/a", &state);
+    switcher.select_address(&crate::session::Address::new("local", "a"), &state);
     let mut rt = test_rt(fake_env_with_sources(&[]));
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
@@ -2058,7 +2027,8 @@ async fn a_switch_asked_for_in_terminal_focus_is_not_dragged_back() {
     let t0 = std::time::Instant::now();
 
     // What a ctl `switch local/b` dispatches to.
-    rt.switcher.select_address("local/b", &rt.state);
+    rt.switcher
+        .select_address(&crate::session::Address::new("local", "b"), &rt.state);
     one_pass(&mut rt, t0);
     one_pass(&mut rt, t0 + std::time::Duration::from_millis(50));
     assert_eq!(
@@ -2109,7 +2079,8 @@ async fn a_pick_on_the_selected_card_leaves_the_nav_and_the_display_naming_one_s
     the_reattach_lands(&mut rt, "a");
 
     // The user picks local/a, the card already selected.
-    rt.switcher.select_address("local/a", &rt.state);
+    rt.switcher
+        .select_address(&crate::session::Address::new("local", "a"), &rt.state);
 
     // `focus terminal`
     rt.state
@@ -2140,17 +2111,16 @@ async fn a_pick_on_the_selected_card_leaves_the_nav_and_the_display_naming_one_s
 // 2. Move the selection between sessions. Confirm the terminal view shows each session's
 //    real attached terminal instantly (it is pre-attached + kept alive), with a
 //    spinner while a session's attach is still establishing.
-// 3. Select a WINDOW row - confirm the attached client switches to that window.
-// 4. Press Enter (or C-g → / C-g Tab) - focus the terminal (Focus::Terminal); the split
+// 3. Press Enter (or C-g → / C-g Tab) - focus the terminal (Focus::Terminal); the split
 //    is unchanged (view border turns green) and keystrokes reach the real attached pane.
 //    C-g ← / C-g Esc / C-g Tab return focus to the nav. Confirm no blank/flash.
-// 5. Create / kill a window or session inside a pane - confirm the nav view
+// 4. Create / kill a window or session inside a pane - confirm the nav view
 //    syncs (remote via control events, local within the poll interval) and the
 //    PTY set follows (new session attaches, killed session's PTY is reaped).
-// 6. C-g then `q` - clean quit, terminal restored.
-// 7. NEVER attach the session that owns xmux (xmux refuses to run inside a mux,
+// 5. C-g then `q` - clean quit, terminal restored.
+// 6. NEVER attach the session that owns xmux (xmux refuses to run inside a mux,
 //    so in normal use no session mirrors the UI).
-// 8. Mouse: dragging never selects native terminal text (the app captures the
+// 7. Mouse: dragging never selects native terminal text (the app captures the
 //    mouse). A LEFT-button press in the UNFOCUSED view switches focus to it (focus
 //    only - the click is not delivered); right-click never moves focus (it opens the
 //    tree context menu). Once the terminal view is focused, clicks/scroll/
@@ -2201,9 +2171,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
     // Switch addr → selection lands on db; returns (quit=false, width_changed=false).
     assert_eq!(
         dispatch_action(
-            Action::Switch {
-                address: "jup/db".into()
-            },
+            Action::Switch(crate::session::Address::new("jup", "db")),
             &mut sw,
             &mut state,
             &mut natural,
@@ -2343,9 +2311,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
     // api (name order) is the preselected top card, so switch to db to exercise a real
     // selection move.
     dispatch_action(
-        Action::Switch {
-            address: "jup/db".into(),
-        },
+        Action::Switch(crate::session::Address::new("jup", "db")),
         &mut sw,
         &mut state,
         &mut natural,
@@ -2975,7 +2941,6 @@ fn forward_to_mux_reasserts_capture_and_encodes_the_sgr_press() {
     let sel = Selection {
         source: "local".into(),
         session: "work".into(),
-        window: None,
     };
     let nav_width = crate::ui::switcher::NAV_WIDTH;
     let (vw, vh) = terminal_view_size(80, 24, crate::ui::switcher::NavSize::visible(nav_width));

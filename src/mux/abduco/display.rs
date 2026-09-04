@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::app::runtime::{host_selection_key, request_attach, terminal_view_size};
 use crate::display::grid::Grid;
-use crate::driver::{lower_select_window, DriverCtx, MuxDriver};
+use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
 /// Per-session mux (abduco): one server per session, displayed through ONE per-host
@@ -26,7 +26,6 @@ impl MuxDriver for AbducoDriver {
             return false;
         }
         let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav);
-        let control = ctx.mgr.get(&sel.source);
         let Some(host) = ctx.hosts.get_mut(&sel.source) else {
             return false;
         };
@@ -64,10 +63,6 @@ impl MuxDriver for AbducoDriver {
         );
         tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
         host.display.set_shows(&key, &sel.session);
-
-        if let Some(win) = sel.window {
-            lower_select_window(host, control, &sel.session, win);
-        }
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
     }

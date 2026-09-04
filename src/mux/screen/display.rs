@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::app::runtime::{host_selection_key, request_attach, terminal_view_size};
 use crate::display::grid::Grid;
-use crate::driver::{lower_select_window, DriverCtx, MuxDriver};
+use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
 /// screen: one daemon per session, displayed through ONE per-host PTY that is REATTACHED
@@ -28,7 +28,6 @@ impl MuxDriver for ScreenDriver {
             return false;
         }
         let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav);
-        let control = ctx.mgr.get(&sel.source);
         let Some(host) = ctx.hosts.get_mut(&sel.source) else {
             return false;
         };
@@ -38,8 +37,7 @@ impl MuxDriver for ScreenDriver {
         let pre_mismatch = !already_on;
 
         if live && already_on {
-            // The live attachment already shows this session, so only a window row can
-            // need moving: `-X select` on the session, no teardown.
+            // The live attachment already shows this session; nothing to move, no teardown.
             tracing::info!(
                 host = %sel.source,
                 model = "per-session",
@@ -48,9 +46,6 @@ impl MuxDriver for ScreenDriver {
                 session = %sel.session,
                 "display_show"
             );
-            if let Some(win) = sel.window {
-                lower_select_window(host, control, &sel.session, win);
-            }
             crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
             return true;
         }
@@ -87,10 +82,6 @@ impl MuxDriver for ScreenDriver {
         );
         tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
         host.display.set_shows(&key, &sel.session);
-
-        if let Some(win) = sel.window {
-            lower_select_window(host, control, &sel.session, win);
-        }
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
     }

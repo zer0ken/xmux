@@ -231,9 +231,7 @@ pub trait Mux: Send + Sync {
         runner: &dyn Runner,
     ) -> Result<Vec<Session>, RunError>;
 
-    /// The interactive attach argv (`argv[0]` = binary). The window is selected
-    /// separately via `select_window_plan`; the transport folds it for a remote
-    /// attach when composing the final connection.
+    /// The interactive attach argv (`argv[0]` = binary).
     fn attach_plan(&self, session: &str) -> Vec<String>;
 
     /// An opaque plan that moves xmux's OWN display client to `session` IN PLACE (no
@@ -314,12 +312,8 @@ pub trait Mux: Send + Sync {
     }
 
     // The command-plan verbs are tmux-compatible argv builders over `self.bin()`, so
-    // every tmux-compatible mux inherits them for free . A mux
+    // every tmux-compatible mux inherits them for free. A mux
     // whose argv diverges overrides only the verb it differs on.
-    fn select_window_plan(&self, target: &str) -> Vec<String> {
-        mux::select_window(self.bin(), target)
-    }
-
     /// The `new-session` argv that creates-or-attaches a DETACHED session (auto-named
     /// when `name` is empty) and prints its assigned name. The manage layer runs it via
     /// the host's `Transport` and reads back the assigned name.
@@ -558,7 +552,6 @@ mod tests {
     #[test]
     fn tmux_attach_plan_is_plain_attach() {
         let m = tmux();
-        // The window is selected separately (select_window_plan); attach stays plain.
         assert_eq!(m.attach_plan("api"), argv(&["tmux", "attach", "-t", "api"]));
     }
 
@@ -568,15 +561,6 @@ mod tests {
         assert_eq!(m.control_argv(), Some(argv(&["tmux", "-CC", "attach"])));
         assert_eq!(m.event_source(), EventSource::Control);
         assert_eq!(m.death_signal(), DeathSignal::ControlNotice);
-    }
-
-    #[test]
-    fn tmux_read_plans_match_mux_builders() {
-        let m = tmux();
-        assert_eq!(
-            m.select_window_plan("api:2"),
-            mux::select_window("tmux", "api:2")
-        );
     }
 
     #[test]
@@ -731,15 +715,6 @@ mod tests {
         assert_eq!(
             psmux().attach_plan("work"),
             argv(&["psmux", "new-session", "-A", "-s", "work"])
-        );
-    }
-
-    #[test]
-    fn psmux_read_plans_use_the_psmux_binary() {
-        let m = psmux();
-        assert_eq!(
-            m.select_window_plan("work:1"),
-            mux::select_window("psmux", "work:1")
         );
     }
 

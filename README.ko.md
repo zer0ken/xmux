@@ -65,7 +65,7 @@ xmux는 호스트가 어느 바이너리로 응답하는지를 보고 그 호스
 ```sh
 xmux                          # 앱을 실행한다
 xmux ls                       # 접근할 수 있는 모든 세션을 나열한다 (스크립트용)
-xmux attach <source>/<name>   # 세션 하나에 바로 attach 한다, 예: xmux attach prod/api
+xmux attach <source> <name>   # 세션 하나에 바로 attach 한다, 예: xmux attach prod api
 xmux doctor                   # 설정과 소스별 접근 가능 여부를 점검한다
 xmux instances                # 실행 중인 인스턴스를 나열한다
 xmux send <name> <command…>  # 그중 하나를 컨트롤 소켓으로 조작한다
@@ -126,8 +126,8 @@ ssh 대상 이름을 모은다.
 하나가 여러 mux를 동시에 제공할 수 있으므로, xmux는 psmux와
 zellij가 함께 동작하는 호스트를 두 소스로 노출한다. 호스트와 mux의 조합
 하나하나가 **소스**다. 소스 이름은 호스트가 여러 mux를 제공하면 `local:psmux`
-형식이고, 하나만 제공하면 `prod` 형식이다. 목록에 표시되는 이름이 곧 명령에서
-`<source>/<session>`으로 지정하는 이름이다. xmux는 원격 호스트를 앱이 실행된
+형식이고, 하나만 제공하면 `prod` 형식이다. 목록에 표시되는 이름이 곧 소스다.
+명령은 세션을 소스와 세션 이름으로 따로 지정한다(예: `switch prod api`). xmux는 원격 호스트를 앱이 실행된
 뒤에 조회하므로, 발견한 소스는 각 호스트가 응답하는 대로 하나씩 나타난다.
 
 ## 설정
@@ -170,14 +170,15 @@ xmux는 호스트를 먼저 `~/.ssh/config`에서 읽는다. 설정 파일은 �
 ## 컨트롤 소켓
 
 실행 중인 인스턴스마다 이름이 있고, 각 인스턴스는 `~/.xmux/ctl-<name>.sock`에서
-요청을 받는다. 세션은 `<source>/<session>`으로 지정한다. 소켓이 받는 명령은
+요청을 받는다. 명령은 세션을 소스와 세션 이름으로 따로 지정한다(`switch
+<source> <session>`), 목록에는 `<source>/<session>`으로 합쳐 보인다. 소켓이 받는 명령은
 탐색 명령(`ping`, `status`, `dump`, `rescan`, `switch`, `focus`, `width`,
 `toggle-auto-hide`, `quit`)과 세션 수명 명령 하나(`new-session`)다. kill,
 rename, window 명령은 없다. 세션을 편집하는 일은 mux가 담당한다.
 
 ```sh
 xmux instances                       # NAME · PID · CWD · TTY · displayed · focus
-xmux send amber-otter switch prod/api
+xmux send amber-otter switch prod api
 xmux send am focus terminal          # 겹치지 않는 이름 앞부분으로 지정한다
 xmux send - dump                     # 하나만 실행 중일 때는 `-`
 ```

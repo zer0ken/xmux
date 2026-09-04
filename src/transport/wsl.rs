@@ -84,20 +84,11 @@ impl Transport for Wsl {
         )
     }
 
-    /// Runs `[<pre_select> ; ] exec <attach>` in the distribution, exactly as the ssh
-    /// implementation does: `exec` replaces the shell so the attach owns the pty for its whole
-    /// life, and folding `pre_select` into the SAME command means the selection cannot be
-    /// lost to a second launch that races the attach.
-    fn interactive_attach_argv(
-        &self,
-        mux_attach_argv: &[String],
-        pre_select: Option<&[String]>,
-    ) -> (String, Vec<String>) {
+    /// Runs `exec <attach>` in the distribution, exactly as the ssh implementation
+    /// does: `exec` replaces the shell so the attach owns the pty for its whole life.
+    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> (String, Vec<String>) {
         let attach = remote_command(mux_attach_argv);
-        let command = match pre_select {
-            Some(sel) => format!("{} ; exec {}", remote_command(sel), attach),
-            None => format!("exec {attach}"),
-        };
+        let command = format!("exec {attach}");
         (WSL_BIN.to_string(), self.shell_argv(&command))
     }
 
@@ -218,7 +209,7 @@ mod tests {
         // later edit cannot quietly drop one of them on one path.
         let t = wsl("Ubuntu-24.04");
         let (_n, exec) = t.exec_argv(false, &argv(&["tmux", "list-sessions"]));
-        let (_n, attach) = t.interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]), None);
+        let (_n, attach) = t.interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]));
         let control = t.control_argv(&argv(&["tmux", "-CC", "attach"]));
         let raw = t.raw_shell_argv("c=$(tty); echo $c").unwrap();
         let want = argv(&["-d", "Ubuntu-24.04", "--exec", "sh", "-lc"]);
@@ -255,18 +246,10 @@ mod tests {
     }
 
     #[test]
-    fn interactive_attach_execs_and_folds_the_pre_select() {
+    fn interactive_attach_execs_in_the_distro() {
         let t = wsl("Ubuntu-24.04");
-        let (_n, a) = t.interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]), None);
+        let (_n, a) = t.interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]));
         assert_eq!(a.last().unwrap(), "exec tmux attach -t api");
-        let (_n, a) = t.interactive_attach_argv(
-            &argv(&["tmux", "attach", "-t", "api"]),
-            Some(&argv(&["tmux", "select-window", "-t", "api:2"])),
-        );
-        assert_eq!(
-            a.last().unwrap(),
-            "tmux select-window -t 'api:2' ; exec tmux attach -t api"
-        );
     }
 
     #[test]
