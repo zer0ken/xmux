@@ -41,9 +41,6 @@ pub trait ControlProtocol: Send + Sync {
     /// `list-sessions -F <fmt>` — the correlated query whose block resolves the inventory.
     fn list_sessions_line(&self) -> String;
 
-    /// `select-window -t <target>` — makes `target` (`session:window`) the active window.
-    fn select_window_line(&self, target: &str) -> String;
-
     /// `switch-client -c <display_tty> -t <session>` — moves the named display client.
     fn switch_client_line(&self, display_tty: &str, session: &str) -> String;
 

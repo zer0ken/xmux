@@ -85,7 +85,6 @@ impl Runtime {
                         registry: &mut *registry,
                         hosts: &mut *hosts,
                         worker,
-                        mgr,
                         pty_tx,
                         attach_seq: &mut *attach_seq,
                         cols,
@@ -242,7 +241,7 @@ impl Runtime {
                     connected.remove(id);
                     detecting.remove(id);
                     for address in registry.addresses() {
-                        if crate::session::source_of(&address) == id {
+                        if address == *id {
                             registry.remove(&address);
                         }
                     }
@@ -341,7 +340,6 @@ impl Runtime {
                     registry: &mut *registry,
                     hosts: &mut *hosts,
                     worker,
-                    mgr,
                     pty_tx,
                     attach_seq: &mut *attach_seq,
                     cols,
@@ -716,7 +714,6 @@ impl Runtime {
                     registry: &mut self.registry,
                     hosts: &mut self.hosts,
                     worker: &self.worker,
-                    mgr: &self.mgr,
                     pty_tx: &self.driver_pty_tx,
                     attach_seq: &mut self.attach_seq,
                     cols: self.cols,
@@ -966,7 +963,6 @@ impl Runtime {
                                 .apply(crate::model::Action::ConfirmDisplay(Selection {
                                     source: hid.clone(),
                                     session: shown,
-                                    window: None,
                                 }));
                         }
                     }
@@ -1017,7 +1013,7 @@ impl Runtime {
                 // state, so the reply is computed here, not in the dispatch task - the
                 // task only awaits it.
                 let resp = match &action {
-                    crate::model::Action::Switch { address } => {
+                    crate::model::Action::Switch(address) => {
                         match self.state.resolve_switch_address(address) {
                             Ok(()) => "ok".to_string(),
                             Err(problem) => format!("err: {problem}"),
@@ -1089,7 +1085,6 @@ impl Runtime {
                         registry: &mut self.registry,
                         hosts: &mut self.hosts,
                         worker: &self.worker,
-                        mgr: &self.mgr,
                         pty_tx: &self.driver_pty_tx,
                         attach_seq: &mut self.attach_seq,
                         cols: self.cols,
@@ -1175,7 +1170,6 @@ impl Runtime {
                             registry: &mut self.registry,
                             hosts: &mut self.hosts,
                             worker: &self.worker,
-                            mgr: &self.mgr,
                             pty_tx: &self.driver_pty_tx,
                             attach_seq: &mut self.attach_seq,
                             cols: self.cols,
@@ -1272,7 +1266,6 @@ impl Runtime {
                             registry: &mut self.registry,
                             hosts: &mut self.hosts,
                             worker: &self.worker,
-                            mgr: &self.mgr,
                             pty_tx: &self.driver_pty_tx,
                             attach_seq: &mut self.attach_seq,
                             cols: self.cols,
@@ -1355,7 +1348,7 @@ impl Runtime {
         if shown == self.state.selection.session {
             return false;
         }
-        let addr = crate::session::address_of(&self.state.selection.source, shown);
+        let addr = crate::session::Address::new(&self.state.selection.source, shown);
         self.switcher.select_address(&addr, &self.state)
     }
 
@@ -1462,7 +1455,13 @@ impl Runtime {
                 .map(|h| h.display.in_flight_contains(&key))
                 .unwrap_or(false);
             if in_flight_for_key || self.registry.connecting(&key) {
-                sp.insert(self.state.selection.address());
+                sp.insert(
+                    crate::session::Address::new(
+                        &self.state.selection.source,
+                        &self.state.selection.session,
+                    )
+                    .display(),
+                );
             }
         }
         self.state.chrome.set_spinner(sp);
@@ -1552,7 +1551,6 @@ impl Runtime {
                 registry: &mut self.registry,
                 hosts: &mut self.hosts,
                 worker: &self.worker,
-                mgr: &self.mgr,
                 pty_tx: &self.driver_pty_tx,
                 attach_seq: &mut self.attach_seq,
                 cols: self.cols,

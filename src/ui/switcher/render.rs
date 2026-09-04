@@ -164,12 +164,12 @@ impl Switcher {
         // screen fills the region instead, so neither state is ever a blank view with no
         // next step. One call for both, because they are one screen in two states.
         if let Some(kind) = self.current_view_screen(state) {
-            let headline = self.view_screen_headline(state, kind);
+            let address = self.view_screen_address(state, kind);
             state.chrome.render_view_screen(
                 frame,
                 term_area,
                 state,
-                &headline,
+                &address,
                 kind,
                 terminal_focused,
             );

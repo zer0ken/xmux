@@ -859,7 +859,10 @@ async fn three_hosts_cursor_on_middle() -> Harness {
     );
     // infer is the launch preselect - the top card - so a select_address
     // to it is a no-op; pin it as a deliberate user selection so a rebuild won't drift it.
-    h.sw.select_address("jupiter00/infer", &h.state);
+    h.sw.select_address(
+        &crate::session::Address::new("jupiter00", "infer"),
+        &h.state,
+    );
     h.sw.user_moved = true;
     assert_eq!(cur_session_name(&h).as_deref(), Some("infer"));
     h
@@ -1405,7 +1408,7 @@ async fn the_session_xmux_runs_in_is_never_a_terminal_view_target() {
     // which is the one value the display reconcile, the attach and the mux-side switch
     // all read, so none of them can reach the session by another path.
     let mut h = Harness::from_sources(&["local"]);
-    h.sw.set_own_session(Some("local/xmus".to_string()));
+    h.sw.set_own_session(Some(crate::session::Address::new("local", "xmus")));
     h.sw.apply_source_result(
         "local".into(),
         vec![sess_mux("local", "xmus", "psmux")],
@@ -1430,7 +1433,7 @@ async fn the_session_xmux_runs_in_shows_a_screen_instead_of_its_grid() {
     // Refusing silently would leave the last session's grid standing under the wrong
     // card. The screen says whose session it is and why it is not shown.
     let mut h = Harness::from_sources(&["local"]);
-    h.sw.set_own_session(Some("local/xmus".to_string()));
+    h.sw.set_own_session(Some(crate::session::Address::new("local", "xmus")));
     h.sw.apply_source_result(
         "local".into(),
         vec![sess_mux("local", "xmus", "psmux")],
@@ -1457,7 +1460,7 @@ async fn the_self_session_screen_headline_carries_the_mux_too() {
         .into_iter()
         .collect(),
     );
-    h.sw.set_own_session(Some("local/xmus".to_string()));
+    h.sw.set_own_session(Some(crate::session::Address::new("local", "xmus")));
     h.sw.apply_source_result(
         "local".into(),
         vec![sess_mux("local", "xmus", "psmux")],
@@ -1477,7 +1480,7 @@ async fn another_instances_session_is_shown_like_any_other() {
     // Only xmux's OWN session is refused. A session running a DIFFERENT xmux mirrors
     // like anything else - that is a real screen a user may want to look at.
     let mut h = Harness::from_sources(&["local"]);
-    h.sw.set_own_session(Some("local/xmus".to_string()));
+    h.sw.set_own_session(Some(crate::session::Address::new("local", "xmus")));
     h.sw.apply_source_result(
         "local".into(),
         vec![sess_mux("local", "other", "psmux")],
@@ -1970,7 +1973,8 @@ async fn slow_op_is_deferred_off_the_key_path() {
     );
     h.sw.apply_op_result(r, &mut h.state);
     assert!(
-        h.sw.row_of_session("local/scratch").is_some(),
+        h.sw.row_of_session(&crate::session::Address::new("local", "scratch"))
+            .is_some(),
         "applying the result folds the new session into the tree"
     );
 }
@@ -1981,7 +1985,9 @@ async fn n_on_a_session_card_opens_new_for_its_host() {
     // names its source, so `n` there opens the create input seeded with it rather
     // than refusing - you can add a session to a host that already has sessions.
     let mut h = Harness::new(sample());
-    assert!(h.sw.select_address("local/editor", &h.state));
+    assert!(h
+        .sw
+        .select_address(&crate::session::Address::new("local", "editor"), &h.state));
     h.ch('n').await;
     assert!(
         h.state.is_inputting(),
@@ -2276,7 +2282,10 @@ async fn levels_render_in_their_level_colors() {
     // The selection parks on a remote card so the local rows render UNSELECTED: the
     // section title reads in the secondary role, the session name in the accent.
     let mut h = Harness::new(sample());
-    assert!(h.sw.select_address("jupiter00/inference", &h.state));
+    assert!(h.sw.select_address(
+        &crate::session::Address::new("jupiter00", "inference"),
+        &h.state
+    ));
     h.draw();
     assert_eq!(
         h.nav_fg_of("local"),
@@ -3252,7 +3261,9 @@ async fn help_overlay_renders_and_closes_on_q() {
 async fn terminal_view_target_follows_cursor() {
     let mut h = Harness::new(sample());
     // On a session card, the target is that session (its active window follows).
-    assert!(h.sw.select_address("local/editor", &h.state));
+    assert!(h
+        .sw
+        .select_address(&crate::session::Address::new("local", "editor"), &h.state));
     let t = h.sw.terminal_view_target();
     assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
     // Step to the next card (the next session) - the target follows the cursor.
@@ -3308,7 +3319,7 @@ fn cur_row_label(h: &Harness) -> String {
     h.sw.rows
         .get(h.sw.selected)
         .map(|r| match &r.reference {
-            RowRef::Session { sess } => sess.address(),
+            RowRef::Session { sess } => sess.address().display(),
             RowRef::Host { source, .. } | RowRef::Section { source, .. } => source.clone(),
         })
         .unwrap_or_default()
@@ -4789,12 +4800,18 @@ fn select_address_moves_cursor_to_named_session() {
     let mut state = crate::state::State::from_scan(scan);
     let mut sw = Switcher::new(&mut state);
     // Selection starts on the first session row (api). Jump to db by address.
-    assert!(sw.select_address("jup/db", &state), "moved to jup/db");
+    assert!(
+        sw.select_address(&crate::session::Address::new("jup", "db"), &state),
+        "moved to jup/db"
+    );
     assert_eq!(sw.terminal_view_target().target, "db");
     // Already-there → no move; unknown address → no move, selection unchanged.
-    assert!(!sw.select_address("jup/db", &state), "already on jup/db");
     assert!(
-        !sw.select_address("jup/ghost", &state),
+        !sw.select_address(&crate::session::Address::new("jup", "db"), &state),
+        "already on jup/db"
+    );
+    assert!(
+        !sw.select_address(&crate::session::Address::new("jup", "ghost"), &state),
         "no such session row"
     );
     assert_eq!(

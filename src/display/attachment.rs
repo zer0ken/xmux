@@ -5,7 +5,7 @@
 //!
 //! This is the DISPLAY path: the mux is actually USED inside xmux - a real attached
 //! client per session - not reconstructed from control-mode `%output`. Control mode
-//! is retained only for inventory, change events, and programmatic window selection.
+//! is retained only for inventory and change events.
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};

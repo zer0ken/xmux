@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::app::runtime::{host_selection_key, request_attach, terminal_view_size};
 use crate::display::grid::Grid;
-use crate::driver::{lower_select_window, DriverCtx, MuxDriver};
+use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Host;
 use crate::model::Selection;
 
@@ -24,17 +24,12 @@ impl MuxDriver for TmuxDriver {
             return false;
         }
         let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav);
-        // The host's open `-CC` control connection, if any. switch-client/select-window
-        // ride it instead of a fresh `ssh` per switch (the slow path on Windows, which
-        // has no ssh ControlMaster - each exec re-handshakes, ~0.5s; see #2).
-        let control = ctx.mgr.get(&sel.source);
         let Some(host) = ctx.hosts.get_mut(&sel.source) else {
             return false;
         };
         let key = host_selection_key(host);
         let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
         let already = ctx.registry.contains(&key);
-        let first_attach = !already && !host.display.in_flight_contains(&key);
 
         if !already {
             // Off-loop first-attach: request the spawn ONLY if one is not already in flight.
@@ -151,13 +146,6 @@ impl MuxDriver for TmuxDriver {
             );
         }
 
-        // Window-row selection → move the session's active window. A fresh first attach
-        // already folded the window into the attach argv; otherwise dispatch a select-window.
-        if let Some(win) = sel.window {
-            if !first_attach {
-                lower_select_window(host, control, &sel.session, win);
-            }
-        }
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
     }
@@ -189,7 +177,7 @@ impl MuxDriver for TmuxDriver {
                 // (for a later in-place switch); local attaches and non-recording muxes
                 // stay bare. (Immutable host reads before the &mut host.display below.)
                 let mux_argv = host.mux.attach_plan(&first.name);
-                let (cmd, args) = host.transport.interactive_attach_argv(&mux_argv, None);
+                let (cmd, args) = host.transport.interactive_attach_argv(&mux_argv);
                 let mut argv = vec![cmd];
                 argv.extend(args);
                 let argv = with_display_tty_record(argv, host, source);
@@ -232,7 +220,6 @@ fn with_display_tty_record(mut argv: Vec<String>, host: &Host, host_key: &str) -
 mod tests {
     use super::*;
     use crate::display::registry::AttachRegistry;
-    use crate::link::HostManager;
     use crate::model::Selection;
 
     /// A REMOTE shared attach gets the mux's record prefix folded into its remote
@@ -303,13 +290,11 @@ mod tests {
         let mut registry = AttachRegistry::new();
         registry.insert("local", crate::display::attachment::fake_attachment(42));
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
             source: "local".into(),
             session: "target".into(),
-            window: None,
         };
         let mut driver = TmuxDriver;
         {
@@ -317,7 +302,6 @@ mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
@@ -377,13 +361,11 @@ mod tests {
             );
         }
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
             source: "local".into(),
             session: "target".into(),
-            window: None,
         };
         let mut driver = TmuxDriver;
         {
@@ -391,7 +373,6 @@ mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
@@ -431,13 +412,11 @@ mod tests {
         );
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
             source: "jup".into(),
             session: "api".into(),
-            window: None,
         };
 
         let mut driver = TmuxDriver;
@@ -446,7 +425,6 @@ mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
@@ -487,7 +465,6 @@ mod tests {
         );
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
         let sessions = vec![
             crate::driver::tests::sess("local", "api"),
@@ -500,7 +477,6 @@ mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,
@@ -544,7 +520,6 @@ mod tests {
         let mut registry = AttachRegistry::new();
         registry.insert("local", crate::display::attachment::fake_attachment(5));
         let mut attach_seq = 0u64;
-        let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let mut driver = TmuxDriver;
@@ -553,7 +528,6 @@ mod tests {
                 registry: &mut registry,
                 hosts: &mut hosts,
                 worker: &worker,
-                mgr: &mgr,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
                 cols: 80,

@@ -31,13 +31,6 @@ pub fn new_session(bin: &str, name: &str) -> Vec<String> {
         argv(&[bin, "-dmS", name])
     }
 }
-
-/// `screen -S <name> -X select <index>` — makes window `index` active server-side
-/// (all attached displays follow).
-pub fn select_window(bin: &str, name: &str, index: i64) -> Vec<String> {
-    argv(&[bin, "-S", name, "-X", "select", &index.to_string()])
-}
-
 /// Parses `screen -ls` output into sessions tagged with `source`/`mux`. Each socket
 /// line is `\t<pid>.<name>\t(<date> <time> <ampm>)\t(<state>)`; the name is everything
 /// after the first dot, and `attached` is read from the state column. Lines that carry
@@ -100,14 +93,6 @@ mod tests {
     #[test]
     fn new_session_empty_is_bare_creation() {
         assert_eq!(new_session("screen", ""), argv(&["screen", "-dmS"]));
-    }
-
-    #[test]
-    fn select_window_sends_select_via_dash_x() {
-        assert_eq!(
-            select_window("screen", "dev", 2),
-            argv(&["screen", "-S", "dev", "-X", "select", "2"])
-        );
     }
 
     #[test]

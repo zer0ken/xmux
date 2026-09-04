@@ -310,8 +310,8 @@ mod tests {
     }
 
     /// A poll sweep over a listing resolves each session's card directly: one
-    /// `Sessions` event, then one empty `Panes` per session (the session alone, no
-    /// window row) — abduco has no per-session query to run.
+    /// `Sessions` event, then one empty `Panes` per session (the session alone) —
+    /// abduco has no per-session query to run.
     #[tokio::test]
     async fn poll_once_resolves_each_session_without_a_per_session_query() {
         use crate::link::HostEvent;

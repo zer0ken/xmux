@@ -73,7 +73,7 @@ pub fn filter_groups(groups: &[Group], pattern: &str) -> Vec<Group> {
         let kept: Vec<Session> = g
             .sessions
             .iter()
-            .filter(|s| fuzzy_match(pattern, &s.address()))
+            .filter(|s| fuzzy_match(pattern, &s.address().display()))
             .cloned()
             .collect();
         if !kept.is_empty() {
@@ -126,10 +126,14 @@ pub fn add_session(groups: &[Group], s: Session) -> Vec<Group> {
 /// Returns groups with the session at `address` removed from its group. The
 /// now-possibly-empty group is kept, since an empty reachable group is still a
 /// valid create target. Inputs are not mutated.
-pub fn remove_session(groups: &[Group], address: &str) -> Vec<Group> {
+pub fn remove_session(groups: &[Group], address: &crate::session::Address) -> Vec<Group> {
     let mut out = groups.to_vec();
     for g in out.iter_mut() {
-        if let Some(j) = g.sessions.iter().position(|s| s.address() == address) {
+        if let Some(j) = g
+            .sessions
+            .iter()
+            .position(|s| s.source == address.source && s.name == address.session)
+        {
             g.sessions.remove(j);
             return out;
         }
@@ -166,10 +170,18 @@ fn source_tier(source: &str) -> u8 {
 /// Returns groups with the session at `address` renamed to `new_name`, kept at its
 /// current position; the next rebuild's deterministic order places it. It is a no-op
 /// if no session matches. Inputs are not mutated.
-pub fn rename_session(groups: &[Group], address: &str, new_name: &str) -> Vec<Group> {
+pub fn rename_session(
+    groups: &[Group],
+    address: &crate::session::Address,
+    new_name: &str,
+) -> Vec<Group> {
     let mut out = groups.to_vec();
     for g in out.iter_mut() {
-        if let Some(j) = g.sessions.iter().position(|s| s.address() == address) {
+        if let Some(j) = g
+            .sessions
+            .iter()
+            .position(|s| s.source == address.source && s.name == address.session)
+        {
             g.sessions[j].name = new_name.to_string();
             return out;
         }
@@ -298,7 +310,7 @@ pub(crate) fn first_visible_session(group: &Group, filter: &str) -> Option<Sessi
         group
             .sessions
             .iter()
-            .find(|s| fuzzy_match(filter, &s.address()))
+            .find(|s| fuzzy_match(filter, &s.address().display()))
             .cloned()
     }
 }
@@ -660,7 +672,7 @@ mod tests {
             err: None,
             sessions: vec![sess("local", "web"), sess("local", "db")],
         }];
-        let got = remove_session(&groups, "local/web");
+        let got = remove_session(&groups, &crate::session::Address::new("local", "web"));
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].sessions.len(), 1);
         assert_eq!(got[0].sessions[0].name, "db");
@@ -673,7 +685,7 @@ mod tests {
             err: None,
             sessions: vec![sess("local", "web")],
         }];
-        let got = remove_session(&groups, "local/web");
+        let got = remove_session(&groups, &crate::session::Address::new("local", "web"));
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].source, "local");
         assert!(got[0].sessions.is_empty());
@@ -687,7 +699,7 @@ mod tests {
             sessions: vec![sess("local", "web"), sess("local", "db")],
         }];
         let orig_len = groups[0].sessions.len();
-        let _ = remove_session(&groups, "local/web");
+        let _ = remove_session(&groups, &crate::session::Address::new("local", "web"));
         assert_eq!(groups[0].sessions.len(), orig_len);
     }
 
@@ -698,7 +710,11 @@ mod tests {
             err: None,
             sessions: vec![sess("local", "alpha"), sess("local", "zeta")],
         }];
-        let got = rename_session(&groups, "local/alpha", "zzz");
+        let got = rename_session(
+            &groups,
+            &crate::session::Address::new("local", "alpha"),
+            "zzz",
+        );
         let s = &got[0].sessions;
         assert_eq!(s.len(), 2);
         // Renamed in place: alpha's slot (index 0) now holds zzz; this mutation does not
@@ -714,7 +730,11 @@ mod tests {
             err: None,
             sessions: vec![sess("local", "web")],
         }];
-        let got = rename_session(&groups, "local/nonexistent", "newname");
+        let got = rename_session(
+            &groups,
+            &crate::session::Address::new("local", "nonexistent"),
+            "newname",
+        );
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].sessions.len(), 1);
         assert_eq!(got[0].sessions[0].name, "web");
@@ -727,7 +747,11 @@ mod tests {
             err: None,
             sessions: vec![sess("local", "web")],
         }];
-        let _ = rename_session(&groups, "local/web", "renamed");
+        let _ = rename_session(
+            &groups,
+            &crate::session::Address::new("local", "web"),
+            "renamed",
+        );
         assert_eq!(groups[0].sessions[0].name, "web");
     }
 
@@ -821,7 +845,7 @@ mod tests {
     fn addr_of(r: &RowRef) -> String {
         match r {
             RowRef::Section { source, .. } => source.clone(),
-            RowRef::Session { sess } => sess.address(),
+            RowRef::Session { sess } => sess.address().display(),
             RowRef::Host { source, .. } => source.clone(),
         }
     }

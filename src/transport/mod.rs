@@ -53,12 +53,8 @@ pub trait Transport: Send + Sync {
     fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>);
 
     /// Lowers a mux attach argv into the interactive terminal-handover (cmd, args).
-    /// This is the SOLE owner of the `exec`/window-fold/ssh-tty machinery.
-    fn interactive_attach_argv(
-        &self,
-        mux_attach_argv: &[String],
-        pre_select: Option<&[String]>,
-    ) -> (String, Vec<String>);
+    /// This is the SOLE owner of the `exec`/ssh-tty machinery.
+    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> (String, Vec<String>);
 
     /// The argv for a `-CC` control-mode child given the mux's control argv.
     fn control_argv(&self, mux_control_argv: &[String]) -> Vec<String>;
@@ -115,12 +111,8 @@ impl Transport for Box<dyn Transport> {
     fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
         (**self).exec_argv(tty, mux_argv)
     }
-    fn interactive_attach_argv(
-        &self,
-        mux_attach_argv: &[String],
-        pre_select: Option<&[String]>,
-    ) -> (String, Vec<String>) {
-        (**self).interactive_attach_argv(mux_attach_argv, pre_select)
+    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> (String, Vec<String>) {
+        (**self).interactive_attach_argv(mux_attach_argv)
     }
     fn control_argv(&self, mux_control_argv: &[String]) -> Vec<String> {
         (**self).control_argv(mux_control_argv)

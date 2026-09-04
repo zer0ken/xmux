@@ -34,10 +34,9 @@ impl Grid {
     }
 
     /// Wipes the grid to a blank slate (a fresh parser at the same size). Used when
-    /// the displayed session/window switches so stale cells from the previous
-    /// content never linger behind the new repaint — the mux sends a full redraw on
-    /// switch-client / select-window, so the cleared grid fills with the new content
-    /// rather than leaving residue.
+    /// the displayed session switches so stale cells from the previous content never
+    /// linger behind the new repaint — the mux sends a full redraw on switch-client,
+    /// so the cleared grid fills with the new content rather than leaving residue.
     pub fn clear(&mut self) {
         let (rows, cols) = self.parser.screen().size();
         self.parser = vt100::Parser::new(rows, cols, 0);
@@ -175,7 +174,7 @@ mod tests {
 
     #[test]
     fn clear_blanks_the_grid() {
-        // On a session/window switch the grid is wiped so no stale cells linger
+        // On a session switch the grid is wiped so no stale cells linger
         // behind the mux's fresh repaint.
         let mut g = Grid::new(24, 80);
         g.feed(b"residue content that must vanish");

@@ -3,11 +3,11 @@
 //! `psmux attach` running inside a `portable-pty` PTY ([`AttachRegistry`]) - alive
 //! across selections, and renders the SELECTED session's live `Grid` on the right.
 //! A separate control-mode client per remote host ([`HostManager`]) supplies the
-//! nav view inventory, mux-side change events, and programmatic `select-window`;
-//! local psmux is enumerated/polled with plain commands (it is one-server-per-
-//! session, so a host-level control client cannot see across its sessions).
+//! nav view inventory and mux-side change events; local psmux is enumerated/polled
+//! with plain commands (it is one-server-per-session, so a host-level control
+//! client cannot see across its sessions).
 //!
-//! State is explicit: [`Selection`] (the canonical `source`/`session`/`window`) is
+//! State is explicit: [`Selection`] (the canonical `source`/`session`) is
 //! the single source of truth the display reads - the `Switcher` owns only the nav
 //! and selection. One `select!` loop interleaves stdin, host events, PTY events, the
 //! control socket, terminal resize, and an animation tick. ratatui owns stdout and
@@ -364,24 +364,16 @@ impl DrawObserver {
     }
 }
 
-/// Derives a [`Selection`] from the switcher's current terminal-view target. The target
-/// is either `session` or `session:window`; the session part keys the PTY attachment, the
-/// optional window part drives `select-window`. Stays in `app` because it depends on the
-/// ui [`TerminalViewTarget`] - the [`Selection`] value itself is a pure `model` type.
+/// Derives a [`Selection`] from the switcher's current terminal-view target. The
+/// whole target is the session name the card carries, which keys the PTY attachment.
+/// Stays in `app` because it depends on the ui [`TerminalViewTarget`] - the
+/// [`Selection`] value itself is a pure `model` type.
 fn selection_from_target(t: &TerminalViewTarget) -> Selection {
-    if t.target.is_empty() {
-        return Selection::default();
-    }
-    let session = crate::mux::session_name(&t.target).to_string();
-    let window = t
-        .target
-        .split(':')
-        .nth(1)
-        .and_then(|w| w.parse::<i64>().ok());
+    // The target is the session name as the card carries it, whole - no window suffix
+    // to part off, so a session name holding a colon survives as it is.
     Selection {
         source: t.source.clone(),
-        session,
-        window,
+        session: t.target.clone(),
     }
 }
 
@@ -486,7 +478,7 @@ pub(crate) fn display_key(hosts: &crate::model::Hosts, sel: &Selection) -> Strin
     hosts
         .get(&sel.source)
         .map(host_selection_key)
-        .unwrap_or_else(|| sel.address())
+        .unwrap_or_else(|| sel.source.clone())
 }
 
 /// The display key for a host's selection. Both server models key the live display by

@@ -251,8 +251,8 @@ mod tests {
         let responder = tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
-                    Cmd::Op(Action::Switch { address }, reply) => {
-                        assert_eq!(address, "jup/api");
+                    Cmd::Op(Action::Switch(address), reply) => {
+                        assert_eq!(address, crate::session::Address::new("jup", "api"));
                         let _ = reply.send("ok".into());
                     }
                     Cmd::Op(Action::Focus(t), reply) => {
@@ -271,7 +271,7 @@ mod tests {
                 }
             }
         });
-        assert_eq!(dispatch("switch jup/api", &tx).await, "ok");
+        assert_eq!(dispatch("switch jup api", &tx).await, "ok");
         assert_eq!(dispatch("focus nav", &tx).await, "ok");
         assert_eq!(dispatch("rescan", &tx).await, "ok");
         assert_eq!(dispatch("raw:keys 1b5b41", &tx).await, "ok");
@@ -370,7 +370,7 @@ mod tests {
                         // Mirror the app loop: `switch` answers by the address
                         // resolution against the inventory, everything else answers ok.
                         let resp = match &action {
-                            crate::model::Action::Switch { address } => {
+                            crate::model::Action::Switch(address) => {
                                 match state.resolve_switch_address(address) {
                                     Ok(()) => "ok".into(),
                                     Err(problem) => format!("err: {problem}"),
@@ -404,16 +404,16 @@ mod tests {
         // A `switch` reply reflects the address resolution: the session the nav
         // lists answers ok; an unresolved source answers err naming what is missing.
         assert_eq!(
-            client.do_cmd("switch local/editor").await.unwrap(),
+            client.do_cmd("switch local editor").await.unwrap(),
             "ok",
             "a session the inventory lists resolves"
         );
         let err = client
-            .do_cmd("switch nosuchhost/nosuchsession")
+            .do_cmd("switch nosuchhost nosuchsession")
             .await
             .unwrap();
         assert!(err.starts_with("err: no such source"), "{err}");
-        let err = client.do_cmd("switch local/nope").await.unwrap();
+        let err = client.do_cmd("switch local nope").await.unwrap();
         assert!(err.starts_with("err: no such session"), "{err}");
 
         // Close the channel (drop every sender) so the consumer exits.

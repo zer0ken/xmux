@@ -5,7 +5,7 @@
 //! Pure over `Ops` - no switcher state - so it never touches the event loop.
 
 use crate::model::MuxOp;
-use crate::session::Session;
+use crate::session::{Address, Session};
 
 /// The side-effecting actions the switcher delegates to the host program. The
 /// event loop also drives the streaming probes through it: [`Ops::sources`] seeds
@@ -74,7 +74,7 @@ pub enum OpResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpFollow {
     /// Rebuild, then move the cursor to this new session's row (a create).
-    Reselect(String),
+    Reselect(Address),
     /// No inventory change - flash this message (a failed op).
     Flash(String),
     /// The unlock verdict: re-probe the unlocked `source`'s machine on success (only it

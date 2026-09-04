@@ -16,7 +16,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::model::{Action, Command};
-use crate::session::Session;
+use crate::session::{Address, Session};
 use crate::ui::chrome::ViewScreen;
 use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
@@ -353,9 +353,9 @@ pub struct Switcher {
     selected: usize,
 
     terminal_view_target: TerminalViewTarget,
-    /// The address of the session xmux is ITSELF running in, when it is inside one. The
-    /// one address the terminal view refuses: see [`Switcher::is_own_session`].
-    own_session: Option<String>,
+    /// The session xmux is ITSELF running in, when it is inside one. The
+    /// one session the terminal view refuses: see [`Switcher::is_own_session`].
+    own_session: Option<Address>,
     /// Whether the nav hides the settled unreachable hosts' cards (`[ui]
     /// hide-unreachable`). The app threads it in at construction; there is no live
     /// toggle. The filter naming a hidden host keeps its card, which is the
@@ -377,11 +377,11 @@ pub struct Switcher {
     /// each frame by `render` from the nav's position.
     layout: ViewLayout,
 
-    /// A pending re-scan reselect: the session address the selection was on when `r`
+    /// A pending re-scan reselect: the session the selection was on when `r`
     /// was pressed. A re-scan clears every session, so the row briefly vanishes; this
     /// returns the selection to it the instant its host re-streams. Cleared once matched,
     /// or when the user navigates off the parked parent host during the skeleton phase.
-    rescan_reselect: Option<String>,
+    rescan_reselect: Option<Address>,
     /// The whole frame area, captured each render so the menu box can be clamped to
     /// the screen at open time (mouse events arrive between renders).
     screen_area: Rect,
@@ -449,7 +449,7 @@ impl Switcher {
     /// Names the session xmux is running in, so the terminal view can refuse it. The app
     /// calls this once at startup; outside a mux, and where the session could not be
     /// named, it is never called and nothing is refused.
-    pub fn set_own_session(&mut self, address: Option<String>) {
+    pub fn set_own_session(&mut self, address: Option<Address>) {
         self.own_session = address;
     }
 
@@ -471,7 +471,7 @@ impl Switcher {
     /// the user's own client and paints xmux inside itself.
     fn is_own_session(&self, source: &str, target: &str) -> bool {
         match &self.own_session {
-            Some(own) => !target.is_empty() && *own == crate::session::address_of(source, target),
+            Some(own) => !target.is_empty() && own.source == source && own.session == target,
             None => false,
         }
     }
@@ -741,7 +741,7 @@ impl Switcher {
         // The session xmux runs in comes first: it is the one card with a grid the view
         // still refuses, and the screen is what stands in place of it.
         if let Some(addr) = self.current_screen_address(state) {
-            if self.own_session.as_deref() == Some(addr.as_str()) {
+            if self.own_session.as_ref() == Some(&addr) {
                 return Some(ViewScreen::SelfSession);
             }
         }
@@ -770,26 +770,25 @@ impl Switcher {
             .then_some(ViewScreen::Empty)
     }
 
-    /// The address the selected card would show, or `None` when it would show nothing.
-    /// The address is what a refusal is keyed to, and it is what the screen writes as its
-    /// headline, so both read the same value.
-    fn current_screen_address(&self, state: &crate::state::State) -> Option<String> {
+    /// The session the selected card would show, or `None` when it would show nothing.
+    /// The pair is what a refusal is keyed to, and what the screen writes as its headline.
+    fn current_screen_address(&self, state: &crate::state::State) -> Option<Address> {
         let r = self.current_ref()?;
         let (source, target) = tree::target_for(r, &state.groups, &state.filter);
-        (!target.is_empty()).then(|| crate::session::address_of(&source, &target))
+        (!target.is_empty()).then(|| Address::new(&source, &target))
     }
 
-    /// What the view screen writes as its headline: the session ADDRESS for the
-    /// self-session state, whose subject is one session, and the host for the two host
-    /// states, whose subject is the host.
-    pub(crate) fn view_screen_headline(
+    /// What the view screen is about: the [`Address`] for the
+    /// self-session state, whose subject is one session, and the host (with an empty
+    /// session half) for the two host states, whose subject is the host.
+    pub(crate) fn view_screen_address(
         &self,
         state: &crate::state::State,
         kind: ViewScreen,
-    ) -> String {
+    ) -> Address {
         match kind {
             ViewScreen::SelfSession => self.current_screen_address(state).unwrap_or_default(),
-            _ => self.current_source().unwrap_or_default(),
+            _ => Address::new(self.current_source().unwrap_or_default(), ""),
         }
     }
 
@@ -844,7 +843,7 @@ impl Switcher {
     /// a create landing on its new card, or the nav following the session the mux moved
     /// its own display client onto. All three name a card and move to it, and nothing
     /// downstream tells them apart, so they share one entry point.
-    pub fn select_address(&mut self, address: &str, state: &crate::state::State) -> bool {
+    pub fn select_address(&mut self, address: &Address, state: &crate::state::State) -> bool {
         match self.row_of_session(address) {
             Some(i) if i != self.selected => {
                 self.user_moved = true;
@@ -992,9 +991,7 @@ impl Switcher {
         // never yanks them back.
         if let Some(addr) = self.rescan_reselect.clone() {
             let parked = match prior.reference.as_ref() {
-                Some(RowRef::Host { source, .. }) => {
-                    crate::session::source_of(&addr) == source.as_str()
-                }
+                Some(RowRef::Host { source, .. }) => addr.source == *source,
                 Some(RowRef::Session { sess }) => sess.address() == addr,
                 // A section title is never the selection, so it is never where a
                 // re-scan parked; the arm exists to keep the match total.
@@ -1005,7 +1002,7 @@ impl Switcher {
                 if let Some(i) = self
                     .rows
                     .iter()
-                    .position(|r| session_addr_of(&r.reference).as_deref() == Some(addr.as_str()))
+                    .position(|r| session_addr_of(&r.reference).as_ref() == Some(&addr))
                 {
                     self.rescan_reselect = None;
                     self.set_selected(i, state);
@@ -1103,10 +1100,10 @@ fn category_of_row(reference: &RowRef) -> Option<&str> {
     }
 }
 
-/// The session address a card belongs to (a session card), or `None` for a
+/// The session a card belongs to (a session card), or `None` for a
 /// host-state card and a section title. Lets selection tracking, kill-confirm
 /// survival, and `select_address` treat a session card as that session.
-fn session_addr_of(reference: &RowRef) -> Option<String> {
+fn session_addr_of(reference: &RowRef) -> Option<Address> {
     match reference {
         RowRef::Session { sess } => Some(sess.address()),
         RowRef::Host { .. } | RowRef::Section { .. } => None,

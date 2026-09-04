@@ -66,7 +66,7 @@ Run xmux with no arguments to open the app:
 ```sh
 xmux                          # open the app
 xmux ls                       # list every reachable session (scriptable)
-xmux attach <source>/<name>   # attach one session directly, e.g. xmux attach prod/api
+xmux attach <source> <name>   # attach one session directly, e.g. xmux attach prod api
 xmux doctor                   # check config and per-source reachability
 xmux instances                # list running instances
 xmux send <name> <command…>  # drive one of them over its control socket
@@ -128,7 +128,8 @@ A **host** is a machine that hosts muxes and that xmux can reach. One host can
 serve several muxes at once, so a host running both psmux and zellij is exposed
 as two sources. Each host and mux pairing is a **source**, named `local:psmux`
 when a host serves several and `prod` when it serves one. That name is what the
-nav shows and what commands address as `<source>/<session>`. Remote hosts are
+nav shows; commands name a session by its source and its session separately (e.g.
+`switch prod api`). Remote hosts are
 probed after the app is up, so a discovered source appears as its host answers.
 A remote host that answers the network but refuses your credentials shows
 `locked` (a ⚿ mark). Focus its panel in the terminal view and type the
@@ -186,14 +187,16 @@ auto-hide-nav toggle, the pinned nav position, logs, and control sockets) lives 
 ## Control socket
 
 Every running instance has a name and listens on `~/.xmux/ctl-<name>.sock`.
-Sessions are addressed `<source>/<session>`. The socket speaks navigation verbs
+Commands name a session by its source and its session separately (`switch
+<source> <session>`), which the nav shows joined as `<source>/<session>`. The
+socket speaks navigation verbs
 (`ping`, `status`, `dump`, `rescan`, `switch`, `focus`, `width`,
 `toggle-auto-hide`, `quit`) and one session-lifecycle verb (`new-session`).
 There are no kill, rename, or window verbs; the mux owns editing a session.
 
 ```sh
 xmux instances                       # NAME · PID · CWD · TTY · displayed · focus
-xmux send amber-otter switch prod/api
+xmux send amber-otter switch prod api
 xmux send am focus terminal          # any unambiguous name prefix
 xmux send - dump                     # `-` when exactly one is running
 ```
