@@ -244,7 +244,7 @@ mod tests {
     async fn screen_detect_live() {
         use crate::model::source::ExecRunner;
         let ssh = crate::transport::ssh("jupiter00".into(), String::new(), "linux".into());
-        let got = crate::mux::detect_backend(&ssh, "screen", &ExecRunner).await;
+        let (got, _) = crate::mux::detect_backend(&ssh, "screen", &ExecRunner).await;
         eprintln!(
             "jupiter00/screen detected -> {:?}",
             got.as_ref().map(|m| (m.kind(), m.server_model()))

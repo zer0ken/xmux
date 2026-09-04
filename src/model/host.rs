@@ -223,18 +223,28 @@ impl Host {
         self.transport.host_id()
     }
 
-    pub(crate) async fn detect_and_correct(&mut self, runner: &dyn Runner) {
+    /// Probes the configured mux on this host and, when another kind answers, corrects
+    /// the mux to it (the psmux-behind-a-tmux-alias correction). Returns `None` when
+    /// the host is already detected or resolves now; `Some(reason)` when detection
+    /// failed, carrying the first probe error so the caller can settle the undetected
+    /// card instead of leaving it scanning forever. The host stays undetected on
+    /// failure, so a later retry recovers it.
+    pub(crate) async fn detect_and_correct(&mut self, runner: &dyn Runner) -> Option<String> {
         if self.detected {
-            return;
+            return None;
         }
         let bin = self.mux.bin().to_string();
-        let Some(mux) = crate::mux::detect_backend(&self.transport, &bin, runner).await else {
-            return;
-        };
-        if mux.kind() != self.mux.kind() {
-            self.mux = mux;
+        let (mux, err) = crate::mux::detect_backend(&self.transport, &bin, runner).await;
+        match mux {
+            Some(mux) => {
+                if mux.kind() != self.mux.kind() {
+                    self.mux = mux;
+                }
+                self.detected = true;
+                None
+            }
+            None => err,
         }
-        self.detected = true;
     }
 
     /// Re-enumerate this host's sessions through the mux with an injected runner,
@@ -1044,7 +1054,11 @@ mod tests {
             crate::mux::for_binary("tmux").unwrap(),
         );
         let runner = DetectRunner::ok("psmux command help");
-        h.detect_and_correct(&runner).await;
+        assert_eq!(
+            h.detect_and_correct(&runner).await,
+            None,
+            "a successful detection reports no reason"
+        );
         assert_eq!(h.mux.kind(), "psmux");
         assert_eq!(h.mux.server_model(), ServerModel::PerSession);
         assert_eq!(
@@ -1067,7 +1081,11 @@ mod tests {
             crate::mux::for_binary("tmux").unwrap(),
         );
         let runner = DetectRunner::err();
-        h.detect_and_correct(&runner).await;
+        assert_eq!(
+            h.detect_and_correct(&runner).await.as_deref(),
+            Some("down"),
+            "an inconclusive probe reports the probe error as the detection reason"
+        );
         assert_eq!(h.mux.kind(), "tmux");
         assert_eq!(h.mux.server_model(), ServerModel::Shared);
         assert!(!h.detected);

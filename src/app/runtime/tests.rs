@@ -206,6 +206,7 @@ async fn dispatch_scanned_without_a_resolved_mux_opens_no_channel() {
     rt.run_event_effect(crate::model::EventEffect::DispatchScanned {
         source: "jup".into(),
         detected: None,
+        err: None,
     });
     assert!(
         rt.mgr.get("jup").is_none(),
@@ -269,6 +270,45 @@ async fn a_relocked_hosts_reconnect_reprobes_instead_of_spawning_a_doomed_channe
     assert!(
         rt.mgr.get("jup").is_none(),
         "a detected-but-dropped host is re-probed, not re-ensured into a doomed -CC"
+    );
+}
+
+#[tokio::test]
+async fn reconnect_sweep_stands_down_while_the_initial_scan_is_in_flight() {
+    // While a source is still scanning (its detection probe in flight), the reconnect
+    // sweep must not re-trigger detection for undetected hosts: one probe, one scan.
+    // The undetected-host retry waits until the scan clears.
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut hosts = crate::model::Hosts::default();
+    hosts.insert(crate::model::Host::new(
+        crate::transport::local(None),
+        crate::mux::for_binary("tmux").unwrap(),
+    )); // undetected
+    rt.hosts = hosts;
+    rt.state.scanning.insert("local".to_string()); // the initial probe is in flight
+    rt.on_reconnect();
+    assert!(
+        rt.detecting.is_empty(),
+        "the sweep queues no second detection while the scan is in flight"
+    );
+}
+
+#[tokio::test]
+async fn reconnect_sweep_retries_detection_after_the_scan_settles() {
+    // Once the scan has settled (nothing scanning), the sweep's detection retry runs:
+    // a settled-undetected host is re-probed so a later-installed mux recovers it.
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut hosts = crate::model::Hosts::default();
+    hosts.insert(crate::model::Host::new(
+        crate::transport::local(None),
+        crate::mux::for_binary("tmux").unwrap(),
+    )); // undetected
+    rt.hosts = hosts;
+    rt.state.scanning.clear(); // the initial scan has settled
+    rt.on_reconnect();
+    assert!(
+        rt.detecting.contains("local"),
+        "a settled-undetected host is queued for a detection retry"
     );
 }
 

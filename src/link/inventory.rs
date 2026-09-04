@@ -110,11 +110,14 @@ pub enum HostEvent {
         roster: Box<crate::provision::env::Roster>,
     },
     /// A detection probe resolved (`detect_and_correct`): the host's mux was
-    /// (re)identified. `None` = still undetected / unreachable. Folded back via
-    /// `apply_scan_result`; emitted by the fire-and-forget detection task.
+    /// (re)identified. `None` = still undetected / unreachable; `err` then carries the
+    /// first probe error, the reason the caller settles the undetected card with.
+    /// Folded back via `apply_scan_result`; emitted by the fire-and-forget detection
+    /// task.
     Scanned {
         source: String,
         detected: Option<Box<dyn crate::mux::Mux>>,
+        err: Option<String>,
     },
     /// A POLL host re-enumerated its sessions. A poll host has no host-level control
     /// stream, so its [`HostManager`](super::HostManager)-owned poll task emits this onto the

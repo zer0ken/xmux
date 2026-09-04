@@ -53,7 +53,7 @@ const FRAME_MS: u64 = 33;
 /// How often the reconnect sweep runs: re-ensures a died remote control client and
 /// re-attaches the selected session's PTY if it dropped. Doubles as the retry
 /// backoff so a genuinely-down host is retried at this cadence, never hot-looped.
-const RECONNECT_MS: u64 = 2000;
+const RECONNECT_MS: u64 = 10000;
 
 pub(crate) const NAV_WIDTH_MAX: u16 = 100;
 
@@ -706,10 +706,15 @@ fn spawn_host_detection(
 ) {
     tokio::spawn(async move {
         let mut host = crate::model::Host::new(transport, mux);
-        host.detect_and_correct(&crate::model::source::ExecRunner)
+        let err = host
+            .detect_and_correct(&crate::model::source::ExecRunner)
             .await;
         let detected = host.detected.then_some(host.mux);
-        let _ = tx.send(HostEvent::Scanned { source, detected });
+        let _ = tx.send(HostEvent::Scanned {
+            source,
+            detected,
+            err,
+        });
     });
 }
 

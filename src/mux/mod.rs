@@ -419,7 +419,7 @@ pub async fn installed_muxes(transport: &dyn Transport, runner: &dyn Runner) -> 
         };
         let probe = probe_identity(transport, mux.as_ref(), runner);
         match tokio::time::timeout(budget, probe).await {
-            Ok(Some(kind)) => kind == *name,
+            Ok((Some(kind), _)) => kind == *name,
             _ => false,
         }
     });
@@ -489,24 +489,32 @@ pub fn is_recognized(name: &str) -> bool {
 /// argv is one probe run; a probe that errors (an absent command, a rejected flag, an
 /// unreachable host) collects `None`, and the outputs aligned with
 /// [`Mux::identity_probes`] go to [`Mux::classify_identity`]. Output is lowercased,
-/// so a implementation's classify matches case-insensitively.
+/// so a implementation's classify matches case-insensitively. The first probe error
+/// rides along as the reason detection failed when no probe identified the mux, for
+/// the caller to show.
 async fn probe_identity(
     transport: &dyn Transport,
     mux: &dyn Mux,
     runner: &dyn Runner,
-) -> Option<&'static str> {
+) -> (Option<&'static str>, Option<String>) {
     let mut outs: Vec<Option<String>> = Vec::new();
+    let mut first_err: Option<String> = None;
     for argv in mux.identity_probes() {
         let (name, args) = transport.exec_argv(false, &argv);
-        outs.push(
-            runner
-                .run(&name, &args)
-                .await
-                .ok()
-                .map(|out| String::from_utf8_lossy(&out).to_lowercase()),
-        );
+        match runner.run(&name, &args).await {
+            Ok(out) => outs.push(Some(String::from_utf8_lossy(&out).to_lowercase())),
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e.to_string());
+                }
+                outs.push(None);
+            }
+        }
     }
-    mux.classify_identity(&outs)
+    let kind = mux.classify_identity(&outs);
+    // The error matters only when nothing identified the mux: a resolved kind is a
+    // detection success, and its error was just one probe that failed along the way.
+    (kind, if kind.is_none() { first_err } else { None })
 }
 
 /// Probes a server's true identity over `transport`, independent of its binary name
@@ -516,16 +524,23 @@ async fn probe_identity(
 /// which may name ANOTHER mux: a `tmux` whose `help` names psmux is that alias, and
 /// the source corrects to psmux with the invoked binary preserved.
 ///
-/// `None` means the binary is unrecognized, the host unreachable, or every probe
-/// inconclusive; the caller keeps its current mux and retries on a later scan.
+/// The resolved mux alongside the reason detection failed (the first probe error)
+/// when nothing resolved. `(None, None)` means the binary is unrecognized or every
+/// probe was inconclusive with no error to report; the caller keeps its current mux
+/// and retries on a later scan.
 pub async fn detect_backend(
     transport: &dyn Transport,
     bin: &str,
     runner: &dyn Runner,
-) -> Option<Box<dyn Mux>> {
-    let mux = for_binary(bin)?;
-    let kind = probe_identity(transport, mux.as_ref(), runner).await?;
-    for_kind(kind, bin)
+) -> (Option<Box<dyn Mux>>, Option<String>) {
+    let Some(mux) = for_binary(bin) else {
+        return (None, None);
+    };
+    let (kind, err) = probe_identity(transport, mux.as_ref(), runner).await;
+    match kind {
+        Some(kind) => (for_kind(kind, bin), None),
+        None => (None, err),
+    }
 }
 
 #[cfg(test)]
@@ -971,7 +986,7 @@ mod tests {
         let transport = crate::transport::local(None);
         // psmux names itself in `help`; `-V` is never reached (it would lie "tmux 3.3.6").
         let runner = ProbeRunner::new(Some("usage: PsMuX help"), Some("tmux 3.3.6"));
-        let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
+        let got = detect_backend(&transport, "tmux", &runner).await.0.unwrap();
         assert_eq!(got.kind(), "psmux");
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(
@@ -990,7 +1005,10 @@ mod tests {
             Some("psmux v3.3.8 - Terminal multiplexer for Windows (tmux alternative)"),
             Some("tmux 3.3.8"),
         );
-        let got = detect_backend(&transport, "psmux", &runner).await.unwrap();
+        let got = detect_backend(&transport, "psmux", &runner)
+            .await
+            .0
+            .unwrap();
         assert_eq!(got.kind(), "psmux");
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(
@@ -1012,7 +1030,10 @@ Usage: zellij [OPTIONS]",
             ),
             Some("tmux 3.5a"),
         );
-        let got = detect_backend(&transport, "zellij", &runner).await.unwrap();
+        let got = detect_backend(&transport, "zellij", &runner)
+            .await
+            .0
+            .unwrap();
         assert_eq!(got.kind(), "zellij");
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(got.attach_plan("api"), argv(&["zellij", "attach", "api"]));
@@ -1026,7 +1047,7 @@ Usage: zellij [OPTIONS]",
         // detected/connected.
         let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(None, Some("tmux 3.5a"));
-        let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
+        let got = detect_backend(&transport, "tmux", &runner).await.0.unwrap();
         assert_eq!(got.kind(), "tmux");
         assert_eq!(got.server_model(), ServerModel::Shared);
     }
@@ -1036,7 +1057,7 @@ Usage: zellij [OPTIONS]",
         // A `help` that succeeds without a known-mux marker still falls through to `-V`.
         let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(Some("usage: tmux commands"), Some("tmux 3.5a"));
-        let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
+        let got = detect_backend(&transport, "tmux", &runner).await.0.unwrap();
         assert_eq!(got.kind(), "tmux");
         assert_eq!(got.server_model(), ServerModel::Shared);
     }
@@ -1049,13 +1070,13 @@ Usage: zellij [OPTIONS]",
     async fn detect_backend_live() {
         use crate::model::source::ExecRunner;
         let ssh = crate::transport::ssh("jupiter00".into(), String::new(), "windows".into());
-        let got = detect_backend(&ssh, "tmux", &ExecRunner).await;
+        let (got, _) = detect_backend(&ssh, "tmux", &ExecRunner).await;
         eprintln!(
             "DETECT jupiter00/tmux -> {:?}",
             got.as_ref().map(|m| (m.kind(), m.server_model()))
         );
         let local = crate::transport::local(None);
-        let got = detect_backend(&local, "psmux", &ExecRunner).await;
+        let (got, _) = detect_backend(&local, "psmux", &ExecRunner).await;
         eprintln!(
             "DETECT local/psmux -> {:?}",
             got.as_ref().map(|m| (m.kind(), m.server_model()))
@@ -1068,7 +1089,10 @@ Usage: zellij [OPTIONS]",
         // output: `abduco-0.6 © …`. `-v` is the implementation's one probe and identifies it.
         let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(None, None).low_version(Some("abduco-0.6 © 2013-2018"));
-        let got = detect_backend(&transport, "abduco", &runner).await.unwrap();
+        let got = detect_backend(&transport, "abduco", &runner)
+            .await
+            .0
+            .unwrap();
         assert_eq!(got.kind(), "abduco");
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(got.attach_plan("api"), argv(&["abduco", "-a", "api"]));
@@ -1080,16 +1104,23 @@ Usage: zellij [OPTIONS]",
         // version stage reads the name in its output, and `-v` is never asked.
         let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(None, Some("tmux 3.5a"));
-        let got = detect_backend(&transport, "tmux", &runner).await.unwrap();
+        let got = detect_backend(&transport, "tmux", &runner).await.0.unwrap();
         assert_eq!(got.kind(), "tmux");
     }
 
     #[tokio::test]
     async fn detect_backend_both_probes_fail_is_inconclusive() {
-        // Unreachable host / missing binary: both probes error ⇒ None (retry later).
+        // Unreachable host / missing binary: both probes error ⇒ None (retry later),
+        // carrying the first probe's error as the reason detection failed.
         let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(None, None);
-        assert!(detect_backend(&transport, "tmux", &runner).await.is_none());
+        let (got, err) = detect_backend(&transport, "tmux", &runner).await;
+        assert!(got.is_none(), "no probe answered ⇒ no mux");
+        assert_eq!(
+            err.as_deref(),
+            Some("down"),
+            "the first probe error rides along as the detection reason"
+        );
     }
 
     #[test]
@@ -1180,7 +1211,10 @@ Usage: zellij [OPTIONS]",
         let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(Some("Must be connected to a terminal."), None)
             .low_version(Some("Screen version 4.09.00 (GNU) 30-Jan-22"));
-        let got = detect_backend(&transport, "screen", &runner).await.unwrap();
+        let got = detect_backend(&transport, "screen", &runner)
+            .await
+            .0
+            .unwrap();
         assert_eq!(got.kind(), "screen");
         assert_eq!(got.server_model(), ServerModel::PerSession);
     }

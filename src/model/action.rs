@@ -195,9 +195,12 @@ pub enum EventEffect {
     },
     /// `Scanned`: a detection probe resolved - (re)identify `source`'s mux with
     /// `detected`, then dispatch the now-detected host onto its metadata channel.
+    /// `err` rides along when `detected` is `None`: the reason detection failed, so
+    /// the loop settles the undetected card with it.
     DispatchScanned {
         source: String,
         detected: Option<Box<dyn crate::mux::Mux>>,
+        err: Option<String>,
     },
     /// `Sessions` (poll host, no enumeration error): drop any stale attach whose
     /// registry `.port` vanished, then sync `source`'s display terminal(s).
@@ -257,10 +260,15 @@ impl std::fmt::Debug for EventEffect {
                 .field("client", client)
                 .field("session", session)
                 .finish(),
-            EventEffect::DispatchScanned { source, detected } => f
+            EventEffect::DispatchScanned {
+                source,
+                detected,
+                err,
+            } => f
                 .debug_struct("DispatchScanned")
                 .field("source", source)
                 .field("detected_some", &detected.is_some())
+                .field("err", err)
                 .finish(),
             EventEffect::SyncPollSessions { source, sessions } => f
                 .debug_struct("SyncPollSessions")
