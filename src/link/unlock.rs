@@ -7,6 +7,7 @@ use crate::transport::Transport;
 
 /// What the [`Answerer`] tells the pty loop to write next, or that it is done. An
 /// empty return means nothing yet (keep reading).
+#[cfg(any(unix, test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PromptWrite {
     /// The ssh host-key prompt: write `yes\n`.
@@ -35,6 +36,7 @@ pub enum UnlockOutcome {
 /// The pure prompt-answer state machine for one unlock. Fed the ssh child's output
 /// chunks, it returns what to write next and, finally, the outcome - so the prompt
 /// logic is unit-tested without a pty.
+#[cfg(any(unix, test))]
 pub(crate) struct Answerer {
     secret: String,
     /// Whether the password (or host key, which precedes it) was already answered.
@@ -44,6 +46,7 @@ pub(crate) struct Answerer {
     done: Option<UnlockOutcome>,
 }
 
+#[cfg(any(unix, test))]
 impl Answerer {
     pub(crate) fn new(secret: String) -> Self {
         Self {
@@ -187,6 +190,19 @@ pub(crate) async fn unlock_host(
         .unwrap_or(UnlockOutcome::Failed("unlock closed".into()))
 }
 
+/// Windows has no ControlMaster to establish, so there is nothing to unlock: the
+/// unlock path is closed and every caller gets `Unavailable`. Present only so the
+/// call sites need no `cfg` of their own.
+#[cfg(not(unix))]
+pub(crate) async fn unlock_host(
+    _transport: &dyn Transport,
+    _user: &str,
+    _password: &str,
+    _timeout: std::time::Duration,
+) -> UnlockOutcome {
+    UnlockOutcome::Unavailable
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +217,8 @@ mod tests {
         assert_eq!(writes, vec![PromptWrite::HostKey]);
         let writes = a.feed("alice@x's password: ");
         assert_eq!(writes, vec![PromptWrite::Password]);
+        // The password write is the secret plus a newline.
+        assert_eq!(a.secret_with_newline(), b"hunter2\n");
         // Wrong password: the re-prompt after one try decides AuthFailed fast.
         let writes = a.feed("Permission denied, please try again.\nalice@x's password: ");
         assert_eq!(writes, vec![PromptWrite::Done(UnlockOutcome::AuthFailed)]);
