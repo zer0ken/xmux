@@ -27,12 +27,6 @@ pub use crate::ui::ops::{run_op, run_unlock, OpResult, Ops};
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const NAV_WIDTH: u16 = 48;
 
-/// How much taller than wide a terminal cell is. A row is about two half-width columns
-/// high in every font a terminal ships with, so an aspect measured in CELLS is not the
-/// aspect the user sees: 60 columns over 30 rows is a square window, not a landscape one.
-/// Every shape test multiplies the rows by this and compares real proportions.
-pub(super) const CELL_ASPECT: u32 = 2;
-
 /// Blank columns between two card columns in the band's column flow. One is enough to
 /// part them: every card opens with its address column, so a gutter reads as a gap
 /// between a name and the next number rather than two names running together.
@@ -90,8 +84,8 @@ pub enum ViewLayout {
 /// from here rather than deriving any of the four.
 ///
 /// `natural` and `width` differ only while the nav is HIDDEN, and keeping both is the
-/// point: the layout turnover is measured from `natural`, so hiding the nav cannot flip
-/// the layout under the very keys that resize it, while the regions are cut from `width`,
+/// point: `natural` keeps the width the user set while `width` is 0 during auto-hide, so
+/// unhiding restores exactly what was set, while the regions are cut from `width`,
 /// which is what is actually on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NavSize {
@@ -135,33 +129,6 @@ impl NavSize {
     /// The same nav attached on another side.
     pub fn with_position(self, position: NavPosition) -> Self {
         NavSize { position, ..self }
-    }
-}
-
-/// Picks the layout from the TERMINAL VIEW's aspect, not the whole screen's: putting the
-/// tree in a side column costs the terminal `nav_width + 1` columns, and if that would
-/// leave the terminal view no wider than it is tall, the tree stacks in a band instead so
-/// the terminal keeps full width. So a screen that is landscape overall can still get the
-/// band once the tree squeezes the terminal into a square-or-taller shape. `nav_width` is
-/// the width the tree would occupy in a column (the natural/unhidden width).
-///
-/// The aspect is the one the user SEES, not the one the cell counts state: a row is about
-/// two columns tall ([`CELL_ASPECT`]), so 60 columns over 30 rows is square. Comparing the
-/// counts directly would call that window landscape and keep the column until the
-/// terminal was half as wide as it looked.
-///
-/// The aspect is always measured AS IF the tree were in its side column, never from the
-/// terminal's live size: going to a band gives the terminal back the tree's columns and
-/// takes the band's rows instead, so measuring the result would make the test flip its
-/// own input and the layout oscillate at the boundary. One side of the comparison, one
-/// answer: the column terminal is wider than tall (`x > y`) or it is not (`x <= y`).
-pub fn view_layout(area: Rect, nav_width: u16) -> ViewLayout {
-    let side_term_w = area.width.saturating_sub(nav_width.saturating_add(1)) as u32;
-    let side_term_h = area.height as u32 * CELL_ASPECT;
-    if side_term_w <= side_term_h {
-        ViewLayout::Band
-    } else {
-        ViewLayout::Column
     }
 }
 
@@ -397,7 +364,7 @@ mod position;
 mod render;
 mod side;
 
-pub use position::{resolve_nav_position, step_nav_position, NavPosition, NavPositionSetting};
+pub use position::{step_nav_position, NavPosition};
 
 impl Switcher {
     fn blank() -> Self {

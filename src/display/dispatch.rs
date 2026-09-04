@@ -38,7 +38,7 @@ pub enum Action {
     /// `prefix t` — toggle auto-hide-nav mode.
     ToggleAutoHide,
     /// `prefix p`: move the nav one side clockwise (left → top → right → bottom →
-    /// automatic). Key-driven only, no ctl verb: applied on the input path, like Height.
+    /// default). Key-driven only, no ctl verb: applied on the input path, like Height.
     CycleNavPosition,
 }
 

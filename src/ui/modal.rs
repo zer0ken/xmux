@@ -400,7 +400,7 @@ pub(crate) fn help_lines(
         ),
         HelpRow::Key(
             format!("{p} p"),
-            "cycle the nav position (left · top · right · bottom · auto)".into(),
+            "cycle the nav position (left · top · right · bottom · default)".into(),
         ),
         HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
         HelpRow::Key("click a view".into(), "focus that view".into()),

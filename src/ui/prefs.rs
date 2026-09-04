@@ -26,8 +26,8 @@ const AUTO_HIDE_NAV_FILE: &str = "auto_hide_nav";
 
 /// The file under the xmux dir holding the nav placement the user last set with
 /// `prefix p` (a side word, or "auto" when the key cycled back to following the
-/// [ui] settings), so the next launch restores the pin (overriding the
-/// `auto-nav-position` config default).
+/// [ui] default), so the next launch restores the pin (overriding the
+/// `nav-position` config default).
 const NAV_POSITION_FILE: &str = "nav_position";
 
 /// Reads the persisted auto-hide-nav mode. `None` when the file is absent or
@@ -54,14 +54,15 @@ pub fn save_auto_hide_nav(xmux_dir: &Path, on: bool) {
 
 /// Reads the persisted nav placement pin. `Some(side)` pins the nav to that side;
 /// `None` (an absent, unreadable, "auto", or unparsable file) means follow the
-/// [ui] settings.
+/// [ui] nav-position default.
 pub fn load_nav_position(xmux_dir: &Path) -> Option<NavPosition> {
     let raw = std::fs::read_to_string(xmux_dir.join(NAV_POSITION_FILE)).ok()?;
     NavPosition::parse(&raw)
 }
 
 /// Persists the nav placement pin. `None` stores "auto" (no pin, follow the [ui]
-/// settings). Best-effort: a write failure only loses the next launch's restore.
+/// nav-position default). Best-effort: a write failure only loses the next launch's
+/// restore.
 pub fn save_nav_position(xmux_dir: &Path, pinned: Option<NavPosition>) {
     let word = match pinned {
         Some(p) => p.word(),

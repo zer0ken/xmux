@@ -37,27 +37,17 @@ screen: one steps a card, the other steps a category.
 
 ### Where the nav attaches
 
-By default the nav takes a **left column** while that leaves the terminal view wider than
-it is tall (wider than tall as it looks on screen, where a row is about two columns tall),
-and a **top band** once the column would leave the terminal view square or taller. Four
-`[ui]` settings shape this:
+By default the nav takes a **left column** on one of the four sides: left, top, right, or
+bottom. A single `[ui]` setting names the default placement:
 
 ```toml
 [ui]
-auto-nav-position = true        # follow the wide/narrow judgment (default)
-wide-nav-position = "left"      # the placement when the terminal stays wider (default "left")
-narrow-nav-position = "top"     # the placement when it does not (default "top")
-# force-nav-position = "right"  # with auto-nav-position = false: pin this side
+nav-position = "left"       # the nav's default side (default "left")
 ```
 
 Each placement names one of `left`, `top`, `right`, `bottom` (an unknown word falls back
-to that setting's default). The effective placement is resolved each frame in one order:
-a placement pinned at runtime wins outright; otherwise, with `auto-nav-position` on, the
-fixed wide/narrow judgment picks between `wide-nav-position` and `narrow-nav-position`;
-with it off, `force-nav-position` applies (falling back to the wide placement when unset).
-The judgment itself never changes: it always asks whether a side column would leave the
-terminal view wider than tall, whatever the nav is actually doing, so the answer cannot
-feed back into the question and nothing oscillates at the boundary.
+to the default). The nav never moves on its own: the effective placement each frame is a
+side pinned at runtime, else this default.
 
 The inner layout of the nav region is identical at all four placements: a right column is
 the same vertical card list as a left one, and a bottom band is the same down-then-right
@@ -65,9 +55,9 @@ flow as a top one. Only what sits on which side of the view border flips. The st
 stays the nav region's bottom row in all four (see below).
 
 `prefix p` moves the nav one side clockwise from where it is now - left → top → right →
-bottom - and the fifth step returns it to the automatic behavior above. The choice is
-remembered in `~/.xmux/nav_position` and wins over these settings until the key cycles
-back to automatic.
+bottom - and the fifth step returns it to the default above. The choice is
+remembered in `~/.xmux/nav_position` and wins over this setting until the key cycles
+back to the default.
 
 | Key | Action |
 |---|---|
@@ -134,7 +124,7 @@ nav or the terminal view holds focus.
 | `prefix q` | quit xmux (the only quit binding) |
 | `prefix ?` | toggle the keybinding help |
 | `prefix t` | toggle auto-hide-nav (focusing the screen then gives it the full width) |
-| `prefix p` | move the nav one side clockwise (left → top → right → bottom → automatic) |
+| `prefix p` | move the nav one side clockwise (left → top → right → bottom → default) |
 | `prefix h` / `prefix l` | narrow / widen the nav (down to just past the resting `C-g` status line) |
 | `prefix Ctrl-←` / `prefix Ctrl-→` | narrow / widen the nav (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
 | `prefix Ctrl-↑` / `prefix Ctrl-↓` | shrink / grow the nav band's height in a band layout (then a bare `Ctrl-↑`/`Ctrl-↓` keeps resizing for a moment) |

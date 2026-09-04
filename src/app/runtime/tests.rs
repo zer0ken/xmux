@@ -1359,7 +1359,7 @@ fn test_rt(env: Env) -> Runtime {
         nav_height: 0,
         nav_position: crate::ui::switcher::NavPosition::Left,
         nav_position_pinned: None,
-        nav_pos_setting: crate::ui::switcher::NavPositionSetting::default(),
+        nav_default: crate::ui::switcher::NavPosition::Left,
         applied_nav_height: u16::MAX,
         auto_hide_nav: false,
         mouse_state: MouseState::default(),
@@ -2450,7 +2450,8 @@ fn prefix_p_cycles_the_nav_position_and_persists_it() {
     use crate::ui::switcher::{NavPosition, Scan, Switcher};
     // `prefix p` moves the pin one step clockwise from the CURRENT effective position
     // and saves it at once, the same moment `prefix t` saves the auto-hide toggle. The
-    // fifth step unpins (back to following the [ui] settings), which stores "auto".
+    // fifth step unpins (back to following the [ui] nav-position default), which stores
+    // "auto".
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
@@ -3018,13 +3019,12 @@ fn loop_top_resolves_the_pinned_nav_position() {
 }
 
 #[test]
-fn loop_top_resolves_auto_for_a_portrait_backend() {
+fn loop_top_resolves_the_default_position_when_unpinned() {
     use crate::ui::switcher::{Scan, Switcher, ViewLayout};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    // No pin: the default settings resolve by the wide/narrow turnover. A 40x60 area
-    // (cols 40, body_rows 59 + the status row) is portrait, so the band takes over and
-    // the narrow default (top) applies.
+    // No pin: the [ui] default (left) applies whatever the aspect, so the nav never
+    // moves on its own. A portrait backend still gets the left column.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
@@ -3034,11 +3034,15 @@ fn loop_top_resolves_auto_for_a_portrait_backend() {
     rt.body_rows = 59;
     let mut term = Terminal::new(TestBackend::new(40, 60)).unwrap();
     rt.prepare_and_draw(&mut term);
-    assert_eq!(rt.nav_position, crate::ui::switcher::NavPosition::Top);
+    assert_eq!(
+        rt.nav_position,
+        crate::ui::switcher::NavPosition::Left,
+        "the unpinned default wins whatever the aspect"
+    );
     let nav = rt.nav_size();
     let (sw, st) = (&mut rt.switcher, &rt.state);
     term.draw(|f| sw.render(f, None, false, nav, st)).unwrap();
-    assert_eq!(rt.switcher.layout(), ViewLayout::Band, "top is a band");
+    assert_eq!(rt.switcher.layout(), ViewLayout::Column, "left is a column");
 }
 
 #[test]

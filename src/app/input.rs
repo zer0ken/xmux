@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn prefix_p_cycles_the_nav_position() {
         // `prefix p` is the position cycle, in nav focus at any placement: one value
-        // (the pin), not a separate auto toggle and force value.
+        // (the pin), persisted to `~/.xmux/nav_position`.
         assert_eq!(
             rt(b"\x07p", false),
             vec![Action::CycleNavPosition],
