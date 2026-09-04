@@ -365,13 +365,16 @@ no function, and no test, so renaming code is never a documentation change.
   a state apart from unreachable: the classification reads only ssh's own failure line
   (`Permission denied (publickey,…)`), so a host that merely died stays unreachable.
   The locked host keeps its card whatever hide-unreachable says (it is the one entry to
-  the unlock), renders the `*` mark, and shows the locked screen with the auth-failure
-  reason. Enter on the locked card opens the two-step unlock: the username, then the
-  masked password, neither ever guessed or prefilled. Submitting runs one PTY
-  prompt-answer ssh (`ControlMaster=yes` over the same control socket every other ssh
-  shares) that establishes the single authenticated master the later channels reuse;
-  success re-enumerates the roster over that master, and any failure keeps the host
-  locked and flashes why. The credentials live only in the transient command and the
+  the unlock), renders the `⚿` mark, and shows the locked panel with the auth-failure
+  reason. The locked panel OWNS the unlock: its top carries a username and a masked
+  password field, and focusing the panel in the terminal view types into them (Enter
+  advances user→password then submits, neither ever guessed or prefilled). It is not a
+  modal and nothing in the nav drives it. Submitting runs one PTY prompt-answer ssh
+  (`ControlMaster=yes` over the same control socket every other ssh shares) that
+  establishes the single authenticated master the later channels reuse;
+  success re-probes ONLY that host over the master (its reach is the only thing that
+  changed, so the whole roster is not re-scanned), and any failure keeps the host locked
+  and flashes why. The credentials live only in the transient command and the
   PTY writer - never stored, logged, rendered, or serialized - and the unlock is
   unavailable on Windows (no ControlMaster socket to leave authenticated, FR-G) and on
   local/WSL hosts (no password to answer).

@@ -97,9 +97,10 @@ UI elements a user perceives as distinct things:
   then the provider that put the host on the roster, the ssh stanza it was reached
   through, what the OTHER muxes on that same machine answered, and the log file holding
   the full history - then the rescan key. The LOCKED state states the same failure
-  facts and adds the unlock row (Enter a username, then the masked password; xmux
-  answers the ssh prompt and establishes one authenticated connection the rest
-  reuses); the host stays locked on any failed unlock and re-scans on a successful
+  facts and adds the unlock fields at the panel's top (a username and a masked password,
+  typed into the panel from the terminal view; xmux answers the ssh prompt and
+  establishes one authenticated connection the rest reuses); the host stays locked on any
+  failed unlock and re-probes only itself on a successful
   one. The EMPTY state's rows are the keys that start a session or rescan. A host
   still scanning gets no screen: an in-flight state is the nav's to show. The
   `own session` state's rows are why it is refused, and no key, because nothing pressed
@@ -277,13 +278,14 @@ UI elements a user perceives as distinct things:
 - locked - a host that answered the network but refused the credentials, a state
   apart from unreachable: ssh's own auth-failure line (`Permission denied
   (publickey,…)`) is the only text that earns it, so a host that merely died is
-  never locked. Its card keeps the `*` mark (warning, like unreachable's `⚠`), is
+  never locked. Its card keeps the `⚿` mark (warning, like unreachable's `⚠`), is
   never hidden by hide-unreachable (it is the one entry to the unlock), and shows
-  the locked view screen naming the reason. Enter on it opens the two-step unlock -
-  the username, then the masked password - which runs one PTY prompt-answer ssh
-  that leaves the one authenticated ControlMaster every later channel reuses. The
-  submitted credentials live only in the transient command and the PTY writer:
-  never stored, logged, rendered, or serialized.
+  the locked panel naming the reason. That panel OWNS the unlock: its top carries a
+  username and a masked password field, typed into from the terminal view (Enter
+  advances user→password then submits), which runs one PTY prompt-answer ssh that leaves
+  the one authenticated ControlMaster every later channel reuses. It is not a modal and
+  nothing in the nav drives it. The submitted credentials live only in the transient
+  command and the PTY writer: never stored, logged, rendered, or serialized.
 - address column - the leftmost column set of every card, holding the one thing that
   answers "where is this": the dim 1-based number `prefix <digit>` jumps to, or, on the
   SELECTED card, the selection mark - the number there would be the address of where you
