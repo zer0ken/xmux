@@ -358,9 +358,10 @@ UI elements a user perceives as distinct things:
   while the filter names it.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
   action's reason). Never a "toast" or "notice".
-- scan indicator - the `scanning n/m…` progress shown in the hint bar while host
-  probes are in flight, behind the same spinner on the same frame as the cards it
-  counts. It counts SOURCES; a scanning host's card spinner trails that host's card.
+- scan indicator - the `scanning hosts n/m…` progress shown in the hint bar while
+  host probes are in flight (a narrow row shortens it to `scanning n/m…`, then to the
+  bare `n/m`), behind the same spinner on the same frame as the cards it counts. It
+  counts SOURCES; a scanning host's card spinner trails that host's card.
 - ready - the state while a prefix interaction is live. A prefix key sets it; it
   clears when the interaction's FUNCTION ENDS, or on a focus switch / mouse action
   (a CANCEL). Most functions end with their command key (even a no-op like focusing
