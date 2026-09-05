@@ -51,9 +51,13 @@ xmux는 Windows와 unix 계열에서 동작한다. 원격 호스트를 사용하
 
 xmux가 지원하는 mux는 다음과 같다.
 
-- unix의 `tmux`·GNU `screen`
-- Windows의 `psmux`
-- `zellij` / `abduco`
+- unix 계열
+  - `tmux`
+  - GNU `screen`
+  - `zellij`
+  - `abduco`
+- Windows
+  - `psmux`
 
 xmux는 호스트가 어느 바이너리로 응답하는지를 보고 그 호스트의 mux를 판별한다.
 따라서 호스트마다 다른 mux가 설치되어 있어도 설정할 것이 없다.
@@ -83,7 +87,7 @@ xmux version
 | 키                                   | 동작                                                       |
 | ------------------------------------ | ---------------------------------------------------------- |
 | `↑` / `↓` (또는 `k` / `j`) | 카드 한 개 이동 (양 끝에서 순환한다)                       |
-| `←` / `→` | 이전 / 다음 `host/mux` 구역으로 이동한다. 호스트 카드들은 하나로 친다     |
+| `←` / `→` (또는 `h` / `l`) | 이전 / 다음 `host/mux` 구역으로 이동한다. 호스트 카드들은 하나로 친다     |
 | `Home` / `End`                   | 첫 카드 / 마지막 카드로 이동                               |
 | `PageUp` / `PageDown`            | 카드 열 개 이동                                            |
 | `Enter`                            | 선택한 세션의 터미널 뷰로 포커스를 옮긴다                |
@@ -150,6 +154,7 @@ theme = "auto-dark"                  # 내장 ANSI 테마: "auto-dark"(기본값
 prefix = "C-g"                        # xmux의 prefix (예: C-g, C-Space, C-b)
 auto-hide-nav = false                 # auto-hide-nav의 초기 상태
 hide-unreachable = true               # 도달하지 못한 호스트는 nav에서 숨긴다 (필터에 이름을 입력하면 카드가 나타난다)
+nav-position = "left"                 # nav의 기본 위치 (left|top|right|bottom)
 view-active-border-style = "green"    # 포커스된 view border의 색
 hint-bar-style = "bg=blue,fg=white"   # 힌트 바의 색 (tmux status-style)
 primary = "brightwhite"               # 역할별 색 오버라이드: primary, secondary,
@@ -166,9 +171,15 @@ selection-style, hint-bar-style, view-border 스타일)을 재시작 없이 실�
 다시 적용한다.
 호스트/로스터 변경은 여전히 `prefix r`로 다시 스캔해야 한다.
 
+nav는 터미널 뷰의 네 변 중 한 곳에 붙는다(왼쪽이나 오른쪽의 세로 열, 위나 아래의
+가로 띠). 위의 `[ui] nav-position` 키가 기본 위치를 정하며, nav는 스스로 움직이지
+않는다. `prefix p`는 nav를 시계 방향으로 한 변 옮기고(left → top → right → bottom →
+기본값) 그 선택을 `~/.xmux/nav_position`에 기억한다. 이 기억은 키가 기본값으로
+돌아올 때까지 설정보다 우선한다.
+
 xmux는 호스트를 먼저 `~/.ssh/config`에서 읽는다. 설정 파일은 그 발견을 보완하며
 대체하지 않는다. 다음 실행까지 남는 상태(마지막에 선택한 세션, auto-hide-nav
-토글, 로그, 컨트롤 소켓)는 `~/.xmux/` 아래에 있다.
+토글, 고정한 nav 위치, 로그, 컨트롤 소켓)는 `~/.xmux/` 아래에 있다.
 
 ## 컨트롤 소켓
 

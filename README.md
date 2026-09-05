@@ -52,9 +52,13 @@ xmux for remote hosts, and at least one supported mux on each host you target.
 
 xmux supports the following muxes:
 
-- `tmux` and GNU `screen` on unix
-- `psmux` on Windows
-- `zellij` / `abduco`
+- unix-likes
+  - `tmux`
+  - GNU `screen`
+  - `zellij`
+  - `abduco`
+- Windows
+  - `psmux`
 
 A host's mux is detected from the binary it answers as, so a mix of these across
 your hosts needs no configuration.
@@ -84,7 +88,7 @@ In the nav list:
 | Key                      | Action                                                                   |
 | ------------------------ | ------------------------------------------------------------------------ |
 | `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends)                                       |
-| `←` / `→`                | previous / next `host/mux` section, the host cards counting as one       |
+| `←` / `→` (or `h` / `l`) | previous / next `host/mux` section, the host cards counting as one       |
 | `Home` / `End`           | jump to the first / last card                                            |
 | `PageUp` / `PageDown`    | jump ten cards                                                           |
 | `Enter`                  | move focus into the selected session's terminal view                    |
