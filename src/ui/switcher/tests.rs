@@ -5454,6 +5454,68 @@ async fn a_host_screen_headline_reads_as_host_over_mux() {
 }
 
 /// A reach entry for `source`, so a screen test states what the app would have resolved.
+/// A host xmux never reached is offered under the mux it WOULD have tried. That guess
+/// must not reach the screen wearing the grammar every confirmed pair wears: the screen
+/// for such a host reads the host alone.
+#[tokio::test]
+async fn a_host_that_answered_nothing_headlines_without_a_mux() {
+    let mut h = Harness::from_sources(&["prod"]);
+    // The reach record carries the mux that was ASKED FOR, which is what the diagnostic
+    // rows state; it is not an answer, and the headline must not read it as one.
+    h.state.chrome.set_source_reach(
+        [(
+            "prod".to_string(),
+            reach("tmux", "ssh to prod", "", "ssh -- prod tmux ls"),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    h.sw.apply_source_result(
+        "prod".into(),
+        vec![],
+        Some("connection refused".into()),
+        &mut h.state,
+    );
+    select_unreachable_host(&mut h).await;
+    h.draw();
+    let out = h.view_text();
+    assert!(
+        out.lines().any(|l| l.trim() == "prod"),
+        "the headline is the host alone:\n{out}"
+    );
+    assert!(
+        !out.contains("prod/tmux"),
+        "no mux is claimed for a host that answered nothing:\n{out}"
+    );
+    // What was ASKED is still stated, in the rows that say what was tried.
+    assert!(
+        out.contains("tmux"),
+        "the diagnostic still says what it tried:\n{out}"
+    );
+}
+
+/// A host that answered enumerated THROUGH its mux, so the pair is a fact and the screen
+/// reads it. An empty host answered - having no session is an answer.
+#[tokio::test]
+async fn a_host_that_answered_headlines_with_its_mux() {
+    let mut h = Harness::from_sources(&["fresh"]);
+    h.state.chrome.set_source_reach(
+        [(
+            "fresh".to_string(),
+            reach("tmux", "ssh to fresh", "", "ssh -- fresh tmux ls"),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    h.sw.apply_source_result("fresh".into(), vec![], None, &mut h.state);
+    h.draw();
+    let out = h.view_text();
+    assert!(
+        out.contains("fresh/tmux"),
+        "an answered host's screen names the pair:\n{out}"
+    );
+}
+
 fn reach(mux: &str, machine: &str, socket: &str, probe: &str) -> crate::ui::chrome::SourceReach {
     crate::ui::chrome::SourceReach {
         probe: probe.into(),

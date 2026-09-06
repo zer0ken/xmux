@@ -54,6 +54,24 @@ pub fn source_label(machine: &str, mux: &str) -> String {
     format!("{machine}{MUX_LABEL_SEP}{mux}")
 }
 
+/// Whether a source's mux may be NAMED on screen, given whether its host ANSWERED.
+///
+/// A mux is named only when it is confirmed. A host that answered enumerated THROUGH its
+/// mux, so that mux is a fact about the machine. A source id that names its own mux was
+/// resolved from what the machine actually serves, so it is a fact too, and it is the
+/// name the user types, so it stays on screen whatever the machine is doing.
+///
+/// Everything else is a config assumption: a host xmux never reached is offered under the
+/// mux it would have tried, and printing that beside a host that answered would put a
+/// guess and a fact in one grammar. Such a source is read as its host alone.
+///
+/// One function because three surfaces show the pair - a card, the screen it selects, and
+/// the doctor's source list - and a rule kept in one of them is a rule the other two
+/// drift from.
+pub fn mux_may_be_named(source: &str, answered: bool) -> bool {
+    answered || !mux_of(source).is_empty()
+}
+
 /// The MACHINE half of a source id (`local:zellij` -> `local`, `prod` -> `prod`).
 /// Everything before the first [`MUX_SEP`]; an unqualified id is returned whole.
 pub fn machine_of(source: &str) -> &str {
@@ -137,6 +155,23 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    /// A mux is named only when something confirmed it. A host that answered enumerated
+    /// through the mux it names; a host that never answered is offered under the mux xmux
+    /// WOULD have tried, which is a guess and reads as a fact beside every other label.
+    #[test]
+    fn an_unanswered_host_with_a_bare_id_names_no_mux() {
+        assert!(mux_may_be_named("prod", true), "it answered");
+        assert!(!mux_may_be_named("prod", false), "it answered nothing");
+    }
+
+    /// An id that names its own mux keeps it whatever the machine is doing: it was
+    /// resolved from what that machine serves, and it is the name the user types.
+    #[test]
+    fn an_id_that_names_its_mux_keeps_it_either_way() {
+        assert!(mux_may_be_named("prod:zellij", true));
+        assert!(mux_may_be_named("prod:zellij", false));
+    }
+
     use super::*;
 
     #[test]
