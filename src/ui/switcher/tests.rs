@@ -1051,8 +1051,8 @@ async fn a_locked_host_card_reads_locked_with_the_lock_mark() {
     // the panel's own assertions).
     let tree = h.nav_text();
     assert!(
-        tree.lines()
-            .any(|l| l.contains("prod") && l.contains(crate::ui::chrome::LOCK_MARK)),
+        tree.lines().any(|l| l.contains("prod")
+            && l.contains(crate::ui::chrome::block_mark(crate::mux::Block::Auth))),
         "the locked host row carries the lock mark:\n{tree}"
     );
 }
@@ -1090,6 +1090,68 @@ async fn locked_host_panel_draws_the_unlock_fields_masked() {
     assert!(
         !screen.contains("hunter2"),
         "no plaintext reaches the rendered frame:\n{screen}"
+    );
+}
+
+#[tokio::test]
+async fn an_unverified_host_key_card_reads_its_own_state_and_offers_the_accept() {
+    // A host whose key nobody verified answered the network, so it is not unreachable:
+    // the card names the block, and the panel reached from it says what Enter does.
+    let mut h = Harness::from_sources(&["newbox"]);
+    h.sw.apply_source_result(
+        "newbox".into(),
+        vec![],
+        Some("command failed (exit 255): Host key verification failed.".into()),
+        &mut h.state,
+    );
+    h.draw();
+    let tree = h.nav_text();
+    assert!(
+        tree.lines().any(|l| l.contains("newbox")
+            && l.contains(crate::ui::chrome::block_mark(crate::mux::Block::HostKey))),
+        "the card carries the block mark:\n{tree}"
+    );
+    let screen = h.view_text();
+    assert!(
+        screen.contains("unverified host key"),
+        "the panel names the state:\n{screen}"
+    );
+    assert!(
+        !screen.contains("unreachable"),
+        "a host that answered is not unreachable:\n{screen}"
+    );
+    assert!(
+        screen.contains("accept"),
+        "the panel offers the accept:\n{screen}"
+    );
+}
+
+#[tokio::test]
+async fn a_changed_host_key_stays_unreachable_with_no_accept_offered() {
+    // A key that changed under a host is not an accept-once decision. ssh's own warning
+    // keeps the host unreachable, so xmux never offers to write the new key down.
+    let mut h = Harness::from_sources(&["newbox"]);
+    h.sw.apply_source_result(
+        "newbox".into(),
+        vec![],
+        Some(
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
+             @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n\
+             Host key verification failed."
+                .into(),
+        ),
+        &mut h.state,
+    );
+    h.draw();
+    assert_eq!(
+        h.sw.current_host_block(),
+        None,
+        "a changed key names no answerable block"
+    );
+    let screen = h.view_text();
+    assert!(
+        screen.contains("unreachable"),
+        "it reads as unreachable:\n{screen}"
     );
 }
 
@@ -1142,8 +1204,9 @@ async fn unlock_success_reprobes_only_that_machine_and_a_failure_keeps_it_locked
         &mut h.state,
     );
     assert_eq!(reprobe, None, "a failure re-probes nothing");
-    assert!(
-        h.sw.current_host_locked(),
+    assert_eq!(
+        h.sw.current_host_block(),
+        Some(crate::mux::Block::Auth),
         "auth failure keeps the card locked"
     );
 }

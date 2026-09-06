@@ -353,11 +353,14 @@ no function, and no test, so renaming code is never a documentation change.
   for the new split, and repaints the whole screen, since the border jumps to the
   opposite side. The focus arrow pairs follow the placement (FR-B14), and the cheatsheet
   and help modal name the pair the current placement makes active.
-- **FR-B26** - A host that answered the network but refused the credentials is LOCKED,
-  a state apart from unreachable: the classification reads only ssh's own failure line
-  (`Permission denied (publickey,…)`), so a host that merely died stays unreachable.
-  The locked host keeps its card whatever hide-unreachable says (it is the one entry to
-  the unlock), renders the `?` mark, and shows the locked panel with the auth-failure
+- **FR-B26** - A host that xmux reached and that named what it wants from the user is
+  BLOCKED, a state apart from unreachable: the classification reads only ssh's own
+  canonical failure lines, so a host that merely died stays unreachable. A blocked host
+  keeps its card whatever hide-unreachable says (its card is the one entry to giving the
+  answer), renders its own one-column mark, and shows the panel that asks for that
+  answer. There are two blocked states, and a host behind both meets them in ssh's own
+  order: the key first, the credentials after. A host that refused the credentials
+  (`Permission denied (publickey,…)`) is LOCKED, renders the `?` mark, and shows the locked panel with the auth-failure
   reason. The locked panel OWNS the unlock: its top carries a username and a masked
   password field, and focusing the panel in the terminal view types into them (Enter
   advances user→password then submits, neither ever guessed or prefilled). It is not a
@@ -370,6 +373,18 @@ no function, and no test, so renaming code is never a documentation change.
   PTY writer - never stored, logged, rendered, or serialized - and the unlock is
   unavailable on Windows (no ControlMaster socket to leave authenticated, FR-G) and on
   local/WSL hosts (no password to answer).
+- **FR-B27** - A host that answered with a key no local policy has verified has an
+  UNVERIFIED HOST KEY, the blocked state ssh's verification-failed line earns. Output
+  that ALSO carries ssh's changed-identification warning stays unreachable instead: a key
+  that changed under a host is decided outside xmux, so no accept is ever offered for it.
+  The unverified host renders the `!` mark and shows a panel that states the same failure
+  facts as the unreachable screen plus an accept row. That panel collects nothing,
+  because the only answer ssh wants is whether to write the presented key down, so Enter
+  alone submits it. Submitting runs the same PTY prompt-answer ssh the unlock runs, with
+  NO credentials: xmux answers the key question and leaves the login to ssh's own key
+  authentication, never inventing a username to accept a key with. A host that also wants
+  a password refuses that attempt and reads as locked on its next probe, which is where
+  its password is asked for.
 
 ## C. Switching (the keystone)
 

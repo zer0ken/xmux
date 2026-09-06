@@ -10,6 +10,10 @@ the binary in place with a checksum-verified build from the latest release.
 `cli::run` is the sole entry the binary shim calls; everything below it is
 crate-internal.
 
+`doctor` reports a failed source as the state its own failure text proves, in the
+same words the app's cards use: a host that answered and named a barrier reads as
+that barrier, and only a host that did not answer reads as unreachable.
+
 ## Mental Model
 
 The CLI is the outermost layer. It parses argv, resolves the config, the resolved

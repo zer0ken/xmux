@@ -686,17 +686,21 @@ impl Switcher {
         matches!(self.current_ref(), Some(RowRef::Host { unreachable, .. }) if *unreachable)
     }
 
-    /// True when the selected host answered the network but refused the credentials. Its
-    /// terminal-view panel carries the unlock input, so a keystroke typed while the
-    /// terminal view is focused edits that panel's fields rather than reaching a session.
-    pub(crate) fn current_host_locked(&self) -> bool {
-        matches!(self.current_ref(), Some(RowRef::Host { locked, .. }) if *locked)
+    /// What the selected host is waiting for the user to answer, or `None` when it is
+    /// waiting for nothing. Its terminal-view panel carries the answer, so a keystroke
+    /// typed while the terminal view is focused drives that panel rather than reaching
+    /// a session.
+    pub(crate) fn current_host_block(&self) -> Option<crate::mux::Block> {
+        match self.current_ref() {
+            Some(RowRef::Host { block, .. }) => *block,
+            _ => None,
+        }
     }
 
     /// True when the selected host is not a valid action target: it is unreachable
-    /// (dead) or locked (auth-failed). Creating under it is refused either way.
+    /// (dead) or blocked on an answer. Creating under it is refused either way.
     fn current_host_blocked(&self) -> bool {
-        self.current_host_unreachable() || self.current_host_locked()
+        self.current_host_unreachable() || self.current_host_block().is_some()
     }
 
     /// Which host screen the terminal view shows in place of the grid, or `None` when it
@@ -715,14 +719,14 @@ impl Switcher {
         let Some(RowRef::Host {
             source,
             unreachable,
-            locked,
+            block,
             ..
         }) = self.current_ref()
         else {
             return None;
         };
-        if *locked {
-            return Some(ViewScreen::Locked);
+        if let Some(block) = block {
+            return Some(ViewScreen::for_block(*block));
         }
         if *unreachable {
             return Some(ViewScreen::Unreachable);

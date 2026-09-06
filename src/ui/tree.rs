@@ -205,15 +205,16 @@ pub(crate) enum RowRef {
     /// card, and the `{host}/{mux}` it used to carry now lives on the section title
     /// above it.
     Session { sess: Session },
-    /// A host with no session to show (scanning / unreachable / locked / empty) -
+    /// A host with no session to show (scanning / unreachable / blocked / empty) -
     /// the only host-level entry, sunk to the bottom of the list. `scanning` is the
     /// in-flight state: the card's unresolved level shows a spinner instead of a
-    /// settled mux. `locked` refines `unreachable`: the host answered the network
-    /// but refused the credentials, so its card is the entry to the unlock view.
+    /// settled mux. `block` refines `unreachable`: the host answered the network and
+    /// named what it wants from the user, so its card is the entry to the panel that
+    /// asks for it.
     Host {
         source: String,
         unreachable: bool,
-        locked: bool,
+        block: Option<crate::mux::Block>,
         scanning: bool,
     },
 }
@@ -258,9 +259,9 @@ pub(crate) fn drop_hidden_unreachable(
         .filter(|g| {
             g.err.is_none()
                 || scanning.contains(&g.source)
-                // A locked host is actionable (its unlock view is the one entry
-                // point), so hiding never drops it, whatever the filter says.
-                || crate::mux::is_locked(g.err.as_deref().unwrap_or_default())
+                // A blocked host is actionable (its panel is the one entry point),
+                // so hiding never drops it, whatever the filter says.
+                || crate::mux::is_blocked(g.err.as_deref().unwrap_or_default())
                 || (!filter.is_empty() && fuzzy_match(filter, &g.source))
         })
         .cloned()
@@ -352,15 +353,14 @@ fn push_session_card(rows: &mut Vec<Row>, sess: &Session, mux_of_source: &dyn Fn
 /// unreachable and the empty states, so the screen a user reaches from a card can
 /// never name the same state two ways. The card itself no longer prints this word:
 /// an unreachable card carries the `⚠` mark on its host row, and a reachable empty
-/// host reads as the host row alone, so the word is the screen's alone. `locked`
-/// names the auth-failed host; it precedes `unreachable` (a locked host is one).
-pub(crate) fn host_state_word(locked: bool, unreachable: bool) -> &'static str {
-    if locked {
-        "locked"
-    } else if unreachable {
-        "⚠ unreachable"
-    } else {
-        "no sessions"
+/// host reads as the host row alone, so the word is the screen's alone. A block
+/// precedes `unreachable`, because a blocked host is one that was reached.
+pub(crate) fn host_state_word(block: Option<crate::mux::Block>, unreachable: bool) -> &'static str {
+    match block {
+        Some(crate::mux::Block::Auth) => "locked",
+        Some(crate::mux::Block::HostKey) => "unverified host key",
+        None if unreachable => "⚠ unreachable",
+        None => "no sessions",
     }
 }
 
@@ -417,7 +417,7 @@ pub(crate) fn flatten(
     for g in groups {
         let is_scanning = scanning.contains(&g.source);
         let unreachable = g.err.is_some();
-        let locked = g.err.as_deref().is_some_and(crate::mux::is_locked);
+        let block = g.err.as_deref().and_then(crate::mux::classify_block);
         if !unreachable && !g.sessions.is_empty() {
             continue;
         }
@@ -439,7 +439,7 @@ pub(crate) fn flatten(
             reference: RowRef::Host {
                 source: g.source.clone(),
                 unreachable,
-                locked,
+                block,
                 scanning: is_scanning,
             },
         });
@@ -1114,11 +1114,9 @@ mod tests {
         let rows = flatten(&groups, &HashSet::new(), "", false, &mux_of_source);
         match &rows[0].reference {
             RowRef::Host {
-                locked,
-                unreachable,
-                ..
+                block, unreachable, ..
             } => {
-                assert!(*locked);
+                assert_eq!(*block, Some(crate::mux::Block::Auth));
                 assert!(*unreachable, "a locked host is still a failure (err set)");
             }
             _ => panic!("expected a host card, got a non-host row"),
@@ -1157,8 +1155,54 @@ mod tests {
 
     #[test]
     fn host_state_word_names_locked() {
-        assert_eq!(host_state_word(true, false), "locked");
-        assert_eq!(host_state_word(false, true), "⚠ unreachable");
-        assert_eq!(host_state_word(false, false), "no sessions");
+        assert_eq!(
+            host_state_word(Some(crate::mux::Block::Auth), false),
+            "locked"
+        );
+        assert_eq!(host_state_word(None, true), "⚠ unreachable");
+        assert_eq!(host_state_word(None, false), "no sessions");
+    }
+
+    #[test]
+    fn host_state_word_names_an_unverified_host_key() {
+        assert_eq!(
+            host_state_word(Some(crate::mux::Block::HostKey), true),
+            "unverified host key"
+        );
+    }
+
+    #[test]
+    fn flatten_marks_an_unverified_host_key_host() {
+        // The host answered and named a key nobody has verified: a settled failure, and
+        // one the user can answer, so the card carries the block rather than reading as
+        // a machine that never replied.
+        let groups = vec![Group {
+            source: "newbox".into(),
+            err: Some("command failed (exit 255): Host key verification failed.".into()),
+            sessions: vec![],
+        }];
+        let rows = flatten(&groups, &HashSet::new(), "", false, &mux_of_source);
+        match &rows[0].reference {
+            RowRef::Host {
+                block, unreachable, ..
+            } => {
+                assert_eq!(*block, Some(crate::mux::Block::HostKey));
+                assert!(*unreachable, "it is still a failure (err set)");
+            }
+            _ => panic!("expected a host card, got a non-host row"),
+        }
+    }
+
+    #[test]
+    fn drop_hidden_unreachable_keeps_an_unverified_host_key_host() {
+        // Hiding drops hosts that are merely dead. A host waiting on an answer is the
+        // entry point to giving that answer, so hiding must never take it off screen.
+        let groups = vec![Group {
+            source: "newbox".into(),
+            err: Some("Host key verification failed.".into()),
+            sessions: vec![],
+        }];
+        let kept = drop_hidden_unreachable(&groups, &HashSet::new(), "");
+        assert_eq!(kept.len(), 1, "the blocked host survives hiding");
     }
 }

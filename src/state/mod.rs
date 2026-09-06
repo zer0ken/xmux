@@ -187,6 +187,47 @@ impl State {
         None
     }
 
+    /// Feeds terminal-view keystrokes into the panel of a host that is blocked on a
+    /// user answer, routing them to the panel that asks for THAT answer. One entry
+    /// point, so the keyboard path and the control socket drive a blocked host the
+    /// same way whichever block it carries.
+    pub(crate) fn feed_blocked_panel(
+        &mut self,
+        block: crate::mux::Block,
+        source: &str,
+        bytes: &[u8],
+    ) -> Option<crate::model::Command> {
+        match block {
+            crate::mux::Block::Auth => self.feed_unlock(source, bytes),
+            crate::mux::Block::HostKey => Self::feed_host_key(source, bytes),
+        }
+    }
+
+    /// Feeds keystrokes into the unverified-host-key panel. That panel collects
+    /// nothing: the only thing ssh wants to hear is whether to accept the key it
+    /// presented, so Enter submits and every other key is ignored (there is no draft
+    /// to keep and nothing to type into).
+    ///
+    /// The submitted unlock carries NO credentials, and that is what makes it an
+    /// accept rather than a login: the worker answers the host-key prompt and leaves
+    /// the rest to ssh's own key authentication. A host that also wants a password
+    /// refuses that attempt, which reclassifies it as locked on the next probe, and
+    /// its panel then asks for the password.
+    fn feed_host_key(source: &str, bytes: &[u8]) -> Option<crate::model::Command> {
+        // An escape sequence (arrow/function keys) is a key, not a submission.
+        if bytes.first() == Some(&0x1b) {
+            return None;
+        }
+        String::from_utf8_lossy(bytes)
+            .chars()
+            .any(|c| c == '\r' || c == '\n')
+            .then(|| crate::model::Command::RunUnlock {
+                source: source.to_string(),
+                user: String::new(),
+                password: String::new(),
+            })
+    }
+
     /// Builds the inventory from a complete snapshot: every host is resolved
     /// (reachable or unreachable per its `err`) and every session is present. Other
     /// state fields stay default.
@@ -1654,6 +1695,52 @@ mod tests {
     }
 
     #[test]
+    fn feed_host_key_submits_an_accept_on_enter_and_ignores_typing() {
+        // The unverified-host-key panel collects nothing: the only answer ssh wants is
+        // whether to accept the key, so typing goes nowhere and Enter submits.
+        let mut s = State::default();
+        let block = crate::mux::Block::HostKey;
+        assert!(
+            s.feed_blocked_panel(block, "newbox", b"alice").is_none(),
+            "there is no field to type into"
+        );
+        assert!(
+            s.feed_blocked_panel(block, "newbox", b"\x1b[A").is_none(),
+            "an escape sequence is a key, not a submission"
+        );
+        let cmd = s
+            .feed_blocked_panel(block, "newbox", b"\r")
+            .expect("Enter submits the accept");
+        match cmd {
+            crate::model::Command::RunUnlock {
+                source,
+                user,
+                password,
+            } => {
+                assert_eq!(source, "newbox");
+                assert!(
+                    user.is_empty() && password.is_empty(),
+                    "an accept carries no credentials: {user:?} {password:?}"
+                );
+            }
+            other => panic!("expected RunUnlock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn feed_blocked_panel_routes_a_locked_host_to_the_unlock_draft() {
+        // One entry point, two panels: a locked host still edits its two fields.
+        let mut s = State::default();
+        let block = crate::mux::Block::Auth;
+        assert!(s.feed_blocked_panel(block, "prod", b"alice").is_none());
+        assert_eq!(
+            s.unlock.as_ref().map(|d| d.user.as_str()),
+            Some("alice"),
+            "the keystrokes reached the unlock draft"
+        );
+    }
+
+    #[test]
     fn feed_unlock_types_two_fields_and_submits_on_the_second_enter() {
         // The locked panel's input: characters land in the active field, Enter advances
         // user→password then submits the RunUnlock, and the password is taken out of the
@@ -1771,8 +1858,9 @@ mod tests {
                 .iter()
                 .find(|g| g.source == source)
                 .unwrap_or_else(|| panic!("{source} group"));
-            assert!(
-                g.err.as_deref().is_some_and(crate::mux::is_locked),
+            assert_eq!(
+                g.err.as_deref().and_then(crate::mux::classify_block),
+                Some(crate::mux::Block::Auth),
                 "{source} classifies locked: {:?}",
                 g.err
             );
@@ -1800,9 +1888,10 @@ mod tests {
         );
         let g = state.groups.iter().find(|g| g.source == "prod").unwrap();
         assert!(g.err.is_some(), "the card is unreachable");
-        assert!(
-            !g.err.as_deref().is_some_and(crate::mux::is_locked),
-            "a reach failure is not locked: {:?}",
+        assert_eq!(
+            g.err.as_deref().and_then(crate::mux::classify_block),
+            None,
+            "a reach failure names no block: {:?}",
             g.err
         );
     }

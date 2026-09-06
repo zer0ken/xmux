@@ -229,16 +229,22 @@ pub(crate) enum BarFill {
     Content,
 }
 
-/// Which screen fills the terminal-view region in place of a mux: one variant per state
-/// that has no grid to mirror. Two are host states with no session to show; the third is
-/// the one session that has a grid and must not be shown anyway. There is no variant for
-/// a host still scanning - an in-flight state is the nav's to show, so the view keeps the
-/// The mark a locked host wears on its nav card, flush after the host name. A locked
-/// host is a failure the user can act on (the password unlock), so it keeps the warning
-/// colour like the unreachable `⚠`.
-pub(crate) const LOCK_MARK: &str = "?";
+/// The mark a BLOCKED host wears on its nav card, flush after the host name. A blocked
+/// host is a failure the user can act on, so it keeps the warning colour like the
+/// unreachable `⚠`. Both marks are one column wide: a card's columns are laid out in
+/// cells, and a wide glyph here would shift every column after it.
+pub(crate) fn block_mark(block: crate::mux::Block) -> &'static str {
+    match block {
+        crate::mux::Block::Auth => "?",
+        crate::mux::Block::HostKey => "!",
+    }
+}
 
-/// grid it already has.
+/// Which screen fills the terminal-view region in place of a mux: one variant per state
+/// that has no grid to mirror. All but one are host states with no session to show; the
+/// remaining one is the session that HAS a grid and must not be shown anyway. There is
+/// no variant for a host still scanning - an in-flight state is the nav's to show, so
+/// the view keeps the grid it already has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ViewScreen {
     /// The session xmux is ITSELF running in. Mirroring it would attach a second client
@@ -250,6 +256,9 @@ pub(crate) enum ViewScreen {
     /// The host answered the network but refused the credentials (`Permission
     /// denied`): a locked host is reachable and awaiting the password unlock.
     Locked,
+    /// The host answered with a key no local policy has verified: it is reachable and
+    /// awaiting the one accept that writes the key down.
+    HostKey,
     /// The host answered and is serving no session.
     Empty,
 }
@@ -262,8 +271,22 @@ impl ViewScreen {
     fn word(self) -> &'static str {
         match self {
             ViewScreen::SelfSession => "running xmux",
-            ViewScreen::Locked => "locked",
-            other => crate::ui::tree::host_state_word(false, other == ViewScreen::Unreachable),
+            ViewScreen::Locked => {
+                crate::ui::tree::host_state_word(Some(crate::mux::Block::Auth), true)
+            }
+            ViewScreen::HostKey => {
+                crate::ui::tree::host_state_word(Some(crate::mux::Block::HostKey), true)
+            }
+            other => crate::ui::tree::host_state_word(None, other == ViewScreen::Unreachable),
+        }
+    }
+
+    /// The screen a blocked host shows. One screen per block, so the card and the screen
+    /// reached from it can never name the same state two ways.
+    pub(crate) fn for_block(block: crate::mux::Block) -> Self {
+        match block {
+            crate::mux::Block::Auth => ViewScreen::Locked,
+            crate::mux::Block::HostKey => ViewScreen::HostKey,
         }
     }
 }
@@ -300,14 +323,14 @@ fn siblings(
         .iter()
         .filter(|g| g.source != source && crate::session::machine_of(&g.source) == machine)
         .map(|g| {
-            let locked = g.err.as_deref().is_some_and(crate::mux::is_locked);
+            let block = g.err.as_deref().and_then(crate::mux::classify_block);
             let word = if state.scanning.contains(&g.source) {
                 "still scanning".to_string()
             } else if g.err.is_some() {
-                crate::ui::tree::host_state_word(locked, true).to_string()
+                crate::ui::tree::host_state_word(block, true).to_string()
             } else {
                 match g.sessions.len() {
-                    0 => crate::ui::tree::host_state_word(false, false).to_string(),
+                    0 => crate::ui::tree::host_state_word(None, false).to_string(),
                     1 => "1 session".to_string(),
                     n => format!("{n} sessions"),
                 }
@@ -700,9 +723,10 @@ impl Chrome {
                     )
                 }
             }
-            ViewScreen::Unreachable | ViewScreen::Locked | ViewScreen::Empty => {
-                self.source_label(&address.source)
-            }
+            ViewScreen::Unreachable
+            | ViewScreen::Locked
+            | ViewScreen::HostKey
+            | ViewScreen::Empty => self.source_label(&address.source),
         }
     }
 
@@ -740,7 +764,10 @@ impl Chrome {
                  which moves your own client and paints xmux inside itself"
                     .into(),
             ));
-        } else if kind == ViewScreen::Unreachable || kind == ViewScreen::Locked {
+        } else if matches!(
+            kind,
+            ViewScreen::Unreachable | ViewScreen::Locked | ViewScreen::HostKey
+        ) {
             // WHAT failed, then WHEN, then what was asked of the host and how, then who
             // put it on the list, then how it is configured, then what else on that same
             // machine answered, then where the whole history is written. Read top to
@@ -830,6 +857,14 @@ impl Chrome {
                         .into(),
                 ));
             }
+            if kind == ViewScreen::HostKey {
+                rows.push((
+                    ScreenCell::Label("accept"),
+                    "Enter accepts the key this host presented and writes it down; a host \
+                     that also wants a password reads as locked afterwards and asks for it"
+                        .into(),
+                ));
+            }
             rows.push((ScreenCell::Gap, String::new()));
         } else {
             // Creating under an unreachable host is refused, so `n` is offered only where
@@ -887,7 +922,7 @@ impl Chrome {
         let rule = Span::styled("│ ", Style::default().fg(pal.decoration));
         let state_style = Style::default().fg(match kind {
             ViewScreen::Unreachable => pal.error,
-            ViewScreen::Locked => pal.warning,
+            ViewScreen::Locked | ViewScreen::HostKey => pal.warning,
             ViewScreen::Empty | ViewScreen::SelfSession => pal.decoration,
         });
         let headline = format!(" {}", self.headline(address, kind));

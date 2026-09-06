@@ -139,6 +139,10 @@ A remote host that answers the network but refuses your credentials shows
 `locked` (a `?` mark). Focus its panel in the terminal view and type the
 username and the masked password into it; xmux establishes one authenticated
 connection the rest of the session reuses, and re-probes just that host.
+A host that answers with a key you have never verified shows `unverified host key`
+(a `!` mark). Focus its panel and press Enter to accept that key; a host that also
+wants a password reads as `locked` afterwards and asks for it. A host whose key
+CHANGED is left unreachable, because that is a decision to make outside xmux.
 
 ## Configuration
 

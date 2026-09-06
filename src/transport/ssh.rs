@@ -116,7 +116,7 @@ impl Transport for Ssh {
         if self.os == "windows" {
             return None; // no ControlMaster socket to leave authenticated
         }
-        let v = vec![
+        let mut v = vec![
             "ssh".to_string(),
             "-o".into(),
             "ControlMaster=yes".into(),
@@ -126,12 +126,19 @@ impl Transport for Ssh {
             "ControlPersist=60s".into(),
             "-o".into(),
             format!("ConnectTimeout={CONNECT_TIMEOUT}"),
-            "-l".into(),
-            user.to_string(),
-            "--".into(),
-            self.alias.clone(),
-            "true".into(),
         ];
+        // An EMPTY user names nobody, so the flag is left off entirely and ssh resolves
+        // the login the way every other channel to this host resolves it (the config's
+        // `User`, else the local name). Passing `-l ""` would instead ask for a login
+        // that cannot exist. The host-key accept submits no credentials and takes this
+        // path; the password unlock always names its user.
+        if !user.is_empty() {
+            v.push("-l".into());
+            v.push(user.to_string());
+        }
+        v.push("--".into());
+        v.push(self.alias.clone());
+        v.push("true".into());
         Some(v)
     }
 
@@ -235,6 +242,19 @@ mod tests {
             "the unlock must be able to prompt: {joined}"
         );
         assert_eq!(got.last().unwrap(), "true");
+        assert!(joined.ends_with("-- prod true"), "{joined}");
+    }
+
+    #[test]
+    fn ssh_unlock_argv_omits_the_login_flag_for_an_empty_user() {
+        // The host-key accept submits no credentials. An empty `-l` would name a login
+        // that cannot exist, so the flag is left off and ssh resolves the user itself.
+        let got = ssh("prod", "linux", "/tmp/cm.sock")
+            .unlock_argv("")
+            .unwrap();
+        let joined = got.join(" ");
+        assert!(!joined.contains("-l"), "no login flag: {joined}");
+        assert!(joined.contains("ControlMaster=yes"), "{joined}");
         assert!(joined.ends_with("-- prod true"), "{joined}");
     }
 

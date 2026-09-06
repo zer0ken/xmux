@@ -92,15 +92,47 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
     })
 }
 
-/// True when `text` is ssh's canonical AUTH-failure line (`Permission denied (…`
-/// with the rejected-methods list), meaning the host was REACHED but refused the
-/// credentials: the locked state, distinct from unreachable. The `(` after
-/// "Permission denied" is ssh's own signature; a generic mux permission error or
-/// a reach failure ("Connection refused" / "Host key verification failed") does not
-/// carry it. Conservative on purpose: a false positive invites a password entry on
-/// a host that is merely down.
-pub(crate) fn is_locked(text: &str) -> bool {
-    text.contains("Permission denied (")
+/// What ssh's own failure text says about a host that xmux REACHED but could not
+/// use. Each variant is decided by a signature ssh itself prints, so a host is never
+/// moved out of unreachable on a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Block {
+    /// The host refused the credentials: it needs a password.
+    Auth,
+    /// The host answered with a key the local policy has never verified: it needs
+    /// the user to accept that key once.
+    HostKey,
+}
+
+/// Classifies a failure text into the one state ssh's canonical signature proves,
+/// or `None` when the text says nothing definite (a reach failure, or a mux error).
+///
+/// The auth signature is `Permission denied (` with the rejected-methods list; the
+/// `(` is ssh's own mark and a generic mux permission error does not carry it. The
+/// host-key signature is ssh's verification-failed line, EXCEPT when the output also
+/// carries the changed-identification warning: a key that changed under a host is a
+/// decision the user makes outside xmux, never one an accept action takes for them.
+///
+/// Conservative on purpose. A false positive here invites the user to answer a
+/// prompt on a host that is merely down.
+pub(crate) fn classify_block(text: &str) -> Option<Block> {
+    if text.contains("Permission denied (") {
+        return Some(Block::Auth);
+    }
+    if text.contains("Host key verification failed.")
+        && !text.contains("REMOTE HOST IDENTIFICATION HAS CHANGED")
+    {
+        return Some(Block::HostKey);
+    }
+    None
+}
+
+/// True when `text` proves the host is reachable and one user answer away from
+/// working, whichever answer that is. The two blocked states share every treatment
+/// that separates them from unreachable: the card stays visible, it is not hidden as
+/// dead, and it carries an action.
+pub(crate) fn is_blocked(text: &str) -> bool {
+    classify_block(text).is_some()
 }
 
 /// The per-command budget [`ExecRunner`] applies to itself, so a command that never
@@ -1220,27 +1252,66 @@ Usage: zellij [OPTIONS]",
     }
 
     #[test]
-    fn is_locked_matches_only_the_ssh_auth_failure_signature() {
-        // The canonical ssh auth-failure line (locked), and the exact "(" after
-        // "Permission denied" that distinguishes it from a generic mux permission error.
-        assert!(is_locked(
-            "pwtest@127.0.0.1: Permission denied (publickey,password)."
-        ));
-        assert!(is_locked(
-            "command failed (exit 255): pwtest@127.0.0.1: Permission denied (publickey)."
-        ));
-        assert!(is_locked(
-            "Permission denied (publickey,password,keyboard-interactive)."
-        ));
-        // Reach failures and non-ssh permission errors are NOT locked.
-        assert!(!is_locked(
-            "ssh: connect to host 192.0.2.1 port 22: Connection timed out"
-        ));
-        assert!(!is_locked("Host key verification failed."));
-        assert!(!is_locked(
-            "tmux: open /tmp/tmux-0/default: Permission denied"
-        ));
-        assert!(!is_locked("no server running on /tmp/tmux-1000/default"));
+    fn classify_block_reads_the_ssh_auth_failure_signature() {
+        // The canonical ssh auth-failure line, and the exact "(" after "Permission
+        // denied" that distinguishes it from a generic mux permission error.
+        assert_eq!(
+            classify_block("pwtest@127.0.0.1: Permission denied (publickey,password)."),
+            Some(Block::Auth)
+        );
+        assert_eq!(
+            classify_block(
+                "command failed (exit 255): pwtest@127.0.0.1: Permission denied (publickey)."
+            ),
+            Some(Block::Auth)
+        );
+        assert_eq!(
+            classify_block("Permission denied (publickey,password,keyboard-interactive)."),
+            Some(Block::Auth)
+        );
+    }
+
+    #[test]
+    fn classify_block_reads_the_ssh_host_key_signature() {
+        assert_eq!(
+            classify_block("Host key verification failed."),
+            Some(Block::HostKey)
+        );
+        assert_eq!(
+            classify_block("command failed (exit 255): Host key verification failed."),
+            Some(Block::HostKey)
+        );
+    }
+
+    #[test]
+    fn classify_block_refuses_a_changed_host_key() {
+        // A key that changed under a host is not an accept-once decision: ssh's own
+        // warning accompanies the same verification-failed line, and that warning is
+        // what keeps the host unreachable instead of offering to accept it.
+        let changed = "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+             @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+             Host key verification failed.";
+        assert_eq!(classify_block(changed), None);
+        assert!(!is_blocked(changed));
+    }
+
+    #[test]
+    fn classify_block_leaves_reach_failures_and_mux_errors_alone() {
+        for text in [
+            "ssh: connect to host 192.0.2.1 port 22: Connection timed out",
+            "ssh: connect to host jupiter00 port 22: Connection refused",
+            "tmux: open /tmp/tmux-0/default: Permission denied",
+            "no server running on /tmp/tmux-1000/default",
+        ] {
+            assert_eq!(classify_block(text), None, "not a blocked state: {text}");
+            assert!(!is_blocked(text), "not a blocked state: {text}");
+        }
+    }
+
+    #[test]
+    fn is_blocked_covers_both_blocked_states() {
+        assert!(is_blocked("Permission denied (publickey)."));
+        assert!(is_blocked("Host key verification failed."));
     }
 
     #[test]

@@ -1135,12 +1135,13 @@ impl Runtime {
             }
             Cmd::RawBytes(bytes) => {
                 if !bytes.is_empty() {
-                    // A LOCKED host has no PTY: its panel owns the keys, exactly as the
+                    // A BLOCKED host has no PTY: its panel owns the keys, exactly as the
                     // interactive terminal-focus path routes them (see `input.rs`). So the
-                    // ctl raw surface drives the unlock the same way a keyboard does.
-                    if self.switcher.current_host_locked() {
+                    // ctl raw surface drives that panel the same way a keyboard does.
+                    if let Some(block) = self.switcher.current_host_block() {
                         if let Some(source) = self.switcher.current_source() {
-                            if let Some(cmd) = self.state.feed_unlock(&source, &bytes) {
+                            if let Some(cmd) = self.state.feed_blocked_panel(block, &source, &bytes)
+                            {
                                 let _ = dispatch_commands(
                                     vec![cmd],
                                     &mut self.switcher,

@@ -559,16 +559,17 @@ impl Runtime {
             // TermInput intercepts the prefix (→ nav / quit / help / resize / literal).
             for action in self.term_input.feed(&non_mouse, self.nav_position) {
                 match action {
-                    // A LOCKED host has no PTY: its panel in the terminal view owns the
-                    // keys. Route them to the unlock draft (edit the user/password field,
-                    // or submit on Enter) instead of a session. Otherwise forward to the
+                    // A BLOCKED host has no PTY: its panel in the terminal view owns the
+                    // keys. Route them to that panel (edit the unlock draft, or accept the
+                    // host key) instead of a session. Otherwise forward to the
                     // VISIBLE session (`displayed`), not the selection: until a new session
                     // is ready the prior one is on screen, so input must reach what the user
                     // actually sees (no blind typing).
                     Action::Forward(f) => {
-                        if self.switcher.current_host_locked() {
+                        if let Some(block) = self.switcher.current_host_block() {
                             if let Some(source) = self.switcher.current_source() {
-                                if let Some(cmd) = self.state.feed_unlock(&source, &f) {
+                                if let Some(cmd) = self.state.feed_blocked_panel(block, &source, &f)
+                                {
                                     let (cq, cwc) = dispatch_commands(
                                         vec![cmd],
                                         &mut self.switcher,

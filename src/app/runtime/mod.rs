@@ -679,10 +679,10 @@ fn ensure_current_host(
     // through every ensure_current_host caller for a size the user never sees.
     let (cols, rows) =
         terminal_view_size(cols, rows, crate::ui::switcher::NavSize::visible(nav_width));
-    // A locked selected host gets no control channel from here: opening a `-CC` that
-    // dies on auth would overwrite its locked reason with "connection closed". The
-    // reconnect sweep re-probes its reachability instead.
-    if switcher.current_host_locked() {
+    // A blocked selected host gets no control channel from here: opening a `-CC` that
+    // dies on the same barrier would overwrite the host's own reason with "connection
+    // closed". The reconnect sweep re-probes its reachability instead.
+    if switcher.current_host_block().is_some() {
         return;
     }
     if let Some(id) = switcher.current_host() {

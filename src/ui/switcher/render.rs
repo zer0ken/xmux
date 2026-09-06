@@ -692,7 +692,7 @@ impl Switcher {
         // sure of, and the mux it shows is a settled fact even while its sessions stream.
         if let RowRef::Host {
             unreachable,
-            locked,
+            block,
             scanning,
             ..
         } = &row.reference
@@ -706,12 +706,12 @@ impl Switcher {
                 host.to_string(),
                 Style::default().fg(color_secondary()),
             ));
-            if *locked {
-                // The lock mark rides the host row flush after the host name. A locked
+            if let Some(block) = block {
+                // The block mark rides the host row flush after the host name. A blocked
                 // host is a failure the user can act on, so it keeps the warning colour
                 // like the unreachable mark.
                 line.push(Span::styled(
-                    crate::ui::chrome::LOCK_MARK,
+                    crate::ui::chrome::block_mark(*block),
                     Style::default().fg(palette::get().warning),
                 ));
             } else if *unreachable {

@@ -265,6 +265,48 @@ mod tests {
     /// `BatchMode=yes` ssh over the same ControlPath reuses the established master.
     /// Skipped (not just ignored) when the env is absent, so a routine `cargo test`
     /// never depends on a live host.
+    /// The host-key accept over a real ssh: a host whose key is in no known_hosts
+    /// answers the key question and nothing else, so the accept runs with NO
+    /// credentials and the key auth that follows decides the outcome. Skipped (not just
+    /// ignored) when the env is absent, so a routine `cargo test` never depends on a
+    /// live host.
+    #[tokio::test]
+    #[ignore = "live gate: set XMUX_LIVE_HOSTKEY_HOST to a host absent from known_hosts"]
+    async fn live_host_key_accept_writes_the_key_down() {
+        let Ok(host) = std::env::var("XMUX_LIVE_HOSTKEY_HOST") else {
+            return;
+        };
+        let cp = format!("/tmp/xmux-live-hostkey-{host}.sock");
+        let _ = std::fs::remove_file(&cp);
+        let transport =
+            crate::transport::ssh_as(host.clone(), host.clone(), cp.clone(), "linux".into());
+        // No credentials: the accept answers the key prompt and leaves the login to
+        // ssh's own key authentication.
+        let outcome = unlock_host(&*transport, "", "", std::time::Duration::from_secs(30)).await;
+        assert!(
+            matches!(outcome, UnlockOutcome::Ok | UnlockOutcome::AuthFailed),
+            "the key question is answered either way, got {outcome:?}"
+        );
+        // Whatever the login did, the key is written down: a BatchMode ssh no longer
+        // fails verification, which is the barrier this accept exists to clear.
+        let out = std::process::Command::new("ssh")
+            .args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                &host,
+                "true",
+            ])
+            .output()
+            .expect("ssh runs");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !err.contains("Host key verification failed."),
+            "the key is known now: {err}"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "live gate: set XMUX_LIVE_HOST/USER/PASSWORD on a password host"]
     async fn live_unlock_establishes_a_reusable_master() {
