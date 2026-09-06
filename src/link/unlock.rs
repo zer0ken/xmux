@@ -148,6 +148,11 @@ pub struct RunningLogin {
     /// prompt that has not been asked yet.
     input: Arc<Mutex<Option<Sender<PtyCmd>>>>,
     cancel: Arc<AtomicBool>,
+    /// The size the PTY was last told to be. The frame that draws the login knows the
+    /// pane it landed in and offers that size on every pass, so the size it already has
+    /// is the common case and must cost nothing: a resize per frame would put an ioctl
+    /// and a grid rebuild between ssh and the prompt it is trying to print.
+    size: Mutex<(u16, u16)>,
 }
 
 impl RunningLogin {
@@ -161,9 +166,14 @@ impl RunningLogin {
     }
 
     /// Resizes the PTY and the grid together, so ssh draws for the pane it is shown in.
+    /// A size it already has is not a resize.
     pub fn resize(&self, cols: u16, rows: u16) {
         if cols == 0 || rows == 0 {
             return;
+        }
+        match self.size.lock() {
+            Ok(mut size) if *size != (cols, rows) => *size = (cols, rows),
+            _ => return,
         }
         if let Ok(slot) = self.input.lock() {
             if let Some(tx) = slot.as_ref() {
@@ -191,6 +201,7 @@ impl RunningLogin {
             grid: Arc::new(Mutex::new(Grid::new(24, 80))),
             input: Arc::new(Mutex::new(None)),
             cancel: Arc::new(AtomicBool::new(false)),
+            size: Mutex::new((80, 24)),
         }
     }
 }
@@ -229,6 +240,7 @@ pub fn start_login(
         grid: grid.clone(),
         input: input.clone(),
         cancel: cancel.clone(),
+        size: Mutex::new((cols, rows)),
     };
     std::thread::spawn(move || {
         let outcome = converse(argv, password, cols, rows, idle, grid, input, cancel, wake);
@@ -396,6 +408,28 @@ mod tests {
         let _ = a.feed("Permission denied (publickey,password).");
         assert_eq!(a.verdict(Some(255)), UnlockOutcome::AuthFailed);
         assert_eq!(a.verdict(Some(0)), UnlockOutcome::Ok, "0 is still success");
+    }
+
+    /// The frame offers the pane's size on every pass, so only a size the PTY does not
+    /// already have counts as a resize.
+    #[test]
+    fn a_size_the_login_already_has_is_not_a_resize() {
+        let login = RunningLogin::parked("prod");
+        assert_eq!(*login.size.lock().unwrap(), (80, 24));
+        login.resize(80, 24);
+        assert_eq!(
+            *login.size.lock().unwrap(),
+            (80, 24),
+            "unchanged is no change"
+        );
+        login.resize(100, 30);
+        assert_eq!(*login.size.lock().unwrap(), (100, 30), "a new size lands");
+        login.resize(0, 30);
+        assert_eq!(
+            *login.size.lock().unwrap(),
+            (100, 30),
+            "a pane with no room is not a size to draw for"
+        );
     }
 
     /// The conversation drives a real PTY: the login handle renders a grid, types what
