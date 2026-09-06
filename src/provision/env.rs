@@ -165,10 +165,10 @@ pub async fn resolve_roster(
     } else {
         Vec::new()
     };
-    let (tailscale, wsl_distros, installed) = tokio::join!(
+    let (neighbors, wsl_distros, installed) = tokio::join!(
         async {
-            if cfg.discovery.tailscale {
-                crate::provision::roster::tailscale_peers().await
+            if cfg.discovery.neighbors {
+                crate::provision::neighbor::neighbors().await
             } else {
                 Vec::new()
             }
@@ -198,14 +198,14 @@ pub async fn resolve_roster(
             }
         },
     );
-    let host_addresses: HashMap<String, String> = tailscale
+    let host_addresses: HashMap<String, String> = neighbors
         .iter()
         .filter_map(|(alias, addr)| addr.clone().map(|a| (alias.clone(), a)))
         .collect();
-    let tailscale: Vec<String> = tailscale.into_iter().map(|(alias, _)| alias).collect();
+    let neighbors: Vec<String> = neighbors.into_iter().map(|(alias, _)| alias).collect();
     let offered = crate::provision::roster::merge(&[
         (crate::provision::roster::Provider::SshConfig, ssh_aliases),
-        (crate::provision::roster::Provider::Tailscale, tailscale),
+        (crate::provision::roster::Provider::Neighbor, neighbors),
     ]);
     let aliases: Vec<String> = offered.iter().map(|(name, _)| name.clone()).collect();
     let local_muxes = cfg.local_muxes(os, &installed);
@@ -903,12 +903,12 @@ mod tests {
         };
         let offered = vec![
             ("jupiter00".to_string(), Provider::SshConfig),
-            ("kyla".to_string(), Provider::Tailscale),
+            ("kyla".to_string(), Provider::Neighbor),
         ];
         let got = roster_providers(&cfg, &offered, &["wsl.Ubuntu-24.04".to_string()]);
 
         assert_eq!(got.get("jupiter00"), Some(&Provider::SshConfig));
-        assert_eq!(got.get("kyla"), Some(&Provider::Tailscale));
+        assert_eq!(got.get("kyla"), Some(&Provider::Neighbor));
         assert_eq!(got.get("wsl.Ubuntu-24.04"), Some(&Provider::Wsl));
         // A host no provider listed is offered by the config that names it.
         assert_eq!(got.get("written-down"), Some(&Provider::Config));

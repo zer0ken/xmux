@@ -363,9 +363,22 @@ UI elements a user perceives as distinct things:
   connected probe also warms the shared ControlMaster its later channels reuse. Distinct
   from `mux discovery` (which muxes a connected machine serves) and `discovery` (a
   source's sessions).
+- neighbour - a machine this box already reaches in ONE hop and that answers ssh, found
+  in the operating system's own network state rather than from any VPN's client. Two
+  records name the directly reachable: a route to a single address, which a mesh VPN
+  writes one of per peer, and the neighbour table, which holds the machines on this link
+  this box has exchanged frames with. A tunnel appears only in the first (it carries no
+  ARP) and a switch only in the second, so both are read. Neither is a list of hosts, so
+  what they give is narrowed: an entry that resolved to nothing names nobody, one
+  hardware address answering for many addresses is a router rather than a machine, and
+  what survives has to answer ssh, because a printer on the same switch is a neighbour
+  and not a host. The name is the system resolver's answer, trimmed to its first label -
+  which is how a peer keeps the name its own network gave it - and the address stands in
+  as the name when the resolver says nothing. This box is told from its neighbours by the
+  connection itself, whose two ends carry the same address only when it reached here.
 - roster - which HOSTS xmux offers, assembled from PROVIDERS, EVERY one on unless
-  `[discovery]` turns it off: `~/.ssh/config` aliases, the online peers of this
-  machine's tailnet, and this machine's WSL distributions. Every provider yields plain ssh
+  `[discovery]` turns it off: `~/.ssh/config` aliases, this machine's NEIGHBOURS, and
+  this machine's WSL distributions. Every provider yields plain ssh
   target names, so nothing downstream BEHAVES differently for one; which provider
   offered a name is kept beside it and shown on the unreachable host's view screen, never read
   to decide anything. The roster is what makes a machine a

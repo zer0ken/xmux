@@ -7,4 +7,5 @@
 pub mod config;
 pub mod discovery;
 pub mod env;
+pub mod neighbor;
 pub mod roster;

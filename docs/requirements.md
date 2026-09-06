@@ -26,12 +26,14 @@ no function, and no test, so renaming code is never a documentation change.
   sessions run by name ascending. A routine poll reproduces the same order, so one
   source's cards are contiguous and the nav never names a source twice.
 - **FR-A5** - The roster (which HOSTS are offered) comes from providers the
-  `[discovery]` table selects: `~/.ssh/config` aliases and this machine's tailnet peers,
-  both on by default. A tailnet peer is offered under its DNS label; this machine and
-  offline peers are skipped. A provider that cannot answer contributes nothing instead
-  of failing the run, so a machine without the tailscale CLI installed reaches an empty
-  list rather than an error, and ssh-config names keep their position when a provider
-  repeats them. The roster is resolved again on every re-scan, so a machine that has
+  `[discovery]` table selects: `~/.ssh/config` aliases and this machine's neighbours,
+  both on by default. A neighbour is a machine the OS already reaches in one hop - by a
+  route to a single address, or by the neighbour table - and that answers ssh; it is
+  offered under the name the system resolver gives it, or its address when the resolver
+  gives none. This box is skipped, since it is reached without ssh. A provider that
+  cannot answer contributes nothing instead of failing the run, so a machine whose
+  network state cannot be read reaches an empty list rather than an error, and
+  ssh-config names keep their position when a provider repeats them. The roster is resolved again on every re-scan, so a machine that has
   come online, and an edit to the `[discovery]` table, both take effect without a
   restart. A machine the roster stops naming is dropped along with every source it
   served and everything on screen for it; a machine it still names keeps the sources it
