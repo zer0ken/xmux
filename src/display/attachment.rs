@@ -257,7 +257,7 @@ impl Osc52Scanner {
 /// Answered: `ESC[6n` (DSR cursor-position report → `ESC[<row>;<col>R`, 1-based) and
 /// `ESC[c` / `ESC[0c` (primary Device Attributes → a VT100-with-AVO `ESC[?1;2c`).
 /// Returns the concatenated responses (empty when there are no queries).
-fn query_responses(data: &[u8], cursor: (u16, u16)) -> Vec<u8> {
+pub(super) fn query_responses(data: &[u8], cursor: (u16, u16)) -> Vec<u8> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + 1 < data.len() {
@@ -294,7 +294,7 @@ fn query_responses(data: &[u8], cursor: (u16, u16)) -> Vec<u8> {
 /// [`query_responses`]), which is what prevents a duplicate reply when a whole query
 /// lands at a read boundary. Recognized partial prefixes: `ESC`, `ESC[`, `ESC[6`,
 /// `ESC[0` (the strict prefixes of `ESC[6n` / `ESC[0c` / `ESC[c`).
-fn trailing_partial_query(data: &[u8]) -> &[u8] {
+pub(super) fn trailing_partial_query(data: &[u8]) -> &[u8] {
     for p in [
         b"\x1b[6".as_slice(),
         b"\x1b[0".as_slice(),
@@ -310,7 +310,7 @@ fn trailing_partial_query(data: &[u8]) -> &[u8] {
 
 /// The blocking PTY operations the control thread performs, behind a trait so
 /// [`pty_control_loop`] is unit-testable without a real ConPTY.
-trait PtySink {
+pub(super) trait PtySink {
     fn write_input(&mut self, bytes: &[u8]);
     fn resize(&mut self, cols: u16, rows: u16);
 }
@@ -326,7 +326,7 @@ trait PtySink {
 /// disconnect) - but only this control thread can stall on that, never the async
 /// runtime or the caller's return. In the common teardown path the output pump is
 /// still draining the read pipe, which lets the close complete.
-fn pty_control_loop(rx: std::sync::mpsc::Receiver<PtyCmd>, mut sink: impl PtySink) {
+pub(super) fn pty_control_loop(rx: std::sync::mpsc::Receiver<PtyCmd>, mut sink: impl PtySink) {
     while let Ok(cmd) = rx.recv() {
         match cmd {
             PtyCmd::Input(bytes) => sink.write_input(&bytes),
@@ -338,9 +338,17 @@ fn pty_control_loop(rx: std::sync::mpsc::Receiver<PtyCmd>, mut sink: impl PtySin
 /// The real [`PtySink`]: owns the child's PTY writer and the master, so every
 /// blocking write/resize happens on the control thread, and the master is dropped
 /// there too when the channel closes at teardown.
-struct MasterSink {
+pub(super) struct MasterSink {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
+}
+
+impl MasterSink {
+    /// Takes ownership of one PTY's writer and master, so both are dropped on the
+    /// control thread rather than wherever the caller happens to be.
+    pub(super) fn new(writer: Box<dyn Write + Send>, master: Box<dyn MasterPty + Send>) -> Self {
+        Self { writer, master }
+    }
 }
 
 impl PtySink for MasterSink {

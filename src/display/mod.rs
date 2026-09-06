@@ -1,6 +1,7 @@
 pub mod attach;
 pub mod attachment;
 pub mod child_env;
+pub mod console;
 pub mod decode;
 pub mod dispatch;
 pub mod grid;
