@@ -93,13 +93,18 @@ impl Answerer {
         if chunk.contains("Permission denied") {
             self.auth_failed = true;
         }
+        // A prompt is what ssh is WAITING on, so it is the last thing on the stream with
+        // no newline after it. Matching the whole chunk would read a login banner that
+        // mentions a password as a question to answer, and answer a session that is
+        // already open.
+        let asking = chunk.rsplit('\n').next().unwrap_or("");
         // The host-key question precedes the password and is its own one-shot: answering
         // it does not spend the password, which ssh asks for next.
-        if !self.accepted && chunk.contains("yes/no/[fingerprint]") {
+        if !self.accepted && asking.contains("yes/no/[fingerprint]") {
             self.accepted = true;
             return vec![PromptWrite::HostKey];
         }
-        if chunk.contains("assword:") {
+        if asking.contains("assword:") {
             if self.secret.is_empty() {
                 self.stalled = Some(UnlockOutcome::Failed(
                     "the server asked for a password".into(),
@@ -313,6 +318,24 @@ mod tests {
             Some(UnlockOutcome::Failed(
                 "the server asked for a password".into()
             ))
+        );
+    }
+
+    /// A banner is not a question. A line about passwords that ssh has already finished
+    /// writing is part of a session that is open, and answering it would type the pane's
+    /// secret into a shell.
+    #[test]
+    fn a_banner_that_mentions_a_password_is_not_a_prompt() {
+        let mut a = Answerer::new("hunter2".into());
+        assert_eq!(
+            a.feed("Your password: expires in 3 days. Run passwd.\r\n"),
+            Vec::new()
+        );
+        assert_eq!(a.stalled(), None);
+        assert_eq!(
+            a.feed("u@h's password: "),
+            vec![PromptWrite::Password],
+            "the real prompt is still answered"
         );
     }
 
