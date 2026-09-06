@@ -1,30 +1,35 @@
-//! An interactive PTY console: a child that talks to a terminal, run on a PTY that xmux
-//! answers for. This module is the mechanics only - it names no mux, no transport, and no
-//! app state, so what the child actually is stays the caller's business.
+//! A PTY console: a child that will only talk to a terminal, given one, with the caller
+//! on the other end of it. This module is the mechanics only - it names no mux, no
+//! transport, and no app state, so what the child actually is stays the caller's business.
 //!
 //! A console is not an [`Attachment`](super::attachment::Attachment). An attachment is
 //! a live mux client the registry keys by display address, reaps on an id, and keeps a
-//! stale grid for; a console is one bounded conversation whose spawner owns it from the
-//! open to the exit code and which nothing else can reach. They share the PTY
-//! mechanics - the control thread that owns the writer and the master so no blocking
-//! write reaches the caller's thread, and the terminal-query answers a child needs when
-//! no real terminal sits behind the PTY - and differ in who owns the result.
+//! grid for; a console is one bounded conversation whose spawner owns it from the open to
+//! the exit code and which nothing else can reach. They share the PTY mechanics - the
+//! control thread that owns the writer and the master so no blocking write reaches the
+//! caller's thread, and the answers a child expects from a terminal - and differ in what
+//! comes out: an attachment renders, a console reports.
 //!
-//! The reader thread hands every chunk it read to the caller, because a caller that must
-//! RECOGNISE something in the stream (a prompt, a marker) needs the bytes in the order
-//! they arrived. The same chunks feed a vt100 grid the console keeps to itself: a child
-//! that asks where the cursor is gets an answer from it, and nothing outside reads it.
+//! What the reader thread hands the caller is the bytes, in the order they arrived,
+//! because a caller that must RECOGNISE something in the stream (a prompt, a marker)
+//! needs the stream. Nothing emulates a screen here, so a child asking where the cursor
+//! is is told the top-left corner: an answer keeps it talking, and no one is looking at
+//! where it would have drawn.
 
 use std::io::Read;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 
 use super::attachment::{
     pty_control_loop, query_responses, trailing_partial_query, MasterSink, PtyCmd,
 };
-use super::grid::Grid;
+
+/// The size the PTY opens at. Nothing renders what the child writes, so the only thing
+/// this has to do is be wide enough that a child wrapping its own output at the terminal
+/// width cannot break a line the caller is trying to recognise.
+const COLS: u16 = 200;
+const ROWS: u16 = 50;
 
 /// A live console: the channel input rides to the child, and the child itself, whose
 /// exit code is the only verdict this layer knows.
@@ -54,8 +59,8 @@ impl Console {
     }
 }
 
-/// Opens a PTY at `cols`x`rows`, spawns `argv` in it with `env_clear`'s keys removed
-/// from the child's environment, and starts the control thread and the reader thread.
+/// Opens a PTY, spawns `argv` in it with `env_clear`'s keys removed from the child's
+/// environment, and starts the control thread and the reader thread.
 ///
 /// Returns the console and the receiver carrying every chunk the reader read, in order.
 /// The receiver disconnects when the child's master hits EOF, which is how a caller
@@ -65,15 +70,12 @@ impl Console {
 /// off the runtime thread.
 pub fn spawn_console(
     argv: &[String],
-    cols: u16,
-    rows: u16,
     env_clear: &[String],
 ) -> anyhow::Result<(Console, Receiver<Vec<u8>>)> {
-    let grid = Arc::new(Mutex::new(Grid::new(rows, cols)));
     anyhow::ensure!(!argv.is_empty(), "spawn_console: argv must not be empty");
     let pair = native_pty_system().openpty(PtySize {
-        rows,
-        cols,
+        rows: ROWS,
+        cols: COLS,
         pixel_width: 0,
         pixel_height: 0,
     })?;
@@ -93,7 +95,6 @@ pub fn spawn_console(
     std::thread::spawn(move || pty_control_loop(control_rx, MasterSink::new(writer, pair.master)));
 
     let (tap_tx, tap_rx) = channel::<Vec<u8>>();
-    let read_grid = grid.clone();
     let read_ctl = control_tx.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
@@ -105,16 +106,8 @@ pub fn spawn_console(
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
-            let cursor = {
-                let mut g = match read_grid.lock() {
-                    Ok(g) => g,
-                    Err(_) => break,
-                };
-                g.feed(&buf[..n]);
-                g.cursor()
-            };
             qtail.extend_from_slice(&buf[..n]);
-            let resp = query_responses(&qtail, cursor);
+            let resp = query_responses(&qtail, (0, 0));
             if !resp.is_empty() {
                 let _ = read_ctl.send(PtyCmd::Input(resp));
             }
@@ -154,8 +147,7 @@ mod tests {
     /// a caller recognise a prompt: the bytes are the conversation.
     #[test]
     fn the_tap_carries_what_the_child_wrote() {
-        let (console, tap) =
-            spawn_console(&sh("printf 'hello console'"), 40, 4, &[]).expect("spawn");
+        let (console, tap) = spawn_console(&sh("printf 'hello console'"), &[]).expect("spawn");
         let seen = drain(&tap);
         assert!(
             seen.contains("hello console"),
@@ -168,7 +160,7 @@ mod tests {
     /// conversation ended without polling the child.
     #[test]
     fn the_tap_disconnects_when_the_child_exits() {
-        let (console, tap) = spawn_console(&sh("exit 3"), 20, 3, &[]).expect("spawn");
+        let (console, tap) = spawn_console(&sh("exit 3"), &[]).expect("spawn");
         drain(&tap);
         assert_eq!(console.wait(), Some(3), "the child's own code comes back");
     }
@@ -178,7 +170,7 @@ mod tests {
     #[test]
     fn input_reaches_the_child() {
         let (console, tap) =
-            spawn_console(&sh("read line; printf 'got:%s' \"$line\""), 40, 4, &[]).expect("spawn");
+            spawn_console(&sh("read line; printf 'got:%s' \"$line\""), &[]).expect("spawn");
         console.input(b"typed\n".to_vec());
         let seen = drain(&tap);
         assert!(
@@ -192,9 +184,7 @@ mod tests {
     /// nothing more. The answer is visible as the tty echoes what xmux wrote back.
     #[test]
     fn the_console_answers_a_terminal_query_itself() {
-        // Ask for the cursor position on a fresh grid, whose cursor is at 1;1.
-        let (console, tap) =
-            spawn_console(&sh("printf '\\033[6n'; sleep 1"), 40, 4, &[]).expect("spawn");
+        let (console, tap) = spawn_console(&sh("printf '\\033[6n'; sleep 1"), &[]).expect("spawn");
         let seen = drain(&tap);
         assert!(
             seen.contains("[1;1R"),

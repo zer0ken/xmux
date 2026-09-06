@@ -25,22 +25,6 @@ use std::time::{Duration, Instant};
 /// waits, and nothing else: the idle budget is counted from its own deadline.
 const POLL: Duration = Duration::from_millis(100);
 
-/// The size the login's PTY opens at. Nothing renders it, so this only has to be wide
-/// enough that ssh's own prompts are not wrapped into something the answerer cannot
-/// recognise.
-const PTY_COLS: u16 = 200;
-const PTY_ROWS: u16 = 50;
-
-/// What the [`Answerer`] tells the conversation to type next. An empty return means it
-/// has nothing to say, which is the normal state once the pane's values are spent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PromptWrite {
-    /// The ssh host-key question: type `yes`.
-    HostKey,
-    /// The password prompt: type the pane's secret.
-    Password,
-}
-
 /// The verdict of one login.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnlockOutcome {
@@ -88,8 +72,8 @@ impl Answerer {
         }
     }
 
-    /// Feeds one chunk of the ssh child's output and returns what to type.
-    pub(crate) fn feed(&mut self, chunk: &str) -> Vec<PromptWrite> {
+    /// Feeds one chunk of the ssh child's output and returns what to type, if anything.
+    pub(crate) fn feed(&mut self, chunk: &str) -> Option<Vec<u8>> {
         if chunk.contains("Permission denied") {
             self.auth_failed = true;
         }
@@ -102,7 +86,7 @@ impl Answerer {
         // it does not spend the password, which ssh asks for next.
         if !self.accepted && asking.contains("yes/no/[fingerprint]") {
             self.accepted = true;
-            return vec![PromptWrite::HostKey];
+            return Some(b"yes\n".to_vec());
         }
         if asking.contains("assword:") {
             if self.secret.is_empty() {
@@ -114,24 +98,16 @@ impl Answerer {
                 self.stalled = Some(UnlockOutcome::AuthFailed);
             } else {
                 self.replied = true;
-                return vec![PromptWrite::Password];
+                return Some(format!("{}\n", self.secret).into_bytes());
             }
         }
-        Vec::new()
+        None
     }
 
     /// The verdict for a login that cannot go on, once ssh has asked for something the
     /// pane's values do not answer. `None` while the conversation can still get somewhere.
     pub(crate) fn stalled(&self) -> Option<UnlockOutcome> {
         self.stalled.clone()
-    }
-
-    /// The bytes to type for one prompt.
-    pub(crate) fn bytes_for(&self, write: &PromptWrite) -> Vec<u8> {
-        match write {
-            PromptWrite::HostKey => b"yes\n".to_vec(),
-            PromptWrite::Password => format!("{}\n", self.secret).into_bytes(),
-        }
     }
 
     /// The verdict for a child that exited with `code`. Zero is the master; anything else
@@ -225,11 +201,10 @@ fn converse(
     let env_clear = crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
     // The PTY is the MEANS, not a screen: ssh reads a password from a terminal and from
     // nowhere else, so one is opened to answer it and nothing renders it.
-    let (mut console, tap) =
-        match crate::display::console::spawn_console(&argv, PTY_COLS, PTY_ROWS, &env_clear) {
-            Ok(v) => v,
-            Err(e) => return UnlockOutcome::Failed(e.to_string()),
-        };
+    let (mut console, tap) = match crate::display::console::spawn_console(&argv, &env_clear) {
+        Ok(v) => v,
+        Err(e) => return UnlockOutcome::Failed(e.to_string()),
+    };
 
     let mut answerer = Answerer::new(password);
     let mut deadline = Instant::now() + idle;
@@ -244,8 +219,8 @@ fn converse(
             Ok(chunk) => {
                 deadline = Instant::now() + idle;
                 let text = String::from_utf8_lossy(&chunk);
-                for write in answerer.feed(&text) {
-                    console.input(answerer.bytes_for(&write));
+                if let Some(reply) = answerer.feed(&text) {
+                    console.input(reply);
                 }
                 // ssh asked for what nobody here can give. Waiting out the idle budget
                 // would report a timeout for a login whose real answer is already known.
@@ -275,35 +250,31 @@ mod tests {
     #[test]
     fn the_answerer_accepts_the_host_key_then_types_the_pane_password() {
         let mut a = Answerer::new("hunter2".into());
-        let writes = a.feed(
-            "The authenticity of host 'x' can't be established.\n\
-             Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+        assert_eq!(
+            a.feed(
+                "The authenticity of host 'x' can't be established.\n\
+                 Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+            ),
+            Some(b"yes\n".to_vec())
         );
-        assert_eq!(writes, vec![PromptWrite::HostKey]);
-        assert_eq!(a.bytes_for(&PromptWrite::HostKey), b"yes\n");
-        let writes = a.feed("alice@x's password: ");
-        assert_eq!(writes, vec![PromptWrite::Password]);
-        assert_eq!(a.bytes_for(&PromptWrite::Password), b"hunter2\n");
+        assert_eq!(a.feed("alice@x's password: "), Some(b"hunter2\n".to_vec()));
     }
 
     #[test]
     fn each_pane_value_is_typed_at_most_once() {
         let mut a = Answerer::new("hunter2".into());
-        assert_eq!(a.feed("alice@x's password: "), vec![PromptWrite::Password]);
+        assert_eq!(a.feed("alice@x's password: "), Some(b"hunter2\n".to_vec()));
         assert_eq!(
             a.feed("alice@x's password: "),
-            Vec::new(),
+            None,
             "the pane had one password and it is spent"
         );
         let mut a = Answerer::new("hunter2".into());
         assert_eq!(
             a.feed("continue connecting (yes/no/[fingerprint])? "),
-            vec![PromptWrite::HostKey]
+            Some(b"yes\n".to_vec())
         );
-        assert_eq!(
-            a.feed("continue connecting (yes/no/[fingerprint])? "),
-            Vec::new()
-        );
+        assert_eq!(a.feed("continue connecting (yes/no/[fingerprint])? "), None);
     }
 
     /// The pane's password is optional, and an empty one is not an answer: typing a bare
@@ -312,7 +283,7 @@ mod tests {
     #[test]
     fn an_empty_pane_password_ends_the_login_on_what_the_server_wants() {
         let mut a = Answerer::new(String::new());
-        assert_eq!(a.feed("alice@x's password: "), Vec::new());
+        assert_eq!(a.feed("alice@x's password: "), None);
         assert_eq!(
             a.stalled(),
             Some(UnlockOutcome::Failed(
@@ -329,12 +300,12 @@ mod tests {
         let mut a = Answerer::new("hunter2".into());
         assert_eq!(
             a.feed("Your password: expires in 3 days. Run passwd.\r\n"),
-            Vec::new()
+            None
         );
         assert_eq!(a.stalled(), None);
         assert_eq!(
             a.feed("u@h's password: "),
-            vec![PromptWrite::Password],
+            Some(b"hunter2\n".to_vec()),
             "the real prompt is still answered"
         );
     }
@@ -347,10 +318,10 @@ mod tests {
         let mut a = Answerer::new("hunter2".into());
         assert_eq!(
             a.feed("Enter passphrase for key '/home/u/.ssh/id_ed25519': "),
-            Vec::new()
+            None
         );
-        assert_eq!(a.feed("Verification code: "), Vec::new());
-        assert_eq!(a.feed("암호: "), Vec::new());
+        assert_eq!(a.feed("Verification code: "), None);
+        assert_eq!(a.feed("암호: "), None);
         assert_eq!(a.stalled(), None, "ssh may still get somewhere on its own");
     }
 
@@ -360,11 +331,11 @@ mod tests {
     #[test]
     fn a_second_password_prompt_ends_the_login_as_an_auth_failure() {
         let mut a = Answerer::new("hunter2".into());
-        assert_eq!(a.feed("alice@x's password: "), vec![PromptWrite::Password]);
+        assert_eq!(a.feed("alice@x's password: "), Some(b"hunter2\n".to_vec()));
         assert_eq!(a.stalled(), None, "the first prompt was answered");
         assert_eq!(
             a.feed("Permission denied, please try again.\nalice@x's password: "),
-            Vec::new()
+            None
         );
         assert_eq!(a.stalled(), Some(UnlockOutcome::AuthFailed));
     }
