@@ -22,7 +22,7 @@ use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
 
 use crate::ui::ops::OpFollow;
-pub use crate::ui::ops::{run_op, run_unlock, OpResult, Ops};
+pub use crate::ui::ops::{run_login, run_op, OpResult, Ops};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const NAV_WIDTH: u16 = 48;

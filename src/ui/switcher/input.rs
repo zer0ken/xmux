@@ -438,7 +438,7 @@ impl Switcher {
             // A successful unlock established the authenticated ControlMaster: only THIS
             // machine's reach changed, so the app re-probes just it (never the roster).
             // Any failure stays locked and flashes why; the user retypes the password.
-            OpFollow::UnlockResult { source, outcome } => match outcome {
+            OpFollow::LoginResult { source, outcome } => match outcome {
                 crate::link::unlock::UnlockOutcome::Ok => Some(source),
                 crate::link::unlock::UnlockOutcome::AuthFailed => {
                     state.flash("authentication failed");

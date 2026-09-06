@@ -48,6 +48,11 @@ pub struct Roster {
     /// a host that fails is traceable to the thing that offered it. See
     /// [`crate::provision::roster::Provider`].
     pub roster_providers: HashMap<String, crate::provision::roster::Provider>,
+    /// The address a provider reported for a host, keyed by HOST name. Only a provider
+    /// that knows one contributes; an ssh-config alias has no address of its own. Read
+    /// only to be OFFERED: it seeds the login pane, because a host named by a label this
+    /// machine cannot resolve is reachable only by the address the provider knew.
+    pub host_addresses: HashMap<String, String>,
     /// The ssh-config host aliases this resolution offered (a config-assembly product).
     /// `Hosts::build` reruns `Config::host_specs` over these to seed the runtime host
     /// registry, so the registry is built from config, not by re-reading `sources`.
@@ -168,7 +173,7 @@ pub async fn resolve_roster(
     let (tailscale, wsl_distros, installed) = tokio::join!(
         async {
             if cfg.discovery.tailscale {
-                crate::provision::roster::tailscale_aliases().await
+                crate::provision::roster::tailscale_peers().await
             } else {
                 Vec::new()
             }
@@ -198,6 +203,11 @@ pub async fn resolve_roster(
             }
         },
     );
+    let host_addresses: HashMap<String, String> = tailscale
+        .iter()
+        .filter_map(|(alias, addr)| addr.clone().map(|a| (alias.clone(), a)))
+        .collect();
+    let tailscale: Vec<String> = tailscale.into_iter().map(|(alias, _)| alias).collect();
     let offered = crate::provision::roster::merge(&[
         (crate::provision::roster::Provider::SshConfig, ssh_aliases),
         (crate::provision::roster::Provider::Tailscale, tailscale),
@@ -223,6 +233,7 @@ pub async fn resolve_roster(
             ssh_aliases: aliases,
             wsl_distros,
             roster_providers,
+            host_addresses,
         },
         cfg_err,
     )
@@ -579,23 +590,19 @@ impl Ops for EnvOps {
         })
     }
 
-    async fn unlock(
+    async fn login(
         &self,
         source: &str,
-        user: &str,
+        login: &crate::transport::Login,
         password: &str,
     ) -> crate::link::unlock::UnlockOutcome {
         let Ok(src) = self.source(source) else {
             return crate::link::unlock::UnlockOutcome::Unavailable;
         };
         let host = src.host();
-        let login = crate::transport::Login {
-            user: (!user.is_empty()).then(|| user.to_string()),
-            ..Default::default()
-        };
         crate::link::unlock::unlock_host(
             &*host.transport,
-            &login,
+            login,
             password,
             std::time::Duration::from_secs(UNLOCK_TIMEOUT_SECS),
         )

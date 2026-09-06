@@ -224,6 +224,9 @@ impl Runtime {
                         .map(|(host, p)| (host.clone(), p.label().to_string()))
                         .collect(),
                 );
+                state
+                    .chrome
+                    .set_login_defaults(roster.host_addresses.clone(), local_user());
                 env.replace_roster(*roster);
                 state.chrome.set_source_reach(
                     env.source_list()
@@ -467,6 +470,12 @@ impl Runtime {
                 .map(|(host, p)| (host.clone(), p.label().to_string()))
                 .collect(),
         );
+        // And what the login pane starts from: the address a provider knew for each host,
+        // and this machine's own account name. Both are what ssh would have used, so a
+        // pane that opens on a failure opens showing what just failed.
+        state
+            .chrome
+            .set_login_defaults(roster.host_addresses.clone(), local_user());
         // And how each source is REACHED, so an unreachable one states what was asked of
         // it and over what, not only that it failed. Resolved to words here for the same
         // reason the providers are: the screen prints them and nothing branches on them.
@@ -1135,12 +1144,12 @@ impl Runtime {
             }
             Cmd::RawBytes(bytes) => {
                 if !bytes.is_empty() {
-                    // A LOCKED host has no PTY: its panel owns the keys, exactly as the
+                    // A BLOCKED host has no PTY: its login pane owns the keys, exactly as the
                     // interactive terminal-focus path routes them (see `input.rs`). So the
-                    // ctl raw surface drives the unlock the same way a keyboard does.
+                    // ctl raw surface drives the pane the same way a keyboard does.
                     if self.switcher.current_host_blocked() {
                         if let Some(source) = self.switcher.current_source() {
-                            if let Some(cmd) = self.state.feed_unlock(&source, &bytes) {
+                            if let Some(cmd) = self.state.feed_login(&source, &bytes) {
                                 let _ = dispatch_commands(
                                     vec![cmd],
                                     &mut self.switcher,
@@ -1213,14 +1222,14 @@ impl Runtime {
                 &self.probe_gate,
                 false,
             );
-            // The unlock is done: clear the draft so the panel keeps no typed id.
+            // The login is done: clear the draft so the pane keeps no typed values.
             if self
                 .state
-                .unlock
+                .login
                 .as_ref()
                 .is_some_and(|d| d.source == source)
             {
-                self.state.unlock = None;
+                self.state.login = None;
             }
             self.dirty = true;
         }
@@ -1294,7 +1303,7 @@ impl Runtime {
                 | crate::model::Command::AdjustNavWidth(_)
                 | crate::model::Command::ToggleAutoHide
                 | crate::model::Command::RunOp(_)
-                | crate::model::Command::RunUnlock { .. }
+                | crate::model::Command::RunLogin { .. }
                 | crate::model::Command::Quit => {}
             }
         }
@@ -1582,6 +1591,15 @@ impl Runtime {
 /// never learns what a machine kind or a mux binary is. Each field comes from the one
 /// place that owns it - the machine describes its own addressing, the host composes its
 /// own listing command - rather than being re-derived from a source id.
+/// This machine's own account name, which is the login ssh falls back to when nothing
+/// names another. Empty when the environment says nothing, and then the login pane's
+/// username simply starts blank rather than carrying a guess.
+fn local_user() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_default()
+}
+
 pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrome::SourceReach {
     crate::ui::chrome::SourceReach {
         probe: shell_line(&s.host().list_sessions_command()),

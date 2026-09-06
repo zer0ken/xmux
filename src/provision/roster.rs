@@ -22,10 +22,11 @@ use std::collections::HashSet;
 
 use crate::model::source::{ExecRunner, Runner};
 
-/// Runs `tailscale status --json` and returns the peer aliases it reports. An absent
-/// CLI, a stopped daemon, or a non-zero exit yields no aliases.
-pub async fn tailscale_aliases() -> Vec<String> {
-    status_aliases(&tailscale_bin()).await
+/// Runs `tailscale status --json` and returns the peers it reports, each with the
+/// tailnet address it answers on. An absent CLI, a stopped daemon, or a non-zero exit
+/// yields no peers.
+pub async fn tailscale_peers() -> Vec<(String, Option<String>)> {
+    status_peers(&tailscale_bin()).await
 }
 
 /// The provider itself, over a named binary. Every way the call can fail - the binary
@@ -33,12 +34,12 @@ pub async fn tailscale_aliases() -> Vec<String> {
 /// not the expected JSON - lands on the same empty list, so a machine without tailscale
 /// simply contributes no aliases. Runs over the async runner so the roster build stays
 /// off the single-threaded runtime.
-async fn status_aliases(bin: &str) -> Vec<String> {
+async fn status_peers(bin: &str) -> Vec<(String, Option<String>)> {
     match ExecRunner
         .run(bin, &["status".to_string(), "--json".to_string()])
         .await
     {
-        Ok(o) => parse_tailscale_status(&String::from_utf8_lossy(&o)),
+        Ok(o) => parse_tailscale_peers(&String::from_utf8_lossy(&o)),
         Err(_) => Vec::new(),
     }
 }
@@ -304,7 +305,7 @@ mod tests {
     async fn a_missing_cli_yields_nothing_rather_than_an_error() {
         // The provider is on by default, so a machine with no tailscale installed must
         // reach an empty list, never a spawn error that would fail the run.
-        assert!(status_aliases("xmux-no-such-tailscale-binary")
+        assert!(status_peers("xmux-no-such-tailscale-binary")
             .await
             .is_empty());
     }

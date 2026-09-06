@@ -120,11 +120,15 @@ pub enum Command {
     /// `OpResult` back through the existing op channel, so an ssh round-trip never
     /// freezes rendering.
     RunOp(MuxOp),
-    /// Run the off-loop ssh unlock for a locked host with the submitted id+password.
-    RunUnlock {
+    /// Run the off-loop ssh login for a blocked host with the pane's submitted values.
+    /// `password` is empty when the user left the field alone, and then ssh's own prompt
+    /// waits for them on the login screen.
+    RunLogin {
         source: String,
-        user: String,
+        login: crate::transport::Login,
         password: String,
+        remember: crate::state::Remember,
+        pubkey: bool,
     },
 }
 

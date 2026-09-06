@@ -29,14 +29,14 @@ pub trait Ops: Send + Sync {
     /// unreachable (the message is shown as the host's failure reason).
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>>;
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session>;
-    /// Unlock a locked source: run the off-loop ssh prompt-answer and return the
-    /// verdict. `Ok` establishes the one authenticated ControlMaster every later
-    /// channel reuses; the app reacts to the outcome (a rescan on success, a flash
+    /// Log in to a blocked source with the pane's values: run the off-loop ssh and
+    /// return the verdict. `Ok` establishes the one authenticated ControlMaster every
+    /// later channel reuses; the app reacts to the outcome (a rescan on success, a flash
     /// on failure).
-    async fn unlock(
+    async fn login(
         &self,
         source: &str,
-        user: &str,
+        login: &crate::transport::Login,
         password: &str,
     ) -> crate::link::unlock::UnlockOutcome;
 }
@@ -54,11 +54,11 @@ pub enum OpResult {
     Failed {
         message: String,
     },
-    /// The unlock worker's verdict. Not an inventory mutation: the app reacts to it
-    /// (re-probe the unlocked machine on success, a flash on failure), never a fold into
-    /// the tree. `source` names the host that was unlocked, so success re-probes only its
-    /// machine rather than the whole roster.
-    Unlock {
+    /// The login worker's verdict. Not an inventory mutation: the app reacts to it
+    /// (re-probe the machine on success, a flash on failure), never a fold into the
+    /// tree. `source` names the host that was logged in to, so success re-probes only
+    /// its machine rather than the whole roster.
+    Login {
         source: String,
         outcome: crate::link::unlock::UnlockOutcome,
     },
@@ -77,9 +77,9 @@ pub enum OpFollow {
     Reselect(Address),
     /// No inventory change - flash this message (a failed op).
     Flash(String),
-    /// The unlock verdict: re-probe the unlocked `source`'s machine on success (only it
-    /// could have changed reach state), flash the failure reason otherwise.
-    UnlockResult {
+    /// The login verdict: re-probe that `source`'s machine on success (only it could
+    /// have changed reach state), flash the failure reason otherwise.
+    LoginResult {
         source: String,
         outcome: crate::link::unlock::UnlockOutcome,
     },
@@ -98,12 +98,17 @@ pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
     }
 }
 
-/// Runs the unlock against the live transport and returns its [`OpResult`]. Pure
+/// Runs the login against the live transport and returns its [`OpResult`]. Pure
 /// over `ops` (no switcher state), so it runs in a detached task off the event loop
 /// like [`run_op`].
-pub async fn run_unlock(source: &str, user: &str, password: &str, ops: &dyn Ops) -> OpResult {
-    OpResult::Unlock {
+pub async fn run_login(
+    source: &str,
+    login: &crate::transport::Login,
+    password: &str,
+    ops: &dyn Ops,
+) -> OpResult {
+    OpResult::Login {
         source: source.to_string(),
-        outcome: ops.unlock(source, user, password).await,
+        outcome: ops.login(source, login, password).await,
     }
 }

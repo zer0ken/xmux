@@ -848,6 +848,22 @@ fn parse_class(p: &[char], c: char) -> Option<(bool, &[char])> {
 /// header (or EOF). Display text only — Match-resolved values (e.g. an exec-chosen
 /// HostName) are NOT computed; the literal config lines are shown. Empty when no
 /// block names the alias.
+/// The `User` an `~/.ssh/config` stanza names for `alias`, or `None` when none does.
+///
+/// Read from the same stanza the host screen shows, which is the one whose header names
+/// the alias exactly. A stanza reached only through a pattern is not consulted, so a
+/// value this returns is one the user wrote against this host by name.
+pub fn stanza_user(config_text: &str, alias: &str) -> Option<String> {
+    host_stanza(config_text, alias).lines().find_map(|line| {
+        let mut it = line.split_whitespace();
+        let key = it.next()?;
+        if !key.eq_ignore_ascii_case("User") {
+            return None;
+        }
+        it.next().map(str::to_string)
+    })
+}
+
 pub fn host_stanza(config_text: &str, alias: &str) -> String {
     let is_header = |l: &str| {
         l.split_whitespace()
