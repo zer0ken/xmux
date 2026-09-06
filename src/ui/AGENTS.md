@@ -106,15 +106,18 @@ flatten renders for the dump verb.
   unreachable screen, so the hiding must leave it reachable. A reachable empty host and
   a host still scanning never hide, and the prune runs before the filter, so the no-match
   fallback cannot resurrect a host the filter does not name.
-- A LOCKED host (the network answered, the credentials refused) never hides, whatever
-  hide-unreachable says: its card is the one entry to the unlock, so the prune keeps it
-  alongside a filter-named card. The classification reads ONLY ssh's own failure line
-  (`Permission denied (publickey,…)`), never a generic "permission denied" or a reach
-  failure, so a host that merely died stays unreachable.
-- The unlock's credentials are exactly what the user submits: the two-step input (the
-  username, then the masked password) carries the id across without looking it up, and
-  a locked host's switch and create are refused. The password is never rendered (its
-  field draws bullets), never stored, and the rendered frame carries no plaintext.
+- A BLOCKED host (one the login pane's values could reach) never hides, whatever
+  hide-unreachable says: its card is the one entry to that pane, so the prune keeps it
+  alongside a filter-named card. The classification reads ONLY ssh's own failure lines,
+  never a generic "permission denied", so a machine that is down stays unreachable.
+- The login pane holds what ssh will not ask for and nothing else. Every value starts at
+  what ssh would have used, so the pane never guesses and never looks a value up behind
+  the user's back. A blocked host's switch and create are refused. The password is never
+  rendered (its field draws bullets), never stored, and the rendered frame carries no
+  plaintext.
+- Enter means one thing across the whole pane: submit from the button, pass the focus on
+  from anywhere else. A key that sometimes toggles and sometimes submits would make
+  filling the pane by feel unsafe.
 - The dump should reflect the same split view the main draw path renders.
 - The nav's two bands are parted by the ROOM between them while the cards can spare a row
   for it, and by a rule once they cannot: a gap that scrolls out of view parts nothing a

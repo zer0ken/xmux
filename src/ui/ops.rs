@@ -30,15 +30,30 @@ pub trait Ops: Send + Sync {
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>>;
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session>;
     /// Log in to a blocked source with the pane's values: run the off-loop ssh and
-    /// return the verdict. `Ok` establishes the one authenticated ControlMaster every
-    /// later channel reuses; the app reacts to the outcome (a rescan on success, a flash
-    /// on failure).
+    /// return the verdict. A connection that succeeds establishes the one authenticated
+    /// ControlMaster every later channel reuses; the app reacts to the outcome (a rescan
+    /// on success, a flash on failure).
+    ///
+    /// `write_config` and `register_key` are the pane's two checkboxes, and they run only
+    /// after a connection that worked: neither is worth doing over one that did not, and
+    /// registering a key needs the authenticated master to carry it.
     async fn login(
         &self,
         source: &str,
         login: &crate::transport::Login,
         password: &str,
-    ) -> crate::link::unlock::UnlockOutcome;
+        write_config: bool,
+        register_key: bool,
+    ) -> LoginOutcome;
+}
+
+/// What one login run did. The connection is the verdict the app branches on; the
+/// notes are what the checkboxes could NOT do, so a step that failed says so instead of
+/// passing silently. Empty notes mean every step that ran worked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginOutcome {
+    pub connect: crate::link::unlock::UnlockOutcome,
+    pub notes: Vec<String>,
 }
 
 /// The outcome of a [`MuxOp`]. [`State::fold_op_result`] folds it into the
@@ -60,7 +75,7 @@ pub enum OpResult {
     /// its machine rather than the whole roster.
     Login {
         source: String,
-        outcome: crate::link::unlock::UnlockOutcome,
+        outcome: LoginOutcome,
     },
 }
 
@@ -81,7 +96,7 @@ pub enum OpFollow {
     /// have changed reach state), flash the failure reason otherwise.
     LoginResult {
         source: String,
-        outcome: crate::link::unlock::UnlockOutcome,
+        outcome: LoginOutcome,
     },
 }
 
@@ -105,10 +120,14 @@ pub async fn run_login(
     source: &str,
     login: &crate::transport::Login,
     password: &str,
+    write_config: bool,
+    register_key: bool,
     ops: &dyn Ops,
 ) -> OpResult {
     OpResult::Login {
         source: source.to_string(),
-        outcome: ops.login(source, login, password).await,
+        outcome: ops
+            .login(source, login, password, write_config, register_key)
+            .await,
     }
 }

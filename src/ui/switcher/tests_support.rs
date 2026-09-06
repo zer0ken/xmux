@@ -21,7 +21,9 @@ impl Ops for NoopOps {
         _source: &str,
         _login: &crate::transport::Login,
         _password: &str,
-    ) -> crate::link::unlock::UnlockOutcome {
+        _write_config: bool,
+        _register_key: bool,
+    ) -> crate::ui::ops::LoginOutcome {
         unreachable!("noop_ops is only constructed, never called")
     }
 }

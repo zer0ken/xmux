@@ -228,8 +228,17 @@ fn dispatch_commands(
                 source,
                 login,
                 password,
-                ..
-            } => spawn_login(source, login, password, op_sink.0, op_sink.1),
+                remember,
+                pubkey,
+            } => spawn_login(
+                source,
+                login,
+                password,
+                remember == crate::state::Remember::SshConfig,
+                pubkey,
+                op_sink.0,
+                op_sink.1,
+            ),
             // Settled-selection effects come only from Action::Tick, dispatched by the
             // run loop with registry/host access - never from a key/ctl action here.
             Command::PersistLastSession(_) | Command::Attach(_) => {}
@@ -1375,13 +1384,23 @@ fn spawn_login(
     source: String,
     login: crate::transport::Login,
     password: String,
+    write_config: bool,
+    register_key: bool,
     ops: &Arc<dyn crate::ui::switcher::Ops>,
     op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
 ) {
     let ops = ops.clone();
     let tx = op_tx.clone();
     tokio::spawn(async move {
-        let result = crate::ui::switcher::run_login(&source, &login, &password, ops.as_ref()).await;
+        let result = crate::ui::switcher::run_login(
+            &source,
+            &login,
+            &password,
+            write_config,
+            register_key,
+            ops.as_ref(),
+        )
+        .await;
         let _ = tx.send(result);
     });
 }

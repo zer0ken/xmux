@@ -265,6 +265,46 @@ mod tests {
     /// `BatchMode=yes` ssh over the same ControlPath reuses the established master.
     /// Skipped (not just ignored) when the env is absent, so a routine `cargo test`
     /// never depends on a live host.
+    /// The login over a real ssh, reaching a host by an ADDRESS its own name does not
+    /// resolve to. This is the shape the login pane submits when a machine is offered
+    /// under a label this box cannot look up. Skipped (not just ignored) when the env is
+    /// absent, so a routine `cargo test` never depends on a live host.
+    #[tokio::test]
+    #[ignore = "live gate: set XMUX_LIVE_ADDRESS to a reachable sshd absent from known_hosts"]
+    async fn live_login_reaches_a_host_by_the_submitted_address() {
+        let Ok(address) = std::env::var("XMUX_LIVE_ADDRESS") else {
+            return;
+        };
+        let cp = "/tmp/xmux-live-login.sock".to_string();
+        let _ = std::fs::remove_file(&cp);
+        // A name that resolves to nothing, reached by the address the pane supplies.
+        let transport = crate::transport::ssh_as(
+            "xmux-live-nonexistent".into(),
+            "xmux-live-nonexistent".into(),
+            cp.clone(),
+            "linux".into(),
+        );
+        let login = crate::transport::Login {
+            address: Some(address),
+            port: Some(22),
+            user: std::env::var("USER").ok(),
+        };
+        let outcome =
+            unlock_host(&*transport, &login, "", std::time::Duration::from_secs(30)).await;
+        assert_eq!(
+            outcome,
+            UnlockOutcome::Ok,
+            "the submitted address reaches the host the name does not"
+        );
+        // The master it left behind is what every later channel rides.
+        let (name, args) = transport.exec_argv(false, &["true".to_string()]);
+        let status = std::process::Command::new(&name)
+            .args(&args)
+            .status()
+            .expect("ssh runs");
+        assert!(status.success(), "a later channel reuses the master");
+    }
+
     #[tokio::test]
     #[ignore = "live gate: set XMUX_LIVE_HOST/USER/PASSWORD on a password host"]
     async fn live_unlock_establishes_a_reusable_master() {

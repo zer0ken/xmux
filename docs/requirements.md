@@ -353,23 +353,44 @@ no function, and no test, so renaming code is never a documentation change.
   for the new split, and repaints the whole screen, since the border jumps to the
   opposite side. The focus arrow pairs follow the placement (FR-B14), and the cheatsheet
   and help modal name the pair the current placement makes active.
-- **FR-B26** - A host that answered the network but refused the credentials is LOCKED,
-  a state apart from unreachable: the classification reads only ssh's own failure line
-  (`Permission denied (publickey,…)`), so a host that merely died stays unreachable.
-  The locked host keeps its card whatever hide-unreachable says (it is the one entry to
-  the unlock), renders the `?` mark, and shows the locked panel with the auth-failure
-  reason. The locked panel OWNS the unlock: its top carries a username and a masked
-  password field, and focusing the panel in the terminal view types into them (Enter
-  advances user→password then submits, neither ever guessed or prefilled). It is not a
-  modal and nothing in the nav drives it. Submitting runs one PTY prompt-answer ssh
-  (`ControlMaster=yes` over the same control socket every other ssh shares) that
-  establishes the single authenticated master the later channels reuse;
-  success re-probes ONLY that host over the master (its reach is the only thing that
-  changed, so the whole roster is not re-scanned), and any failure keeps the host locked
-  and flashes why. The credentials live only in the transient command and the
-  PTY writer - never stored, logged, rendered, or serialized - and the unlock is
-  unavailable on Windows (no ControlMaster socket to leave authenticated, FR-G) and on
-  local/WSL hosts (no password to answer).
+- **FR-B26** - A failure the user could answer from xmux is BLOCKED, a state apart from
+  unreachable. What the login pane collects decides the set: ssh's auth-failure line
+  (`Permission denied (…`), its host-key verification-failed line, and a name that did
+  not resolve. A machine that refused, timed out, or had no route stays unreachable, as
+  does output carrying ssh's changed-identification warning, which is decided outside
+  xmux. A blocked host keeps its card whatever hide-unreachable says (it is the one entry
+  to the pane), renders the `?` mark, and shows the pane above the same failure facts the
+  unreachable screen states. What it was blocked ON is not in its state word: the reason
+  row carries ssh's own sentence.
+- **FR-B27** - The LOGIN PANE holds the three values ssh will not ask for and must know
+  before it dials - the address, the port, and the username - with an optional masked
+  password beside them. Every value starts at what ssh WOULD use: the address a provider
+  reported else the host's own name, ssh's default port, and the ssh config's `User` else
+  this machine's account name. Nothing is guessed. A required field is marked in its
+  label and an empty optional one says so in the space its value would occupy. It is not
+  a modal and nothing in the nav drives it. Enter means one thing throughout: submit from
+  the button, pass the focus on from anywhere else. Space picks a choice, Tab and the
+  vertical arrows walk the stops, and an escape sequence xmux does not act on is consumed
+  whole rather than landing in a field as text.
+- **FR-B28** - Submitting runs one PTY ssh (`ControlMaster=yes` over the same control
+  socket every other ssh shares) carrying the submitted values as `-o` overrides, so the
+  host keeps its alias and its ssh-config stanza still supplies whatever they do not
+  name. It establishes the single authenticated master the later channels reuse. Success
+  re-probes ONLY that host over the master (its reach is the only thing that changed, so
+  the whole roster is not re-scanned); any failure keeps the host blocked and flashes
+  why. The password lives only in the transient command and the PTY writer, never
+  stored, logged, rendered, or serialized. The login is unavailable on Windows (no
+  ControlMaster socket to leave authenticated, FR-G) and on local/WSL hosts.
+- **FR-B29** - The pane's two choices run only after a connection that worked, and each
+  says so when it could not. RECORDING writes an xmux-marked stanza naming the host, with
+  the values that reached it, at the TOP of `~/.ssh/config`, because ssh keeps the first
+  value it obtains for a keyword. The marker makes a second login replace that stanza
+  rather than stack another, and nothing the user wrote is touched. The choice is offered
+  only once a value differs from what ssh would have used. A password is never recorded,
+  because ssh config has nowhere to put one. REGISTERING appends this machine's public
+  key to the host's `authorized_keys` over the master the login just authenticated,
+  adding it only when that exact line is absent, and generating an ed25519 pair first
+  when the machine has no key to send.
 
 ## C. Switching (the keystone)
 

@@ -42,9 +42,14 @@ impl Ops for RecordOps {
         source: &str,
         _login: &crate::transport::Login,
         _password: &str,
-    ) -> crate::link::unlock::UnlockOutcome {
+        _write_config: bool,
+        _register_key: bool,
+    ) -> crate::ui::ops::LoginOutcome {
         self.logged_in.lock().unwrap().push(source.to_string());
-        crate::link::unlock::UnlockOutcome::Ok
+        crate::ui::ops::LoginOutcome {
+            connect: crate::link::unlock::UnlockOutcome::Ok,
+            notes: Vec::new(),
+        }
     }
 }
 
@@ -1167,7 +1172,10 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
     let reprobe = h.sw.apply_op_result(
         OpResult::Login {
             source: "pwbox".into(),
-            outcome: UnlockOutcome::Ok,
+            outcome: crate::ui::ops::LoginOutcome {
+                connect: UnlockOutcome::Ok,
+                notes: Vec::new(),
+            },
         },
         &mut h.state,
     );
@@ -1190,7 +1198,10 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
     let reprobe = h.sw.apply_op_result(
         OpResult::Login {
             source: "pwbox".into(),
-            outcome: UnlockOutcome::AuthFailed,
+            outcome: crate::ui::ops::LoginOutcome {
+                connect: UnlockOutcome::AuthFailed,
+                notes: Vec::new(),
+            },
         },
         &mut h.state,
     );

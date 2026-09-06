@@ -152,7 +152,7 @@ impl Transport for Ssh {
         Some(v)
     }
 
-    /// The unlock: force a NEW master over the SAME control socket every other ssh
+    /// The login: force a NEW master over the SAME control socket every other ssh
     /// shares, with no BatchMode so it can prompt, and run `true` so the master
     /// lingers via `ControlPersist` after auth. `None` on Windows, where ssh has no
     /// ControlMaster socket to leave authenticated.
@@ -287,7 +287,7 @@ mod tests {
         assert!(joined.contains("User=alice"), "{joined}");
         assert!(
             !joined.contains("BatchMode"),
-            "the unlock must be able to prompt: {joined}"
+            "the login must be able to prompt: {joined}"
         );
         assert_eq!(got.last().unwrap(), "true");
         assert!(joined.ends_with("-- prod true"), "{joined}");
