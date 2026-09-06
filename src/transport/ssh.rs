@@ -64,6 +64,15 @@ impl Login {
 }
 
 impl Ssh {
+    /// Whether this side can share ONE authenticated connection across several ssh runs.
+    /// Windows ssh has no connection multiplexing, and a machine addressed without a
+    /// control path has nowhere to put the socket. Asked in one place, because a channel
+    /// that opens a master and one that reuses it must never disagree about whether there
+    /// is one.
+    fn multiplexes(&self) -> bool {
+        self.os != "windows" && !self.control_path.is_empty()
+    }
+
     /// The ssh options preceding the remote command, ending with `-- <alias>` so an
     /// alias beginning with `-` is the destination, never an option. `tty` requests
     /// a pty and omits BatchMode so auth can prompt; else `BatchMode=yes` so a
@@ -79,7 +88,7 @@ impl Ssh {
         }
         a.push("-o".into());
         a.push(format!("ConnectTimeout={CONNECT_TIMEOUT}"));
-        if self.os != "windows" && !self.control_path.is_empty() {
+        if self.multiplexes() {
             a.push("-o".into());
             a.push("ControlMaster=auto".into());
             a.push("-o".into());
@@ -152,25 +161,32 @@ impl Transport for Ssh {
         Some(v)
     }
 
-    /// The login: force a NEW master over the SAME control socket every other ssh
-    /// shares, with no BatchMode so it can prompt, and run `true` so the master
-    /// lingers via `ControlPersist` after auth. `None` on Windows, where ssh has no
-    /// ControlMaster socket to leave authenticated.
+    /// The login: a real ssh with no BatchMode, so every question it has reaches the
+    /// person watching it.
+    ///
+    /// Where this side multiplexes, it forces a NEW master over the SAME control socket
+    /// every other ssh shares and runs `true`, so what it leaves behind is an
+    /// authenticated connection the later `BatchMode` channels reuse. Where it does not -
+    /// Windows, whose ssh has no connection multiplexing - the same login runs without
+    /// those options and leaves nothing behind, which costs the reuse and NOTHING else:
+    /// ssh asks about the host key before it authenticates, and the answer is written to
+    /// `known_hosts`, so accepting a key is a login that outlasts any connection. A host
+    /// that then needs a password is asked for one again on the next probe, which is the
+    /// truth about that machine on this platform rather than a reason to refuse the login.
     fn login_argv(&self, login: &Login) -> Option<Vec<String>> {
-        if self.os == "windows" {
-            return None; // no ControlMaster socket to leave authenticated
-        }
         let mut v = vec![
             "ssh".to_string(),
             "-o".into(),
-            "ControlMaster=yes".into(),
-            "-o".into(),
-            format!("ControlPath={}", self.control_path),
-            "-o".into(),
-            "ControlPersist=60s".into(),
-            "-o".into(),
             format!("ConnectTimeout={CONNECT_TIMEOUT}"),
         ];
+        if self.multiplexes() {
+            v.push("-o".into());
+            v.push("ControlMaster=yes".into());
+            v.push("-o".into());
+            v.push(format!("ControlPath={}", self.control_path));
+            v.push("-o".into());
+            v.push("ControlPersist=60s".into());
+        }
         // The values the user is submitting, not the ones this transport was built with:
         // the whole point of the run is to try something that has not worked yet.
         for opt in login.options() {
@@ -324,13 +340,49 @@ mod tests {
         }
     }
 
+    /// Windows ssh cannot share one authenticated connection, so the login leaves nothing
+    /// behind there. It still RUNS: ssh asks about the host key before it authenticates
+    /// and writes the answer to `known_hosts`, so accepting a key is a login whose whole
+    /// result outlives the connection. Refusing to run it would cost that for a reason
+    /// that only touches the reuse.
     #[test]
-    fn ssh_login_argv_is_none_on_windows() {
-        assert_eq!(
-            ssh("prod", "windows", "").login_argv(&Login::default()),
-            None,
-            "no ControlMaster on Windows to reuse"
+    fn a_login_runs_on_windows_without_the_options_windows_has_no_use_for() {
+        let argv = ssh("prod", "windows", "")
+            .login_argv(&Login::default())
+            .expect("a remote host has a login to run on any platform");
+        let joined = argv.join(" ");
+        assert!(
+            !joined.contains("ControlMaster") && !joined.contains("ControlPath"),
+            "nothing is asked of an ssh that cannot multiplex: {joined}"
         );
+        assert!(
+            !joined.contains("BatchMode"),
+            "the login must be able to ask its questions: {joined}"
+        );
+        assert_eq!(argv.last().unwrap(), "true", "the connection IS the work");
+    }
+
+    /// Where this side multiplexes, the login opens the master every later channel rides.
+    #[test]
+    fn a_login_opens_the_master_where_one_can_be_left() {
+        let joined = ssh("prod", "linux", "/tmp/cm.sock")
+            .login_argv(&Login::default())
+            .expect("a remote host has a login")
+            .join(" ");
+        assert!(joined.contains("ControlMaster=yes"), "{joined}");
+        assert!(joined.contains("ControlPath=/tmp/cm.sock"), "{joined}");
+        assert!(joined.contains("ControlPersist=60s"), "{joined}");
+    }
+
+    /// A machine with nowhere to put the socket is in the same position as Windows: the
+    /// login runs, and leaves no connection behind.
+    #[test]
+    fn a_login_without_a_control_path_leaves_nothing_behind() {
+        let joined = ssh("prod", "linux", "")
+            .login_argv(&Login::default())
+            .expect("a remote host has a login")
+            .join(" ");
+        assert!(!joined.contains("ControlMaster"), "{joined}");
     }
 
     #[test]

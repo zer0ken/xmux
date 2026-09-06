@@ -377,12 +377,14 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B28** - Submitting runs one PTY ssh (`ControlMaster=yes` over the same control
   socket every other ssh shares) carrying the submitted values as `-o` overrides, so the
   host keeps its alias and its ssh-config stanza still supplies whatever they do not
-  name. It establishes the single authenticated master the later channels reuse. Success
-  re-probes ONLY that host over the master (its reach is the only thing that changed, so
-  the whole roster is not re-scanned); any failure keeps the host blocked and flashes
-  why. The password lives only in the transient command and the PTY writer, never
-  stored, logged, rendered, or serialized. The login is unavailable on Windows (no
-  ControlMaster socket to leave authenticated, FR-G) and on local/WSL hosts.
+  name. Where this side multiplexes it establishes the single authenticated master the
+  later channels reuse. Success re-probes ONLY that host (its reach is the only thing that
+  changed, so the whole roster is not re-scanned); any failure keeps the host blocked and
+  flashes why. The password lives only in the transient command and the PTY writer, never
+  stored, logged, rendered, or serialized. A side with no multiplexing (Windows, FR-G)
+  still runs the login and still records the host key and the values, and loses only the
+  reuse, so a password host there is asked again on the next probe. Only local and WSL
+  hosts have no login at all, having nothing to log in to.
 - **FR-B29** - The pane's two choices run only after a connection that worked, and each
   says so when it could not. RECORDING writes an xmux-marked stanza naming the host, with
   the values that reached it, at the TOP of `~/.ssh/config`, because ssh keeps the first
