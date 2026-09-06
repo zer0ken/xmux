@@ -638,13 +638,6 @@ fn write_ssh_config_stanza(
     std::fs::write(&path, next)
 }
 
-/// Appends this machine's public key to the remote's `authorized_keys`, generating a key
-/// pair first when there is none to send.
-///
-/// It runs over the transport's own argv, so it rides the ControlMaster the login just
-/// authenticated and asks for nothing. The remote command is idempotent: it adds the key
-/// only when the file does not already hold that exact line, so a second registration
-/// changes nothing.
 /// The remote command that puts this machine's public key in the host's
 /// `authorized_keys`, for the login to carry.
 ///
