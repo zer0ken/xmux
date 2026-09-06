@@ -371,7 +371,10 @@ fn reverse_name(ip: Ipv4Addr) -> Option<String> {
             std::ptr::addr_of!(sa) as *const libc::sockaddr,
             std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
             host.as_mut_ptr(),
-            host.len() as libc::socklen_t,
+            // bionic types this length as `size_t` where glibc and the BSDs use
+            // `socklen_t`, so the cast target is whatever this platform's own
+            // declaration says rather than a name that is right on only some of them.
+            host.len() as _,
             std::ptr::null_mut(),
             0,
             // A name or nothing: without this the call answers with the address itself,
