@@ -29,10 +29,11 @@ sources exist.
   addresses, and the neighbour table. It narrows what those give - an entry naming no
   machine, a hardware address answering for many addresses - then keeps only what
   answers ssh, and names the survivors through the system resolver.
-- On Linux and Android those two records are read straight from the kernel over netlink;
-  every other OS is asked through a command. The netlink socket is never bound: an app on
-  Android may not bind one, and a dump does not need it, which is why `ip` fails there on
-  every subcommand while these dumps answer.
+- Those two records are read from the OS itself wherever the OS has a way to be asked:
+  netlink on Linux and Android, IP Helper on Windows. Only the unixes with neither are
+  asked through a command. The netlink socket is never bound: an app on Android may not
+  bind one, and a dump does not need it, which is why `ip` fails there on every
+  subcommand while these dumps answer.
 - A record the OS REFUSES is not a record that is empty. Android denies the neighbour
   table and allows the routing table, so the refusal is carried rather than flattened:
   where the neighbour table is refused, the link this machine holds an address in is

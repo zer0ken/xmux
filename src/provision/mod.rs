@@ -12,4 +12,7 @@ pub mod neighbor;
 // else; every other OS is served by the commands in `neighbor`.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub mod netlink;
+// Windows keeps the same state behind IP Helper, which is what its own cmdlets call.
+#[cfg(windows)]
+pub mod iphlpapi;
 pub mod roster;

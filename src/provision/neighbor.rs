@@ -23,14 +23,19 @@
 //! Reading the OS rather than a vendor CLI is what makes this one provider instead of
 //! one per network: a tailnet peer, a WireGuard peer, and the machine on the next desk
 //! arrive by the same two records and leave by the same gate.
+//!
+//! Where the OS has an interface for those records, they are read through it - netlink
+//! on Linux and Android, IP Helper on Windows - and only the unixes with neither are
+//! asked through a command. What differs between platforms is therefore only where the
+//! two records come from; everything after them is one path.
 
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
 // Only the platforms that answer through a command need a way to run one; Linux and
-// Android ask the kernel directly.
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+// Android ask the kernel, Windows asks IP Helper.
+#[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
 use crate::model::source::{ExecRunner, Runner};
 
 /// How long one address gets to answer on port 22. A neighbour is on this link or one
@@ -137,7 +142,15 @@ async fn route_prefixes() -> Vec<RoutePrefix> {
 }
 
 /// The routing table as this OS gives it up.
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(windows)]
+async fn route_prefixes() -> Vec<RoutePrefix> {
+    tokio::task::spawn_blocking(|| super::iphlpapi::routes().unwrap_or_default())
+        .await
+        .unwrap_or_default()
+}
+
+/// The routing table as this OS gives it up.
+#[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
 async fn route_prefixes() -> Vec<RoutePrefix> {
     let (bin, args) = route_command();
     match ExecRunner.run(bin, &args).await {
@@ -147,7 +160,7 @@ async fn route_prefixes() -> Vec<RoutePrefix> {
 }
 
 /// The command that prints this machine's IPv4 routes, per OS.
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
 fn route_command() -> (&'static str, Vec<String>) {
     if cfg!(windows) {
         (
@@ -244,7 +257,15 @@ async fn neighbor_table() -> Result<Vec<Neighbor>, String> {
 }
 
 /// The neighbour table as this OS gives it up, or why it would not.
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(windows)]
+async fn neighbor_table() -> Result<Vec<Neighbor>, String> {
+    tokio::task::spawn_blocking(|| super::iphlpapi::neighbors().map_err(|e| e.to_string()))
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()))
+}
+
+/// The neighbour table as this OS gives it up, or why it would not.
+#[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
 async fn neighbor_table() -> Result<Vec<Neighbor>, String> {
     let (bin, args) = neighbor_command();
     match ExecRunner.run(bin, &args).await {
@@ -259,6 +280,7 @@ async fn neighbor_table() -> Result<Vec<Neighbor>, String> {
 /// once, which the probe budget already absorbs; anything wider is a scan, and a machine
 /// found by scanning a network this size was never a neighbour in the sense this
 /// provider means.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const LARGEST_SWEPT_LINK: u8 = 24;
 
 /// Every address on the links this machine holds an address in. Used only where the
@@ -271,7 +293,9 @@ async fn link_sweep() -> Vec<Ipv4Addr> {
     own.iter().flat_map(link_addresses).collect()
 }
 
-/// Nothing to sweep where a refusal cannot be told from an empty table.
+/// Nothing to sweep where a refusal cannot be told from an empty table. Windows and
+/// macOS hand the whole table over or fail as a whole, so a refusal there is not the
+/// per-record denial the sweep exists for.
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 async fn link_sweep() -> Vec<Ipv4Addr> {
     Vec::new()
@@ -280,6 +304,7 @@ async fn link_sweep() -> Vec<Ipv4Addr> {
 /// The addresses of the network one of this machine's own addresses sits in, without
 /// the two that are the network and its broadcast. Empty for a link too wide to ask
 /// about, and for one that holds nobody else.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn link_addresses(own: &RoutePrefix) -> Vec<Ipv4Addr> {
     if own.len < LARGEST_SWEPT_LINK || own.len >= 31 {
         return Vec::new();
@@ -310,7 +335,7 @@ pub async fn source_report() -> Vec<(&'static str, String)> {
 }
 
 /// The command that prints this machine's IPv4 neighbour table, per OS.
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
 fn neighbor_command() -> (&'static str, Vec<String>) {
     if cfg!(windows) {
         (
@@ -616,6 +641,7 @@ broadcast 143.248.140.255 dev eno1 table local proto kernel scope link src 143.2
     /// The link a machine is on is asked about address by address only while it is a
     /// link. The two addresses that are the network itself and its broadcast are not
     /// machines and are not asked.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn a_link_is_swept_only_while_it_is_a_link() {
         let link = |len| {
