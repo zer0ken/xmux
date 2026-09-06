@@ -224,6 +224,9 @@ impl Runtime {
                         .map(|(host, p)| (host.clone(), p.label().to_string()))
                         .collect(),
                 );
+                state
+                    .chrome
+                    .set_login_defaults(roster.host_addresses.clone(), local_user());
                 env.replace_roster(*roster);
                 state.chrome.set_source_reach(
                     env.source_list()
@@ -467,6 +470,12 @@ impl Runtime {
                 .map(|(host, p)| (host.clone(), p.label().to_string()))
                 .collect(),
         );
+        // And what the login pane starts from: the address a provider knew for each host,
+        // and this machine's own account name. Both are what ssh would have used, so a
+        // pane that opens on a failure opens showing what just failed.
+        state
+            .chrome
+            .set_login_defaults(roster.host_addresses.clone(), local_user());
         // And how each source is REACHED, so an unreachable one states what was asked of
         // it and over what, not only that it failed. Resolved to words here for the same
         // reason the providers are: the screen prints them and nothing branches on them.
@@ -699,21 +708,43 @@ impl Runtime {
         if self.dirty && self.last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
             // Render the CONFIRMED display truth (`displayed`), not the selection: the prior
             // session stays on screen until the new one is ready (stale-while-revalidate).
-            let grid_arc = current_grid(
-                &self.state.displayed,
-                &crate::driver::DriverCtx {
-                    registry: &mut self.registry,
-                    hosts: &mut self.hosts,
-                    worker: &self.worker,
-                    pty_tx: &self.driver_pty_tx,
-                    attach_seq: &mut self.attach_seq,
-                    cols: self.cols,
-                    body_rows: self.body_rows,
-                    nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                        .with_height(self.nav_height)
-                        .with_position(self.nav_position),
-                },
-            );
+            // A login on screen is what the terminal view shows, so its PTY is the grid
+            // this frame draws and the pane it landed in is the size ssh draws for. No
+            // attach runs while it does: the host it belongs to has not answered yet.
+            let login_grid = self
+                .state
+                .login_pty
+                .as_ref()
+                .filter(|l| self.switcher.current_source().as_deref() == Some(&l.source))
+                .map(|l| {
+                    let (cols, rows) = terminal_view_size(
+                        self.cols,
+                        self.body_rows,
+                        crate::ui::switcher::NavSize::visible(self.nav_width)
+                            .with_height(self.nav_height)
+                            .with_position(self.nav_position),
+                    );
+                    l.resize(cols, rows);
+                    l.grid.clone()
+                });
+            let grid_arc = match login_grid {
+                Some(g) => Some(g),
+                None => current_grid(
+                    &self.state.displayed,
+                    &crate::driver::DriverCtx {
+                        registry: &mut self.registry,
+                        hosts: &mut self.hosts,
+                        worker: &self.worker,
+                        pty_tx: &self.driver_pty_tx,
+                        attach_seq: &mut self.attach_seq,
+                        cols: self.cols,
+                        body_rows: self.body_rows,
+                        nav: crate::ui::switcher::NavSize::visible(self.nav_width)
+                            .with_height(self.nav_height)
+                            .with_position(self.nav_position),
+                    },
+                ),
+            };
             let terminal_focused = self.state.focus.is_terminal_focused();
             // The view border glyph reflects auto-hide-nav mode (║ on, │ off).
             self.state.chrome.set_auto_hide(self.auto_hide_nav);
@@ -1021,7 +1052,7 @@ impl Runtime {
                     &mut self.nav_width_natural,
                     &mut self.auto_hide_nav,
                     &self.env.xmux_dir,
-                    (&self.ops, &self.op_tx),
+                    (&self.ops, &self.op_tx, &self.driver_pty_tx),
                 );
                 let _ = reply.send(resp);
                 if wc {
@@ -1111,7 +1142,7 @@ impl Runtime {
                     &mut self.nav_width_natural,
                     &mut self.auto_hide_nav,
                     &self.env.xmux_dir,
-                    (&self.ops, &self.op_tx),
+                    (&self.ops, &self.op_tx, &self.driver_pty_tx),
                 );
                 if wc {
                     self.width_dirty = true;
@@ -1135,12 +1166,12 @@ impl Runtime {
             }
             Cmd::RawBytes(bytes) => {
                 if !bytes.is_empty() {
-                    // A LOCKED host has no PTY: its panel owns the keys, exactly as the
+                    // A BLOCKED host has no PTY: its login pane owns the keys, exactly as the
                     // interactive terminal-focus path routes them (see `input.rs`). So the
-                    // ctl raw surface drives the unlock the same way a keyboard does.
-                    if self.switcher.current_host_locked() {
+                    // ctl raw surface drives the pane the same way a keyboard does.
+                    if self.switcher.current_host_blocked() {
                         if let Some(source) = self.switcher.current_source() {
-                            if let Some(cmd) = self.state.feed_unlock(&source, &bytes) {
+                            if let Some(cmd) = self.state.feed_login(&source, &bytes) {
                                 let _ = dispatch_commands(
                                     vec![cmd],
                                     &mut self.switcher,
@@ -1148,7 +1179,7 @@ impl Runtime {
                                     &mut self.nav_width_natural,
                                     &mut self.auto_hide_nav,
                                     &self.env.xmux_dir,
-                                    (&self.ops, &self.op_tx),
+                                    (&self.ops, &self.op_tx, &self.driver_pty_tx),
                                 );
                             }
                             self.dirty = true;
@@ -1213,14 +1244,14 @@ impl Runtime {
                 &self.probe_gate,
                 false,
             );
-            // The unlock is done: clear the draft so the panel keeps no typed id.
+            // The login is done: clear the draft so the pane keeps no typed values.
             if self
                 .state
-                .unlock
+                .login
                 .as_ref()
                 .is_some_and(|d| d.source == source)
             {
-                self.state.unlock = None;
+                self.state.login = None;
             }
             self.dirty = true;
         }
@@ -1294,7 +1325,7 @@ impl Runtime {
                 | crate::model::Command::AdjustNavWidth(_)
                 | crate::model::Command::ToggleAutoHide
                 | crate::model::Command::RunOp(_)
-                | crate::model::Command::RunUnlock { .. }
+                | crate::model::Command::RunLogin { .. }
                 | crate::model::Command::Quit => {}
             }
         }
@@ -1582,6 +1613,15 @@ impl Runtime {
 /// never learns what a machine kind or a mux binary is. Each field comes from the one
 /// place that owns it - the machine describes its own addressing, the host composes its
 /// own listing command - rather than being re-derived from a source id.
+/// This machine's own account name, which is the login ssh falls back to when nothing
+/// names another. Empty when the environment says nothing, and then the login pane's
+/// username simply starts blank rather than carrying a guess.
+fn local_user() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_default()
+}
+
 pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrome::SourceReach {
     crate::ui::chrome::SourceReach {
         probe: shell_line(&s.host().list_sessions_command()),

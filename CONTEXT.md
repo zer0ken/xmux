@@ -97,12 +97,9 @@ UI elements a user perceives as distinct things:
   the socket, and the session-listing command itself, spelled so it can be run by hand),
   then the provider that put the host on the roster, the ssh stanza it was reached
   through, what the OTHER muxes on that same machine answered, and the log file holding
-  the full history - then the rescan key. The LOCKED state states the same failure
-  facts and adds the unlock fields at the panel's top (a username and a masked password,
-  typed into the panel from the terminal view; xmux answers the ssh prompt and
-  establishes one authenticated connection the rest reuses); the host stays locked on any
-  failed unlock and re-probes only itself on a successful
-  one. The EMPTY state's rows are the keys that start a session or rescan. A host
+  the full history - then the rescan key. The BLOCKED state states the same failure
+  facts and adds the login pane above them; the host stays blocked on any failed login
+  and re-probes only itself on a successful one. The EMPTY state's rows are the keys that start a session or rescan. A host
   still scanning gets no screen: an in-flight state is the nav's to show. The
   `own session` state's rows are why it is refused, and no key, because nothing pressed
   here would make it showable.
@@ -256,22 +253,50 @@ UI elements a user perceives as distinct things:
   card never spins, because a session is a plain session card the moment its host
   resolves.
 - status - a host-state card's state once it has SETTLED: the unreachable host's `⚠`
-  mark riding after its host name, the locked host's `*` mark, or nothing at all on
+  mark riding after its host name, the blocked host's `?` mark, or nothing at all on
   a reachable empty host
   (whose screen states "no sessions"); a card still scanning carries the spinner
   instead, because its spinner already says so. Not to be confused with the hint bar
   (below) or the `chrome`.
-- locked - a host that answered the network but refused the credentials, a state
-  apart from unreachable: ssh's own auth-failure line (`Permission denied
-  (publickey,…)`) is the only text that earns it, so a host that merely died is
-  never locked. Its card keeps the `?` mark (warning, like unreachable's `⚠`), is
-  never hidden by hide-unreachable (it is the one entry to the unlock), and shows
-  the locked panel naming the reason. That panel OWNS the unlock: its top carries a
-  username and a masked password field, typed into from the terminal view (Enter
-  advances user→password then submits), which runs one PTY prompt-answer ssh that leaves
-  the one authenticated ControlMaster every later channel reuses. It is not a modal and
-  nothing in the nav drives it. The submitted credentials live only in the transient
-  command and the PTY writer: never stored, logged, rendered, or serialized.
+- blocked - a host xmux REACHED, or could reach with different values, a state apart
+  from unreachable. What the login pane collects decides the set: ssh's auth-failure line
+  (`Permission denied (…`), its host-key verification-failed line, and a name that did
+  not resolve. A machine that refused, timed out, or had no route is down and stays
+  unreachable, as does output carrying ssh's changed-identification warning, which is
+  decided outside xmux. A blocked card keeps the `?` mark (warning, like unreachable's
+  `⚠`), is never hidden by hide-unreachable (it is the one entry to the login pane), and
+  shows that pane above the same failure facts the unreachable screen states. What it was
+  blocked ON is not in its state word: the reason row carries ssh's own sentence.
+- login pane - the form a blocked host's panel opens, holding the three values ssh will
+  not ask for and must know before it dials: the address, the port, and the username. A
+  masked password field is optional beside them. Every value starts at what ssh WOULD
+  use - the address a provider reported, ssh's default port, the ssh config's `User` else
+  this machine's account name - so a pane that opened on a failure opens showing what
+  just failed. A required field is marked in its label; an empty optional one says so in
+  the space its value would occupy. Two choices follow: whether to record the values, and
+  whether to register this machine's public key on the host. The record choice appears
+  only once a value differs from what ssh would have used, since a stanza repeating what
+  ssh already resolves records nothing. Enter means one thing throughout - submit from
+  the button, pass the focus on from anywhere else - and Space picks a choice. It is not
+  a modal and nothing in the nav drives it. The submitted password lives only in the
+  transient command and the PTY writer: never stored, logged, rendered, or serialized.
+- login screen - the ssh the pane started, on screen in the pane's place for as long as
+  it runs. ssh asks for the host key and the credentials itself, on a terminal, so the
+  login runs on a PTY and that PTY is what the terminal view draws. What the pane
+  collected is typed into it - the host-key question once, the password once and only if
+  the pane carried one - and every other prompt is left standing for the user, whose keys
+  reach it. That is what makes a second factor, a key passphrase, and a prompt in any
+  language a conversation rather than a failure. A wrong password ends nothing: ssh asks
+  again and the user answers. The verdict is the child's exit code; a lone Esc ends the
+  conversation early. However it ends, the screen goes and the pane returns holding what
+  was typed.
+- remembering a login - what the pane's record choice does once the connection works: an
+  xmux-marked stanza naming the host, holding the values that reached it, written at the
+  TOP of `~/.ssh/config` because ssh keeps the FIRST value it obtains for a keyword. The
+  marker is what makes a second login replace the stanza instead of stacking, and what
+  tells a reader which lines are xmux's. Nothing the user wrote is touched. A password is
+  never recorded, because ssh config has nowhere to put one; the public-key choice is
+  what stops the host asking again.
 - address column - the leftmost column set of every card, holding the one thing that
   answers "where is this": the dim 1-based number `prefix <digit>` jumps to, or, on the
   SELECTED card, the selection mark - the number there would be the address of where you
@@ -332,8 +357,8 @@ UI elements a user perceives as distinct things:
   true`, or an inline connect for this box) that leads discovery, bounded so a large
   roster never floods the network at once. Its three outcomes gate everything after:
   `connected` goes on to `mux discovery`, detection, and the metadata channels;
-  `locked` (ssh's `Permission denied (` auth-failure signature) and `unreachable` (any
-  other failure) classify the machine's cards and open no channel. The probe reads
+  `blocked` (a failure the login pane's values could fix) and `unreachable` (any other
+  failure) classify the machine's cards and open no channel. The probe reads
   ssh's own failure text, so the reason a card shows is the machine's, not a guess; a
   connected probe also warms the shared ControlMaster its later channels reuse. Distinct
   from `mux discovery` (which muxes a connected machine serves) and `discovery` (a

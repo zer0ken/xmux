@@ -29,16 +29,34 @@ pub trait Ops: Send + Sync {
     /// unreachable (the message is shown as the host's failure reason).
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>>;
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session>;
-    /// Unlock a locked source: run the off-loop ssh prompt-answer and return the
-    /// verdict. `Ok` establishes the one authenticated ControlMaster every later
-    /// channel reuses; the app reacts to the outcome (a rescan on success, a flash
-    /// on failure).
-    async fn unlock(
+    /// The command that logs in to `source` with the pane's values, or `None` where the
+    /// machine has no login to run (it is local, or the platform leaves no reusable
+    /// master behind). Synchronous: it composes an argv and runs nothing, so the app can
+    /// ask for it on the loop and start the conversation itself.
+    fn login_argv(&self, source: &str, login: &crate::transport::Login) -> Option<Vec<String>>;
+
+    /// The pane's two checkboxes, run over the master a successful login just left. Each
+    /// returns a note only when it could NOT do what it said, so a step that failed says
+    /// so instead of passing silently.
+    ///
+    /// It is called only after a connection that worked: neither is worth doing over one
+    /// that did not, and registering a key needs the authenticated master to carry it.
+    async fn login_follow_ups(
         &self,
         source: &str,
-        user: &str,
-        password: &str,
-    ) -> crate::link::unlock::UnlockOutcome;
+        login: &crate::transport::Login,
+        write_config: bool,
+        register_key: bool,
+    ) -> Vec<String>;
+}
+
+/// What one login run did. The connection is the verdict the app branches on; the
+/// notes are what the checkboxes could NOT do, so a step that failed says so instead of
+/// passing silently. Empty notes mean every step that ran worked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginOutcome {
+    pub connect: crate::link::unlock::UnlockOutcome,
+    pub notes: Vec<String>,
 }
 
 /// The outcome of a [`MuxOp`]. [`State::fold_op_result`] folds it into the
@@ -54,13 +72,13 @@ pub enum OpResult {
     Failed {
         message: String,
     },
-    /// The unlock worker's verdict. Not an inventory mutation: the app reacts to it
-    /// (re-probe the unlocked machine on success, a flash on failure), never a fold into
-    /// the tree. `source` names the host that was unlocked, so success re-probes only its
-    /// machine rather than the whole roster.
-    Unlock {
+    /// The login worker's verdict. Not an inventory mutation: the app reacts to it
+    /// (re-probe the machine on success, a flash on failure), never a fold into the
+    /// tree. `source` names the host that was logged in to, so success re-probes only
+    /// its machine rather than the whole roster.
+    Login {
         source: String,
-        outcome: crate::link::unlock::UnlockOutcome,
+        outcome: LoginOutcome,
     },
 }
 
@@ -77,11 +95,11 @@ pub enum OpFollow {
     Reselect(Address),
     /// No inventory change - flash this message (a failed op).
     Flash(String),
-    /// The unlock verdict: re-probe the unlocked `source`'s machine on success (only it
-    /// could have changed reach state), flash the failure reason otherwise.
-    UnlockResult {
+    /// The login verdict: re-probe that `source`'s machine on success (only it could
+    /// have changed reach state), flash the failure reason otherwise.
+    LoginResult {
         source: String,
-        outcome: crate::link::unlock::UnlockOutcome,
+        outcome: LoginOutcome,
     },
 }
 
@@ -98,12 +116,26 @@ pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
     }
 }
 
-/// Runs the unlock against the live transport and returns its [`OpResult`]. Pure
-/// over `ops` (no switcher state), so it runs in a detached task off the event loop
-/// like [`run_op`].
-pub async fn run_unlock(source: &str, user: &str, password: &str, ops: &dyn Ops) -> OpResult {
-    OpResult::Unlock {
+/// Finishes a login the app already ran: takes the connection's verdict, runs the two
+/// checkboxes over the master it left (and only if it left one), and returns the
+/// [`OpResult`] the switcher folds. Pure over `ops` (no switcher state), so it runs in a
+/// detached task off the event loop like [`run_op`].
+pub async fn run_login_follow_ups(
+    source: &str,
+    login: &crate::transport::Login,
+    connect: crate::link::unlock::UnlockOutcome,
+    write_config: bool,
+    register_key: bool,
+    ops: &dyn Ops,
+) -> OpResult {
+    let notes = if connect == crate::link::unlock::UnlockOutcome::Ok {
+        ops.login_follow_ups(source, login, write_config, register_key)
+            .await
+    } else {
+        Vec::new()
+    };
+    OpResult::Login {
         source: source.to_string(),
-        outcome: ops.unlock(source, user, password).await,
+        outcome: LoginOutcome { connect, notes },
     }
 }

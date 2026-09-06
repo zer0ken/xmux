@@ -63,52 +63,202 @@ pub struct State {
     /// precedent) and fed by the app each frame; the switcher's `render` reads it off
     /// `&state`.
     pub(crate) chrome: crate::ui::chrome::Chrome,
-    /// The unlock draft for the locked host whose panel is on screen: the username and
-    /// masked password the user is typing INTO the locked panel (the terminal view), and
-    /// which of the two fields the keys edit. It is NOT a modal - it never routes through
-    /// the nav input path - it is a feature of the locked panel, driven only while the
-    /// terminal view holds a locked host. `source` pins it to that host so moving to
-    /// another card starts a fresh draft. The password lives here and in the transient
-    /// unlock command only; it is drawn masked and never logged or serialized.
-    pub unlock: Option<UnlockDraft>,
+    /// The login draft for the blocked host whose panel is on screen: the connection
+    /// values the user is entering INTO the login pane (the terminal view) and which
+    /// element the keys drive. It is NOT a modal - it never routes through the nav input
+    /// path - it is a feature of the login pane, driven only while the terminal view
+    /// holds a blocked host. `source` pins it to that host so moving to another card
+    /// starts a fresh draft. The password lives here and in the transient login command
+    /// only; it is drawn masked and never logged or serialized.
+    pub login: Option<LoginDraft>,
+    /// The login the user is WATCHING: once the pane is submitted, ssh runs on a PTY and
+    /// that PTY is what the terminal view shows, because the rest of the conversation is
+    /// ssh's to have and the user's to answer. Present only while that conversation runs,
+    /// so its presence is what tells the view to draw a screen instead of the form.
+    pub login_pty: Option<crate::link::unlock::RunningLogin>,
 }
 
-/// Which field of the locked panel's unlock draft the keys edit.
+/// What the login pane does with the values once the connection works. The two are one
+/// choice, not two switches: a draft either leaves nothing behind or writes a stanza.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UnlockField {
+pub enum Remember {
     #[default]
-    User,
+    Nothing,
+    SshConfig,
+}
+
+/// Which element of the login pane the keys drive. Every interactive element is one
+/// stop, so Tab and the vertical arrows walk the pane the same way whatever is on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LoginFocus {
+    #[default]
+    Address,
+    Port,
+    Username,
     Password,
+    RememberNothing,
+    RememberSshConfig,
+    Pubkey,
+    Submit,
 }
 
-/// The username and password being typed into a locked host's panel. Held on
-/// [`State`] (not the modal set) because the unlock is a feature of the locked panel in
-/// the terminal view, so nothing in the nav path drives it.
+/// The login pane's draft: what the user is entering for a host that would not answer
+/// with the values ssh resolves on its own. Held on [`State`] (not the modal set)
+/// because the pane is a feature of the terminal view, so nothing in the nav path
+/// drives it.
+///
+/// The three connection values start at what ssh WOULD use, and those starting values
+/// are kept beside them: the remember choice is only worth offering once the user has
+/// changed something, since a stanza repeating what ssh already resolves says nothing.
 #[derive(Debug, Clone, Default)]
-pub struct UnlockDraft {
-    /// The locked source this draft belongs to; a different current source resets it.
+pub struct LoginDraft {
+    /// The blocked source this draft belongs to; a different current source resets it.
     pub source: String,
-    pub user: String,
+    pub address: String,
+    pub port: String,
+    pub username: String,
     pub password: String,
-    pub field: UnlockField,
+    pub remember: Remember,
+    pub pubkey: bool,
+    pub focus: LoginFocus,
+    pub default_address: String,
+    pub default_port: String,
+    pub default_username: String,
 }
 
-impl UnlockDraft {
-    /// Appends a typed character to the active field.
-    fn push(&mut self, c: char) {
-        match self.field {
-            UnlockField::User => self.user.push(c),
-            UnlockField::Password => self.password.push(c),
+impl LoginDraft {
+    /// True once a connection value differs from what ssh would have used. Only then is
+    /// there anything a stanza could record.
+    pub fn changed(&self) -> bool {
+        self.address != self.default_address
+            || self.port != self.default_port
+            || self.username != self.default_username
+    }
+
+    /// The pane's focus stops in reading order. The remember choice is absent until the
+    /// user changes a value, and a stop that is not drawn is not one the keys land on.
+    pub fn stops(&self) -> Vec<LoginFocus> {
+        let mut v = vec![
+            LoginFocus::Address,
+            LoginFocus::Port,
+            LoginFocus::Username,
+            LoginFocus::Password,
+        ];
+        if self.changed() {
+            v.push(LoginFocus::RememberNothing);
+            v.push(LoginFocus::RememberSshConfig);
+        }
+        v.push(LoginFocus::Pubkey);
+        v.push(LoginFocus::Submit);
+        v
+    }
+
+    /// Moves the focus `delta` stops, wrapping. A focus left on a stop that is no longer
+    /// drawn (the user undid their edit) lands on the first stop rather than nowhere.
+    fn move_focus(&mut self, delta: isize) {
+        let stops = self.stops();
+        let at = stops.iter().position(|s| *s == self.focus).unwrap_or(0) as isize;
+        let n = stops.len() as isize;
+        self.focus = stops[(at + delta).rem_euclid(n) as usize];
+    }
+
+    /// The text field the focus is on, or `None` when the focus is on a choice.
+    fn field_mut(&mut self) -> Option<&mut String> {
+        match self.focus {
+            LoginFocus::Address => Some(&mut self.address),
+            LoginFocus::Port => Some(&mut self.port),
+            LoginFocus::Username => Some(&mut self.username),
+            LoginFocus::Password => Some(&mut self.password),
+            _ => None,
         }
     }
 
-    /// Deletes the last character of the active field.
-    fn backspace(&mut self) {
-        match self.field {
-            UnlockField::User => self.user.pop(),
-            UnlockField::Password => self.password.pop(),
-        };
+    /// What Enter does: submit from the button, and pass the focus on from anywhere
+    /// else. One meaning for the whole pane, so filling it top to bottom with Enter alone
+    /// ends on the button and never toggles something on the way past.
+    fn enter(&mut self) -> bool {
+        if self.focus == LoginFocus::Submit {
+            return true;
+        }
+        self.move_focus(1);
+        false
     }
+
+    /// What Space does: pick the focused choice, leaving the focus where it is so the
+    /// user can see what they picked. A text field takes it as the character it is.
+    fn pick(&mut self) {
+        match self.focus {
+            LoginFocus::RememberNothing => self.remember = Remember::Nothing,
+            LoginFocus::RememberSshConfig => self.remember = Remember::SshConfig,
+            LoginFocus::Pubkey => self.pubkey = !self.pubkey,
+            _ => {}
+        }
+    }
+}
+
+/// One key the login pane understands, decoded from the terminal's bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Key {
+    Char(char),
+    Enter,
+    Tab,
+    BackTab,
+    Up,
+    Down,
+    Backspace,
+}
+
+/// Decodes a terminal input chunk into the keys the login pane acts on, dropping every
+/// other escape sequence whole so its bytes can never land in a field as text.
+///
+/// Only the sequences the pane uses are recognised: the vertical arrows walk its stops
+/// and back-tab walks them backwards. A horizontal arrow is dropped rather than mapped,
+/// because the fields are edited from their end and there is no caret for it to move.
+fn decode_keys(bytes: &[u8]) -> Vec<Key> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => {
+                // CSI runs to a final byte; SS3 is one byte past its introducer; anything
+                // else is a lone escape. Each form is consumed WHOLE, so no tail of a
+                // sequence can be mistaken for typing.
+                match chars.peek() {
+                    Some('[') => {
+                        chars.next();
+                        let mut last = None;
+                        for c in chars.by_ref() {
+                            last = Some(c);
+                            if c.is_ascii_alphabetic() || c == '~' {
+                                break;
+                            }
+                        }
+                        match last {
+                            Some('A') => out.push(Key::Up),
+                            Some('B') => out.push(Key::Down),
+                            Some('Z') => out.push(Key::BackTab),
+                            _ => {}
+                        }
+                    }
+                    Some('O') => {
+                        chars.next();
+                        chars.next();
+                    }
+                    Some(_) => {
+                        chars.next();
+                    }
+                    None => {}
+                }
+            }
+            '\r' | '\n' => out.push(Key::Enter),
+            '\t' => out.push(Key::Tab),
+            '\u{7f}' | '\u{8}' => out.push(Key::Backspace),
+            c if c.is_control() => {}
+            c => out.push(Key::Char(c)),
+        }
+    }
+    out
 }
 
 impl State {
@@ -136,55 +286,69 @@ impl State {
         crate::ui::modal::modal_kind(&self.modal)
     }
 
-    /// Feeds terminal-view keystrokes into the locked panel's unlock draft for
-    /// `source`, editing the active field. Enter advances user→password and then submits
-    /// (returns the off-loop [`RunUnlock`](crate::model::Command::RunUnlock) with the
-    /// entered id and password) once both are non-empty; Tab toggles the field;
-    /// Backspace deletes. A draft for a different source is reset first, so moving to
-    /// another locked card never carries a stale entry. On submit the password is taken
-    /// out of the draft (it rides only the transient command), so nothing keeps it.
-    pub fn feed_unlock(&mut self, source: &str, bytes: &[u8]) -> Option<crate::model::Command> {
-        // An escape sequence (arrow/function keys) is a key, not text: ignore the whole
-        // chunk so its bytes never land in a field. Plain typing never starts with ESC.
-        if bytes.first() == Some(&0x1b) {
-            return None;
-        }
-        let draft = match &mut self.unlock {
+    /// Feeds terminal-view keystrokes into the login pane for `source`.
+    ///
+    /// The pane is a form: printable characters land in the focused text field, Tab and
+    /// the vertical arrows walk the stops, Enter activates the focused one, and Space
+    /// picks a choice. Enter on a text field passes the focus on, so filling the pane top
+    /// to bottom with Enter alone ends on the button, where Enter submits.
+    ///
+    /// A draft for a different source is reset first, and a fresh draft starts at the
+    /// values ssh would have used, so the pane opens showing what just failed. On submit
+    /// the password is taken out of the draft (it rides only the transient command), so
+    /// nothing keeps it.
+    pub fn feed_login(&mut self, source: &str, bytes: &[u8]) -> Option<crate::model::Command> {
+        let (address, port, username) = self.chrome.login_defaults(source);
+        let draft = match &mut self.login {
             Some(d) if d.source == source => d,
             _ => {
-                self.unlock = Some(UnlockDraft {
+                self.login = Some(LoginDraft {
                     source: source.to_string(),
+                    address: address.clone(),
+                    port: port.clone(),
+                    username: username.clone(),
+                    default_address: address,
+                    default_port: port,
+                    default_username: username,
                     ..Default::default()
                 });
-                self.unlock.as_mut().unwrap()
+                self.login.as_mut().unwrap()
             }
         };
         let mut submit = false;
-        for c in String::from_utf8_lossy(bytes).chars() {
-            match c {
-                '\r' | '\n' => match draft.field {
-                    UnlockField::User => draft.field = UnlockField::Password,
-                    UnlockField::Password => submit = true,
-                },
-                '\t' => {
-                    draft.field = match draft.field {
-                        UnlockField::User => UnlockField::Password,
-                        UnlockField::Password => UnlockField::User,
+        for key in decode_keys(bytes) {
+            match key {
+                Key::Tab => draft.move_focus(1),
+                Key::BackTab | Key::Up => draft.move_focus(-1),
+                Key::Down => draft.move_focus(1),
+                Key::Enter => submit |= draft.enter(),
+                Key::Backspace => {
+                    draft.field_mut().map(String::pop);
+                }
+                // Space picks a choice; in a text field it is a character like any other.
+                Key::Char(' ') if draft.field_mut().is_none() => draft.pick(),
+                Key::Char(c) => {
+                    if let Some(f) = draft.field_mut() {
+                        f.push(c);
                     }
                 }
-                '\u{7f}' | '\u{8}' => draft.backspace(),
-                c if c.is_control() => {}
-                c => draft.push(c),
             }
         }
-        if submit && !draft.user.is_empty() && !draft.password.is_empty() {
-            return Some(crate::model::Command::RunUnlock {
-                source: draft.source.clone(),
-                user: draft.user.clone(),
-                password: std::mem::take(&mut draft.password),
-            });
+        if !submit {
+            return None;
         }
-        None
+        let port = draft.port.trim().parse::<u16>().ok();
+        Some(crate::model::Command::RunLogin {
+            source: draft.source.clone(),
+            login: crate::transport::Login {
+                address: (!draft.address.trim().is_empty()).then(|| draft.address.trim().into()),
+                port,
+                user: (!draft.username.trim().is_empty()).then(|| draft.username.trim().into()),
+            },
+            password: std::mem::take(&mut draft.password),
+            remember: draft.remember,
+            pubkey: draft.pubkey,
+        })
     }
 
     /// Builds the inventory from a complete snapshot: every host is resolved
@@ -615,7 +779,12 @@ impl State {
             OpResult::Failed { message } => OpFollow::Flash(message),
             // The unlock verdict is no inventory mutation: the app reacts to it (re-probe
             // the unlocked machine on success, a flash on failure).
-            OpResult::Unlock { source, outcome } => OpFollow::UnlockResult { source, outcome },
+            OpResult::Login { source, outcome } => {
+                // The conversation is over however it ended, so the PTY it was shown in
+                // goes with it and the pane comes back holding what was typed.
+                self.login_pty = None;
+                OpFollow::LoginResult { source, outcome }
+            }
         }
     }
 
@@ -1654,65 +1823,107 @@ mod tests {
     }
 
     #[test]
-    fn feed_unlock_types_two_fields_and_submits_on_the_second_enter() {
-        // The locked panel's input: characters land in the active field, Enter advances
-        // user→password then submits the RunUnlock, and the password is taken out of the
-        // draft on submit so nothing keeps it.
+    fn feed_login_fills_the_pane_and_submits_from_the_button() {
+        // Enter passes the focus on from a text field, so filling the pane top to bottom
+        // with Enter alone ends on the button, where Enter submits. The password is taken
+        // out of the draft on submit so nothing keeps it.
         let mut s = State::default();
+        // address, port, username come prefilled; Enter walks past them.
+        for _ in 0..3 {
+            assert!(
+                s.feed_login("prod", b"\r").is_none(),
+                "a field passes focus on"
+            );
+        }
+        assert!(s.feed_login("prod", b"hunter2").is_none(), "typing waits");
         assert!(
-            s.feed_unlock("prod", b"alice").is_none(),
-            "typing the id waits"
+            s.feed_login("prod", b"\r").is_none(),
+            "the password field passes focus on too"
+        );
+        // The focus is on the pubkey checkbox: Space picks it, Enter walks past.
+        assert!(
+            s.feed_login("prod", b" ").is_none(),
+            "Space picks, never submits"
         );
         assert!(
-            s.feed_unlock("prod", b"\r").is_none(),
-            "the first Enter only moves to the password field"
+            s.feed_login("prod", b"\r").is_none(),
+            "Enter walks past the choice"
         );
-        assert!(
-            s.feed_unlock("prod", b"hunter2").is_none(),
-            "typing the password waits"
-        );
-        let cmd = s
-            .feed_unlock("prod", b"\r")
-            .expect("the second Enter submits");
+        let cmd = s.feed_login("prod", b"\r").expect("the button submits");
         match cmd {
-            crate::model::Command::RunUnlock {
+            crate::model::Command::RunLogin {
                 source,
-                user,
                 password,
+                pubkey,
+                ..
             } => {
                 assert_eq!(source, "prod");
-                assert_eq!(user, "alice");
                 assert_eq!(password, "hunter2");
+                assert!(pubkey, "the checkbox the user toggled rides along");
             }
-            other => panic!("expected RunUnlock, got {other:?}"),
+            other => panic!("expected RunLogin, got {other:?}"),
         }
         assert_eq!(
-            s.unlock.as_ref().unwrap().password,
+            s.login.as_ref().unwrap().password,
             "",
             "the submitted password is taken out of the draft"
         );
     }
 
     #[test]
-    fn feed_unlock_backspace_edits_and_a_new_source_resets_the_draft() {
+    fn feed_login_walks_its_stops_with_tab_and_the_vertical_arrows() {
         let mut s = State::default();
-        s.feed_unlock("prod", b"aliceX");
-        s.feed_unlock("prod", b"\x7f"); // backspace deletes the X
-        assert_eq!(s.unlock.as_ref().unwrap().user, "alice");
-        // Moving to another locked host starts a fresh draft (no stale id carried).
-        s.feed_unlock("stage", b"bob");
-        let d = s.unlock.as_ref().unwrap();
-        assert_eq!(d.source, "stage");
-        assert_eq!(d.user, "bob");
+        s.feed_login("prod", b"\t");
+        assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::Port);
+        s.feed_login("prod", b"\x1b[B");
+        assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::Username);
+        s.feed_login("prod", b"\x1b[A");
+        assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::Port);
+        s.feed_login("prod", b"\x1b[Z");
+        assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::Address);
     }
 
     #[test]
-    fn feed_unlock_ignores_escape_sequences() {
-        // An arrow key (ESC [ A) is a key, not text: none of its bytes land in a field.
+    fn feed_login_offers_the_remember_choice_only_after_a_value_changes() {
+        // A stanza repeating what ssh already resolves records nothing, so the choice is
+        // absent until the user changes a connection value, and the stops skip it.
         let mut s = State::default();
-        s.feed_unlock("prod", b"ab");
-        s.feed_unlock("prod", b"\x1b[A");
-        assert_eq!(s.unlock.as_ref().unwrap().user, "ab");
+        s.feed_login("prod", b"x");
+        let d = s.login.as_ref().unwrap();
+        assert!(d.changed(), "the address was edited");
+        assert!(d.stops().contains(&LoginFocus::RememberSshConfig));
+        // Undoing the edit takes the choice away again.
+        s.feed_login("prod", b"\x7f");
+        let d = s.login.as_ref().unwrap();
+        assert!(!d.changed());
+        assert!(!d.stops().contains(&LoginFocus::RememberSshConfig));
+    }
+
+    #[test]
+    fn feed_login_backspace_edits_and_a_new_source_resets_the_draft() {
+        let mut s = State::default();
+        s.feed_login("prod", b"X");
+        s.feed_login("prod", b"\x7f");
+        assert_eq!(s.login.as_ref().unwrap().address, "prod");
+        // Moving to another blocked host starts a fresh draft (no stale value carried).
+        s.feed_login("stage", b"");
+        let d = s.login.as_ref().unwrap();
+        assert_eq!(d.source, "stage");
+        assert_eq!(
+            d.address, "stage",
+            "the fresh draft starts at its own defaults"
+        );
+    }
+
+    #[test]
+    fn feed_login_never_lets_an_escape_sequence_land_in_a_field() {
+        // A function key xmux does not act on is still a key, not text: none of its bytes
+        // reach a field.
+        let mut s = State::default();
+        s.feed_login("prod", b"\x7f\x7f\x7f\x7fab");
+        s.feed_login("prod", b"\x1b[1;5C");
+        s.feed_login("prod", b"\x1bOP");
+        assert_eq!(s.login.as_ref().unwrap().address, "ab");
     }
 
     #[test]
@@ -1772,7 +1983,7 @@ mod tests {
                 .find(|g| g.source == source)
                 .unwrap_or_else(|| panic!("{source} group"));
             assert!(
-                g.err.as_deref().is_some_and(crate::mux::is_locked),
+                g.err.as_deref().is_some_and(crate::mux::is_blocked),
                 "{source} classifies locked: {:?}",
                 g.err
             );
@@ -1801,7 +2012,7 @@ mod tests {
         let g = state.groups.iter().find(|g| g.source == "prod").unwrap();
         assert!(g.err.is_some(), "the card is unreachable");
         assert!(
-            !g.err.as_deref().is_some_and(crate::mux::is_locked),
+            !g.err.as_deref().is_some_and(crate::mux::is_blocked),
             "a reach failure is not locked: {:?}",
             g.err
         );

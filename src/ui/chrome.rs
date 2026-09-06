@@ -233,10 +233,11 @@ pub(crate) enum BarFill {
 /// that has no grid to mirror. Two are host states with no session to show; the third is
 /// the one session that has a grid and must not be shown anyway. There is no variant for
 /// a host still scanning - an in-flight state is the nav's to show, so the view keeps the
-/// The mark a locked host wears on its nav card, flush after the host name. A locked
-/// host is a failure the user can act on (the password unlock), so it keeps the warning
-/// colour like the unreachable `⚠`.
-pub(crate) const LOCK_MARK: &str = "?";
+/// The mark a BLOCKED host wears on its nav card, flush after the host name. A blocked
+/// host is a failure the user can act on (the login pane), so it keeps the warning
+/// colour like the unreachable `⚠`. One column wide: a card's columns are laid out in
+/// cells, and a wide glyph here would shift every column after it.
+pub(crate) const BLOCK_MARK: &str = "?";
 
 /// grid it already has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -247,9 +248,9 @@ pub(crate) enum ViewScreen {
     SelfSession,
     /// The host could not be reached.
     Unreachable,
-    /// The host answered the network but refused the credentials (`Permission
-    /// denied`): a locked host is reachable and awaiting the password unlock.
-    Locked,
+    /// The connection failed in a way the user can answer from xmux: a blocked host
+    /// is awaiting the login pane's values.
+    Login,
     /// The host answered and is serving no session.
     Empty,
 }
@@ -262,7 +263,7 @@ impl ViewScreen {
     fn word(self) -> &'static str {
         match self {
             ViewScreen::SelfSession => "running xmux",
-            ViewScreen::Locked => "locked",
+            ViewScreen::Login => crate::ui::tree::host_state_word(true, true),
             other => crate::ui::tree::host_state_word(false, other == ViewScreen::Unreachable),
         }
     }
@@ -300,11 +301,11 @@ fn siblings(
         .iter()
         .filter(|g| g.source != source && crate::session::machine_of(&g.source) == machine)
         .map(|g| {
-            let locked = g.err.as_deref().is_some_and(crate::mux::is_locked);
+            let blocked = g.err.as_deref().is_some_and(crate::mux::is_blocked);
             let word = if state.scanning.contains(&g.source) {
                 "still scanning".to_string()
             } else if g.err.is_some() {
-                crate::ui::tree::host_state_word(locked, true).to_string()
+                crate::ui::tree::host_state_word(blocked, true).to_string()
             } else {
                 match g.sessions.len() {
                     0 => crate::ui::tree::host_state_word(false, false).to_string(),
@@ -398,6 +399,15 @@ pub struct Chrome {
     /// the words to print (set once by the app). The unreachable host screen names it.
     /// Empty in tests, where the row is then absent rather than blank.
     pub(crate) roster_providers: HashMap<String, String>,
+    /// The address a provider reported for each host, keyed by HOST name (set once by
+    /// the app). It seeds the login pane's address, because a host offered under a name
+    /// this machine cannot resolve is reachable only by the address the provider knew.
+    /// A host absent from the map starts at its own name, which is what ssh would use.
+    pub(crate) host_addresses: HashMap<String, String>,
+    /// This machine's own account name (set once by the app). It seeds the login pane's
+    /// username wherever the ssh config names none, because that is the login ssh itself
+    /// would fall back to.
+    pub(crate) local_user: String,
     /// How xmux reaches each source, keyed by SOURCE id (set once by the app). The
     /// unreachable screen states it: a host that failed is worth little without what was
     /// asked of it and how. See [`SourceReach`].
@@ -436,6 +446,8 @@ impl Default for Chrome {
             spinner: HashSet::new(),
             spinner_frame: 0,
             ssh_config_text: String::new(),
+            host_addresses: HashMap::new(),
+            local_user: String::new(),
             roster_providers: HashMap::new(),
             source_reach: HashMap::new(),
             log_path: String::new(),
@@ -523,6 +535,37 @@ impl Chrome {
     /// which is the honest answer for one nothing recorded.
     pub(crate) fn set_roster_providers(&mut self, providers: HashMap<String, String>) {
         self.roster_providers = providers;
+    }
+
+    /// Sets the address each provider reported for a host, and this machine's own
+    /// account name. Both seed the login pane and nothing else reads them.
+    pub(crate) fn set_login_defaults(
+        &mut self,
+        addresses: HashMap<String, String>,
+        local_user: String,
+    ) {
+        self.host_addresses = addresses;
+        self.local_user = local_user;
+    }
+
+    /// What ssh WOULD use to reach `source`, as the login pane's starting values: the
+    /// address, the port, and the username.
+    ///
+    /// Nothing here is a guess. The address is what the provider reported, else the host
+    /// name itself. The port is ssh's own default. The username is the ssh config's
+    /// `User` for this host, else this machine's account name, which is exactly ssh's
+    /// fallback. A pane that opened on a failure therefore opens showing what just
+    /// failed, and the user changes the part that was wrong.
+    pub(crate) fn login_defaults(&self, source: &str) -> (String, String, String) {
+        let host = crate::session::machine_of(source);
+        let address = self
+            .host_addresses
+            .get(host)
+            .cloned()
+            .unwrap_or_else(|| host.to_string());
+        let user = crate::provision::config::stanza_user(&self.ssh_config_text, host)
+            .unwrap_or_else(|| self.local_user.clone());
+        (address, "22".to_string(), user)
     }
 
     /// Sets how xmux reaches each source, keyed by source id. The app calls this once at
@@ -700,7 +743,7 @@ impl Chrome {
                     )
                 }
             }
-            ViewScreen::Unreachable | ViewScreen::Locked | ViewScreen::Empty => {
+            ViewScreen::Unreachable | ViewScreen::Login | ViewScreen::Empty => {
                 self.source_label(&address.source)
             }
         }
@@ -740,7 +783,7 @@ impl Chrome {
                  which moves your own client and paints xmux inside itself"
                     .into(),
             ));
-        } else if kind == ViewScreen::Unreachable || kind == ViewScreen::Locked {
+        } else if kind == ViewScreen::Unreachable || kind == ViewScreen::Login {
             // WHAT failed, then WHEN, then what was asked of the host and how, then who
             // put it on the list, then how it is configured, then what else on that same
             // machine answered, then where the whole history is written. Read top to
@@ -822,14 +865,6 @@ impl Chrome {
             if !self.log_path.is_empty() {
                 rows.push((ScreenCell::Label("log"), self.log_path.clone()));
             }
-            if kind == ViewScreen::Locked {
-                rows.push((
-                    ScreenCell::Label("unlock"),
-                    "Enter a username, then the masked password; xmux answers the ssh \
-                     prompt and establishes one authenticated connection the rest reuses"
-                        .into(),
-                ));
-            }
             rows.push((ScreenCell::Gap, String::new()));
         } else {
             // Creating under an unreachable host is refused, so `n` is offered only where
@@ -887,7 +922,7 @@ impl Chrome {
         let rule = Span::styled("│ ", Style::default().fg(pal.decoration));
         let state_style = Style::default().fg(match kind {
             ViewScreen::Unreachable => pal.error,
-            ViewScreen::Locked => pal.warning,
+            ViewScreen::Login => pal.warning,
             ViewScreen::Empty | ViewScreen::SelfSession => pal.decoration,
         });
         let headline = format!(" {}", self.headline(address, kind));
@@ -901,44 +936,132 @@ impl Chrome {
             )),
             Line::from(Span::styled(format!(" {}", kind.word()), state_style)),
         ];
-        // The locked panel OWNS the unlock input: the username and masked password sit at
-        // its top, edited in place from the terminal view (no modal, no nav). The active
-        // field shows a cursor only while the terminal view is focused, so the panel says
+        // The login pane OWNS the connection values: they sit at the panel's top,
+        // edited in place from the terminal view (no modal, no nav). The focused element
+        // shows a cursor only while the terminal view is focused, so the pane says
         // whether it is taking keys.
-        if kind == ViewScreen::Locked {
-            let draft = state.unlock.as_ref().filter(|d| d.source == source);
-            let (user, password, field) = draft
-                .map_or(("", "", crate::state::UnlockField::User), |d| {
-                    (d.user.as_str(), d.password.as_str(), d.field)
-                });
-            let cursor = |active: bool| {
-                if active && focused {
-                    "▊"
-                } else {
-                    ""
-                }
+        if kind == ViewScreen::Login {
+            let defaults = self.login_defaults(source);
+            let draft = state.login.as_ref().filter(|d| d.source == source);
+            let fallback = crate::state::LoginDraft {
+                address: defaults.0.clone(),
+                port: defaults.1.clone(),
+                username: defaults.2.clone(),
+                default_address: defaults.0.clone(),
+                default_port: defaults.1.clone(),
+                default_username: defaults.2.clone(),
+                ..Default::default()
             };
-            let field_line = |label: &str, shown: String, active: bool| {
+            let d = draft.unwrap_or(&fallback);
+            let cursor = |active: bool| if active && focused { "▊" } else { "" };
+            let label = |text: String| {
+                Span::styled(
+                    format!(" {text:>cw$} "),
+                    Style::default().fg(pal.decoration),
+                )
+            };
+            // A field carries its own emptiness: a required one is marked in its label,
+            // and an optional one says so in the space its value would occupy, so the
+            // pane never needs a legend to be read.
+            let field = |name: &str, required: bool, value: &str, mask: bool, active: bool| {
+                let shown = if mask {
+                    "•".repeat(value.chars().count())
+                } else {
+                    value.to_string()
+                };
+                let (text, style) = if shown.is_empty() && !active {
+                    (
+                        if required {
+                            String::new()
+                        } else {
+                            "optional".into()
+                        },
+                        Style::default().fg(pal.decoration),
+                    )
+                } else {
+                    (shown, Style::default().fg(pal.secondary))
+                };
                 Line::from(vec![
-                    Span::styled(format!(" {label:<9} "), Style::default().fg(pal.decoration)),
+                    label(format!("{name}{}", if required { "*" } else { "" })),
+                    rule.clone(),
+                    Span::styled(format!("{text}{}", cursor(active)), style),
+                ])
+            };
+            let choice = |name: &str, mark: &str, text: &str, active: bool| {
+                Line::from(vec![
+                    label(name.to_string()),
+                    rule.clone(),
                     Span::styled(
-                        format!("{shown}{}", cursor(active)),
-                        Style::default().fg(pal.secondary),
+                        format!(
+                            "{mark}{}{text}{}",
+                            if mark.is_empty() { "" } else { " " },
+                            cursor(active)
+                        ),
+                        if active {
+                            Style::default().fg(pal.secondary)
+                        } else {
+                            Style::default().fg(pal.decoration)
+                        },
                     ),
                 ])
             };
-            let masked: String = "•".repeat(password.chars().count());
+            use crate::state::{LoginFocus, Remember};
             out.push(Line::from(""));
-            out.push(field_line(
-                "user:",
-                user.to_string(),
-                field == crate::state::UnlockField::User,
+            out.push(field(
+                "address",
+                true,
+                &d.address,
+                false,
+                d.focus == LoginFocus::Address,
             ));
-            out.push(field_line(
-                "password:",
-                masked,
-                field == crate::state::UnlockField::Password,
+            out.push(field(
+                "port",
+                true,
+                &d.port,
+                false,
+                d.focus == LoginFocus::Port,
             ));
+            out.push(field(
+                "username",
+                true,
+                &d.username,
+                false,
+                d.focus == LoginFocus::Username,
+            ));
+            out.push(field(
+                "password",
+                false,
+                &d.password,
+                true,
+                d.focus == LoginFocus::Password,
+            ));
+            // The remember choice appears only once a value differs from what ssh would
+            // have used: a stanza repeating what ssh already resolves records nothing.
+            if d.changed() {
+                out.push(Line::from(""));
+                let pick = |on: bool| if on { "(•)" } else { "( )" };
+                out.push(choice(
+                    "remember",
+                    pick(d.remember == Remember::Nothing),
+                    "nothing",
+                    d.focus == LoginFocus::RememberNothing,
+                ));
+                out.push(choice(
+                    "",
+                    pick(d.remember == Remember::SshConfig),
+                    "write address, port, username to ssh config",
+                    d.focus == LoginFocus::RememberSshConfig,
+                ));
+            }
+            out.push(Line::from(""));
+            out.push(choice(
+                "pubkey",
+                if d.pubkey { "[x]" } else { "[ ]" },
+                "register my public key on this host",
+                d.focus == LoginFocus::Pubkey,
+            ));
+            out.push(Line::from(""));
+            out.push(choice("", "", "[ login ]", d.focus == LoginFocus::Submit));
         }
         out.push(Line::from(""));
         for (cell, value) in rows {

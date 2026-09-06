@@ -22,10 +22,11 @@ use std::collections::HashSet;
 
 use crate::model::source::{ExecRunner, Runner};
 
-/// Runs `tailscale status --json` and returns the peer aliases it reports. An absent
-/// CLI, a stopped daemon, or a non-zero exit yields no aliases.
-pub async fn tailscale_aliases() -> Vec<String> {
-    status_aliases(&tailscale_bin()).await
+/// Runs `tailscale status --json` and returns the peers it reports, each with the
+/// tailnet address it answers on. An absent CLI, a stopped daemon, or a non-zero exit
+/// yields no peers.
+pub async fn tailscale_peers() -> Vec<(String, Option<String>)> {
+    status_peers(&tailscale_bin()).await
 }
 
 /// The provider itself, over a named binary. Every way the call can fail - the binary
@@ -33,12 +34,12 @@ pub async fn tailscale_aliases() -> Vec<String> {
 /// not the expected JSON - lands on the same empty list, so a machine without tailscale
 /// simply contributes no aliases. Runs over the async runner so the roster build stays
 /// off the single-threaded runtime.
-async fn status_aliases(bin: &str) -> Vec<String> {
+async fn status_peers(bin: &str) -> Vec<(String, Option<String>)> {
     match ExecRunner
         .run(bin, &["status".to_string(), "--json".to_string()])
         .await
     {
-        Ok(o) => parse_tailscale_status(&String::from_utf8_lossy(&o)),
+        Ok(o) => parse_tailscale_peers(&String::from_utf8_lossy(&o)),
         Err(_) => Vec::new(),
     }
 }
@@ -69,6 +70,23 @@ fn tailscale_bin() -> String {
 /// would only add a row that is guaranteed to fail; a peer that comes up appears on
 /// the next rescan.
 pub fn parse_tailscale_status(json: &str) -> Vec<String> {
+    parse_tailscale_peers(json)
+        .into_iter()
+        .map(|p| p.0)
+        .collect()
+}
+
+/// The peers of [`parse_tailscale_status`], each with the tailnet ADDRESS it answers on.
+///
+/// The address is carried because the label only resolves where the tailnet's DNS is in
+/// force. A machine whose resolver does not serve those names reaches nothing by label,
+/// and the address is the one value that still reaches the peer. It is offered as a
+/// default, never substituted for the label: the label is what the user recognises and
+/// what their `~/.ssh/config` names.
+///
+/// The first IPv4 is taken. A tailnet peer always has one, and it is the address a user
+/// reading the tailscale UI sees.
+pub fn parse_tailscale_peers(json: &str) -> Vec<(String, Option<String>)> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
         return Vec::new();
     };
@@ -79,7 +97,7 @@ pub fn parse_tailscale_status(json: &str) -> Vec<String> {
     let mut seen = HashSet::new();
     // The JSON object's iteration order is arbitrary, so sort by the resulting alias.
     // A host list that reshuffles between runs is a list the user cannot learn.
-    let mut aliases: Vec<String> = Vec::new();
+    let mut found: Vec<(String, Option<String>)> = Vec::new();
     for peer in peers.values() {
         if peer.get("Online").and_then(|o| o.as_bool()) != Some(true) {
             continue;
@@ -88,16 +106,28 @@ pub fn parse_tailscale_status(json: &str) -> Vec<String> {
             continue;
         };
         if let Some(alias) = dns_first_label(dns) {
-            aliases.push(alias);
+            found.push((alias, first_ipv4(peer)));
         }
     }
-    aliases.sort();
-    for alias in aliases {
-        if seen.insert(alias.clone()) {
-            out.push(alias);
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    for peer in found {
+        if seen.insert(peer.0.clone()) {
+            out.push(peer);
         }
     }
     out
+}
+
+/// The first IPv4 of a peer's tailnet addresses, or `None` when it reports none that
+/// parse. Anything that is not a plain IPv4 is refused so a malformed entry cannot
+/// become an ssh argument.
+fn first_ipv4(peer: &serde_json::Value) -> Option<String> {
+    peer.get("TailscaleIPs")?
+        .as_array()?
+        .iter()
+        .filter_map(|ip| ip.as_str())
+        .find(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+        .map(str::to_string)
 }
 
 /// The first DNS label of a `DNSName` (`jupiter00.tail1cbccc.ts.net.` -> `jupiter00`),
@@ -208,6 +238,36 @@ mod tests {
     }
 
     #[test]
+    fn peers_carry_the_first_ipv4_as_the_address() {
+        // The label only resolves where the tailnet's DNS is in force. The address is
+        // what still reaches the peer where it is not, so it rides alongside.
+        let json = r#"{"Peer":{"k":{"DNSName":"jupiter00.tail0.ts.net.","Online":true,
+            "TailscaleIPs":["fd7a:115c:a1e0::1","100.88.0.0"]}}}"#;
+        assert_eq!(
+            parse_tailscale_peers(json),
+            vec![("jupiter00".to_string(), Some("100.88.0.0".to_string()))]
+        );
+    }
+
+    #[test]
+    fn a_peer_with_no_usable_address_still_offers_its_label() {
+        // A missing or unparseable address costs the peer nothing: the label is what the
+        // roster names, and the address was only ever a default for the login pane.
+        for json in [
+            r#"{"Peer":{"k":{"DNSName":"jupiter00.tail0.ts.net.","Online":true}}}"#,
+            r#"{"Peer":{"k":{"DNSName":"jupiter00.tail0.ts.net.","Online":true,"TailscaleIPs":[]}}}"#,
+            r#"{"Peer":{"k":{"DNSName":"jupiter00.tail0.ts.net.","Online":true,
+                "TailscaleIPs":["not-an-address"]}}}"#,
+        ] {
+            assert_eq!(
+                parse_tailscale_peers(json),
+                vec![("jupiter00".to_string(), None)],
+                "the label survives: {json}"
+            );
+        }
+    }
+
+    #[test]
     fn the_dns_label_wins_over_hostname() {
         // A machine named in Korean still has an ASCII DNS label, and that label is
         // what resolves and what the user has in ssh config.
@@ -245,7 +305,7 @@ mod tests {
     async fn a_missing_cli_yields_nothing_rather_than_an_error() {
         // The provider is on by default, so a machine with no tailscale installed must
         // reach an empty list, never a spawn error that would fail the run.
-        assert!(status_aliases("xmux-no-such-tailscale-binary")
+        assert!(status_peers("xmux-no-such-tailscale-binary")
             .await
             .is_empty());
     }

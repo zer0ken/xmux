@@ -22,7 +22,7 @@ use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
 
 use crate::ui::ops::OpFollow;
-pub use crate::ui::ops::{run_op, run_unlock, OpResult, Ops};
+pub use crate::ui::ops::{run_login_follow_ups, run_op, OpResult, Ops};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const NAV_WIDTH: u16 = 48;
@@ -682,21 +682,15 @@ impl Switcher {
         }
     }
 
-    fn current_host_unreachable(&self) -> bool {
+    pub(super) fn current_host_unreachable(&self) -> bool {
         matches!(self.current_ref(), Some(RowRef::Host { unreachable, .. }) if *unreachable)
     }
 
-    /// True when the selected host answered the network but refused the credentials. Its
-    /// terminal-view panel carries the unlock input, so a keystroke typed while the
-    /// terminal view is focused edits that panel's fields rather than reaching a session.
-    pub(crate) fn current_host_locked(&self) -> bool {
-        matches!(self.current_ref(), Some(RowRef::Host { locked, .. }) if *locked)
-    }
-
-    /// True when the selected host is not a valid action target: it is unreachable
-    /// (dead) or locked (auth-failed). Creating under it is refused either way.
-    fn current_host_blocked(&self) -> bool {
-        self.current_host_unreachable() || self.current_host_locked()
+    /// True when the selected host failed in a way the user can answer from xmux. Its
+    /// terminal-view panel carries the login pane, so a keystroke typed while the
+    /// terminal view is focused drives that pane rather than reaching a session.
+    pub(crate) fn current_host_blocked(&self) -> bool {
+        matches!(self.current_ref(), Some(RowRef::Host { blocked, .. }) if *blocked)
     }
 
     /// Which host screen the terminal view shows in place of the grid, or `None` when it
@@ -715,14 +709,24 @@ impl Switcher {
         let Some(RowRef::Host {
             source,
             unreachable,
-            locked,
+            blocked,
             ..
         }) = self.current_ref()
         else {
             return None;
         };
-        if *locked {
-            return Some(ViewScreen::Locked);
+        if *blocked {
+            // Once the pane is submitted the view shows ssh itself: the form has nothing
+            // left to collect until that conversation ends, and what the user needs to see
+            // is the prompt they have to answer.
+            if state
+                .login_pty
+                .as_ref()
+                .is_some_and(|l| &l.source == source)
+            {
+                return None;
+            }
+            return Some(ViewScreen::Login);
         }
         if *unreachable {
             return Some(ViewScreen::Unreachable);

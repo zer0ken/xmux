@@ -92,15 +92,31 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
     })
 }
 
-/// True when `text` is ssh's canonical AUTH-failure line (`Permission denied (…`
-/// with the rejected-methods list), meaning the host was REACHED but refused the
-/// credentials: the locked state, distinct from unreachable. The `(` after
-/// "Permission denied" is ssh's own signature; a generic mux permission error or
-/// a reach failure ("Connection refused" / "Host key verification failed") does not
-/// carry it. Conservative on purpose: a false positive invites a password entry on
+/// True when `text` is a failure the user can answer FROM xmux, which is the state
+/// apart from unreachable. What the login pane collects decides the set: it takes the
+/// address, the port, and the username, so every failure those three values can fix
+/// belongs here.
+///
+/// Three of ssh's own canonical lines qualify. The auth failure carries `Permission
+/// denied (` with the rejected-methods list; the `(` is ssh's own mark, which a generic
+/// mux permission error does not have. The host-key failure says verification failed. A
+/// name that does not resolve is the third, because an address is exactly what the pane
+/// supplies.
+///
+/// Two failures deliberately stay unreachable. A machine that refused the connection,
+/// timed out, or had no route is down, and no value the pane holds reaches it. And
+/// output carrying ssh's changed-identification warning is not an answer the user gives
+/// here: a key that changed under a host is decided outside xmux.
+///
+/// Conservative on purpose. A false positive here invites the user to answer a prompt on
 /// a host that is merely down.
-pub(crate) fn is_locked(text: &str) -> bool {
+pub(crate) fn is_blocked(text: &str) -> bool {
+    if text.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
+        return false;
+    }
     text.contains("Permission denied (")
+        || text.contains("Host key verification failed.")
+        || text.contains("Could not resolve hostname")
 }
 
 /// The per-command budget [`ExecRunner`] applies to itself, so a command that never
@@ -1220,27 +1236,44 @@ Usage: zellij [OPTIONS]",
     }
 
     #[test]
-    fn is_locked_matches_only_the_ssh_auth_failure_signature() {
-        // The canonical ssh auth-failure line (locked), and the exact "(" after
-        // "Permission denied" that distinguishes it from a generic mux permission error.
-        assert!(is_locked(
-            "pwtest@127.0.0.1: Permission denied (publickey,password)."
+    fn is_blocked_covers_the_failures_the_login_pane_can_answer() {
+        for text in [
+            "pwtest@127.0.0.1: Permission denied (publickey,password).",
+            "command failed (exit 255): pwtest@127.0.0.1: Permission denied (publickey).",
+            "Permission denied (publickey,password,keyboard-interactive).",
+            "Host key verification failed.",
+            "command failed (exit 255): Host key verification failed.",
+            "ssh: Could not resolve hostname jupiter00: No address associated with hostname",
+        ] {
+            assert!(is_blocked(text), "the pane can answer this: {text}");
+        }
+    }
+
+    #[test]
+    fn is_blocked_leaves_a_machine_that_is_down_unreachable() {
+        // No value the pane holds reaches a machine that is not answering, and a generic
+        // mux error is not an ssh barrier at all.
+        for text in [
+            "ssh: connect to host 192.0.2.1 port 22: Connection timed out",
+            "ssh: connect to host prod port 22: Connection refused",
+            "ssh: connect to host prod port 22: No route to host",
+            "tmux: open /tmp/tmux-0/default: Permission denied",
+            "no server running on /tmp/tmux-1000/default",
+        ] {
+            assert!(!is_blocked(text), "not answerable here: {text}");
+        }
+    }
+
+    #[test]
+    fn is_blocked_refuses_a_changed_host_key() {
+        // A key that changed under a host is not an answer the user gives in xmux: ssh's
+        // own warning accompanies the same verification-failed line, and that warning is
+        // what keeps the host unreachable.
+        assert!(!is_blocked(
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
+             @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n\
+             Host key verification failed."
         ));
-        assert!(is_locked(
-            "command failed (exit 255): pwtest@127.0.0.1: Permission denied (publickey)."
-        ));
-        assert!(is_locked(
-            "Permission denied (publickey,password,keyboard-interactive)."
-        ));
-        // Reach failures and non-ssh permission errors are NOT locked.
-        assert!(!is_locked(
-            "ssh: connect to host 192.0.2.1 port 22: Connection timed out"
-        ));
-        assert!(!is_locked("Host key verification failed."));
-        assert!(!is_locked(
-            "tmux: open /tmp/tmux-0/default: Permission denied"
-        ));
-        assert!(!is_locked("no server running on /tmp/tmux-1000/default"));
     }
 
     #[test]

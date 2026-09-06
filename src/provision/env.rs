@@ -23,11 +23,6 @@ use tokio::sync::mpsc;
 const SCAN_CONCURRENCY: usize = 8;
 const SCAN_TIMEOUT: Duration = Duration::from_secs(6); // must exceed the ssh connect timeout (5s)
 const DETAIL_TIMEOUT: Duration = Duration::from_secs(6);
-/// The unlock's whole budget: ssh connect (5s) + host-key/password answering + a
-/// margin for a slow login prompt. Bounds the PTY exchange so it cannot hang the
-/// off-loop task that runs it.
-const UNLOCK_TIMEOUT_SECS: u64 = 20;
-
 /// Everything a config resolution decides about WHICH sources exist.
 ///
 /// One value because every field answers the same question from the same read of config
@@ -48,6 +43,11 @@ pub struct Roster {
     /// a host that fails is traceable to the thing that offered it. See
     /// [`crate::provision::roster::Provider`].
     pub roster_providers: HashMap<String, crate::provision::roster::Provider>,
+    /// The address a provider reported for a host, keyed by HOST name. Only a provider
+    /// that knows one contributes; an ssh-config alias has no address of its own. Read
+    /// only to be OFFERED: it seeds the login pane, because a host named by a label this
+    /// machine cannot resolve is reachable only by the address the provider knew.
+    pub host_addresses: HashMap<String, String>,
     /// The ssh-config host aliases this resolution offered (a config-assembly product).
     /// `Hosts::build` reruns `Config::host_specs` over these to seed the runtime host
     /// registry, so the registry is built from config, not by re-reading `sources`.
@@ -168,7 +168,7 @@ pub async fn resolve_roster(
     let (tailscale, wsl_distros, installed) = tokio::join!(
         async {
             if cfg.discovery.tailscale {
-                crate::provision::roster::tailscale_aliases().await
+                crate::provision::roster::tailscale_peers().await
             } else {
                 Vec::new()
             }
@@ -198,6 +198,11 @@ pub async fn resolve_roster(
             }
         },
     );
+    let host_addresses: HashMap<String, String> = tailscale
+        .iter()
+        .filter_map(|(alias, addr)| addr.clone().map(|a| (alias.clone(), a)))
+        .collect();
+    let tailscale: Vec<String> = tailscale.into_iter().map(|(alias, _)| alias).collect();
     let offered = crate::provision::roster::merge(&[
         (crate::provision::roster::Provider::SshConfig, ssh_aliases),
         (crate::provision::roster::Provider::Tailscale, tailscale),
@@ -223,6 +228,7 @@ pub async fn resolve_roster(
             ssh_aliases: aliases,
             wsl_distros,
             roster_providers,
+            host_addresses,
         },
         cfg_err,
     )
@@ -579,24 +585,110 @@ impl Ops for EnvOps {
         })
     }
 
-    async fn unlock(
+    fn login_argv(&self, source: &str, login: &crate::transport::Login) -> Option<Vec<String>> {
+        let src = self.source(source).ok()?;
+        src.host().transport.login_argv(login)
+    }
+
+    async fn login_follow_ups(
         &self,
         source: &str,
-        user: &str,
-        password: &str,
-    ) -> crate::link::unlock::UnlockOutcome {
+        login: &crate::transport::Login,
+        write_config: bool,
+        register_key: bool,
+    ) -> Vec<String> {
         let Ok(src) = self.source(source) else {
-            return crate::link::unlock::UnlockOutcome::Unavailable;
+            return vec![format!("{source} is gone")];
         };
-        let host = src.host();
-        crate::link::unlock::unlock_host(
-            &*host.transport,
-            user,
-            password,
-            std::time::Duration::from_secs(UNLOCK_TIMEOUT_SECS),
-        )
-        .await
+        let mut notes = Vec::new();
+        if write_config {
+            if let Err(e) = write_ssh_config_stanza(crate::session::machine_of(source), login) {
+                notes.push(format!("ssh config not written: {e}"));
+            }
+        }
+        if register_key {
+            if let Err(e) = register_public_key(&*src.host().transport).await {
+                notes.push(format!("public key not registered: {e}"));
+            }
+        }
+        notes
     }
+}
+
+/// Writes the xmux-managed stanza for `machine` into `~/.ssh/config`.
+///
+/// The file is rewritten whole, from the text just read, so a stanza the user edited
+/// between the read and the write is never resurrected from a stale copy. Only lines
+/// xmux marked as its own are replaced; everything else is carried across untouched.
+fn write_ssh_config_stanza(
+    machine: &str,
+    login: &crate::transport::Login,
+) -> Result<(), std::io::Error> {
+    let path = ssh_config_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let next = crate::provision::config::upsert_managed_stanza(&text, machine, login);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, next)
+}
+
+/// Appends this machine's public key to the remote's `authorized_keys`, generating a key
+/// pair first when there is none to send.
+///
+/// It runs over the transport's own argv, so it rides the ControlMaster the login just
+/// authenticated and asks for nothing. The remote command is idempotent: it adds the key
+/// only when the file does not already hold that exact line, so a second registration
+/// changes nothing.
+async fn register_public_key(
+    transport: &dyn crate::transport::Transport,
+) -> Result<(), std::io::Error> {
+    let key = public_key_line()?;
+    // Single-quoted for the remote shell, with the key's own quotes made impossible by
+    // the reject below, so nothing in it can end the quoting.
+    if key.contains('\'') || key.contains('\n') {
+        return Err(std::io::Error::other("the public key is not a plain line"));
+    }
+    let remote = format!(
+        "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; \
+         grep -qxF '{key}' ~/.ssh/authorized_keys || printf '%s\\n' '{key}' >> ~/.ssh/authorized_keys"
+    );
+    let (name, args) = transport.exec_argv(false, &[remote]);
+    match crate::model::source::Runner::run(&crate::model::source::ExecRunner, &name, &args).await {
+        Ok(_) => Ok(()),
+        Err(e) => Err(std::io::Error::other(e.to_string())),
+    }
+}
+
+/// This machine's public key line, generating an ed25519 pair when it has none.
+///
+/// The first existing public key wins, in the order ssh itself prefers, so a machine
+/// that already has a key registers THAT one rather than growing a second identity.
+fn public_key_line() -> Result<String, std::io::Error> {
+    // The home SSH itself reads `~` from, so the key xmux sends is the key ssh would
+    // offer. See `ssh_home`.
+    let dir = ssh_home().join(".ssh");
+    for name in ["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"] {
+        if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
+            let line = text.trim().to_string();
+            if !line.is_empty() {
+                return Ok(line);
+            }
+        }
+    }
+    std::fs::create_dir_all(&dir)?;
+    let key = dir.join("id_ed25519");
+    let status = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&key)
+        .stdin(std::process::Stdio::null())
+        .status()?;
+    if !status.success() {
+        return Err(std::io::Error::other("ssh-keygen failed"));
+    }
+    Ok(std::fs::read_to_string(key.with_extension("pub"))?
+        .trim()
+        .to_string())
 }
 
 #[cfg(test)]

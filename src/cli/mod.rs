@@ -251,7 +251,8 @@ async fn run_direct_attach(env: &Env, source: &str, session: &str) -> i32 {
 }
 
 /// Reports configuration health and per-source reachability. A diagnostic: a
-/// malformed config or an unreachable host is reported, not fatal.
+/// malformed config or a host that did not answer is reported, not fatal. A failure the
+/// user could answer from the app is reported as that, never as unreachable.
 async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
     println!("xmux doctor");
 
@@ -313,8 +314,15 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
         } else {
             format!(" ({})", s.binary)
         };
+        // A failure the user could answer inside the app is reported as such, in the
+        // word the app's own cards use. A diagnostic that called every failure
+        // unreachable would send the user hunting for a dead machine when the machine
+        // answered, or when the only thing missing was an address.
         match probe(s).await {
             Ok(n) => println!("  {label}{via}: ok, {n} session(s)"),
+            Err(e) if crate::mux::is_blocked(&e) => {
+                println!("  {label}{via}: LOGIN REQUIRED — {e}")
+            }
             Err(e) => println!("  {label}{via}: UNREACHABLE — {e}"),
         }
     }

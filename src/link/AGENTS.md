@@ -66,16 +66,29 @@ and the composed control argv.
   for as long as xmux runs, so a line per tick is a file filled by one silent host. The
   rule is a value the loop folds outcomes into, so it is tested rather than read out of a
   log file afterwards.
-- A remote host's REACHABILITY (connected, locked, or unreachable) is classified by a
+- A remote host's REACHABILITY (connected, blocked, or unreachable) is classified by a
   machine probe (`ssh <machine> true`) before any channel opens, not by the control
   reader. The reader's exit reason carries only a protocol `%error` (a "no sessions" /
   "no server" empty mux), so a reachable-but-empty host is told from one that answered;
   a control channel opens only for a machine already known to connect.
-- The unlock establishes the ONE authenticated master: a single PTY prompt-answer ssh
-  (`ControlMaster=yes` over the shared control socket) answers the host-key and password
-  prompts, and every later `BatchMode` channel reuses the socket it leaves. The secret
-  rides only the transient command and the PTY writer - never stored, logged, or
-  rendered - and its success signal is the child's zero exit.
+- The login establishes the ONE authenticated master: a single PTY ssh
+  (`ControlMaster=yes` over the shared control socket) carrying the submitted connection
+  values as `-o` overrides, and every later `BatchMode` channel reuses the socket it
+  leaves. The secret rides only the transient command and the PTY writer - never stored,
+  logged, or rendered.
+- The login is a CONVERSATION the user watches, not an exchange xmux has on their behalf.
+  Its PTY is on screen, its keys reach it, and what the pane already collected is typed
+  into it: the host-key question once, the password once and only if the pane carried
+  one. Every other prompt is left standing for the person looking at it, which is what
+  makes a second factor, a key passphrase, and a prompt in any language something to
+  answer rather than something to fail on.
+- Nothing decides a login failed from what it read. A wrong password only means ssh will
+  ask again, and the user answers that one better than a pattern can; the verdict is the
+  child's exit code. Recognised auth-failure text only names a failure the exit already
+  established.
+- The conversation runs on its own thread, because every part of it - opening the PTY,
+  spawning ssh, reading it - waits on something the single runtime thread must not wait
+  on, and the frames that make the login watchable are drawn on that thread.
 
 ## Common Pitfalls
 

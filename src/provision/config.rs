@@ -848,6 +848,92 @@ fn parse_class(p: &[char], c: char) -> Option<(bool, &[char])> {
 /// header (or EOF). Display text only — Match-resolved values (e.g. an exec-chosen
 /// HostName) are NOT computed; the literal config lines are shown. Empty when no
 /// block names the alias.
+/// The marker that opens a stanza xmux wrote, naming the host it is for.
+fn managed_marker(alias: &str) -> String {
+    format!("# xmux: {alias}")
+}
+
+/// `config_text` with the xmux-managed stanza for `alias` replaced by one naming
+/// `login`'s values, or added when there is none.
+///
+/// The stanza goes at the TOP of the file, because ssh keeps the FIRST value it obtains
+/// for a keyword: a stanza appended after one the user already wrote would be read and
+/// then ignored. It carries a marker naming its host, which is what makes a second write
+/// replace the first instead of stacking, and what tells a reader which lines are xmux's
+/// to delete.
+///
+/// Nothing the user wrote is touched. Only lines between a marker and the end of the
+/// stanza it opens are replaced, and a file that never held one is only prepended to.
+pub fn upsert_managed_stanza(
+    config_text: &str,
+    alias: &str,
+    login: &crate::transport::Login,
+) -> String {
+    let marker = managed_marker(alias);
+    let mut out = String::new();
+    out.push_str(&marker);
+    out.push('\n');
+    out.push_str(&format!("Host {alias}\n"));
+    if let Some(address) = &login.address {
+        out.push_str(&format!("    HostName {address}\n"));
+    }
+    if let Some(port) = login.port {
+        out.push_str(&format!("    Port {port}\n"));
+    }
+    if let Some(user) = &login.user {
+        out.push_str(&format!("    User {user}\n"));
+    }
+    out.push('\n');
+    out.push_str(strip_managed(config_text, &marker).trim_start_matches('\n'));
+    out
+}
+
+/// `config_text` without the stanza `marker` opens: the marker line, the `Host` line
+/// under it, and everything up to the next stanza header.
+fn strip_managed(config_text: &str, marker: &str) -> String {
+    let is_header = |l: &str| {
+        l.split_whitespace()
+            .next()
+            .is_some_and(|w| w.eq_ignore_ascii_case("Host") || w.eq_ignore_ascii_case("Match"))
+    };
+    let mut out: Vec<&str> = Vec::new();
+    let mut lines = config_text.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.trim() != marker {
+            out.push(line);
+            continue;
+        }
+        // The marker's own stanza header, then its body up to the next header.
+        if lines.peek().is_some_and(|l| is_header(l)) {
+            lines.next();
+        }
+        while lines.peek().is_some_and(|l| !is_header(l)) {
+            lines.next();
+        }
+    }
+    let mut s = out.join("\n");
+    if !s.is_empty() && !s.ends_with('\n') {
+        s.push('\n');
+    }
+    s
+}
+
+/// The `User` an `~/.ssh/config` stanza names for `alias`, or `None` when none does.
+///
+/// Read from the same stanza the host screen shows, which is the one whose header names
+/// the alias exactly. A stanza reached only through a pattern is not consulted, so a
+/// value this returns is one the user wrote against this host by name.
+pub fn stanza_user(config_text: &str, alias: &str) -> Option<String> {
+    host_stanza(config_text, alias).lines().find_map(|line| {
+        let mut it = line.split_whitespace();
+        let key = it.next()?;
+        if !key.eq_ignore_ascii_case("User") {
+            return None;
+        }
+        it.next().map(str::to_string)
+    })
+}
+
 pub fn host_stanza(config_text: &str, alias: &str) -> String {
     let is_header = |l: &str| {
         l.split_whitespace()
@@ -880,6 +966,81 @@ pub fn host_stanza(config_text: &str, alias: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn login(address: &str, port: u16, user: &str) -> crate::transport::Login {
+        crate::transport::Login {
+            address: Some(address.into()),
+            port: Some(port),
+            user: Some(user.into()),
+        }
+    }
+
+    #[test]
+    fn upsert_puts_the_managed_stanza_first_so_ssh_reads_it() {
+        // ssh keeps the FIRST value it obtains for a keyword, so a stanza appended after
+        // one the user wrote would be read and then ignored.
+        let text = "Host jupiter00\n    User someone\n";
+        let got = upsert_managed_stanza(text, "jupiter00", &login("100.88.0.0", 22, "hrlee"));
+        let first = got.lines().next().unwrap();
+        assert_eq!(first, "# xmux: jupiter00");
+        assert!(got.contains("    HostName 100.88.0.0"), "{got}");
+        assert!(got.contains("    User hrlee"), "{got}");
+        assert!(
+            got.contains("    User someone"),
+            "what the user wrote is untouched:\n{got}"
+        );
+    }
+
+    #[test]
+    fn upsert_replaces_its_own_stanza_rather_than_stacking() {
+        let once = upsert_managed_stanza("", "jupiter00", &login("100.88.0.0", 22, "hrlee"));
+        let twice = upsert_managed_stanza(&once, "jupiter00", &login("100.88.0.6", 2222, "bob"));
+        assert_eq!(
+            twice.matches("# xmux: jupiter00").count(),
+            1,
+            "one marker, not two:\n{twice}"
+        );
+        assert!(twice.contains("HostName 100.88.0.6"), "{twice}");
+        assert!(
+            !twice.contains("100.88.0.0"),
+            "the old values are gone:\n{twice}"
+        );
+        assert!(!twice.contains("User hrlee"), "{twice}");
+    }
+
+    #[test]
+    fn upsert_leaves_another_hosts_managed_stanza_alone() {
+        let a = upsert_managed_stanza("", "jupiter00", &login("100.88.0.0", 22, "hrlee"));
+        let b = upsert_managed_stanza(&a, "mars01", &login("100.77.0.1", 22, "hrlee"));
+        assert!(b.contains("# xmux: jupiter00"), "{b}");
+        assert!(b.contains("# xmux: mars01"), "{b}");
+        assert!(b.contains("HostName 100.88.0.0"), "{b}");
+        assert!(b.contains("HostName 100.77.0.1"), "{b}");
+    }
+
+    #[test]
+    fn upsert_writes_only_the_values_the_login_names() {
+        let got = upsert_managed_stanza(
+            "",
+            "prod",
+            &crate::transport::Login {
+                user: Some("hrlee".into()),
+                ..Default::default()
+            },
+        );
+        assert!(got.contains("    User hrlee"), "{got}");
+        assert!(!got.contains("HostName"), "{got}");
+        assert!(!got.contains("Port"), "{got}");
+    }
+
+    #[test]
+    fn stanza_user_reads_the_user_of_the_named_host() {
+        let text = "Host prod\n    User hrlee\n    Port 22\n\nHost other\n    User bob\n";
+        assert_eq!(stanza_user(text, "prod").as_deref(), Some("hrlee"));
+        assert_eq!(stanza_user(text, "other").as_deref(), Some("bob"));
+        assert_eq!(stanza_user(text, "absent"), None);
+        assert_eq!(stanza_user("Host prod\n    Port 22\n", "prod"), None);
+    }
     use crate::ui::switcher::NavPosition;
     use std::io::Write;
 

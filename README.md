@@ -135,10 +135,17 @@ when a host serves several and `prod` when it serves one. That name is what the
 nav shows; commands name a session by its source and its session separately (e.g.
 `switch prod api`). Remote hosts are
 probed after the app is up, so a discovered source appears as its host answers.
-A remote host that answers the network but refuses your credentials shows
-`locked` (a `?` mark). Focus its panel in the terminal view and type the
-username and the masked password into it; xmux establishes one authenticated
-connection the rest of the session reuses, and re-probes just that host.
+A remote host xmux could not reach with the values ssh works out on its own shows
+`login required` (a `?` mark). Focus its panel in the terminal view: it holds the
+address, the port and the username ssh will not ask you for, each starting at what
+ssh would have used, plus an optional masked password. Submitting runs ssh in that
+panel and shows it: the host-key question and the password are answered from what
+you filled in, and any other prompt - a second factor, a key passphrase - waits for
+you to type it. Esc ends the attempt. A connection that works establishes the one
+authenticated connection the rest of the session reuses, and re-probes just that
+host. Two checkboxes decide what happens afterwards: recording the values as an
+`~/.ssh/config` stanza, and registering your public key on the host so it stops
+asking for a password.
 
 ## Configuration
 

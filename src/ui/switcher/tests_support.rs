@@ -16,12 +16,16 @@ impl Ops for NoopOps {
     async fn new_session(&self, _source: &str, _name: &str) -> anyhow::Result<Session> {
         unreachable!("noop_ops is only constructed, never called")
     }
-    async fn unlock(
+    fn login_argv(&self, _source: &str, _login: &crate::transport::Login) -> Option<Vec<String>> {
+        unreachable!("noop_ops is only constructed, never called")
+    }
+    async fn login_follow_ups(
         &self,
         _source: &str,
-        _user: &str,
-        _password: &str,
-    ) -> crate::link::unlock::UnlockOutcome {
+        _login: &crate::transport::Login,
+        _write_config: bool,
+        _register_key: bool,
+    ) -> Vec<String> {
         unreachable!("noop_ops is only constructed, never called")
     }
 }

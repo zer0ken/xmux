@@ -27,6 +27,7 @@ impl Runtime {
             probe_gate,
             ops,
             op_tx,
+            driver_pty_tx,
             nav_width_natural,
             nav_position,
             auto_hide_nav,
@@ -85,7 +86,7 @@ impl Runtime {
             nav_width_natural,
             auto_hide_nav,
             &env.xmux_dir,
-            (&*ops, &*op_tx),
+            (&*ops, &*op_tx, &*driver_pty_tx),
         );
         quit |= cmd_quit;
         if cmd_width_changed {
@@ -559,16 +560,29 @@ impl Runtime {
             // TermInput intercepts the prefix (→ nav / quit / help / resize / literal).
             for action in self.term_input.feed(&non_mouse, self.nav_position) {
                 match action {
-                    // A LOCKED host has no PTY: its panel in the terminal view owns the
-                    // keys. Route them to the unlock draft (edit the user/password field,
-                    // or submit on Enter) instead of a session. Otherwise forward to the
+                    // A BLOCKED host has no PTY: its login pane in the terminal view owns the
+                    // keys. Route them to that pane (edit a field, walk the stops, or submit
+                    // on Enter) instead of a session. Otherwise forward to the
                     // VISIBLE session (`displayed`), not the selection: until a new session
                     // is ready the prior one is on screen, so input must reach what the user
                     // actually sees (no blind typing).
                     Action::Forward(f) => {
-                        if self.switcher.current_host_locked() {
+                        if let Some(login) = self.state.login_pty.as_ref().filter(|l| {
+                            self.switcher.current_source().as_deref() == Some(&l.source)
+                        }) {
+                            // A lone Esc ends the conversation; ssh has no use for it, and
+                            // a user who cannot answer a prompt needs a way back to the
+                            // form. Everything else is ssh's, including the Ctrl-C that
+                            // would end it the other way.
+                            if f.as_slice() == b"\x1b" {
+                                login.cancel();
+                            } else {
+                                login.input(f);
+                            }
+                            *dirty = true;
+                        } else if self.switcher.current_host_blocked() {
                             if let Some(source) = self.switcher.current_source() {
-                                if let Some(cmd) = self.state.feed_unlock(&source, &f) {
+                                if let Some(cmd) = self.state.feed_login(&source, &f) {
                                     let (cq, cwc) = dispatch_commands(
                                         vec![cmd],
                                         &mut self.switcher,
@@ -576,7 +590,7 @@ impl Runtime {
                                         &mut self.nav_width_natural,
                                         &mut self.auto_hide_nav,
                                         &self.env.xmux_dir,
-                                        (&self.ops, &self.op_tx),
+                                        (&self.ops, &self.op_tx, &self.driver_pty_tx),
                                     );
                                     *quit |= cq;
                                     if cwc {
@@ -639,7 +653,7 @@ impl Runtime {
                             &mut self.nav_width_natural,
                             &mut self.auto_hide_nav,
                             &self.env.xmux_dir,
-                            (&self.ops, &self.op_tx),
+                            (&self.ops, &self.op_tx, &self.driver_pty_tx),
                         );
                         *quit |= cq;
                         if cwc {

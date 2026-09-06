@@ -143,8 +143,11 @@ impl Switcher {
     pub(super) fn open_new(&mut self, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         self.dismiss_modals(state);
-        if self.current_host_blocked() {
-            state.flash("host locked or unreachable, cannot create here");
+        // A blocked host is unreachable too (its failure is one of unreachable's), so
+        // the one check covers both: nothing can be created over a connection that is
+        // not up.
+        if self.current_host_unreachable() {
+            state.flash("host unreachable, cannot create here");
             return;
         }
         let Some(source) = self.current_source() else {
@@ -435,25 +438,36 @@ impl Switcher {
             // A successful unlock established the authenticated ControlMaster: only THIS
             // machine's reach changed, so the app re-probes just it (never the roster).
             // Any failure stays locked and flashes why; the user retypes the password.
-            OpFollow::UnlockResult { source, outcome } => match outcome {
-                crate::link::unlock::UnlockOutcome::Ok => Some(source),
-                crate::link::unlock::UnlockOutcome::AuthFailed => {
-                    state.flash("authentication failed");
-                    None
+            OpFollow::LoginResult { source, outcome } => {
+                // What the checkboxes could not do is said even when the connection
+                // worked: a step that failed silently would leave the user believing it
+                // ran.
+                if !outcome.notes.is_empty() {
+                    state.flash(outcome.notes.join("; "));
                 }
-                crate::link::unlock::UnlockOutcome::Timeout => {
-                    state.flash("unlock timed out");
-                    None
+                match outcome.connect {
+                    crate::link::unlock::UnlockOutcome::Ok => Some(source),
+                    crate::link::unlock::UnlockOutcome::AuthFailed => {
+                        state.flash("authentication failed");
+                        None
+                    }
+                    crate::link::unlock::UnlockOutcome::Timeout => {
+                        state.flash("login timed out");
+                        None
+                    }
+                    // The user ended it themselves, so they know why it is over and the
+                    // pane they are looking at is the answer.
+                    crate::link::unlock::UnlockOutcome::Cancelled => None,
+                    crate::link::unlock::UnlockOutcome::Unavailable => {
+                        state.flash("login unavailable on this platform");
+                        None
+                    }
+                    crate::link::unlock::UnlockOutcome::Failed(msg) => {
+                        state.flash(format!("login failed: {msg}"));
+                        None
+                    }
                 }
-                crate::link::unlock::UnlockOutcome::Unavailable => {
-                    state.flash("unlock unavailable on this platform");
-                    None
-                }
-                crate::link::unlock::UnlockOutcome::Failed(msg) => {
-                    state.flash(format!("unlock failed: {msg}"));
-                    None
-                }
-            },
+            }
         }
     }
 

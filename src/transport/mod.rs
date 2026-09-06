@@ -13,7 +13,7 @@ pub mod vocab;
 pub mod wsl;
 
 pub use local::Local;
-pub use ssh::Ssh;
+pub use ssh::{Login, Ssh};
 pub use wsl::Wsl;
 
 /// The machine boundary: turns a full mux argv (`argv[0]` = the mux binary) into a
@@ -74,10 +74,11 @@ pub trait Transport: Send + Sync {
         None
     }
 
-    /// The argv that establishes a password-authenticated ControlMaster for this
-    /// machine (the unlock), or `None` when the machine has no reusable master (a
-    /// local/WSL machine with no password, or Windows ssh without ControlMaster).
-    fn unlock_argv(&self, _user: &str) -> Option<Vec<String>> {
+    /// The argv that opens an INTERACTIVE connection which leaves an authenticated
+    /// ControlMaster behind (the login), or `None` when the machine has no reusable
+    /// master (a local/WSL machine with nothing to authenticate, or Windows ssh without
+    /// ControlMaster). `login` carries the values the user is submitting.
+    fn login_argv(&self, _login: &Login) -> Option<Vec<String>> {
         None
     }
 
@@ -123,8 +124,8 @@ impl Transport for Box<dyn Transport> {
     fn raw_shell_argv(&self, remote_cmd: &str) -> Option<Vec<String>> {
         (**self).raw_shell_argv(remote_cmd)
     }
-    fn unlock_argv(&self, user: &str) -> Option<Vec<String>> {
-        (**self).unlock_argv(user)
+    fn login_argv(&self, login: &Login) -> Option<Vec<String>> {
+        (**self).login_argv(login)
     }
     fn clone_box(&self) -> Box<dyn Transport> {
         (**self).clone_box()
@@ -300,6 +301,7 @@ pub fn ssh(alias: String, control_path: String, os: String) -> Box<dyn Transport
         alias,
         control_path,
         os,
+        login: Login::default(),
     })
 }
 
@@ -311,6 +313,7 @@ pub fn ssh_as(id: String, alias: String, control_path: String, os: String) -> Bo
         alias,
         control_path,
         os,
+        login: Login::default(),
     })
 }
 

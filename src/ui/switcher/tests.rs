@@ -14,7 +14,7 @@ use super::tests_support::auto_nav;
 #[derive(Default)]
 struct RecordOps {
     created: Mutex<Vec<String>>,
-    unlocked: Mutex<Vec<String>>,
+    logged_in: Mutex<Vec<String>>,
 }
 
 #[async_trait::async_trait]
@@ -37,14 +37,20 @@ impl Ops for RecordOps {
             ..Default::default()
         })
     }
-    async fn unlock(
+    fn login_argv(&self, source: &str, _login: &crate::transport::Login) -> Option<Vec<String>> {
+        self.logged_in.lock().unwrap().push(source.to_string());
+        // A child that exits 0 at once: the conversation this stands in for is one that
+        // needed nothing typed.
+        Some(vec!["true".to_string()])
+    }
+    async fn login_follow_ups(
         &self,
-        source: &str,
-        _user: &str,
-        _password: &str,
-    ) -> crate::link::unlock::UnlockOutcome {
-        self.unlocked.lock().unwrap().push(source.to_string());
-        crate::link::unlock::UnlockOutcome::Ok
+        _source: &str,
+        _login: &crate::transport::Login,
+        _write_config: bool,
+        _register_key: bool,
+    ) -> Vec<String> {
+        Vec::new()
     }
 }
 
@@ -1052,17 +1058,16 @@ async fn a_locked_host_card_reads_locked_with_the_lock_mark() {
     let tree = h.nav_text();
     assert!(
         tree.lines()
-            .any(|l| l.contains("prod") && l.contains(crate::ui::chrome::LOCK_MARK)),
+            .any(|l| l.contains("prod") && l.contains(crate::ui::chrome::BLOCK_MARK)),
         "the locked host row carries the lock mark:\n{tree}"
     );
 }
 
 #[tokio::test]
-async fn locked_host_panel_draws_the_unlock_fields_masked() {
-    // The unlock is a feature of the locked panel in the terminal view, not a modal: the
-    // username and masked password sit in the panel, driven from `State::unlock`. The
-    // panel renders the id in the clear and the password as bullets, and no plaintext
-    // reaches the frame.
+async fn login_pane_draws_its_fields_with_the_password_masked() {
+    // The login pane is a feature of the terminal view, not a modal: the connection
+    // values sit in the panel, driven from `State::login`. It renders them in the clear
+    // and the password as bullets, and no plaintext reaches the frame.
     let mut h = Harness::from_sources(&["pwbox"]);
     h.sw.apply_source_result(
         "pwbox".into(),
@@ -1070,21 +1075,24 @@ async fn locked_host_panel_draws_the_unlock_fields_masked() {
         Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
-    h.state.unlock = Some(crate::state::UnlockDraft {
+    h.state.login = Some(crate::state::LoginDraft {
         source: "pwbox".into(),
-        user: "alice".into(),
+        address: "100.88.0.0".into(),
+        port: "22".into(),
+        username: "alice".into(),
         password: "hunter2".into(),
-        field: crate::state::UnlockField::Password,
+        focus: crate::state::LoginFocus::Password,
+        ..Default::default()
     });
     h.draw();
     let screen = h.text();
     assert!(
         h.state.modal.is_none(),
-        "the unlock is not a modal:\n{screen}"
+        "the login pane is not a modal:\n{screen}"
     );
     assert!(
-        screen.contains("alice"),
-        "the panel shows the entered id:\n{screen}"
+        screen.contains("alice") && screen.contains("100.88.0.0"),
+        "the pane shows the entered values:\n{screen}"
     );
     assert!(screen.contains('•'), "the password draws masked:\n{screen}");
     assert!(
@@ -1094,7 +1102,142 @@ async fn locked_host_panel_draws_the_unlock_fields_masked() {
 }
 
 #[tokio::test]
-async fn unlock_success_reprobes_only_that_machine_and_a_failure_keeps_it_locked() {
+async fn login_pane_marks_required_fields_and_hints_the_optional_one() {
+    // A field carries its own emptiness: a required one is marked in its label, and the
+    // optional one says so in the space its value would occupy.
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.draw();
+    let screen = h.text();
+    for required in ["address*", "port*", "username*"] {
+        assert!(screen.contains(required), "{required} is marked:\n{screen}");
+    }
+    assert!(
+        screen.contains("password") && !screen.contains("password*"),
+        "the optional field carries no mark:\n{screen}"
+    );
+    assert!(
+        screen.contains("optional"),
+        "an empty optional field says so:\n{screen}"
+    );
+}
+
+#[tokio::test]
+async fn login_pane_offers_the_remember_choice_only_after_a_value_changes() {
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.draw();
+    assert!(
+        !h.text().contains("write address, port, username"),
+        "nothing to record yet:\n{}",
+        h.text()
+    );
+    h.state.feed_login("pwbox", b"x");
+    h.draw();
+    assert!(
+        h.text()
+            .contains("write address, port, username to ssh config"),
+        "an edited value is worth recording:\n{}",
+        h.text()
+    );
+}
+
+#[tokio::test]
+async fn a_running_login_puts_ssh_on_screen_in_place_of_the_form() {
+    // Submitting the pane starts a real ssh, and that ssh is what the view shows: the
+    // form has nothing left to collect, and the prompt the user must answer is ssh's own.
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.state.login = Some(crate::state::LoginDraft {
+        source: "pwbox".into(),
+        address: "100.88.0.0".into(),
+        port: "22".into(),
+        username: "alice".into(),
+        ..Default::default()
+    });
+    h.draw();
+    assert!(
+        h.text().contains("username"),
+        "the form is on screen before the login runs:\n{}",
+        h.text()
+    );
+
+    h.state.login_pty = Some(crate::link::unlock::RunningLogin::parked("pwbox"));
+    h.draw();
+    let screen = h.text();
+    assert!(
+        !screen.contains("username") && !screen.contains("100.88.0.0"),
+        "the form gives the view up to ssh while the login runs:\n{screen}"
+    );
+
+    // A login running for a DIFFERENT host is not this pane's: the form stays.
+    h.state.login_pty = Some(crate::link::unlock::RunningLogin::parked("elsewhere"));
+    h.draw();
+    assert!(
+        h.text().contains("username"),
+        "another host's login leaves this pane alone:\n{}",
+        h.text()
+    );
+}
+
+#[tokio::test]
+async fn the_verdict_takes_the_login_screen_down() {
+    // However the conversation ended, it is over: the PTY goes with it and the pane comes
+    // back holding what was typed, so a failure is retried rather than retyped.
+    use crate::link::unlock::UnlockOutcome;
+    use crate::ui::ops::OpResult;
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.state.login = Some(crate::state::LoginDraft {
+        source: "pwbox".into(),
+        username: "alice".into(),
+        ..Default::default()
+    });
+    h.state.login_pty = Some(crate::link::unlock::RunningLogin::parked("pwbox"));
+    h.sw.apply_op_result(
+        OpResult::Login {
+            source: "pwbox".into(),
+            outcome: crate::ui::ops::LoginOutcome {
+                connect: UnlockOutcome::AuthFailed,
+                notes: Vec::new(),
+            },
+        },
+        &mut h.state,
+    );
+    assert!(
+        h.state.login_pty.is_none(),
+        "the login screen is gone once the verdict is in"
+    );
+    h.draw();
+    assert!(
+        h.text().contains("alice"),
+        "the pane comes back holding what was typed:\n{}",
+        h.text()
+    );
+}
+
+#[tokio::test]
+async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked() {
     use crate::link::unlock::UnlockOutcome;
     use crate::ui::ops::OpResult;
     let mut h = Harness::from_sources(&["pwbox"]);
@@ -1112,9 +1255,12 @@ async fn unlock_success_reprobes_only_that_machine_and_a_failure_keeps_it_locked
     // machine (its reach changed locked→connected), and it does NOT arm a whole-roster
     // re-scan - that would re-probe every host for one that changed.
     let reprobe = h.sw.apply_op_result(
-        OpResult::Unlock {
+        OpResult::Login {
             source: "pwbox".into(),
-            outcome: UnlockOutcome::Ok,
+            outcome: crate::ui::ops::LoginOutcome {
+                connect: UnlockOutcome::Ok,
+                notes: Vec::new(),
+            },
         },
         &mut h.state,
     );
@@ -1135,15 +1281,18 @@ async fn unlock_success_reprobes_only_that_machine_and_a_failure_keeps_it_locked
         &mut h.state,
     );
     let reprobe = h.sw.apply_op_result(
-        OpResult::Unlock {
+        OpResult::Login {
             source: "pwbox".into(),
-            outcome: UnlockOutcome::AuthFailed,
+            outcome: crate::ui::ops::LoginOutcome {
+                connect: UnlockOutcome::AuthFailed,
+                notes: Vec::new(),
+            },
         },
         &mut h.state,
     );
     assert_eq!(reprobe, None, "a failure re-probes nothing");
     assert!(
-        h.sw.current_host_locked(),
+        h.sw.current_host_blocked(),
         "auth failure keeps the card locked"
     );
 }
