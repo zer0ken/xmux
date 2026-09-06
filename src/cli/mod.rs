@@ -308,17 +308,28 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
         let kind = crate::mux::for_binary(&s.binary)
             .map(|m| m.kind().to_string())
             .unwrap_or_else(|| s.binary.clone());
-        let label = crate::session::source_label(crate::session::machine_of(&s.alias), &kind);
         let via = if s.binary == kind {
             String::new()
         } else {
             format!(" ({})", s.binary)
         };
+        // The probe runs BEFORE the label is written, because whether it answered is what
+        // decides whether the label may name a mux at all: a source that answered
+        // enumerated through the one it names, and one that did not is read as its host.
+        let outcome = probe(s).await;
+        let label = {
+            let mux = if crate::session::mux_may_be_named(&s.alias, outcome.is_ok()) {
+                kind.as_str()
+            } else {
+                ""
+            };
+            crate::session::source_label(crate::session::machine_of(&s.alias), mux)
+        };
         // A failure the user could answer inside the app is reported as such, in the
         // word the app's own cards use. A diagnostic that called every failure
         // unreachable would send the user hunting for a dead machine when the machine
         // answered, or when the only thing missing was an address.
-        match probe(s).await {
+        match outcome {
             Ok(n) => println!("  {label}{via}: ok, {n} session(s)"),
             Err(e) if crate::mux::is_blocked(&e) => {
                 println!("  {label}{via}: LOGIN REQUIRED — {e}")

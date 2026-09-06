@@ -587,6 +587,18 @@ impl Chrome {
         crate::session::source_label(crate::session::machine_of(source), self.source_mux(source))
     }
 
+    /// The same label, for a surface that knows whether the host ANSWERED. A mux no
+    /// answer confirmed is left off, so the label never puts a guess where every other
+    /// one carries a fact.
+    pub(crate) fn source_label_when(&self, source: &str, answered: bool) -> String {
+        let mux = if crate::session::mux_may_be_named(source, answered) {
+            self.source_mux(source)
+        } else {
+            ""
+        };
+        crate::session::source_label(crate::session::machine_of(source), mux)
+    }
+
     pub(crate) fn set_source_reach(&mut self, reach: HashMap<String, SourceReach>) {
         self.source_reach = reach;
     }
@@ -743,8 +755,12 @@ impl Chrome {
                     )
                 }
             }
+            // An EMPTY host answered - it has no session, which is itself an answer
+            // through its mux - so its screen names the pair. The two failure states
+            // answered nothing, so theirs reads the host alone unless the id names the
+            // mux, which is the name the user types for it.
             ViewScreen::Unreachable | ViewScreen::Login | ViewScreen::Empty => {
-                self.source_label(&address.source)
+                self.source_label_when(&address.source, matches!(kind, ViewScreen::Empty))
             }
         }
     }
