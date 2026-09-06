@@ -300,6 +300,19 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
         println!("ssh: NOT FOUND on PATH — remote sources unavailable");
     }
 
+    // Where the neighbour provider found nothing, the reason is in the OS rather than in
+    // the network: a record it will not hand over reads exactly like a record with
+    // nothing in it, and only this line tells the two apart.
+    let report = crate::provision::neighbor::source_report().await;
+    println!(
+        "neighbours: {}",
+        report
+            .iter()
+            .map(|(what, said)| format!("{what} {said}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
     println!("sources:");
     for s in &env.source_list() {
         // The pair reads as one label, the way every surface shows it. The binary follows

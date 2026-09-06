@@ -25,10 +25,21 @@ sources exist.
 - Roster answers only "which hosts does xmux offer", from one or more providers
   that each yield plain ssh target names.
 - The neighbour provider answers "which machines does this OS already reach in one hop",
-  from the OS's own network state rather than any VPN's client: a route to a single
-  address, and the neighbour table. It narrows what those give - an entry naming no
+  from the OS's own network state rather than any VPN's client: the routes to single
+  addresses, and the neighbour table. It narrows what those give - an entry naming no
   machine, a hardware address answering for many addresses - then keeps only what
   answers ssh, and names the survivors through the system resolver.
+- On Linux and Android those two records are read straight from the kernel over netlink;
+  every other OS is asked through a command. The netlink socket is never bound: an app on
+  Android may not bind one, and a dump does not need it, which is why `ip` fails there on
+  every subcommand while these dumps answer.
+- A record the OS REFUSES is not a record that is empty. Android denies the neighbour
+  table and allows the routing table, so the refusal is carried rather than flattened:
+  where the neighbour table is refused, the link this machine holds an address in is
+  asked address by address instead, and `doctor` says which record was refused.
+- A route names a machine when it names few enough addresses to be machines. A VPN that
+  summarises its peers hands the OS one route for two of them, so a block of up to eight
+  is read as its addresses; a wider one is a network and contributes nothing.
 - Discovery probes every source concurrently, isolating each so one unreachable
   mux never fails the rest, with bounded concurrency, a per-source timeout, and
   order-preserving results.

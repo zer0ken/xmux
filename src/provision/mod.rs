@@ -8,4 +8,8 @@ pub mod config;
 pub mod discovery;
 pub mod env;
 pub mod neighbor;
+// Linux and Android keep the network state behind netlink, and Android allows nothing
+// else; every other OS is served by the commands in `neighbor`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub mod netlink;
 pub mod roster;
