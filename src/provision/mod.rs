@@ -7,6 +7,7 @@
 pub mod config;
 pub mod discovery;
 pub mod env;
+pub mod mdns;
 pub mod neighbor;
 // Linux and Android keep the network state behind netlink, and Android allows nothing
 // else; every other OS is served by the commands in `neighbor`.

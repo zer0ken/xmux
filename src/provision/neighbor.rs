@@ -16,9 +16,13 @@
 //! lookup names nothing, and one hardware address answering for many addresses is a
 //! router speaking for a whole subnet rather than a machine of its own. Then every
 //! surviving address is asked whether it answers ssh, because a printer on the same
-//! switch is a neighbour and not a host. What answers is named through the system
-//! resolver, which is where a tunnel's own naming already lives, and keeps its address
-//! as the name when nothing answers for it.
+//! switch is a neighbour and not a host.
+//!
+//! What answers is then named. The system resolver is asked first, since that is where a
+//! tunnel's own naming already lives; a machine no resolver knows is asked for its own
+//! name, which it answers over mDNS whether or not anyone registered it anywhere. A name
+//! is used only when this machine can resolve it back, because the name is also what ssh
+//! is given, and an address that works beats a name that does not.
 //!
 //! Reading the OS rather than a vendor CLI is what makes this one provider instead of
 //! one per network: a tailnet peer, a WireGuard peer, and the machine on the next desk
@@ -497,7 +501,7 @@ async fn reverse_names(ips: &[Ipv4Addr]) -> HashMap<Ipv4Addr, String> {
         .copied()
         // A resolver call waits on a network answer, so it goes to the blocking pool
         // rather than the thread drawing frames. They wait together, not in turn.
-        .map(|ip| tokio::task::spawn_blocking(move || (ip, reverse_name(ip))))
+        .map(|ip| tokio::task::spawn_blocking(move || (ip, name_of(ip))))
         .collect();
     let mut map = HashMap::new();
     for lookup in lookups {
@@ -506,6 +510,48 @@ async fn reverse_names(ips: &[Ipv4Addr]) -> HashMap<Ipv4Addr, String> {
         }
     }
     map
+}
+
+/// What one address is called, or `None` when nothing anywhere calls it anything.
+///
+/// The resolver is asked first: a name someone registered is the name the whole network
+/// agrees on, and a tunnel registers one for every peer it manages. A machine nobody
+/// registered still knows what it calls itself, so it is asked directly - which is the
+/// only way a card for the machine on the next desk carries a name before anyone has
+/// logged in to it.
+fn name_of(ip: Ipv4Addr) -> Option<String> {
+    let found = reverse_name(ip).or_else(|| super::mdns::own_name(ip))?;
+    usable_name(&found, resolvable)
+}
+
+/// The shortest form of `full` this machine can still resolve, or `None` when it can
+/// resolve neither form.
+///
+/// A name is what the card shows AND what ssh is given, so a name this machine cannot
+/// resolve is worse than no name: the address it came from always works. The bare label
+/// is preferred, because that is what a person calls the machine and one machine reached
+/// at several addresses answers to it at all of them; the full name is what saves a label
+/// that means nothing outside its own domain, which is every name a responder gives for
+/// itself.
+fn usable_name(full: &str, resolves: impl Fn(&str) -> bool) -> Option<String> {
+    if let Some(label) = dns_label(full) {
+        if resolves(&label) {
+            return Some(label);
+        }
+    }
+    let full = full.trim().trim_end_matches('.').to_lowercase();
+    resolves(&full).then_some(full)
+}
+
+/// Whether this machine can turn `name` into an address at all. The system resolver
+/// answers, so every way this machine has of resolving a name counts: a search domain, a
+/// tunnel's own zone, an mDNS responder behind the C library.
+fn resolvable(name: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    (name, 22u16)
+        .to_socket_addrs()
+        .map(|mut found| found.next().is_some())
+        .unwrap_or(false)
 }
 
 /// What the system resolver calls one address, or `None` when it names it nothing.
@@ -544,7 +590,7 @@ fn reverse_name(ip: Ipv4Addr) -> Option<String> {
     let name = unsafe { std::ffi::CStr::from_ptr(host.as_ptr()) }
         .to_str()
         .ok()?;
-    dns_label(name)
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Windows asks its DNS client, which is where a VPN installs the policy for its own
@@ -552,17 +598,49 @@ fn reverse_name(ip: Ipv4Addr) -> Option<String> {
 /// list goes in one call.
 #[cfg(windows)]
 fn reverse_name(ip: Ipv4Addr) -> Option<String> {
-    let out = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!(
-                "$n = Resolve-DnsName -Type PTR -ErrorAction SilentlyContinue {ip}; if ($n) {{ $n[0].NameHost }}"
-            ),
-        ])
-        .output()
-        .ok()?;
-    dns_label(String::from_utf8_lossy(&out.stdout).trim())
+    use windows_sys::Win32::Networking::WinSock::{
+        getnameinfo, WSAStartup, ADDRESS_FAMILY, AF_INET, NI_NAMEREQD, SOCKADDR, SOCKADDR_IN,
+        WSADATA,
+    };
+    // Winsock answers nothing until it has been started. The standard library starts it
+    // for the sockets IT opens, and this is not one of those, so it is started here -
+    // once, and harmlessly again if the library already did it.
+    static WINSOCK: std::sync::Once = std::sync::Once::new();
+    WINSOCK.call_once(|| {
+        // SAFETY: the call fills a structure this thread owns for the length of it.
+        unsafe {
+            let mut data: WSADATA = std::mem::zeroed();
+            WSAStartup(0x0202, &mut data);
+        }
+    });
+    // Long enough for any name a resolver may return (the traditional NI_MAXHOST).
+    let mut host = [0u8; 1025];
+    let mut sa: SOCKADDR_IN = unsafe { std::mem::zeroed() };
+    sa.sin_family = AF_INET as ADDRESS_FAMILY;
+    // Both are network byte order already: the octets as they travel, and `S_addr` as it
+    // is stored, so the bytes are moved and never swapped.
+    sa.sin_addr.S_un.S_addr = u32::from_ne_bytes(ip.octets());
+    // SAFETY: the address and the buffer both outlive the call, and each is passed with
+    // its own length.
+    let rc = unsafe {
+        getnameinfo(
+            std::ptr::addr_of!(sa) as *const SOCKADDR,
+            std::mem::size_of::<SOCKADDR_IN>() as i32,
+            host.as_mut_ptr(),
+            host.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            // A name or nothing: without this the call answers with the address itself,
+            // which would make every machine look named.
+            NI_NAMEREQD as i32,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    let end = host.iter().position(|&b| b == 0).unwrap_or(host.len());
+    let name = String::from_utf8_lossy(&host[..end]).into_owned();
+    (!name.is_empty()).then_some(name)
 }
 
 /// The first label of a name, when it is one a shell can be handed as an ssh target.
@@ -635,6 +713,37 @@ broadcast 143.248.140.255 dev eno1 table local proto kernel scope link src 143.2
         assert!(
             !got.iter().any(|a| a.octets()[..3] == [192, 168, 45]),
             "a /24 is a network, and asking every address in one is a scan: {got:?}"
+        );
+    }
+
+    /// A name is only worth showing if it also leads back to the machine. The bare label
+    /// is preferred, because that is what a person calls the machine, and the full name
+    /// is what saves a label that means something only inside its own domain.
+    #[test]
+    fn a_name_is_kept_only_where_this_machine_can_resolve_it() {
+        // A tunnel's own domain is searched here, so the label alone reaches the machine.
+        let searched = |name: &str| name == "mars01";
+        assert_eq!(
+            usable_name("mars01.tail1cbccc.ts.net.", searched).as_deref(),
+            Some("mars01")
+        );
+
+        // A responder's own name means nothing without its domain, so the full name is
+        // what the card carries and what ssh is given.
+        let mdns = |name: &str| name == "faizs-mac-mini.local";
+        assert_eq!(
+            usable_name("Faizs-Mac-Mini.local.", mdns).as_deref(),
+            Some("faizs-mac-mini.local")
+        );
+
+        // A name this machine cannot follow is worse than the address it came from.
+        assert_eq!(usable_name("dblab21.kaist.ac.kr", |_| false), None);
+
+        // The label wins even where the full name also resolves: one machine reached at
+        // several addresses must come back under ONE name, or it becomes two cards.
+        assert_eq!(
+            usable_name("jupiter06.tail1cbccc.ts.net", |_| true).as_deref(),
+            Some("jupiter06")
         );
     }
 
