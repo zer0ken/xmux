@@ -110,15 +110,28 @@ The roster assembles the machine candidates xmux offers as hosts. It gathers
 ssh target names from three providers:
 
 - `~/.ssh/config` aliases
-- online peers on this machine's tailnet
+- the machines this box already reaches in one hop and that answer ssh
 - this machine's WSL distributions
+
+The second provider reads the operating system's own network state, so it needs
+no VPN client installed and no account anywhere. Two records tell it who is
+directly reachable: the routing table, where a mesh VPN writes one route per
+peer, and the neighbour table (the ARP cache), which holds the machines on this
+link this box has actually exchanged frames with. Those addresses are narrowed
+twice. An entry that resolved to nothing, and one hardware address answering for
+many addresses (a router speaking for a subnet), name no machine. What is left is
+asked whether it answers ssh, because a printer on the same switch is a neighbour
+and not a host. Whatever answers is named through the system resolver, which is
+where a mesh VPN's own naming already lives, so a peer arrives under the name its
+network gave it and keeps its address as its name when nothing answers for it.
 
 Every provider yields ssh target names. Whichever provider suggested a name, the
 downstream behavior is the same; the suggesting provider is kept alongside the
 name and shown when the host becomes unreachable, so you can tell which provider
-to inspect or disable. When a provider's CLI is missing, its daemon is down, or
-its output cannot be parsed, the roster treats it as an empty list rather than
-an error, so one dead provider never hides the hosts the others suggest.
+to inspect or disable. When a provider's command is missing, the OS will not
+answer, or its output cannot be parsed, the roster treats it as an empty list
+rather than an error, so one dead provider never hides the hosts the others
+suggest.
 
 The roster decides which machines become hosts. A machine no provider names is
 a machine xmux has nothing to do with. `local`, this machine reached without

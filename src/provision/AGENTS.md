@@ -24,6 +24,11 @@ sources exist.
   produce the set of hosts and mux binaries to use.
 - Roster answers only "which hosts does xmux offer", from one or more providers
   that each yield plain ssh target names.
+- The neighbour provider answers "which machines does this OS already reach in one hop",
+  from the OS's own network state rather than any VPN's client: a route to a single
+  address, and the neighbour table. It narrows what those give - an entry naming no
+  machine, a hardware address answering for many addresses - then keeps only what
+  answers ssh, and names the survivors through the system resolver.
 - Discovery probes every source concurrently, isolating each so one unreachable
   mux never fails the rest, with bounded concurrency, a per-source timeout, and
   order-preserving results.
@@ -35,6 +40,11 @@ sources exist.
 - The roster is separate from the transport axis (how a command reaches a host)
   and from discovery (scanning a source for sessions).
 - A provider that cannot run yields an empty list rather than an error.
+- The roster names no vendor. A provider reads what the OS knows, so a network xmux has
+  never heard of is offered on the same terms as one it has, and installing or removing a
+  VPN's own tooling changes nothing about which machines appear.
+- This box is told from its neighbours by the connection, not by a list of its own
+  addresses: a connection whose two ends carry the same address reached here.
 - The resolved source list is the single answer threaded into both the source list
   and the runtime registry.
 

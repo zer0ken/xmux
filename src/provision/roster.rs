@@ -5,8 +5,8 @@
 //! ssh targets exist", from one or more providers.
 //!
 //! Every provider yields plain ssh target names, so nothing downstream BEHAVES
-//! differently for one: a tailnet peer becomes a `MachineKind::Ssh` exactly as an
-//! `~/.ssh/config` alias does. That is what keeps the providers additive - adding one
+//! differently for one: a machine the OS says is next door becomes a `MachineKind::Ssh`
+//! exactly as an `~/.ssh/config` alias does. That is what keeps the providers additive - adding one
 //! touches this module and the config, nothing downstream.
 //!
 //! Which provider offered a name is kept ALONGSIDE the name, never inside it, and is
@@ -14,140 +14,11 @@
 //! on the roster, so the user knows which provider to look at (or turn off) rather than
 //! hunting for a host they never wrote down.
 //!
-//! A provider that cannot run (the CLI is missing, the daemon is down, the output is
-//! unparseable) yields an empty list rather than an error. A host source going quiet
+//! A provider that cannot run (the command is missing, the OS will not answer, the
+//! output is unparseable) yields an empty list rather than an error. A host source going quiet
 //! must not stop xmux from offering the sources that did answer.
 
 use std::collections::HashSet;
-
-use crate::model::source::{ExecRunner, Runner};
-
-/// Runs `tailscale status --json` and returns the peers it reports, each with the
-/// tailnet address it answers on. An absent CLI, a stopped daemon, or a non-zero exit
-/// yields no peers.
-pub async fn tailscale_peers() -> Vec<(String, Option<String>)> {
-    status_peers(&tailscale_bin()).await
-}
-
-/// The provider itself, over a named binary. Every way the call can fail - the binary
-/// does not exist, it cannot be spawned, it exits non-zero, it prints something that is
-/// not the expected JSON - lands on the same empty list, so a machine without tailscale
-/// simply contributes no aliases. Runs over the async runner so the roster build stays
-/// off the single-threaded runtime.
-async fn status_peers(bin: &str) -> Vec<(String, Option<String>)> {
-    match ExecRunner
-        .run(bin, &["status".to_string(), "--json".to_string()])
-        .await
-    {
-        Ok(o) => parse_tailscale_peers(&String::from_utf8_lossy(&o)),
-        Err(_) => Vec::new(),
-    }
-}
-
-/// Where the tailscale CLI lives. On Windows the installer does not put it on PATH,
-/// so fall back to its fixed install location before giving up; elsewhere the bare
-/// name is right and PATH resolves it.
-fn tailscale_bin() -> String {
-    if cfg!(windows) {
-        let fixed = r"C:\Program Files\Tailscale\tailscale.exe";
-        if std::path::Path::new(fixed).exists() {
-            return fixed.to_string();
-        }
-    }
-    "tailscale".to_string()
-}
-
-/// Extracts the ssh targets from `tailscale status --json` output.
-///
-/// The alias is the FIRST LABEL OF `DNSName`, not `HostName`: tailscale derives the
-/// DNS label by lowercasing and stripping whatever the machine calls itself, so the
-/// label is the name that actually resolves, and it is the name a user already has in
-/// `~/.ssh/config`. `HostName` can be mixed case or non-ASCII (a machine named in
-/// Korean is a real case) and would not resolve as typed.
-///
-/// `Self` is skipped: this machine is the `local` source, reached without ssh.
-/// OFFLINE peers are skipped too. An offline peer cannot be scanned, so including it
-/// would only add a row that is guaranteed to fail; a peer that comes up appears on
-/// the next rescan.
-pub fn parse_tailscale_status(json: &str) -> Vec<String> {
-    parse_tailscale_peers(json)
-        .into_iter()
-        .map(|p| p.0)
-        .collect()
-}
-
-/// The peers of [`parse_tailscale_status`], each with the tailnet ADDRESS it answers on.
-///
-/// The address is carried because the label only resolves where the tailnet's DNS is in
-/// force. A machine whose resolver does not serve those names reaches nothing by label,
-/// and the address is the one value that still reaches the peer. It is offered as a
-/// default, never substituted for the label: the label is what the user recognises and
-/// what their `~/.ssh/config` names.
-///
-/// The first IPv4 is taken. A tailnet peer always has one, and it is the address a user
-/// reading the tailscale UI sees.
-pub fn parse_tailscale_peers(json: &str) -> Vec<(String, Option<String>)> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
-        return Vec::new();
-    };
-    let Some(peers) = v.get("Peer").and_then(|p| p.as_object()) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    // The JSON object's iteration order is arbitrary, so sort by the resulting alias.
-    // A host list that reshuffles between runs is a list the user cannot learn.
-    let mut found: Vec<(String, Option<String>)> = Vec::new();
-    for peer in peers.values() {
-        if peer.get("Online").and_then(|o| o.as_bool()) != Some(true) {
-            continue;
-        }
-        let Some(dns) = peer.get("DNSName").and_then(|d| d.as_str()) else {
-            continue;
-        };
-        if let Some(alias) = dns_first_label(dns) {
-            found.push((alias, first_ipv4(peer)));
-        }
-    }
-    found.sort_by(|a, b| a.0.cmp(&b.0));
-    for peer in found {
-        if seen.insert(peer.0.clone()) {
-            out.push(peer);
-        }
-    }
-    out
-}
-
-/// The first IPv4 of a peer's tailnet addresses, or `None` when it reports none that
-/// parse. Anything that is not a plain IPv4 is refused so a malformed entry cannot
-/// become an ssh argument.
-fn first_ipv4(peer: &serde_json::Value) -> Option<String> {
-    peer.get("TailscaleIPs")?
-        .as_array()?
-        .iter()
-        .filter_map(|ip| ip.as_str())
-        .find(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
-        .map(str::to_string)
-}
-
-/// The first DNS label of a `DNSName` (`jupiter00.tail1cbccc.ts.net.` -> `jupiter00`),
-/// or `None` when there is no usable label. Rejects anything that is not a plain DNS
-/// label so a malformed entry cannot become an ssh argument.
-fn dns_first_label(dns: &str) -> Option<String> {
-    // No leading-dot tolerance: stripping it would promote the tailnet suffix to a
-    // hostname (`.tail0.ts.net.` becoming `tail0`), which names no machine.
-    let label = dns.trim().split('.').next()?;
-    if label.is_empty() || label.len() > 63 {
-        return None;
-    }
-    if !label
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return None;
-    }
-    Some(label.to_ascii_lowercase())
-}
 
 /// Which provider put a host on the roster.
 ///
@@ -157,8 +28,9 @@ fn dns_first_label(dns: &str) -> Option<String> {
 pub enum Provider {
     /// A `Host` alias in `~/.ssh/config`.
     SshConfig,
-    /// An online peer of this machine's tailnet.
-    Tailscale,
+    /// A machine the OS already reaches in one hop: a peer of a tunnel this box is on,
+    /// or a machine on the same link, that answers ssh.
+    Neighbor,
     /// A WSL distribution `wsl.exe` listed on this machine.
     Wsl,
     /// No provider listed it: a `[[hosts]]` or `[[wsl]]` entry named it outright.
@@ -174,7 +46,7 @@ impl Provider {
     pub fn label(self) -> &'static str {
         match self {
             Provider::SshConfig => "ssh-config",
-            Provider::Tailscale => "tailscale",
+            Provider::Neighbor => "neighbors",
             Provider::Wsl => "wsl",
             Provider::Config => "config.toml",
             Provider::Local => "this box",
@@ -205,116 +77,11 @@ pub fn merge(lists: &[(Provider, Vec<String>)]) -> Vec<(String, Provider)> {
 mod tests {
     use super::*;
 
-    const STATUS: &str = r#"{
-      "Self": { "HostName": "my-laptop", "DNSName": "my-laptop.tail0.ts.net.", "Online": true },
-      "MagicDNSSuffix": "tail0.ts.net",
-      "Peer": {
-        "nodekey:aaa": { "HostName": "jupiter00", "DNSName": "jupiter00.tail0.ts.net.", "Online": true },
-        "nodekey:bbb": { "HostName": "Kyla", "DNSName": "kyla.tail0.ts.net.", "Online": false },
-        "nodekey:ccc": { "HostName": "graphai01", "DNSName": "graphai01.tail0.ts.net.", "Online": true }
-      }
-    }"#;
-
-    #[test]
-    fn takes_online_peers_by_their_dns_label() {
-        // Sorted, so the list does not reshuffle with the JSON object's iteration order.
-        assert_eq!(
-            parse_tailscale_status(STATUS),
-            vec!["graphai01", "jupiter00"]
-        );
-    }
-
-    #[test]
-    fn skips_self_and_offline_peers() {
-        let got = parse_tailscale_status(STATUS);
-        assert!(
-            !got.contains(&"my-laptop".to_string()),
-            "Self is the local source, not an ssh target: {got:?}"
-        );
-        assert!(
-            !got.contains(&"kyla".to_string()),
-            "an offline peer cannot be scanned, so it is not offered: {got:?}"
-        );
-    }
-
-    #[test]
-    fn peers_carry_the_first_ipv4_as_the_address() {
-        // The label only resolves where the tailnet's DNS is in force. The address is
-        // what still reaches the peer where it is not, so it rides alongside.
-        let json = r#"{"Peer":{"k":{"DNSName":"jupiter00.tail0.ts.net.","Online":true,
-            "TailscaleIPs":["fd7a:115c:a1e0::1","100.88.0.0"]}}}"#;
-        assert_eq!(
-            parse_tailscale_peers(json),
-            vec![("jupiter00".to_string(), Some("100.88.0.0".to_string()))]
-        );
-    }
-
-    #[test]
-    fn a_peer_with_no_usable_address_still_offers_its_label() {
-        // A missing or unparseable address costs the peer nothing: the label is what the
-        // roster names, and the address was only ever a default for the login pane.
-        for json in [
-            r#"{"Peer":{"k":{"DNSName":"jupiter00.tail0.ts.net.","Online":true}}}"#,
-            r#"{"Peer":{"k":{"DNSName":"jupiter00.tail0.ts.net.","Online":true,"TailscaleIPs":[]}}}"#,
-            r#"{"Peer":{"k":{"DNSName":"jupiter00.tail0.ts.net.","Online":true,
-                "TailscaleIPs":["not-an-address"]}}}"#,
-        ] {
-            assert_eq!(
-                parse_tailscale_peers(json),
-                vec![("jupiter00".to_string(), None)],
-                "the label survives: {json}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_dns_label_wins_over_hostname() {
-        // A machine named in Korean still has an ASCII DNS label, and that label is
-        // what resolves and what the user has in ssh config.
-        let json = r#"{"Peer":{"k":{"HostName":"그래파이-이현령","DNSName":"node.tail0.ts.net.","Online":true}}}"#;
-        assert_eq!(parse_tailscale_status(json), vec!["node"]);
-    }
-
-    #[test]
-    fn a_provider_that_cannot_answer_yields_nothing() {
-        // Not an error: one quiet provider must not stop the others being offered.
-        assert!(parse_tailscale_status("").is_empty(), "empty output");
-        assert!(parse_tailscale_status("not json").is_empty(), "garbage");
-        assert!(parse_tailscale_status("{}").is_empty(), "no Peer key");
-        assert!(
-            parse_tailscale_status(r#"{"Peer":{}}"#).is_empty(),
-            "no peers"
-        );
-    }
-
-    #[test]
-    fn a_label_that_is_not_a_dns_label_is_refused() {
-        // The alias becomes an ssh argument, so anything shell-shaped is dropped
-        // rather than passed along.
-        for bad in [
-            r#"{"Peer":{"k":{"DNSName":"a b.tail0.ts.net.","Online":true}}}"#,
-            r#"{"Peer":{"k":{"DNSName":"a;rm -rf.tail0.ts.net.","Online":true}}}"#,
-            r#"{"Peer":{"k":{"DNSName":".tail0.ts.net.","Online":true}}}"#,
-            r#"{"Peer":{"k":{"Online":true}}}"#,
-        ] {
-            assert!(parse_tailscale_status(bad).is_empty(), "refused: {bad}");
-        }
-    }
-
-    #[tokio::test]
-    async fn a_missing_cli_yields_nothing_rather_than_an_error() {
-        // The provider is on by default, so a machine with no tailscale installed must
-        // reach an empty list, never a spawn error that would fail the run.
-        assert!(status_peers("xmux-no-such-tailscale-binary")
-            .await
-            .is_empty());
-    }
-
     #[test]
     fn merge_keeps_first_seen_order_and_drops_duplicates() {
         let ssh = vec!["prod".to_string(), "jupiter00".to_string()];
         let ts = vec!["jupiter00".to_string(), "graphai01".to_string()];
-        let got = merge(&[(Provider::SshConfig, ssh), (Provider::Tailscale, ts)]);
+        let got = merge(&[(Provider::SshConfig, ssh), (Provider::Neighbor, ts)]);
         assert_eq!(
             got.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
             vec!["prod", "jupiter00", "graphai01"],
@@ -328,7 +95,7 @@ mod tests {
         // answer to "where did this come from".
         let got = merge(&[
             (Provider::SshConfig, vec!["jupiter00".to_string()]),
-            (Provider::Tailscale, vec!["jupiter00".to_string()]),
+            (Provider::Neighbor, vec!["jupiter00".to_string()]),
         ]);
         assert_eq!(got, vec![("jupiter00".to_string(), Provider::SshConfig)]);
     }
@@ -338,7 +105,7 @@ mod tests {
         // The label is what the user would edit, so reading it off the screen is enough
         // to act on it.
         assert_eq!(Provider::SshConfig.label(), "ssh-config");
-        assert_eq!(Provider::Tailscale.label(), "tailscale");
+        assert_eq!(Provider::Neighbor.label(), "neighbors");
         assert_eq!(Provider::Wsl.label(), "wsl");
     }
 }

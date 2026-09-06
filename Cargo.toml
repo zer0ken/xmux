@@ -54,6 +54,13 @@ sha2 = "0.10"
 # elapse instantly instead of sleeping the suite.
 tokio = { version = "1.52.3", features = ["test-util"] }
 
+[target.'cfg(unix)'.dependencies]
+# `getnameinfo`: the system resolver's own entry point. A mesh VPN configures the
+# resolver with the zones naming its peers, so asking the OS is what makes a peer come
+# back under the name its network gave it - with no vendor CLI, and on every unix
+# including Android, whose libc has no `getent` to shell out to.
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 # `Wdk_System_Threading` is where `NtQueryInformationProcess` lives (not
 # `Win32_System_Threading`, which holds only the structures it fills in). Together with
