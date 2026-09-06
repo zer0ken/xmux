@@ -598,8 +598,8 @@ impl Ops for EnvOps {
         match authorized_keys_command() {
             Ok(cmd) => cmd,
             // A key that cannot be read or made registers nothing, and the login is still
-            // worth having: it accepts the host key and carries the values. The screen
-            // shows what the remote said, so the failure is not silent.
+            // worth having: it accepts the host key and carries the values. The host then
+            // asks for a password again on the next probe, which is the truth about it.
             Err(_) => "true".to_string(),
         }
     }

@@ -87,19 +87,19 @@ and the composed control argv.
   reuse is lost, so only the reuse is refused: a host that then needs a password is asked
   again on the next probe, which is the truth about that machine on that platform rather
   than a reason to have refused the login.
-- The login is a CONVERSATION the user watches, not an exchange xmux has on their behalf.
-  Its PTY is on screen, its keys reach it, and what the pane already collected is typed
-  into it: the host-key question once, the password once and only if the pane carried
-  one. Every other prompt is left standing for the person looking at it, which is what
-  makes a second factor, a key passphrase, and a prompt in any language something to
-  answer rather than something to fail on.
-- Nothing decides a login failed from what it read. A wrong password only means ssh will
-  ask again, and the user answers that one better than a pattern can; the verdict is the
-  child's exit code. Recognised auth-failure text only names a failure the exit already
-  established.
+- The login is an exchange xmux has on the user's behalf, not a screen. The PTY exists
+  because ssh reads a password from a terminal and from nowhere else; nothing renders it
+  and nothing typed reaches it. What the pane collected is what answers: the host-key
+  question once, the password once and only if the pane carried one.
+- The verdict is the child's exit code. A wrong password only means ssh asks again, so
+  recognised auth-failure text only names a failure the exit already established.
+- A prompt the pane's values cannot answer ENDS the login, because nobody is there to
+  answer it: a second password prompt is an auth failure, and a password prompt with no
+  password in the pane is a server asking for what the pane is missing. A prompt that is
+  neither is left to ssh and ends the login on the idle budget.
 - The conversation runs on its own thread, because every part of it - opening the PTY,
   spawning ssh, reading it - waits on something the single runtime thread must not wait
-  on, and the frames that make the login watchable are drawn on that thread.
+  on. The runtime holds only the handle that cancels it.
 
 ## Common Pitfalls
 

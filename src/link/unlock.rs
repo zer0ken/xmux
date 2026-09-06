@@ -1,17 +1,16 @@
-//! The login conversation: one ssh on a PTY whose screen the USER watches.
+//! The login conversation: one ssh xmux has on the user's behalf, with nothing on screen.
 //!
-//! ssh asks for two things xmux cannot decide in advance, the host key and the
-//! credentials, and it asks for them on a terminal. So the login runs on a PTY, xmux
-//! draws that PTY, and the keys the user presses reach it. What the pane already
-//! collected is typed for them: the host-key question is answered once, and the password
-//! is written once if the pane carried one. Everything else is theirs to answer, which is
-//! what makes two-factor codes, key passphrases, and prompts in any language a
-//! conversation rather than a failure.
+//! ssh asks for two things xmux cannot decide in advance, the host key and the password,
+//! and it asks for them on a terminal and nowhere else. So the login runs on a PTY, and
+//! that PTY is the MEANS rather than a screen: the pane collected the answers before the
+//! login started, so the conversation is xmux's to have, and the user waits for a verdict
+//! instead of a prompt.
 //!
-//! Nothing here decides that a login failed from what it read. A wrong password only
-//! means ssh will ask again, and the person watching can answer better than xmux can.
-//! The verdict is the child's exit code, and until the child exits the conversation is
-//! still open.
+//! The verdict is the child's exit code. A wrong password only means ssh asks again, so
+//! nothing here calls a login failed from what it read - except when ssh asks something
+//! this module has no answer for. Nobody is watching the PTY, so such a prompt would
+//! stand until the idle budget ran out; it ends the login instead, and what ssh asked for
+//! is what the app says.
 //!
 //! The prompt logic is a pure state machine ([`Answerer`]) tested without a PTY; the
 //! conversation runs on its own thread ([`start_login`]) because every part of it -
@@ -19,21 +18,18 @@
 //! must never wait on.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use crate::display::attachment::PtyCmd;
-use crate::display::grid::Grid;
 
 /// How often the conversation wakes while ssh is silent. It bounds how long a cancel
 /// waits, and nothing else: the idle budget is counted from its own deadline.
 const POLL: Duration = Duration::from_millis(100);
 
-/// The id a login's redraw request carries. The attach registry hands out ids counting
-/// up from zero, so this one belongs to no attachment and can never be mistaken for one
-/// to reap; the app reads only the fact that something was drawn.
-const WAKE_ID: u64 = u64::MAX;
+/// The size the login's PTY opens at. Nothing renders it, so this only has to be wide
+/// enough that ssh's own prompts are not wrapped into something the answerer cannot
+/// recognise.
+const PTY_COLS: u16 = 200;
+const PTY_ROWS: u16 = 50;
 
 /// What the [`Answerer`] tells the conversation to type next. An empty return means it
 /// has nothing to say, which is the normal state once the pane's values are spent.
@@ -63,21 +59,22 @@ pub enum UnlockOutcome {
 }
 
 /// The pure prompt-answer state machine for one login. Fed the ssh child's output, it
-/// says what to type from the pane's values and, once those are spent, says nothing -
-/// the user is watching the same screen and answers the rest.
+/// says what to type from the pane's values, and says when ssh has asked for something
+/// the pane's values cannot answer.
 ///
-/// It also NOTES an auth failure it recognises. That note only sharpens the word the app
-/// shows for a child that exited nonzero; it never ends the conversation, because ssh
-/// re-prompts after a wrong password and the user can get it right.
+/// A password prompt it cannot answer is the end of the login: the pane's password is one
+/// answer, so a second prompt means the first was wrong, and an empty pane password means
+/// there was never one to give. Either way no answer will ever arrive, and saying so at
+/// once is the difference between a verdict and a wait.
 pub(crate) struct Answerer {
     secret: String,
-    /// Whether the password was already typed. The pane's value is one answer, not a
-    /// standing offer: a second prompt means the first was wrong, and the user answers
-    /// that one.
+    /// Whether the password was already typed.
     replied: bool,
     /// Whether the host-key question was already answered.
     accepted: bool,
     auth_failed: bool,
+    /// What ssh asked for that this machine has no answer to, once that has happened.
+    stalled: Option<UnlockOutcome>,
 }
 
 impl Answerer {
@@ -87,6 +84,7 @@ impl Answerer {
             replied: false,
             accepted: false,
             auth_failed: false,
+            stalled: None,
         }
     }
 
@@ -101,13 +99,26 @@ impl Answerer {
             self.accepted = true;
             return vec![PromptWrite::HostKey];
         }
-        // An empty pane password is not an answer: the user types it, so ssh's prompt
-        // must be left standing rather than answered with a blank line.
-        if !self.replied && !self.secret.is_empty() && chunk.contains("assword:") {
-            self.replied = true;
-            return vec![PromptWrite::Password];
+        if chunk.contains("assword:") {
+            if self.secret.is_empty() {
+                self.stalled = Some(UnlockOutcome::Failed(
+                    "the server asked for a password".into(),
+                ));
+            } else if self.replied {
+                // The one answer the pane had was already given and ssh asked again.
+                self.stalled = Some(UnlockOutcome::AuthFailed);
+            } else {
+                self.replied = true;
+                return vec![PromptWrite::Password];
+            }
         }
         Vec::new()
+    }
+
+    /// The verdict for a login that cannot go on, once ssh has asked for something the
+    /// pane's values do not answer. `None` while the conversation can still get somewhere.
+    pub(crate) fn stalled(&self) -> Option<UnlockOutcome> {
+        self.stalled.clone()
     }
 
     /// The bytes to type for one prompt.
@@ -134,57 +145,21 @@ impl Answerer {
     }
 }
 
-/// A login the user is watching: the grid the pane draws, the keys it forwards, and the
-/// way to end it. Held by the app for as long as the conversation runs.
+/// A login in progress: which host it is for, and the way to end it. It carries no
+/// screen, because the conversation is xmux's to have: ssh's two questions are answered
+/// from what the pane collected, and a question xmux does not know is one nobody here can
+/// answer either.
+///
+/// The handle is what the pane reads to say a login is under way, so the user is never
+/// looking at a form that appears to have done nothing.
 pub struct RunningLogin {
     /// The blocked source this login is for. The pane belongs to one host, so a login
     /// running for another is not this pane's.
     pub source: String,
-    /// The screen ssh is drawing. Present from the first frame, empty until the child
-    /// writes, so the view never has nothing to show.
-    pub grid: Arc<Mutex<Grid>>,
-    /// Set once the PTY is open. Before that there is no child to type at, and the few
-    /// keystrokes that could land in that window are dropped rather than queued for a
-    /// prompt that has not been asked yet.
-    input: Arc<Mutex<Option<Sender<PtyCmd>>>>,
     cancel: Arc<AtomicBool>,
-    /// The size the PTY was last told to be. The frame that draws the login knows the
-    /// pane it landed in and offers that size on every pass, so the size it already has
-    /// is the common case and must cost nothing: a resize per frame would put an ioctl
-    /// and a grid rebuild between ssh and the prompt it is trying to print.
-    size: Mutex<(u16, u16)>,
 }
 
 impl RunningLogin {
-    /// Types `bytes` at the child.
-    pub fn input(&self, bytes: Vec<u8>) {
-        if let Ok(slot) = self.input.lock() {
-            if let Some(tx) = slot.as_ref() {
-                let _ = tx.send(PtyCmd::Input(bytes));
-            }
-        }
-    }
-
-    /// Resizes the PTY and the grid together, so ssh draws for the pane it is shown in.
-    /// A size it already has is not a resize.
-    pub fn resize(&self, cols: u16, rows: u16) {
-        if cols == 0 || rows == 0 {
-            return;
-        }
-        match self.size.lock() {
-            Ok(mut size) if *size != (cols, rows) => *size = (cols, rows),
-            _ => return,
-        }
-        if let Ok(slot) = self.input.lock() {
-            if let Some(tx) = slot.as_ref() {
-                let _ = tx.send(PtyCmd::Resize { cols, rows });
-            }
-        }
-        if let Ok(mut g) = self.grid.lock() {
-            g.resize(rows, cols);
-        }
-    }
-
     /// Ends the conversation. The thread kills the child on its next wake, so the verdict
     /// still arrives through the same channel as any other ending.
     pub fn cancel(&self) {
@@ -192,98 +167,64 @@ impl RunningLogin {
     }
 
     /// A handle with no conversation behind it, for the callers that only ask WHETHER a
-    /// login is running. The view decides what to draw from that alone, so testing that
-    /// decision needs no ssh, no PTY, and no platform.
+    /// login is running.
     #[cfg(test)]
     pub(crate) fn parked(source: &str) -> Self {
         Self {
             source: source.to_string(),
-            grid: Arc::new(Mutex::new(Grid::new(24, 80))),
-            input: Arc::new(Mutex::new(None)),
             cancel: Arc::new(AtomicBool::new(false)),
-            size: Mutex::new((80, 24)),
         }
     }
 }
 
-/// Starts the login and returns at once: the handle the app renders and types into, and
-/// the channel the verdict arrives on. Everything that waits - the PTY open, the ssh
-/// spawn, the reading - happens on the thread this starts, so the runtime thread is free
-/// for the frames that make the conversation watchable.
+/// Starts the login and returns at once: the handle that says it is running, and the
+/// channel the verdict arrives on. Everything that waits - the PTY open, the ssh spawn,
+/// the reading - happens on the thread this starts, so the runtime thread stays free to
+/// draw the frames that say a login is under way.
 ///
-/// `idle` bounds a conversation nobody is having: it is counted from the last thing ssh
-/// said, so a prompt the user is still reading does not end the login, but an ssh that
-/// went quiet and a user who walked away do.
-///
-/// `wake` is how the screen keeps up with the conversation: every chunk ssh writes is
-/// announced on the app's own PTY event channel, so the frame that shows a prompt is
-/// drawn when the prompt arrives rather than on the next animation beat. It carries no
-/// attachment id that could be reaped - [`WAKE_ID`] is outside what the registry hands
-/// out - because a login PTY is nobody's attachment.
-#[allow(clippy::too_many_arguments)]
+/// `idle` bounds a conversation that is going nowhere: it is counted from the last thing
+/// ssh said, so a server taking its time does not end the login, while one that went quiet
+/// on a question xmux cannot answer does.
 pub fn start_login(
     source: String,
     argv: Vec<String>,
     remote: Box<dyn FnOnce() -> String + Send>,
     password: String,
-    cols: u16,
-    rows: u16,
     idle: Duration,
-    wake: tokio::sync::mpsc::UnboundedSender<crate::display::attachment::PtyEvent>,
 ) -> (RunningLogin, tokio::sync::oneshot::Receiver<UnlockOutcome>) {
-    let grid = Arc::new(Mutex::new(Grid::new(rows.max(1), cols.max(1))));
-    let input: Arc<Mutex<Option<Sender<PtyCmd>>>> = Arc::new(Mutex::new(None));
     let cancel = Arc::new(AtomicBool::new(false));
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-
     let handle = RunningLogin {
         source,
-        grid: grid.clone(),
-        input: input.clone(),
         cancel: cancel.clone(),
-        size: Mutex::new((cols, rows)),
     };
     std::thread::spawn(move || {
-        let outcome = converse(
-            argv, remote, password, cols, rows, idle, grid, input, cancel, wake,
-        );
-        let _ = done_tx.send(outcome);
+        let _ = done_tx.send(converse(argv, remote, password, idle, cancel));
     });
     (handle, done_rx)
 }
 
 /// The conversation itself, on its own thread: spawn ssh on a PTY, type the pane's
-/// answers at the prompts that want them, and report what the child's exit says.
-#[allow(clippy::too_many_arguments)]
+/// answers at the prompts that want them, and report what the child's exit says - or, for
+/// a prompt the pane cannot answer, what ssh asked for.
 fn converse(
     mut argv: Vec<String>,
     remote: Box<dyn FnOnce() -> String + Send>,
     password: String,
-    cols: u16,
-    rows: u16,
     idle: Duration,
-    grid: Arc<Mutex<Grid>>,
-    input: Arc<Mutex<Option<Sender<PtyCmd>>>>,
     cancel: Arc<AtomicBool>,
-    wake: tokio::sync::mpsc::UnboundedSender<crate::display::attachment::PtyEvent>,
 ) -> UnlockOutcome {
     // Composing it can spawn (a machine with no key pair is given one), which is why it
     // happens here and not where the login was asked for.
     argv.push(remote());
     let env_clear = crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
-    let (mut console, tap) = match crate::display::console::spawn_console_into(
-        &argv,
-        cols.max(1),
-        rows.max(1),
-        &env_clear,
-        grid,
-    ) {
-        Ok(v) => v,
-        Err(e) => return UnlockOutcome::Failed(e.to_string()),
-    };
-    if let Ok(mut slot) = input.lock() {
-        *slot = Some(console.input_sender());
-    }
+    // The PTY is the MEANS, not a screen: ssh reads a password from a terminal and from
+    // nowhere else, so one is opened to answer it and nothing renders it.
+    let (mut console, tap) =
+        match crate::display::console::spawn_console(&argv, PTY_COLS, PTY_ROWS, &env_clear) {
+            Ok(v) => v,
+            Err(e) => return UnlockOutcome::Failed(e.to_string()),
+        };
 
     let mut answerer = Answerer::new(password);
     let mut deadline = Instant::now() + idle;
@@ -301,8 +242,12 @@ fn converse(
                 for write in answerer.feed(&text) {
                     console.input(answerer.bytes_for(&write));
                 }
-                // The screen changed: ask for a frame now rather than on the next beat.
-                let _ = wake.send(crate::display::attachment::PtyEvent::Output { id: WAKE_ID });
+                // ssh asked for what nobody here can give. Waiting out the idle budget
+                // would report a timeout for a login whose real answer is already known.
+                if let Some(stall) = answerer.stalled() {
+                    console.kill();
+                    break Some(stall);
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if Instant::now() >= deadline {
@@ -343,7 +288,7 @@ mod tests {
         assert_eq!(
             a.feed("alice@x's password: "),
             Vec::new(),
-            "a second prompt is the user's to answer"
+            "the pane had one password and it is spent"
         );
         let mut a = Answerer::new("hunter2".into());
         assert_eq!(
@@ -357,16 +302,23 @@ mod tests {
     }
 
     /// The pane's password is optional, and an empty one is not an answer: typing a bare
-    /// newline would spend ssh's attempt on nothing. The prompt is left standing for the
-    /// person looking at it.
+    /// newline would spend ssh's attempt on nothing. A server that wants one is telling
+    /// the user what the pane is missing, so the login ends on that word.
     #[test]
-    fn an_empty_pane_password_leaves_the_prompt_to_the_user() {
+    fn an_empty_pane_password_ends_the_login_on_what_the_server_wants() {
         let mut a = Answerer::new(String::new());
         assert_eq!(a.feed("alice@x's password: "), Vec::new());
+        assert_eq!(
+            a.stalled(),
+            Some(UnlockOutcome::Failed(
+                "the server asked for a password".into()
+            ))
+        );
     }
 
-    /// A prompt xmux does not recognise draws no answer at all, which is what hands
-    /// two-factor codes and key passphrases to the user instead of failing on them.
+    /// A prompt xmux does not recognise draws no answer, and is not called a failure
+    /// either: what a two-factor code or a key passphrase means for this login is not
+    /// something this machine can read out of the words.
     #[test]
     fn an_unrecognised_prompt_draws_no_answer() {
         let mut a = Answerer::new("hunter2".into());
@@ -376,24 +328,22 @@ mod tests {
         );
         assert_eq!(a.feed("Verification code: "), Vec::new());
         assert_eq!(a.feed("암호: "), Vec::new());
+        assert_eq!(a.stalled(), None, "ssh may still get somewhere on its own");
     }
 
-    /// A wrong password is not the end: ssh asks again and the user answers. Nothing here
-    /// may decide the login failed while the child is still running.
+    /// ssh asking a second time means the pane's password was wrong. Nobody is watching
+    /// the PTY to type a better one, so the login ends on the answer that is already
+    /// known rather than on the idle budget.
     #[test]
-    fn a_wrong_password_does_not_end_the_conversation() {
+    fn a_second_password_prompt_ends_the_login_as_an_auth_failure() {
         let mut a = Answerer::new("hunter2".into());
-        let _ = a.feed("alice@x's password: ");
+        assert_eq!(a.feed("alice@x's password: "), vec![PromptWrite::Password]);
+        assert_eq!(a.stalled(), None, "the first prompt was answered");
         assert_eq!(
             a.feed("Permission denied, please try again.\nalice@x's password: "),
-            Vec::new(),
-            "the retry prompt is the user's"
+            Vec::new()
         );
-        assert_eq!(
-            a.verdict(Some(0)),
-            UnlockOutcome::Ok,
-            "a user who then got it right logged in"
-        );
+        assert_eq!(a.stalled(), Some(UnlockOutcome::AuthFailed));
     }
 
     #[test]
@@ -417,30 +367,8 @@ mod tests {
         assert_eq!(a.verdict(Some(0)), UnlockOutcome::Ok, "0 is still success");
     }
 
-    /// The frame offers the pane's size on every pass, so only a size the PTY does not
-    /// already have counts as a resize.
-    #[test]
-    fn a_size_the_login_already_has_is_not_a_resize() {
-        let login = RunningLogin::parked("prod");
-        assert_eq!(*login.size.lock().unwrap(), (80, 24));
-        login.resize(80, 24);
-        assert_eq!(
-            *login.size.lock().unwrap(),
-            (80, 24),
-            "unchanged is no change"
-        );
-        login.resize(100, 30);
-        assert_eq!(*login.size.lock().unwrap(), (100, 30), "a new size lands");
-        login.resize(0, 30);
-        assert_eq!(
-            *login.size.lock().unwrap(),
-            (100, 30),
-            "a pane with no room is not a size to draw for"
-        );
-    }
-
-    /// The conversation drives a real PTY: the login handle renders a grid, types what
-    /// the pane carried, and returns the child's own code.
+    /// The conversation drives a real PTY: it types what the pane carried at the prompt
+    /// that wants it, and returns the child's own code.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_login_answers_a_password_prompt_and_reports_the_exit() {
@@ -450,16 +378,12 @@ mod tests {
             "-c".to_string(),
             "printf \"u@h's password: \"; read -r p; test \"$p\" = hunter2".to_string(),
         ];
-        let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let (login, done) = start_login(
             "prod".into(),
             argv,
             Box::new(|| "true".to_string()),
             "hunter2".into(),
-            40,
-            6,
             Duration::from_secs(10),
-            wake,
         );
         assert_eq!(login.source, "prod");
         assert_eq!(
@@ -469,31 +393,60 @@ mod tests {
         );
     }
 
-    /// A prompt the pane has no answer for waits for the user, and what they type is what
-    /// decides it.
+    /// ssh asking twice ends the login there and then. Nobody is watching the PTY, so a
+    /// login left to the idle budget would report a timeout minutes after the answer was
+    /// known: the child is killed and the verdict is the refusal.
     #[cfg(unix)]
     #[tokio::test]
-    async fn what_the_user_types_reaches_the_login() {
+    async fn a_refused_password_ends_the_login_before_the_idle_budget() {
+        // Stands in for an ssh that refuses and asks again, then waits far past the test.
         let argv = vec![
             "/bin/sh".to_string(),
             "-c".to_string(),
-            "printf 'Verification code: '; read -r c; test \"$c\" = 123456".to_string(),
+            "printf \"u@h's password: \"; read -r p; \
+             printf '\\nPermission denied, please try again.\\n'; \
+             printf \"u@h's password: \"; sleep 60"
+                .to_string(),
         ];
-        let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (login, done) = start_login(
+        let started = Instant::now();
+        let (_login, done) = start_login(
+            "prod".into(),
+            argv,
+            Box::new(|| "true".to_string()),
+            "wrong".into(),
+            Duration::from_secs(60),
+        );
+        assert_eq!(
+            done.await.expect("the verdict arrives"),
+            UnlockOutcome::AuthFailed
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the verdict did not wait out the idle budget"
+        );
+    }
+
+    /// A server asking for a password the pane does not carry ends the login on what it
+    /// asked for, which is the one thing the user has to know to fill the pane in.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_password_the_pane_does_not_carry_ends_the_login_on_what_the_server_asked() {
+        let argv = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "printf \"u@h's password: \"; sleep 60".to_string(),
+        ];
+        let (_login, done) = start_login(
             "prod".into(),
             argv,
             Box::new(|| "true".to_string()),
             String::new(),
-            40,
-            6,
-            Duration::from_secs(10),
-            wake,
+            Duration::from_secs(60),
         );
-        // The user reads the prompt and answers it.
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        login.input(b"123456\n".to_vec());
-        assert_eq!(done.await.expect("the verdict arrives"), UnlockOutcome::Ok);
+        assert_eq!(
+            done.await.expect("the verdict arrives"),
+            UnlockOutcome::Failed("the server asked for a password".into())
+        );
     }
 
     /// Cancelling ends a conversation that is going nowhere, and says so.
@@ -505,16 +458,12 @@ mod tests {
             "-c".to_string(),
             "sleep 30".to_string(),
         ];
-        let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let (login, done) = start_login(
             "prod".into(),
             argv,
             Box::new(|| "true".to_string()),
             String::new(),
-            40,
-            6,
             Duration::from_secs(30),
-            wake,
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
         login.cancel();
@@ -534,16 +483,12 @@ mod tests {
             "-c".to_string(),
             "sleep 30".to_string(),
         ];
-        let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let (_login, done) = start_login(
             "prod".into(),
             argv,
             Box::new(|| "true".to_string()),
             String::new(),
-            40,
-            6,
             Duration::from_millis(300),
-            wake,
         );
         assert_eq!(
             done.await.expect("the verdict arrives"),
@@ -579,16 +524,12 @@ mod tests {
         };
         let argv = crate::transport::Transport::login_argv(&*transport, &login)
             .expect("a remote host has a login argv");
-        let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let (_running, done) = start_login(
             "live".into(),
             argv,
             Box::new(|| "true".to_string()),
             String::new(),
-            80,
-            24,
             Duration::from_secs(30),
-            wake,
         );
         assert_eq!(
             done.await.expect("the verdict arrives"),

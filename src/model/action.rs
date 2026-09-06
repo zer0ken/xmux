@@ -121,8 +121,8 @@ pub enum Command {
     /// freezes rendering.
     RunOp(MuxOp),
     /// Run the off-loop ssh login for a blocked host with the pane's submitted values.
-    /// `password` is empty when the user left the field alone, and then ssh's own prompt
-    /// waits for them on the login screen.
+    /// `password` is empty when the user left the field alone, and then a server that
+    /// asks for one ends the login on that word.
     RunLogin {
         source: String,
         login: crate::transport::Login,

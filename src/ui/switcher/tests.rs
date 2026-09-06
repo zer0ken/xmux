@@ -1155,9 +1155,10 @@ async fn login_pane_offers_the_remember_choice_only_after_a_value_changes() {
 }
 
 #[tokio::test]
-async fn a_running_login_puts_ssh_on_screen_in_place_of_the_form() {
-    // Submitting the pane starts a real ssh, and that ssh is what the view shows: the
-    // form has nothing left to collect, and the prompt the user must answer is ssh's own.
+async fn a_running_login_says_so_in_place_of_the_submit_button() {
+    // Submitting the pane hands the values to ssh and waits. The form stays on screen
+    // with what it collected, and the row the user would press says the login is running
+    // and how to stop it, so the pane is never a screen where nothing happens.
     let mut h = Harness::from_sources(&["pwbox"]);
     h.sw.apply_source_result(
         "pwbox".into(),
@@ -1174,24 +1175,32 @@ async fn a_running_login_puts_ssh_on_screen_in_place_of_the_form() {
     });
     h.draw();
     assert!(
-        h.text().contains("username"),
-        "the form is on screen before the login runs:\n{}",
+        h.text().contains("[ login ]"),
+        "the pane offers the login before one runs:\n{}",
         h.text()
     );
 
-    h.state.login_pty = Some(crate::link::unlock::RunningLogin::parked("pwbox"));
+    h.state.login_run = Some(crate::link::unlock::RunningLogin::parked("pwbox"));
     h.draw();
     let screen = h.text();
     assert!(
-        !screen.contains("username") && !screen.contains("100.88.0.0"),
-        "the form gives the view up to ssh while the login runs:\n{screen}"
+        screen.contains("logging in") && screen.contains("esc to stop"),
+        "the running login says so and says how to stop it:\n{screen}"
+    );
+    assert!(
+        screen.contains("username") && screen.contains("100.88.0.0"),
+        "the values the login is using stay on screen:\n{screen}"
+    );
+    assert!(
+        !screen.contains("[ login ]"),
+        "there is nothing left to submit:\n{screen}"
     );
 
-    // A login running for a DIFFERENT host is not this pane's: the form stays.
-    h.state.login_pty = Some(crate::link::unlock::RunningLogin::parked("elsewhere"));
+    // A login running for a DIFFERENT host is not this pane's: the button stays.
+    h.state.login_run = Some(crate::link::unlock::RunningLogin::parked("elsewhere"));
     h.draw();
     assert!(
-        h.text().contains("username"),
+        h.text().contains("[ login ]"),
         "another host's login leaves this pane alone:\n{}",
         h.text()
     );
@@ -1215,7 +1224,7 @@ async fn the_verdict_takes_the_login_screen_down() {
         username: "alice".into(),
         ..Default::default()
     });
-    h.state.login_pty = Some(crate::link::unlock::RunningLogin::parked("pwbox"));
+    h.state.login_run = Some(crate::link::unlock::RunningLogin::parked("pwbox"));
     h.sw.apply_op_result(
         OpResult::Login {
             source: "pwbox".into(),
@@ -1227,8 +1236,8 @@ async fn the_verdict_takes_the_login_screen_down() {
         &mut h.state,
     );
     assert!(
-        h.state.login_pty.is_none(),
-        "the login screen is gone once the verdict is in"
+        h.state.login_run.is_none(),
+        "the running login is gone once the verdict is in"
     );
     h.draw();
     assert!(

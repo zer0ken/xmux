@@ -38,15 +38,11 @@ use crate::ui::switcher::TerminalViewTarget;
 /// starves under a PTY-output flood.
 const SPINNER_FRAME_MS: u64 = 120;
 
-/// The size a login PTY opens at, before the first frame resizes it to the pane it is
-/// drawn in. ssh's prompts are one line each, so nothing depends on the guess.
-const LOGIN_COLS: u16 = 80;
-const LOGIN_ROWS: u16 = 24;
-
 /// How long a login may go with NOTHING said on it. It is counted from ssh's last word,
-/// so a prompt the user is still reading never ends the login, while an ssh that went
-/// quiet and a user who walked away do.
-const LOGIN_IDLE_SECS: u64 = 120;
+/// so a server taking its time over a slow link never ends the login, while an ssh that
+/// went quiet on something xmux cannot answer does. Nobody is typing into a login, so the
+/// budget only has to cover ssh's own pace.
+const LOGIN_IDLE_SECS: u64 = 30;
 
 /// Max events (host or PTY) drained into one redraw before the loop yields back to
 /// `select!`. Coalesces an output burst without letting a sustained flood
@@ -1289,7 +1285,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     }
     // A login still on screen at quit is a child nobody will watch again: end it here so
     // the ssh it started goes with the app rather than outliving it.
-    if let Some(login) = rt.state.login_pty.take() {
+    if let Some(login) = rt.state.login_run.take() {
         login.cancel();
     }
     rt.registry.teardown_all();
@@ -1395,16 +1391,17 @@ fn spawn_op(
 
 /// Starts the login the pane submitted and hands the app the conversation.
 ///
-/// The connection is not an op: it is a screen the user watches and types into, so it
-/// runs on its own thread and its PTY is parked on [`State::login_pty`] for the view to
-/// draw. Only what comes AFTER the verdict is an op - the pane's two checkboxes over the
-/// master a working login left - and that folds back through the same channel as any
-/// other, so the switcher reacts to one login result however the login was had.
+/// The connection is not an op: it waits on a child, on a network, and on a server's
+/// pace, so it runs on its own thread and only the handle that says it is running is
+/// parked on [`State::login_run`]. Only what comes AFTER the verdict is an op - the
+/// pane's two checkboxes over what a working login left behind - and that folds back
+/// through the same channel as any other, so the switcher reacts to one login result
+/// however the login was had.
 ///
-/// A machine with no login to run (it is local, or the platform leaves no reusable
-/// master) never opens a PTY: its verdict is posted directly.
+/// A machine with no login to run (it is local, or it is a WSL distribution) never opens
+/// a PTY: its verdict is posted directly.
 ///
-/// [`State::login_pty`]: crate::state::State::login_pty
+/// [`State::login_run`]: crate::state::State::login_run
 fn start_login(
     source: String,
     login: crate::transport::Login,
@@ -1430,19 +1427,14 @@ fn start_login(
     let ops = op_sink.0.clone();
     let remote: Box<dyn FnOnce() -> String + Send> =
         Box::new(move || ops.login_remote(register_key));
-    // The PTY opens at a nominal size; the first frame that draws it resizes it to the
-    // pane it actually landed in, as does every window resize after that.
     let (running, done) = crate::link::unlock::start_login(
         source.clone(),
         argv,
         remote,
         password,
-        LOGIN_COLS,
-        LOGIN_ROWS,
         std::time::Duration::from_secs(LOGIN_IDLE_SECS),
-        op_sink.2.clone(),
     );
-    state.login_pty = Some(running);
+    state.login_run = Some(running);
 
     let ops = op_sink.0.clone();
     let tx = op_sink.1.clone();

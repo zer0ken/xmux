@@ -957,6 +957,7 @@ impl Chrome {
         // shows a cursor only while the terminal view is focused, so the pane says
         // whether it is taking keys.
         if kind == ViewScreen::Login {
+            let running = state.login_run.as_ref().is_some_and(|l| l.source == source);
             let defaults = self.login_defaults(source);
             let draft = state.login.as_ref().filter(|d| d.source == source);
             let fallback = crate::state::LoginDraft {
@@ -969,7 +970,15 @@ impl Chrome {
                 ..Default::default()
             };
             let d = draft.unwrap_or(&fallback);
-            let cursor = |active: bool| if active && focused { "▊" } else { "" };
+            // No cursor while the login runs: the pane takes no keys then, and a cursor
+            // would say it does.
+            let cursor = |active: bool| {
+                if active && focused && !running {
+                    "▊"
+                } else {
+                    ""
+                }
+            };
             let label = |text: String| {
                 Span::styled(
                     format!(" {text:>cw$} "),
@@ -1077,7 +1086,14 @@ impl Chrome {
                 d.focus == LoginFocus::Pubkey,
             ));
             out.push(Line::from(""));
-            out.push(choice("", "", "[ login ]", d.focus == LoginFocus::Submit));
+            // A login under way replaces the button it was started from. The pane keeps
+            // every value, so what the user sees is the thing they submitted, still
+            // theirs, with the one thing they can now say about it.
+            if running {
+                out.push(choice("", "", "logging in…  esc to stop", false));
+            } else {
+                out.push(choice("", "", "[ login ]", d.focus == LoginFocus::Submit));
+            }
         }
         out.push(Line::from(""));
         for (cell, value) in rows {
