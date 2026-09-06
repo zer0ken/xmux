@@ -32,7 +32,10 @@ no function, and no test, so renaming code is never a documentation change.
   address in where the OS refuses that table - and that answers ssh; it is offered under
   the name the system resolver gives it, or the name the machine gives for itself when
   the resolver gives none, or its address when neither yields a name this machine can
-  resolve back. This box is skipped, since it is reached without ssh. A provider that
+  resolve back. Those two records are read from the OS itself wherever it has an
+  interface for them rather than through a command, so a machine whose command-line
+  network tools are missing, or refused as they are to an app on Android, still lists its
+  neighbours. This box is skipped, since it is reached without ssh. A provider that
   cannot answer contributes nothing instead of failing the run, so a machine whose
   network state cannot be read reaches an empty list rather than an error, and
   ssh-config names keep their position when a provider repeats them. The roster is resolved again on every re-scan, so a machine that has
@@ -263,7 +266,10 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B17** - The status row is a bar where it owns its row and a label where it does not:
   the side column's bar fills its row, and so does any ready or flashing bar, which has to
   be readable over what it covers; the portrait band's resting bar paints its text plus a
-  cell of padding, leaving the rest of the row to the offscreen counts.
+  cell of padding, leaving the rest of the row to the offscreen counts. A flash comes down
+  on the next tree key and, for a user who presses nothing, after ten seconds of its own:
+  it reports something that already happened, so holding one indefinitely would keep the
+  nav's own help text off screen over a message that has stopped being news.
 - **FR-B18** - A prefix lasts as long as the FUNCTION it starts, not as long as the
   keystroke that names it. Most commands end with their key. A command that opens an
   input row ends when Enter or Esc closes the row. A resize ends when its repeat window
@@ -375,11 +381,19 @@ no function, and no test, so renaming code is never a documentation change.
   a modal and nothing in the nav drives it. Enter means one thing throughout: submit from
   the button, pass the focus on from anywhere else. Space picks a choice, Tab and the
   vertical arrows walk the stops, and an escape sequence xmux does not act on is consumed
-  whole rather than landing in a field as text.
-- **FR-B28** - Submitting runs one PTY ssh (`ControlMaster=yes` over the same control
+  whole rather than landing in a field as text. While a login runs the pane keeps every
+  value on screen and says so in place of the button it was submitted from, taking no key
+  but the lone Esc that ends the attempt, since there is nothing left to fill in.
+- **FR-B28** - Submitting runs one ssh on a PTY (`ControlMaster=yes` over the same control
   socket every other ssh shares) carrying the submitted values as `-o` overrides, so the
   host keeps its alias and its ssh-config stanza still supplies whatever they do not
-  name. Where this side multiplexes it establishes the single authenticated master the
+  name. The PTY is the MEANS and not a screen: ssh reads a password from a terminal and
+  from nowhere else, so one is opened, nothing renders it, and xmux answers it - the
+  host-key question once, the password once and only if the pane carried one. A prompt
+  those values cannot answer ends the login on what ssh asked for rather than on the idle
+  budget, since nobody is watching the PTY to answer it: a second password prompt is an
+  auth failure, and a password prompt with no password in the pane is a server asking for
+  what the pane is missing. Where this side multiplexes it establishes the single authenticated master the
   later channels reuse. Success re-probes ONLY that host (its reach is the only thing that
   changed, so the whole roster is not re-scanned); any failure keeps the host blocked and
   flashes why. The password lives only in the transient command and the PTY writer, never
