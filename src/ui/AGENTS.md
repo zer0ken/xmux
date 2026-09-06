@@ -118,11 +118,11 @@ flatten renders for the dump verb.
 - Enter means one thing across the whole pane: submit from the button, pass the focus on
   from anywhere else. A key that sometimes toggles and sometimes submits would make
   filling the pane by feel unsafe.
-- Once the pane is submitted the view shows the ssh it started, not the form. The form
-  has nothing left to collect, and what the user has to see is the prompt ssh is asking;
-  a form drawn over it would hide the only thing that can move the login along. Keys go
-  to that ssh, a lone Esc ends it, and the verdict takes the screen down and brings the
-  pane back holding what was typed, so a failure is retried rather than retyped.
+- Once the pane is submitted it says a login is under way in place of the button it
+  offered, and keeps the values on screen. xmux has the conversation itself, so there is
+  no prompt to show and nothing to type; a lone Esc ends it. The verdict brings the button
+  back with what was typed still there, so a failure is retried rather than retyped, and a
+  success re-probes that host and replaces the pane with its sessions.
 - The dump should reflect the same split view the main draw path renders.
 - The nav's two bands are parted by the ROOM between them while the cards can spare a row
   for it, and by a rule once they cannot: a gap that scrolls out of view parts nothing a

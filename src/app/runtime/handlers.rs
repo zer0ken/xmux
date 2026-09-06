@@ -708,43 +708,21 @@ impl Runtime {
         if self.dirty && self.last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
             // Render the CONFIRMED display truth (`displayed`), not the selection: the prior
             // session stays on screen until the new one is ready (stale-while-revalidate).
-            // A login on screen is what the terminal view shows, so its PTY is the grid
-            // this frame draws and the pane it landed in is the size ssh draws for. No
-            // attach runs while it does: the host it belongs to has not answered yet.
-            let login_grid = self
-                .state
-                .login_pty
-                .as_ref()
-                .filter(|l| self.switcher.current_source().as_deref() == Some(&l.source))
-                .map(|l| {
-                    let (cols, rows) = terminal_view_size(
-                        self.cols,
-                        self.body_rows,
-                        crate::ui::switcher::NavSize::visible(self.nav_width)
-                            .with_height(self.nav_height)
-                            .with_position(self.nav_position),
-                    );
-                    l.resize(cols, rows);
-                    l.grid.clone()
-                });
-            let grid_arc = match login_grid {
-                Some(g) => Some(g),
-                None => current_grid(
-                    &self.state.displayed,
-                    &crate::driver::DriverCtx {
-                        registry: &mut self.registry,
-                        hosts: &mut self.hosts,
-                        worker: &self.worker,
-                        pty_tx: &self.driver_pty_tx,
-                        attach_seq: &mut self.attach_seq,
-                        cols: self.cols,
-                        body_rows: self.body_rows,
-                        nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                            .with_height(self.nav_height)
-                            .with_position(self.nav_position),
-                    },
-                ),
-            };
+            let grid_arc = current_grid(
+                &self.state.displayed,
+                &crate::driver::DriverCtx {
+                    registry: &mut self.registry,
+                    hosts: &mut self.hosts,
+                    worker: &self.worker,
+                    pty_tx: &self.driver_pty_tx,
+                    attach_seq: &mut self.attach_seq,
+                    cols: self.cols,
+                    body_rows: self.body_rows,
+                    nav: crate::ui::switcher::NavSize::visible(self.nav_width)
+                        .with_height(self.nav_height)
+                        .with_position(self.nav_position),
+                },
+            );
             let terminal_focused = self.state.focus.is_terminal_focused();
             // The view border glyph reflects auto-hide-nav mode (║ on, │ off).
             self.state.chrome.set_auto_hide(self.auto_hide_nav);
@@ -1168,8 +1146,18 @@ impl Runtime {
                 if !bytes.is_empty() {
                     // A BLOCKED host has no PTY: its login pane owns the keys, exactly as the
                     // interactive terminal-focus path routes them (see `input.rs`). So the
-                    // ctl raw surface drives the pane the same way a keyboard does.
-                    if self.switcher.current_host_blocked() {
+                    // ctl raw surface drives the pane the same way a keyboard does, down to
+                    // a running login taking no input but the Esc that ends it.
+                    if let Some(login) =
+                        self.state.login_run.as_ref().filter(|l| {
+                            self.switcher.current_source().as_deref() == Some(&l.source)
+                        })
+                    {
+                        if bytes.as_slice() == b"\x1b" {
+                            login.cancel();
+                        }
+                        self.dirty = true;
+                    } else if self.switcher.current_host_blocked() {
                         if let Some(source) = self.switcher.current_source() {
                             if let Some(cmd) = self.state.feed_login(&source, &bytes) {
                                 let _ = dispatch_commands(
@@ -1232,9 +1220,9 @@ impl Runtime {
     }
 
     /// The op-result arm: fold a finished create back into the nav/state. A successful
-    /// unlock returns the unlocked source; only THAT machine's reach changed (locked →
-    /// connected), so re-probe just it - over the warm master the unlock left - instead of
-    /// the whole roster.
+    /// login returns the source it was for; only THAT machine's reach changed (locked →
+    /// connected), so re-probe just it - over what the login left behind - instead of the
+    /// whole roster. The re-probe is what turns the pane back into the host's sessions.
     pub(super) fn on_op_result(&mut self, result: crate::ui::switcher::OpResult) {
         if let Some(source) = self.switcher.apply_op_result(result, &mut self.state) {
             probe_machine(
@@ -1465,6 +1453,12 @@ impl Runtime {
             }
         }
         if self.observe_display_session() {
+            self.dirty = true;
+        }
+        // A flash outlives the moment it was about, so it comes down on its own for a
+        // user who pressed nothing. The tick is where that is noticed, because it is the
+        // one wake that happens without the user doing anything.
+        if self.state.chrome.expire_flash(std::time::Instant::now()) {
             self.dirty = true;
         }
         // Spinner set = the selected session if its PTY is still connecting.

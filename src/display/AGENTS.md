@@ -45,14 +45,15 @@ back to the app, which owns the registry.
 - Input decoding, dispatch, and mouse parsing turn terminal input into routing
   decisions or input actions. Terminal setup holds the prefix parsing, mouse
   capture, and the terminal guard.
-- A console is one PTY child whose screen xmux draws and whose keys xmux forwards, owned
-  by whoever spawned it rather than by the registry. It shares the PTY mechanics with an
+- A console is one PTY child owned by whoever spawned it rather than by the registry, for
+  a program that will only talk to a terminal. It shares the PTY mechanics with an
   attachment - the control thread owning the writer and master, the terminal-query
-  answers - and differs in ownership: an attachment is a live mux client the registry
-  keys, reaps, and keeps a stale grid for, while a console is one bounded conversation
-  its spawner sees through to an exit code. It hands the caller every chunk it read as
-  well as feeding the grid, because a caller that must RECOGNISE something in the stream
-  cannot read it back out of an emulated screen.
+  answers - and differs in what comes out: an attachment is a live mux client the registry
+  keys, reaps, and renders, while a console is one bounded conversation its spawner sees
+  through to an exit code. What it hands back is the bytes the child wrote, in order,
+  because a caller that must RECOGNISE something in the stream needs the stream. It
+  emulates no screen: a child that asks where the cursor is is told the top-left corner,
+  which keeps it talking and costs nothing, since nobody is looking at what it draws.
 - Reading one environment variable out of a live attach child is its own seam,
   beside the attachment. It answers what the running process holds NOW, not what
   the spawn was given, which is the only way to observe a mux that moves its

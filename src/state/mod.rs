@@ -71,11 +71,11 @@ pub struct State {
     /// starts a fresh draft. The password lives here and in the transient login command
     /// only; it is drawn masked and never logged or serialized.
     pub login: Option<LoginDraft>,
-    /// The login the user is WATCHING: once the pane is submitted, ssh runs on a PTY and
-    /// that PTY is what the terminal view shows, because the rest of the conversation is
-    /// ssh's to have and the user's to answer. Present only while that conversation runs,
-    /// so its presence is what tells the view to draw a screen instead of the form.
-    pub login_pty: Option<crate::link::unlock::RunningLogin>,
+    /// The login that is RUNNING: once the pane is submitted, ssh has the conversation on
+    /// its own thread with the values the draft collected, and this is the handle that
+    /// ends it. Present only while that conversation runs, so its presence is what tells
+    /// the pane to say a login is under way instead of offering one.
+    pub login_run: Option<crate::link::unlock::RunningLogin>,
 }
 
 /// What the login pane does with the values once the connection works. The two are one
@@ -780,17 +780,18 @@ impl State {
             // The unlock verdict is no inventory mutation: the app reacts to it (re-probe
             // the unlocked machine on success, a flash on failure).
             OpResult::Login { source, outcome } => {
-                // The conversation is over however it ended, so the PTY it was shown in
-                // goes with it and the pane comes back holding what was typed.
-                self.login_pty = None;
+                // The conversation is over however it ended, so the handle that would
+                // have ended it goes with it and the pane offers a login again.
+                self.login_run = None;
                 OpFollow::LoginResult { source, outcome }
             }
         }
     }
 
     /// Flashes a transient message in the tree-column hint bar (an error or notice).
-    /// The next tree key clears it (the switcher's `handle_key` clear path), so the
-    /// normal help/status hint bar returns. Delegates to the chrome's flash API.
+    /// The next tree key clears it (the switcher's `handle_key` clear path), and so does
+    /// its own ten-second life, so the normal help/status hint bar returns whether or not
+    /// the user presses anything. Delegates to the chrome's flash API.
     pub(crate) fn flash(&mut self, msg: impl Into<String>) {
         self.chrome.flash(msg);
     }

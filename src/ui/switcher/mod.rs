@@ -716,16 +716,6 @@ impl Switcher {
             return None;
         };
         if *blocked {
-            // Once the pane is submitted the view shows ssh itself: the form has nothing
-            // left to collect until that conversation ends, and what the user needs to see
-            // is the prompt they have to answer.
-            if state
-                .login_pty
-                .as_ref()
-                .is_some_and(|l| &l.source == source)
-            {
-                return None;
-            }
             return Some(ViewScreen::Login);
         }
         if *unreachable {

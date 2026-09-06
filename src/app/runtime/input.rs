@@ -567,17 +567,15 @@ impl Runtime {
                     // is ready the prior one is on screen, so input must reach what the user
                     // actually sees (no blind typing).
                     Action::Forward(f) => {
-                        if let Some(login) = self.state.login_pty.as_ref().filter(|l| {
+                        if let Some(login) = self.state.login_run.as_ref().filter(|l| {
                             self.switcher.current_source().as_deref() == Some(&l.source)
                         }) {
-                            // A lone Esc ends the conversation; ssh has no use for it, and
-                            // a user who cannot answer a prompt needs a way back to the
-                            // form. Everything else is ssh's, including the Ctrl-C that
-                            // would end it the other way.
+                            // The login is xmux's own conversation, so nothing typed here
+                            // reaches it. A lone Esc ends it, which is the one thing the
+                            // user can still say about a login that is going nowhere;
+                            // every other key waits for the pane to come back.
                             if f.as_slice() == b"\x1b" {
                                 login.cancel();
-                            } else {
-                                login.input(f);
                             }
                             *dirty = true;
                         } else if self.switcher.current_host_blocked() {

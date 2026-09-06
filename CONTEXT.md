@@ -280,16 +280,16 @@ UI elements a user perceives as distinct things:
   the button, pass the focus on from anywhere else - and Space picks a choice. It is not
   a modal and nothing in the nav drives it. The submitted password lives only in the
   transient command and the PTY writer: never stored, logged, rendered, or serialized.
-- login screen - the ssh the pane started, on screen in the pane's place for as long as
-  it runs. ssh asks for the host key and the credentials itself, on a terminal, so the
-  login runs on a PTY and that PTY is what the terminal view draws. What the pane
-  collected is typed into it - the host-key question once, the password once and only if
-  the pane carried one - and every other prompt is left standing for the user, whose keys
-  reach it. That is what makes a second factor, a key passphrase, and a prompt in any
-  language a conversation rather than a failure. A wrong password ends nothing: ssh asks
-  again and the user answers. The verdict is the child's exit code; a lone Esc ends the
-  conversation early. However it ends, the screen goes and the pane returns holding what
-  was typed.
+- running a login - the ssh the pane started, had by xmux rather than by the user. ssh
+  asks for the host key and the password itself, on a terminal and nowhere else, so the
+  login runs on a PTY that nothing renders: the pane collected the answers before it
+  started, so the host-key question is answered once and the password typed once. The
+  pane says a login is under way in place of the button it offered and takes no input but
+  the Esc that ends it. The verdict is the child's exit code, except where ssh asks for
+  something the pane's values cannot answer, which ends the login on what ssh asked for
+  rather than on the idle budget. However it ends, the pane returns holding what was
+  typed, and a login that worked re-probes its host so the pane gives way to that host's
+  sessions.
 - remembering a login - what the pane's record choice does once the connection works: an
   xmux-marked stanza naming the host, holding the values that reached it, written at the
   TOP of `~/.ssh/config` because ssh keeps the FIRST value it obtains for a keyword. The
@@ -402,7 +402,9 @@ UI elements a user perceives as distinct things:
   opened with. A host hidden from the nav (`[ui] hide-unreachable`) shows its card
   while the filter names it.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
-  action's reason). Never a "toast" or "notice".
+  action's reason). It goes away on the next tree key, and after ten seconds for a user
+  who presses nothing, since it is about something that already happened. Never a
+  "toast" or "notice".
 - scan indicator - the `scanning hosts n/m…` progress shown in the hint bar while
   host probes are in flight (a narrow row shortens it to `scanning n/m…`, then to the
   bare `n/m`), behind the same spinner on the same frame as the cards it counts. It

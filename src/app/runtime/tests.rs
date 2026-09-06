@@ -514,7 +514,7 @@ fn runtime_threads_hide_unreachable_into_its_switcher() {
 #[test]
 fn a_blocked_host_shows_the_login_view_screen() {
     use crate::ui::run::dump_screen;
-    // A blocked host (reached, credentials refused) shows the login screen: its
+    // A blocked host (reached, credentials refused) shows the login pane: its
     // state word, not the unreachable word, and ssh's own reason. It also
     // survives the default hide-unreachable (a blocked host is actionable).
     use crate::ui::switcher::Switcher;
@@ -537,7 +537,7 @@ fn a_blocked_host_shows_the_login_view_screen() {
     );
     assert!(
         out.contains("pwtest@127.0.0.1"),
-        "ssh's own reason is on the login screen:\n{out}"
+        "ssh's own reason is on the login pane:\n{out}"
     );
 }
 
