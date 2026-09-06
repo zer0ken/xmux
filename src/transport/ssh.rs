@@ -162,7 +162,7 @@ impl Transport for Ssh {
     }
 
     /// The login: a real ssh with no BatchMode, so every question it has reaches the
-    /// person watching it.
+    /// person watching it. The remote command is the caller's to append.
     ///
     /// Where this side multiplexes, it forces a NEW master over the SAME control socket
     /// every other ssh shares and runs `true`, so what it leaves behind is an
@@ -195,9 +195,9 @@ impl Transport for Ssh {
         }
         v.push("--".into());
         v.push(self.alias.clone());
-        // The connection itself IS the work: it leaves the authenticated master behind,
-        // and the remote command only has to exit.
-        v.push("true".into());
+        // No remote command: the caller appends the one this login is FOR. That command
+        // runs inside the session the user just authenticated, which is the only session
+        // some platforms will ever have.
         Some(v)
     }
 
@@ -305,8 +305,10 @@ mod tests {
             !joined.contains("BatchMode"),
             "the login must be able to prompt: {joined}"
         );
-        assert_eq!(got.last().unwrap(), "true");
-        assert!(joined.ends_with("-- prod true"), "{joined}");
+        assert!(
+            joined.ends_with("-- prod"),
+            "the destination ends it; what the login is FOR is appended by the caller: {joined}"
+        );
     }
 
     #[test]
@@ -359,7 +361,11 @@ mod tests {
             !joined.contains("BatchMode"),
             "the login must be able to ask its questions: {joined}"
         );
-        assert_eq!(argv.last().unwrap(), "true", "the connection IS the work");
+        assert_eq!(
+            argv.last().unwrap(),
+            "prod",
+            "the destination ends it; the remote command is the caller's to append"
+        );
     }
 
     /// Where this side multiplexes, the login opens the master every later channel rides.

@@ -43,12 +43,14 @@ impl Ops for RecordOps {
         // needed nothing typed.
         Some(vec!["true".to_string()])
     }
+    fn login_remote(&self, _register_key: bool) -> String {
+        "true".to_string()
+    }
     async fn login_follow_ups(
         &self,
         _source: &str,
         _login: &crate::transport::Login,
         _write_config: bool,
-        _register_key: bool,
     ) -> Vec<String> {
         Vec::new()
     }

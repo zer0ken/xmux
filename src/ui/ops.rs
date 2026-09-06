@@ -35,7 +35,18 @@ pub trait Ops: Send + Sync {
     /// ask for it on the loop and start the conversation itself.
     fn login_argv(&self, source: &str, login: &crate::transport::Login) -> Option<Vec<String>>;
 
-    /// The pane's two checkboxes, run over the master a successful login just left. Each
+    /// The command this login is FOR, appended to its argv and run inside the session the
+    /// user authenticates. Registering a key goes HERE rather than over a connection
+    /// opened afterwards, because a platform without connection sharing has no afterwards:
+    /// the login's own session is the only authenticated one it will ever have. It is also
+    /// what makes registering worth offering there at all - the key turns a host that
+    /// wanted a password into one that wants nothing.
+    ///
+    /// May generate this machine's key pair when it has none, so it is called off the
+    /// runtime thread.
+    fn login_remote(&self, register_key: bool) -> String;
+
+    /// The pane's remaining choice, applied once a login has worked. Each
     /// returns a note only when it could NOT do what it said, so a step that failed says
     /// so instead of passing silently.
     ///
@@ -46,7 +57,6 @@ pub trait Ops: Send + Sync {
         source: &str,
         login: &crate::transport::Login,
         write_config: bool,
-        register_key: bool,
     ) -> Vec<String>;
 }
 
@@ -125,12 +135,10 @@ pub async fn run_login_follow_ups(
     login: &crate::transport::Login,
     connect: crate::link::unlock::UnlockOutcome,
     write_config: bool,
-    register_key: bool,
     ops: &dyn Ops,
 ) -> OpResult {
     let notes = if connect == crate::link::unlock::UnlockOutcome::Ok {
-        ops.login_follow_ups(source, login, write_config, register_key)
-            .await
+        ops.login_follow_ups(source, login, write_config).await
     } else {
         Vec::new()
     };

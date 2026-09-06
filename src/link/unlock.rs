@@ -224,6 +224,7 @@ impl RunningLogin {
 pub fn start_login(
     source: String,
     argv: Vec<String>,
+    remote: Box<dyn FnOnce() -> String + Send>,
     password: String,
     cols: u16,
     rows: u16,
@@ -243,7 +244,9 @@ pub fn start_login(
         size: Mutex::new((cols, rows)),
     };
     std::thread::spawn(move || {
-        let outcome = converse(argv, password, cols, rows, idle, grid, input, cancel, wake);
+        let outcome = converse(
+            argv, remote, password, cols, rows, idle, grid, input, cancel, wake,
+        );
         let _ = done_tx.send(outcome);
     });
     (handle, done_rx)
@@ -253,7 +256,8 @@ pub fn start_login(
 /// answers at the prompts that want them, and report what the child's exit says.
 #[allow(clippy::too_many_arguments)]
 fn converse(
-    argv: Vec<String>,
+    mut argv: Vec<String>,
+    remote: Box<dyn FnOnce() -> String + Send>,
     password: String,
     cols: u16,
     rows: u16,
@@ -263,6 +267,9 @@ fn converse(
     cancel: Arc<AtomicBool>,
     wake: tokio::sync::mpsc::UnboundedSender<crate::display::attachment::PtyEvent>,
 ) -> UnlockOutcome {
+    // Composing it can spawn (a machine with no key pair is given one), which is why it
+    // happens here and not where the login was asked for.
+    argv.push(remote());
     let env_clear = crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
     let (mut console, tap) = match crate::display::console::spawn_console_into(
         &argv,
@@ -447,6 +454,7 @@ mod tests {
         let (login, done) = start_login(
             "prod".into(),
             argv,
+            Box::new(|| "true".to_string()),
             "hunter2".into(),
             40,
             6,
@@ -475,6 +483,7 @@ mod tests {
         let (login, done) = start_login(
             "prod".into(),
             argv,
+            Box::new(|| "true".to_string()),
             String::new(),
             40,
             6,
@@ -500,6 +509,7 @@ mod tests {
         let (login, done) = start_login(
             "prod".into(),
             argv,
+            Box::new(|| "true".to_string()),
             String::new(),
             40,
             6,
@@ -528,6 +538,7 @@ mod tests {
         let (_login, done) = start_login(
             "prod".into(),
             argv,
+            Box::new(|| "true".to_string()),
             String::new(),
             40,
             6,
@@ -572,6 +583,7 @@ mod tests {
         let (_running, done) = start_login(
             "live".into(),
             argv,
+            Box::new(|| "true".to_string()),
             String::new(),
             80,
             24,
