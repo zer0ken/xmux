@@ -1052,7 +1052,7 @@ async fn a_locked_host_card_reads_locked_with_the_lock_mark() {
     let tree = h.nav_text();
     assert!(
         tree.lines()
-            .any(|l| l.contains("prod") && l.contains(crate::ui::chrome::LOCK_MARK)),
+            .any(|l| l.contains("prod") && l.contains(crate::ui::chrome::BLOCK_MARK)),
         "the locked host row carries the lock mark:\n{tree}"
     );
 }
@@ -1143,7 +1143,7 @@ async fn unlock_success_reprobes_only_that_machine_and_a_failure_keeps_it_locked
     );
     assert_eq!(reprobe, None, "a failure re-probes nothing");
     assert!(
-        h.sw.current_host_locked(),
+        h.sw.current_host_blocked(),
         "auth failure keeps the card locked"
     );
 }

@@ -21,6 +21,46 @@ pub struct Ssh {
     pub alias: String,
     pub control_path: String,
     pub os: String,
+    /// The connection values the user supplied for this machine, empty until they do.
+    pub login: Login,
+}
+
+/// The three connection values ssh never asks for and must know before it dials: where
+/// to go, on which port, and as whom. A machine that does not answer with the values ssh
+/// resolves on its own is reached with these instead.
+///
+/// Each is applied as an `-o` OVERRIDE, never by replacing the destination. The machine
+/// keeps its alias, so its `~/.ssh/config` stanza still supplies everything the override
+/// does not name, and a command-line override outranks the file for what it does name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Login {
+    pub address: Option<String>,
+    pub port: Option<u16>,
+    pub user: Option<String>,
+}
+
+impl Login {
+    /// The `-o` pairs this login names, in ssh's own keyword spelling. Empty when the
+    /// user supplied nothing, which is the state of every machine that just works.
+    pub(crate) fn options(&self) -> Vec<String> {
+        let mut a = Vec::new();
+        if let Some(address) = &self.address {
+            a.push(format!("HostName={address}"));
+        }
+        if let Some(port) = self.port {
+            a.push(format!("Port={port}"));
+        }
+        if let Some(user) = &self.user {
+            a.push(format!("User={user}"));
+        }
+        a
+    }
+
+    /// True when the user supplied nothing, so the machine is reached exactly as ssh
+    /// would reach it unaided.
+    pub fn is_empty(&self) -> bool {
+        self.address.is_none() && self.port.is_none() && self.user.is_none()
+    }
 }
 
 impl Ssh {
@@ -46,6 +86,10 @@ impl Ssh {
             a.push(format!("ControlPath={}", self.control_path));
             a.push("-o".into());
             a.push("ControlPersist=60s".into());
+        }
+        for opt in self.login.options() {
+            a.push("-o".into());
+            a.push(opt);
         }
         a.push("--".into());
         a.push(self.alias.clone());
@@ -112,11 +156,11 @@ impl Transport for Ssh {
     /// shares, with no BatchMode so it can prompt, and run `true` so the master
     /// lingers via `ControlPersist` after auth. `None` on Windows, where ssh has no
     /// ControlMaster socket to leave authenticated.
-    fn unlock_argv(&self, user: &str) -> Option<Vec<String>> {
+    fn login_argv(&self, login: &Login) -> Option<Vec<String>> {
         if self.os == "windows" {
             return None; // no ControlMaster socket to leave authenticated
         }
-        let v = vec![
+        let mut v = vec![
             "ssh".to_string(),
             "-o".into(),
             "ControlMaster=yes".into(),
@@ -126,12 +170,18 @@ impl Transport for Ssh {
             "ControlPersist=60s".into(),
             "-o".into(),
             format!("ConnectTimeout={CONNECT_TIMEOUT}"),
-            "-l".into(),
-            user.to_string(),
-            "--".into(),
-            self.alias.clone(),
-            "true".into(),
         ];
+        // The values the user is submitting, not the ones this transport was built with:
+        // the whole point of the run is to try something that has not worked yet.
+        for opt in login.options() {
+            v.push("-o".into());
+            v.push(opt);
+        }
+        v.push("--".into());
+        v.push(self.alias.clone());
+        // The connection itself IS the work: it leaves the authenticated master behind,
+        // and the remote command only has to exit.
+        v.push("true".into());
         Some(v)
     }
 
@@ -150,6 +200,7 @@ mod tests {
             alias: alias.into(),
             control_path: cp.into(),
             os: os.into(),
+            login: Login::default(),
         }
     }
     fn argv(parts: &[&str]) -> Vec<String> {
@@ -221,15 +272,19 @@ mod tests {
     }
 
     #[test]
-    fn ssh_unlock_argv_forces_a_master_with_the_same_control_path() {
+    fn ssh_login_argv_forces_a_master_with_the_same_control_path() {
+        let login = Login {
+            user: Some("alice".into()),
+            ..Default::default()
+        };
         let got = ssh("prod", "linux", "/tmp/cm.sock")
-            .unlock_argv("alice")
+            .login_argv(&login)
             .unwrap();
         assert_eq!(got[0], "ssh");
         let joined = got.join(" ");
         assert!(joined.contains("ControlMaster=yes"), "{joined}");
         assert!(joined.contains("ControlPath=/tmp/cm.sock"), "{joined}");
-        assert!(joined.contains("-l alice"), "{joined}");
+        assert!(joined.contains("User=alice"), "{joined}");
         assert!(
             !joined.contains("BatchMode"),
             "the unlock must be able to prompt: {joined}"
@@ -239,9 +294,40 @@ mod tests {
     }
 
     #[test]
-    fn ssh_unlock_argv_is_none_on_windows() {
+    fn ssh_opts_carry_the_login_overrides_and_keep_the_alias() {
+        // The overrides ride as `-o` keywords, so the destination stays the alias and the
+        // machine's own ssh-config stanza still supplies whatever they do not name.
+        let mut t = ssh("prod", "linux", "/tmp/cm.sock");
+        t.login = Login {
+            address: Some("100.88.0.0".into()),
+            port: Some(2222),
+            user: Some("alice".into()),
+        };
+        let joined = t.exec_argv(false, &["true".to_string()]).1.join(" ");
+        assert!(joined.contains("HostName=100.88.0.0"), "{joined}");
+        assert!(joined.contains("Port=2222"), "{joined}");
+        assert!(joined.contains("User=alice"), "{joined}");
+        assert!(
+            joined.contains("-- prod"),
+            "the alias is the destination: {joined}"
+        );
+    }
+
+    #[test]
+    fn ssh_opts_carry_nothing_when_no_login_was_supplied() {
+        let joined = ssh("prod", "linux", "/tmp/cm.sock")
+            .exec_argv(false, &["true".to_string()])
+            .1
+            .join(" ");
+        for k in ["HostName=", "Port=", "User="] {
+            assert!(!joined.contains(k), "{k} must not appear: {joined}");
+        }
+    }
+
+    #[test]
+    fn ssh_login_argv_is_none_on_windows() {
         assert_eq!(
-            ssh("prod", "windows", "").unlock_argv("alice"),
+            ssh("prod", "windows", "").login_argv(&Login::default()),
             None,
             "no ControlMaster on Windows to reuse"
         );

@@ -1772,7 +1772,7 @@ mod tests {
                 .find(|g| g.source == source)
                 .unwrap_or_else(|| panic!("{source} group"));
             assert!(
-                g.err.as_deref().is_some_and(crate::mux::is_locked),
+                g.err.as_deref().is_some_and(crate::mux::is_blocked),
                 "{source} classifies locked: {:?}",
                 g.err
             );
@@ -1801,7 +1801,7 @@ mod tests {
         let g = state.groups.iter().find(|g| g.source == "prod").unwrap();
         assert!(g.err.is_some(), "the card is unreachable");
         assert!(
-            !g.err.as_deref().is_some_and(crate::mux::is_locked),
+            !g.err.as_deref().is_some_and(crate::mux::is_blocked),
             "a reach failure is not locked: {:?}",
             g.err
         );

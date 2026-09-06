@@ -512,11 +512,11 @@ fn runtime_threads_hide_unreachable_into_its_switcher() {
 }
 
 #[test]
-fn a_locked_host_shows_the_locked_view_screen() {
+fn a_blocked_host_shows_the_login_view_screen() {
     use crate::ui::run::dump_screen;
-    // A locked host (reached, credentials refused) shows the locked screen: its
-    // state word, not the unreachable word, and the auth-failure reason. It also
-    // survives the default hide-unreachable (a locked host is actionable).
+    // A blocked host (reached, credentials refused) shows the login screen: its
+    // state word, not the unreachable word, and ssh's own reason. It also
+    // survives the default hide-unreachable (a blocked host is actionable).
     use crate::ui::switcher::Switcher;
     let mut state = crate::state::State::from_sources(vec!["pwbox".into()]);
     let mut switcher = Switcher::from_sources(&mut state);
@@ -528,16 +528,45 @@ fn a_locked_host_shows_the_locked_view_screen() {
     );
     let out = dump_screen(&mut switcher, None, 80, 24, &state);
     assert!(
-        out.contains("locked"),
-        "the locked view names its state:\n{out}"
+        out.contains("login required"),
+        "the login view names its state:\n{out}"
     );
     assert!(
         !out.contains("unreachable"),
-        "a locked host is not the unreachable state:\n{out}"
+        "a blocked host is not the unreachable state:\n{out}"
     );
     assert!(
         out.contains("pwtest@127.0.0.1"),
-        "the auth-failure reason is on the locked screen:\n{out}"
+        "ssh's own reason is on the login screen:\n{out}"
+    );
+}
+
+#[test]
+fn a_host_whose_name_did_not_resolve_shows_the_login_view_screen() {
+    use crate::ui::run::dump_screen;
+    // The address is exactly what the login pane supplies, so a name that did not
+    // resolve is answerable here rather than a machine that is simply gone.
+    use crate::ui::switcher::Switcher;
+    let mut state = crate::state::State::from_sources(vec!["jupiter00".into()]);
+    let mut switcher = Switcher::from_sources(&mut state);
+    switcher.apply_source_result(
+        "jupiter00".into(),
+        Vec::new(),
+        Some(
+            "command failed (exit 255): ssh: Could not resolve hostname jupiter00: \
+             No address associated with hostname"
+                .into(),
+        ),
+        &mut state,
+    );
+    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    assert!(
+        out.contains("login required"),
+        "an unresolved name is answerable:\n{out}"
+    );
+    assert!(
+        !out.contains("unreachable"),
+        "it is not the unreachable state:\n{out}"
     );
 }
 

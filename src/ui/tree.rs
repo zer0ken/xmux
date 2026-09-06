@@ -205,15 +205,15 @@ pub(crate) enum RowRef {
     /// card, and the `{host}/{mux}` it used to carry now lives on the section title
     /// above it.
     Session { sess: Session },
-    /// A host with no session to show (scanning / unreachable / locked / empty) -
+    /// A host with no session to show (scanning / unreachable / blocked / empty) -
     /// the only host-level entry, sunk to the bottom of the list. `scanning` is the
     /// in-flight state: the card's unresolved level shows a spinner instead of a
-    /// settled mux. `locked` refines `unreachable`: the host answered the network
-    /// but refused the credentials, so its card is the entry to the unlock view.
+    /// settled mux. `blocked` refines `unreachable`: the failure is one the user can
+    /// answer from xmux, so its card is the entry to the login pane.
     Host {
         source: String,
         unreachable: bool,
-        locked: bool,
+        blocked: bool,
         scanning: bool,
     },
 }
@@ -258,9 +258,9 @@ pub(crate) fn drop_hidden_unreachable(
         .filter(|g| {
             g.err.is_none()
                 || scanning.contains(&g.source)
-                // A locked host is actionable (its unlock view is the one entry
+                // A blocked host is actionable (its login pane is the one entry
                 // point), so hiding never drops it, whatever the filter says.
-                || crate::mux::is_locked(g.err.as_deref().unwrap_or_default())
+                || crate::mux::is_blocked(g.err.as_deref().unwrap_or_default())
                 || (!filter.is_empty() && fuzzy_match(filter, &g.source))
         })
         .cloned()
@@ -352,11 +352,13 @@ fn push_session_card(rows: &mut Vec<Row>, sess: &Session, mux_of_source: &dyn Fn
 /// unreachable and the empty states, so the screen a user reaches from a card can
 /// never name the same state two ways. The card itself no longer prints this word:
 /// an unreachable card carries the `⚠` mark on its host row, and a reachable empty
-/// host reads as the host row alone, so the word is the screen's alone. `locked`
-/// names the auth-failed host; it precedes `unreachable` (a locked host is one).
-pub(crate) fn host_state_word(locked: bool, unreachable: bool) -> &'static str {
-    if locked {
-        "locked"
+/// host reads as the host row alone, so the word is the screen's alone. `blocked`
+/// names a failure the user can answer; it precedes `unreachable` (a blocked host is
+/// one). What it was blocked ON is not in the word: the screen's reason row carries
+/// ssh's own sentence, which says it better than a state name could.
+pub(crate) fn host_state_word(blocked: bool, unreachable: bool) -> &'static str {
+    if blocked {
+        "login required"
     } else if unreachable {
         "⚠ unreachable"
     } else {
@@ -417,7 +419,7 @@ pub(crate) fn flatten(
     for g in groups {
         let is_scanning = scanning.contains(&g.source);
         let unreachable = g.err.is_some();
-        let locked = g.err.as_deref().is_some_and(crate::mux::is_locked);
+        let blocked = g.err.as_deref().is_some_and(crate::mux::is_blocked);
         if !unreachable && !g.sessions.is_empty() {
             continue;
         }
@@ -439,7 +441,7 @@ pub(crate) fn flatten(
             reference: RowRef::Host {
                 source: g.source.clone(),
                 unreachable,
-                locked,
+                blocked,
                 scanning: is_scanning,
             },
         });
@@ -1105,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn flatten_marks_a_locked_host_as_locked() {
+    fn flatten_marks_a_blocked_host_as_blocked() {
         let groups = vec![Group {
             source: "pwbox".into(),
             err: Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
@@ -1114,12 +1116,12 @@ mod tests {
         let rows = flatten(&groups, &HashSet::new(), "", false, &mux_of_source);
         match &rows[0].reference {
             RowRef::Host {
-                locked,
+                blocked,
                 unreachable,
                 ..
             } => {
-                assert!(*locked);
-                assert!(*unreachable, "a locked host is still a failure (err set)");
+                assert!(*blocked);
+                assert!(*unreachable, "a blocked host is still a failure (err set)");
             }
             _ => panic!("expected a host card, got a non-host row"),
         }
@@ -1156,8 +1158,8 @@ mod tests {
     }
 
     #[test]
-    fn host_state_word_names_locked() {
-        assert_eq!(host_state_word(true, false), "locked");
+    fn host_state_word_names_the_login_state() {
+        assert_eq!(host_state_word(true, false), "login required");
         assert_eq!(host_state_word(false, true), "⚠ unreachable");
         assert_eq!(host_state_word(false, false), "no sessions");
     }

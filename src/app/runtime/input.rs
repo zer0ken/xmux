@@ -566,7 +566,7 @@ impl Runtime {
                     // is ready the prior one is on screen, so input must reach what the user
                     // actually sees (no blind typing).
                     Action::Forward(f) => {
-                        if self.switcher.current_host_locked() {
+                        if self.switcher.current_host_blocked() {
                             if let Some(source) = self.switcher.current_source() {
                                 if let Some(cmd) = self.state.feed_unlock(&source, &f) {
                                     let (cq, cwc) = dispatch_commands(

@@ -589,9 +589,13 @@ impl Ops for EnvOps {
             return crate::link::unlock::UnlockOutcome::Unavailable;
         };
         let host = src.host();
+        let login = crate::transport::Login {
+            user: (!user.is_empty()).then(|| user.to_string()),
+            ..Default::default()
+        };
         crate::link::unlock::unlock_host(
             &*host.transport,
-            user,
+            &login,
             password,
             std::time::Duration::from_secs(UNLOCK_TIMEOUT_SECS),
         )

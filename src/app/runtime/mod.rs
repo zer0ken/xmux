@@ -682,7 +682,7 @@ fn ensure_current_host(
     // A locked selected host gets no control channel from here: opening a `-CC` that
     // dies on auth would overwrite its locked reason with "connection closed". The
     // reconnect sweep re-probes its reachability instead.
-    if switcher.current_host_locked() {
+    if switcher.current_host_blocked() {
         return;
     }
     if let Some(id) = switcher.current_host() {

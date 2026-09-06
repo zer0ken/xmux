@@ -1138,7 +1138,7 @@ impl Runtime {
                     // A LOCKED host has no PTY: its panel owns the keys, exactly as the
                     // interactive terminal-focus path routes them (see `input.rs`). So the
                     // ctl raw surface drives the unlock the same way a keyboard does.
-                    if self.switcher.current_host_locked() {
+                    if self.switcher.current_host_blocked() {
                         if let Some(source) = self.switcher.current_source() {
                             if let Some(cmd) = self.state.feed_unlock(&source, &bytes) {
                                 let _ = dispatch_commands(

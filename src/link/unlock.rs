@@ -115,11 +115,11 @@ impl Answerer {
 #[cfg(unix)]
 pub(crate) async fn unlock_host(
     transport: &dyn Transport,
-    user: &str,
+    login: &crate::transport::Login,
     password: &str,
     timeout: std::time::Duration,
 ) -> UnlockOutcome {
-    let Some(argv) = transport.unlock_argv(user) else {
+    let Some(argv) = transport.login_argv(login) else {
         return UnlockOutcome::Unavailable;
     };
     let spawned = match super::client::spawn_pty_child(&argv, &[], 80, 24) {
@@ -196,7 +196,7 @@ pub(crate) async fn unlock_host(
 #[cfg(not(unix))]
 pub(crate) async fn unlock_host(
     _transport: &dyn Transport,
-    _user: &str,
+    _login: &crate::transport::Login,
     _password: &str,
     _timeout: std::time::Duration,
 ) -> UnlockOutcome {
@@ -281,9 +281,13 @@ mod tests {
         // The same transport shape xmux builds for the host.
         let transport =
             crate::transport::ssh_as(host.clone(), host.clone(), cp.clone(), "linux".into());
+        let login = crate::transport::Login {
+            user: Some(user.clone()),
+            ..Default::default()
+        };
         let outcome = unlock_host(
             &*transport,
-            &user,
+            &login,
             &password,
             std::time::Duration::from_secs(30),
         )

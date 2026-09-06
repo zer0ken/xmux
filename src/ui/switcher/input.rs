@@ -143,8 +143,11 @@ impl Switcher {
     pub(super) fn open_new(&mut self, state: &mut crate::state::State) {
         state.chrome.flash.clear();
         self.dismiss_modals(state);
-        if self.current_host_blocked() {
-            state.flash("host locked or unreachable, cannot create here");
+        // A blocked host is unreachable too (its failure is one of unreachable's), so
+        // the one check covers both: nothing can be created over a connection that is
+        // not up.
+        if self.current_host_unreachable() {
+            state.flash("host unreachable, cannot create here");
             return;
         }
         let Some(source) = self.current_source() else {
