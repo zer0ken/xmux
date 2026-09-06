@@ -29,22 +29,25 @@ pub trait Ops: Send + Sync {
     /// unreachable (the message is shown as the host's failure reason).
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>>;
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session>;
-    /// Log in to a blocked source with the pane's values: run the off-loop ssh and
-    /// return the verdict. A connection that succeeds establishes the one authenticated
-    /// ControlMaster every later channel reuses; the app reacts to the outcome (a rescan
-    /// on success, a flash on failure).
+    /// The command that logs in to `source` with the pane's values, or `None` where the
+    /// machine has no login to run (it is local, or the platform leaves no reusable
+    /// master behind). Synchronous: it composes an argv and runs nothing, so the app can
+    /// ask for it on the loop and start the conversation itself.
+    fn login_argv(&self, source: &str, login: &crate::transport::Login) -> Option<Vec<String>>;
+
+    /// The pane's two checkboxes, run over the master a successful login just left. Each
+    /// returns a note only when it could NOT do what it said, so a step that failed says
+    /// so instead of passing silently.
     ///
-    /// `write_config` and `register_key` are the pane's two checkboxes, and they run only
-    /// after a connection that worked: neither is worth doing over one that did not, and
-    /// registering a key needs the authenticated master to carry it.
-    async fn login(
+    /// It is called only after a connection that worked: neither is worth doing over one
+    /// that did not, and registering a key needs the authenticated master to carry it.
+    async fn login_follow_ups(
         &self,
         source: &str,
         login: &crate::transport::Login,
-        password: &str,
         write_config: bool,
         register_key: bool,
-    ) -> LoginOutcome;
+    ) -> Vec<String>;
 }
 
 /// What one login run did. The connection is the verdict the app branches on; the
@@ -113,21 +116,26 @@ pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
     }
 }
 
-/// Runs the login against the live transport and returns its [`OpResult`]. Pure
-/// over `ops` (no switcher state), so it runs in a detached task off the event loop
-/// like [`run_op`].
-pub async fn run_login(
+/// Finishes a login the app already ran: takes the connection's verdict, runs the two
+/// checkboxes over the master it left (and only if it left one), and returns the
+/// [`OpResult`] the switcher folds. Pure over `ops` (no switcher state), so it runs in a
+/// detached task off the event loop like [`run_op`].
+pub async fn run_login_follow_ups(
     source: &str,
     login: &crate::transport::Login,
-    password: &str,
+    connect: crate::link::unlock::UnlockOutcome,
     write_config: bool,
     register_key: bool,
     ops: &dyn Ops,
 ) -> OpResult {
+    let notes = if connect == crate::link::unlock::UnlockOutcome::Ok {
+        ops.login_follow_ups(source, login, write_config, register_key)
+            .await
+    } else {
+        Vec::new()
+    };
     OpResult::Login {
         source: source.to_string(),
-        outcome: ops
-            .login(source, login, password, write_config, register_key)
-            .await,
+        outcome: LoginOutcome { connect, notes },
     }
 }

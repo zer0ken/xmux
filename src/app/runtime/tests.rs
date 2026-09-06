@@ -2346,6 +2346,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
     let mut hide = false;
     let ops = crate::ui::switcher::tests_support::noop_ops();
     let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = std::env::temp_dir().join(format!("xmux-apply-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -2358,7 +2359,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
             &mut natural,
             &mut hide,
             &dir,
-            (&ops, &op_tx),
+            (&ops, &op_tx, &pty_tx),
         ),
         (false, false)
     );
@@ -2372,7 +2373,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
         &mut natural,
         &mut hide,
         &dir,
-        (&ops, &op_tx),
+        (&ops, &op_tx, &pty_tx),
     );
     assert_eq!(state.focus, Focus::Terminal);
     // Focus(Tree) returns to nav focus.
@@ -2383,7 +2384,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
         &mut natural,
         &mut hide,
         &dir,
-        (&ops, &op_tx),
+        (&ops, &op_tx, &pty_tx),
     );
     assert_eq!(state.focus, Focus::Nav);
     // NavWidth adjusts the natural width and signals width_changed; Quit signals quit.
@@ -2395,7 +2396,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
             &mut natural,
             &mut hide,
             &dir,
-            (&ops, &op_tx),
+            (&ops, &op_tx, &pty_tx),
         ),
         (false, true)
     );
@@ -2408,7 +2409,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
             &mut natural,
             &mut hide,
             &dir,
-            (&ops, &op_tx),
+            (&ops, &op_tx, &pty_tx),
         ),
         (true, false),
         "Quit signals quit"
@@ -2486,6 +2487,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
     let mut hide = false;
     let ops = crate::ui::switcher::tests_support::noop_ops();
     let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = std::env::temp_dir().join(format!("xmux-ctl-switch-sync-{}", std::process::id()));
 
     sync_selection_from_switcher(&mut state, &sw);
@@ -2498,7 +2500,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
         &mut natural,
         &mut hide,
         &dir,
-        (&ops, &op_tx),
+        (&ops, &op_tx, &pty_tx),
     );
 
     // The switch moved the selection to db; the loop-top derive routes it through

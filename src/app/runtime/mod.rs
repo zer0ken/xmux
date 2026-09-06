@@ -38,6 +38,16 @@ use crate::ui::switcher::TerminalViewTarget;
 /// starves under a PTY-output flood.
 const SPINNER_FRAME_MS: u64 = 120;
 
+/// The size a login PTY opens at, before the first frame resizes it to the pane it is
+/// drawn in. ssh's prompts are one line each, so nothing depends on the guess.
+const LOGIN_COLS: u16 = 80;
+const LOGIN_ROWS: u16 = 24;
+
+/// How long a login may go with NOTHING said on it. It is counted from ssh's last word,
+/// so a prompt the user is still reading never ends the login, while an ssh that went
+/// quiet and a user who walked away do.
+const LOGIN_IDLE_SECS: u64 = 120;
+
 /// Max events (host or PTY) drained into one redraw before the loop yields back to
 /// `select!`. Coalesces an output burst without letting a sustained flood
 /// monopolize the single thread.
@@ -165,6 +175,7 @@ fn cycle_nav_position(
 type OpSink<'a> = (
     &'a Arc<dyn crate::ui::switcher::Ops>,
     &'a tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+    &'a tokio::sync::mpsc::UnboundedSender<crate::display::attachment::PtyEvent>,
 );
 
 fn dispatch_action(
@@ -230,14 +241,14 @@ fn dispatch_commands(
                 password,
                 remember,
                 pubkey,
-            } => spawn_login(
+            } => start_login(
                 source,
                 login,
                 password,
                 remember == crate::state::Remember::SshConfig,
                 pubkey,
-                op_sink.0,
-                op_sink.1,
+                state,
+                op_sink,
             ),
             // Settled-selection effects come only from Action::Tick, dispatched by the
             // run loop with registry/host access - never from a key/ctl action here.
@@ -1276,6 +1287,11 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     if rt.width_dirty {
         crate::ui::prefs::save_nav_width(&rt.env.xmux_dir, rt.nav_width_natural);
     }
+    // A login still on screen at quit is a child nobody will watch again: end it here so
+    // the ssh it started goes with the app rather than outliving it.
+    if let Some(login) = rt.state.login_pty.take() {
+        login.cancel();
+    }
     rt.registry.teardown_all();
     rt.mgr.teardown_all();
     0
@@ -1377,25 +1393,60 @@ fn spawn_op(
     });
 }
 
-/// Runs the login off the loop the way [`spawn_op`] runs a mux op: the PTY
-/// conversation is blocking I/O with its own timeout, so it must never freeze the
-/// loop; its [`OpResult::Login`] folds back through the same op channel.
-fn spawn_login(
+/// Starts the login the pane submitted and hands the app the conversation.
+///
+/// The connection is not an op: it is a screen the user watches and types into, so it
+/// runs on its own thread and its PTY is parked on [`State::login_pty`] for the view to
+/// draw. Only what comes AFTER the verdict is an op - the pane's two checkboxes over the
+/// master a working login left - and that folds back through the same channel as any
+/// other, so the switcher reacts to one login result however the login was had.
+///
+/// A machine with no login to run (it is local, or the platform leaves no reusable
+/// master) never opens a PTY: its verdict is posted directly.
+///
+/// [`State::login_pty`]: crate::state::State::login_pty
+fn start_login(
     source: String,
     login: crate::transport::Login,
     password: String,
     write_config: bool,
     register_key: bool,
-    ops: &Arc<dyn crate::ui::switcher::Ops>,
-    op_tx: &tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+    state: &mut crate::state::State,
+    op_sink: OpSink<'_>,
 ) {
-    let ops = ops.clone();
-    let tx = op_tx.clone();
+    let Some(argv) = op_sink.0.login_argv(&source, &login) else {
+        let _ = op_sink.1.send(crate::ui::switcher::OpResult::Login {
+            source,
+            outcome: crate::ui::ops::LoginOutcome {
+                connect: crate::link::unlock::UnlockOutcome::Unavailable,
+                notes: Vec::new(),
+            },
+        });
+        return;
+    };
+    // The PTY opens at a nominal size; the first frame that draws it resizes it to the
+    // pane it actually landed in, as does every window resize after that.
+    let (running, done) = crate::link::unlock::start_login(
+        source.clone(),
+        argv,
+        password,
+        LOGIN_COLS,
+        LOGIN_ROWS,
+        std::time::Duration::from_secs(LOGIN_IDLE_SECS),
+        op_sink.2.clone(),
+    );
+    state.login_pty = Some(running);
+
+    let ops = op_sink.0.clone();
+    let tx = op_sink.1.clone();
     tokio::spawn(async move {
-        let result = crate::ui::switcher::run_login(
+        let connect = done.await.unwrap_or_else(|_| {
+            crate::link::unlock::UnlockOutcome::Failed("the login ended without a verdict".into())
+        });
+        let result = crate::ui::switcher::run_login_follow_ups(
             &source,
             &login,
-            &password,
+            connect,
             write_config,
             register_key,
             ops.as_ref(),

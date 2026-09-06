@@ -22,7 +22,7 @@ use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
 
 use crate::ui::ops::OpFollow;
-pub use crate::ui::ops::{run_login, run_op, OpResult, Ops};
+pub use crate::ui::ops::{run_login_follow_ups, run_op, OpResult, Ops};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
 pub const NAV_WIDTH: u16 = 48;
@@ -716,6 +716,16 @@ impl Switcher {
             return None;
         };
         if *blocked {
+            // Once the pane is submitted the view shows ssh itself: the form has nothing
+            // left to collect until that conversation ends, and what the user needs to see
+            // is the prompt they have to answer.
+            if state
+                .login_pty
+                .as_ref()
+                .is_some_and(|l| &l.source == source)
+            {
+                return None;
+            }
             return Some(ViewScreen::Login);
         }
         if *unreachable {

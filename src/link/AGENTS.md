@@ -73,10 +73,22 @@ and the composed control argv.
   a control channel opens only for a machine already known to connect.
 - The login establishes the ONE authenticated master: a single PTY ssh
   (`ControlMaster=yes` over the shared control socket) carrying the submitted connection
-  values as `-o` overrides answers the host-key and password prompts, and every later
-  `BatchMode` channel reuses the socket it leaves. The secret rides only the transient
-  command and the PTY writer - never stored, logged, or rendered - and its success signal
-  is the child's zero exit.
+  values as `-o` overrides, and every later `BatchMode` channel reuses the socket it
+  leaves. The secret rides only the transient command and the PTY writer - never stored,
+  logged, or rendered.
+- The login is a CONVERSATION the user watches, not an exchange xmux has on their behalf.
+  Its PTY is on screen, its keys reach it, and what the pane already collected is typed
+  into it: the host-key question once, the password once and only if the pane carried
+  one. Every other prompt is left standing for the person looking at it, which is what
+  makes a second factor, a key passphrase, and a prompt in any language something to
+  answer rather than something to fail on.
+- Nothing decides a login failed from what it read. A wrong password only means ssh will
+  ask again, and the user answers that one better than a pattern can; the verdict is the
+  child's exit code. Recognised auth-failure text only names a failure the exit already
+  established.
+- The conversation runs on its own thread, because every part of it - opening the PTY,
+  spawning ssh, reading it - waits on something the single runtime thread must not wait
+  on, and the frames that make the login watchable are drawn on that thread.
 
 ## Common Pitfalls
 

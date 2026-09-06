@@ -23,11 +23,6 @@ use tokio::sync::mpsc;
 const SCAN_CONCURRENCY: usize = 8;
 const SCAN_TIMEOUT: Duration = Duration::from_secs(6); // must exceed the ssh connect timeout (5s)
 const DETAIL_TIMEOUT: Duration = Duration::from_secs(6);
-/// The login's whole budget: ssh connect (5s) + host-key/password answering + a
-/// margin for a slow login prompt. Bounds the PTY exchange so it cannot hang the
-/// off-loop task that runs it.
-const UNLOCK_TIMEOUT_SECS: u64 = 20;
-
 /// Everything a config resolution decides about WHICH sources exist.
 ///
 /// One value because every field answers the same question from the same read of config
@@ -590,45 +585,33 @@ impl Ops for EnvOps {
         })
     }
 
-    async fn login(
+    fn login_argv(&self, source: &str, login: &crate::transport::Login) -> Option<Vec<String>> {
+        let src = self.source(source).ok()?;
+        src.host().transport.login_argv(login)
+    }
+
+    async fn login_follow_ups(
         &self,
         source: &str,
         login: &crate::transport::Login,
-        password: &str,
         write_config: bool,
         register_key: bool,
-    ) -> crate::ui::ops::LoginOutcome {
+    ) -> Vec<String> {
         let Ok(src) = self.source(source) else {
-            return crate::ui::ops::LoginOutcome {
-                connect: crate::link::unlock::UnlockOutcome::Unavailable,
-                notes: Vec::new(),
-            };
+            return vec![format!("{source} is gone")];
         };
-        let host = src.host();
-        let connect = crate::link::unlock::unlock_host(
-            &*host.transport,
-            login,
-            password,
-            std::time::Duration::from_secs(UNLOCK_TIMEOUT_SECS),
-        )
-        .await;
-        // Neither follow-up is worth doing over a connection that did not work, and
-        // registering a key needs the authenticated master to carry it.
         let mut notes = Vec::new();
-        if connect == crate::link::unlock::UnlockOutcome::Ok {
-            let machine = crate::session::machine_of(source);
-            if write_config {
-                if let Err(e) = write_ssh_config_stanza(machine, login) {
-                    notes.push(format!("ssh config not written: {e}"));
-                }
-            }
-            if register_key {
-                if let Err(e) = register_public_key(&*host.transport).await {
-                    notes.push(format!("public key not registered: {e}"));
-                }
+        if write_config {
+            if let Err(e) = write_ssh_config_stanza(crate::session::machine_of(source), login) {
+                notes.push(format!("ssh config not written: {e}"));
             }
         }
-        crate::ui::ops::LoginOutcome { connect, notes }
+        if register_key {
+            if let Err(e) = register_public_key(&*src.host().transport).await {
+                notes.push(format!("public key not registered: {e}"));
+            }
+        }
+        notes
     }
 }
 

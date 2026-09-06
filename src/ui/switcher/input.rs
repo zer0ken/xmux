@@ -455,6 +455,9 @@ impl Switcher {
                         state.flash("login timed out");
                         None
                     }
+                    // The user ended it themselves, so they know why it is over and the
+                    // pane they are looking at is the answer.
+                    crate::link::unlock::UnlockOutcome::Cancelled => None,
                     crate::link::unlock::UnlockOutcome::Unavailable => {
                         state.flash("login unavailable on this platform");
                         None

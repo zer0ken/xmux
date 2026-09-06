@@ -71,6 +71,11 @@ pub struct State {
     /// starts a fresh draft. The password lives here and in the transient login command
     /// only; it is drawn masked and never logged or serialized.
     pub login: Option<LoginDraft>,
+    /// The login the user is WATCHING: once the pane is submitted, ssh runs on a PTY and
+    /// that PTY is what the terminal view shows, because the rest of the conversation is
+    /// ssh's to have and the user's to answer. Present only while that conversation runs,
+    /// so its presence is what tells the view to draw a screen instead of the form.
+    pub login_pty: Option<crate::link::unlock::RunningLogin>,
 }
 
 /// What the login pane does with the values once the connection works. The two are one
@@ -774,7 +779,12 @@ impl State {
             OpResult::Failed { message } => OpFollow::Flash(message),
             // The unlock verdict is no inventory mutation: the app reacts to it (re-probe
             // the unlocked machine on success, a flash on failure).
-            OpResult::Login { source, outcome } => OpFollow::LoginResult { source, outcome },
+            OpResult::Login { source, outcome } => {
+                // The conversation is over however it ended, so the PTY it was shown in
+                // goes with it and the pane comes back holding what was typed.
+                self.login_pty = None;
+                OpFollow::LoginResult { source, outcome }
+            }
         }
     }
 

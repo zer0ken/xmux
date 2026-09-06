@@ -37,19 +37,20 @@ impl Ops for RecordOps {
             ..Default::default()
         })
     }
-    async fn login(
+    fn login_argv(&self, source: &str, _login: &crate::transport::Login) -> Option<Vec<String>> {
+        self.logged_in.lock().unwrap().push(source.to_string());
+        // A child that exits 0 at once: the conversation this stands in for is one that
+        // needed nothing typed.
+        Some(vec!["true".to_string()])
+    }
+    async fn login_follow_ups(
         &self,
-        source: &str,
+        _source: &str,
         _login: &crate::transport::Login,
-        _password: &str,
         _write_config: bool,
         _register_key: bool,
-    ) -> crate::ui::ops::LoginOutcome {
-        self.logged_in.lock().unwrap().push(source.to_string());
-        crate::ui::ops::LoginOutcome {
-            connect: crate::link::unlock::UnlockOutcome::Ok,
-            notes: Vec::new(),
-        }
+    ) -> Vec<String> {
+        Vec::new()
     }
 }
 
@@ -1147,6 +1148,90 @@ async fn login_pane_offers_the_remember_choice_only_after_a_value_changes() {
         h.text()
             .contains("write address, port, username to ssh config"),
         "an edited value is worth recording:\n{}",
+        h.text()
+    );
+}
+
+#[tokio::test]
+async fn a_running_login_puts_ssh_on_screen_in_place_of_the_form() {
+    // Submitting the pane starts a real ssh, and that ssh is what the view shows: the
+    // form has nothing left to collect, and the prompt the user must answer is ssh's own.
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.state.login = Some(crate::state::LoginDraft {
+        source: "pwbox".into(),
+        address: "100.88.0.0".into(),
+        port: "22".into(),
+        username: "alice".into(),
+        ..Default::default()
+    });
+    h.draw();
+    assert!(
+        h.text().contains("username"),
+        "the form is on screen before the login runs:\n{}",
+        h.text()
+    );
+
+    h.state.login_pty = Some(crate::link::unlock::RunningLogin::parked("pwbox"));
+    h.draw();
+    let screen = h.text();
+    assert!(
+        !screen.contains("username") && !screen.contains("100.88.0.0"),
+        "the form gives the view up to ssh while the login runs:\n{screen}"
+    );
+
+    // A login running for a DIFFERENT host is not this pane's: the form stays.
+    h.state.login_pty = Some(crate::link::unlock::RunningLogin::parked("elsewhere"));
+    h.draw();
+    assert!(
+        h.text().contains("username"),
+        "another host's login leaves this pane alone:\n{}",
+        h.text()
+    );
+}
+
+#[tokio::test]
+async fn the_verdict_takes_the_login_screen_down() {
+    // However the conversation ended, it is over: the PTY goes with it and the pane comes
+    // back holding what was typed, so a failure is retried rather than retyped.
+    use crate::link::unlock::UnlockOutcome;
+    use crate::ui::ops::OpResult;
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.state.login = Some(crate::state::LoginDraft {
+        source: "pwbox".into(),
+        username: "alice".into(),
+        ..Default::default()
+    });
+    h.state.login_pty = Some(crate::link::unlock::RunningLogin::parked("pwbox"));
+    h.sw.apply_op_result(
+        OpResult::Login {
+            source: "pwbox".into(),
+            outcome: crate::ui::ops::LoginOutcome {
+                connect: UnlockOutcome::AuthFailed,
+                notes: Vec::new(),
+            },
+        },
+        &mut h.state,
+    );
+    assert!(
+        h.state.login_pty.is_none(),
+        "the login screen is gone once the verdict is in"
+    );
+    h.draw();
+    assert!(
+        h.text().contains("alice"),
+        "the pane comes back holding what was typed:\n{}",
         h.text()
     );
 }

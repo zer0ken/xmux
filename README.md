@@ -138,7 +138,10 @@ probed after the app is up, so a discovered source appears as its host answers.
 A remote host xmux could not reach with the values ssh works out on its own shows
 `login required` (a `?` mark). Focus its panel in the terminal view: it holds the
 address, the port and the username ssh will not ask you for, each starting at what
-ssh would have used, plus an optional masked password. Submitting establishes one
+ssh would have used, plus an optional masked password. Submitting runs ssh in that
+panel and shows it: the host-key question and the password are answered from what
+you filled in, and any other prompt - a second factor, a key passphrase - waits for
+you to type it. Esc ends the attempt. A connection that works establishes the one
 authenticated connection the rest of the session reuses, and re-probes just that
 host. Two checkboxes decide what happens afterwards: recording the values as an
 `~/.ssh/config` stanza, and registering your public key on the host so it stops

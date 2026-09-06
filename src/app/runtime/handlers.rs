@@ -708,21 +708,43 @@ impl Runtime {
         if self.dirty && self.last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
             // Render the CONFIRMED display truth (`displayed`), not the selection: the prior
             // session stays on screen until the new one is ready (stale-while-revalidate).
-            let grid_arc = current_grid(
-                &self.state.displayed,
-                &crate::driver::DriverCtx {
-                    registry: &mut self.registry,
-                    hosts: &mut self.hosts,
-                    worker: &self.worker,
-                    pty_tx: &self.driver_pty_tx,
-                    attach_seq: &mut self.attach_seq,
-                    cols: self.cols,
-                    body_rows: self.body_rows,
-                    nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                        .with_height(self.nav_height)
-                        .with_position(self.nav_position),
-                },
-            );
+            // A login on screen is what the terminal view shows, so its PTY is the grid
+            // this frame draws and the pane it landed in is the size ssh draws for. No
+            // attach runs while it does: the host it belongs to has not answered yet.
+            let login_grid = self
+                .state
+                .login_pty
+                .as_ref()
+                .filter(|l| self.switcher.current_source().as_deref() == Some(&l.source))
+                .map(|l| {
+                    let (cols, rows) = terminal_view_size(
+                        self.cols,
+                        self.body_rows,
+                        crate::ui::switcher::NavSize::visible(self.nav_width)
+                            .with_height(self.nav_height)
+                            .with_position(self.nav_position),
+                    );
+                    l.resize(cols, rows);
+                    l.grid.clone()
+                });
+            let grid_arc = match login_grid {
+                Some(g) => Some(g),
+                None => current_grid(
+                    &self.state.displayed,
+                    &crate::driver::DriverCtx {
+                        registry: &mut self.registry,
+                        hosts: &mut self.hosts,
+                        worker: &self.worker,
+                        pty_tx: &self.driver_pty_tx,
+                        attach_seq: &mut self.attach_seq,
+                        cols: self.cols,
+                        body_rows: self.body_rows,
+                        nav: crate::ui::switcher::NavSize::visible(self.nav_width)
+                            .with_height(self.nav_height)
+                            .with_position(self.nav_position),
+                    },
+                ),
+            };
             let terminal_focused = self.state.focus.is_terminal_focused();
             // The view border glyph reflects auto-hide-nav mode (║ on, │ off).
             self.state.chrome.set_auto_hide(self.auto_hide_nav);
@@ -1030,7 +1052,7 @@ impl Runtime {
                     &mut self.nav_width_natural,
                     &mut self.auto_hide_nav,
                     &self.env.xmux_dir,
-                    (&self.ops, &self.op_tx),
+                    (&self.ops, &self.op_tx, &self.driver_pty_tx),
                 );
                 let _ = reply.send(resp);
                 if wc {
@@ -1120,7 +1142,7 @@ impl Runtime {
                     &mut self.nav_width_natural,
                     &mut self.auto_hide_nav,
                     &self.env.xmux_dir,
-                    (&self.ops, &self.op_tx),
+                    (&self.ops, &self.op_tx, &self.driver_pty_tx),
                 );
                 if wc {
                     self.width_dirty = true;
@@ -1157,7 +1179,7 @@ impl Runtime {
                                     &mut self.nav_width_natural,
                                     &mut self.auto_hide_nav,
                                     &self.env.xmux_dir,
-                                    (&self.ops, &self.op_tx),
+                                    (&self.ops, &self.op_tx, &self.driver_pty_tx),
                                 );
                             }
                             self.dirty = true;
