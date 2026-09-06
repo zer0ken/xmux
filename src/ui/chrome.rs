@@ -6,6 +6,7 @@
 //! draws to it.
 
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -375,12 +376,20 @@ impl ScreenCell {
     }
 }
 
+/// How long a flash stays up with nothing pressed. A refusal is about something that
+/// already happened, so a bar holding one forever keeps the nav's own help text off
+/// screen over a message that has stopped being news. Ten seconds reads a wrapped line
+/// twice over.
+pub(crate) const FLASH_TTL: Duration = Duration::from_secs(10);
+
 /// The switcher's chrome view state: the view border/hint_bar/host-screen draws and
 /// their inputs (flash, spinner set + frame, auto-hide + hover cues, view border
 /// colours, the ssh-config text, the configured prefix string, whether the prefix is
 /// currently armed, and the hint bar style).
 pub struct Chrome {
     pub(crate) flash: String,
+    /// When the flash stops showing itself, or `None` when nothing is flashing.
+    flash_until: Option<Instant>,
     /// Auto-hide-tree mode (set by the app each frame). Drives the view border glyph:
     /// ║ (double) when on, │ (single) when off - the only on-screen cue, since while
     /// the mode is on but the tree is focused the tree still shows.
@@ -441,6 +450,7 @@ impl Default for Chrome {
     fn default() -> Self {
         Chrome {
             flash: String::new(),
+            flash_until: None,
             auto_hide: false,
             view_border_hovered: false,
             spinner: HashSet::new(),
@@ -462,10 +472,30 @@ impl Default for Chrome {
 
 impl Chrome {
     /// Sets the transient flash message shown in the nav's hint bar (an error
-    /// or notice). The next tree key clears it (the switcher's `handle_key`), so the
-    /// normal help/status hint bar returns.
+    /// or notice). The next tree key clears it (the switcher's `handle_key`), and
+    /// [`FLASH_TTL`] clears it for a user who presses nothing, so the normal
+    /// help/status hint bar returns either way.
     pub(crate) fn flash(&mut self, msg: impl Into<String>) {
         self.flash = msg.into();
+        self.flash_until = Some(Instant::now() + FLASH_TTL);
+    }
+
+    /// Takes the flash down, however it came to be over: a key, or its own life.
+    pub(crate) fn clear_flash(&mut self) {
+        self.flash.clear();
+        self.flash_until = None;
+    }
+
+    /// Drops a flash that has been up for its whole life, and says whether the bar
+    /// changed, so a caller repaints only when it did.
+    pub(crate) fn expire_flash(&mut self, now: Instant) -> bool {
+        match self.flash_until {
+            Some(until) if now >= until => {
+                self.clear_flash();
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Replaces the set of session addresses currently connecting / awaiting
@@ -1385,6 +1415,33 @@ impl Chrome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A flash comes down on its own, so a refusal nobody answered stops holding the
+    /// hint bar. Dropping it is a one-time change: the bar is already back afterwards.
+    #[test]
+    fn a_flash_comes_down_after_its_own_life() {
+        let mut c = Chrome::default();
+        c.flash("boom");
+        let now = Instant::now();
+        assert!(!c.expire_flash(now), "it has only just been shown");
+        assert_eq!(c.flash, "boom");
+        assert!(c.expire_flash(now + FLASH_TTL), "its life is over");
+        assert!(c.flash.is_empty());
+        assert!(
+            !c.expire_flash(now + FLASH_TTL),
+            "an empty bar changes nothing"
+        );
+    }
+
+    /// A key that takes the flash down takes its deadline with it, so nothing is left to
+    /// fire later at a bar the user already cleared.
+    #[test]
+    fn clearing_a_flash_leaves_nothing_to_expire() {
+        let mut c = Chrome::default();
+        c.flash("boom");
+        c.clear_flash();
+        assert!(!c.expire_flash(Instant::now() + FLASH_TTL));
+    }
 
     #[test]
     fn a_selection_style_names_one_background() {

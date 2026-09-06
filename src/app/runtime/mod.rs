@@ -1427,6 +1427,10 @@ fn start_login(
     let ops = op_sink.0.clone();
     let remote: Box<dyn FnOnce() -> String + Send> =
         Box::new(move || ops.login_remote(register_key));
+    // The login is the one thing the user starts that shows no output of its own, so the
+    // log is where a run that went nowhere is read back. The values ride ssh's argv and
+    // the password rides neither, so only the host is named.
+    tracing::info!(source = %source, "login started");
     let (running, done) = crate::link::unlock::start_login(
         source.clone(),
         argv,
@@ -1442,6 +1446,7 @@ fn start_login(
         let connect = done.await.unwrap_or_else(|_| {
             crate::link::unlock::UnlockOutcome::Failed("the login ended without a verdict".into())
         });
+        tracing::info!(source = %source, outcome = ?connect, "login finished");
         let result = crate::ui::switcher::run_login_follow_ups(
             &source,
             &login,

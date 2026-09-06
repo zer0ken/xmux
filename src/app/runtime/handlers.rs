@@ -1455,6 +1455,12 @@ impl Runtime {
         if self.observe_display_session() {
             self.dirty = true;
         }
+        // A flash outlives the moment it was about, so it comes down on its own for a
+        // user who pressed nothing. The tick is where that is noticed, because it is the
+        // one wake that happens without the user doing anything.
+        if self.state.chrome.expire_flash(std::time::Instant::now()) {
+            self.dirty = true;
+        }
         // Spinner set = the selected session if its PTY is still connecting.
         let mut sp = HashSet::new();
         if !self.state.selection.is_empty() {

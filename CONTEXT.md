@@ -402,7 +402,9 @@ UI elements a user perceives as distinct things:
   opened with. A host hidden from the nav (`[ui] hide-unreachable`) shows its card
   while the filter names it.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
-  action's reason). Never a "toast" or "notice".
+  action's reason). It goes away on the next tree key, and after ten seconds for a user
+  who presses nothing, since it is about something that already happened. Never a
+  "toast" or "notice".
 - scan indicator - the `scanning hosts n/m…` progress shown in the hint bar while
   host probes are in flight (a narrow row shortens it to `scanning n/m…`, then to the
   bare `n/m`), behind the same spinner on the same frame as the cards it counts. It

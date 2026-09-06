@@ -4320,7 +4320,7 @@ fn a_hidden_nav_keeps_no_status_line_until_it_has_something_to_say() {
         flashed.contains("nope") && !flashed.contains('X'),
         "a refusal floats over a hidden nav: {flashed:?}"
     );
-    state.chrome.flash.clear();
+    state.chrome.clear_flash();
 
     // Scan progress does NOT float: it persists, and the user asked for the whole screen.
     state.scanning.insert("local".to_string());

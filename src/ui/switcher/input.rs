@@ -75,7 +75,7 @@ impl Switcher {
         // A flash is a transient error/message - it lives only until the next key. Clear
         // it here so navigation (or any key) restores the normal help
         // hint_bar; actions below may set a fresh one, which survives because this runs first.
-        state.chrome.flash.clear();
+        state.chrome.clear_flash();
         // The flat card list has no levels or host columns: ↑/↓ (and k/j) step one card,
         // ←/→ step one category, PageUp/Down jump ten, Home/End go to the ends (prefix
         // →/Enter focuses the terminal at the app layer). `n` starts a session on
@@ -116,7 +116,7 @@ impl Switcher {
     /// mode; `new session` is opened by [`Switcher::open_new`], which needs the
     /// selected host captured up front.
     pub(super) fn open_input(&mut self, mode: InputMode, state: &mut crate::state::State) {
-        state.chrome.flash.clear();
+        state.chrome.clear_flash();
         self.dismiss_modals(state);
         match mode {
             InputMode::Filter => {
@@ -141,7 +141,7 @@ impl Switcher {
     /// nothing else `n` could add.) The source is captured up front so a streamed
     /// selection move cannot retarget it.
     pub(super) fn open_new(&mut self, state: &mut crate::state::State) {
-        state.chrome.flash.clear();
+        state.chrome.clear_flash();
         self.dismiss_modals(state);
         // A blocked host is unreachable too (its failure is one of unreachable's), so
         // the one check covers both: nothing can be created over a connection that is
@@ -193,7 +193,7 @@ impl Switcher {
     /// selection is only moved while the number names a card, so a dead number just
     /// waits for Enter to vet it.
     pub(super) fn open_jump(&mut self, digit: char, state: &mut crate::state::State) {
-        state.chrome.flash.clear();
+        state.chrome.clear_flash();
         let seed = digit.to_string();
         let last = self.selectable_count();
         let restore = self.current_ref().cloned();
@@ -263,7 +263,7 @@ impl Switcher {
         // it here so a key while an input is open (a fresh edit, a fresh Enter) restores
         // the input line; an action below may set a fresh one, which survives because
         // this runs first.
-        state.chrome.flash.clear();
+        state.chrome.clear_flash();
         match ev.code {
             KeyCode::Enter => {
                 let (mode, val, source) = {
