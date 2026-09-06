@@ -114,16 +114,27 @@ ssh target names from three providers:
 - this machine's WSL distributions
 
 The second provider reads the operating system's own network state, so it needs
-no VPN client installed and no account anywhere. Two records tell it who is
-directly reachable: the routing table, where a mesh VPN writes one route per
-peer, and the neighbour table (the ARP cache), which holds the machines on this
-link this box has actually exchanged frames with. Those addresses are narrowed
-twice. An entry that resolved to nothing, and one hardware address answering for
-many addresses (a router speaking for a subnet), name no machine. What is left is
-asked whether it answers ssh, because a printer on the same switch is a neighbour
-and not a host. Whatever answers is named through the system resolver, which is
+no VPN client installed and no account anywhere. It reads it from the OS
+directly - over netlink on Linux and Android, through IP Helper on Windows - so
+it also runs where the usual command-line tools are missing or, as on Android,
+refused. Two records tell it who is directly reachable: the routing table, where
+a mesh VPN writes one route per peer (or one for a handful of them, which is read
+as those addresses), and the neighbour table (the ARP cache), which holds the
+machines on this link this box has actually exchanged frames with. Where the OS
+refuses the neighbour table, as Android does, the link this machine is on is
+asked address by address instead.
+
+Those addresses are narrowed twice. An entry that resolved to nothing, and one
+hardware address answering for many addresses (a router speaking for a subnet),
+name no machine. What is left is asked whether it answers ssh, because a printer
+on the same switch is a neighbour and not a host.
+
+Whatever answers is then named. The system resolver is asked first, which is
 where a mesh VPN's own naming already lives, so a peer arrives under the name its
-network gave it and keeps its address as its name when nothing answers for it.
+network gave it. A machine no resolver knows is asked for its own name, which it
+answers over mDNS whether or not anyone registered it anywhere. A name is used
+only when this machine can resolve it back, because the name is also what ssh is
+given; a machine whose name leads nowhere keeps its address as its name.
 
 Every provider yields ssh target names. Whichever provider suggested a name, the
 downstream behavior is the same; the suggesting provider is kept alongside the

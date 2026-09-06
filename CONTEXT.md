@@ -372,16 +372,21 @@ UI elements a user perceives as distinct things:
   source's sessions).
 - neighbour - a machine this box already reaches in ONE hop and that answers ssh, found
   in the operating system's own network state rather than from any VPN's client. Two
-  records name the directly reachable: a route to a single address, which a mesh VPN
-  writes one of per peer, and the neighbour table, which holds the machines on this link
-  this box has exchanged frames with. A tunnel appears only in the first (it carries no
-  ARP) and a switch only in the second, so both are read. Neither is a list of hosts, so
-  what they give is narrowed: an entry that resolved to nothing names nobody, one
-  hardware address answering for many addresses is a router rather than a machine, and
-  what survives has to answer ssh, because a printer on the same switch is a neighbour
-  and not a host. The name is the system resolver's answer, trimmed to its first label -
-  which is how a peer keeps the name its own network gave it - and the address stands in
-  as the name when the resolver says nothing. This box is told from its neighbours by the
+  records name the directly reachable: the routes to single machines, which a mesh VPN
+  writes one of per peer (and sometimes one for two of them, so a route naming a handful
+  of addresses is read as those addresses and a wider one as a network), and the
+  neighbour table, which holds the machines on this link this box has exchanged frames
+  with. A tunnel appears only in the first (it carries no ARP) and a switch only in the
+  second, so both are read. Where the OS refuses the neighbour table outright, the link
+  this box holds an address in is asked address by address instead. Neither record is a
+  list of hosts, so what they give is narrowed: an entry that resolved to nothing names
+  nobody, one hardware address answering for many addresses is a router rather than a
+  machine, and what survives has to answer ssh, because a printer on the same switch is
+  a neighbour and not a host. The name comes from whoever knows it - the system
+  resolver, which holds what someone registered, then the machine itself over mDNS,
+  which knows what it calls itself - and is adopted only when this box can resolve it
+  back, since the name is also the ssh destination; the address stands in as the name
+  when nothing resolvable answers. This box is told from its neighbours by the
   connection itself, whose two ends carry the same address only when it reached here.
 - roster - which HOSTS xmux offers, assembled from PROVIDERS, EVERY one on unless
   `[discovery]` turns it off: `~/.ssh/config` aliases, this machine's NEIGHBOURS, and

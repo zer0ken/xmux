@@ -28,9 +28,11 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-A5** - The roster (which HOSTS are offered) comes from providers the
   `[discovery]` table selects: `~/.ssh/config` aliases and this machine's neighbours,
   both on by default. A neighbour is a machine the OS already reaches in one hop - by a
-  route to a single address, or by the neighbour table - and that answers ssh; it is
-  offered under the name the system resolver gives it, or its address when the resolver
-  gives none. This box is skipped, since it is reached without ssh. A provider that
+  route naming a machine, or by the neighbour table, or by the link this machine holds an
+  address in where the OS refuses that table - and that answers ssh; it is offered under
+  the name the system resolver gives it, or the name the machine gives for itself when
+  the resolver gives none, or its address when neither yields a name this machine can
+  resolve back. This box is skipped, since it is reached without ssh. A provider that
   cannot answer contributes nothing instead of failing the run, so a machine whose
   network state cannot be read reaches an empty list rather than an error, and
   ssh-config names keep their position when a provider repeats them. The roster is resolved again on every re-scan, so a machine that has

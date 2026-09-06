@@ -25,10 +25,28 @@ sources exist.
 - Roster answers only "which hosts does xmux offer", from one or more providers
   that each yield plain ssh target names.
 - The neighbour provider answers "which machines does this OS already reach in one hop",
-  from the OS's own network state rather than any VPN's client: a route to a single
-  address, and the neighbour table. It narrows what those give - an entry naming no
+  from the OS's own network state rather than any VPN's client: the routes to single
+  addresses, and the neighbour table. It narrows what those give - an entry naming no
   machine, a hardware address answering for many addresses - then keeps only what
-  answers ssh, and names the survivors through the system resolver.
+  answers ssh, and names the survivors.
+- A name is asked for in the order of who would know it: the system resolver, which holds
+  what someone registered, then the machine itself over mDNS, which knows what it calls
+  itself whether or not anyone registered it. A name is adopted only when this machine can
+  resolve it back, because the name is also the ssh destination: the bare label first, the
+  full name where the label means nothing outside its own domain, and the address where
+  neither resolves.
+- Those two records are read from the OS itself wherever the OS has a way to be asked:
+  netlink on Linux and Android, IP Helper on Windows. Only the unixes with neither are
+  asked through a command. The netlink socket is never bound: an app on Android may not
+  bind one, and a dump does not need it, which is why `ip` fails there on every
+  subcommand while these dumps answer.
+- A record the OS REFUSES is not a record that is empty. Android denies the neighbour
+  table and allows the routing table, so the refusal is carried rather than flattened:
+  where the neighbour table is refused, the link this machine holds an address in is
+  asked address by address instead, and `doctor` says which record was refused.
+- A route names a machine when it names few enough addresses to be machines. A VPN that
+  summarises its peers hands the OS one route for two of them, so a block of up to eight
+  is read as its addresses; a wider one is a network and contributes nothing.
 - Discovery probes every source concurrently, isolating each so one unreachable
   mux never fails the rest, with bounded concurrency, a per-source timeout, and
   order-preserving results.
