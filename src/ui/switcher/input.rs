@@ -458,8 +458,10 @@ impl Switcher {
                     // The user ended it themselves, so they know why it is over and the
                     // pane they are looking at is the answer.
                     crate::link::unlock::UnlockOutcome::Cancelled => None,
+                    // Reached only for a machine there is nothing to log in TO: this box
+                    // and its WSL distributions are not behind ssh at all.
                     crate::link::unlock::UnlockOutcome::Unavailable => {
-                        state.flash("login unavailable on this platform");
+                        state.flash("this machine is reached without a login");
                         None
                     }
                     crate::link::unlock::UnlockOutcome::Failed(msg) => {

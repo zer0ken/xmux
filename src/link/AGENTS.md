@@ -71,11 +71,22 @@ and the composed control argv.
   reader. The reader's exit reason carries only a protocol `%error` (a "no sessions" /
   "no server" empty mux), so a reachable-but-empty host is told from one that answered;
   a control channel opens only for a machine already known to connect.
-- The login establishes the ONE authenticated master: a single PTY ssh
-  (`ControlMaster=yes` over the shared control socket) carrying the submitted connection
-  values as `-o` overrides, and every later `BatchMode` channel reuses the socket it
-  leaves. The secret rides only the transient command and the PTY writer - never stored,
-  logged, or rendered.
+- The login is a single PTY ssh carrying the submitted connection values as `-o`
+  overrides. Where this side multiplexes, it establishes the ONE authenticated master
+  (`ControlMaster=yes` over the shared control socket) that every later `BatchMode`
+  channel reuses. The secret rides only the transient command and the PTY writer - never
+  stored, logged, or rendered.
+- What the login is FOR rides the login's own session. Registering a key is a remote
+  command on that ssh, not a connection opened afterwards, because a side that cannot
+  multiplex has no afterwards - and there the key is the whole point, since it ends the
+  password the next probe could not supply. Composing that command may make this machine
+  a key pair, so it is composed on the login's thread and never on the runtime's.
+- A side that cannot multiplex still runs the login. ssh asks about the host key BEFORE it
+  authenticates and writes the answer to `known_hosts`, so accepting a key is a login
+  whose whole result outlives the connection; recording the values is another. Only the
+  reuse is lost, so only the reuse is refused: a host that then needs a password is asked
+  again on the next probe, which is the truth about that machine on that platform rather
+  than a reason to have refused the login.
 - The login is a CONVERSATION the user watches, not an exchange xmux has on their behalf.
   Its PTY is on screen, its keys reach it, and what the pane already collected is typed
   into it: the host-key question once, the password once and only if the pane carried

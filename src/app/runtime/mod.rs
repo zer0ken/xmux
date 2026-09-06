@@ -1424,11 +1424,18 @@ fn start_login(
         });
         return;
     };
+    // What the login is FOR rides its own session, so the command is composed on the
+    // login's thread: composing it may have to make this machine a key pair, and a spawn
+    // is the one thing the runtime thread must never wait on.
+    let ops = op_sink.0.clone();
+    let remote: Box<dyn FnOnce() -> String + Send> =
+        Box::new(move || ops.login_remote(register_key));
     // The PTY opens at a nominal size; the first frame that draws it resizes it to the
     // pane it actually landed in, as does every window resize after that.
     let (running, done) = crate::link::unlock::start_login(
         source.clone(),
         argv,
+        remote,
         password,
         LOGIN_COLS,
         LOGIN_ROWS,
@@ -1448,7 +1455,6 @@ fn start_login(
             &login,
             connect,
             write_config,
-            register_key,
             ops.as_ref(),
         )
         .await;

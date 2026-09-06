@@ -377,22 +377,27 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B28** - Submitting runs one PTY ssh (`ControlMaster=yes` over the same control
   socket every other ssh shares) carrying the submitted values as `-o` overrides, so the
   host keeps its alias and its ssh-config stanza still supplies whatever they do not
-  name. It establishes the single authenticated master the later channels reuse. Success
-  re-probes ONLY that host over the master (its reach is the only thing that changed, so
-  the whole roster is not re-scanned); any failure keeps the host blocked and flashes
-  why. The password lives only in the transient command and the PTY writer, never
-  stored, logged, rendered, or serialized. The login is unavailable on Windows (no
-  ControlMaster socket to leave authenticated, FR-G) and on local/WSL hosts.
-- **FR-B29** - The pane's two choices run only after a connection that worked, and each
-  says so when it could not. RECORDING writes an xmux-marked stanza naming the host, with
-  the values that reached it, at the TOP of `~/.ssh/config`, because ssh keeps the first
-  value it obtains for a keyword. The marker makes a second login replace that stanza
-  rather than stack another, and nothing the user wrote is touched. The choice is offered
-  only once a value differs from what ssh would have used. A password is never recorded,
-  because ssh config has nowhere to put one. REGISTERING appends this machine's public
-  key to the host's `authorized_keys` over the master the login just authenticated,
-  adding it only when that exact line is absent, and generating an ed25519 pair first
-  when the machine has no key to send.
+  name. Where this side multiplexes it establishes the single authenticated master the
+  later channels reuse. Success re-probes ONLY that host (its reach is the only thing that
+  changed, so the whole roster is not re-scanned); any failure keeps the host blocked and
+  flashes why. The password lives only in the transient command and the PTY writer, never
+  stored, logged, rendered, or serialized. A side with no multiplexing (Windows, FR-G)
+  still runs the login and still records the host key and the values, and loses only the
+  reuse, so a password host there is asked again on the next probe. Only local and WSL
+  hosts have no login at all, having nothing to log in to.
+- **FR-B29** - RECORDING runs after a connection that worked and says so when it could
+  not. It writes an xmux-marked stanza naming the host, with the values that reached it,
+  at the TOP of `~/.ssh/config`, because ssh keeps the first value it obtains for a
+  keyword. The marker makes a second login replace that stanza rather than stack another,
+  and nothing the user wrote is touched. The choice is offered only once a value differs
+  from what ssh would have used. A password is never recorded, because ssh config has
+  nowhere to put one.
+- **FR-B30** - REGISTERING is the login's own remote command, run INSIDE the session the
+  user authenticates rather than over a connection opened afterwards, because a platform
+  without connection sharing (FR-G) has no afterwards. It appends this machine's public
+  key to the host's `authorized_keys`, only when that exact line is absent, generating an
+  ed25519 pair first when the machine has no key to send. What it leaves is what makes a
+  password host usable on such a platform at all: the key ends the password.
 
 ## C. Switching (the keystone)
 

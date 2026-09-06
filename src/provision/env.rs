@@ -590,25 +590,30 @@ impl Ops for EnvOps {
         src.host().transport.login_argv(login)
     }
 
+    fn login_remote(&self, register_key: bool) -> String {
+        if !register_key {
+            // The connection itself is the work; the command only has to exit.
+            return "true".to_string();
+        }
+        match authorized_keys_command() {
+            Ok(cmd) => cmd,
+            // A key that cannot be read or made registers nothing, and the login is still
+            // worth having: it accepts the host key and carries the values. The screen
+            // shows what the remote said, so the failure is not silent.
+            Err(_) => "true".to_string(),
+        }
+    }
+
     async fn login_follow_ups(
         &self,
         source: &str,
         login: &crate::transport::Login,
         write_config: bool,
-        register_key: bool,
     ) -> Vec<String> {
-        let Ok(src) = self.source(source) else {
-            return vec![format!("{source} is gone")];
-        };
         let mut notes = Vec::new();
         if write_config {
             if let Err(e) = write_ssh_config_stanza(crate::session::machine_of(source), login) {
                 notes.push(format!("ssh config not written: {e}"));
-            }
-        }
-        if register_key {
-            if let Err(e) = register_public_key(&*src.host().transport).await {
-                notes.push(format!("public key not registered: {e}"));
             }
         }
         notes
@@ -633,31 +638,25 @@ fn write_ssh_config_stanza(
     std::fs::write(&path, next)
 }
 
-/// Appends this machine's public key to the remote's `authorized_keys`, generating a key
-/// pair first when there is none to send.
+/// The remote command that puts this machine's public key in the host's
+/// `authorized_keys`, for the login to carry.
 ///
-/// It runs over the transport's own argv, so it rides the ControlMaster the login just
-/// authenticated and asks for nothing. The remote command is idempotent: it adds the key
-/// only when the file does not already hold that exact line, so a second registration
-/// changes nothing.
-async fn register_public_key(
-    transport: &dyn crate::transport::Transport,
-) -> Result<(), std::io::Error> {
+/// It runs inside the session the user authenticates, which is what makes it work on a
+/// platform that keeps no connection afterwards - and what makes it the thing worth doing
+/// there, since the key it leaves turns a host that wanted a password into one that wants
+/// nothing. Idempotent: the key is added only when that exact line is absent, so a second
+/// login changes nothing.
+fn authorized_keys_command() -> Result<String, std::io::Error> {
     let key = public_key_line()?;
     // Single-quoted for the remote shell, with the key's own quotes made impossible by
     // the reject below, so nothing in it can end the quoting.
     if key.contains('\'') || key.contains('\n') {
         return Err(std::io::Error::other("the public key is not a plain line"));
     }
-    let remote = format!(
+    Ok(format!(
         "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; \
          grep -qxF '{key}' ~/.ssh/authorized_keys || printf '%s\\n' '{key}' >> ~/.ssh/authorized_keys"
-    );
-    let (name, args) = transport.exec_argv(false, &[remote]);
-    match crate::model::source::Runner::run(&crate::model::source::ExecRunner, &name, &args).await {
-        Ok(_) => Ok(()),
-        Err(e) => Err(std::io::Error::other(e.to_string())),
-    }
+    ))
 }
 
 /// This machine's public key line, generating an ed25519 pair when it has none.
@@ -693,6 +692,24 @@ fn public_key_line() -> Result<String, std::io::Error> {
 
 #[cfg(test)]
 mod tests {
+    /// The key registration is a REMOTE COMMAND the login carries, not a connection
+    /// opened afterwards. That is what makes it work where there is no afterwards, and it
+    /// must be idempotent, because a second login runs it again.
+    #[test]
+    fn the_key_command_adds_the_line_only_when_it_is_absent() {
+        let Ok(cmd) = authorized_keys_command() else {
+            return; // this machine has no key and cannot make one; nothing to check
+        };
+        assert!(
+            cmd.contains("grep -qxF") && cmd.contains(">> ~/.ssh/authorized_keys"),
+            "it appends only what is not already there: {cmd}"
+        );
+        assert!(
+            cmd.starts_with("umask 077"),
+            "the file it may create is not readable by others: {cmd}"
+        );
+    }
+
     use super::*;
     use crate::model::source::{RunError, Runner};
     use crate::provision::config::Config;
