@@ -110,6 +110,14 @@ flatten renders for the dump verb.
   hide-unreachable says: its card is the one entry to that pane, so the prune keeps it
   alongside a filter-named card. The classification reads ONLY ssh's own failure lines,
   never a generic "permission denied", so a machine that is down stays unreachable.
+- A host the user LOGGED IN to never hides either, for the rest of the run and however it
+  answers afterwards. The reason a blocked host is kept is that it is actionable, and
+  succeeding at the action does not make it less so: it is the host the user just chose,
+  and whatever it answers next is the answer they are waiting for. Read the transition,
+  not the state: without this rule the one action a card offers is the action that takes
+  the card off the list, because the login stops being blocked and nothing else keeps it.
+  The mark is per MACHINE, since a login authenticates the machine and not the one mux
+  whose card carried the pane.
 - The login pane holds what ssh will not ask for and nothing else. Every value starts at
   what ssh would have used, so the pane never guesses and never looks a value up behind
   the user's back. A blocked host's switch and create are refused. The password is never

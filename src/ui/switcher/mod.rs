@@ -500,6 +500,7 @@ impl Switcher {
         let rows = tree::flatten(
             &state.groups,
             &state.scanning,
+            &state.logged_in,
             &state.filter,
             self.hide_unreachable,
             &named_mux,

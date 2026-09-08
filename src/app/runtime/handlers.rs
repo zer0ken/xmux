@@ -1253,6 +1253,12 @@ impl Runtime {
                 crate::session::machine_of(&source),
                 |host| host.transport.set_login(login.clone()),
             );
+            // The machine the user just authenticated is the one they are waiting on, so
+            // hiding stops applying to it: the login it offered no longer blocks, and
+            // without this that success is what would take the card off the list.
+            self.state
+                .logged_in
+                .insert(crate::session::machine_of(&source).to_string());
             probe_machine(
                 &source,
                 &self.hosts,

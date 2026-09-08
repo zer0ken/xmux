@@ -16,6 +16,16 @@ pub struct State {
     pub groups: Vec<Group>,
     /// Sources whose `list-sessions` has not yet returned (host shows scanning…).
     pub scanning: HashSet<String>,
+    /// MACHINES the user has logged in to successfully in this run, which hiding never
+    /// drops however they answer afterwards.
+    ///
+    /// A locked host is kept because it is actionable, its login pane being the one entry
+    /// point. Succeeding at that login does not make it less actionable: it is the host
+    /// the user just chose, and whatever it answers next is the answer they are waiting
+    /// for. Without this, the one action a card offers is the action that makes the card
+    /// vanish - the login stops being blocked, so nothing keeps it any more. Keyed by
+    /// machine because a login authenticates the machine, not the one mux that carried it.
+    pub logged_in: HashSet<String>,
     /// How many times in a row each source has failed to enumerate, reset to zero the
     /// moment it answers. Written at the single result-apply site and read only to be
     /// SHOWN: the unreachable screen states it, because one failed sweep and a host that

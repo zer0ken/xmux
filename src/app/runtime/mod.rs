@@ -839,6 +839,17 @@ fn spawn_machine_probe(
             ),
             Err(e) => (Some(e.to_string()), None),
         };
+        // This verdict decides whether the machine has cards at all: a failure makes every
+        // source it serves unreachable, and hiding then takes them off the list. So it is
+        // said out loud. A probe that answered is the routine case and says only what it
+        // read; a probe that failed carries the reason, which is otherwise recoverable
+        // only from the host's own unreachable screen.
+        match &err {
+            Some(reason) => {
+                tracing::warn!(machine = %machine, error = %reason, "machine_probe_failed")
+            }
+            None => tracing::info!(machine = %machine, shell = ?shell, "machine_probed"),
+        }
         let _ = tx.send(HostEvent::MachineProbed {
             machine,
             err,
