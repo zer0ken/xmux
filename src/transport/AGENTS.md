@@ -18,6 +18,12 @@ never re-reads the quoting and the user's own mux is on `PATH`. Which implementa
 host belongs to is read out of its NAME, so a host named after launch reaches
 its implementation without anything extra being threaded alongside it.
 
+An ssh host also carries WHICH SHELL FAMILY answers it. A POSIX shell is assumed
+until the reachability probe reads otherwise, and that probe asks which shell rather
+than only whether one answers, so the family costs no round trip of its own. The family
+gates the POSIX snippets a command may carry: the `exec` an attach prepends, and a mux's
+shell switch plan.
+
 Each transport also carries the SOURCE ID it answers as, separate from where it
 connects: one host running several muxes is several sources, all reaching the
 same place, so the id cannot be the ssh destination.
@@ -55,9 +61,12 @@ and nothing in `transport/` imports a mux type or a source.
 - `Transport` names no mux and no server model. Remoteness is a semantic
   ssh-versus-local marker only. What the mux sites actually read are the
   capability predicates: whether a display attach runs through a host shell (the
-  gate deciding which source names its client's tty) and whether this machine's mux
-  registry is authoritative (the registry-merge gate). None of the three derives from another, and no code reads
-  them to pick a server model.
+  gate deciding which source names its client's tty), whether this machine's mux
+  registry is authoritative (the registry-merge gate), and which shell family answers
+  the host (the gate on POSIX snippets). None of the four derives from another, and no
+  code reads them to pick a server model. In particular the shell family is NOT the
+  shell-based predicate restated: a PowerShell remote runs its attach through a shell
+  that records no tty for it.
 - The host kind's own query methods are the ONLY code that matches on the
   kind: one maps a kind to a concrete transport, another reads its server socket.
   No match on the kind is scattered across call sites; the trait object carries
@@ -83,9 +92,12 @@ and nothing in `transport/` imports a mux type or a source.
 - A boxed transport does not coerce to a borrowed trait object on its own; the
   blanket impl in the module root is what lets a stored transport be passed
   directly. Removing it forces an explicit reborrow at every call site.
-- The shared quoting assumes a POSIX remote shell. A `cmd.exe` remote is NOT a
-  supported target. Do not weaken the quoting to accommodate one without an
-  explicit per-host shell feature.
+- The shared quoting renders a POSIX command line. PowerShell reads a single-quoted
+  string as a literal, so that line is safe there as well, and a PowerShell remote is
+  addressed by withholding POSIX snippets from it rather than by re-rendering the line.
+  A `cmd.exe` remote is still NOT a supported target: single quotes are ordinary
+  characters to it, so the line neutralizes nothing. Do not weaken the quoting for it;
+  addressing it means a second rendering, chosen by the same shell family.
 
 ## Before Editing
 

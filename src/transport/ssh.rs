@@ -2,7 +2,7 @@
 //! right tty/batch/ControlMaster options. Untrusted argv elements are per-arg
 //! quoted via [`super::vocab::remote_command`].
 
-use super::vocab::remote_command;
+use super::vocab::{remote_command, RemoteShell};
 use super::Transport;
 
 /// Bounds the ssh TCP connect; the per-host scan timeout must exceed it so a
@@ -23,6 +23,10 @@ pub struct Ssh {
     pub os: String,
     /// The connection values the user supplied for this machine, empty until they do.
     pub login: Login,
+    /// Which shell family the far side answers with. `Posix` until the reachability
+    /// probe says otherwise, so a machine that has not been asked yet is addressed the
+    /// way every POSIX remote is.
+    pub shell: RemoteShell,
 }
 
 /// The three connection values ssh never asks for and must know before it dials: where
@@ -124,6 +128,14 @@ impl Transport for Ssh {
         true
     }
 
+    fn remote_shell(&self) -> RemoteShell {
+        self.shell
+    }
+
+    fn set_remote_shell(&mut self, shell: RemoteShell) {
+        self.shell = shell;
+    }
+
     fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
         let mut args = self.ssh_opts(tty);
         args.push(remote_command(mux_argv));
@@ -133,9 +145,17 @@ impl Transport for Ssh {
     /// A REMOTE interactive attach requests a pty (`-t`, no BatchMode) and runs
     /// `exec <attach>`: the `exec` replaces the ssh login shell so the connection
     /// closes cleanly on detach.
+    ///
+    /// `exec` is POSIX shell syntax, so a remote outside that family gets the attach
+    /// alone. What it costs there is one shell process living beside the attach for the
+    /// length of the session; what prepending it would cost is the attach never running.
     fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> (String, Vec<String>) {
         let attach = remote_command(mux_attach_argv);
-        let remote_cmd = format!("exec {attach}");
+        let remote_cmd = if self.shell.runs_posix_snippets() {
+            format!("exec {attach}")
+        } else {
+            attach
+        };
         let mut args = self.ssh_opts(true);
         args.push(remote_cmd);
         ("ssh".into(), args)
@@ -217,6 +237,7 @@ mod tests {
             control_path: cp.into(),
             os: os.into(),
             login: Login::default(),
+            shell: RemoteShell::default(),
         }
     }
     fn argv(parts: &[&str]) -> Vec<String> {
@@ -252,6 +273,36 @@ mod tests {
     fn ssh_opts_windows_omits_control_master() {
         let a = ssh("prod", "windows", "/tmp/cm.sock").ssh_opts(false);
         assert!(!a.join(" ").contains("ControlMaster"), "{a:?}");
+    }
+
+    #[test]
+    fn a_posix_remote_execs_the_attach_and_a_non_posix_one_does_not() {
+        // `exec` replaces the login shell so the connection closes cleanly on detach,
+        // and it is POSIX syntax: a remote outside that family would fail the whole
+        // attach on the prefix alone, so it gets the attach by itself.
+        let attach = argv(&["tmux", "attach", "-t", "api"]);
+
+        let mut t = ssh("prod", "linux", "");
+        assert_eq!(
+            t.interactive_attach_argv(&attach).1.last().unwrap(),
+            "exec tmux attach -t api",
+            "a POSIX remote keeps the exec"
+        );
+
+        t.set_remote_shell(RemoteShell::Other);
+        assert_eq!(
+            t.interactive_attach_argv(&attach).1.last().unwrap(),
+            "tmux attach -t api",
+            "a non-POSIX remote gets the attach with no exec"
+        );
+    }
+
+    #[test]
+    fn a_remote_is_posix_until_the_probe_says_otherwise() {
+        let mut t = ssh("prod", "linux", "");
+        assert_eq!(t.remote_shell(), RemoteShell::Posix);
+        t.set_remote_shell(RemoteShell::Other);
+        assert_eq!(t.remote_shell(), RemoteShell::Other);
     }
 
     #[test]

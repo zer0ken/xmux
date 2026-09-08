@@ -283,7 +283,28 @@ impl Runtime {
                     dispatch_detected_host(mgr, hosts, &source, vc, vr);
                 }
             }
-            EventEffect::MachineConnected { machine, rescan } => {
+            EventEffect::MachineConnected {
+                machine,
+                shell,
+                rescan,
+            } => {
+                // Record the shell family the probe read on every source this machine
+                // serves, before a channel opens: the attach shape and the in-place
+                // switch are composed for a shell family, so the first command must
+                // already know which one answered.
+                if let Some(shell) = shell {
+                    let served: Vec<String> = hosts
+                        .ids()
+                        .iter()
+                        .filter(|id| crate::session::machine_of(id) == machine)
+                        .cloned()
+                        .collect();
+                    for id in served {
+                        if let Some(host) = hosts.get_mut(&id) {
+                            host.transport.set_remote_shell(shell);
+                        }
+                    }
+                }
                 // The machine's reachability probe connected: resolve every source it
                 // serves onto its metadata channel (a re-scan re-enumerates a live one; a
                 // launch detects then ensures it), and, when the machine left its mux list

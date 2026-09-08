@@ -650,7 +650,14 @@ pub(crate) fn run_switch_plan(host: &crate::model::Host, plan: crate::mux::Switc
             }
             true
         }
-        SwitchPlan::Shell(cmd) => match host.transport.raw_shell_argv(&cmd) {
+        // A `Shell` plan is POSIX shell text the mux wrote. A machine with no host shell
+        // to run it in, and one whose shell is not POSIX, both answer `false` here, and
+        // the caller reattaches instead of switching in place.
+        SwitchPlan::Shell(cmd) => match host
+            .transport
+            .raw_shell_argv(&cmd)
+            .filter(|_| host.transport.remote_shell().runs_posix_snippets())
+        {
             Some(argv) => {
                 run_lowered(LoweredSwitch::RawSsh(argv));
                 true
@@ -795,12 +802,18 @@ fn spawn_roster_resolve(
 /// network with a subprocess per machine all at the same instant.
 const PROBE_CONCURRENCY: usize = 12;
 
-/// Runs one machine's REACHABILITY probe off the loop - `ssh <opts> <machine> true`,
-/// bounded by the shared `gate` - and carries the outcome back as
+/// Runs one machine's REACHABILITY probe off the loop - the shell probe over the
+/// machine's raw shell, bounded by the shared `gate` - and carries the outcome back as
 /// [`HostEvent::MachineProbed`]. A zero exit is connected (`err` `None`); ssh's own
 /// failure line is the reason otherwise, classified locked (its auth-failure signature)
-/// or unreachable at the card. The `true` also warms the shared ControlMaster socket the
+/// or unreachable at the card. It also warms the shared ControlMaster socket the
 /// connected machine's later channels reuse without re-authenticating.
+///
+/// The probe asks WHICH SHELL answers rather than only whether one does
+/// ([`crate::transport::vocab::SHELL_PROBE`]), because every later command is composed
+/// for a shell family and the family costs no round trip of its own to learn. It goes
+/// over the raw shell shape, not the mux-argv one: the probe's own `$0` has to reach
+/// the remote unquoted, and per-arg quoting exists to stop exactly that.
 fn spawn_machine_probe(
     machine: String,
     transport: Box<dyn crate::transport::Transport>,
@@ -813,14 +826,23 @@ fn spawn_machine_probe(
         let Ok(_permit) = gate.acquire().await else {
             return;
         };
-        let (name, args) = transport.exec_argv(false, &["true".to_string()]);
-        let err = match crate::model::source::ExecRunner.run(&name, &args).await {
-            Ok(_) => None,
-            Err(e) => Some(e.to_string()),
+        // A machine with no raw shell answers no probe of this shape; it is also never
+        // reached here, since only a remote machine is probed at all.
+        let Some(argv) = transport.raw_shell_argv(crate::transport::vocab::SHELL_PROBE) else {
+            return;
+        };
+        let (name, args) = (argv[0].clone(), argv[1..].to_vec());
+        let (err, shell) = match crate::model::source::ExecRunner.run(&name, &args).await {
+            Ok(out) => (
+                None,
+                Some(crate::transport::vocab::RemoteShell::from_probe(&out)),
+            ),
+            Err(e) => (Some(e.to_string()), None),
         };
         let _ = tx.send(HostEvent::MachineProbed {
             machine,
             err,
+            shell,
             rescan,
         });
     });
@@ -844,6 +866,9 @@ fn probe_machine(
         let _ = tx.send(HostEvent::MachineProbed {
             machine,
             err: None,
+            // This box and a WSL distribution are POSIX by construction, so there is
+            // nothing to read back: `None` leaves the transport's default standing.
+            shell: None,
             rescan,
         });
         return;
