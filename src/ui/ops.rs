@@ -42,6 +42,12 @@ pub trait Ops: Send + Sync {
     /// what makes registering worth offering there at all - the key turns a host that
     /// wanted a password into one that wants nothing.
     ///
+    /// Its exit code is the login's whole verdict, so it MUST end by reporting the
+    /// authentication and nothing else, in a word every shell family has. Anything the
+    /// command carries rides along without a vote: a locked host's shell family is unknown
+    /// by construction (the probe that reads it never got past the refusal that locked the
+    /// card), so a word only one family has turns an accepted password into a refused one.
+    ///
     /// May generate this machine's key pair when it has none, so it is called off the
     /// runtime thread.
     fn login_remote(&self, register_key: bool) -> String;

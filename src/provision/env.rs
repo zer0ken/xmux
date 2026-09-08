@@ -401,6 +401,51 @@ impl Env {
         true
     }
 
+    /// Carries the machines a PROBE offered into a freshly resolved roster that lost them.
+    ///
+    /// A roster names a machine from one of two kinds of evidence, and absence means
+    /// opposite things for the two. A RECORD that no longer names it (`~/.ssh/config`,
+    /// `[[hosts]]`, the wsl list) is someone having removed it, so the machine must go. A
+    /// PROBE that did not answer is one round trip that was too slow, and says nothing
+    /// about whether the machine exists - a neighbour is offered by connecting to port 22
+    /// inside a 700ms budget, which a tunnel hop misses without anything being wrong.
+    ///
+    /// Reaping on a missed probe tears down the card the user is working in and paints it
+    /// again on the next scan. A machine that really did leave still shows: it keeps its
+    /// card and reports itself unreachable, which is what a machine named by a record
+    /// does when it goes offline, so both kinds behave the same way.
+    ///
+    /// Everything the machine had is carried, not just its name: the sources (async mux
+    /// discovery's included), the provider its card names, and the address the login pane
+    /// offers - all of which came from the answer that is now missing.
+    pub fn carry_probed(&self, fresh: &mut Roster) {
+        use crate::provision::roster::Provider;
+        let cur = self.roster.read().expect("roster lock");
+        let lost: Vec<String> = cur
+            .roster_providers
+            .iter()
+            .filter(|(machine, provider)| {
+                **provider == Provider::Neighbor && !fresh.roster_providers.contains_key(*machine)
+            })
+            .map(|(machine, _)| machine.clone())
+            .collect();
+        for machine in lost {
+            fresh.sources.extend(
+                cur.sources
+                    .iter()
+                    .filter(|s| crate::session::machine_of(&s.alias) == machine)
+                    .cloned(),
+            );
+            if let Some(addr) = cur.host_addresses.get(&machine) {
+                fresh.host_addresses.insert(machine.clone(), addr.clone());
+            }
+            fresh
+                .roster_providers
+                .insert(machine.clone(), Provider::Neighbor);
+            fresh.ssh_aliases.push(machine);
+        }
+    }
+
     /// Swaps in a freshly resolved roster, CARRYING OVER the sources async mux discovery
     /// added on machines the fresh roster still names.
     ///
@@ -593,14 +638,18 @@ impl Ops for EnvOps {
     fn login_remote(&self, register_key: bool) -> String {
         if !register_key {
             // The connection itself is the work; the command only has to exit.
-            return "true".to_string();
+            return EXIT_OK.to_string();
         }
         match authorized_keys_command() {
-            Ok(cmd) => cmd,
+            // Registering ends in the same report an empty login gives, so the verdict
+            // stays a verdict on the AUTHENTICATION. A key that did not land leaves the
+            // host asking for a password on the next probe, which is the truth about it -
+            // and which the user reads on the card, rather than as a login that looks
+            // like the password was wrong.
+            Ok(cmd) => format!("{cmd}; {EXIT_OK}"),
             // A key that cannot be read or made registers nothing, and the login is still
-            // worth having: it accepts the host key and carries the values. The host then
-            // asks for a password again on the next probe, which is the truth about it.
-            Err(_) => "true".to_string(),
+            // worth having: it accepts the host key and carries the values.
+            Err(_) => EXIT_OK.to_string(),
         }
     }
 
@@ -637,6 +686,16 @@ fn write_ssh_config_stanza(
     }
     std::fs::write(&path, next)
 }
+
+/// The remote command that reports a login worked, and nothing else.
+///
+/// The login's verdict IS this command's exit code, so what it runs must answer one
+/// question: did the authentication succeed. `exit 0` is that answer in every shell
+/// family, which is what this position needs - the family of a LOCKED host is unknown by
+/// construction, because the probe that would have read it never got past the refusal
+/// that locked the card. A POSIX-only word here (`true`) is a command a PowerShell remote
+/// does not have, so it exits nonzero and an accepted password reads as a refused one.
+const EXIT_OK: &str = "exit 0";
 
 /// The remote command that puts this machine's public key in the host's
 /// `authorized_keys`, for the login to carry.
@@ -692,6 +751,27 @@ fn public_key_line() -> Result<String, std::io::Error> {
 
 #[cfg(test)]
 mod tests {
+    /// The login's verdict is its remote command's exit code, so whatever the command
+    /// does it must end by saying the AUTHENTICATION worked. `exit 0` is that word in
+    /// every shell family, which is the requirement here: a locked host's family is
+    /// unknown, because the probe that reads it never got past the refusal that locked
+    /// the card. A POSIX-only word makes an accepted password read as a refused one on a
+    /// PowerShell remote.
+    #[test]
+    fn every_login_command_ends_by_reporting_the_authentication() {
+        let ops = Arc::new(env_with(&["prod"])).ops();
+        assert_eq!(
+            ops.login_remote(false),
+            "exit 0",
+            "a login with nothing to carry reports the authentication and stops"
+        );
+        let with_key = ops.login_remote(true);
+        assert!(
+            with_key.ends_with("; exit 0"),
+            "registering a key does not get to fail the login: {with_key}"
+        );
+    }
+
     /// The key registration is a REMOTE COMMAND the login carries, not a connection
     /// opened afterwards. That is what makes it work where there is no afterwards, and it
     /// must be idempotent, because a second login runs it again.
@@ -810,6 +890,84 @@ mod tests {
             aliases_of(&env),
             vec!["stage".to_string()],
             "prod is off the roster, so every source it served goes with it"
+        );
+    }
+
+    /// A neighbour is offered by a 700ms round trip. When it does not answer, the
+    /// machine is not gone: everything it had is carried back in, so a card the user is
+    /// working in survives a probe that was merely slow.
+    #[test]
+    fn a_machine_only_a_probe_offered_survives_a_probe_that_missed_it() {
+        use crate::provision::roster::Provider;
+        let env = Env::new(
+            Roster {
+                sources: vec![
+                    test_source("prod", true, ""),
+                    test_source("prod:zellij", true, ""),
+                ],
+                ssh_aliases: vec!["prod".into()],
+                roster_providers: [("prod".to_string(), Provider::Neighbor)].into(),
+                host_addresses: [("prod".to_string(), "100.87.27.26".to_string())].into(),
+                ..Default::default()
+            },
+            "C-g".into(),
+            PathBuf::from("."),
+            None,
+            None,
+        );
+        // The probe answered for nothing this time.
+        let mut fresh = Roster::default();
+        env.carry_probed(&mut fresh);
+
+        assert_eq!(
+            fresh.ssh_aliases,
+            vec!["prod".to_string()],
+            "the machine is named again, so every registry built from this roster keeps it"
+        );
+        assert_eq!(
+            fresh
+                .sources
+                .iter()
+                .map(|s| s.alias.clone())
+                .collect::<Vec<_>>(),
+            vec!["prod".to_string(), "prod:zellij".to_string()],
+            "the mux discovery found on it is carried too, not just the machine's name"
+        );
+        assert_eq!(
+            fresh.roster_providers.get("prod"),
+            Some(&Provider::Neighbor),
+            "the card still names what offered it"
+        );
+        assert_eq!(
+            fresh.host_addresses.get("prod").map(String::as_str),
+            Some("100.87.27.26"),
+            "the login pane still offers the address the probe had found"
+        );
+    }
+
+    /// A record is the opposite evidence: someone wrote the machine down, so a roster
+    /// that no longer names it is someone having removed it, and it must go.
+    #[test]
+    fn a_machine_a_record_named_is_not_carried_when_the_record_stops_naming_it() {
+        use crate::provision::roster::Provider;
+        let env = Env::new(
+            Roster {
+                sources: vec![test_source("prod", true, "")],
+                ssh_aliases: vec!["prod".into()],
+                roster_providers: [("prod".to_string(), Provider::SshConfig)].into(),
+                ..Default::default()
+            },
+            "C-g".into(),
+            PathBuf::from("."),
+            None,
+            None,
+        );
+        let mut fresh = Roster::default();
+        env.carry_probed(&mut fresh);
+        assert!(
+            fresh.ssh_aliases.is_empty() && fresh.sources.is_empty(),
+            "the stanza is gone, so the machine is gone: {:?}",
+            fresh.ssh_aliases
         );
     }
 

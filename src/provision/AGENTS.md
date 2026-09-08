@@ -29,6 +29,16 @@ sources exist.
   addresses, and the neighbour table. It narrows what those give - an entry naming no
   machine, a hardware address answering for many addresses - then keeps only what
   answers ssh, and names the survivors.
+- A provider offers a machine from one of two kinds of evidence, and a roster swap must
+  read absence differently for each. A RECORD naming it (`~/.ssh/config`, `[[hosts]]`, the
+  wsl list) is authoritative both ways, so a record that stops naming it removes it. A
+  PROBE answering is authoritative only one way: it proves the machine is there, and its
+  silence proves nothing, because the neighbour probe offers a machine by reaching port 22
+  inside a bounded budget that a tunnel hop misses with nothing wrong. So a machine only a
+  probe offered is CARRIED into a roster that lost it, with its sources, its provider and
+  its address. A machine that really left keeps its card and reports itself unreachable,
+  which is what a recorded machine does when it goes offline; both kinds behave alike, and
+  no re-scan tears down a card the user is working in.
 - A name is asked for in the order of who would know it: the system resolver, which holds
   what someone registered, then the machine itself over mDNS, which knows what it calls
   itself whether or not anyone registered it. A name is adopted only when this machine can

@@ -107,6 +107,13 @@ impl Hosts {
     /// perfectly well named. Dropping by id would tear those cards down on every re-scan
     /// and re-find them a moment later.
     ///
+    /// A MACHINE absent from `fresh` is therefore taken as gone, which holds only because
+    /// what reaches here is already settled: a machine a probe offers is carried back into
+    /// the roster before this sees it (see [`Env::carry_probed`]), so absence here is a
+    /// record no longer naming it and never a probe that was too slow.
+    ///
+    /// [`Env::carry_probed`]: crate::provision::env::Env::carry_probed
+    ///
     /// A surviving host keeps the display position it had and an added one appends, so a
     /// card the user is looking at does not move because another machine answered.
     pub fn reconcile(&mut self, mut fresh: Hosts) -> RosterDelta {
