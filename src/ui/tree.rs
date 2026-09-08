@@ -251,6 +251,7 @@ impl Row {
 pub(crate) fn drop_hidden_unreachable(
     groups: &[Group],
     scanning: &HashSet<String>,
+    logged_in: &HashSet<String>,
     filter: &str,
 ) -> Vec<Group> {
     groups
@@ -261,6 +262,11 @@ pub(crate) fn drop_hidden_unreachable(
                 // A blocked host is actionable (its login pane is the one entry
                 // point), so hiding never drops it, whatever the filter says.
                 || crate::mux::is_blocked(g.err.as_deref().unwrap_or_default())
+                // And a host the user LOGGED IN to stays for the same reason: it is the
+                // host they just acted on, so whatever it answers next is the answer they
+                // are waiting for. Otherwise succeeding at the login is what hides the
+                // card, since the login is no longer blocked and nothing else keeps it.
+                || logged_in.contains(crate::session::machine_of(&g.source))
                 || (!filter.is_empty() && fuzzy_match(filter, &g.source))
         })
         .cloned()
@@ -380,6 +386,7 @@ pub(crate) fn host_state_word(blocked: bool, unreachable: bool) -> &'static str 
 pub(crate) fn flatten(
     groups: &[Group],
     scanning: &HashSet<String>,
+    logged_in: &HashSet<String>,
     filter: &str,
     hide_unreachable: bool,
     mux_of_source: &dyn Fn(&str) -> String,
@@ -389,7 +396,7 @@ pub(crate) fn flatten(
     // groups instead of materializing them a second time.
     let pruned;
     let groups: &[Group] = if hide_unreachable {
-        pruned = drop_hidden_unreachable(groups, scanning, filter);
+        pruned = drop_hidden_unreachable(groups, scanning, logged_in, filter);
         &pruned
     } else {
         groups
@@ -857,7 +864,14 @@ mod tests {
             err: None,
             sessions: vec![sess("jup", "api")],
         }];
-        let rows = flatten(&groups, &HashSet::new(), "", false, &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            false,
+            &mux_of_source,
+        );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["section", "session"]);
         assert_eq!(addr_of(&rows[1].reference), "jup/api");
@@ -876,7 +890,14 @@ mod tests {
             err: None,
             sessions: vec![sess("h", "a"), sess("h", "b")],
         }];
-        let rows = flatten(&groups, &HashSet::new(), "", false, &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            false,
+            &mux_of_source,
+        );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["section", "session", "session"]);
         let addrs: Vec<String> = rows.iter().map(|r| addr_of(&r.reference)).collect();
@@ -892,7 +913,14 @@ mod tests {
         }];
         let mut scanning = HashSet::new();
         scanning.insert("jup".to_string());
-        let rows = flatten(&groups, &scanning, "", false, &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &scanning,
+            &HashSet::new(),
+            "",
+            false,
+            &mux_of_source,
+        );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host"]);
         assert_eq!(addr_of(&rows[0].reference), "jup");
@@ -922,7 +950,14 @@ mod tests {
                 sessions: vec![],
             },
         ];
-        let rows = flatten(&groups, &HashSet::new(), "", false, &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            false,
+            &mux_of_source,
+        );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host", "host"]);
         assert_eq!(addr_of(&rows[0].reference), "empty");
@@ -956,7 +991,14 @@ mod tests {
         }];
         let mut scanning = HashSet::new();
         scanning.insert("kyla".to_string());
-        let rows = flatten(&groups, &scanning, "", false, &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &scanning,
+            &HashSet::new(),
+            "",
+            false,
+            &mux_of_source,
+        );
         assert!(matches!(
             rows[0].reference,
             RowRef::Host { scanning: true, .. }
@@ -1009,7 +1051,8 @@ mod tests {
     fn drop_hidden_unreachable_keeps_reachable_and_drops_settled_failures() {
         // An empty filter hides the settled unreachable host; the reachable hosts (one
         // with sessions, one empty) keep their groups.
-        let got = drop_hidden_unreachable(&drop_hidden_setup(), &HashSet::new(), "");
+        let got =
+            drop_hidden_unreachable(&drop_hidden_setup(), &HashSet::new(), &HashSet::new(), "");
         let sources: Vec<&str> = got.iter().map(|g| g.source.as_str()).collect();
         assert_eq!(sources, vec!["local", "empty"]);
     }
@@ -1020,7 +1063,7 @@ mod tests {
         // its group stays, consistent with the render's spinner state.
         let mut scanning = HashSet::new();
         scanning.insert("deadhost".to_string());
-        let got = drop_hidden_unreachable(&drop_hidden_setup(), &scanning, "");
+        let got = drop_hidden_unreachable(&drop_hidden_setup(), &scanning, &HashSet::new(), "");
         let sources: Vec<&str> = got.iter().map(|g| g.source.as_str()).collect();
         assert_eq!(sources, vec!["local", "empty", "deadhost"]);
     }
@@ -1029,7 +1072,12 @@ mod tests {
     fn drop_hidden_unreachable_filter_naming_the_host_keeps_its_group() {
         // The filter naming the host keeps its card: it is the one entry to that host's
         // unreachable screen.
-        let got = drop_hidden_unreachable(&drop_hidden_setup(), &HashSet::new(), "dead");
+        let got = drop_hidden_unreachable(
+            &drop_hidden_setup(),
+            &HashSet::new(),
+            &HashSet::new(),
+            "dead",
+        );
         let sources: Vec<&str> = got.iter().map(|g| g.source.as_str()).collect();
         assert_eq!(sources, vec!["local", "empty", "deadhost"]);
     }
@@ -1038,7 +1086,7 @@ mod tests {
     fn drop_hidden_unreachable_does_not_mutate_input() {
         let groups = drop_hidden_setup();
         let orig_len = groups.len();
-        let _ = drop_hidden_unreachable(&groups, &HashSet::new(), "");
+        let _ = drop_hidden_unreachable(&groups, &HashSet::new(), &HashSet::new(), "");
         assert_eq!(groups.len(), orig_len);
         assert_eq!(groups[2].source, "deadhost");
         assert!(groups[2].err.is_some());
@@ -1049,7 +1097,14 @@ mod tests {
         // With hiding on and an empty filter, the rows are the local section and card
         // and the empty reachable host's card; the unreachable host takes no row.
         let groups = drop_hidden_setup();
-        let rows = flatten(&groups, &HashSet::new(), "", true, &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            true,
+            &mux_of_source,
+        );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["section", "session", "host"]);
         assert!(!rows
@@ -1061,7 +1116,14 @@ mod tests {
     fn flatten_keeps_the_unreachable_card_when_the_filter_names_it() {
         // The filter naming the hidden host brings its card back, unreachable as ever.
         let groups = drop_hidden_setup();
-        let rows = flatten(&groups, &HashSet::new(), "dead", true, &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &HashSet::new(),
+            "dead",
+            true,
+            &mux_of_source,
+        );
         assert!(rows.iter().any(|r| matches!(
             &r.reference,
             RowRef::Host { source, unreachable: true, .. } if source == "deadhost"
@@ -1073,7 +1135,14 @@ mod tests {
         // The prune runs before the filter, so the no-match fallback (header-only
         // groups for every remaining host) cannot bring the hidden host back.
         let groups = drop_hidden_setup();
-        let rows = flatten(&groups, &HashSet::new(), "zzz", true, &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &HashSet::new(),
+            "zzz",
+            true,
+            &mux_of_source,
+        );
         assert!(!rows
             .iter()
             .any(|r| addr_of(&r.reference).contains("deadhost")));
@@ -1098,7 +1167,14 @@ mod tests {
                 sessions: vec![],
             },
         ];
-        let rows = flatten(&groups, &HashSet::new(), "", true, &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            true,
+            &mux_of_source,
+        );
         assert!(rows.is_empty());
     }
 
@@ -1109,7 +1185,14 @@ mod tests {
             err: Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
             sessions: vec![],
         }];
-        let rows = flatten(&groups, &HashSet::new(), "", false, &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &HashSet::new(),
+            "",
+            false,
+            &mux_of_source,
+        );
         match &rows[0].reference {
             RowRef::Host {
                 blocked,
@@ -1121,6 +1204,62 @@ mod tests {
             }
             _ => panic!("expected a host card, got a non-host row"),
         }
+    }
+
+    /// Succeeding at the login must not be what hides the card. A locked host is kept
+    /// because it is actionable; the host the user just authenticated is the one they are
+    /// waiting on, so whatever it answers next has to stay readable.
+    #[test]
+    fn drop_hidden_unreachable_keeps_a_host_the_user_logged_in_to() {
+        let groups = vec![
+            Group {
+                source: "pwbox".into(),
+                // The login worked, so this is no longer the blocked error that kept it.
+                err: Some("psmux: not found".into()),
+                sessions: vec![],
+            },
+            Group {
+                source: "deadhost".into(),
+                err: Some("refused".into()),
+                sessions: vec![],
+            },
+        ];
+        let hidden = drop_hidden_unreachable(&groups, &HashSet::new(), &HashSet::new(), "");
+        assert!(
+            !hidden.iter().any(|g| g.source == "pwbox"),
+            "without the login it is an ordinary unreachable host"
+        );
+
+        let logged_in: HashSet<String> = ["pwbox".to_string()].into();
+        let kept = drop_hidden_unreachable(&groups, &HashSet::new(), &logged_in, "");
+        let sources: Vec<&str> = kept.iter().map(|g| g.source.as_str()).collect();
+        assert_eq!(
+            sources,
+            vec!["pwbox"],
+            "the machine logged in to survives and the untouched dead host does not: {sources:?}"
+        );
+    }
+
+    /// The login authenticates the MACHINE, so every mux it serves is kept - not only the
+    /// source whose card carried the login pane.
+    #[test]
+    fn a_login_keeps_every_source_on_that_machine() {
+        let groups = vec![
+            Group {
+                source: "pwbox".into(),
+                err: Some("psmux: not found".into()),
+                sessions: vec![],
+            },
+            Group {
+                source: "pwbox:zellij".into(),
+                err: Some("zellij: not found".into()),
+                sessions: vec![],
+            },
+        ];
+        let logged_in: HashSet<String> = ["pwbox".to_string()].into();
+        let kept = drop_hidden_unreachable(&groups, &HashSet::new(), &logged_in, "");
+        let sources: Vec<&str> = kept.iter().map(|g| g.source.as_str()).collect();
+        assert_eq!(sources, vec!["pwbox", "pwbox:zellij"], "{sources:?}");
     }
 
     #[test]
@@ -1144,7 +1283,7 @@ mod tests {
                 sessions: vec![],
             },
         ];
-        let kept = drop_hidden_unreachable(&groups, &HashSet::new(), "");
+        let kept = drop_hidden_unreachable(&groups, &HashSet::new(), &HashSet::new(), "");
         let sources: Vec<&str> = kept.iter().map(|g| g.source.as_str()).collect();
         assert_eq!(
             sources,
