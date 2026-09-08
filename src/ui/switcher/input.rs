@@ -413,15 +413,15 @@ impl Switcher {
     /// the switcher only rebuilds its rows + restores the cursor per the returned
     /// [`OpFollow`].
     ///
-    /// Returns the source whose MACHINE the app should re-probe: `Some` only on a
-    /// successful unlock, because that machine's reach state (locked → connected) is the
-    /// only thing that changed, so re-probing the whole roster would be wasteful. Every
-    /// other result returns `None`.
+    /// Returns the source whose MACHINE the app should re-probe, and the connection
+    /// values that reached it: `Some` only on a successful unlock, because that machine's
+    /// reach state (locked → connected) is the only thing that changed, so re-probing the
+    /// whole roster would be wasteful. Every other result returns `None`.
     pub fn apply_op_result(
         &mut self,
         result: OpResult,
         state: &mut crate::state::State,
-    ) -> Option<String> {
+    ) -> Option<(String, crate::transport::Login)> {
         match state.fold_op_result(result) {
             OpFollow::Reselect(addr) => {
                 self.rebuild(state);
@@ -438,7 +438,11 @@ impl Switcher {
             // A successful unlock established the authenticated ControlMaster: only THIS
             // machine's reach changed, so the app re-probes just it (never the roster).
             // Any failure stays locked and flashes why; the user retypes the password.
-            OpFollow::LoginResult { source, outcome } => {
+            OpFollow::LoginResult {
+                source,
+                login,
+                outcome,
+            } => {
                 // What the checkboxes could not do is said even when the connection
                 // worked: a step that failed silently would leave the user believing it
                 // ran.
@@ -446,7 +450,7 @@ impl Switcher {
                     state.flash(outcome.notes.join("; "));
                 }
                 match outcome.connect {
-                    crate::link::unlock::UnlockOutcome::Ok => Some(source),
+                    crate::link::unlock::UnlockOutcome::Ok => Some((source, login)),
                     crate::link::unlock::UnlockOutcome::AuthFailed => {
                         state.flash("authentication failed");
                         None

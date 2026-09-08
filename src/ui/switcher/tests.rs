@@ -1228,6 +1228,7 @@ async fn the_verdict_takes_the_login_screen_down() {
     h.sw.apply_op_result(
         OpResult::Login {
             source: "pwbox".into(),
+            login: crate::transport::Login::default(),
             outcome: crate::ui::ops::LoginOutcome {
                 connect: UnlockOutcome::AuthFailed,
                 notes: Vec::new(),
@@ -1268,6 +1269,10 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
     let reprobe = h.sw.apply_op_result(
         OpResult::Login {
             source: "pwbox".into(),
+            login: crate::transport::Login {
+                user: Some("alice".into()),
+                ..Default::default()
+            },
             outcome: crate::ui::ops::LoginOutcome {
                 connect: UnlockOutcome::Ok,
                 notes: Vec::new(),
@@ -1275,10 +1280,19 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
         },
         &mut h.state,
     );
+    // The values that authenticated come back WITH the source: the app records them on
+    // the machine, so the re-probe below reaches it as the account that just worked
+    // rather than as whoever runs xmux.
     assert_eq!(
-        reprobe.as_deref(),
-        Some("pwbox"),
-        "success re-probes the unlocked machine"
+        reprobe,
+        Some((
+            "pwbox".to_string(),
+            crate::transport::Login {
+                user: Some("alice".into()),
+                ..Default::default()
+            }
+        )),
+        "success re-probes the unlocked machine with the login that worked"
     );
     assert!(
         !h.sw.take_rescan_kick(),
@@ -1294,6 +1308,7 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
     let reprobe = h.sw.apply_op_result(
         OpResult::Login {
             source: "pwbox".into(),
+            login: crate::transport::Login::default(),
             outcome: crate::ui::ops::LoginOutcome {
                 connect: UnlockOutcome::AuthFailed,
                 notes: Vec::new(),

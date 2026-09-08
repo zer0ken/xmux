@@ -784,11 +784,19 @@ impl State {
             OpResult::Failed { message } => OpFollow::Flash(message),
             // The unlock verdict is no inventory mutation: the app reacts to it (re-probe
             // the unlocked machine on success, a flash on failure).
-            OpResult::Login { source, outcome } => {
+            OpResult::Login {
+                source,
+                login,
+                outcome,
+            } => {
                 // The conversation is over however it ended, so the handle that would
                 // have ended it goes with it and the pane offers a login again.
                 self.login_run = None;
-                OpFollow::LoginResult { source, outcome }
+                OpFollow::LoginResult {
+                    source,
+                    login,
+                    outcome,
+                }
             }
         }
     }

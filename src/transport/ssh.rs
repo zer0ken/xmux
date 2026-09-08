@@ -136,6 +136,10 @@ impl Transport for Ssh {
         self.shell = shell;
     }
 
+    fn set_login(&mut self, login: Login) {
+        self.login = login;
+    }
+
     fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
         let mut args = self.ssh_opts(tty);
         args.push(remote_command(mux_argv));
@@ -295,6 +299,27 @@ mod tests {
             "tmux attach -t api",
             "a non-POSIX remote gets the attach with no exec"
         );
+    }
+
+    #[test]
+    fn a_recorded_login_rides_every_later_command() {
+        // A login authenticates once and its connection then ends. Nothing but this
+        // recording survives it, so without it the next command out would name no
+        // account and ssh would fall back to whoever runs xmux - a different user on the
+        // remote, and a refusal that reads as the login not having worked.
+        let mut t = ssh("prod", "linux", "");
+        let before = t.exec_argv(false, &argv(&["tmux", "ls"])).1.join(" ");
+        assert!(!before.contains("User="), "{before}");
+
+        t.set_login(Login {
+            address: Some("100.87.27.26".into()),
+            port: Some(2222),
+            user: Some("hrlee".into()),
+        });
+        let after = t.exec_argv(false, &argv(&["tmux", "ls"])).1.join(" ");
+        for expected in ["HostName=100.87.27.26", "Port=2222", "User=hrlee"] {
+            assert!(after.contains(expected), "{expected} missing from {after}");
+        }
     }
 
     #[test]

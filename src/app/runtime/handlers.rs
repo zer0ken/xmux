@@ -293,17 +293,9 @@ impl Runtime {
                 // switch are composed for a shell family, so the first command must
                 // already know which one answered.
                 if let Some(shell) = shell {
-                    let served: Vec<String> = hosts
-                        .ids()
-                        .iter()
-                        .filter(|id| crate::session::machine_of(id) == machine)
-                        .cloned()
-                        .collect();
-                    for id in served {
-                        if let Some(host) = hosts.get_mut(&id) {
-                            host.transport.set_remote_shell(shell);
-                        }
-                    }
+                    for_each_source_of(hosts, &machine, |host| {
+                        host.transport.set_remote_shell(shell)
+                    });
                 }
                 // The machine's reachability probe connected: resolve every source it
                 // serves onto its metadata channel (a re-scan re-enumerates a live one; a
@@ -1245,7 +1237,17 @@ impl Runtime {
     /// connected), so re-probe just it - over what the login left behind - instead of the
     /// whole roster. The re-probe is what turns the pane back into the host's sessions.
     pub(super) fn on_op_result(&mut self, result: crate::ui::switcher::OpResult) {
-        if let Some(source) = self.switcher.apply_op_result(result, &mut self.state) {
+        if let Some((source, login)) = self.switcher.apply_op_result(result, &mut self.state) {
+            // The values that just authenticated become the machine's, before the
+            // re-probe is the first command to use them. The login's own connection is
+            // over, so a value left only in its argv would be gone: every later command
+            // would reach the machine as whoever runs xmux, which is a different account
+            // and a refusal.
+            for_each_source_of(
+                &mut self.hosts,
+                crate::session::machine_of(&source),
+                |host| host.transport.set_login(login.clone()),
+            );
             probe_machine(
                 &source,
                 &self.hosts,
@@ -1631,6 +1633,33 @@ impl Runtime {
 /// This machine's own account name, which is the login ssh falls back to when nothing
 /// names another. Empty when the environment says nothing, and then the login pane's
 /// username simply starts blank rather than carrying a guess.
+/// Applies `f` to every source the `machine` serves.
+///
+/// What a probe or a login learns is the MACHINE's, not one source's: the shell family
+/// that answered and the values that authenticated hold for every mux on that box. A
+/// fact recorded on only the source that happened to carry the round trip would leave
+/// its siblings composing commands from what they were built with, so the next command
+/// out of a different source would go wrong for a reason nothing on screen explains.
+fn for_each_source_of(
+    hosts: &mut crate::model::Hosts,
+    machine: &str,
+    mut f: impl FnMut(&mut crate::model::Host),
+) {
+    // The ids are taken first: naming the sources borrows the roster, and reaching into
+    // one to change it borrows it again.
+    let served: Vec<String> = hosts
+        .ids()
+        .iter()
+        .filter(|id| crate::session::machine_of(id) == machine)
+        .cloned()
+        .collect();
+    for id in served {
+        if let Some(host) = hosts.get_mut(&id) {
+            f(host);
+        }
+    }
+}
+
 fn local_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))

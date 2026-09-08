@@ -61,6 +61,15 @@ pub trait Transport: Send + Sync {
     /// differ (the local box and a WSL distribution are POSIX by construction).
     fn set_remote_shell(&mut self, _shell: vocab::RemoteShell) {}
 
+    /// Records the connection values a successful login established, so every later
+    /// command reaches the machine the way that login did. A no-op on a machine with
+    /// nothing to authenticate.
+    ///
+    /// Without this the values would live only in the login's own argv: the machine
+    /// would be reached as whoever runs xmux the moment the login's connection is gone,
+    /// which is a different account and a refusal.
+    fn set_login(&mut self, _login: ssh::Login) {}
+
     /// Turns a full mux argv (`argv[0]` = the mux binary) into the (command, args)
     /// to spawn.
     fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>);
@@ -127,6 +136,9 @@ impl Transport for Box<dyn Transport> {
     }
     fn set_remote_shell(&mut self, shell: vocab::RemoteShell) {
         (**self).set_remote_shell(shell)
+    }
+    fn set_login(&mut self, login: ssh::Login) {
+        (**self).set_login(login)
     }
     fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
         (**self).exec_argv(tty, mux_argv)

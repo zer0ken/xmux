@@ -1439,6 +1439,7 @@ fn start_login(
     let Some(argv) = op_sink.0.login_argv(&source, &login) else {
         let _ = op_sink.1.send(crate::ui::switcher::OpResult::Login {
             source,
+            login,
             outcome: crate::ui::ops::LoginOutcome {
                 connect: crate::link::unlock::UnlockOutcome::Unavailable,
                 notes: Vec::new(),
