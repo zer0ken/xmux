@@ -204,7 +204,12 @@ impl Runtime {
                 // A re-scan re-resolved the roster. Three registries have to agree about
                 // which machines exist, so all three are reconciled from this ONE answer:
                 // the host registry the loop drives, the source list the off-loop ops
-                // resolve against, and the nav.
+                // resolve against, and the nav. Which makes this the one place to settle
+                // what the answer even is: a machine only a PROBE offers is carried back
+                // in before anything reads the roster, so a probe that was too slow
+                // cannot reap a card through all three at once.
+                let mut roster = roster;
+                env.carry_probed(&mut roster);
                 let fresh = crate::model::Hosts::build(
                     &roster.cfg,
                     &roster.ssh_aliases,

@@ -93,6 +93,13 @@ and the composed control argv.
   question once, the password once and only if the pane carried one.
 - The verdict is the child's exit code. A wrong password only means ssh asks again, so
   recognised auth-failure text only names a failure the exit already established.
+- Because the verdict is that exit code, the remote command the login carries MUST end by
+  reporting the AUTHENTICATION and nothing else, in a word every shell family has. What it
+  carries rides along without a vote. A locked host's shell family is unknown by
+  construction: the probe that would have read it never got past the refusal that locked
+  the card, so a word only one family has (`true`) turns an accepted password into a
+  refused one on a remote from another family. A carried step that failed is reported by
+  the next probe telling the truth about the host, not by a login that looks refused.
 - A prompt the pane's values cannot answer ENDS the login, because nobody is there to
   answer it: a second password prompt is an auth failure, and a password prompt with no
   password in the pane is a server asking for what the pane is missing. A prompt that is
