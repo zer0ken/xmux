@@ -67,6 +67,13 @@ and nothing in `transport/` imports a mux type or a source.
   code reads them to pick a server model. In particular the shell family is NOT the
   shell-based predicate restated: a PowerShell remote runs its attach through a shell
   that records no tty for it.
+- A transport holds the connection values that reach its machine, and a successful
+  login RECORDS them there. The login's own connection ends; a value left only in its
+  argv is gone with it, and every later command would name no account and reach the
+  machine as whoever runs xmux. The values are the machine's, not one source's, so the
+  recording covers every source that machine serves. A transport rebuilt from the roster
+  loses the recording, which is why the roster reconcile is add-only for an id it
+  already holds.
 - The host kind's own query methods are the ONLY code that matches on the
   kind: one maps a kind to a concrete transport, another reads its server socket.
   No match on the kind is scattered across call sites; the trait object carries

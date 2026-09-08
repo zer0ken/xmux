@@ -85,9 +85,12 @@ pub enum OpResult {
     /// The login worker's verdict. Not an inventory mutation: the app reacts to it
     /// (re-probe the machine on success, a flash on failure), never a fold into the
     /// tree. `source` names the host that was logged in to, so success re-probes only
-    /// its machine rather than the whole roster.
+    /// its machine rather than the whole roster. `login` is what the connection was made
+    /// WITH, so a success can record it on the machine instead of leaving it in the
+    /// finished connection's argv.
     Login {
         source: String,
+        login: crate::transport::Login,
         outcome: LoginOutcome,
     },
 }
@@ -106,9 +109,11 @@ pub enum OpFollow {
     /// No inventory change - flash this message (a failed op).
     Flash(String),
     /// The login verdict: re-probe that `source`'s machine on success (only it could
-    /// have changed reach state), flash the failure reason otherwise.
+    /// have changed reach state), flash the failure reason otherwise. `login` rides along
+    /// so a success can be recorded on the machine before that re-probe goes out.
     LoginResult {
         source: String,
+        login: crate::transport::Login,
         outcome: LoginOutcome,
     },
 }
@@ -144,6 +149,7 @@ pub async fn run_login_follow_ups(
     };
     OpResult::Login {
         source: source.to_string(),
+        login: login.clone(),
         outcome: LoginOutcome { connect, notes },
     }
 }
