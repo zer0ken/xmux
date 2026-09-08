@@ -222,7 +222,15 @@ pub enum EventEffect {
     /// muxes it serves. The loop owns it because it needs the host registry (the
     /// machine's sources), the manager (the channels), and the shared probe gate. On a
     /// re-scan a live channel re-enumerates; at launch it is ensured.
-    MachineConnected { machine: String, rescan: bool },
+    ///
+    /// `shell` is the family the probe read, recorded on every source the machine
+    /// serves BEFORE any channel opens, so the first command composed for the machine
+    /// is already composed for its shell.
+    MachineConnected {
+        machine: String,
+        shell: Option<crate::transport::vocab::RemoteShell>,
+        rescan: bool,
+    },
 }
 
 // Hand-written: `Box<dyn Mux>` is not `Debug`, so `DispatchScanned` cannot derive
@@ -284,9 +292,14 @@ impl std::fmt::Debug for EventEffect {
                 .field("host", host)
                 .field("tty", tty)
                 .finish(),
-            EventEffect::MachineConnected { machine, rescan } => f
+            EventEffect::MachineConnected {
+                machine,
+                shell,
+                rescan,
+            } => f
                 .debug_struct("MachineConnected")
                 .field("machine", machine)
+                .field("shell", shell)
                 .field("rescan", rescan)
                 .finish(),
         }

@@ -48,6 +48,19 @@ pub trait Transport: Send + Sync {
         false
     }
 
+    /// Which shell family answers this machine's remote commands. `Posix` (the default)
+    /// for every machine whose shell is known to be POSIX and for one not yet asked; a
+    /// remote learns its own answer from the reachability probe. NOT derived from the
+    /// three predicates above: an ssh remote is remote and shell-based whatever family
+    /// its shell belongs to.
+    fn remote_shell(&self) -> vocab::RemoteShell {
+        vocab::RemoteShell::Posix
+    }
+
+    /// Records the family the probe read. A no-op on a machine whose shell cannot
+    /// differ (the local box and a WSL distribution are POSIX by construction).
+    fn set_remote_shell(&mut self, _shell: vocab::RemoteShell) {}
+
     /// Turns a full mux argv (`argv[0]` = the mux binary) into the (command, args)
     /// to spawn.
     fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>);
@@ -108,6 +121,12 @@ impl Transport for Box<dyn Transport> {
     }
     fn local_registry_scope(&self) -> bool {
         (**self).local_registry_scope()
+    }
+    fn remote_shell(&self) -> vocab::RemoteShell {
+        (**self).remote_shell()
+    }
+    fn set_remote_shell(&mut self, shell: vocab::RemoteShell) {
+        (**self).set_remote_shell(shell)
     }
     fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
         (**self).exec_argv(tty, mux_argv)
@@ -302,6 +321,7 @@ pub fn ssh(alias: String, control_path: String, os: String) -> Box<dyn Transport
         control_path,
         os,
         login: Login::default(),
+        shell: vocab::RemoteShell::default(),
     })
 }
 
@@ -314,6 +334,7 @@ pub fn ssh_as(id: String, alias: String, control_path: String, os: String) -> Bo
         control_path,
         os,
         login: Login::default(),
+        shell: vocab::RemoteShell::default(),
     })
 }
 

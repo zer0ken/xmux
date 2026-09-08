@@ -657,6 +657,7 @@ impl State {
             HostEvent::MachineProbed {
                 machine,
                 err,
+                shell,
                 rescan,
             } => match err {
                 Some(reason) => {
@@ -682,7 +683,11 @@ impl State {
                 }
                 // Connected: which sources to resolve and how lives in the host
                 // registry, so the whole decision is the loop's.
-                None => vec![EventEffect::MachineConnected { machine, rescan }],
+                None => vec![EventEffect::MachineConnected {
+                    machine,
+                    shell,
+                    rescan,
+                }],
             },
             HostEvent::Sessions {
                 source,
@@ -1937,6 +1942,7 @@ mod tests {
         let mut connected = HashSet::new();
         let effects = state.apply_event(
             HostEvent::MachineProbed {
+                shell: None,
                 machine: "prod".into(),
                 err: None,
                 rescan: false,
@@ -1947,7 +1953,11 @@ mod tests {
         assert!(
             matches!(
                 &effects[..],
-                [EventEffect::MachineConnected { machine, rescan: false }] if machine == "prod"
+                [EventEffect::MachineConnected {
+                    machine,
+                    rescan: false,
+                    ..
+                }] if machine == "prod"
             ),
             "{effects:?}"
         );
@@ -1963,6 +1973,7 @@ mod tests {
         let mut connected = HashSet::new();
         let effects = state.apply_event(
             HostEvent::MachineProbed {
+                shell: None,
                 machine: "prod".into(),
                 err: Some(
                     "command failed (exit 255): user@prod: Permission denied (publickey,password)."
@@ -2003,6 +2014,7 @@ mod tests {
         let mut connected = HashSet::new();
         let _ = state.apply_event(
             HostEvent::MachineProbed {
+                shell: None,
                 machine: "prod".into(),
                 err: Some("ssh: connect to host prod port 22: Connection refused".into()),
                 rescan: false,
@@ -2106,6 +2118,7 @@ mod tests {
         let mut connected = HashSet::new();
         let _ = state.apply_event(
             HostEvent::MachineProbed {
+                shell: None,
                 machine: "jup".into(),
                 err: Some("hrlee@jup: Permission denied (publickey,password).".into()),
                 rescan: false,

@@ -128,7 +128,7 @@ pub enum HostEvent {
         sessions: Vec<Session>,
         err: Option<String>,
     },
-    /// A MACHINE'S REACHABILITY probe resolved: `ssh <machine> true` (or an inline
+    /// A MACHINE'S REACHABILITY probe resolved: the shell probe over ssh (or an inline
     /// connect for a local/WSL machine). `err` is `None` when the machine connected,
     /// else ssh's own failure line - its auth-failure signature classifies the machine
     /// LOCKED and any other failure UNREACHABLE. Emitted once per machine, bounded, so
@@ -136,9 +136,14 @@ pub enum HostEvent {
     /// locked or unreachable one classifies its cards without opening one. `rescan` is
     /// true when a re-scan raised the probe, so a connected machine re-enumerates its
     /// live channel instead of only ensuring it.
+    ///
+    /// `shell` is which shell family answered, read from the same round trip. `None`
+    /// when nothing answered, and for a machine that is POSIX by construction, so the
+    /// transport's own default stands in both cases.
     MachineProbed {
         machine: String,
         err: Option<String>,
+        shell: Option<crate::transport::vocab::RemoteShell>,
         rescan: bool,
     },
 }

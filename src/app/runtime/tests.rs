@@ -229,6 +229,7 @@ async fn machine_connected_dispatches_a_detected_control_host() {
     hosts.insert(host);
     rt.hosts = hosts;
     rt.run_event_effect(crate::model::EventEffect::MachineConnected {
+        shell: None,
         machine: "jup".into(),
         rescan: false,
     });
