@@ -554,6 +554,16 @@ pub(crate) fn request_attach(
 ) -> u64 {
     let id = registry.alloc_id();
     *attach_seq += 1;
+    // The command the display terminal IS. A pane that dies is diagnosed by comparing
+    // what xmux ran against what the same command does by hand, so the argv has to be on
+    // record: without it the comparison is a guess about what was even attempted.
+    tracing::info!(
+        key,
+        id,
+        seq = *attach_seq,
+        cmd = %crate::app::runtime::handlers::shell_line(&argv),
+        "attach_spawn"
+    );
     display.mark_in_flight(key, *attach_seq);
     display.mark_pending(id, key);
     worker.ensure(DisplayEnsure {
