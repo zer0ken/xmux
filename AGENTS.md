@@ -35,7 +35,7 @@ state; raw key and text injection is an unstable low-level surface.
 - `src/app/` - the app: the runtime loop that owns the terminal, plus the focus
   and modal routing state.
 - `src/cli/` - the CLI surface: argument parsing and command dispatch, plus the
-  `xmux update` subcommand. `cli::run` is the sole public entry.
+  `xmux update` subcommand. It exposes ONE public entry, which the binary shim calls.
 - `src/provision/` - resolution: the TOML config, the roster of ssh targets, the
   concurrent source probe, and the resolved runtime view over them.
 - `src/transport/` - the TRANSPORT axis: the `Transport` trait, the per-host

@@ -165,10 +165,12 @@ address, the port and the username ssh will not ask you for, each starting at wh
 ssh would have used, plus an optional masked password. Submitting hands those values
 to ssh and waits: xmux answers the host-key question and the password itself, so
 there is nothing to watch and nothing to type. Esc ends the attempt. A login that
-works re-probes that host, and the panel gives way to the sessions it found. A login
-the values cannot finish says what the server asked for. Two checkboxes decide what
-a working login leaves behind: recording the values as an `~/.ssh/config` stanza,
-and registering your public key on the host so it stops asking for a password.
+works re-probes that host, and the panel gives way to the sessions it found. The values
+you submitted become the machine's, so everything xmux runs there afterwards reaches it
+the way the login did. A login the values cannot finish says what the server asked for.
+Two checkboxes decide what a working login leaves behind: recording the values as an
+`~/.ssh/config` stanza, and registering your public key on the host so it stops asking
+for a password.
 
 ## Configuration
 
