@@ -866,6 +866,8 @@ impl Runtime {
                 if Some(id) == displayed_attach_id {
                     detached = true;
                 }
+                // Read before the reap: the reap drops the grid the reason is written on.
+                let last = last_pane_line(&self.registry, id);
                 clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
                 if !self.registry.reap(id) {
                     // pre-Ready Exited: registry has no id yet. Attribute to the owning host
@@ -873,6 +875,13 @@ impl Runtime {
                     self.hosts
                         .iter_mut()
                         .any(|h| h.display.mark_reaped_if_pending(id));
+                    tracing::info!(id, established = false, last = %last, "attach_exited");
+                } else {
+                    // An attachment that had been serving and is now gone. The loop reads
+                    // its absence as a client to replace, so a pane that keeps dying is a
+                    // reattach that keeps firing; saying so here is what separates that
+                    // from a reattach decision gone wrong.
+                    tracing::info!(id, established = true, last = %last, "attach_exited");
                 }
             }
             PtyEvent::DisplayTty { id, tty } => {
@@ -888,11 +897,15 @@ impl Runtime {
                     if Some(id) == displayed_attach_id {
                         detached = true;
                     }
+                    let last = last_pane_line(&self.registry, id);
                     clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
                     if !self.registry.reap(id) {
                         self.hosts
                             .iter_mut()
                             .any(|h| h.display.mark_reaped_if_pending(id));
+                        tracing::info!(id, established = false, last = %last, "attach_exited");
+                    } else {
+                        tracing::info!(id, established = true, last = %last, "attach_exited");
                     }
                     budget -= 1;
                 }
@@ -1671,6 +1684,22 @@ fn for_each_source_of(
     }
 }
 
+/// The last line the attachment `id`'s pane holds, or a placeholder when there is none.
+///
+/// Read BEFORE the attachment is reaped: the reap drops the grid, and the grid is the only
+/// place the child's own account of why it stopped exists.
+fn last_pane_line(registry: &crate::display::registry::AttachRegistry, id: u64) -> String {
+    let Some(addr) = registry.address_of_id(id) else {
+        return "(no pane)".to_string();
+    };
+    let Some(grid) = registry.grid(&addr) else {
+        return "(no grid)".to_string();
+    };
+    let line = grid.lock().ok().and_then(|g| g.last_line());
+    line.map(|l| escape_controls(&l))
+        .unwrap_or_else(|| "(blank)".to_string())
+}
+
 fn local_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
@@ -1695,7 +1724,7 @@ pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrom
 /// A control character is written as its escape first: a session format carries TABs, and
 /// a terminal prints a raw TAB as nothing at all - the datum would be on screen and
 /// unreadable, which is the one thing this screen exists not to do.
-pub(super) fn shell_line(argv: &[String]) -> String {
+pub(crate) fn shell_line(argv: &[String]) -> String {
     argv.iter()
         .map(|a| crate::transport::vocab::quote(&escape_controls(a)))
         .collect::<Vec<_>>()

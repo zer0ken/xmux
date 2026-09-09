@@ -41,7 +41,15 @@ back to the app, which owns the registry.
 - The grid owns the terminal-emulation cell state. It also answers a content
   fingerprint, which the runtime compares across successive frames to decide
   whether a display transition actually changed the visible screen; the
-  grid-changed log event fires only on a change.
+  grid-changed log event fires only on a change. It answers its last written line for the
+  same reason: a child that stopped left its account of why on its own screen, and that
+  screen is the only place it exists, so the line is read off the grid BEFORE the reap
+  drops it.
+- An attachment's whole life is on record: the argv it IS when it is asked for, the key it
+  installs under when it is ready, the reason when it fails, and its exit when it goes,
+  with the last line its pane held. The loop reads a missing attachment as a client to
+  replace, so a child that keeps stopping and a reattach decision that keeps firing look
+  identical from the outside; only the exit being on record separates them.
 - Input decoding, dispatch, and mouse parsing turn terminal input into routing
   decisions or input actions. Terminal setup holds the prefix parsing, mouse
   capture, and the terminal guard.

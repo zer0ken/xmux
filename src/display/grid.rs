@@ -64,6 +64,22 @@ impl Grid {
 
     /// Whether the grid has no visible content (all blank) — used to diagnose an
     /// attachment whose PTY child has not produced output yet.
+    /// The last non-empty line the pane holds, for the log to name WHY a display
+    /// terminal is gone.
+    ///
+    /// A pane that dies leaves its reason on its own screen: `ssh` says the connection
+    /// closed, a mux says what it refused. Nothing else carries that sentence, so without
+    /// reading it back the death is only ever a timestamp.
+    pub fn last_line(&self) -> Option<String> {
+        let text = self.parser.screen().contents();
+        // Trimmed at both ends: a pane keeps its cells padded to the full width, and
+        // where a line STARTS on screen says nothing about what it says.
+        text.lines()
+            .map(str::trim)
+            .rfind(|l| !l.is_empty())
+            .map(str::to_string)
+    }
+
     pub fn is_blank(&self) -> bool {
         self.parser.screen().contents().trim().is_empty()
     }
@@ -158,6 +174,26 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::Color as RColor;
+
+    /// A pane that dies leaves its reason on its own screen, and the log reads it from
+    /// there. The LAST written line is the one that matters: what the child said just
+    /// before it stopped, not the banner it opened with.
+    #[test]
+    fn last_line_reads_what_the_child_said_last() {
+        let mut g = Grid::new(6, 40);
+        assert_eq!(g.last_line(), None, "a blank pane has nothing to report");
+
+        g.feed(
+            b"Welcome
+Connection to host closed.
+",
+        );
+        assert_eq!(
+            g.last_line().as_deref(),
+            Some("Connection to host closed."),
+            "the trailing blank rows are skipped for the last written line"
+        );
+    }
 
     #[test]
     fn color_mapping_covers_default_idx_rgb() {
