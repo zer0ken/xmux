@@ -19,8 +19,8 @@ the debounced attach, and renders the live split view.
 ## Module Seams
 
 - `cli/` is the command surface: parsing and dispatch for the commands and the
-  default interactive app, plus the self-update subcommand. `cli::run` is the sole
-  entry the binary shim calls.
+  default interactive app, plus the self-update subcommand. It exposes ONE entry, which
+  the binary shim calls.
 - `provision/` resolves what exists on this machine: the optional TOML config merged
   with ssh-config discovery, the roster of ssh targets, the concurrent source
   probe, and the resolved runtime view over them.

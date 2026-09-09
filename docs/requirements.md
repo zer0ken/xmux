@@ -40,10 +40,18 @@ no function, and no test, so renaming code is never a documentation change.
   network state cannot be read reaches an empty list rather than an error, and
   ssh-config names keep their position when a provider repeats them. The roster is resolved again on every re-scan, so a machine that has
   come online, and an edit to the `[discovery]` table, both take effect without a
-  restart. A machine the roster stops naming is dropped along with every source it
-  served and everything on screen for it; a machine it still names keeps the sources it
-  is serving, including any that were found by asking the machine rather than by
-  configuration.
+  restart. Absence from a re-resolved roster means opposite things for the two kinds of
+  evidence a provider offers a machine from. A RECORD is authoritative both ways, so a
+  machine an ssh-config alias, a `[[hosts]]` entry, or the distribution list stops naming
+  is dropped along with every source it served and everything on screen for it. A PROBE is
+  authoritative one way only: it proves the machine is there, and its silence proves
+  nothing, because a neighbour is offered by reaching it inside a bounded budget that one
+  slow hop misses with nothing wrong. A machine only a probe offered is therefore carried
+  into a roster that lost it, with its sources, the provider its card names, and the
+  address the login pane offers; a machine that really left keeps its card and reports
+  itself unreachable, exactly as a recorded machine does when it goes offline. A machine
+  the roster still names keeps the sources it is serving, including any that were found by
+  asking the machine rather than by configuration.
 - **FR-A6** - A host's mux is identified by what its binary answers as, not by the
   name it was invoked under, so tmux, psmux, zellij, abduco, and screen mix freely
   across hosts with no configuration. Each mux is one implementation behind the mux axis: the
@@ -342,7 +350,12 @@ no function, and no test, so renaming code is never a documentation change.
   matching nothing does not bring them back through the no-match fallback that shows the
   other hosts. A reachable host with no sessions keeps its card, and a host still scanning
   never hides, whatever stale failure it carries. A host that goes unreachable mid-run
-  hides from that result on and returns when a scan answers.
+  hides from that result on and returns when a scan answers. A host the user LOGGED IN to
+  never hides for the rest of the run, however it answers afterwards: a blocked host is
+  kept because it is actionable, and succeeding at the action does not make it less so, so
+  the one action a card offers is never the action that takes the card off the list. The
+  exemption is per machine, since a login authenticates the machine and not the one mux
+  whose card carried the pane.
 - **FR-B25** - The nav attaches on one of FOUR sides of the terminal view - a left or
   right column, a top or bottom band - and the placement is a user choice at two layers:
   a single `[ui] nav-position` setting (default `left`) names the placement when nothing
@@ -394,7 +407,13 @@ no function, and no test, so renaming code is never a documentation change.
   budget, since nobody is watching the PTY to answer it: a second password prompt is an
   auth failure, and a password prompt with no password in the pane is a server asking for
   what the pane is missing. Where this side multiplexes it establishes the single authenticated master the
-  later channels reuse. Success re-probes ONLY that host (its reach is the only thing that
+  later channels reuse. The VERDICT is the authentication and nothing else: the remote
+  command the login carries ends by reporting it in a word every shell family has, so a
+  remote whose shell is outside the POSIX family does not turn an accepted password into a
+  refused one. Success records the submitted values on the machine, so everything xmux runs
+  there afterwards reaches it the way the login did rather than as whoever runs xmux; the
+  values are the machine's, not one source's, so every source it serves carries them.
+  Success re-probes ONLY that host (its reach is the only thing that
   changed, so the whole roster is not re-scanned); any failure keeps the host blocked and
   flashes why. The password lives only in the transient command and the PTY writer, never
   stored, logged, rendered, or serialized. A side with no multiplexing (Windows, FR-G)
@@ -413,7 +432,10 @@ no function, and no test, so renaming code is never a documentation change.
   without connection sharing (FR-G) has no afterwards. It appends this machine's public
   key to the host's `authorized_keys`, only when that exact line is absent, generating an
   ed25519 pair first when the machine has no key to send. What it leaves is what makes a
-  password host usable on such a platform at all: the key ends the password.
+  password host usable on such a platform at all: the key ends the password. It rides the
+  login without a vote on its verdict (FR-B28): a key that did not land leaves the host
+  asking for a password on the next probe, which is the truth about that host, rather than
+  a login that reads as refused.
 
 ## C. Switching (the keystone)
 
@@ -543,6 +565,12 @@ nothing to switch to until one exists.
   command then runs in a LOGIN shell, because a mux installed under the user's own home is
   not on the bare environment's `PATH`. A distribution's attach runs one command
   exactly as FR-G4's remote attach does.
+- **FR-G6** - Which shell family answers a remote is READ from its reachability probe, in
+  the round trip that probe already makes, and held for every source that machine serves.
+  A remote outside the POSIX family is then not sent POSIX-only syntax: it gets the attach
+  by itself where a POSIX remote gets it behind a POSIX prefix. A LOCKED host's family is
+  unknown, because the probe that reads it never got past the refusal that locked the card,
+  which is why the login's own command has to hold in every family (FR-B28).
 
 ---
 

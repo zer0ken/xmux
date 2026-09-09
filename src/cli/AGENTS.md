@@ -7,7 +7,7 @@
 interactive app, plus the `update` subcommand that detects how xmux was installed
 and delegates to the owning package manager (cargo, winget, Homebrew) or replaces
 the binary in place with a checksum-verified build from the latest release.
-`cli::run` is the sole entry the binary shim calls; everything below it is
+This directory exposes ONE entry, which the binary shim calls; everything below it is
 crate-internal.
 
 `doctor` reports a failed source as the state its own failure text proves, in the
@@ -32,8 +32,8 @@ without one, so a broken config never blocks it.
 
 ## Invariants
 
-- `cli::run` is the single public entry the binary shim calls; the layers below
-  it are crate-internal.
+- This directory exposes exactly ONE public entry, which the binary shim calls; the
+  layers below it are crate-internal.
 - A running instance is addressed by NAME (a control socket), never by pid.
 
 ## Common Pitfalls
