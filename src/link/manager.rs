@@ -43,8 +43,12 @@ impl HostManager {
 
     /// Ensures `id`'s metadata channel is live, picking the channel from the host's
     /// `event_source()` - the ONE place that reads it. CONTROL → spawn a `-CC` client
-    /// (connect sequence queued by `HostClient::spawn`); POLL → spawn a self-looping
-    /// poll task at the mux's interval. A no-op (`Ok(false)`) if already live.
+    /// (connect sequence queued by `HostClient::spawn`); POLL → spawn a task that
+    /// enumerates once and then parks. A no-op (`Ok(false)`) if already live.
+    ///
+    /// Ensuring is therefore not a request on its own: it opens a channel a host does not
+    /// have, and a host that has one is left exactly as it stands. That is what lets the
+    /// input paths call it freely - a keystroke on a live card asks the machine nothing.
     pub fn ensure(
         &mut self,
         id: &str,
@@ -52,10 +56,10 @@ impl HostManager {
         cols: u16,
         rows: u16,
     ) -> anyhow::Result<bool> {
-        // A finished poll task leaves a dead JoinHandle in the map (the loop is otherwise
-        // infinite, so this only happens if its body panicked). Drop it so this re-ensure
-        // (startup, selection move, or the reconnect sweep) respawns it instead of treating
-        // the corpse as live - this is what makes the reconnect sweep a real liveness check.
+        // A finished poll task leaves a dead JoinHandle in the map. The task parks after
+        // its one enumeration, so it finishes only when its body panicked or the event
+        // receiver was already gone. Drop the corpse so a later ensure can respawn it
+        // rather than reading it as a live channel.
         if self.polls.get(id).is_some_and(|h| h.is_finished()) {
             self.polls.remove(id);
         }
@@ -87,12 +91,11 @@ impl HostManager {
                 )?;
                 self.clients.insert(id.to_string(), client);
             }
-            crate::model::EventSource::Poll { interval_ms } => {
+            crate::model::EventSource::Poll => {
                 let handle = tokio::spawn(run_poll(
                     id.to_string(),
                     host.transport.clone(),
                     host.mux.clone_box(),
-                    interval_ms,
                     self.events.clone(),
                 ));
                 self.polls.insert(id.to_string(), handle);
@@ -112,10 +115,14 @@ impl HostManager {
         self.clients.contains_key(host) || self.polls.contains_key(host)
     }
 
-    /// Immediate re-enumeration on demand (`r` / menu reconnect). A CONTROL host
-    /// re-issues list-sessions; a POLL host's task is aborted and respawned so the next
-    /// enumeration fires NOW instead of at the next interval. Branches on which channel
-    /// the manager holds - it does NOT read the mux's event source.
+    /// Re-enumeration ON DEMAND (`r` / menu reconnect / a machine that just logged in).
+    /// A CONTROL host re-issues list-sessions over the stream it already holds; a POLL
+    /// host's parked task is aborted and respawned, which is what runs its enumeration
+    /// again. Branches on which channel the manager holds - it does NOT read the mux's
+    /// event source.
+    ///
+    /// This is the ONLY thing that re-enumerates a poll host, so every re-enumeration
+    /// traces back to something that asked for one.
     pub fn rescan(&mut self, id: &str, host: &crate::model::Host, cols: u16, rows: u16) {
         if let Some(c) = self.clients.get(id) {
             c.list_sessions();

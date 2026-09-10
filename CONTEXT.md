@@ -211,9 +211,9 @@ UI elements a user perceives as distinct things:
   hosts run local, then WSL, then remote, each tier by source name ascending, and
   inside a source its sessions run by name ascending, so one source's cards are
   contiguous and the nav never names a source twice. `rebuild` applies the order on
-  every pass, and a routine poll reproduces the same order exactly, so the list never
+  every pass, and a re-enumeration reproduces the same order exactly, so the list never
   reshuffles under the user.
-- selection - the nav's current pick, advanced by navigation; a routine poll or
+- selection - the nav's current pick, advanced by navigation; a re-enumeration or
   restream never moves it: the order is identical on every rebuild, and the session
   under the cursor is held by identity across one, so neither a re-sort nor a host
   answering late can take it. The preselect and the
@@ -563,6 +563,28 @@ The remaining layers each own one concern:
 - `src/driver.rs` - the mux-agnostic `MuxDriver` trait, the supervisor
   capabilities a driver borrows, and the thin wrapper that resolves a source's
   driver. It names no concrete mux type.
+
+## Asked-for requests
+
+**xmux reaches a machine only when something asked it to.** Every request traces to one
+of three things: the launch scan, a user action, or a push stream that is already open.
+Nothing repeats on a timer, and no failure raises its own retry.
+
+A user action means a re-scan, a login, selecting a card, or an operation on a session.
+A push stream is one connection that stays open while the far side speaks over it, which
+is not a repeated request however much it carries.
+
+The rule exists because a request that answers a failed request cannot stop. A machine
+that refuses one connection refuses the next identically, so a client that reconnects on
+every refusal reconnects without end, and the machine's own defences are built to read
+exactly that as an attack. The consequences are deliberate and they are what the user
+sees: a channel that dropped stays dropped, a display whose client died keeps the last
+frame it drew, and a card that is unreachable stays unreachable, each until the user asks
+for it again.
+
+Concurrency follows from the same fact. A machine counts the connections that have not
+authenticated yet, so work fans out ACROSS machines and never within one: a machine is
+asked one thing at a time, however many things there are to ask it.
 
 ## Colour ownership
 

@@ -406,7 +406,7 @@ mod tests {
             DeathSignal::Eof
         }
         fn event_source(&self) -> EventSource {
-            EventSource::Poll { interval_ms: 1500 }
+            EventSource::Poll
         }
         fn new_session_plan(&self, _n: &str) -> Vec<String> {
             vec![]
@@ -750,7 +750,7 @@ mod tests {
             DeathSignal::Eof
         }
         fn event_source(&self) -> EventSource {
-            EventSource::Poll { interval_ms: 1500 }
+            EventSource::Poll
         }
         fn new_session_plan(&self, _n: &str) -> Vec<String> {
             vec![]

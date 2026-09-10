@@ -6,8 +6,8 @@
 no abduco code sits at the `src` root. It owns BOTH sides of the mux:
 
 - the metadata mux: binary name, a per-session server model, listing
-  enumeration (the bare binary IS the listing), attach argv, create argv, poll
-  cadence, death signal, and the one-card-per-session rule;
+  enumeration (the bare binary IS the listing), attach argv, create argv,
+  death signal, and the one-card-per-session rule;
 - the display driver: the per-source display orchestration for a per-session mux.
 
 The mux constructs its own driver, so abduco selection lives in this implementation and
@@ -27,15 +27,15 @@ surface is `-a -A -c -l -n -e -f -p -q -r -v`, and none of those is a switch ver
 `-e` only names the detach key. Pressing that key ends the attachment and leaves
 every session running, so the client is GONE rather than pointed somewhere else.
 
-Because there is no per-session query, a poll sweep enumerates ONCE and resolves
-every session as a plain session card (the session alone).
+Because there is no per-session query, one enumeration is the whole answer and every
+session resolves as a plain session card (the session alone).
 
 The mux supplies the argv, model, and enumeration; the driver consumes it
 and owns the concrete display decision. The transport dispatches the host execution.
 
 ## Module Seams
 
-- The implementation root holds the mux itself, the poll cadence, and the listing parser.
+- The implementation root holds the mux itself and the listing parser.
 - The driver sits beside it and owns the per-source display orchestration.
 - The driver pulls the mux-agnostic display seam from `src/driver.rs` and the
   supervisor capabilities from the app runtime. The seam does NOT import the
@@ -64,7 +64,7 @@ and owns the concrete display decision. The transport dispatches the host execut
 ## Common Pitfalls
 
 - Do not invent a per-session query: abduco has none, and a bogus command
-  would run every poll and fail.
+  would run on every enumeration and fail.
 - Do not add a session-follow path for abduco: it would carry a notification abduco
   cannot send about a move abduco cannot make.
 - Do not use `-V` (uppercase) anywhere: abduco rejects it; its version flag is

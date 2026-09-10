@@ -60,8 +60,6 @@ pub enum Action {
     Tick {
         /// The current instant (injected, not read inside `apply`).
         now: Instant,
-        /// Whether the selected session's display PTY is currently live.
-        key_live: bool,
         /// Whether an attach for the selected session's key is already in flight.
         in_flight: bool,
         /// Whether the display client sits on a session the SELECTION does not name and
@@ -80,11 +78,6 @@ pub enum Action {
     /// Blank the display truth - the `r` reattach-kick tears the current display
     /// down, so nothing is confirmed until the fresh attach lands.
     ClearDisplay,
-    /// Re-arm the attach debounce one interval out from `now` - the recovery rearm
-    /// (a matched-client detach-reap, or the viewed session's PTY exiting). Carries
-    /// the same debounce arithmetic `apply(Tick)` owns, so the two arming paths
-    /// cannot drift. `now` is injected (apply never reads the clock itself).
-    RearmAttach { now: Instant },
     /// Arm the attach deadline at `now` itself (already elapsed) so the trailing
     /// `Tick` re-attaches immediately - the `r` reattach-kick, which re-attaches the
     /// current display with no debounce.

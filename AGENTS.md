@@ -60,6 +60,17 @@ state; raw key and text injection is an unstable low-level surface.
 
 ## Invariants
 
+- ASKED-FOR REQUESTS ONLY. xmux reaches a machine only when something asked it to.
+  Every request traces to one of three things: the launch scan, a user action (a
+  re-scan, a login, selecting a card, an operation on a session), or a push stream
+  that is already open. Nothing repeats on a timer, and no failure raises its own
+  retry - a request that answers a failed request is a retry loop, and a machine on
+  the far side reads a client that reconnects on every refusal as one attacking it.
+  So a dropped channel stays dropped, a dead display keeps its last frame, and an
+  unreachable card stays unreachable, each until the user asks. A push stream is not
+  a repeated request: one connection stays open and the far side speaks over it.
+- A machine is asked ONE THING AT A TIME. Concurrent connections to a single machine
+  are what its own defences count, so a fan-out is per machine, never within one.
 - The public control surface should speak semantic operations before raw keys.
 - Metadata and control clients do not own display pixels.
 - Display attachments are real mux clients, not reconstructed output streams.

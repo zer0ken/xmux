@@ -8,11 +8,6 @@ mod registry;
 
 pub use display::PsmuxDriver;
 
-/// The local-psmux poll cadence (psmux is one-server-per-session with no event
-/// push, so changes are discovered by re-enumeration). Mirrors the supervisor's
-/// loop constant; held here so the supervisor reads it off the mux, not a literal.
-const PSMUX_POLL_MS: u64 = 1500;
-
 /// psmux: one server per session (`ServerModel::PerSession`), enumerated from the
 /// filesystem registry, polled for change, each session keeping its own attachment.
 pub struct Psmux {
@@ -157,9 +152,7 @@ impl Mux for Psmux {
     }
 
     fn event_source(&self) -> EventSource {
-        EventSource::Poll {
-            interval_ms: PSMUX_POLL_MS,
-        }
+        EventSource::Poll
     }
 }
 

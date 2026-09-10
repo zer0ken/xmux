@@ -799,7 +799,8 @@ impl Runtime {
     }
 
     /// The `host_rx` arm: apply one host event, then drain a burst (bounded) so a `%`-event
-    /// flood coalesces into one redraw. Re-arms the attach debounce on the detach-reap path.
+    /// flood coalesces into one redraw. A reaped display attach only repaints; it opens
+    /// nothing, because a client that detached is not a reason to connect again.
     pub(super) fn on_host_event(
         &mut self,
         ev: HostEvent,
@@ -807,9 +808,6 @@ impl Runtime {
     ) {
         let t = std::time::Instant::now();
         if self.handle_host_event(ev) {
-            self.state.apply(crate::model::Action::RearmAttach {
-                now: std::time::Instant::now(),
-            });
             self.dirty = true;
         }
         let mut budget = EVENT_DRAIN_BUDGET;
@@ -817,9 +815,6 @@ impl Runtime {
             match host_rx.try_recv() {
                 Ok(ev) => {
                     if self.handle_host_event(ev) {
-                        self.state.apply(crate::model::Action::RearmAttach {
-                            now: std::time::Instant::now(),
-                        });
                         self.dirty = true;
                     }
                     budget -= 1;
@@ -924,11 +919,12 @@ impl Runtime {
             }
         }
         if detached {
-            // The viewed session's client detached/exited - recover by re-attaching it
-            // (reaped above, so the loop-top attach re-fires once its PTY is gone).
-            self.state.apply(crate::model::Action::RearmAttach {
-                now: std::time::Instant::now(),
-            });
+            // The viewed session's client detached or exited. The view keeps the last
+            // frame it drew and NOTHING re-attaches: the re-attach would be a fresh
+            // connection raised by the death of the connection before it, and when the
+            // session is gone every attempt dies the same way, so the chain does not stop
+            // on its own. The user recovers the pane by selecting its card again or
+            // re-scanning. Repaint so the pane shows what it is now.
             self.dirty = true;
         }
     }
@@ -1301,11 +1297,9 @@ impl Runtime {
     /// `now` is injected rather than read here, the same way `apply` takes it, so a
     /// caller can drive the debounce across its whole span.
     pub(super) fn drive_attach_beat(&mut self, now: std::time::Instant) {
-        let (key_live, in_flight) =
-            selection_attach_facts(&self.registry, &self.hosts, &self.state.selection);
+        let in_flight = selection_attach_in_flight(&self.hosts, &self.state.selection);
         let cmds = self.state.apply(crate::model::Action::Tick {
             now,
-            key_live,
             in_flight,
             display_astray: display_astray(&self.state, &self.hosts),
         });
@@ -1394,8 +1388,7 @@ impl Runtime {
         if !self.state.focus.is_terminal_focused() || self.state.selection.is_empty() {
             return false;
         }
-        let (_, in_flight) =
-            selection_attach_facts(&self.registry, &self.hosts, &self.state.selection);
+        let in_flight = selection_attach_in_flight(&self.hosts, &self.state.selection);
         if self.state.attach_pending || self.state.attach_deadline.is_some() || in_flight {
             return false;
         }
@@ -1563,87 +1556,6 @@ impl Runtime {
         // reconcile re-resolves the position from it.
         self.nav_default = ui.nav_position();
         true
-    }
-
-    /// The reconnect-sweep arm: re-ensures died metadata channels, re-detects
-    /// undetected hosts, re-warms dropped control-host PTYs, and captures display
-    /// ttys. The selected session's display is NOT re-attached here: the attach beat
-    /// owns that recovery (the tick arms on the display PTY being gone, the driver
-    /// decides how to show the session), so a dropped display retries through the one
-    /// gated path - bounded against a session that is gone - instead of an unbounded
-    /// sweep of its own.
-    pub(super) fn on_reconnect(&mut self) {
-        let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
-        // Snapshot the ids so the loops can re-borrow `hosts` (incl. &mut) without holding
-        // the `ids()` borrow across the body.
-        let ids: Vec<String> = self.hosts.ids().to_vec();
-        // Self-heal sweep. A DETECTED host whose metadata channel DROPPED is re-established
-        // through the machine probe (deduped per machine), not a blind re-ensure: a host
-        // that silently relocked - its key removed, or its ControlMaster closed - would
-        // otherwise re-spawn a `-CC` that dies with no reason and reads as "connection
-        // closed" unreachable instead of locked. A live channel is left alone; a connected
-        // probe re-ensures the channel through the `MachineConnected` effect. An UNDETECTED
-        // host retries detection.
-        // While the initial scan is still settling, every undetected source already has
-        // its one detection probe in flight (raised by the discovery pass): the sweep
-        // must not run a second scan for the same probe. The undetected-host retry
-        // stands down until the scan clears, then retries at its own cadence.
-        let scan_settled = self.state.scanning.is_empty();
-        let mut reprobed: HashSet<String> = HashSet::new();
-        for id in &ids {
-            let detected = self.hosts.get(id).map(|h| h.detected).unwrap_or(false);
-            if detected {
-                if !self.mgr.is_live(id)
-                    && reprobed.insert(crate::session::machine_of(id).to_string())
-                {
-                    probe_machine(id, &self.hosts, self.mgr.events(), &self.probe_gate, false);
-                }
-            } else if scan_settled {
-                scan_or_dispatch_host(&mut self.mgr, &self.hosts, &mut self.detecting, id, vc, vr);
-            }
-        }
-        // Re-warm each control host's dropped per-host PTY via its driver (ENSURE-ONLY;
-        // a host with no known sessions yet is skipped rather than reaping a live PTY).
-        for id in &ids {
-            if self.mgr.get(id).is_none() {
-                continue;
-            }
-            let inventory = match self.hosts.get(id) {
-                Some(h) => h.inventory.sessions.clone(),
-                None => continue,
-            };
-            if inventory.is_empty() {
-                continue;
-            }
-            let mut ctx = crate::driver::DriverCtx {
-                registry: &mut self.registry,
-                hosts: &mut self.hosts,
-                worker: &self.worker,
-                pty_tx: &self.driver_pty_tx,
-                attach_seq: &mut self.attach_seq,
-                cols: self.cols,
-                body_rows: self.body_rows,
-                nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                    .with_height(self.nav_height)
-                    .with_position(self.nav_position),
-            };
-            sync_source_terminals(id, &inventory, &mut ctx);
-        }
-        // Capture the display-client tty for any shared host whose display attach is live
-        // but whose tty is not yet known (retried each sweep).
-        for id in &ids {
-            let Some(h) = self.hosts.get(id) else {
-                continue;
-            };
-            if h.display_tty.0.is_some() {
-                continue;
-            }
-            if self.registry.contains(&host_selection_key(h)) {
-                if let Some(client) = self.mgr.get(id) {
-                    client.capture_display_tty();
-                }
-            }
-        }
     }
 }
 

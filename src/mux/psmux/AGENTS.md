@@ -7,7 +7,7 @@ no psmux code sits at the `src` root. It owns BOTH sides of the mux:
 
 - the metadata mux: binary name, a per-session server model, registry-merge
   enumeration for a LOCAL host (a plain session listing over ssh for a REMOTE
-  one), attach argv, poll cadence, death signal, the environment variable its own
+  one), attach argv, death signal, the environment variable its own
   client carries its session in, and the window and session operation plans;
 - the display driver: the per-source display orchestration for a per-session mux.
 
@@ -49,7 +49,7 @@ and owns the concrete display decision. The transport dispatches the host execut
 
 ## Module Seams
 
-- The implementation root holds the mux itself and the poll cadence.
+- The implementation root holds the mux itself.
 - The driver sits beside it and owns the per-source display orchestration.
 - The session registry backs local enumeration: an existence set merged with one
   detail row from a session listing.

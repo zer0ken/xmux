@@ -49,12 +49,6 @@ pub struct State {
     /// pending selection so rapid navigation coalesces into one trailing attach
     /// instead of a per-step storm of switch-client repaints (the freeze).
     pub attach_pending: bool,
-    /// How many dead-display recovery attaches have fired for the current selection
-    /// without the display being confirmed again. Each recovery fire spends one and
-    /// the recovery stands down at the limit, so a session that is gone cannot turn
-    /// the EOF of every failed attach into the next attempt; a selection move, a
-    /// cleared display, or a re-confirmed display starts a new count.
-    pub attach_retries: u32,
     /// The session last persisted as the user's last-selected.
     pub last_saved_session: crate::session::Address,
     /// The app's focus state machine - which pane keys go to and whether a
@@ -422,7 +416,7 @@ impl State {
     /// exactly one mutation point.
     ///
     /// The clock and the runtime attach facts enter ONLY as data on [`Action::Tick`]
-    /// (`now`/`key_live`/`in_flight`); `apply` never reads `Instant::now()` or any
+    /// (`now`/`in_flight`); `apply` never reads `Instant::now()` or any
     /// registry/host state itself.
     ///
     /// [`Action`]: crate::model::Action
@@ -447,16 +441,10 @@ impl State {
             }
             Action::ConfirmDisplay(sel) => {
                 self.displayed = sel;
-                self.attach_retries = 0;
                 Vec::new()
             }
             Action::ClearDisplay => {
                 self.displayed = Selection::default();
-                self.attach_retries = 0;
-                Vec::new()
-            }
-            Action::RearmAttach { now } => {
-                self.attach_deadline = Some(now + Duration::from_millis(ATTACH_DEBOUNCE_MS));
                 Vec::new()
             }
             Action::RearmAttachNow { now } => {
@@ -472,12 +460,10 @@ impl State {
                 // The trailing Tick arms the debounce, so rapid navigation coalesces.
                 self.selection = target;
                 self.attach_pending = true;
-                self.attach_retries = 0;
                 Vec::new()
             }
             Action::Tick {
                 now,
-                key_live,
                 in_flight,
                 display_astray,
             } => {
@@ -494,23 +480,21 @@ impl State {
                 // ARM ON THE CONDITION, not on a change. A display sitting away from the
                 // selection is a state, so it is answered for as long as it lasts and
                 // nothing has to be remembered from the moment it began: a selection that
-                // never moved again would arm nothing if only its MOVE could. The ways it
-                // can sit away are one condition here, because the gate below fires on
+                // never moved again would arm nothing if only its MOVE could. The two ways
+                // it can sit away are one condition here, because the gate below fires on
                 // them: the client left for another session of the selected host
-                // (`display_astray`), the confirmed display is another session
-                // altogether, or the display PTY is gone while the selection stands
-                // (an EOF'd display attachment - the detach of the mirrored client).
-                // The last of these arms only while the recovery could actually fire
-                // (the inventory still lists the session and the retry budget lasts),
-                // so a dead session cannot arm-and-refuse forever. Armed only with the
-                // debounce idle, so a navigation burst still coalesces into one
-                // trailing attach, and only with nothing in flight, so the attach
-                // already carrying the display there is not restarted under itself.
-                let recovery_possible =
-                    self.selection_is_listed() && self.attach_retries < ATTACH_RECOVERY_LIMIT;
-                let display_needs_carry = display_astray
-                    || self.selection != self.displayed
-                    || (!key_live && recovery_possible);
+                // (`display_astray`), or the confirmed display is another session
+                // altogether. Armed only with the debounce idle, so a navigation burst
+                // still coalesces into one trailing attach, and only with nothing in
+                // flight, so the attach already carrying the display there is not
+                // restarted under itself.
+                //
+                // A display PTY that DIED while the selection stands arms nothing. Every
+                // re-attach is a fresh connection to that machine, and an attach that
+                // answers a death that the attach itself caused is a loop the machine sees
+                // as a client hammering it. The pane keeps what it last drew and the user
+                // decides, by selecting the card again or re-scanning.
+                let display_needs_carry = display_astray || self.selection != self.displayed;
                 if display_needs_carry
                     && !self.selection.is_empty()
                     && self.attach_deadline.is_none()
@@ -538,17 +522,10 @@ impl State {
                     self.last_saved_session = addr.clone();
                     cmds.push(Command::PersistLastSession(addr));
                 }
-                // Fire the attach only when the gate holds (selection differs from the
-                // confirmed display, its PTY is gone, or the display is astray) and
-                // nothing is in flight - the freeze invariant depends on this gate, so
-                // it stays exactly as is. A fire that recovers a dead display PTY while
-                // the selection stands (the detach of the mirrored client) spends one
-                // of the recovery budget's retries; the gate itself refuses to fire
-                // that leg past the budget or for a session the inventory dropped.
-                if self.should_attach(key_live, in_flight, display_astray) {
-                    if self.selection == self.displayed && !key_live {
-                        self.attach_retries += 1;
-                    }
+                // Fire the attach only when the gate holds (the selection differs from the
+                // confirmed display, or the display is astray) and nothing is in flight -
+                // the freeze invariant depends on this gate, so it stays exactly as is.
+                if self.should_attach(in_flight, display_astray) {
                     cmds.push(Command::Attach(self.selection.clone()));
                 }
                 cmds
@@ -719,54 +696,27 @@ impl State {
     }
 
     /// Whether to (re)issue an attach for the settled selection. Fire when the
-    /// selection differs from what is confirmed on screen, when its display PTY is
-    /// gone (`!key_live` - the attachment exited or was reaped, whether while the
-    /// selection was elsewhere or while it stood on the displayed session: the
-    /// detach of the mirrored client), or when the display client sits on another
-    /// session (`display_astray`) - but never while an attach for the key is already
-    /// in flight, so the async-attach window cannot spawn a storm of duplicates.
-    /// The clock and these runtime facts enter as data on the Tick, never read here
-    /// directly.
+    /// selection differs from what is confirmed on screen, or when the display client
+    /// sits on another session (`display_astray`) - but never while an attach for the
+    /// key is already in flight, so the async-attach window cannot spawn a storm of
+    /// duplicates. The clock and these runtime facts enter as data on the Tick, never
+    /// read here directly.
     ///
     /// The astray leg is why the two regions cannot settle on different sessions. The
-    /// other two legs compare the selection against xmux's OWN record of what it put on
+    /// other leg compares the selection against xmux's OWN record of what it put on
     /// screen, which a session change the mux made never touches: the selection and the
-    /// confirmed display agree, the PTY is alive, and the client is somewhere else
-    /// entirely. Only a fact about where the client actually is can say so.
+    /// confirmed display agree and the client is somewhere else entirely. Only a fact
+    /// about where the client actually is can say so.
     ///
-    /// The dead-display leg is bounded: a display PTY that is gone while the
-    /// selection stands is recovered only while the inventory still lists the
-    /// session and the per-selection retry budget lasts. Once the enumeration has
-    /// dropped the session there is nothing to attach to, and a session that is
-    /// gone makes every re-attach EOF in turn - the budget is what keeps that from
-    /// becoming an endless reap-and-reattach chain.
-    pub(crate) fn should_attach(
-        &self,
-        key_live: bool,
-        in_flight: bool,
-        display_astray: bool,
-    ) -> bool {
-        let recovery = self.selection == self.displayed && !key_live;
-        let owed = self.selection != self.displayed || !key_live || display_astray;
-        if !owed || in_flight {
-            return false;
-        }
-        if recovery {
-            self.selection_is_listed() && self.attach_retries < ATTACH_RECOVERY_LIMIT
-        } else {
-            true
-        }
-    }
-
-    /// Whether the selection's session is still listed by its source's inventory
-    /// (the nav tree the enumerations stream into). Pure - it reads State's own
-    /// inventory, and nothing else. An unlisted session has nothing to attach to:
-    /// its card is gone, and the selection is on its way elsewhere.
-    fn selection_is_listed(&self) -> bool {
-        self.groups
-            .iter()
-            .find(|g| g.source == self.selection.source)
-            .is_some_and(|g| g.sessions.iter().any(|s| s.name == self.selection.session))
+    /// A display PTY that DIED while the selection stands is NOT re-attached. Each
+    /// re-attach is a fresh connection to that machine, and an attach whose own EOF
+    /// arms the next one is a chain the machine sees as a client hammering it - which
+    /// is exactly what it looks like when the session is gone and every attempt dies
+    /// the same way. The pane keeps what it last drew until the user selects the card
+    /// again or re-scans, so recovering is something the user asks for.
+    pub(crate) fn should_attach(&self, in_flight: bool, display_astray: bool) -> bool {
+        let owed = self.selection != self.displayed || display_astray;
+        owed && !in_flight
     }
 
     /// Folds a completed [`MuxOp`](crate::model::MuxOp)'s [`OpResult`] into the
@@ -825,17 +775,10 @@ impl State {
 /// mux send a full-screen repaint, and a storm of repaints floods
 /// the draw - the single-threaded loop then spends all its time redrawing, which IS
 /// the freeze. Deferring the attach until the selection settles keeps per-step redraws
-/// to a cheap tree-only diff. The single source of this value: both `apply`'s `Tick`
-/// re-arm and its [`Action::RearmAttach`](crate::model::Action::RearmAttach) recovery
-/// re-arm read it, so the two arming paths can never drift.
+/// to a cheap tree-only diff. The single source of this value: `apply`'s `Tick` re-arm and
+/// its [`Action::RearmAttachNow`](crate::model::Action::RearmAttachNow) both read it, so
+/// the two arming paths can never drift.
 pub(crate) const ATTACH_DEBOUNCE_MS: u64 = 90;
-
-/// How many dead-display recovery attaches may fire for one selection before the
-/// recovery stands down until a selection move, a cleared display, or a re-confirmed
-/// display refills it. The recovery chain - a dead display PTY re-armed, attached,
-/// EOF'd, re-armed again - would otherwise run without end for a session that no
-/// longer exists, so the budget bounds it while the enumeration catches up.
-pub(crate) const ATTACH_RECOVERY_LIMIT: u32 = 5;
 
 #[cfg(test)]
 mod tests {
@@ -888,7 +831,6 @@ mod tests {
         // Tick at t0 arms the deadline (no fire yet - now < deadline).
         let armed = s.apply(Action::Tick {
             now: t0,
-            key_live: true,
             in_flight: false,
             display_astray: false,
         });
@@ -897,7 +839,6 @@ mod tests {
         // Tick at t0+90ms (deadline reached) with no intervening Select fires once.
         let fired = s.apply(Action::Tick {
             now: t0 + Duration::from_millis(90),
-            key_live: true,
             in_flight: false,
             display_astray: false,
         });
@@ -922,7 +863,6 @@ mod tests {
         s.apply(Action::Select(sel("api")));
         s.apply(Action::Tick {
             now: t0,
-            key_live: true,
             in_flight: false,
             display_astray: false,
         });
@@ -932,7 +872,6 @@ mod tests {
         s.apply(Action::Select(sel("db")));
         let rearm = s.apply(Action::Tick {
             now: t0 + Duration::from_millis(30),
-            key_live: true,
             in_flight: false,
             display_astray: false,
         });
@@ -949,7 +888,6 @@ mod tests {
         // elapsed → no premature fire.
         let early = s.apply(Action::Tick {
             now: t0 + Duration::from_millis(90),
-            key_live: true,
             in_flight: false,
             display_astray: false,
         });
@@ -957,7 +895,6 @@ mod tests {
         // Only at t0+120 does the trailing selection (db) attach, once.
         let fired = s.apply(Action::Tick {
             now: t0 + Duration::from_millis(120),
-            key_live: true,
             in_flight: false,
             display_astray: false,
         });
@@ -985,7 +922,6 @@ mod tests {
         };
         let cmds = s.apply(Action::Tick {
             now: t0,
-            key_live: true,
             in_flight: false,
             display_astray: false,
         });
@@ -1015,7 +951,6 @@ mod tests {
         };
         let armed = s.apply(Action::Tick {
             now: t0,
-            key_live: true,
             in_flight: false,
             display_astray: false,
         });
@@ -1027,7 +962,6 @@ mod tests {
         );
         let fired = s.apply(Action::Tick {
             now: t0 + Duration::from_millis(90),
-            key_live: true,
             in_flight: false,
             display_astray: false,
         });
@@ -1050,7 +984,6 @@ mod tests {
         };
         let cmds = s.apply(Action::Tick {
             now: t0,
-            key_live: false,
             in_flight: false,
             display_astray: false,
         });
@@ -1062,180 +995,66 @@ mod tests {
     }
 
     #[test]
-    fn apply_tick_fires_recovery_when_display_pty_gone() {
-        // should_attach gate: selection == displayed but its PTY is not live ⇒ re-attach.
-        // The recovery leg also asks the inventory to still list the session, so the
-        // state is built from a scan that lists it.
-        let t0 = Instant::now();
-        let mut s = State {
-            groups: one_session_scan().groups,
-            selection: sel("api"),
-            displayed: sel("api"),
-            last_saved_session: Address::new("jup", "api"), // already persisted → no persist command
-            attach_deadline: Some(t0),
-            ..State::default()
-        };
-        let cmds = s.apply(Action::Tick {
-            now: t0,
-            key_live: false,
-            in_flight: false,
-            display_astray: false,
-        });
-        assert_eq!(
-            cmds,
-            vec![Command::Attach(sel("api"))],
-            "a vanished display PTY re-attaches even with an unchanged selection"
-        );
-    }
-
-    #[test]
-    fn apply_tick_arms_when_the_display_pty_dies_under_an_unchanged_selection() {
+    fn a_dead_display_pty_neither_arms_nor_attaches() {
         // The mirrored client detached: the display PTY is gone while the selection and
-        // the confirmed display still name one session. The arm mirrors the gate's fire
-        // condition, so this state arms the debounce by itself - in either focus, with
-        // no selection move and no rearm event - and the elapsed deadline then fires the
-        // recovery attach.
+        // the confirmed display still name one session. Nothing arms and nothing fires.
+        //
+        // Re-attaching here is a fresh connection to that machine, raised by the death of
+        // the connection before it. When the session is gone every attempt dies the same
+        // way, so the chain does not stop on its own, and a machine on the far side reads
+        // a client reconnecting on every failure as one attacking it. The pane keeps what
+        // it last drew; the user recovers it by selecting the card again or re-scanning.
         let t0 = Instant::now();
         let mut s = State {
             groups: one_session_scan().groups,
             selection: sel("api"),
             displayed: sel("api"),
-            last_saved_session: Address::new("jup", "api"), // already persisted → no persist command
+            last_saved_session: Address::new("jup", "api"),
             ..State::default()
         };
         let armed = s.apply(Action::Tick {
             now: t0,
-            key_live: false,
             in_flight: false,
             display_astray: false,
         });
-        assert!(armed.is_empty(), "arming does not fire on the same tick");
-        assert_eq!(
-            s.attach_deadline,
-            Some(t0 + Duration::from_millis(90)),
-            "the dead display arms the debounce on its own"
+        assert!(armed.is_empty(), "a dead display fires nothing");
+        assert!(
+            s.attach_deadline.is_none(),
+            "a dead display arms no deadline either, so no later tick can fire one"
         );
+    }
+
+    #[test]
+    fn selecting_the_card_again_is_what_recovers_a_dead_display() {
+        // The recovery path that remains is the user's. A selection carries the display
+        // wherever it lands, including back onto the session whose PTY died: `Select`
+        // marks the attach pending, the next tick arms the debounce, and the elapsed
+        // deadline attaches.
+        let t0 = Instant::now();
+        let mut s = State {
+            groups: one_session_scan().groups,
+            selection: sel("api"),
+            displayed: sel("api"),
+            last_saved_session: Address::new("jup", "api"),
+            ..State::default()
+        };
+        s.apply(Action::ClearDisplay); // the dead attachment is torn down
+        s.apply(Action::Select(sel("api")));
+        s.apply(Action::Tick {
+            now: t0,
+            in_flight: false,
+            display_astray: false,
+        });
         let fired = s.apply(Action::Tick {
             now: t0 + Duration::from_millis(90),
-            key_live: false,
             in_flight: false,
             display_astray: false,
         });
         assert_eq!(
             fired,
             vec![Command::Attach(sel("api"))],
-            "the dead display re-attaches the still-selected session"
+            "the user's own selection attaches the session again"
         );
-    }
-
-    #[test]
-    fn the_dead_display_recovery_does_not_fire_for_a_session_the_inventory_dropped() {
-        // Once the enumeration no longer lists the session there is nothing to attach
-        // to; re-firing would only spawn one doomed attach after another.
-        let t0 = Instant::now();
-        let mut s = State {
-            groups: one_session_scan().groups,
-            selection: sel("api"),
-            displayed: sel("api"),
-            last_saved_session: Address::new("jup", "api"),
-            ..State::default()
-        };
-        s.groups[0].sessions.clear(); // the enumeration dropped the session
-        s.apply(Action::Tick {
-            now: t0,
-            key_live: false,
-            in_flight: false,
-            display_astray: false,
-        });
-        assert!(
-            s.attach_deadline.is_none(),
-            "a recovery that cannot fire does not arm either"
-        );
-        let fired = s.apply(Action::Tick {
-            now: t0 + Duration::from_millis(90),
-            key_live: false,
-            in_flight: false,
-            display_astray: false,
-        });
-        assert!(fired.is_empty(), "no attach for a dropped session");
-    }
-
-    #[test]
-    fn the_dead_display_recovery_stands_down_after_its_retry_budget() {
-        // A session that is gone makes every re-attach EOF in turn; each EOF would
-        // otherwise re-arm the next attach. The recovery leg spends one retry per fire
-        // and stops at the limit.
-        let t0 = Instant::now();
-        let mut s = State {
-            groups: one_session_scan().groups,
-            selection: sel("api"),
-            displayed: sel("api"),
-            last_saved_session: Address::new("jup", "api"),
-            ..State::default()
-        };
-        let mut now = t0;
-        let mut fires = 0usize;
-        for _ in 0..(ATTACH_RECOVERY_LIMIT as usize + 2) {
-            s.apply(Action::Tick {
-                now,
-                key_live: false,
-                in_flight: false,
-                display_astray: false,
-            }); // arms
-            now += Duration::from_millis(90);
-            let cmds = s.apply(Action::Tick {
-                now,
-                key_live: false,
-                in_flight: false,
-                display_astray: false,
-            }); // fires
-            fires += cmds
-                .iter()
-                .filter(|c| matches!(c, Command::Attach(_)))
-                .count();
-            now += Duration::from_millis(90);
-        }
-        assert_eq!(
-            fires, ATTACH_RECOVERY_LIMIT as usize,
-            "the recovery fires at most the limit times, then stands down"
-        );
-    }
-
-    #[test]
-    fn a_selection_move_or_a_reconfirmed_display_refills_the_recovery_budget() {
-        // The budget is per selection epoch: moving the selection, or the display being
-        // confirmed again, starts a new count - so a later detach of the (new) display
-        // recovers again.
-        let t0 = Instant::now();
-        let mut s = State {
-            groups: one_session_scan().groups,
-            selection: sel("api"),
-            displayed: sel("api"),
-            last_saved_session: Address::new("jup", "api"),
-            ..State::default()
-        };
-        s.attach_retries = ATTACH_RECOVERY_LIMIT; // exhausted
-        let refused = s.apply(Action::Tick {
-            now: t0,
-            key_live: false,
-            in_flight: false,
-            display_astray: false,
-        });
-        assert!(
-            refused.is_empty(),
-            "an exhausted budget attaches nothing on its own"
-        );
-        s.apply(Action::ConfirmDisplay(sel("api")));
-        assert_eq!(
-            s.attach_retries, 0,
-            "a re-confirmed display refills the budget"
-        );
-        s.attach_retries = ATTACH_RECOVERY_LIMIT;
-        s.apply(Action::Select(sel("db")));
-        assert_eq!(s.attach_retries, 0, "a selection move refills the budget");
-        s.attach_retries = ATTACH_RECOVERY_LIMIT;
-        s.apply(Action::ClearDisplay);
-        assert_eq!(s.attach_retries, 0, "a cleared display refills the budget");
     }
 
     #[test]
@@ -1252,7 +1071,6 @@ mod tests {
         };
         let cmds = s.apply(Action::Tick {
             now: t0,
-            key_live: false,
             in_flight: true,
             display_astray: false,
         });
@@ -1280,13 +1098,11 @@ mod tests {
         s.apply(Action::Select(sel("b")));
         s.apply(Action::Tick {
             now: t0,
-            key_live: false,
             in_flight: false,
             display_astray: false,
         }); // arms
         let b_cmds = s.apply(Action::Tick {
             now: t0 + Duration::from_millis(90),
-            key_live: false,
             in_flight: false,
             display_astray: false,
         });
@@ -1301,13 +1117,11 @@ mod tests {
         s.apply(Action::Select(sel("c")));
         s.apply(Action::Tick {
             now: t0 + Duration::from_millis(100),
-            key_live: false,
             in_flight: true,
             display_astray: false,
         }); // arms
         let c_cmds = s.apply(Action::Tick {
             now: t0 + Duration::from_millis(190),
-            key_live: false,
             in_flight: true, // first attach (B) still in flight on the shared host key
             display_astray: false,
         });
@@ -1331,27 +1145,11 @@ mod tests {
         };
         let cmds = s.apply(Action::Tick {
             now: t0,
-            key_live: false,
             in_flight: false,
             display_astray: false,
         });
         assert!(cmds.is_empty(), "empty selection never attaches");
         assert!(s.attach_deadline.is_none());
-    }
-
-    #[test]
-    fn apply_rearm_attach_arms_the_debounce_deadline() {
-        // The recovery re-arm (host-event detach-reap, pty-detach recover): apply owns
-        // the debounce arithmetic that Tick owns, so the two arming paths cannot drift.
-        let mut s = State::default();
-        let t0 = Instant::now();
-        let cmds = s.apply(Action::RearmAttach { now: t0 });
-        assert_eq!(
-            s.attach_deadline,
-            Some(t0 + Duration::from_millis(90)),
-            "RearmAttach arms the deadline one debounce out"
-        );
-        assert!(cmds.is_empty(), "RearmAttach emits no command");
     }
 
     #[test]

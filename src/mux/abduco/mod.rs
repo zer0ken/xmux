@@ -12,12 +12,6 @@ pub mod display;
 
 pub use display::AbducoDriver;
 
-/// The abduco poll cadence. abduco pushes no change events, so the session list is
-/// re-enumerated; one sweep costs one `abduco` process spawn (no per-session query
-/// exists), which is cheaper than zellij's per-session ssh round trips but not as
-/// cheap as psmux's direct local registry read.
-const ABDUCO_POLL_MS: u64 = 2000;
-
 /// abduco: one server per session, enumerated from its listing, polled for change,
 /// each session displayed through its own attachment.
 pub struct Abduco {
@@ -107,9 +101,7 @@ impl Mux for Abduco {
     }
 
     fn event_source(&self) -> EventSource {
-        EventSource::Poll {
-            interval_ms: ABDUCO_POLL_MS,
-        }
+        EventSource::Poll
     }
 
     fn new_session_plan(&self, name: &str) -> Vec<String> {
@@ -201,12 +193,7 @@ mod tests {
         assert_eq!(m.server_model(), ServerModel::PerSession);
         assert_eq!(m.death_signal(), DeathSignal::Eof);
         assert!(!m.takes_server_socket(), "abduco has no -S flag");
-        assert_eq!(
-            m.event_source(),
-            EventSource::Poll {
-                interval_ms: ABDUCO_POLL_MS
-            }
-        );
+        assert_eq!(m.event_source(), EventSource::Poll);
         assert!(
             m.control_argv().is_none() && m.control_protocol().is_none(),
             "abduco has no control-mode channel"
