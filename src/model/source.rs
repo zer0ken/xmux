@@ -3,8 +3,8 @@
 //! ssh alias, control path, os), and an injectable runner. The off-loop `Ops`/CLI
 //! paths assemble a value [`Host`](crate::model::Host) from this config (`host()`)
 //! and drive its enumerate/manage/attach through the `Host`/`Mux`/`Transport` APIs;
-//! the machine boundary itself — argv assembly and the ssh transport (connect-timeout,
-//! injection-safe quoting) — lives entirely in `Transport`, built at the single
+//! the machine boundary itself - argv assembly and the ssh transport (connect-timeout,
+//! injection-safe quoting) - lives entirely in `Transport`, built at the single
 //! `MachineKind::transport` site. The mux-env rules live in `mux::vocab`.
 
 use std::path::Path;
@@ -26,7 +26,7 @@ pub enum RunError {
     /// never a healthy-but-empty mux.
     #[error("command failed (exit {code}): {stderr}")]
     Exit { stderr: String, code: i32 },
-    /// A spawn/transport failure (missing binary, connect failure) — never benign.
+    /// A spawn/transport failure (missing binary, connect failure) - never benign.
     #[error("{0}")]
     Other(String),
 }
@@ -50,7 +50,7 @@ impl Runner for ExecRunner {
         // Isolate stdin: these are non-interactive mux/ssh commands (list-sessions,
         // switch-client, …) that read no input. Without this, ssh inherits the parent
         // console tty and resets its mode (raw → canonical) for its own escape handling,
-        // wrecking the app's raw mode until ssh exits — the terminal then echoes keys
+        // wrecking the app's raw mode until ssh exits - the terminal then echoes keys
         // and only flushes input on Enter.
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());
@@ -124,7 +124,7 @@ pub struct Source {
     pub alias: String,
     /// mux binary name on that machine.
     pub binary: String,
-    /// Which machine kind (and its construction data — socket / ssh alias, control
+    /// Which machine kind (and its construction data - socket / ssh alias, control
     /// path, os) this source reaches its mux over. The single representation of transport
     /// kind; `transport()` maps it to a concrete `Transport` at one site.
     pub kind: MachineKind,
@@ -140,9 +140,9 @@ impl Source {
         }
     }
 
-    /// Assembles a value [`Host`](crate::model::Host) from this source's config —
+    /// Assembles a value [`Host`](crate::model::Host) from this source's config -
     /// transport from [`kind`](Self::kind) at the single `MachineKind::transport` site,
-    /// mux from [`binary`](Self::binary) — for the off-loop `Ops`/CLI paths that cannot
+    /// mux from [`binary`](Self::binary) - for the off-loop `Ops`/CLI paths that cannot
     /// borrow the event loop's live `&mut Host`. The runner stays with the source
     /// (`run_with`), injected into the host's enumerate/manage/attach calls.
     pub(crate) fn host(&self) -> crate::model::Host {
@@ -289,7 +289,7 @@ mod tests {
     }
 
     /// The echo command for the host platform (test-only): `cmd /C echo` on Windows,
-    /// `sh -c` elsewhere — keeps the runner test portable.
+    /// `sh -c` elsewhere - keeps the runner test portable.
     fn echo_cmd(text: &str) -> (String, Vec<String>) {
         #[cfg(windows)]
         {
@@ -344,29 +344,13 @@ mod tests {
     /// output.
     #[tokio::test]
     async fn exec_runner_returns_stdout_larger_than_the_pipe_capacity() {
-        const BYTES: usize = 200_000;
-        #[cfg(windows)]
-        let (name, args) = (
-            "powershell",
-            vec![
-                "-NoProfile".to_string(),
-                "-Command".to_string(),
-                format!("[Console]::Out.Write('a' * {BYTES})"),
-            ],
-        );
-        #[cfg(not(windows))]
-        let (name, args) = (
-            "sh",
-            vec![
-                "-c".to_string(),
-                format!("head -c {BYTES} /dev/zero | tr '\\000' a"),
-            ],
-        );
+        let big = BigOutput::new("stdout");
+        let (name, args) = big.stdout_command();
         let out = ExecRunner
-            .run(name, &args)
+            .run(&name, &args)
             .await
             .unwrap_or_else(|e| panic!("large stdout must succeed: {e:?}"));
-        assert_eq!(out.len(), BYTES);
+        assert_eq!(out.len(), BigOutput::BYTES);
     }
 
     /// The same overflow on the stderr pipe: a command whose stderr exceeds the
@@ -374,37 +358,113 @@ mod tests {
     /// stderr, not as a budget timeout.
     #[tokio::test]
     async fn exec_runner_returns_stderr_larger_than_the_pipe_capacity() {
-        const BYTES: usize = 200_000;
-        #[cfg(windows)]
-        let (name, args) = (
-            "powershell",
-            vec![
-                "-NoProfile".to_string(),
-                "-Command".to_string(),
-                format!("[Console]::Error.Write('a' * {BYTES}); exit 1"),
-            ],
-        );
-        #[cfg(not(windows))]
-        let (name, args) = (
-            "sh",
-            vec![
-                "-c".to_string(),
-                format!("head -c {BYTES} /dev/zero | tr '\\000' a >&2; exit 1"),
-            ],
-        );
-        let err = ExecRunner.run(name, &args).await.expect_err("must fail");
+        let big = BigOutput::new("stderr");
+        let (name, args) = big.stderr_command();
+        let err = ExecRunner.run(&name, &args).await.expect_err("must fail");
         let RunError::Exit { stderr, code } = &err else {
             panic!("expected an exit error, got {err:?}");
         };
         assert_eq!(*code, 1);
-        assert_eq!(stderr.len(), BYTES);
+        assert_eq!(stderr.len(), BigOutput::BYTES);
+    }
+
+    /// A file of known size, and the command that copies it to one of the two pipes.
+    ///
+    /// The bytes come from a FILE rather than from a program that generates them,
+    /// because these two tests race the runner's own six-second budget. The
+    /// interpreter that generated them takes most of a second to start on an idle
+    /// machine and, on a loaded CI runner, longer than the budget allows, which
+    /// failed the test for the one reason it is not about. Copying a file needs only
+    /// the shell each platform already has.
+    struct BigOutput {
+        path: std::path::PathBuf,
+    }
+
+    impl BigOutput {
+        const BYTES: usize = 200_000;
+
+        fn new(tag: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("xmux-pipe-{tag}-{}.bin", std::process::id()));
+            std::fs::write(&path, vec![b'a'; Self::BYTES]).expect("write the payload");
+            Self { path }
+        }
+
+        fn display(&self) -> String {
+            self.path.display().to_string()
+        }
+
+        #[cfg(windows)]
+        fn stdout_command(&self) -> (String, Vec<String>) {
+            (
+                "cmd".into(),
+                vec!["/c".into(), "type".into(), self.display()],
+            )
+        }
+
+        #[cfg(not(windows))]
+        fn stdout_command(&self) -> (String, Vec<String>) {
+            ("cat".into(), vec![self.display()])
+        }
+
+        #[cfg(windows)]
+        fn stderr_command(&self) -> (String, Vec<String>) {
+            // `type` writes to stdout, so the redirection and the exit code have to
+            // live somewhere. They go in a SCRIPT rather than in the command line:
+            // Rust escapes a quote inside an argument as `\"`, which cmd does not
+            // read as a quote, so a command line carrying a quoted path arrives
+            // mangled and `type` reports a file it cannot find. Handing cmd a script
+            // path is one plain argument, and the quoting inside the script is this
+            // test's own. `%~dp0` names the script's directory, so the payload is
+            // found whatever the temp directory is called.
+            let script = self.path.with_extension("cmd");
+            std::fs::write(
+                &script,
+                format!(
+                    "@echo off\r\ntype \"%~dp0{}\" 1>&2\r\nexit /b 1\r\n",
+                    self.path
+                        .file_name()
+                        .expect("the payload has a file name")
+                        .to_string_lossy()
+                ),
+            )
+            .expect("write the emitter");
+            (
+                "cmd".into(),
+                vec!["/c".into(), script.display().to_string()],
+            )
+        }
+
+        #[cfg(not(windows))]
+        fn stderr_command(&self) -> (String, Vec<String>) {
+            // The path arrives as a positional argument rather than inside the
+            // snippet, so the shell never parses it.
+            (
+                "sh".into(),
+                vec![
+                    "-c".into(),
+                    "cat \"$1\" >&2; exit 1".into(),
+                    "sh".into(),
+                    self.display(),
+                ],
+            )
+        }
+    }
+
+    impl Drop for BigOutput {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+            // The Windows emitter sits beside the payload; removing it on every
+            // platform costs one failed call and keeps this to one rule.
+            let _ = std::fs::remove_file(self.path.with_extension("cmd"));
+        }
     }
 
     // LIVE: the timeout path runs a real hung command for the full POLL_CMD_TIMEOUT
     // (6s), so it is ignored and run on demand:
     //   cargo test --lib model::source::tests::exec_runner_times_out_and_kills -- --ignored
     // It asserts the command's own budget returns a timeout error AND that the child is
-    // reaped (the process is gone) rather than left behind — the teardown that on
+    // reaped (the process is gone) rather than left behind - the teardown that on
     // Windows avoids the "IO is still pending on closed socket" crash (#116).
     #[ignore = "live: sleeps for the full 6s command budget"]
     #[tokio::test]
@@ -435,7 +495,7 @@ mod tests {
             "timeout names the hung command, got {err:?}"
         );
         // The budget is the 6s command budget (plus scheduling slack), NOT the full 30s
-        // hang — proof the child was killed and not left running.
+        // hang - proof the child was killed and not left running.
         assert!(
             t0.elapsed() < std::time::Duration::from_secs(20),
             "child was killed and reaped, took {:?}",
