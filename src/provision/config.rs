@@ -21,6 +21,35 @@ pub struct Config {
     pub ui: UiConfig,
     #[serde(default)]
     pub discovery: DiscoveryConfig,
+    #[serde(default)]
+    pub update: UpdateConfig,
+}
+
+/// The optional `[update]` table.
+///
+/// One key, because there is one thing to decide: whether xmux may ask the release
+/// feed which version is newest. It is on by default, since a user who never hears
+/// that a release exists stays on an old build without choosing to. Turning it off is
+/// for a machine that must reach nothing but the hosts it was told about.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateConfig {
+    /// Whether xmux may ask GitHub for the newest released version. The answer is
+    /// cached for a day and the request runs off the app's own path, so this is at
+    /// most one request a day and never a wait.
+    #[serde(rename = "check", default = "default_update_check")]
+    pub check: bool,
+}
+
+fn default_update_check() -> bool {
+    true
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            check: default_update_check(),
+        }
+    }
 }
 
 /// The optional `[discovery]` table: which providers contribute ssh targets to the

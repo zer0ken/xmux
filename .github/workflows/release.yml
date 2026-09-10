@@ -64,10 +64,18 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
+      # The install scripts ship as release assets, so `install.sh` served from a
+      # release is the script that shipped with it. `xmux update` fetches them from
+      # `releases/latest/download`, which a branch edit cannot change under a user.
+      - name: Stage installer scripts
+        run: |
+          cp scripts/install/install.sh artifacts/install.sh
+          cp scripts/install/install.ps1 artifacts/install.ps1
       - name: Write checksums
         run: |
           cd artifacts

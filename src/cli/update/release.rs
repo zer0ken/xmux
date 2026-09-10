@@ -178,24 +178,34 @@ fn extract_tar(archive: &Path, dest_dir: &Path) -> Result<(), String> {
 /// upgrade of the running binary.
 pub fn update(args: &super::Args, platform: Platform) -> Result<(), String> {
     let current = env!("CARGO_PKG_VERSION");
-    let latest = latest_version()?;
+    // A pinned version is the version to install; only an unpinned update asks the
+    // release feed which one that is.
+    let wanted = args.version.as_deref().map(|v| v.trim_start_matches('v'));
+    let target = match wanted {
+        Some(v) => v.to_string(),
+        None => latest_version()?,
+    };
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     let asset =
-        asset_name(&latest, os, arch).ok_or_else(|| format!("no release build for {os}/{arch}"))?;
+        asset_name(&target, os, arch).ok_or_else(|| format!("no release build for {os}/{arch}"))?;
 
     if args.check {
-        if is_newer(&latest, current) {
-            println!(
-                "xmux {current} is installed; latest is {latest} - run `xmux update` to upgrade"
-            );
-        } else {
-            println!("xmux is up to date ({current})");
+        match wanted {
+            Some(v) => {
+                println!("xmux {current} is installed; `xmux update --version {v}` installs {v}")
+            }
+            None if is_newer(&target, current) => println!(
+                "xmux {current} is installed; latest is {target} - run `xmux update` to upgrade"
+            ),
+            None => println!("xmux is up to date ({current})"),
         }
         return Ok(());
     }
 
-    if !is_newer(&latest, current) {
+    // Asking for a version is asking for that version, so a pin installs whether or
+    // not it is newer - which is what makes it a way back to an older build.
+    if wanted.is_none() && !is_newer(&target, current) {
         println!("xmux is already up to date ({current})");
         return Ok(());
     }
@@ -204,14 +214,14 @@ pub fn update(args: &super::Args, platform: Platform) -> Result<(), String> {
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("cannot create staging dir {}: {e}", dir.display()))?;
     let archive = dir.join(&asset);
-    let url = download_url(&latest, &asset);
+    let url = download_url(&target, &asset);
     println!("downloading {asset} …");
     if let Err(e) = download_to(&url, &archive) {
         let _ = std::fs::remove_dir_all(&dir);
         return Err(e);
     }
 
-    let sums = fetch_checksums(&latest)?;
+    let sums = fetch_checksums(&target)?;
     let expected = sums
         .get(&asset)
         .ok_or_else(|| format!("no checksum recorded for {asset}"))?;
@@ -231,14 +241,14 @@ pub fn update(args: &super::Args, platform: Platform) -> Result<(), String> {
         dir.join("xmux")
     };
 
-    let target = std::env::current_exe().map_err(|e| format!("cannot locate own binary: {e}"))?;
-    println!("installing {latest} → {}", target.display());
-    replace_binary(&staged_bin, &target, platform)?;
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate own binary: {e}"))?;
+    println!("installing {target} → {}", exe.display());
+    replace_binary(&staged_bin, &exe, platform)?;
 
     if platform == Platform::Windows {
         println!("xmux will swap in the new build once all xmux instances exit");
     } else {
-        println!("updated xmux to {latest}");
+        println!("updated xmux to {target}");
     }
     Ok(())
 }

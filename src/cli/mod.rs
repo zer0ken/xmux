@@ -68,9 +68,13 @@ enum Command {
         /// Check for a newer version and report it, but do not install.
         #[arg(long)]
         check: bool,
-        /// Force an update path: cargo, winget, brew, or self.
-        #[arg(long, value_name = "cargo|winget|brew|self")]
+        /// Force an update path instead of the one the install is detected as.
+        #[arg(long, value_name = "cargo|winget|brew|script|self")]
         method: Option<String>,
+        /// Install this version instead of the newest release. A package manager
+        /// picks its own version, so this reaches only the paths that choose one.
+        #[arg(long, value_name = "x.y.z")]
+        version: Option<String>,
     },
     /// Print version.
     Version,
@@ -116,10 +120,19 @@ pub async fn run() -> i32 {
             let (env, _cfg_err) = env::build_env().await;
             run_send(&env, &id, args).await
         }
-        Some(Command::Update { check, method }) => {
+        Some(Command::Update {
+            check,
+            method,
+            version,
+        }) => {
             // Like `version`, `update` needs no config or instance: it acts on the
             // running binary alone, so a broken config must not block an update.
-            crate::cli::update::run(crate::cli::update::Args { check, method }).await
+            crate::cli::update::run(crate::cli::update::Args {
+                check,
+                method,
+                version,
+            })
+            .await
         }
         Some(Command::Version) => {
             println!("xmux {}", env!("CARGO_PKG_VERSION"));
@@ -250,11 +263,45 @@ async fn run_direct_attach(env: &Env, source: &str, session: &str) -> i32 {
     0
 }
 
+/// Reports which xmux is running and what owns it, so an update that lands somewhere
+/// unexpected can be traced to the install it acted on.
+///
+/// The newest-version line comes from the answer already recorded on disk, so this
+/// diagnostic asks the network nothing and cannot hang on it. `xmux update --check`
+/// is the command that asks.
+fn report_install(env: &Env) {
+    let current = env!("CARGO_PKG_VERSION");
+    println!("version: {current}");
+    match std::env::current_exe() {
+        Ok(exe) => {
+            println!("binary: {}", exe.display());
+            println!("install: {}", crate::cli::update::detected_method_label());
+            if let Some(root) = crate::cli::update::script_root(&exe) {
+                println!("install root: {}", root.display());
+            }
+        }
+        Err(e) => println!("binary: UNKNOWN — {e}"),
+    }
+    let enabled = env.with_roster(|r| r.cfg.update.check);
+    match crate::cli::update::notify::read(&env.xmux_dir) {
+        Some(c) if crate::cli::update::release::is_newer(&c.latest, current) => {
+            println!("update: {} available — run `xmux update`", c.latest)
+        }
+        Some(c) => println!(
+            "update: none recorded newer than {current} (latest seen {})",
+            c.latest
+        ),
+        None if enabled => println!("update: not checked yet — run `xmux update --check`"),
+        None => println!("update: checking is off ([update] check = false)"),
+    }
+}
+
 /// Reports configuration health and per-source reachability. A diagnostic: a
 /// malformed config or a host that did not answer is reported, not fatal. A failure the
 /// user could answer from the app is reported as that, never as unreachable.
 async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
     println!("xmux doctor");
+    report_install(env);
 
     // A config that failed to parse is a real error the diagnostic must signal in its
     // exit code (like `ls` does for all-unreachable); an unreachable source is reported
