@@ -580,6 +580,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let version_dir = base.join("versions").join("0.9.6");
         std::fs::create_dir_all(&version_dir).unwrap();
+        // What the root RESOLVES to, which is what `script_root` returns. A temp
+        // directory can be reached through an 8.3 short name or a symlink, and
+        // resolving is the whole point: the same install must be recognised however
+        // the path that reached it was spelled.
+        let base = super::plain(&base.canonicalize().unwrap());
         let unix_shape = version_dir.join("xmux");
         std::fs::write(&unix_shape, b"").unwrap();
         assert_eq!(
