@@ -27,6 +27,10 @@ binary a running xmux is executing is never written to.
 | Versions | `~/.local/share/xmux/versions/<version>/` | `%LOCALAPPDATA%\xmux\versions\<version>\` |
 | Launcher | `~/.local/bin/xmux`, a symlink | `%LOCALAPPDATA%\xmux\bin\xmux.exe`, a copy |
 
+Beside the launcher the script writes a one-line file naming the directory the
+versions live in. `xmux update` reads it to recognise an install the script
+placed, and to run the script again rather than writing the binary itself.
+
 The script adds the launcher directory to your `PATH` when it is not already
 there. On unix it appends a marked block to your shell profile; on Windows it
 writes your own user `PATH`, never the machine one, so it needs no elevation.
