@@ -219,6 +219,12 @@ link_tmp="${BIN_DIR}/.xmux.$$"
 ln -sfn "${version_dir}/xmux" "$link_tmp"
 mv -f "$link_tmp" "${BIN_DIR}/xmux"
 
+# Which root this launcher belongs to. `xmux update` reads it to know the install is
+# one this script placed, and to run this script again rather than writing the binary
+# itself. A launcher inside the root could be recognised from its position alone, but
+# --bin-dir puts it anywhere, so the launcher says where it came from.
+printf '%s\n' "$ROOT" >"${BIN_DIR}/xmux.install"
+
 say "installed ${version_dir}/xmux"
 say "launcher   ${BIN_DIR}/xmux"
 

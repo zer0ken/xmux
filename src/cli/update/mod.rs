@@ -65,20 +65,32 @@ impl InstallMethod {
 const WIN_WINGET_MARKERS: &[&str] = &["microsoft\\winget", "microsoft/winget"];
 const BREW_MARKERS: &[&str] = &["/cellar/", "/homebrew/", "/home/linuxbrew/"];
 
+/// The name of the file the install script writes beside its launcher, naming the
+/// root that launcher belongs to.
+pub(crate) const INSTALL_MARKER_SUFFIX: &str = ".install";
+
 /// The install root the install script owns, found from the executable, or `None`
 /// when this executable is not in one.
 ///
-/// The script lays out `<root>/versions/<version>/xmux` and a launcher. On unix the
-/// launcher is a symlink, so resolving it lands in the version directory two levels
-/// under the root; on Windows it is a copy in `<root>/bin`, one level under it. Both
-/// shapes are answered by walking up and asking which ancestor has a `versions`
-/// directory, which is the one thing the layout guarantees and a path string cannot
-/// fake by accident.
+/// Two things are asked, in order.
+///
+/// The MARKER the script writes beside its launcher is asked first, because it is the
+/// only thing that answers for a launcher placed outside the root. `--bin-dir` allows
+/// exactly that, and a Windows launcher is a copy, so it carries nothing that leads
+/// back to the versions it was copied from. Reading the marker is also what makes the
+/// two platforms one rule instead of two.
+///
+/// The LAYOUT is asked second, so an install whose marker was deleted is still
+/// recognised: `<root>/versions/<version>/xmux` and `<root>/bin/xmux.exe` both sit
+/// within two directories of a root that has a `versions` directory. A resolved unix
+/// launcher lands in the version directory, which is why the symlink case never needed
+/// the marker.
 pub fn script_root(exe: &Path) -> Option<PathBuf> {
     let real = plain(&exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf()));
+    if let Some(root) = marked_root(exe).or_else(|| marked_root(&real)) {
+        return Some(root);
+    }
     let mut dir = real.parent();
-    // `<root>/versions/<version>/xmux` and `<root>/bin/xmux.exe` are the two shapes,
-    // so the root is at most two directories above the one holding the binary.
     for _ in 0..2 {
         let candidate = dir?.parent()?;
         if candidate.join("versions").is_dir() {
@@ -87,6 +99,16 @@ pub fn script_root(exe: &Path) -> Option<PathBuf> {
         dir = Some(candidate);
     }
     None
+}
+
+/// The root named by the marker beside `exe`, if there is one and it still holds a
+/// `versions` directory. A marker naming a root that is gone is ignored rather than
+/// returned: it would send an update at a directory nothing installed to.
+fn marked_root(exe: &Path) -> Option<PathBuf> {
+    let name = exe.file_name()?.to_string_lossy().into_owned();
+    let marker = exe.with_file_name(format!("{name}{INSTALL_MARKER_SUFFIX}"));
+    let root = PathBuf::from(std::fs::read_to_string(marker).ok()?.trim());
+    root.join("versions").is_dir().then_some(root)
 }
 
 /// Drops the verbatim prefix Windows canonicalisation adds to a drive path. That
@@ -602,6 +624,63 @@ mod tests {
             Some(base.as_path()),
             "a launcher beside the versions directory names the same root"
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_launcher_outside_the_root_is_found_through_its_marker() {
+        // `--bin-dir` puts the launcher anywhere, and a Windows launcher is a copy, so
+        // its own position leads nowhere. The marker the script writes beside it is
+        // what names the root, and without it an update would write over the launcher
+        // instead of running the script that placed it.
+        let base = std::env::temp_dir().join(format!("xmux-marked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        std::fs::create_dir_all(root.join("versions").join("0.9.7")).unwrap();
+        let bin = base.join("elsewhere");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("xmux.exe");
+        std::fs::write(&exe, b"").unwrap();
+        assert_eq!(
+            super::script_root(&exe),
+            None,
+            "with no marker its position says nothing"
+        );
+
+        let root_resolved = super::plain(&root.canonicalize().unwrap());
+        std::fs::write(
+            bin.join("xmux.exe.install"),
+            format!(
+                "{}
+",
+                root_resolved.display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            super::script_root(&exe),
+            Some(root_resolved),
+            "the marker names the root the launcher came from"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_marker_naming_a_root_that_is_gone_is_ignored() {
+        // An install the user deleted leaves its marker behind. Believing it would aim
+        // an update at a directory nothing is installed in.
+        let base = std::env::temp_dir().join(format!("xmux-stale-marker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let bin = base.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("xmux");
+        std::fs::write(&exe, b"").unwrap();
+        std::fs::write(
+            bin.join("xmux.install"),
+            base.join("root-that-is-gone").display().to_string(),
+        )
+        .unwrap();
+        assert_eq!(super::script_root(&exe), None);
         let _ = std::fs::remove_dir_all(&base);
     }
 

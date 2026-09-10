@@ -213,6 +213,13 @@ try {
     $launcher = Join-Path $BinDir 'xmux.exe'
     $wasLocked = Install-Launcher -Source (Join-Path $versionDir 'xmux.exe') -Target $launcher
 
+    # Which root this launcher belongs to. `xmux update` reads it to know the install
+    # is one this script placed, and to run this script again rather than writing the
+    # binary itself. The launcher here is a COPY, so without this it carries nothing
+    # that leads back to the versions it came from once -BinDir puts it outside the
+    # root.
+    Set-Content -LiteralPath "$launcher.install" -Value $Root -Encoding ascii
+
     Say "installed $versionDir\xmux.exe"
     Say "launcher   $launcher"
     if ($wasLocked) {

@@ -40,6 +40,11 @@ without one, so a broken config never blocks it.
 - The steps of an install live in the install script, not here. An install that script
   placed is updated by running the script again, so the layout it writes is described
   in one place and cannot drift from what the update does.
+- An install the script placed is recognised by the marker it writes beside its
+  launcher, before the layout is read at all. The launcher may sit outside the versions
+  it points at, and on Windows it is a copy, so its own position leads nowhere. Reading
+  the layout stays as the fallback, which is what recognises an install whose marker
+  was deleted.
 - An install method is decided from the running executable's own path and nothing
   else. A binary whose path cannot be read is reported as unknown rather than assigned
   a method, because each method writes somewhere different.
