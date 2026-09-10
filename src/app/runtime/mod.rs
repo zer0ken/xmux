@@ -56,11 +56,6 @@ const EVENT_DRAIN_BUDGET: usize = 512;
 /// timer at this cadence flushes a pending dirty draw promptly even with no input.
 const FRAME_MS: u64 = 33;
 
-/// How often the reconnect sweep runs: re-ensures a died remote control client and
-/// re-attaches the selected session's PTY if it dropped. Doubles as the retry
-/// backoff so a genuinely-down host is retried at this cadence, never hot-looped.
-const RECONNECT_MS: u64 = 10000;
-
 pub(crate) const NAV_WIDTH_MAX: u16 = 100;
 
 /// The nav's floor width: the resting prefix label plus a one-cell breathing gap on
@@ -521,21 +516,15 @@ fn host_of_key(key: &str) -> &str {
 /// `(false, false)` - the gate short-circuits on emptiness anyway.
 ///
 /// [`State::apply`]: crate::state::State::apply
-fn selection_attach_facts(
-    registry: &AttachRegistry,
-    hosts: &crate::model::Hosts,
-    selection: &Selection,
-) -> (bool, bool) {
+fn selection_attach_in_flight(hosts: &crate::model::Hosts, selection: &Selection) -> bool {
     if selection.is_empty() {
-        return (false, false);
+        return false;
     }
     let key = display_key(hosts, selection);
-    let key_live = registry.contains(&key);
-    let in_flight = hosts
+    hosts
         .get(&selection.source)
         .map(|h| h.display.in_flight_contains(&key))
-        .unwrap_or(false);
-    (key_live, in_flight)
+        .unwrap_or(false)
 }
 
 /// Issues an OFF-LOOP attach for `key`: allocates the attachment id, records the request's
@@ -1267,13 +1256,6 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
 
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Periodic reconnect sweep: re-ensure any died remote control client (so #5
-    // metadata sync self-heals) and re-attach the selected session's PTY if it
-    // dropped. The sweep interval doubles as the retry backoff.
-    let reconnect_start = tokio::time::Instant::now() + Duration::from_millis(RECONNECT_MS);
-    let mut reconnect =
-        tokio::time::interval_at(reconnect_start, Duration::from_millis(RECONNECT_MS));
-    reconnect.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Frame timer: wakes the loop at the redraw cadence so a pending `dirty` draw is
     // flushed promptly even when no other event arrives.
     let mut frame = tokio::time::interval(Duration::from_millis(FRAME_MS));
@@ -1306,7 +1288,6 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
             }
             Some(result) = io.op_rx.recv() => rt.on_op_result(result),
             _ = tick.tick() => rt.on_tick(&mut term),
-            _ = reconnect.tick() => rt.on_reconnect(),
             _ = frame.tick() => {
                 from_frame = true;
                 // Cheap live config reload: on the redraw cadence, stat the config

@@ -82,16 +82,15 @@ holds the modal state plus its popup geometry and forwards to that module.
   the pending flag marks a moved selection awaiting its first tick arm. Re-arming
   on every pending selection is the freeze fix; never arm once.
 - The tick ARMS on the same condition the gate FIRES on: a display sitting away
-  from the selection - the client left for another session, the confirmed display
-  is another session altogether, or the display PTY is gone while the selection
-  stands. An arm that only a selection move could set would leave the gate true
-  with no deadline, and the two regions would stay split until the next move.
-- The dead-display recovery (the display PTY gone while the selection stands, as
-  when the mirrored client detaches) is bounded: it fires only while the
-  inventory still lists the selected session, and only within a per-selection
-  budget of consecutive attempts that a moved selection or a re-confirmed display
-  refills. A session that is gone makes every re-attach end in EOF in turn, so an
-  unbounded recovery would never stop retrying it.
+  from the selection - the client left for another session, or the confirmed display
+  is another session altogether. An arm that only a selection move could set would
+  leave the gate true with no deadline, and the two regions would stay split until
+  the next move.
+- A display PTY that DIED while the selection stands attaches NOTHING. Each attach is a
+  fresh connection to that machine, so an attach raised by the death of the attach before
+  it is a chain, and a session that is gone makes every attempt die the same way, so the
+  chain has no end of its own. The pane keeps the last frame it drew; the user recovers it
+  by selecting the card again or re-scanning.
 - The last saved session address prevents rewriting preferences on every step
   within the same session.
 - This layer branches on nothing mux-specific: both apply sites fold intents and

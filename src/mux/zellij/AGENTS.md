@@ -6,7 +6,7 @@
 no zellij code sits at the `src` root. It owns BOTH sides of the mux:
 
 - the metadata mux: binary name, a per-session server model, session-listing
-  enumeration, attach argv, poll cadence, death signal, the environment variable
+  enumeration, attach argv, death signal, the environment variable
   its own client carries its session in, and the command plans, none of which are
   tmux-compatible;
 - the display driver: the per-source display orchestration for a per-session mux
@@ -49,7 +49,7 @@ behaves as though there were none to read.
 
 ## Module Seams
 
-- The implementation root holds the mux itself, the poll cadence, and the
+- The implementation root holds the mux itself and the
   `--session <name> action <verb>` argv builder.
 - The parsing module holds the session-line grammar. Pure and total: anything that does not
   fit is skipped.

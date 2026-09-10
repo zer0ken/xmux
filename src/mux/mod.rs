@@ -418,34 +418,37 @@ const DETECT_TIMEOUT_REMOTE: std::time::Duration = std::time::Duration::from_sec
 /// help. No classification reads ANOTHER mux's name as its own identity, and the one
 /// name a stage may drop is one that stage itself has a reason to skip.
 pub async fn installed_muxes(transport: &dyn Transport, runner: &dyn Runner) -> Vec<String> {
-    // Probe every candidate mux CONCURRENTLY (each with the same `DETECT_TIMEOUT`
-    // budget) rather than one after another, so a machine's mux set resolves in ~one
-    // probe-time instead of the sum of them. A remote machine gets the longer remote
-    // budget: its probes are ssh round trips, and an implementation that asks several commands
-    // would otherwise time out before its last one answers.
+    // Ask the candidates ONE AT A TIME. Each candidate is one or more commands, and on a
+    // remote machine each command is its own connection, so asking them together opens a
+    // handful of connections to one machine in the same instant. An ssh server counts the
+    // connections that have not authenticated yet and starts dropping them past its limit,
+    // so the burst is both what makes a legitimate probe fail and what the machine's own
+    // logs read as an attack. In sequence the machine sees one connection at a time, which
+    // is what it is: one client asking what it has.
+    //
+    // The cost is wall-clock on a machine that is asked at all, which is once, when it
+    // connects. A remote machine gets the longer budget: its probes are ssh round trips,
+    // and an implementation that asks several commands would otherwise time out before its
+    // last one answers.
     let names = supported_muxes();
     let budget = if transport.is_remote() {
         DETECT_TIMEOUT_REMOTE
     } else {
         DETECT_TIMEOUT
     };
-    let futures = names.iter().map(|name| async {
+    let mut found = Vec::new();
+    for name in names {
         let Some(mux) = for_binary(name) else {
-            return false;
+            continue;
         };
         let probe = probe_identity(transport, mux.as_ref(), runner);
-        match tokio::time::timeout(budget, probe).await {
-            Ok((Some(kind), _)) => kind == *name,
-            _ => false,
+        if let Ok((Some(kind), _)) = tokio::time::timeout(budget, probe).await {
+            if kind == name {
+                found.push(name.to_string());
+            }
         }
-    });
-    let hits: Vec<bool> = futures::future::join_all(futures).await;
-    names
-        .iter()
-        .zip(hits)
-        .filter(|(_, hit)| *hit)
-        .map(|(name, _)| (*name).to_string())
-        .collect()
+    }
+    found
 }
 
 /// The mux whose name `text` contains, in registry order. `skip` drops one kind's
@@ -740,7 +743,7 @@ mod tests {
         // (the manager's poll task uses this cadence). Death is the per-session registry stat.
         let m = psmux();
         assert_eq!(m.control_argv(), None);
-        assert_eq!(m.event_source(), EventSource::Poll { interval_ms: 1500 });
+        assert_eq!(m.event_source(), EventSource::Poll);
         assert_eq!(
             m.death_signal(),
             DeathSignal::PathStat {
@@ -1161,7 +1164,7 @@ Usage: zellij [OPTIONS]",
         let p = for_kind("psmux", "tmux").unwrap();
         assert_eq!(p.kind(), "psmux");
         assert_eq!(p.bin(), "tmux");
-        assert_eq!(p.event_source(), EventSource::Poll { interval_ms: 1500 });
+        assert_eq!(p.event_source(), EventSource::Poll);
 
         let t = for_kind("tmux", "psmux").unwrap();
         assert_eq!(t.kind(), "tmux");

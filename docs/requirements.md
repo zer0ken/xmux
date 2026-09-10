@@ -71,10 +71,9 @@ no function, and no test, so renaming code is never a documentation change.
   not move. `exclude` names hosts, so it drops every mux on one. A listed mux that is
   not installed there surfaces as unreachable rather than being dropped, because a name
   the user wrote is a name they meant.
-- **FR-A8** - A polled source cannot wedge on one unanswered command. Every command in
-  a poll sweep runs under a fixed per-command budget, because the poll ticker only
-  advances once the sweep returns: a timed-out listing surfaces as that source's error
-  (the nav shows it unreachable).
+- **FR-A8** - A polled source cannot wedge on one unanswered command. Every command in an
+  enumeration runs under a fixed per-command budget, so a timed-out listing surfaces as
+  that source's error (the nav shows it unreachable) instead of holding the source open.
 - **FR-A9** - No mux list needs configuring, on any host. A host that named no
   mux is asked which of the ones xmux SUPPORTS it has, and each one that answers becomes a
   source. The candidate set is what xmux can drive, and each candidate is asked with the
@@ -460,8 +459,10 @@ no function, and no test, so renaming code is never a documentation change.
   on the roster (so a host the user never wrote down is traceable to the thing that
   offered it, and to the `[discovery]` key that would turn it off), the ssh stanza it was
   reached through, what the OTHER muxes on that same machine answered (which is what says
-  whether the machine or the mux is down), and the log file holding the full history; a reachable-but-serverless source reads `(empty)`, a once-connected source keeps its last-known cards on a transient drop, and
-  the reconnect sweep self-heals; a dropped display client is reaped and re-attached.
+  whether the machine or the mux is down), and the log file holding the full history; a reachable-but-serverless source reads `(empty)`, and a once-connected source keeps its
+  last-known cards on a transient drop. Nothing recovers on its own: a dropped display
+  client is reaped and its last frame stays on screen, and a re-scan or selecting the card
+  again is what reconnects either.
 - **FR-C4** - No silent loss: every dispatched switch/select command logs its exact argv
   and result; a failed attach is logged at warn level and returns to the nav rather
   than being swallowed; each driver logs its show decision and the grid-changed effect.
@@ -492,13 +493,10 @@ no function, and no test, so renaming code is never a documentation change.
   scan. The settled selection's address is persisted as the last session. There is no
   separate picker mode; `prefix q`
   quits.
-- **FR-D6** - The log records what HAPPENED, never the rate xmux asks. A sweep that says
-  what the sweep before it said is not written: an unchanged session list is not, and
-  neither is a failure already standing, which is counted instead. A failure is written
-  when it arrives and when its message changes, and the source answering again is written
-  too, with how many sweeps failed, so a run of failures reads as one event with a
-  beginning and an end. Without this a source that cannot answer writes one line every
-  poll for as long as xmux runs, and it alone fills the file.
+- **FR-D6** - The log records what HAPPENED. One line per enumeration is one line per
+  thing that asked for one, because nothing enumerates on a cadence, so the file carries
+  what the user did rather than how often xmux ticks and no silent host can fill it on its
+  own.
 - **FR-D7** - No log grows without end. The daily files are kept for a bounded window and
   the oldest goes as a new day opens. A panic that a worker recovers from and hits again on
   the next frame is written by its SITE at each doubling of its count, not once per
@@ -571,6 +569,23 @@ nothing to switch to until one exists.
   by itself where a POSIX remote gets it behind a POSIX prefix. A LOCKED host's family is
   unknown, because the probe that reads it never got past the refusal that locked the card,
   which is why the login's own command has to hold in every family (FR-B28).
+- **FR-G7** - xmux reaches a machine only when something asked it to. Every request
+  traces to the launch scan, to a user action (a re-scan, a login, selecting a card, an
+  operation on a session), or to a push stream that is already open. Nothing repeats on a
+  timer and no failure raises its own retry, because a request that answers a failed
+  request cannot stop: a machine that refuses one connection refuses the next identically,
+  so a client reconnecting on every refusal reconnects without end, which is what a
+  machine's own defences are built to read as an attack. What the user sees follows from
+  this and is deliberate. A metadata channel that dropped stays dropped, a source with no
+  push stream is enumerated once and then not again, a display whose client died keeps the
+  last frame it drew, and an unreachable or locked card stays as it is - each until the
+  user asks. A push stream is one open connection the far side speaks over, so it carries
+  changes without asking for them.
+- **FR-G8** - A machine is asked one thing at a time. Work fans out ACROSS machines and
+  never within one, because a machine counts the connections that have not authenticated
+  yet and drops the ones past its limit: a burst is both what makes a legitimate probe
+  fail and what its logs record as an attack. So the muxes a machine is asked about are
+  asked in sequence, and the probes of separate machines still run together.
 
 ---
 
@@ -620,6 +635,10 @@ The seamless cross-host switch is bought with three costs, accepted by design:
 
 ## Design principles
 
+- **Asked-for requests** - xmux is a guest on every machine it reaches. It asks when
+  something asked it to, one thing at a time, and it answers a refusal by reporting it
+  rather than by asking again. Recovering is the user's to ask for, which costs a
+  keystroke and is the only version of it that ever stops. *(FR-G7, FR-G8)*
 - **Honesty** - The nav shows only what it can back with an answer, and says
   so when it cannot. A value is never guessed, assumed, or shown as a fact
   before it is one: a mux appears on a card only when the enumeration

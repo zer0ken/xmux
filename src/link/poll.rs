@@ -1,179 +1,118 @@
-//! A POLL host's self-looping enumeration task, owned by `HostManager` for muxes
-//! with no host-level control stream: it emits `HostEvent`s onto the same bus.
+//! A POLL host's enumeration task, owned by `HostManager` for muxes with no
+//! host-level control stream: it enumerates ONCE and emits the result onto the same
+//! event bus the control clients use.
 
 use super::HostEvent;
 
-/// What a source's failures have said so far, so a sweep can be asked whether its outcome
-/// is NEWS. A polled source that cannot answer fails every sweep with the same message for
-/// as long as xmux runs, forty sweeps to the minute: the message is worth writing when it
-/// arrives and when it changes, and worth counting the rest of the time.
-#[derive(Default)]
-struct Failures {
-    standing: Option<String>,
-    sweeps: u64,
-}
-
-impl Failures {
-    /// Folds in a failed sweep. `None` means this message is new (or replaces a different
-    /// one) and is worth writing whole; `Some(n)` means the failure already stood and this
-    /// is the nth sweep to hit it.
-    fn failed(&mut self, error: &str) -> Option<u64> {
-        if self.standing.as_deref() == Some(error) {
-            self.sweeps += 1;
-            return Some(self.sweeps);
-        }
-        self.standing = Some(error.to_string());
-        self.sweeps = 1;
-        None
-    }
-
-    /// Folds in a sweep that answered. `Some((message, sweeps))` when that ends a run of
-    /// failures, which is as much news as the failure starting; `None` when nothing was
-    /// standing to recover from.
-    fn recovered(&mut self) -> Option<(String, u64)> {
-        let stood = self.standing.take()?;
-        let sweeps = std::mem::take(&mut self.sweeps);
-        Some((stood, sweeps))
-    }
-}
-
-/// A POLL host's self-looping enumeration task. A poll host has no host-level control
-/// stream, so the [`HostManager`](super::HostManager) owns this task to re-enumerate sessions + panes on
-/// the mux's cadence and emit them as [`HostEvent`]s onto the same bus the control
-/// clients use. Runs until aborted (reap / teardown) or the event receiver is dropped
-/// (app exit). Mirrors a control client's connect-then-stream role for poll muxes.
+/// A POLL host's enumeration task. A poll host has no host-level control stream, so
+/// the [`HostManager`](super::HostManager) owns this task to enumerate its sessions +
+/// panes and emit them as [`HostEvent`]s onto the same bus the control clients use.
+///
+/// The enumeration runs ONCE, at spawn. It does not repeat on a cadence: every sweep of
+/// a remote poll host is a fresh connection to that machine, and a sweep that repeats on
+/// a timer is a connection that repeats on a timer whether or not anyone is waiting for
+/// the answer - which is what a server's own defences read as an attack rather than as
+/// a client. So the answer is fetched when something asked for it, and after that the
+/// task PARKS.
+///
+/// Parking rather than returning is what keeps the channel LIVE
+/// ([`HostManager::is_live`](super::HostManager::is_live)): a finished task reads as a
+/// dropped channel, and every path that ensures a host's channel would then re-enumerate
+/// it - a keystroke on a selected card would spawn a connection. So the task stays,
+/// holding the one enumeration it was spawned to run, until it is aborted (a re-scan, a
+/// reap, or the app exiting). Re-enumeration is that abort-and-respawn, raised by a user
+/// asking for it ([`HostManager::rescan`](super::HostManager::rescan)).
+///
+/// Runs until aborted, or returns early when the event receiver is gone (app exit).
 pub(super) async fn run_poll(
     source: String,
     transport: Box<dyn crate::transport::Transport>,
     mux: Box<dyn crate::mux::Mux>,
-    interval_ms: u64,
     events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
-    // Fixed-cadence ticker: the first tick is immediate (enumerate on spawn), then a
-    // sweep every `interval_ms` of wall-clock. Skip ticks missed while one enumeration
-    // ran long, so a slow probe paces the loop instead of piling up overlapping sweeps.
-    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Per-source last-known name set: suppress INFO when the enumeration is identical to
-    // the previous sweep (reduces log noise for idle polls while keeping change visibility).
-    let mut last_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut first_poll = true;
-    // What this source's failures have said so far, so a standing failure is counted
-    // instead of rewritten every tick.
-    let mut failures = Failures::default();
-    loop {
-        ticker.tick().await;
-        // `poll_once` (the mux-blind sweep) hands each event back here. The app's
-        // receiver dropping (its exit) is the loop's other stop condition besides abort,
-        // so a failed send latches `gone` and the loop returns after this sweep.
-        let mut gone = false;
-        mux.poll_once(
-            &source,
-            &transport,
-            &crate::model::source::ExecRunner,
-            &mut |ev| {
-                // Log enumeration at the producer (where `err` is in hand). A sweep that says
-                // what the one before it said is not news, whichever way it went: an unchanged
-                // session set is TRACE, and so is a failure already standing. WARN is for a
-                // failure arriving or changing, INFO for a set changing or a source answering
-                // again. So the log carries the source's HISTORY rather than its cadence, and
-                // an unreachable source cannot fill the file on its own.
-                if let HostEvent::Sessions {
-                    source: ref host,
-                    ref sessions,
-                    ref err,
-                } = ev
-                {
-                    let n = sessions.len();
-                    if let Some(error) = err {
-                        match failures.failed(error) {
-                            Some(sweeps) => {
-                                tracing::trace!(host, sweeps, "enumeration_failing_still")
-                            }
-                            None => tracing::warn!(host, error, "enumeration_failed"),
-                        }
-                    } else {
-                        // A failure that stopped is as much news as one that started: without
-                        // this line the log would end on a failure the source has since
-                        // recovered from.
-                        if let Some((stood, sweeps)) = failures.recovered() {
-                            tracing::info!(host, sweeps, was = %stood, "enumeration_recovered");
-                        }
-                        let names: std::collections::BTreeSet<String> =
-                            sessions.iter().map(|s| s.name.clone()).collect();
-                        if first_poll || names != last_names {
-                            let names_list: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-                            tracing::info!(host, n, names = ?names_list, "sessions_enumerated");
-                            last_names = names;
-                            first_poll = false;
-                        } else {
-                            tracing::trace!(host, n, "sessions_enumerated_unchanged");
-                        }
+    // `poll_once` (the mux-blind enumeration) hands each event back here. The app's
+    // receiver dropping (its exit) means there is nobody to park for, so the task returns.
+    let mut gone = false;
+    mux.poll_once(
+        &source,
+        &transport,
+        &crate::model::source::ExecRunner,
+        &mut |ev| {
+            // Log the enumeration at the producer, where `err` is in hand. One line per
+            // enumeration is one line per thing that asked for one, so the log carries
+            // what the user did rather than a cadence nobody chose.
+            if let HostEvent::Sessions {
+                source: ref host,
+                ref sessions,
+                ref err,
+            } = ev
+            {
+                match err {
+                    Some(error) => tracing::warn!(host, error, "enumeration_failed"),
+                    None => {
+                        let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
+                        tracing::info!(host, n = sessions.len(), names = ?names, "sessions_enumerated");
                     }
                 }
-                if events.send(ev).is_err() {
-                    gone = true;
-                }
-            },
-        )
-        .await;
-        if gone {
-            return;
-        }
+            }
+            if events.send(ev).is_err() {
+                gone = true;
+            }
+        },
+    )
+    .await;
+    if gone {
+        return;
     }
+    // Hold the channel open with no further work. Only an abort ends this.
+    std::future::pending::<()>().await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Failures;
+    use super::*;
 
-    #[test]
-    fn a_failure_is_news_once_and_counted_after() {
-        let mut f = Failures::default();
-        assert_eq!(f.failed("no server running"), None, "the first is news");
-        assert_eq!(f.failed("no server running"), Some(2));
-        assert_eq!(f.failed("no server running"), Some(3));
-    }
-
-    #[test]
-    fn a_different_message_is_news_again() {
-        let mut f = Failures::default();
-        assert_eq!(f.failed("no server running"), None);
-        assert_eq!(
-            f.failed("connection refused"),
-            None,
-            "a new message is news"
+    /// The enumeration runs ONCE per spawn and the task then holds the channel open
+    /// without asking the machine anything else. This is the whole point of the task's
+    /// shape: a repeating sweep of a remote host is a repeating connection to it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_task_enumerates_once_and_then_asks_for_nothing_more() {
+        let transport = crate::transport::ssh(
+            "xmux-nonexistent-host.invalid".into(),
+            String::new(),
+            "linux".into(),
         );
-        assert_eq!(
-            f.failed("connection refused"),
-            Some(2),
-            "and counts from one"
+        let mux = crate::mux::for_binary("psmux").expect("psmux is a known mux");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let task = tokio::spawn(run_poll("src".to_string(), transport, mux, tx));
+
+        // The one enumeration this spawn was for.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+            .await
+            .expect("the enumeration answers within its own budget")
+            .expect("it emits its result");
+        assert!(
+            matches!(&first, HostEvent::Sessions { source, .. } if source == "src"),
+            "the spawn's enumeration lands"
         );
-    }
+        while let Ok(ev) = rx.try_recv() {
+            assert!(
+                !matches!(ev, HostEvent::Sessions { .. }),
+                "one enumeration per spawn, not several"
+            );
+        }
 
-    #[test]
-    fn recovery_reports_the_run_it_ended() {
-        let mut f = Failures::default();
-        f.failed("connection refused");
-        f.failed("connection refused");
-        assert_eq!(
-            f.recovered(),
-            Some(("connection refused".to_string(), 2)),
-            "the message and how many sweeps hit it"
+        // Well past the fastest cadence the task could have kept, nothing else has been
+        // emitted. The wait is real time because the enumeration is a real subprocess.
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "five seconds on, the parked task has asked the machine nothing more"
         );
-        assert_eq!(f.recovered(), None, "and it is reported once");
-    }
-
-    #[test]
-    fn a_source_that_never_failed_recovers_from_nothing() {
-        assert_eq!(Failures::default().recovered(), None);
-    }
-
-    #[test]
-    fn a_failure_after_a_recovery_is_news() {
-        let mut f = Failures::default();
-        f.failed("connection refused");
-        f.recovered();
-        assert_eq!(f.failed("connection refused"), None);
+        assert!(
+            !task.is_finished(),
+            "the task parks rather than finishing, so its channel still reads as live"
+        );
+        task.abort();
     }
 }

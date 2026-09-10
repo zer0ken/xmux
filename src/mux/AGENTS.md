@@ -22,23 +22,23 @@ AND its display driver, and is re-exported from the root:
 - `tmux/` owns the tmux mux, the display-tty file helpers, its control argv, its
   driver with its attach helper, and its pure control-mode wire functions behind
   the control-protocol trait. See `tmux/AGENTS.md`.
-- `psmux/` owns the psmux mux, its poll cadence, the environment variable its own
+- `psmux/` owns the psmux mux, the environment variable its own
   client carries its session in, its driver (which reattaches on every change
   unless the live client itself reports it is already on the selected session,
   since it can name no client from outside its own session), and the per-host
   session registry that backs enumeration (one server per session, so there is no
   aggregate session listing). See `psmux/AGENTS.md`.
-- `zellij/` owns the zellij mux, its poll cadence, the per-session action argv
+- `zellij/` owns the zellij mux, the per-session action argv
   every zellij query is addressed with, the environment variable its own client
   carries its session in, and its driver (which reattaches on every session change
   because no client can be named from outside its own session), owning the session
   listing as its one output shape. See `zellij/AGENTS.md`.
-- `abduco/` owns the abduco mux, its poll cadence, its listing parser (the bare
+- `abduco/` owns the abduco mux, its listing parser (the bare
   binary IS the listing), its driver (which reattaches on every session change),
   and the one-card-per-session rule. abduco is the simplest implementation: no control
   stream, no server-socket flag, and no per-session query — a poll enumerates
   once and resolves each session as the session alone. See `abduco/AGENTS.md`.
-- `screen/` owns the GNU screen mux, its poll cadence, its `-ls`
+- `screen/` owns the GNU screen mux, its `-ls`
   parser, and its driver (which reattaches on every session change because
   screen offers no client switch). See `screen/AGENTS.md`.
 
@@ -98,10 +98,14 @@ it prints are one decision, so they move together.
 
 - A reachable empty mux enumerates as an empty list, not an error; unreachable
   sources return an error.
-- Every command in a poll sweep runs under a fixed per-command budget. The poll
-  ticker only advances after the sweep RETURNS, so one command that never answers
-  would freeze that source's whole inventory. A timed-out listing surfaces as the
-  source's error.
+- Every command in an enumeration runs under a fixed per-command budget, so one command
+  that never answers cannot hold that source's inventory open. A timed-out listing
+  surfaces as the source's error.
+- Mux discovery asks a machine's candidates ONE AT A TIME. Each candidate is one or more
+  commands, and on a remote machine each command is its own connection, so asking them
+  together opens several unauthenticated connections to one machine in the same instant -
+  which is both what makes a legitimate probe get dropped and what the machine's own logs
+  read as an attack.
 - Transport-specific command wrapping belongs to the host axis.
 - A mux that moves its client between sessions INSIDE the client process is
   invisible to every server, so nothing can be pushed and nothing can be asked:

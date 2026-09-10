@@ -61,11 +61,17 @@ and the composed control argv.
 - Ensuring a source is idempotent: re-ensuring a live source is a no-op.
 - The control argv is composed from the transport and mux axes; no mux verb or
   ssh invocation is hardcoded here.
-- A sweep logs what CHANGED, not that it ran. An unchanged listing and a failure already
-  standing are both counted, never rewritten: a polled source ticks tens of times a minute
-  for as long as xmux runs, so a line per tick is a file filled by one silent host. The
-  rule is a value the loop folds outcomes into, so it is tested rather than read out of a
-  log file afterwards.
+- A POLL source is enumerated ONCE per spawn and the task then parks. It keeps no cadence
+  of its own: a sweep that repeats on a timer is a connection to that machine that repeats
+  on a timer, whether or not anyone is waiting for the answer. Re-enumerating is
+  abort-and-respawn, and only something the user did raises it.
+- The parked task is what keeps the channel LIVE, and that is why it parks rather than
+  returning. A finished task reads as a dropped channel, so every path that ensures a
+  host's channel would enumerate it again, and a keystroke on a selected card would
+  become a connection.
+- Ensuring a channel is not a request. It opens one a host does not have and leaves a
+  host that has one exactly as it stands, which is what lets the input paths call it on
+  every keystroke.
 - A remote host's REACHABILITY (connected, blocked, or unreachable) is classified by a
   machine probe (`ssh <machine> true`) before any channel opens, not by the control
   reader. The reader's exit reason carries only a protocol `%error` (a "no sessions" /
@@ -113,6 +119,8 @@ and the composed control argv.
 - Do not do display or PTY work here; that belongs to `src/display`.
 - Do not block: the reader and writer run on their own threads and communicate
   with the app loop over channels.
+- Do not answer a failure with a request. A channel that died, a probe that was refused,
+  and an attachment that EOF'd are all states to report, never reasons to reconnect.
 
 ## Before Editing
 

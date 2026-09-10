@@ -9,12 +9,6 @@ mod vocab;
 
 pub use display::ScreenDriver;
 
-/// The screen poll cadence. screen pushes no change events, so the session list is
-/// discovered by re-enumeration; one sweep costs one `-ls` plus one `-Q windows` per
-/// session, each a separate process (over ssh, a separate connection), so the cadence
-/// mirrors zellij's polled read rather than psmux's single local registry stat.
-const SCREEN_POLL_MS: u64 = 3000;
-
 /// screen: one daemon per session under a per-user socket directory, enumerated from
 /// `-ls`, polled for change, each session displayed through its own attachment.
 pub struct Screen {
@@ -106,9 +100,7 @@ impl Mux for Screen {
     }
 
     fn event_source(&self) -> EventSource {
-        EventSource::Poll {
-            interval_ms: SCREEN_POLL_MS,
-        }
+        EventSource::Poll
     }
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         vocab::new_session(&self.bin, name)
@@ -158,12 +150,7 @@ mod tests {
         assert_eq!(m.kind(), "screen");
         assert_eq!(m.server_model(), ServerModel::PerSession);
         assert_eq!(m.death_signal(), DeathSignal::Eof);
-        assert_eq!(
-            m.event_source(),
-            EventSource::Poll {
-                interval_ms: SCREEN_POLL_MS
-            }
-        );
+        assert_eq!(m.event_source(), EventSource::Poll);
         assert!(
             !m.takes_server_socket(),
             "screen's -S is a session name, not a socket"
@@ -250,13 +237,5 @@ mod tests {
             got.as_ref().map(|m| (m.kind(), m.server_model()))
         );
         assert_eq!(got.as_ref().map(|m| m.kind()), Some("screen"));
-    }
-
-    #[test]
-    fn screen_poll_interval_matches_a_remote_multi_query_mux() {
-        // Each poll sweep is one `-ls` plus one `-Q windows` per session, every one a
-        // separate process (over ssh, a separate connection) — the same cost zellij's
-        // poll budgets for, so screen shares its cadence rather than psmux's local one.
-        assert_eq!(SCREEN_POLL_MS, 3000);
     }
 }
