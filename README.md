@@ -16,12 +16,21 @@ filling the right side.](docs/assets/xmux.png)
 
 ## Install
 
-xmux is one self-contained binary, provided as a prebuilt package for Windows,
-macOS, and Linux on the [releases](https://github.com/zer0ken/xmux/releases)
-page. Step-by-step instructions for each OS - prebuilt binary, package manager,
-or build from source - are in [`INSTALL.md`](INSTALL.md).
+xmux is one self-contained binary. One line installs it:
 
-Quick package-manager installs:
+```sh
+curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh
+```
+
+```powershell
+irm https://github.com/zer0ken/xmux/releases/latest/download/install.ps1 | iex
+```
+
+The script downloads the build for your machine, checks it against the checksum
+the release publishes, and puts the `xmux` command on your `PATH`. Upgrading
+later is `xmux update`.
+
+Package managers work too:
 
 ```sh
 brew install zer0ken/xmux/xmux        # macOS
@@ -30,8 +39,11 @@ cargo install xmux                    # any OS with Rust
 
 There is no winget install yet: the manifest in
 [`packaging/winget`](packaging/winget) is not registered in the community
-winget-pkgs repository. On Windows, use the prebuilt binary or
-`cargo install xmux`.
+winget-pkgs repository.
+
+Step-by-step instructions for each OS, including the prebuilt packages on the
+[releases](https://github.com/zer0ken/xmux/releases) page and building from
+source, are in [`INSTALL.md`](INSTALL.md).
 
 Install the `xmux` command onto your `PATH` from source:
 

@@ -1254,6 +1254,26 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         tokio::spawn(async move { crate::link::control::prune_stale(&dir, &keep).await });
     }
 
+    // What the newest release is, from the answer recorded on disk. The flash carries
+    // it, so the user reads it where every other transient notice appears rather than
+    // in a banner of its own.
+    //
+    // Nothing here waits on the network: the line comes from the recorded answer, and
+    // the refresh below runs on its own thread and only writes the file. So a launch
+    // with no network paints exactly as fast as one with it, and the release that
+    // arrived today is announced on tomorrow's launch.
+    {
+        let check_enabled = rt.env.with_roster(|r| r.cfg.update.check);
+        let current = env!("CARGO_PKG_VERSION");
+        if let Some(line) = crate::cli::update::notify::notice(
+            crate::cli::update::notify::read(&rt.env.xmux_dir).as_ref(),
+            current,
+        ) {
+            rt.state.flash(line);
+        }
+        crate::cli::update::notify::refresh_in_background(&rt.env.xmux_dir, check_enabled);
+    }
+
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Frame timer: wakes the loop at the redraw cadence so a pending `dirty` draw is

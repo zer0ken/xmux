@@ -503,6 +503,39 @@ no function, and no test, so renaming code is never a documentation change.
   occurrence, so the first is kept, the scale is kept, and a repeating internal error
   cannot bury the file. A panic that ends the app is always written whole.
 
+- **FR-D8** - One command installs xmux, on every OS with a published build. The
+  install script reads the OS and the architecture from the machine it runs on,
+  downloads that build from the release, and refuses to install it unless its SHA-256
+  matches the checksum the release publishes. It reports where the launcher went and,
+  when that directory is not on `PATH`, either adds it or states exactly what to add;
+  it writes only the user's own `PATH`, never the machine's, so it needs no elevation.
+  A named version installs instead of the newest one, which is what makes going back to
+  an older build a command rather than a manual download.
+- **FR-D9** - Installing a version never writes the binary a running xmux is
+  executing. Each version goes into a directory named after it, and only the launcher
+  is repointed, so an upgrade during a session leaves every running instance on the
+  build it started with. On the platform where a running image cannot be overwritten,
+  a launcher in use is renamed aside and the new one takes its place, and the renamed
+  file is removed by a later install once nothing holds it.
+- **FR-D10** - `xmux update` acts through whatever owns the install rather than
+  reimplementing it. An install the script placed re-runs that script, a package
+  manager runs its own upgrade, and a binary the user placed themselves is replaced
+  with a checksum-verified build. The method is read from the running executable's
+  path; a path that cannot be read is reported as unknown rather than guessed, because
+  each method writes somewhere different. `--check` reports what an update would do
+  without doing it, and `--method` forces one.
+- **FR-D11** - xmux tells the user that a newer version exists. It asks the release
+  feed at most once a day and records the answer, so a launch never waits on that
+  question and a launch with no network paints as fast as one with it; the answer is
+  shown on startup and by `doctor`, and one config key turns the asking off. This is
+  not the request rule of FR-G7: that rule governs the machines the roster names,
+  which xmux reaches over ssh and which refuse every retry identically once they
+  refuse one. Asking a release feed authenticates nothing and retries nothing.
+- **FR-D12** - `doctor` opens with which xmux is running, where its binary is, what
+  owns that install, and whether a newer version was recorded, so an update that lands
+  somewhere unexpected is traceable to the install it acted on. It asks the network
+  nothing.
+
 ## E. Session management
 
 xmux aggregates and switches; it does not edit what a mux already edits. Starting a

@@ -1,29 +1,65 @@
 # Installing xmux
 
-xmux ships as one self-contained binary. There are two ways to get it, and
-either gives you the same `xmux` command-line program:
+xmux ships as one self-contained binary. The install script is the shortest way
+to get it, and every other way gives you the same `xmux` command.
 
-- **Prebuilt binary** - download the package for your OS from the
-  [releases](https://github.com/zer0ken/xmux/releases) page and put the binary
-  on your `PATH`. This is the recommended path: nothing needs to be compiled.
-- **From source** - build the Rust project with Cargo. Use this when no
-  prebuilt binary matches your platform, or when you want to build a specific
-  commit.
+## Install script
 
-## Quick install (package managers)
+```sh
+curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh
+```
 
-The fastest one-line installs, per OS:
+```powershell
+irm https://github.com/zer0ken/xmux/releases/latest/download/install.ps1 | iex
+```
+
+The script reads which OS and architecture it is running on, downloads that
+build from the latest release, and refuses to install it unless its SHA-256
+matches the checksum the release publishes. It then unpacks the build into a
+directory named after the version and points a launcher at that directory.
+
+That layout is what makes an upgrade safe while xmux is running. A new version
+goes into a directory of its own and only the launcher is replaced, so the
+binary a running xmux is executing is never written to.
+
+| | Unix | Windows |
+|---|---|---|
+| Versions | `~/.local/share/xmux/versions/<version>/` | `%LOCALAPPDATA%\xmux\versions\<version>\` |
+| Launcher | `~/.local/bin/xmux`, a symlink | `%LOCALAPPDATA%\xmux\bin\xmux.exe`, a copy |
+
+The script adds the launcher directory to your `PATH` when it is not already
+there. On unix it appends a marked block to your shell profile; on Windows it
+writes your own user `PATH`, never the machine one, so it needs no elevation.
+Pass `--no-modify-path` and it prints what to add instead.
+
+Both scripts take the same options:
+
+| Option | Environment variable | Effect |
+|---|---|---|
+| `--version <x.y.z>` | `XMUX_VERSION` | Install this version rather than the newest release. |
+| `--bin-dir <dir>` | `XMUX_BIN_DIR` | Put the launcher somewhere else. |
+| `--root <dir>` | `XMUX_INSTALL_ROOT` | Keep the version directories somewhere else. |
+| `--no-modify-path` | `XMUX_NO_MODIFY_PATH=1` | Report what to add to `PATH` rather than adding it. |
+
+```sh
+curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh -s -- --version 0.9.5
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://github.com/zer0ken/xmux/releases/latest/download/install.ps1))) -Version 0.9.5
+```
+
+## Package managers
 
 | OS | Command |
 |---|---|
 | macOS | `brew install zer0ken/xmux/xmux` |
-| Windows · Linux · any OS with Rust | `cargo install xmux` |
+| Windows, Linux, any OS with Rust | `cargo install xmux` |
 
 There is no winget install: the manifest in
 [`packaging/winget`](packaging/winget) is not registered in the community
-winget-pkgs repository. The **prebuilt binary** or the
-`cargo install --path .` command above are always available. See
-[`packaging/`](packaging/) for the manifests and the registration steps.
+winget-pkgs repository. See [`packaging/`](packaging/) for the manifests and the
+registration steps.
 
 ## Prerequisites
 
@@ -38,13 +74,20 @@ use it.
 
 ## Windows
 
+### Install script
+
+```powershell
+irm https://github.com/zer0ken/xmux/releases/latest/download/install.ps1 | iex
+```
+
+Open a new terminal afterwards, so it picks up the `PATH` the script wrote.
+
 ### Package manager
 
 There is no winget package: the manifest in
 [`packaging/winget`](packaging/winget) is not registered in the community
 winget-pkgs repository, so `winget install --id zer0ken.xmux` finds nothing.
-With Rust installed, `cargo install xmux` works; otherwise use the prebuilt
-binary below.
+With Rust installed, `cargo install xmux` works.
 
 ### Prebuilt binary
 
@@ -77,6 +120,16 @@ binary without installing it, use `cargo build --release` and copy
 ---
 
 ## macOS
+
+### Install script
+
+```sh
+curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh
+```
+
+It picks the Apple Silicon or Intel build from what the machine reports, and
+reads the Rosetta translation flag rather than the reported architecture, so an
+Intel shell on an Apple Silicon Mac still gets the native build.
 
 ### Package manager
 
@@ -138,6 +191,14 @@ This places the `xmux` command on your `PATH` (commonly under
 ---
 
 ## Linux
+
+### Install script
+
+```sh
+curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh
+```
+
+Builds are published for `x86_64` and `aarch64`.
 
 ### Package manager
 
@@ -205,17 +266,20 @@ xmux version
 xmux doctor
 ```
 
-To upgrade, run `xmux update`. It looks at where the `xmux` binary lives and
-picks the update that matches how you installed it: a cargo install updates
-with `cargo install xmux`, a winget install with `winget upgrade --id
-zer0ken.xmux`, and a Homebrew install with `brew upgrade
-zer0ken/xmux/xmux`. Any other placement (a prebuilt binary copied onto your
-`PATH`) is updated in place from the latest GitHub release, after verifying the
-downloaded binary's SHA256 against the release's published checksum.
+`xmux doctor` opens with which xmux is running, where its binary is, and what
+owns that install, so an update that lands somewhere unexpected can be traced to
+the install it acted on.
 
-On Windows, a running executable cannot be overwritten, so a winget upgrade or
-a release swap finishes in the background once every xmux instance has exited;
-a cargo install completes in the foreground right away.
+To upgrade, run `xmux update`. It reads where the `xmux` binary lives and hands
+the upgrade to whatever owns that install:
+
+| Install | What `xmux update` runs |
+|---|---|
+| Install script | The same install script, which writes a new version directory and repoints the launcher |
+| Cargo | `cargo install xmux` |
+| winget | `winget upgrade --id zer0ken.xmux` |
+| Homebrew | `brew upgrade zer0ken/xmux/xmux` |
+| A binary you copied onto your `PATH` yourself | A checksum-verified build from the release, written over that binary |
 
 Preview what an update would do without installing it:
 
@@ -223,11 +287,30 @@ Preview what an update would do without installing it:
 xmux update --check
 ```
 
-Force a specific update path with `--method cargo|winget|brew|self`, or the
-`XMUX_UPDATE_METHOD` environment variable. A source/dev build (not a released
-version) is not overwritten - update it the same way it was built.
+`xmux update --version 0.9.5` installs a named version, which is also how you go
+back to an older one. A package manager picks its own version, so this reaches
+only the paths that choose one.
 
-To upgrade from a prebuilt binary manually, download the newer package and
-replace the binary. To upgrade a Cargo install by hand, re-run
-`cargo install --path .` (or, if you installed from crates.io,
-`cargo install xmux`).
+Force a path with `--method cargo|winget|brew|script|self`, or the
+`XMUX_UPDATE_METHOD` environment variable. A source build is not a released
+version, so update it the way it was built.
+
+On Windows a running executable cannot be overwritten. A script install is
+unaffected, because the new build goes into a directory of its own; the other
+paths either rename the running binary aside or finish in the background once
+every xmux instance has exited.
+
+## New releases
+
+xmux asks GitHub once a day which version is newest and records the answer in
+`~/.xmux/version.json`. When a newer version has been released, xmux says so on
+startup and `xmux doctor` reports it. The request runs off the app's own path, so
+a launch never waits on it, and a launch with no network paints exactly as fast
+as one with it.
+
+Turn it off in `config.toml`:
+
+```toml
+[update]
+check = false
+```

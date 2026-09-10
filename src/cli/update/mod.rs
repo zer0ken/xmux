@@ -1,12 +1,19 @@
 //! The `xmux update` command. It detects how xmux was installed from the running
-//! executable's path and delegates to the owning package manager (cargo, winget,
-//! Homebrew); an install no package manager owns is replaced in place with a
-//! checksum-verified build from the latest GitHub release. On Windows a running
-//! process locks its own image file against deletion and overwrite but not against
-//! rename, so the cargo delegation renames the live binary aside first, while the
-//! winget delegation and the release swap are handed to a detached updater that
-//! waits for every xmux process to exit.
+//! executable's path and hands the update to whatever owns that install: a package
+//! manager (cargo, winget, Homebrew) runs its own upgrade, and an install the
+//! install script placed re-runs that same script, so the steps of an install live
+//! in one place rather than being reimplemented here. A binary the user copied onto
+//! their PATH themselves is owned by nobody, so it is replaced in place with a
+//! checksum-verified build from the GitHub release.
+//!
+//! On Windows a running process locks its own image file against deletion and
+//! overwrite but not against rename. The script install is unaffected, because the
+//! script writes a new version directory and only the launcher is replaced. For the
+//! paths that do write the live binary, the cargo delegation renames it aside first,
+//! while the winget delegation and the in-place swap are handed to a detached updater
+//! that waits for every xmux process to exit.
 
+pub mod notify;
 pub mod release;
 
 use std::ffi::OsStr;
@@ -15,6 +22,9 @@ use std::path::{Path, PathBuf};
 pub struct Args {
     pub check: bool,
     pub method: Option<String>,
+    /// Install this version instead of the newest release. Only the paths that
+    /// choose a version honour it; a package manager picks its own.
+    pub version: Option<String>,
 }
 
 /// Which OS family the binary runs on. A parameter (not `cfg`) so detection logic
@@ -31,11 +41,74 @@ pub enum InstallMethod {
     Cargo,
     Winget,
     Brew,
+    /// Placed by the install script, which owns the version directories and the
+    /// launcher that points at one of them.
+    Script,
+    /// Owned by nobody: a release binary the user put on their PATH themselves.
     Self_,
+}
+
+impl InstallMethod {
+    /// The word `doctor` and the update messages print. Also what `--method` accepts,
+    /// so the name a user reads is the name they can pass back.
+    pub fn label(self) -> &'static str {
+        match self {
+            InstallMethod::Cargo => "cargo",
+            InstallMethod::Winget => "winget",
+            InstallMethod::Brew => "brew",
+            InstallMethod::Script => "script",
+            InstallMethod::Self_ => "self",
+        }
+    }
 }
 
 const WIN_WINGET_MARKERS: &[&str] = &["microsoft\\winget", "microsoft/winget"];
 const BREW_MARKERS: &[&str] = &["/cellar/", "/homebrew/", "/home/linuxbrew/"];
+
+/// The install root the install script owns, found from the executable, or `None`
+/// when this executable is not in one.
+///
+/// The script lays out `<root>/versions/<version>/xmux` and a launcher. On unix the
+/// launcher is a symlink, so resolving it lands in the version directory two levels
+/// under the root; on Windows it is a copy in `<root>/bin`, one level under it. Both
+/// shapes are answered by walking up and asking which ancestor has a `versions`
+/// directory, which is the one thing the layout guarantees and a path string cannot
+/// fake by accident.
+pub fn script_root(exe: &Path) -> Option<PathBuf> {
+    let real = plain(&exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf()));
+    let mut dir = real.parent();
+    // `<root>/versions/<version>/xmux` and `<root>/bin/xmux.exe` are the two shapes,
+    // so the root is at most two directories above the one holding the binary.
+    for _ in 0..2 {
+        let candidate = dir?.parent()?;
+        if candidate.join("versions").is_dir() {
+            return Some(candidate.to_path_buf());
+        }
+        dir = Some(candidate);
+    }
+    None
+}
+
+/// Drops the verbatim prefix Windows canonicalisation adds to a drive path. That
+/// prefix is what lets a path exceed the legacy length limit and every API here
+/// accepts it, but `doctor` prints this path for a person to read and compare
+/// against what they typed. Only the drive-letter form is unwrapped: the UNC form
+/// does not shorten by dropping a prefix, so it is left exactly as it came.
+fn plain(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    let Some(rest) = s.strip_prefix(r"\\?\") else {
+        return p.to_path_buf();
+    };
+    let mut chars = rest.chars();
+    let is_drive = matches!(chars.next(), Some(c) if c.is_ascii_alphabetic())
+        && chars.next() == Some(':')
+        && matches!(chars.next(), Some('\\') | Some('/'));
+    if is_drive {
+        PathBuf::from(rest)
+    } else {
+        p.to_path_buf()
+    }
+}
 
 /// Decides the install method from the executable path. Resolves symlinks first so a
 /// Homebrew `/usr/local/bin/xmux` symlink (into `Cellar/`) is read as brew, not as a
@@ -43,6 +116,9 @@ const BREW_MARKERS: &[&str] = &["/cellar/", "/homebrew/", "/home/linuxbrew/"];
 fn classify(exe: &Path, cargo_bins: &[PathBuf], platform: Platform) -> InstallMethod {
     let real = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
     let p = real.to_string_lossy().to_lowercase();
+    if script_root(exe).is_some() {
+        return InstallMethod::Script;
+    }
     match platform {
         Platform::Windows => {
             if WIN_WINGET_MARKERS.iter().any(|m| p.contains(m)) {
@@ -109,9 +185,10 @@ fn parse_method(s: &str) -> Result<InstallMethod, String> {
         "cargo" => Ok(InstallMethod::Cargo),
         "winget" => Ok(InstallMethod::Winget),
         "brew" => Ok(InstallMethod::Brew),
+        "script" => Ok(InstallMethod::Script),
         "self" => Ok(InstallMethod::Self_),
         _ => Err(format!(
-            "unknown method {s:?} (expected cargo|winget|brew|self)"
+            "unknown method {s:?} (expected cargo|winget|brew|script|self)"
         )),
     }
 }
@@ -128,6 +205,17 @@ fn resolve_method(forced: Option<&str>) -> Result<InstallMethod, String> {
     }
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate own binary: {e}"))?;
     Ok(classify(&exe, &cargo_bins(), platform()))
+}
+
+/// The install method this running binary is detected as, as the word `doctor`
+/// prints and `--method` accepts. A binary whose own path cannot be read is named
+/// as that rather than defaulting to a method, because every method acts somewhere
+/// different and guessing one would send an update to the wrong place.
+pub fn detected_method_label() -> &'static str {
+    let Ok(exe) = std::env::current_exe() else {
+        return "unknown";
+    };
+    classify(&exe, &cargo_bins(), platform()).label()
 }
 
 fn tool_on_path(tool: &str) -> bool {
@@ -161,6 +249,7 @@ fn run_blocking(args: &Args) -> Result<(), String> {
     let p = platform();
     match method {
         InstallMethod::Self_ => release::update(args, p),
+        InstallMethod::Script => run_script(args, p),
         InstallMethod::Cargo => run_cargo(args, p),
         InstallMethod::Winget => run_winget(args, p),
         InstallMethod::Brew => run_brew(args),
@@ -346,6 +435,104 @@ pub(crate) fn spawn_detached_cmd(_dir: &Path, _content: String) -> Result<(), St
     unreachable!("Windows-only updater ran on a non-Windows host")
 }
 
+/// The install script's URL, taken from the LATEST RELEASE rather than from a
+/// branch. A release asset is a fixed artifact, so the script that installs a
+/// version is the script that shipped with it, and an edit on the default branch
+/// cannot change what an update runs before anyone has released it.
+const INSTALL_SH: &str = "https://github.com/zer0ken/xmux/releases/latest/download/install.sh";
+const INSTALL_PS1: &str = "https://github.com/zer0ken/xmux/releases/latest/download/install.ps1";
+
+/// The update path for an install the script placed: run that same script again.
+///
+/// The script owns where a version goes and how the launcher is pointed at it, so
+/// re-running it is what keeps those steps in one place. It is also why this path
+/// needs no lock handling: the script writes a NEW version directory and only
+/// replaces the launcher, so the image a running xmux is executing is never written.
+fn run_script(args: &Args, platform: Platform) -> Result<(), String> {
+    let current = env!("CARGO_PKG_VERSION");
+    let wanted = args.version.as_deref();
+
+    if args.check {
+        match wanted {
+            Some(v) => {
+                println!("xmux {current} is installed; `xmux update --version {v}` installs {v}")
+            }
+            None => {
+                let latest = release::latest_version()?;
+                if release::is_newer(&latest, current) {
+                    println!("xmux {current} is installed; latest is {latest} - run `xmux update` to upgrade");
+                } else {
+                    println!("xmux is up to date ({current})");
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // A pinned version is installed whether or not it is newer, because asking for a
+    // version is asking for that version. Only an unpinned update compares, so a run
+    // that has nothing to do says so instead of re-downloading what is already here.
+    if wanted.is_none() {
+        let latest = release::latest_version()?;
+        if !release::is_newer(&latest, current) {
+            println!("xmux is already up to date ({current})");
+            return Ok(());
+        }
+    }
+
+    match platform {
+        Platform::Unix => {
+            if !tool_on_path("curl") {
+                return Err("curl is not on PATH; the install script needs it".to_string());
+            }
+            // The version rides in the environment rather than in the piped command,
+            // so a version string never becomes part of a shell line.
+            let script = format!("curl -fsSL {INSTALL_SH} | sh");
+            let mut cmd = std::process::Command::new("sh");
+            cmd.arg("-c").arg(&script);
+            if let Some(v) = wanted {
+                cmd.env("XMUX_VERSION", v);
+            }
+            run_command(cmd, "sh")
+        }
+        Platform::Windows => {
+            let script = format!(
+                "$ErrorActionPreference='Stop'; & ([scriptblock]::Create((irm {INSTALL_PS1})))"
+            );
+            let mut cmd = std::process::Command::new("powershell.exe");
+            cmd.args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
+            ]);
+            if let Some(v) = wanted {
+                cmd.env("XMUX_VERSION", v);
+            }
+            run_command(cmd, "powershell")
+        }
+    }
+}
+
+/// Runs a prepared command with the terminal attached, so the install script's own
+/// output is what the user reads.
+fn run_command(mut cmd: std::process::Command, name: &str) -> Result<(), String> {
+    let status = cmd
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| format!("cannot run {name}: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{name} exited with {status}"))
+    }
+}
+
 fn run_brew(args: &Args) -> Result<(), String> {
     if args.check {
         println!("xmux is installed via Homebrew; update with `brew upgrade zer0ken/xmux/xmux`");
@@ -382,6 +569,74 @@ mod tests {
     fn classify(p: &str, cargo_bins: &[&str], platform: Platform) -> InstallMethod {
         let bins: Vec<PathBuf> = cargo_bins.iter().map(PathBuf::from).collect();
         super::classify(Path::new(p), &bins, platform)
+    }
+
+    #[test]
+    fn a_binary_in_a_script_layout_is_a_script_install() {
+        // The layout the install script writes: a version directory under `versions`,
+        // and (on Windows) a launcher in `bin`. Both are answered by the same walk, so
+        // the two platforms need no separate rule.
+        let base = std::env::temp_dir().join(format!("xmux-script-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let version_dir = base.join("versions").join("0.9.6");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        // What the root RESOLVES to, which is what `script_root` returns. A temp
+        // directory can be reached through an 8.3 short name or a symlink, and
+        // resolving is the whole point: the same install must be recognised however
+        // the path that reached it was spelled.
+        let base = super::plain(&base.canonicalize().unwrap());
+        let unix_shape = version_dir.join("xmux");
+        std::fs::write(&unix_shape, b"").unwrap();
+        assert_eq!(
+            super::script_root(&unix_shape).as_deref(),
+            Some(base.as_path()),
+            "a binary inside a version directory names its root"
+        );
+
+        let bin_dir = base.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let windows_shape = bin_dir.join("xmux.exe");
+        std::fs::write(&windows_shape, b"").unwrap();
+        assert_eq!(
+            super::script_root(&windows_shape).as_deref(),
+            Some(base.as_path()),
+            "a launcher beside the versions directory names the same root"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_binary_outside_that_layout_is_not_a_script_install() {
+        // Nothing about a plain directory may read as an install root, or an update
+        // would re-run the install script for a binary the script never placed.
+        let base = std::env::temp_dir().join(format!("xmux-plain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = base.join("bin");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("xmux");
+        std::fs::write(&exe, b"").unwrap();
+        assert_eq!(super::script_root(&exe), None);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn every_method_round_trips_through_its_own_label() {
+        // `doctor` prints the label and `--method` parses it, so the word a user reads
+        // has to be a word they can pass back.
+        for m in [
+            InstallMethod::Cargo,
+            InstallMethod::Winget,
+            InstallMethod::Brew,
+            InstallMethod::Script,
+            InstallMethod::Self_,
+        ] {
+            assert_eq!(
+                super::parse_method(m.label()),
+                Ok(m),
+                "{} round-trips",
+                m.label()
+            );
+        }
     }
 
     #[test]
