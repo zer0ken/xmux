@@ -8,6 +8,12 @@ mod registry;
 
 pub use display::PsmuxDriver;
 
+/// The psmux re-enumeration cadence. psmux pushes no change events, so the session
+/// list is discovered by re-polling; one sweep reads the local filesystem registry,
+/// which is cheap enough for a fast cadence. The supervisor re-enumerates on this
+/// cadence while the host keeps answering, and stops at the first failure.
+const PSMUX_POLL_MS: u64 = 1500;
+
 /// psmux: one server per session (`ServerModel::PerSession`), enumerated from the
 /// filesystem registry, polled for change, each session keeping its own attachment.
 pub struct Psmux {
@@ -152,7 +158,9 @@ impl Mux for Psmux {
     }
 
     fn event_source(&self) -> EventSource {
-        EventSource::Poll
+        EventSource::Poll {
+            interval_ms: PSMUX_POLL_MS,
+        }
     }
 }
 

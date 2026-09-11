@@ -13,6 +13,14 @@ mod parse;
 
 pub use display::ZellijDriver;
 
+/// The zellij re-enumeration cadence. zellij pushes no change events, so the session
+/// list is discovered by re-polling; one sweep costs one `list-sessions` plus one
+/// `list-tabs` per session, and every one of them is a separate process (over ssh, a
+/// separate connection), so the cadence is slower than psmux's local registry read. The
+/// supervisor re-enumerates on this cadence while the host keeps answering, and stops at
+/// the first failure.
+const ZELLIJ_POLL_MS: u64 = 3000;
+
 /// zellij: one server per session, enumerated from `list-sessions`, polled for change,
 /// each session displayed through its own attachment.
 pub struct Zellij {
@@ -132,7 +140,9 @@ impl Mux for Zellij {
     }
 
     fn event_source(&self) -> EventSource {
-        EventSource::Poll
+        EventSource::Poll {
+            interval_ms: ZELLIJ_POLL_MS,
+        }
     }
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         // `attach -b` is zellij's create-detached: it starts the session's server
@@ -200,7 +210,12 @@ mod tests {
         assert_eq!(m.kind(), "zellij");
         assert_eq!(m.server_model(), ServerModel::PerSession);
         assert_eq!(m.death_signal(), DeathSignal::Eof);
-        assert_eq!(m.event_source(), EventSource::Poll);
+        assert_eq!(
+            m.event_source(),
+            EventSource::Poll {
+                interval_ms: ZELLIJ_POLL_MS
+            }
+        );
         assert!(
             m.control_argv().is_none() && m.control_protocol().is_none(),
             "zellij has no control-mode channel"

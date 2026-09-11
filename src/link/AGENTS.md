@@ -61,14 +61,15 @@ and the composed control argv.
 - Ensuring a source is idempotent: re-ensuring a live source is a no-op.
 - The control argv is composed from the transport and mux axes; no mux verb or
   ssh invocation is hardcoded here.
-- A POLL source is enumerated ONCE per spawn and the task then parks. It keeps no cadence
-  of its own: a sweep that repeats on a timer is a connection to that machine that repeats
-  on a timer, whether or not anyone is waiting for the answer. Re-enumerating is
-  abort-and-respawn, and only something the user did raises it.
-- The parked task is what keeps the channel LIVE, and that is why it parks rather than
-  returning. A finished task reads as a dropped channel, so every path that ensures a
-  host's channel would enumerate it again, and a keystroke on a selected card would
-  become a connection.
+- A POLL source is re-enumerated on its cadence WHILE it keeps answering, so the nav
+  stays current with session/window changes (a session switch inside a session shows up
+  without the user asking). A sweep of a connected host reuses the path it answers over
+  (a ControlMaster socket on a remote, a local command on a local host), so the cadence
+  is not a fresh connection each time.
+- A POLL source STOPS at its first failed sweep: a request that answers nothing is one a
+  later request cannot answer either, so a host that stops answering is not asked again
+  until the user asks. Re-enumerating after a stop is abort-and-respawn, and only
+  something the user did raises it.
 - Ensuring a channel is not a request. It opens one a host does not have and leaves a
   host that has one exactly as it stands, which is what lets the input paths call it on
   every keystroke.

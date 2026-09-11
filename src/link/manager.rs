@@ -91,11 +91,12 @@ impl HostManager {
                 )?;
                 self.clients.insert(id.to_string(), client);
             }
-            crate::model::EventSource::Poll => {
+            crate::model::EventSource::Poll { interval_ms } => {
                 let handle = tokio::spawn(run_poll(
                     id.to_string(),
                     host.transport.clone(),
                     host.mux.clone_box(),
+                    interval_ms,
                     self.events.clone(),
                 ));
                 self.polls.insert(id.to_string(), handle);
@@ -109,8 +110,9 @@ impl HostManager {
     }
 
     /// True when `host` has a live metadata channel of either kind - a control client or
-    /// a poll task. The reconnect sweep reads it to tell a channel that dropped from one
-    /// still running, so it re-probes only the dropped ones.
+    /// a poll task that is still re-enumerating. A poll task returns at its first failed
+    /// sweep, so a host that stopped answering reads as not live until the user re-arms
+    /// it; the control client is live until it EOFs.
     pub fn is_live(&self, host: &str) -> bool {
         self.clients.contains_key(host) || self.polls.contains_key(host)
     }

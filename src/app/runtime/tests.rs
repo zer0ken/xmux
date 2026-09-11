@@ -119,7 +119,7 @@ fn scan_result_corrects_tmux_config_to_psmux_poll() {
     assert_eq!(host.mux.bin(), "tmux");
     assert!(matches!(
         host.mux.event_source(),
-        crate::model::EventSource::Poll
+        crate::model::EventSource::Poll { interval_ms: _ }
     ));
 }
 
