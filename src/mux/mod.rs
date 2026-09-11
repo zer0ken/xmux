@@ -743,7 +743,7 @@ mod tests {
         // (the manager's poll task uses this cadence). Death is the per-session registry stat.
         let m = psmux();
         assert_eq!(m.control_argv(), None);
-        assert_eq!(m.event_source(), EventSource::Poll);
+        assert_eq!(m.event_source(), EventSource::Poll { interval_ms: 1500 });
         assert_eq!(
             m.death_signal(),
             DeathSignal::PathStat {
@@ -1164,7 +1164,7 @@ Usage: zellij [OPTIONS]",
         let p = for_kind("psmux", "tmux").unwrap();
         assert_eq!(p.kind(), "psmux");
         assert_eq!(p.bin(), "tmux");
-        assert_eq!(p.event_source(), EventSource::Poll);
+        assert_eq!(p.event_source(), EventSource::Poll { interval_ms: 1500 });
 
         let t = for_kind("tmux", "psmux").unwrap();
         assert_eq!(t.kind(), "tmux");

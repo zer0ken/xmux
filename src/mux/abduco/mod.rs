@@ -12,6 +12,12 @@ pub mod display;
 
 pub use display::AbducoDriver;
 
+/// The abduco re-enumeration cadence. abduco pushes no change events, so the session
+/// list is discovered by re-polling; one sweep runs one `abduco` listing. The supervisor
+/// re-enumerates on this cadence while the host keeps answering, and stops at the first
+/// failure.
+const ABDUCO_POLL_MS: u64 = 2000;
+
 /// abduco: one server per session, enumerated from its listing, polled for change,
 /// each session displayed through its own attachment.
 pub struct Abduco {
@@ -101,7 +107,9 @@ impl Mux for Abduco {
     }
 
     fn event_source(&self) -> EventSource {
-        EventSource::Poll
+        EventSource::Poll {
+            interval_ms: ABDUCO_POLL_MS,
+        }
     }
 
     fn new_session_plan(&self, name: &str) -> Vec<String> {
@@ -193,7 +201,12 @@ mod tests {
         assert_eq!(m.server_model(), ServerModel::PerSession);
         assert_eq!(m.death_signal(), DeathSignal::Eof);
         assert!(!m.takes_server_socket(), "abduco has no -S flag");
-        assert_eq!(m.event_source(), EventSource::Poll);
+        assert_eq!(
+            m.event_source(),
+            EventSource::Poll {
+                interval_ms: ABDUCO_POLL_MS
+            }
+        );
         assert!(
             m.control_argv().is_none() && m.control_protocol().is_none(),
             "abduco has no control-mode channel"

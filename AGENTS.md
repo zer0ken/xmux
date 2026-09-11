@@ -63,12 +63,16 @@ state; raw key and text injection is an unstable low-level surface.
 - ASKED-FOR REQUESTS ONLY. xmux reaches a machine only when something asked it to.
   Every request traces to one of three things: the launch scan, a user action (a
   re-scan, a login, selecting a card, an operation on a session), or a push stream
-  that is already open. Nothing repeats on a timer, and no failure raises its own
-  retry - a request that answers a failed request is a retry loop, and a machine on
-  the far side reads a client that reconnects on every refusal as one attacking it.
-  So a dropped channel stays dropped, a dead display keeps its last frame, and an
-  unreachable card stays unreachable, each until the user asks. A push stream is not
-  a repeated request: one connection stays open and the far side speaks over it.
+  that is already open. A push stream is not a repeated request: one connection stays
+  open and the far side speaks over it. A POLL source is the same, not a fresh request
+  each time: it re-enumerates on its cadence while it keeps answering, and every sweep
+  reuses the path it answers over (a ControlMaster socket on a remote, a local command
+  on a local host), so a session or window change inside a connected session shows up
+  without the user asking. No failure raises its own retry and nothing repeats against
+  a host that stops answering - a poll sweep that fails is the last one, because a
+  request that answers a failed request is a retry loop a machine's own defences read
+  as an attack. So a dropped channel stays dropped, a dead display keeps its last
+  frame, and an unreachable card stays unreachable, each until the user asks.
 - A machine is asked ONE THING AT A TIME. Concurrent connections to a single machine
   are what its own defences count, so a fan-out is per machine, never within one.
 - The public control surface should speak semantic operations before raw keys.
