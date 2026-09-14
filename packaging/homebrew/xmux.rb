@@ -2,29 +2,29 @@ class Xmux < Formula
   desc "Cross-environment tmux/psmux session switcher"
   homepage "https://github.com/zer0ken/xmux"
   license "MIT"
-  version "0.9.9"
+  version "0.9.10"
 
   on_macos do
     on_arm do
-      url "https://github.com/zer0ken/xmux/releases/download/v0.9.9/xmux-v0.9.9-aarch64-apple-darwin.tar.gz"
-      sha256 "c850fc21f5d97d2b0592eef987b48993aaaad14a69c0a390bdceb3fb7ce37da4"
+      url "https://github.com/zer0ken/xmux/releases/download/v0.9.10/xmux-v0.9.10-aarch64-apple-darwin.tar.gz"
+      sha256 "a0f863c4989a234d8ccffb5c45a3eae0ee7c4a32857401dfa772262633ce8877"
     end
 
     on_intel do
-      url "https://github.com/zer0ken/xmux/releases/download/v0.9.9/xmux-v0.9.9-x86_64-apple-darwin.tar.gz"
-      sha256 "1d8423259ae176306d698ab332de5cf6fe9a20f3cdbdce3786753bfd418d6975"
+      url "https://github.com/zer0ken/xmux/releases/download/v0.9.10/xmux-v0.9.10-x86_64-apple-darwin.tar.gz"
+      sha256 "1383240feb895ccbfa14fe4de2598708d6d7ec5d33c7289c803bd52e6012b3fc"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/zer0ken/xmux/releases/download/v0.9.9/xmux-v0.9.9-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "a864150b08a853b0b39a38f2e086a2c380a44171dc1075f846a311db0af0745b"
+      url "https://github.com/zer0ken/xmux/releases/download/v0.9.10/xmux-v0.9.10-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "7bd9727a6640b518b5cb411cd36e97d176198c4a46481e48ae9d93219517699d"
     end
 
     on_intel do
-      url "https://github.com/zer0ken/xmux/releases/download/v0.9.9/xmux-v0.9.9-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "10776ca0f39881cdf37ddbd9159da31253e33beadc83a3449401ee65cacbae71"
+      url "https://github.com/zer0ken/xmux/releases/download/v0.9.10/xmux-v0.9.10-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "5dc147b530e8fd0216a9a12fc0677845e2e4ae6c09b41cb283eea208ac7f91c6"
     end
   end
 
