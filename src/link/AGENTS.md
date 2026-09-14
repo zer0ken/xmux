@@ -64,8 +64,8 @@ and the composed control argv.
 - A POLL source is re-enumerated on its cadence WHILE it keeps answering, so the nav
   stays current with session/window changes (a session switch inside a session shows up
   without the user asking). A sweep of a connected host reuses the path it answers over
-  (a ControlMaster socket on a remote, a local command on a local host), so the cadence
-  is not a fresh connection each time.
+  (the ControlMaster socket when the transport multiplexes, a local command on a local
+  host), so the cadence is not a fresh connection each time.
 - A POLL source STOPS at its first failed sweep: a request that answers nothing is one a
   later request cannot answer either, so a host that stops answering is not asked again
   until an explicit re-scan. Re-enumerating after a stop is abort-and-respawn, and only an

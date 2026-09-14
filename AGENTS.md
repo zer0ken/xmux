@@ -66,8 +66,8 @@ state; raw key and text injection is an unstable low-level surface.
   that is already open. A push stream is not a repeated request: one connection stays
   open and the far side speaks over it. A POLL source is the same, not a fresh request
   each time: it re-enumerates on its cadence while it keeps answering, and every sweep
-  reuses the path it answers over (a ControlMaster socket on a remote, a local command
-  on a local host), so a session or window change inside a connected session shows up
+  reuses the path it answers over (the ControlMaster socket when the transport
+  multiplexes, a local command on a local host), so a session or window change inside a connected session shows up
   without the user asking. No failure raises its own retry and nothing repeats against
   a host that stops answering - a poll sweep that fails is the last one, because a
   request that answers a failed request is a retry loop a machine's own defences read

@@ -44,11 +44,18 @@ impl HostManager {
     /// Ensures `id`'s metadata channel is live, picking the channel from the host's
     /// `event_source()` - the ONE place that reads it. CONTROL → spawn a `-CC` client
     /// (connect sequence queued by `HostClient::spawn`); POLL → spawn a task that
-    /// enumerates once and then parks. A no-op (`Ok(false)`) if already live.
+    /// re-enumerates on its cadence. A no-op (`Ok(false)`) if the channel is already
+    /// present.
     ///
     /// Ensuring is therefore not a request on its own: it opens a channel a host does not
     /// have, and a host that has one is left exactly as it stands. That is what lets the
     /// input paths call it freely - a keystroke on a live card asks the machine nothing.
+    ///
+    /// A POLL channel is never re-armed from here. A poll task that exists is either
+    /// still polling or has stopped at a failed sweep, and both read as present, so
+    /// `ensure` returns `Ok(false)` rather than respawning it: only an explicit
+    /// [`rescan`](Self::rescan) re-arms a stopped poll host. This is what keeps a probe
+    /// or a card selection from re-enumerating a host that stopped answering.
     pub fn ensure(
         &mut self,
         id: &str,
@@ -56,13 +63,8 @@ impl HostManager {
         cols: u16,
         rows: u16,
     ) -> anyhow::Result<bool> {
-        // A finished poll task leaves a dead JoinHandle in the map. The task parks after
-        // its one enumeration, so it finishes only when its body panicked or the event
-        // receiver was already gone. Drop the corpse so a later ensure can respawn it
-        // rather than reading it as a live channel.
-        if self.polls.get(id).is_some_and(|h| h.is_finished()) {
-            self.polls.remove(id);
-        }
+        // A poll task that is present, live or finished, is left as it stands. A finished
+        // one is a host that stopped answering; only rescan removes it and re-arms it.
         if self.clients.contains_key(id) || self.polls.contains_key(id) {
             return Ok(false);
         }
@@ -111,10 +113,10 @@ impl HostManager {
 
     /// True when `host` has a live metadata channel of either kind - a control client or
     /// a poll task that is still re-enumerating. A poll task returns at its first failed
-    /// sweep, so a host that stopped answering reads as not live until the user re-arms
-    /// it; the control client is live until it EOFs.
+    /// sweep, so a host that stopped answering reads as not live until an explicit re-scan
+    /// re-arms it; the control client is live until it EOFs.
     pub fn is_live(&self, host: &str) -> bool {
-        self.clients.contains_key(host) || self.polls.contains_key(host)
+        self.clients.contains_key(host) || self.polls.get(host).is_some_and(|h| !h.is_finished())
     }
 
     /// Re-enumeration ON DEMAND (`r` / menu reconnect / a machine that just logged in).
@@ -444,6 +446,40 @@ mod tests {
         assert!(
             mgr.ensure("local", &host, 80, 24).unwrap(),
             "reap aborted the task so ensure re-spawns it"
+        );
+        mgr.teardown_all();
+    }
+
+    #[tokio::test]
+    async fn ensure_does_not_rearm_a_finished_poll_task() {
+        // A poll task that has run and stopped (a failed sweep leaves a finished handle)
+        // is NOT re-armed by ensure: only an explicit rescan removes it and re-spawns it.
+        // This is what keeps a probe or a card selection from re-enumerating a host that
+        // stopped answering.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(tx);
+        let handle = tokio::spawn(async {});
+        while !handle.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        mgr.polls.insert("src".to_string(), handle);
+        let host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_kind("psmux", "psmux-no-such-binary").unwrap(),
+        );
+        assert!(
+            !mgr.ensure("src", &host, 80, 24).unwrap(),
+            "ensure does not re-spawn a finished poll task"
+        );
+        assert!(
+            mgr.polls.contains_key("src"),
+            "the stopped task's handle is left for rescan to remove"
+        );
+        // An explicit re-scan removes and re-spawns it, re-arming the stopped host.
+        mgr.rescan("src", &host, 80, 24);
+        assert!(
+            mgr.polls.contains_key("src"),
+            "rescan re-spawns the poll task"
         );
         mgr.teardown_all();
     }

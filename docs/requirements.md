@@ -493,8 +493,8 @@ no function, and no test, so renaming code is never a documentation change.
   scan. The settled selection's address is persisted as the last session. There is no
   separate picker mode; `prefix q`
   quits.
-- **FR-D6** - The log records what HAPPENED. An enumeration logs INFO when its result is
-  news (a changed session set, a failure) and TRACE when an answering sweep repeats an
+- **FR-D6** - The log records what HAPPENED. An enumeration logs INFO when the session
+  set changes and WARN when it fails, and TRACE when an answering sweep repeats an
   unchanged set, so a connected host that polls on its cadence does not fill the file and
   no silent host can either: the file carries what changed rather than how often xmux
   ticks.
@@ -610,8 +610,9 @@ nothing to switch to until one exists.
   refuses one connection refuses the next identically, so a client reconnecting on every
   refusal reconnects without end, which is what a machine's own defences are built to read
   as an attack. A POLL source re-enumerates on its cadence while it keeps answering, and
-  each sweep reuses the path the host answers over (a ControlMaster socket on a remote, a
-  local command on a local host) rather than opening a fresh unauthenticated connection,
+  each sweep reuses the path the host answers over (the ControlMaster socket when the
+  transport multiplexes, a local command on a local host) rather than opening a fresh
+  unauthenticated connection,
   so a session or window change inside a connected session shows up without the user
   asking. A poll sweep that FAILS is the last one - the host is asked again only when the
   user re-scans. What the user sees follows from this and is deliberate: a metadata channel

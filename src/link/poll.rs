@@ -12,8 +12,8 @@ use super::HostEvent;
 ///
 /// The enumeration runs at spawn and then again on the mux's cadence WHILE the host
 /// keeps answering. A poll sweep of an already-connected host reuses the path the host
-/// answers over (a ControlMaster socket on a remote, a local command on a local host)
-/// rather than opening a fresh unauthenticated connection each time, so keeping the
+/// answers over (the ControlMaster socket when the transport multiplexes, a local command
+/// on a local host) rather than opening a fresh unauthenticated connection each time, so keeping the
 /// session/window list current costs nothing a host is not already honouring.
 ///
 /// A sweep that FAILS is the last one. A request that answers nothing is one a later

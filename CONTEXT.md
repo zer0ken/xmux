@@ -574,8 +574,8 @@ A user action means a re-scan, a login, selecting a card, or an operation on a s
 A push stream is one connection that stays open while the far side speaks over it, which
 is not a repeated request however much it carries. A POLL source is the same class, not
 an exception: it re-enumerates on its cadence while it keeps answering, and each sweep
-reuses the path the host answers over (a ControlMaster socket on a remote, a local
-command on a local host) instead of opening a fresh unauthenticated connection. That is
+reuses the path the host answers over (the ControlMaster socket when the transport
+multiplexes, a local command on a local host) instead of opening a fresh unauthenticated connection. That is
 what keeps a connected host's session/window list current without the user asking, while
 never making a request a host is not already honouring.
 
