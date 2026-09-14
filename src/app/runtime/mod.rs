@@ -1320,7 +1320,17 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                 // Cheap live config reload: on the redraw cadence, stat the config
                 // file and re-apply the `[ui]` presentation settings when it changed.
                 // Marked dirty so the re-applied styles actually repaint this frame.
-                if rt.on_config_check() {
+                //
+                // While a scan is in flight or a spinner is showing, redraw on the
+                // frame cadence even with no new event, so the scanning/connecting
+                // spinner advances instead of freezing in the gaps between probe
+                // completions. Probe-completion events alone leave long event-free
+                // spans (a slow remote host between answers), and the dirty-gated
+                // draw would hold the last frame the whole time.
+                if rt.on_config_check()
+                    || !rt.state.scanning.is_empty()
+                    || !rt.state.chrome.spinner.is_empty()
+                {
                     rt.dirty = true;
                 }
             }
