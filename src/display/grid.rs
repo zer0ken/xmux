@@ -12,23 +12,18 @@ pub struct Grid {
 }
 
 impl Grid {
-    /// A grid one column wider than the viewport it mirrors. The extra column keeps a
-    /// double-width (CJK) glyph that lands on the viewport's last column fully inside
-    /// the parser - vt100 0.16.2 panics (`Row::clear_wide`, `Grid::col_wrap`) when such
-    /// a glyph's second half falls off the edge and a later operation touches it, which
-    /// is common after a grid shrink. Rendering clips to the viewport, so the padding
-    /// column is never drawn; the parser just never sees a char straddle its own edge.
     pub fn new(rows: u16, cols: u16) -> Self {
         Self {
-            parser: vt100::Parser::new(rows, cols.saturating_add(1), 0),
+            parser: vt100::Parser::new(rows, cols, 0),
         }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
-        // vt100 0.16.2 has more edge panics than the wide-char-at-last-column one the
-        // padded width prevents (see [`Grid::new`]); the catch keeps the PTY pump alive
-        // and resets the parser so the next mux repaint refills the grid cleanly instead
-        // of re-panicking on the same stale cursor.
+        // vt100 0.16.2 panics (screen.rs `Screen::text` unwrap on None) when a wide
+        // (CJK) glyph lands on the last column in some cursor states — common after a
+        // grid shrink. Catch it so the PTY pump thread survives; reset the parser so
+        // the next mux repaint refills the grid cleanly instead of re-panicking on the
+        // same stale cursor.
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.parser.process(bytes);
         }));
@@ -47,13 +42,8 @@ impl Grid {
         self.parser = vt100::Parser::new(rows, cols, 0);
     }
 
-    /// Resizes the grid to a new viewport. The parser keeps the one-column padding, so
-    /// a glyph that sat at the old edge still has room inside the parser after a shrink
-    /// (the follow-up feed that used to panic now lands).
     pub fn resize(&mut self, rows: u16, cols: u16) {
-        self.parser
-            .screen_mut()
-            .set_size(rows, cols.saturating_add(1));
+        self.parser.screen_mut().set_size(rows, cols);
     }
 
     /// The vt100 cursor as ratatui `(x, y)` (col, row), clamped to the grid.
@@ -229,26 +219,49 @@ Connection to host closed.
         assert!(g.is_blank(), "clear wipes all visible content");
     }
 
+    // NOTE: this test deliberately triggers the vt100 panic that Grid::feed catches, so
+    // `cargo test` prints one "thread panicked at vt100 ... screen.rs" line to stderr —
+    // expected, not a failure. (The hook is not silenced here because it is process-
+    // global and tests run in parallel.)
     #[test]
-    fn wide_char_on_the_last_column_survives_a_shrink() {
-        // vt100 0.16.2 panics (`drawing_cell_mut(col+1).unwrap()` on None) when a wide
-        // (CJK) glyph's second half falls off the last column and a later operation
-        // touches it — common after a grid shrink. The grid is padded one column wider
-        // than the viewport, so the glyph stays inside the parser: the overwrite that
-        // used to panic now lands, and content written before it is never blanked by a
-        // panic recovery.
+    fn streamed_full_width_lines_keep_their_first_char() {
+        // A mux draws a full-width row and lets auto-wrap carry into the next row
+        // (no CR between rows when the cursor is at the right margin). In a 4-wide
+        // terminal "ABCDEFGH" lands as "ABCD" / "EFGH". The parser must wrap at the
+        // viewport width, never a column later: a padded grid would absorb the first
+        // char of the wrapped row into the invisible padding column.
+        let mut g = Grid::new(2, 4);
+        g.feed(b"ABCDEFGH");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
+        g.render_into(&mut buf, Rect::new(0, 0, 4, 2));
+        assert_eq!(buf[(0, 0)].symbol(), "A");
+        assert_eq!(buf[(3, 0)].symbol(), "D");
+        assert_eq!(
+            buf[(0, 1)].symbol(),
+            "E",
+            "first char of the wrapped row must stay at the line start"
+        );
+        assert_eq!(buf[(3, 1)].symbol(), "H");
+    }
+
+    #[test]
+    fn feed_survives_wide_char_at_last_column() {
+        // Regression: vt100 0.16.2 panics (drawing_cell_mut(col+1).unwrap() on None) when
+        // a wide CJK glyph prints on the last column — observed crashing the PTY pump
+        // thread. Grid::feed must catch+recover so the pump survives and the grid stays
+        // usable (a subsequent repaint lands).
         let mut g = Grid::new(1, 4);
-        g.feed(b"Z"); // content at col 0 that must survive
         g.feed(b"\x1b[1;3H"); // cursor to 0-based col 2
-        g.feed("한".as_bytes()); // wide glyph occupies cols 2-3 (the viewport's last column)
-        g.resize(1, 3); // shrink → the glyph's second half still sits inside the padded parser
-        g.feed(b"\x1b[1;3HX"); // overwrite the edge glyph — inside the padded parser, no panic
+        g.feed("한".as_bytes()); // wide glyph occupies cols 2-3 (the right edge)
+        g.resize(1, 3); // shrink → the wide glyph's second half (col 3) is truncated
+        g.feed(b"\x1b[1;3HX"); // overwrite the now-edge wide glyph → vt100 panics here
+        g.feed(b"\x1b[H\x1b[2JOK"); // recovered grid still repaints
         let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
         g.render_into(&mut buf, Rect::new(0, 0, 3, 1));
         assert_eq!(
             buf[(0, 0)].symbol(),
-            "Z",
-            "the shrink + edge overwrite did not blank the grid"
+            "O",
+            "grid usable after the wide-char edge case"
         );
     }
 
@@ -386,23 +399,32 @@ Connection to host closed.
         );
     }
 
+    // NOTE: this test deliberately triggers the vt100 panic that Grid::feed catches, so
+    // `cargo test` prints one "thread panicked at vt100 ..." line to stderr — expected,
+    // not a failure. (The hook is not silenced here because it is process-global and
+    // tests run in parallel.)
     #[test]
-    fn erase_on_a_wide_char_at_the_last_column_does_not_blank_the_grid() {
-        // vt100 0.16.2's `Row::clear_wide` (row.rs:89) panics when an erase lands on a
-        // wide (CJK) glyph whose second half sits at the last column (col+1 out of
-        // bounds). The padded width keeps the glyph inside the parser, so the erase
-        // lands and earlier content survives.
+    fn feed_survives_clear_wide_panic_at_last_column() {
+        // Regression: vt100 0.16.2's `Row::clear_wide` (row.rs:89/91) panics when an
+        // erase/remove lands on the boundary of a wide (CJK) glyph — most often a
+        // double-width char whose first half sits at the last column (col+1 OOB, the
+        // row.rs:89 the panic.log shows as "len is 130 but the index is 130") or whose
+        // continuation wraps to column 0 (col-1 underflow). Both are the same code path
+        // and are caught by Grid::feed's catch_unwind; this pins the survival so a
+        // change to the catch does not silently re-expose the PTY pump to it.
         let mut g = Grid::new(1, 4);
-        g.feed(b"Z"); // content at col 0 that must survive
-        g.feed(b"\x1b[1;4H"); // cursor to 0-based col 3 (the viewport's last column)
-        g.feed("한".as_bytes()); // wide glyph straddles the last column → into the padding
-        g.feed(b"\x1b[K"); // erase-in-line on the edge glyph — inside the padded parser, no panic
-        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
-        g.render_into(&mut buf, Rect::new(0, 0, 4, 1));
+        g.feed(b"\x1b[1;4H"); // cursor to 0-based col 3 (the right edge)
+        g.feed("한".as_bytes()); // wide glyph straddles/overflows the last column
+        g.feed(b"\x1b[K"); // erase-in-line on the dangling wide boundary → vt100 panics
+                           // Recovered grid must still repaint: a later clear+redraw lands cleanly.
+        g.clear();
+        g.feed(b"OK");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+        g.render_into(&mut buf, Rect::new(0, 0, 3, 1));
         assert_eq!(
             buf[(0, 0)].symbol(),
-            "Z",
-            "the edge erase did not blank the grid"
+            "O",
+            "grid usable after the clear_wide edge case"
         );
     }
 
