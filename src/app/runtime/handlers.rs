@@ -345,9 +345,9 @@ impl Runtime {
             }
             EventEffect::SyncPollSessions { source, sessions } => {
                 // A poll host's SUCCESSFUL enumeration (the nav group is already applied).
-                // The `poll enum` debug line is logged UNCONDITIONALLY at the producer
-                // (`run_poll`), where `err` is in hand - `apply_event` drops the error path
-                // before reaching here, so logging here would only ever see successes.
+                // The enumeration is logged at the producer (`run_poll`), where `err` is in
+                // hand - `apply_event` drops the error path before reaching here, so logging
+                // here would only ever see successes.
                 // PerSession psmux: a session whose registry .port disappeared is dead even
                 // if its PTY has not EOF'd. Drop the stale attach so it cannot show a dead grid.
                 if let Some(h) = hosts.get(&source) {

@@ -684,10 +684,12 @@ fn sync_source_terminals(
     driver.sync(source, sessions, ctx);
 }
 
-/// Connects the host the selection is on (if not already + detected), so its metadata
-/// channel streams that host's rows in. The manager picks the channel (control client
-/// vs poll task) from the host's `event_source`; an undetected host is skipped until a
-/// detection probe resolves its mux.
+/// (Re)opens the CONTROL metadata channel of the host the selection is on, so its push
+/// stream streams that host's rows in. A CONTROL host's dropped client is reconnected
+/// here; a POLL host is deliberately NOT ensured from the selection - its task is spawned
+/// at launch and re-arms only on an explicit re-scan, so selecting its card never
+/// re-enumerates it. An undetected host is skipped until a detection probe resolves its
+/// mux.
 fn ensure_current_host(
     mgr: &mut HostManager,
     hosts: &crate::model::Hosts,
@@ -710,7 +712,12 @@ fn ensure_current_host(
     }
     if let Some(id) = switcher.current_host() {
         if let Some(host) = hosts.get(&id) {
-            if host.detected {
+            // Only a CONTROL host needs the selection to (re)open its metadata channel.
+            // A POLL host's task is spawned at launch and re-arms only on an explicit
+            // re-scan; selecting its card must not re-enumerate it.
+            if host.detected
+                && matches!(host.mux.event_source(), crate::model::EventSource::Control)
+            {
                 let _ = mgr.ensure(&id, host, cols, rows);
             }
         }
