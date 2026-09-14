@@ -812,15 +812,6 @@ fn spawn_roster_resolve(
     });
 }
 
-/// How many discovery tasks may run at once is the `[discovery] scan-concurrency`
-/// config value (default 6), clamped to [`crate::provision::config::SCAN_CONCURRENCY_MAX`].
-/// One shared pool bounds EVERY piece of discovery work - the roster resolve, each
-/// machine's reachability probe, the mux discovery a connected machine runs, and each
-/// source's mux detection - so a launch or re-scan over a large roster never floods the
-/// network with a subprocess all at the same instant, and no single phase can hold the
-/// pool open past its own work. The pool bounds CONCURRENCY only; it does not restrict
-/// WHICH task runs, so any discovery work flows through it on equal terms.
-
 /// Runs one machine's REACHABILITY probe off the loop - the shell probe over the
 /// machine's raw shell, bounded by the shared `gate` - and carries the outcome back as
 /// [`HostEvent::MachineProbed`]. A zero exit is connected (`err` `None`); ssh's own
