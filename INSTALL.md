@@ -274,13 +274,13 @@ xmux doctor
 owns that install, so an update that lands somewhere unexpected can be traced to
 the install it acted on.
 
-To upgrade, run `xmux update`. It reads where the `xmux` binary lives and hands
-the upgrade to whatever owns that install:
+To upgrade, run `xmux update`. It reads where the `xmux` binary lives and
+updates it:
 
 | Install | What `xmux update` runs |
 |---|---|
 | Install script | The same install script, which writes a new version directory and repoints the launcher |
-| Cargo | `cargo install xmux` |
+| Cargo | A checksum-verified build from the release, written over the binary (`--method cargo` runs `cargo install xmux` instead) |
 | winget | `winget upgrade --id zer0ken.xmux` |
 | Homebrew | `brew upgrade zer0ken/xmux/xmux` |
 | A binary you copied onto your `PATH` yourself | A checksum-verified build from the release, written over that binary |

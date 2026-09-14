@@ -517,13 +517,15 @@ no function, and no test, so renaming code is never a documentation change.
   build it started with. On the platform where a running image cannot be overwritten,
   a launcher in use is renamed aside and the new one takes its place, and the renamed
   file is removed by a later install once nothing holds it.
-- **FR-D10** - `xmux update` acts through whatever owns the install rather than
-  reimplementing it. An install the script placed re-runs that script, a package
-  manager runs its own upgrade, and a binary the user placed themselves is replaced
-  with a checksum-verified build. The method is read from the running executable's
-  path; a path that cannot be read is reported as unknown rather than guessed, because
-  each method writes somewhere different. `--check` reports what an update would do
-  without doing it, and `--method` forces one.
+- **FR-D10** - `xmux update` updates a cargo install or a binary the user placed
+  themselves by replacing it in place with a checksum-verified build from the release,
+  so an update never recompiles; an install the script placed re-runs that script; and
+  a winget or Homebrew install runs its package manager, because those already fetch
+  prebuilt binaries and overwriting one would leave the manager out of step. The
+  method is read from the running executable's path; a path that cannot be read is
+  reported as unknown rather than guessed, because each method writes somewhere
+  different. `--check` reports what an update would do without doing it, and `--method`
+  forces one, so a cargo install can still be handed back to `cargo install`.
 - **FR-D11** - xmux tells the user that a newer version exists. It asks the release
   feed at most once a day and records the answer, so a launch never waits on that
   question and a launch with no network paints as fast as one with it; the answer is

@@ -5,10 +5,10 @@
 `cli` is the command surface: argument parsing and dispatch for the
 `ls`/`attach`/`doctor`/`instances`/`send`/`version` commands and the default
 interactive app, plus the `update` subcommand that detects how xmux was installed
-and hands the upgrade to whatever owns that install: a package manager runs its own
-upgrade, an install the install script placed re-runs that script, and a binary the
-user copied onto their PATH is replaced with a checksum-verified build from the
-release. This directory exposes ONE entry, which the binary shim calls; everything
+and updates it: a cargo install and a binary the user copied onto their PATH are
+replaced with a checksum-verified build from the release, an install the script
+placed re-runs that script, and a winget or Homebrew install runs its package
+manager. This directory exposes ONE entry, which the binary shim calls; everything
 below it is crate-internal.
 
 `doctor` reports a failed source as the state its own failure text proves, in the
