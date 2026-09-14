@@ -432,6 +432,12 @@ impl Runtime {
         // built from ONE answer about which machines exist.
         let roster = env.roster();
         let nav_default = roster.cfg.ui.nav_position();
+        // The discovery pool capacity: the configured value, clamped to [1, MAX].
+        let scan_concurrency = roster
+            .cfg
+            .discovery
+            .scan_concurrency
+            .clamp(1, crate::provision::config::SCAN_CONCURRENCY_MAX);
         let nav_position_pinned = crate::ui::prefs::load_nav_position(&env.xmux_dir);
         // The initial position: a pinned side wins, else the [ui] default. Resolved once
         // here so the first frame and the first PTY sizing already split the screen the
@@ -545,7 +551,7 @@ impl Runtime {
             ops,
             hosts,
             mgr,
-            scan_pool: Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY)),
+            scan_pool: Arc::new(tokio::sync::Semaphore::new(scan_concurrency)),
             registry,
             worker,
             switcher,
