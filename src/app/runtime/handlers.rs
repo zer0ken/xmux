@@ -977,6 +977,18 @@ impl Runtime {
                                 tracing::debug!(host = %hid, tty, "display_tty_from_pty");
                                 h.record_display_tty(Some(tty));
                             }
+                            // A shell-routed (remote) attach cannot read its client tty from
+                            // the PTY it runs in - a ConPTY consumes the in-band record
+                            // marker before the display pump sees it - so capture it over
+                            // the already-open -CC control connection with one `list-clients`
+                            // probe, but only while it is still unknown. Without the tty the
+                            // client-session-changed follow can never match our display
+                            // client, so a native session switch would not move the nav.
+                            if h.display_tty.0.is_none() && h.transport.runs_through_shell() {
+                                if let Some(client) = self.mgr.get(&hid) {
+                                    client.capture_display_tty();
+                                }
+                            }
                         }
                         // Only the attach the SELECTION is displayed through may claim the
                         // terminal view. A host warms a PTY on a session of its own
