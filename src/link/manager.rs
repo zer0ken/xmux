@@ -51,11 +51,11 @@ impl HostManager {
     /// have, and a host that has one is left exactly as it stands. That is what lets the
     /// input paths call it freely - a keystroke on a live card asks the machine nothing.
     ///
-    /// A POLL channel is never re-armed from here. A poll task that exists is either
-    /// still polling or has stopped at a failed sweep, and both read as present, so
-    /// `ensure` returns `Ok(false)` rather than respawning it: only an explicit
-    /// [`rescan`](Self::rescan) re-arms a stopped poll host. This is what keeps a probe
-    /// or a card selection from re-enumerating a host that stopped answering.
+    /// A POLL channel is never re-armed from here. A poll task that exists - whether it
+    /// is mid-enumeration or has already returned - reads as present, so `ensure` returns
+    /// `Ok(false)` rather than respawning it: only an explicit
+    /// [`rescan`](Self::rescan) re-arms a poll host. This is what keeps a probe or a
+    /// card selection from re-enumerating a host.
     pub fn ensure(
         &mut self,
         id: &str,
@@ -93,12 +93,11 @@ impl HostManager {
                 )?;
                 self.clients.insert(id.to_string(), client);
             }
-            crate::model::EventSource::Poll { interval_ms } => {
+            crate::model::EventSource::Poll => {
                 let handle = tokio::spawn(run_poll(
                     id.to_string(),
                     host.transport.clone(),
                     host.mux.clone_box(),
-                    interval_ms,
                     self.events.clone(),
                 ));
                 self.polls.insert(id.to_string(), handle);
@@ -134,8 +133,11 @@ impl HostManager {
         }
         if let Some(h) = self.polls.remove(id) {
             h.abort();
-            let _ = self.ensure(id, host, cols, rows);
         }
+        // A POLL host is re-enumerated unconditionally: an explicit re-scan must refresh
+        // it even when no task is running (a stopped host, or one never dispatched), or
+        // its card would stay scanning forever.
+        let _ = self.ensure(id, host, cols, rows);
     }
 
     /// `%exit`/EOF (control) or explicit drop (poll): tear down the channel. The app
@@ -480,6 +482,27 @@ mod tests {
         assert!(
             mgr.polls.contains_key("src"),
             "rescan re-spawns the poll task"
+        );
+        mgr.teardown_all();
+    }
+
+    #[tokio::test]
+    async fn rescan_spawns_a_poll_task_when_none_is_running() {
+        // A POLL host with NO task in the map (a host that was never dispatched, or whose
+        // task was torn down) is still re-enumerated by an explicit re-scan. Before this
+        // fix rescan only respawned inside `if let Some(task)`, so a missing task meant no
+        // enumeration and a card that stayed scanning forever.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(tx);
+        let host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_kind("psmux", "psmux-no-such-binary").unwrap(),
+        );
+        assert!(!mgr.polls.contains_key("src"), "no poll task is running");
+        mgr.rescan("src", &host, 80, 24);
+        assert!(
+            mgr.polls.contains_key("src"),
+            "rescan spawns a poll task even when none was running"
         );
         mgr.teardown_all();
     }

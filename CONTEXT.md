@@ -572,18 +572,15 @@ No failure raises its own retry.
 
 A user action means a re-scan, a login, selecting a card, or an operation on a session.
 A push stream is one connection that stays open while the far side speaks over it, which
-is not a repeated request however much it carries. A POLL source is the same class, not
-an exception: it re-enumerates on its cadence while it keeps answering, and each sweep
-reuses the path the host answers over (the ControlMaster socket when the transport
-multiplexes, a local command on a local host) instead of opening a fresh unauthenticated connection. That is
-what keeps a connected host's session/window list current without the user asking, while
-never making a request a host is not already honouring.
+is not a repeated request however much it carries. A POLL source is enumerated exactly
+when something asked for it - the launch scan or an explicit re-scan - and never on a
+cadence of its own, so a machine is never queried for no one.
 
 The rule exists because a request that answers a failed request cannot stop. A machine
 that refuses one connection refuses the next identically, so a client that reconnects on
 every refusal reconnects without end, and the machine's own defences are built to read
-exactly that as an attack. So a poll sweep that fails is the last one - the host is asked
-again only when the user re-scans. The consequences are deliberate and they are what the user
+exactly that as an attack. So a host that does not answer is not asked again - the
+re-scan is what asks it. The consequences are deliberate and they are what the user
 sees: a channel that dropped stays dropped, a display whose client died keeps the last
 frame it drew, and a card that is unreachable stays unreachable, each until the user asks
 for it again.
