@@ -28,6 +28,11 @@ impl MuxDriver for TmuxDriver {
             return false;
         };
         let key = host_selection_key(host);
+        // The per-host display-tty record file is keyed by host AND instance, so two
+        // xmux instances sharing one remote host each record/read their own display
+        // client's tty - a `switch-client` then moves THIS instance's client, never the
+        // other instance's. The registry (grid) key stays the bare host key.
+        let tty_key = format!("{key}-{}", ctx.instance_name);
         let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
         let already = ctx.registry.contains(&key);
 
@@ -55,7 +60,7 @@ impl MuxDriver for TmuxDriver {
                 // A remote shared attach records its own tty before exec (for a later
                 // in-place switch); the record snippet is a remote-shell mechanism, so a
                 // local attach stays bare.
-                argv = with_display_tty_record(argv, host, &key);
+                argv = with_display_tty_record(argv, host, &tty_key);
                 let id = request_attach(
                     ctx.registry,
                     ctx.worker,
@@ -116,7 +121,7 @@ impl MuxDriver for TmuxDriver {
             } else {
                 let switched = host
                     .mux
-                    .switch_in_place(&key, &sel.session, tty.as_deref())
+                    .switch_in_place(&tty_key, &sel.session, tty.as_deref())
                     .map(|plan| crate::app::runtime::run_switch_plan(host, plan))
                     .unwrap_or(false);
                 (
@@ -155,7 +160,7 @@ impl MuxDriver for TmuxDriver {
                 let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
                 let mut argv = vec![cmd];
                 argv.extend(args);
-                argv = with_display_tty_record(argv, host, &key);
+                argv = with_display_tty_record(argv, host, &tty_key);
                 let id = request_attach(
                     ctx.registry,
                     ctx.worker,
@@ -213,7 +218,8 @@ impl MuxDriver for TmuxDriver {
                 let (cmd, args) = host.transport.interactive_attach_argv(&mux_argv);
                 let mut argv = vec![cmd];
                 argv.extend(args);
-                let argv = with_display_tty_record(argv, host, source);
+                let argv =
+                    with_display_tty_record(argv, host, &format!("{source}-{}", ctx.instance_name));
                 request_attach(
                     ctx.registry,
                     ctx.worker,
@@ -335,6 +341,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
@@ -404,6 +411,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
@@ -491,6 +499,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
@@ -560,6 +569,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
@@ -614,6 +624,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
@@ -667,6 +678,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,

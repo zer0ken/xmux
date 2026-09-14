@@ -84,6 +84,7 @@ impl Runtime {
                     let mut ctx = crate::driver::DriverCtx {
                         registry: &mut *registry,
                         hosts: &mut *hosts,
+                        instance_name: &self.instance_name,
                         mgr,
                         worker,
                         pty_tx,
@@ -362,6 +363,7 @@ impl Runtime {
                 let mut ctx = crate::driver::DriverCtx {
                     registry: &mut *registry,
                     hosts: &mut *hosts,
+                    instance_name: &self.instance_name,
                     mgr,
                     worker,
                     pty_tx,
@@ -739,6 +741,7 @@ impl Runtime {
                 &crate::driver::DriverCtx {
                     registry: &mut self.registry,
                     hosts: &mut self.hosts,
+                    instance_name: &self.instance_name,
                     mgr: &self.mgr,
                     worker: &self.worker,
                     pty_tx: &self.driver_pty_tx,
@@ -1132,6 +1135,7 @@ impl Runtime {
                     &crate::driver::DriverCtx {
                         registry: &mut self.registry,
                         hosts: &mut self.hosts,
+                        instance_name: &self.instance_name,
                         mgr: &self.mgr,
                         worker: &self.worker,
                         pty_tx: &self.driver_pty_tx,
@@ -1228,6 +1232,7 @@ impl Runtime {
                         let ctx = crate::driver::DriverCtx {
                             registry: &mut self.registry,
                             hosts: &mut self.hosts,
+                            instance_name: &self.instance_name,
                             mgr: &self.mgr,
                             worker: &self.worker,
                             pty_tx: &self.driver_pty_tx,
@@ -1339,6 +1344,7 @@ impl Runtime {
                         &mut crate::driver::DriverCtx {
                             registry: &mut self.registry,
                             hosts: &mut self.hosts,
+                            instance_name: &self.instance_name,
                             mgr: &self.mgr,
                             worker: &self.worker,
                             pty_tx: &self.driver_pty_tx,

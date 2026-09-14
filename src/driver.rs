@@ -50,6 +50,11 @@ impl Target {
 pub struct DriverCtx<'a> {
     pub registry: &'a mut AttachRegistry,
     pub hosts: &'a mut Hosts,
+    /// This instance's name (`ctl-<name>.sock`). Keys the per-host display-tty record so
+    /// two xmux instances sharing one remote host never overwrite each other's recorded
+    /// display-client tty (a `switch-client` would otherwise move the wrong instance's
+    /// client).
+    pub instance_name: &'a str,
     /// The open control channel, so a driver can route an in-place session switch
     /// over a host's already-open `-CC` connection instead of spawning a fresh process
     /// per switch (each would pay a full connect+auth handshake on Windows).
@@ -357,6 +362,7 @@ pub(crate) mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,

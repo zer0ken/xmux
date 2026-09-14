@@ -161,6 +161,7 @@ mod tests {
         let mut ctx = DriverCtx {
             registry,
             hosts,
+            instance_name: "test",
             mgr: &mgr,
             worker: &worker,
             pty_tx: &cap_tx,
