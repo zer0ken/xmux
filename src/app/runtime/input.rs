@@ -24,7 +24,7 @@ impl Runtime {
             mgr,
             env,
             hosts,
-            probe_gate,
+            scan_pool,
             ops,
             op_tx,
             driver_pty_tx,
@@ -93,7 +93,7 @@ impl Runtime {
             *width_changed = true;
         }
         ensure_current_host(mgr, hosts, switcher, cols, rows, nav_width);
-        kick_rescan(switcher, env, hosts, mgr, probe_gate);
+        kick_rescan(switcher, env, hosts, mgr, scan_pool);
         (
             focus_terminal,
             quit,
@@ -662,7 +662,7 @@ impl Runtime {
                             &self.env,
                             &self.hosts,
                             &self.mgr,
-                            &self.probe_gate,
+                            &self.scan_pool,
                         );
                         *dirty = true;
                     }

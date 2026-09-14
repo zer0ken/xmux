@@ -733,8 +733,12 @@ fn spawn_host_detection(
     transport: Box<dyn crate::transport::Transport>,
     mux: Box<dyn crate::mux::Mux>,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+    gate: std::sync::Arc<tokio::sync::Semaphore>,
 ) {
     tokio::spawn(async move {
+        let Ok(_permit) = gate.acquire().await else {
+            return;
+        };
         let mut host = crate::model::Host::new(transport, mux);
         let err = host
             .detect_and_correct(&crate::model::source::ExecRunner)
@@ -755,7 +759,7 @@ fn spawn_host_detection(
 /// Fire and forget, and deliberately AFTER a machine connects: a remote probe is an ssh
 /// round trip per mux, and only a reachable machine is worth asking. Nothing waits for
 /// it, so a machine that never answers costs a task and no more. A permit is held on
-/// `gate` (the shared probe gate) for the whole probe, so at most [`PROBE_CONCURRENCY`]
+/// `gate` (the shared scan pool) for the whole probe, so at most [`SCAN_CONCURRENCY`]
 /// probe tasks run at once.
 fn spawn_mux_discovery(
     machine: String,
@@ -781,6 +785,7 @@ fn spawn_mux_discovery(
 /// Off the loop for the same reason mux discovery is: resolving reads the config and asks
 /// each roster provider, and a provider is a subprocess (`tailscale status`, `wsl.exe -l`).
 /// Running that on the loop would freeze rendering and input for its whole duration.
+/// Bounded by the shared scan pool, like every other piece of discovery work.
 ///
 /// A config that stopped PARSING resolves to defaults, which would silently narrow the
 /// roster to this machine. That answer is dropped rather than applied: a typo must cost the
@@ -789,8 +794,12 @@ fn spawn_roster_resolve(
     xmux_dir: std::path::PathBuf,
     local_socket: Option<String>,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+    gate: std::sync::Arc<tokio::sync::Semaphore>,
 ) {
     tokio::spawn(async move {
+        let Ok(_permit) = gate.acquire().await else {
+            return;
+        };
         let (roster, err) = crate::provision::env::resolve_roster(&xmux_dir, local_socket).await;
         if let Some(e) = err {
             tracing::warn!(error = %e, "config did not parse; keeping the roster as it stands");
@@ -802,11 +811,14 @@ fn spawn_roster_resolve(
     });
 }
 
-/// How many probe tasks may run at once, from a machine's reachability probe onward
-/// (that probe, and the mux discovery a connected machine goes on to). The shared gate
-/// bounds them together so a launch or re-scan over a large roster never floods the
-/// network with a subprocess per machine all at the same instant.
-const PROBE_CONCURRENCY: usize = 12;
+/// How many discovery tasks may run at once. One shared pool bounds EVERY piece of
+/// discovery work - the roster resolve, each machine's reachability probe, the mux
+/// discovery a connected machine runs, and each source's mux detection - so a launch or
+/// re-scan over a large roster never floods the network with a subprocess all at the
+/// same instant, and no single phase can hold the pool open past its own work. The pool
+/// bounds CONCURRENCY only; it does not restrict WHICH task runs, so any discovery work
+/// flows through it on equal terms.
+const SCAN_CONCURRENCY: usize = 12;
 
 /// Runs one machine's REACHABILITY probe off the loop - the shell probe over the
 /// machine's raw shell, bounded by the shared `gate` - and carries the outcome back as
@@ -934,6 +946,7 @@ fn scan_or_dispatch_host(
     source: &str,
     cols: u16,
     rows: u16,
+    gate: &std::sync::Arc<tokio::sync::Semaphore>,
 ) {
     let Some(host) = hosts.get(source) else {
         return;
@@ -945,6 +958,7 @@ fn scan_or_dispatch_host(
                 host.transport.clone(),
                 host.mux.clone_box(),
                 mgr.events(),
+                gate.clone(),
             );
         }
         return;
@@ -1003,7 +1017,12 @@ fn run_discovery(
     rescan: bool,
 ) {
     if rescan {
-        spawn_roster_resolve(env.xmux_dir.clone(), env.local_socket.clone(), mgr.events());
+        spawn_roster_resolve(
+            env.xmux_dir.clone(),
+            env.local_socket.clone(),
+            mgr.events(),
+            gate.clone(),
+        );
     }
     probe_machines(hosts, mgr.events(), gate, rescan);
 }
@@ -1199,7 +1218,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // Deliberately off `Runtime::new` so a headless unit test can build a `Runtime`
     // without launching real probes / control clients. PTYs are attached as each source's
     // sessions arrive (see [`sync_source_terminals`]).
-    run_discovery(&rt.env, &rt.hosts, &rt.mgr, &rt.probe_gate, false);
+    run_discovery(&rt.env, &rt.hosts, &rt.mgr, &rt.scan_pool, false);
     // Take the worker's reply receiver out so the loop can `select!` on it while `&mut rt`
     // is borrowed for the arm body (the send half stays on `rt.worker`).
     let mut worker_events = rt.worker.take_events();
@@ -1360,10 +1379,11 @@ struct Runtime {
     ops: Arc<dyn crate::ui::switcher::Ops>,
     hosts: crate::model::Hosts,
     mgr: HostManager,
-    /// Bounds the discovery probe fan-out (each machine's reachability probe and the mux
-    /// discovery a connected machine runs) at [`PROBE_CONCURRENCY`], shared across the
+    /// Bounds the discovery fan-out - the roster resolve, each machine's reachability
+    /// probe, the mux discovery a connected machine runs, and each source's mux
+    /// detection - at [`SCAN_CONCURRENCY`], shared across the
     /// launch pass, every re-scan, and the roster-add path so they never flood together.
-    probe_gate: Arc<tokio::sync::Semaphore>,
+    scan_pool: Arc<tokio::sync::Semaphore>,
     registry: AttachRegistry,
     /// The off-loop attach worker. Its reply receiver is taken out in `run_app`
     /// ([`DisplayWorker::take_events`]); this keeps only the send half (`ensure`).

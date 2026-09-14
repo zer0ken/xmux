@@ -183,7 +183,8 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
         crate::mux::for_kind("psmux", "psmux-no-such-binary").unwrap(),
     )); // Host::new leaves it undetected
     let mut detecting = HashSet::new();
-    scan_or_dispatch_host(&mut mgr, &hosts, &mut detecting, "local", 80, 24);
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY));
+    scan_or_dispatch_host(&mut mgr, &hosts, &mut detecting, "local", 80, 24, &gate);
     assert!(
         detecting.contains("local"),
         "an undetected host is queued for detection straight from the registry"
@@ -824,13 +825,7 @@ async fn r_rescan_rebuilds_nav_and_kicks_discovery() {
     );
 
     // The loop consumes the kick and re-probes each machine.
-    kick_rescan(
-        &mut rt.switcher,
-        &rt.env,
-        &rt.hosts,
-        &rt.mgr,
-        &rt.probe_gate,
-    );
+    kick_rescan(&mut rt.switcher, &rt.env, &rt.hosts, &rt.mgr, &rt.scan_pool);
     assert!(
         !rt.switcher.take_rescan_kick(),
         "kick_rescan consumed the rescan kick"
@@ -1347,7 +1342,7 @@ fn test_rt(env: Env) -> Runtime {
         worker,
         switcher,
         state,
-        probe_gate: std::sync::Arc::new(tokio::sync::Semaphore::new(PROBE_CONCURRENCY)),
+        scan_pool: std::sync::Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY)),
         attach_seq: 0,
         driver_pty_tx: pty_tx,
         op_tx,
