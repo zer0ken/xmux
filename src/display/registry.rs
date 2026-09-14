@@ -66,13 +66,15 @@ impl AttachRegistry {
             .or_else(|| self.stale_grids.get(addr).cloned())
     }
 
-    /// Wipes `addr`'s grid to blank (a no-op if not attached). Called when the
-    /// displayed session switches so the previous content's cells do not
-    /// linger as residue behind the mux's fresh repaint.
-    pub fn clear_grid(&self, addr: &str) {
+    /// Marks `addr`'s grid to wipe at the start of its next feed (a no-op if not
+    /// attached). Called when the displayed session switches so the previous content
+    /// stays on screen until the mux's fresh repaint lands, then clears just before
+    /// the new content is applied — no blank window between switch and repaint, and
+    /// no residue behind the repaint.
+    pub fn clear_grid_on_next_feed(&self, addr: &str) {
         if let Some(att) = self.map.get(addr) {
             if let Ok(mut g) = att.grid.lock() {
-                g.clear();
+                g.clear_on_next_feed();
             }
         }
     }
@@ -349,20 +351,35 @@ mod tests {
     }
 
     #[test]
-    fn clear_grid_blanks_then_noop_for_absent() {
+    fn clear_grid_on_next_feed_defers_to_the_next_feed() {
         let mut reg = empty_registry();
         reg.insert_fake("local/a", 1);
-        // Put content into the grid, then clear it through the registry.
+        // Put content into the grid, mark it, and check it is NOT wiped until the
+        // next feed (the prior session's content stays on screen until the repaint).
         if let Some(g) = reg.grid("local/a") {
             g.lock().unwrap().feed(b"stale residue");
             assert!(!g.lock().unwrap().is_blank());
         }
-        reg.clear_grid("local/a");
+        reg.clear_grid_on_next_feed("local/a");
         assert!(
-            reg.grid("local/a").unwrap().lock().unwrap().is_blank(),
-            "clear_grid wipes the grid"
+            !reg.grid("local/a").unwrap().lock().unwrap().is_blank(),
+            "the deferred clear keeps the prior content until the next feed"
         );
-        reg.clear_grid("absent"); // must not panic
+        // The next feed wipes the stale residue and applies the new content.
+        if let Some(g) = reg.grid("local/a") {
+            g.lock().unwrap().feed(b"fresh content");
+        }
+        assert_eq!(
+            reg.grid("local/a")
+                .unwrap()
+                .lock()
+                .unwrap()
+                .last_line()
+                .as_deref(),
+            Some("fresh content"),
+            "the next feed wipes the prior residue and applies the new content"
+        );
+        reg.clear_grid_on_next_feed("absent"); // must not panic
     }
 
     #[test]

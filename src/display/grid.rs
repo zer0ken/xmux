@@ -9,16 +9,26 @@ use ratatui::style::{Color as RColor, Modifier, Style};
 
 pub struct Grid {
     parser: vt100::Parser,
+    /// Set by a session switch: the next `feed` wipes the grid before applying the
+    /// chunk, so the prior session's content stays on screen until the mux's fresh
+    /// repaint arrives (no blank window between the switch and the repaint) and the
+    /// grid still clears the instant the new content lands (no residue either).
+    clear_on_feed: bool,
 }
 
 impl Grid {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self {
             parser: vt100::Parser::new(rows, cols, 0),
+            clear_on_feed: false,
         }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
+        if self.clear_on_feed {
+            self.clear_on_feed = false;
+            self.clear();
+        }
         // vt100 0.16.2 panics (screen.rs `Screen::text` unwrap on None) when a wide
         // (CJK) glyph lands on the last column in some cursor states — common after a
         // grid shrink. Catch it so the PTY pump thread survives; reset the parser so
@@ -33,10 +43,17 @@ impl Grid {
         }
     }
 
-    /// Wipes the grid to a blank slate (a fresh parser at the same size). Used when
-    /// the displayed session switches so stale cells from the previous content never
-    /// linger behind the new repaint — the mux sends a full redraw on switch-client,
-    /// so the cleared grid fills with the new content rather than leaving residue.
+    /// Wipes the grid to a blank slate (a fresh parser at the same size) at the start
+    /// of the next feed. Used when the displayed session switches so the prior
+    /// content stays on screen until the mux's full redraw arrives, then clears the
+    /// moment the new content lands — stale cells from the previous session never
+    /// linger behind the new repaint.
+    pub fn clear_on_next_feed(&mut self) {
+        self.clear_on_feed = true;
+    }
+
+    /// The primitive behind [`Grid::clear_on_next_feed`]: wipes to a fresh parser at
+    /// the same size. Also used directly by tests.
     pub fn clear(&mut self) {
         let (rows, cols) = self.parser.screen().size();
         self.parser = vt100::Parser::new(rows, cols, 0);

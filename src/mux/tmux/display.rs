@@ -74,18 +74,20 @@ impl MuxDriver for TmuxDriver {
             // own attached client (which `list-clients` cannot tell apart, the class of
             // bug a "first non-control client" capture caused).
             //
-            // The shared grid is REUSED across sessions, so it is cleared before the
-            // switch: the one host PTY mirrors one screen, and a switch to a session
-            // whose repaint does not clear every prior cell (a partial or interrupted
-            // switch-client repaint, e.g. a rapid jump that is cancelled) would leave
-            // the prior session's stale cells lingering behind the new content. Clearing
-            // first makes the new repaint start from a blank slate, so no residue.
+            // The shared grid is REUSED across sessions, so it is marked to clear at
+            // the START of the new repaint's first feed: the prior session's content
+            // stays on screen until the mux's fresh redraw arrives (no blank window
+            // between the switch and the repaint), and the grid wipes the instant the
+            // new content lands, so a switch to a session whose repaint does not clear
+            // every prior cell (a partial or interrupted switch-client repaint, e.g. a
+            // rapid jump that is cancelled) never leaves the prior session's stale
+            // cells lingering behind the new content.
             //
             // A machine that runs a host shell reads, in-shell, the tty the attach
             // recorded to its per-host file. A machine that runs no shell has no such
             // file, but its attach child IS the mux client and runs in a PTY xmux opened,
             // whose name the supervisor recorded on the host - hand that over instead.
-            ctx.registry.clear_grid(&key);
+            ctx.registry.clear_grid_on_next_feed(&key);
             // The display client's tty, whichever way it was learned: the attach child's
             // own PTY (a shell-less host) or a captured `list-clients` reply (a shell-
             // routed host). A shell-routed host that still has none (its display client
@@ -360,9 +362,9 @@ mod tests {
 
     /// A REMOTE (shell-routed) shared host with a live `-CC` control client switches
     /// IN PLACE over THAT connection: no fresh attach is requested, the shown session
-    /// updates, and the shared grid is cleared. This is the fast path the switch lag
-    /// fix exists for - a fresh process per switch would pay a full connect+auth
-    /// handshake on Windows, where ssh has no ControlMaster.
+    /// updates, and the shared grid is marked to clear on the next feed. This is the
+    /// fast path the switch lag fix exists for - a fresh process per switch would pay a
+    /// full connect+auth handshake on Windows, where ssh has no ControlMaster.
     #[tokio::test(flavor = "current_thread")]
     async fn tmux_driver_show_switches_a_shell_routed_host_over_control_when_tty_known() {
         let mut hosts = crate::model::Hosts::default();
@@ -422,19 +424,33 @@ mod tests {
             "the shown session updates to the switched-to session"
         );
         assert!(
-            registry.grid("jup").unwrap().lock().unwrap().is_blank(),
-            "the switch clears the shared grid"
+            !registry.grid("jup").unwrap().lock().unwrap().is_blank(),
+            "the prior content stays on screen until the new repaint's first feed"
+        );
+        if let Some(g) = registry.grid("jup") {
+            g.lock().unwrap().feed(b"fresh target content");
+        }
+        assert_eq!(
+            registry
+                .grid("jup")
+                .unwrap()
+                .lock()
+                .unwrap()
+                .last_line()
+                .as_deref(),
+            Some("fresh target content"),
+            "the next feed wipes the prior residue and applies the new content"
         );
     }
 
-    /// The IN-PLACE SWITCH clears the shared grid so the prior session's stale cells
-    /// cannot linger behind the new repaint. The one host PTY mirrors one screen; a
-    /// switch to a session whose repaint does not clear every prior cell (a partial or
-    /// interrupted switch-client repaint) would otherwise leave the old session's
-    /// residue. Clearing first makes the new repaint start blank - the documented
-    /// `Grid::clear` purpose, wired here and nowhere else.
+    /// The IN-PLACE SWITCH marks the shared grid to clear at the START of the next
+    /// feed: the prior session's content stays on screen until the mux's fresh repaint
+    /// arrives (no blank window), and the grid wipes just before the new content is
+    /// applied (no residue). The one host PTY mirrors one screen; a switch to a session
+    /// whose repaint does not clear every prior cell would otherwise leave the old
+    /// session's residue behind the new content.
     #[tokio::test(flavor = "current_thread")]
-    async fn tmux_driver_in_place_switch_clears_the_shared_grid() {
+    async fn tmux_driver_in_place_switch_defers_the_shared_grid_clear_to_the_next_feed() {
         let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
@@ -486,8 +502,23 @@ mod tests {
             assert!(driver.show(&sel, &mut ctx));
         }
         assert!(
-            registry.grid("local").unwrap().lock().unwrap().is_blank(),
-            "the in-place switch clears the shared grid so no prior-session residue lingers"
+            !registry.grid("local").unwrap().lock().unwrap().is_blank(),
+            "the prior content stays on screen until the new repaint's first feed"
+        );
+        // The deferred clear fires at the start of the next feed.
+        if let Some(g) = registry.grid("local") {
+            g.lock().unwrap().feed(b"fresh target content");
+        }
+        assert_eq!(
+            registry
+                .grid("local")
+                .unwrap()
+                .lock()
+                .unwrap()
+                .last_line()
+                .as_deref(),
+            Some("fresh target content"),
+            "the next feed wipes the prior residue and applies the new content"
         );
         assert_eq!(
             hosts.get("local").unwrap().display.shows("local"),
