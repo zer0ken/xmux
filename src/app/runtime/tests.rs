@@ -845,11 +845,13 @@ fn current_grid_returns_none_for_empty_displayed() {
     let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
     let mut attach_seq = 0u64;
     let displayed = Selection::default();
+    let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
     let grid = current_grid(
         &displayed,
         &crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
@@ -876,6 +878,7 @@ fn draw_observer_reports_change_only_on_new_fingerprint() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
+    let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
         crate::transport::ssh("jup".into(), String::new(), "linux".into()),
@@ -904,6 +907,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
         &mut crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
@@ -925,6 +929,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
         &mut crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
@@ -942,6 +947,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn psmux_selection_replaces_the_single_display_attachment() {
+    let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
         crate::transport::local(None),
@@ -972,6 +978,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
         &mut crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
@@ -1014,6 +1021,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
         &mut crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
@@ -1035,6 +1043,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
+    let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
         crate::transport::local(None),
@@ -1068,6 +1077,7 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
         &mut crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
@@ -1122,6 +1132,7 @@ fn should_attach_fires_on_change_and_never_storms_in_flight() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn psmux_select_attach_supersedes_in_flight_attach() {
+    let mgr = HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
         crate::transport::local(None),
@@ -1154,6 +1165,7 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
         &mut crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,

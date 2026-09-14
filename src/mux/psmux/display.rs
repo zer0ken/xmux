@@ -235,10 +235,12 @@ mod tests {
         };
 
         let mut driver = PsmuxDriver;
+        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let shown = {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
@@ -273,6 +275,7 @@ mod tests {
     /// hold.
     #[tokio::test(flavor = "current_thread")]
     async fn a_nav_driven_switch_still_respawns_the_client() {
+        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let (mut hosts, mut registry) = a_client_reporting("vfy-ps-b", "vfy-ps-b");
         let worker = a_display_worker();
         let mut attach_seq = 0u64;
@@ -287,6 +290,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
@@ -323,6 +327,7 @@ mod tests {
     /// type. Headless: a fake spawner, no live psmux.
     #[tokio::test(flavor = "current_thread")]
     async fn psmux_driver_show_replaces_the_display_attachment() {
+        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
@@ -356,6 +361,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
@@ -389,6 +395,7 @@ mod tests {
     /// leaves the on-demand display attachment untouched.
     #[tokio::test(flavor = "current_thread")]
     async fn psmux_driver_sync_does_not_warm_and_reaps_only_when_empty() {
+        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
@@ -417,6 +424,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
@@ -443,6 +451,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
@@ -465,6 +474,7 @@ mod tests {
     /// though a tty is on record, and the stale attachment is held meanwhile.
     #[tokio::test(flavor = "current_thread")]
     async fn psmux_driver_show_reattaches_even_when_a_client_tty_is_known() {
+        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
@@ -496,6 +506,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
@@ -529,6 +540,7 @@ mod tests {
     /// tty is never captured behaves exactly like today (no regression).
     #[tokio::test(flavor = "current_thread")]
     async fn psmux_driver_show_reattaches_when_tty_unknown() {
+        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut hosts = crate::model::Hosts::default();
         hosts.insert(crate::model::Host::new(
             crate::transport::local(None),
@@ -561,6 +573,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,

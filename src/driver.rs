@@ -50,6 +50,10 @@ impl Target {
 pub struct DriverCtx<'a> {
     pub registry: &'a mut AttachRegistry,
     pub hosts: &'a mut Hosts,
+    /// The open control channel, so a driver can route an in-place session switch
+    /// over a host's already-open `-CC` connection instead of spawning a fresh process
+    /// per switch (each would pay a full connect+auth handshake on Windows).
+    pub mgr: &'a crate::link::HostManager,
     pub worker: &'a DisplayWorker,
     /// The off-loop event sink (a clone of the loop's `PtyEvent` channel). A driver may
     /// spawn a read-only probe that feeds a `PtyEvent` back to the loop — e.g. the psmux
@@ -348,10 +352,12 @@ pub(crate) mod tests {
         // Through the Mux dispatch (driver_for → host.mux.driver()) + the concrete
         // driver — the same path the app takes — so this pins the whole boundary.
         let mut driver = driver_for(hosts.get("local").unwrap());
+        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let shown = {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,

@@ -157,9 +157,11 @@ mod tests {
             source: "local".into(),
             session: session.into(),
         };
+        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
         let mut ctx = DriverCtx {
             registry,
             hosts,
+            mgr: &mgr,
             worker: &worker,
             pty_tx: &cap_tx,
             attach_seq: &mut attach_seq,
