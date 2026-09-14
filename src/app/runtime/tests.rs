@@ -183,7 +183,9 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
         crate::mux::for_kind("psmux", "psmux-no-such-binary").unwrap(),
     )); // Host::new leaves it undetected
     let mut detecting = HashSet::new();
-    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY));
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        crate::provision::config::SCAN_CONCURRENCY_MAX,
+    ));
     scan_or_dispatch_host(&mut mgr, &hosts, &mut detecting, "local", 80, 24, &gate);
     assert!(
         detecting.contains("local"),
@@ -1342,7 +1344,9 @@ fn test_rt(env: Env) -> Runtime {
         worker,
         switcher,
         state,
-        scan_pool: std::sync::Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY)),
+        scan_pool: std::sync::Arc::new(tokio::sync::Semaphore::new(
+            crate::provision::config::SCAN_CONCURRENCY_MAX,
+        )),
         attach_seq: 0,
         driver_pty_tx: pty_tx,
         op_tx,

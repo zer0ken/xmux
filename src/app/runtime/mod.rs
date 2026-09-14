@@ -759,7 +759,8 @@ fn spawn_host_detection(
 /// Fire and forget, and deliberately AFTER a machine connects: a remote probe is an ssh
 /// round trip per mux, and only a reachable machine is worth asking. Nothing waits for
 /// it, so a machine that never answers costs a task and no more. A permit is held on
-/// `gate` (the shared scan pool) for the whole probe, so at most [`SCAN_CONCURRENCY`]
+/// `gate` (the shared scan pool) for the whole probe, so at most
+/// [`crate::provision::config::SCAN_CONCURRENCY_MAX`]
 /// probe tasks run at once.
 fn spawn_mux_discovery(
     machine: String,
@@ -810,15 +811,6 @@ fn spawn_roster_resolve(
         });
     });
 }
-
-/// How many discovery tasks may run at once. One shared pool bounds EVERY piece of
-/// discovery work - the roster resolve, each machine's reachability probe, the mux
-/// discovery a connected machine runs, and each source's mux detection - so a launch or
-/// re-scan over a large roster never floods the network with a subprocess all at the
-/// same instant, and no single phase can hold the pool open past its own work. The pool
-/// bounds CONCURRENCY only; it does not restrict WHICH task runs, so any discovery work
-/// flows through it on equal terms.
-const SCAN_CONCURRENCY: usize = 12;
 
 /// Runs one machine's REACHABILITY probe off the loop - the shell probe over the
 /// machine's raw shell, bounded by the shared `gate` - and carries the outcome back as
@@ -1391,7 +1383,8 @@ struct Runtime {
     mgr: HostManager,
     /// Bounds the discovery fan-out - the roster resolve, each machine's reachability
     /// probe, the mux discovery a connected machine runs, and each source's mux
-    /// detection - at [`SCAN_CONCURRENCY`], shared across the
+    /// detection - at the configured `[discovery] scan-concurrency` (clamped to
+    /// [`crate::provision::config::SCAN_CONCURRENCY_MAX`]), shared across the
     /// launch pass, every re-scan, and the roster-add path so they never flood together.
     scan_pool: Arc<tokio::sync::Semaphore>,
     registry: AttachRegistry,

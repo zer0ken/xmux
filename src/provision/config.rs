@@ -72,6 +72,12 @@ pub struct DiscoveryConfig {
     /// Offer this machine's WSL distributions, by the name `wsl.exe` lists them under.
     #[serde(default = "default_true")]
     pub wsl: bool,
+    /// The maximum number of discovery tasks - the roster resolve, each machine's
+    /// reachability probe, the mux discovery a connected machine runs, and each source's
+    /// mux detection - that may run at once. The pool bounds CONCURRENCY only, never
+    /// which task runs. Defaults to 6, hard-capped at [`SCAN_CONCURRENCY_MAX`].
+    #[serde(rename = "scan-concurrency", default = "default_scan_concurrency")]
+    pub scan_concurrency: usize,
 }
 
 impl Default for DiscoveryConfig {
@@ -80,6 +86,7 @@ impl Default for DiscoveryConfig {
             ssh_config: true,
             neighbors: true,
             wsl: true,
+            scan_concurrency: 6,
         }
     }
 }
@@ -87,6 +94,14 @@ impl Default for DiscoveryConfig {
 fn default_true() -> bool {
     true
 }
+
+fn default_scan_concurrency() -> usize {
+    6
+}
+
+/// The hard upper bound on `[discovery] scan-concurrency`: more concurrent discovery
+/// tasks than this would flood the network and the machines it probes.
+pub const SCAN_CONCURRENCY_MAX: usize = 8;
 
 /// Configures the mux used on the local machine.
 #[derive(Debug, Clone, Default, Deserialize)]
