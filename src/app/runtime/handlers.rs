@@ -34,7 +34,7 @@ impl Runtime {
             env,
             mgr,
             hosts,
-            probe_gate,
+            scan_pool,
             registry,
             switcher,
             state,
@@ -197,7 +197,7 @@ impl Runtime {
                         env.local_socket.clone(),
                     ));
                     switcher.add_source(id.clone(), state);
-                    scan_or_dispatch_host(mgr, hosts, detecting, &id, vc, vr);
+                    scan_or_dispatch_host(mgr, hosts, detecting, &id, vc, vr, scan_pool);
                 }
             }
             EventEffect::ApplyRoster { roster } => {
@@ -268,7 +268,7 @@ impl Runtime {
                 let mut probed: HashSet<&str> = HashSet::new();
                 for id in &delta.added {
                     if probed.insert(crate::session::machine_of(id)) {
-                        probe_machine(id, hosts, mgr.events(), probe_gate, false);
+                        probe_machine(id, hosts, mgr.events(), scan_pool, false);
                     }
                 }
             }
@@ -324,7 +324,7 @@ impl Runtime {
                             dispatch_detected_host(mgr, hosts, source, vc, vr);
                         }
                     } else {
-                        scan_or_dispatch_host(mgr, hosts, detecting, source, vc, vr);
+                        scan_or_dispatch_host(mgr, hosts, detecting, source, vc, vr, scan_pool);
                     }
                 }
                 // Mux discovery is a machine-level question, asked once per connect and
@@ -338,7 +338,7 @@ impl Runtime {
                             machine,
                             host.transport.clone(),
                             mgr.events(),
-                            probe_gate.clone(),
+                            scan_pool.clone(),
                         );
                     }
                 }
@@ -545,7 +545,7 @@ impl Runtime {
             ops,
             hosts,
             mgr,
-            probe_gate: Arc::new(tokio::sync::Semaphore::new(PROBE_CONCURRENCY)),
+            scan_pool: Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY)),
             registry,
             worker,
             switcher,
@@ -1086,7 +1086,7 @@ impl Runtime {
                     &self.env,
                     &self.hosts,
                     &self.mgr,
-                    &self.probe_gate,
+                    &self.scan_pool,
                 );
                 if sync_selection_from_switcher(&mut self.state, &self.switcher) {
                     self.dirty = true;
@@ -1272,7 +1272,7 @@ impl Runtime {
                 &source,
                 &self.hosts,
                 self.mgr.events(),
-                &self.probe_gate,
+                &self.scan_pool,
                 false,
             );
             // The login is done: clear the draft so the pane keeps no typed values.
