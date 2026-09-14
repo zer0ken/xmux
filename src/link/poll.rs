@@ -20,9 +20,9 @@ use super::HostEvent;
 /// request cannot answer either - a host that refuses one sweep refuses the next
 /// identically, and a request that repeats on a timer is a connection that repeats on
 /// a timer whether or not anyone is waiting for the answer. So the task returns at the
-/// first failure, and the host is asked again only when the user asks: a re-scan or
-/// selecting the card re-arms it ([`HostManager::rescan`](super::HostManager::rescan)
-/// and the `ensure` a selection raises).
+/// first failure, and the host is asked again only when the user explicitly re-scans:
+/// a re-scan ([`HostManager::rescan`](super::HostManager::rescan)) aborts and respawns
+/// the task. Selecting the card does NOT re-arm it.
 ///
 /// Returning at a failure also drops the channel it held, which is what keeps the host
 /// from being read as still connected: the reconnect-sweep-era semantics are gone, so

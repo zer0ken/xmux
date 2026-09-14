@@ -12,7 +12,7 @@ pub use display::PsmuxDriver;
 /// list is discovered by re-polling; one sweep reads the local filesystem registry,
 /// which is cheap enough for a fast cadence. The supervisor re-enumerates on this
 /// cadence while the host keeps answering, and stops at the first failure.
-const PSMUX_POLL_MS: u64 = 1500;
+const PSMUX_POLL_MS: u64 = 5000;
 
 /// psmux: one server per session (`ServerModel::PerSession`), enumerated from the
 /// filesystem registry, polled for change, each session keeping its own attachment.

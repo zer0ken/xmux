@@ -583,7 +583,7 @@ The rule exists because a request that answers a failed request cannot stop. A m
 that refuses one connection refuses the next identically, so a client that reconnects on
 every refusal reconnects without end, and the machine's own defences are built to read
 exactly that as an attack. So a poll sweep that fails is the last one - the host is asked
-again only when the user asks. The consequences are deliberate and they are what the user
+again only when the user re-scans. The consequences are deliberate and they are what the user
 sees: a channel that dropped stays dropped, a display whose client died keeps the last
 frame it drew, and a card that is unreachable stays unreachable, each until the user asks
 for it again.

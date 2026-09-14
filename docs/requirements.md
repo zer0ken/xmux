@@ -461,8 +461,8 @@ no function, and no test, so renaming code is never a documentation change.
   reached through, what the OTHER muxes on that same machine answered (which is what says
   whether the machine or the mux is down), and the log file holding the full history; a reachable-but-serverless source reads `(empty)`, and a once-connected source keeps its
   last-known cards on a transient drop. Nothing recovers on its own: a dropped display
-  client is reaped and its last frame stays on screen, and a re-scan or selecting the card
-  again is what reconnects either.
+  client is reaped and its last frame stays on screen, a re-scan reconnects a dropped
+  poll host's metadata, and selecting the card reconnects a dropped control client.
 - **FR-C4** - No silent loss: every dispatched switch/select command logs its exact argv
   and result; a failed attach is logged at warn level and returns to the nav rather
   than being swallowed; each driver logs its show decision and the grid-changed effect.
@@ -614,7 +614,7 @@ nothing to switch to until one exists.
   local command on a local host) rather than opening a fresh unauthenticated connection,
   so a session or window change inside a connected session shows up without the user
   asking. A poll sweep that FAILS is the last one - the host is asked again only when the
-  user asks. What the user sees follows from this and is deliberate: a metadata channel
+  user re-scans. What the user sees follows from this and is deliberate: a metadata channel
   that dropped stays dropped, a display whose client died keeps the last frame it drew,
   and an unreachable or locked card stays as it is - each until the user asks. A push
   stream is one open connection the far side speaks over, so it carries changes without

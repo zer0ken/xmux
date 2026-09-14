@@ -13,7 +13,7 @@ pub use display::ScreenDriver;
 /// list is discovered by re-polling; each sweep is a separate `screen` process, so the
 /// cadence is slower than psmux's local registry read. The supervisor re-enumerates on
 /// this cadence while the host keeps answering, and stops at the first failure.
-const SCREEN_POLL_MS: u64 = 3000;
+const SCREEN_POLL_MS: u64 = 5000;
 
 /// screen: one daemon per session under a per-user socket directory, enumerated from
 /// `-ls`, polled for change, each session displayed through its own attachment.

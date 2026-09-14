@@ -19,7 +19,7 @@ pub use display::ZellijDriver;
 /// separate connection), so the cadence is slower than psmux's local registry read. The
 /// supervisor re-enumerates on this cadence while the host keeps answering, and stops at
 /// the first failure.
-const ZELLIJ_POLL_MS: u64 = 3000;
+const ZELLIJ_POLL_MS: u64 = 5000;
 
 /// zellij: one server per session, enumerated from `list-sessions`, polled for change,
 /// each session displayed through its own attachment.

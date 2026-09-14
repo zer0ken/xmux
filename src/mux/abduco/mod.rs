@@ -16,7 +16,7 @@ pub use display::AbducoDriver;
 /// list is discovered by re-polling; one sweep runs one `abduco` listing. The supervisor
 /// re-enumerates on this cadence while the host keeps answering, and stops at the first
 /// failure.
-const ABDUCO_POLL_MS: u64 = 2000;
+const ABDUCO_POLL_MS: u64 = 5000;
 
 /// abduco: one server per session, enumerated from its listing, polled for change,
 /// each session displayed through its own attachment.
