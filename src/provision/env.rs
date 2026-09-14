@@ -751,6 +751,17 @@ fn public_key_line() -> Result<String, std::io::Error> {
 
 #[cfg(test)]
 mod tests {
+    /// Serializes the tests that point `$HOME` at a scratch directory. `ssh_home` reads
+    /// that variable, so two tests setting it concurrently would hand each other the
+    /// other's scratch path.
+    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A public key line a scratch HOME holds for the login tests. It never
+    /// authenticates anything; it only has to look like a key for the login command
+    /// builder.
+    const KNOWN_PUBLIC_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMwVQxmuxTestKeyNeverUsed xmux@test";
+
     /// The login's verdict is its remote command's exit code, so whatever the command
     /// does it must end by saying the AUTHENTICATION worked. `exit 0` is that word in
     /// every shell family, which is the requirement here: a locked host's family is
@@ -765,9 +776,24 @@ mod tests {
             "exit 0",
             "a login with nothing to carry reports the authentication and stops"
         );
+        // A HOME that already holds a key makes the key registration deterministic:
+        // the login reads that key instead of asking the machine's ssh-keygen, so the
+        // check never depends on the runner's own key state.
+        let _guard = HOME_LOCK.lock().unwrap();
+        let home = std::env::temp_dir().join(format!("xmux-env-login-key-{}", std::process::id()));
+        let ssh = home.join(".ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        std::fs::write(ssh.join("id_ed25519.pub"), KNOWN_PUBLIC_KEY).unwrap();
+        let saved = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
         let with_key = ops.login_remote(true);
+        match saved {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        std::fs::remove_dir_all(&home).ok();
         assert!(
-            with_key.ends_with("; exit 0"),
+            with_key.ends_with("; exit 0") && with_key.contains(KNOWN_PUBLIC_KEY),
             "registering a key does not get to fail the login: {with_key}"
         );
     }
@@ -1108,6 +1134,7 @@ mod tests {
         // `USERPROFILE`; the ssh config must follow `$HOME` so it matches what the
         // user's ssh reads.
         let saved = std::env::var_os("HOME");
+        let _guard = HOME_LOCK.lock().unwrap();
         let tmp = std::env::temp_dir();
         std::env::set_var("HOME", &tmp);
         let got = ssh_config_path();
