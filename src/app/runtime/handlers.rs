@@ -84,6 +84,7 @@ impl Runtime {
                     let mut ctx = crate::driver::DriverCtx {
                         registry: &mut *registry,
                         hosts: &mut *hosts,
+                        mgr,
                         worker,
                         pty_tx,
                         attach_seq: &mut *attach_seq,
@@ -361,6 +362,7 @@ impl Runtime {
                 let mut ctx = crate::driver::DriverCtx {
                     registry: &mut *registry,
                     hosts: &mut *hosts,
+                    mgr,
                     worker,
                     pty_tx,
                     attach_seq: &mut *attach_seq,
@@ -737,6 +739,7 @@ impl Runtime {
                 &crate::driver::DriverCtx {
                     registry: &mut self.registry,
                     hosts: &mut self.hosts,
+                    mgr: &self.mgr,
                     worker: &self.worker,
                     pty_tx: &self.driver_pty_tx,
                     attach_seq: &mut self.attach_seq,
@@ -1129,6 +1132,7 @@ impl Runtime {
                     &crate::driver::DriverCtx {
                         registry: &mut self.registry,
                         hosts: &mut self.hosts,
+                        mgr: &self.mgr,
                         worker: &self.worker,
                         pty_tx: &self.driver_pty_tx,
                         attach_seq: &mut self.attach_seq,
@@ -1224,6 +1228,7 @@ impl Runtime {
                         let ctx = crate::driver::DriverCtx {
                             registry: &mut self.registry,
                             hosts: &mut self.hosts,
+                            mgr: &self.mgr,
                             worker: &self.worker,
                             pty_tx: &self.driver_pty_tx,
                             attach_seq: &mut self.attach_seq,
@@ -1334,6 +1339,7 @@ impl Runtime {
                         &mut crate::driver::DriverCtx {
                             registry: &mut self.registry,
                             hosts: &mut self.hosts,
+                            mgr: &self.mgr,
                             worker: &self.worker,
                             pty_tx: &self.driver_pty_tx,
                             attach_seq: &mut self.attach_seq,
