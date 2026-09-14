@@ -1,17 +1,18 @@
 //! The `xmux update` command. It detects how xmux was installed from the running
-//! executable's path and hands the update to whatever owns that install: a package
-//! manager (cargo, winget, Homebrew) runs its own upgrade, and an install the
-//! install script placed re-runs that same script, so the steps of an install live
-//! in one place rather than being reimplemented here. A binary the user copied onto
-//! their PATH themselves is owned by nobody, so it is replaced in place with a
-//! checksum-verified build from the GitHub release.
+//! executable's path and updates it. A cargo install and a binary the user copied
+//! onto their PATH themselves are replaced in place with a checksum-verified build
+//! from the GitHub release, so an update never recompiles. An install the script
+//! placed re-runs that same script, and a winget or Homebrew install runs its
+//! package manager, because those already fetch prebuilt binaries and overwriting
+//! one would leave the manager out of step. `--method` forces a path, so a cargo
+//! install can still be handed back to `cargo install` explicitly.
 //!
 //! On Windows a running process locks its own image file against deletion and
 //! overwrite but not against rename. The script install is unaffected, because the
-//! script writes a new version directory and only the launcher is replaced. For the
-//! paths that do write the live binary, the cargo delegation renames it aside first,
-//! while the winget delegation and the in-place swap are handed to a detached updater
-//! that waits for every xmux process to exit.
+//! script writes a new version directory and only the launcher is replaced. The
+//! release-download paths, which write the live binary, are handed to a detached
+//! updater that waits for every xmux process to exit before copying the staged
+//! build over the live binary.
 
 pub mod notify;
 pub mod release;
@@ -215,18 +216,22 @@ fn parse_method(s: &str) -> Result<InstallMethod, String> {
     }
 }
 
-fn resolve_method(forced: Option<&str>) -> Result<InstallMethod, String> {
+/// Resolves the install method an update should act on, and whether it was forced by
+/// `--method` or `XMUX_UPDATE_METHOD` rather than read from the executable's path.
+/// The distinction matters for cargo: an unforced cargo install updates from the
+/// release download, while `--method cargo` hands it back to `cargo install`.
+fn resolve_method(forced: Option<&str>) -> Result<(InstallMethod, bool), String> {
     if let Some(m) = forced {
-        return parse_method(m);
+        return parse_method(m).map(|m| (m, true));
     }
     if let Some(m) = std::env::var("XMUX_UPDATE_METHOD")
         .ok()
         .filter(|s| !s.is_empty())
     {
-        return parse_method(&m);
+        return parse_method(&m).map(|m| (m, true));
     }
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate own binary: {e}"))?;
-    Ok(classify(&exe, &cargo_bins(), platform()))
+    Ok((classify(&exe, &cargo_bins(), platform()), false))
 }
 
 /// The install method this running binary is detected as, as the word `doctor`
@@ -267,17 +272,24 @@ fn run_delegated(program: &str, args: &[&str]) -> Result<(), String> {
 }
 
 fn run_blocking(args: &Args) -> Result<(), String> {
-    let method = resolve_method(args.method.as_deref())?;
+    let (method, forced) = resolve_method(args.method.as_deref())?;
     let p = platform();
     match method {
+        // A cargo install updates from the release like a self-install: compiling is
+        // never the fast path. Only an explicitly forced `--method cargo` still runs
+        // the package manager, for an install whose owner should stay cargo.
+        InstallMethod::Cargo if !forced => release::update(args, p),
+        InstallMethod::Cargo => run_cargo(args, p),
         InstallMethod::Self_ => release::update(args, p),
         InstallMethod::Script => run_script(args, p),
-        InstallMethod::Cargo => run_cargo(args, p),
         InstallMethod::Winget => run_winget(args, p),
         InstallMethod::Brew => run_brew(args),
     }
 }
 
+/// The cargo delegation, reached only through `--method cargo`: an install whose
+/// owner should stay with cargo. The default for a cargo install is the release
+/// download, so this path is opt-in.
 fn run_cargo(args: &Args, platform: Platform) -> Result<(), String> {
     if args.check {
         println!("xmux is installed via cargo; update with `cargo install xmux`");
@@ -767,6 +779,16 @@ mod tests {
         assert_eq!(super::parse_method("cargo").unwrap(), InstallMethod::Cargo);
         assert_eq!(super::parse_method("self").unwrap(), InstallMethod::Self_);
         assert!(super::parse_method("bogus").is_err());
+    }
+
+    #[test]
+    fn forced_method_is_marked_forced() {
+        // `--method cargo` must stay distinguishable from a cargo install read from
+        // the executable path: the default for a cargo install is the release
+        // download, while the forced cargo path runs the package manager.
+        let (m, forced) = super::resolve_method(Some("cargo")).unwrap();
+        assert_eq!(m, InstallMethod::Cargo);
+        assert!(forced);
     }
 
     #[test]
