@@ -23,7 +23,7 @@ no function, and no test, so renaming code is never a documentation change.
   reachability with session counts.
 - **FR-A4** - Sessions are ordered deterministically: the hosts run local, then WSL,
   then remote, and within each tier by source name ascending; inside a source its
-  sessions run by name ascending. A routine poll reproduces the same order, so one
+  sessions run by name ascending. A re-enumeration reproduces the same order, so one
   source's cards are contiguous and the nav never names a source twice.
 - **FR-A5** - The roster (which HOSTS are offered) comes from providers the
   `[discovery]` table selects: `~/.ssh/config` aliases and this machine's neighbours,
@@ -493,11 +493,10 @@ no function, and no test, so renaming code is never a documentation change.
   scan. The settled selection's address is persisted as the last session. There is no
   separate picker mode; `prefix q`
   quits.
-- **FR-D6** - The log records what HAPPENED. An enumeration logs INFO when the session
-  set changes and WARN when it fails, and TRACE when an answering sweep repeats an
-  unchanged set, so a connected host that polls on its cadence does not fill the file and
-  no silent host can either: the file carries what changed rather than how often xmux
-  ticks.
+- **FR-D6** - The log records what HAPPENED. An enumeration logs INFO with the session
+  list on success and WARN on failure - one line per enumeration, and an enumeration
+  happens only when something asked for one, so the file carries what the user did
+  rather than a cadence and no silent host can fill it on its own.
 - **FR-D7** - No log grows without end. The daily files are kept for a bounded window and
   the oldest goes as a new day opens. A panic that a worker recovers from and hits again on
   the next frame is written by its SITE at each doubling of its count, not once per
@@ -609,17 +608,13 @@ nothing to switch to until one exists.
   own retry, because a request that answers a failed request cannot stop: a machine that
   refuses one connection refuses the next identically, so a client reconnecting on every
   refusal reconnects without end, which is what a machine's own defences are built to read
-  as an attack. A POLL source re-enumerates on its cadence while it keeps answering, and
-  each sweep reuses the path the host answers over (the ControlMaster socket when the
-  transport multiplexes, a local command on a local host) rather than opening a fresh
-  unauthenticated connection,
-  so a session or window change inside a connected session shows up without the user
-  asking. A poll sweep that FAILS is the last one - the host is asked again only when the
-  user re-scans. What the user sees follows from this and is deliberate: a metadata channel
-  that dropped stays dropped, a display whose client died keeps the last frame it drew,
-  and an unreachable or locked card stays as it is - each until the user asks. A push
-  stream is one open connection the far side speaks over, so it carries changes without
-  asking for them.
+  as an attack. A POLL source is enumerated exactly when something asked for it - the
+  launch scan or an explicit re-scan - and never on a cadence of its own, so a machine is
+  never queried for no one. What the user sees follows from this and is deliberate: a
+  metadata channel that dropped stays dropped, a display whose client died keeps the last
+  frame it drew, and an unreachable or locked card stays as it is - each until the user
+  asks. A push stream is one open connection the far side speaks over, so it carries
+  changes without asking for them.
 - **FR-G8** - A machine is asked one thing at a time. Work fans out ACROSS machines and
   never within one, because a machine counts the connections that have not authenticated
   yet and drops the ones past its limit: a burst is both what makes a legitimate probe

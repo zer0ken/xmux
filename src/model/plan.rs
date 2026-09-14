@@ -24,11 +24,9 @@ pub enum DeathSignal {
 pub enum EventSource {
     /// A live `-CC` control-mode child pushes `%`-notices.
     Control,
-    /// No push stream. The host is re-enumerated on this cadence while it keeps
-    /// answering, and never again once an enumeration fails - a request that answers
-    /// nothing is one a later request cannot answer either, so asking again is noise
-    /// until the user asks.
-    Poll { interval_ms: u64 },
+    /// No push stream. The host is enumerated when something asks for it - the launch
+    /// scan, a detection, or an explicit re-scan - and never on a cadence of its own.
+    Poll,
 }
 
 /// xmux's own display-client tty, captured in memory (not a `/tmp` file). Passed to
@@ -55,19 +53,11 @@ mod tests {
     }
 
     #[test]
-    fn event_source_poll_carries_a_cadence() {
-        assert_eq!(
-            EventSource::Poll { interval_ms: 1500 },
-            EventSource::Poll { interval_ms: 1500 }
-        );
-        assert_ne!(
-            EventSource::Poll { interval_ms: 1500 },
-            EventSource::Poll { interval_ms: 3000 }
-        );
-        assert_ne!(
-            EventSource::Control,
-            EventSource::Poll { interval_ms: 1500 }
-        );
+    fn event_source_names_a_channel_and_carries_no_cadence() {
+        // Poll is a channel KIND, not a schedule: it holds no interval, so nothing
+        // downstream can start re-enumerating on its own.
+        assert_eq!(EventSource::Poll, EventSource::Poll);
+        assert_ne!(EventSource::Control, EventSource::Poll);
     }
 
     #[test]

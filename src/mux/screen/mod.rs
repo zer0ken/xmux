@@ -9,12 +9,6 @@ mod vocab;
 
 pub use display::ScreenDriver;
 
-/// The screen re-enumeration cadence. screen pushes no change events, so the session
-/// list is discovered by re-polling; each sweep is a separate `screen` process, so the
-/// cadence is slower than psmux's local registry read. The supervisor re-enumerates on
-/// this cadence while the host keeps answering, and stops at the first failure.
-const SCREEN_POLL_MS: u64 = 5000;
-
 /// screen: one daemon per session under a per-user socket directory, enumerated from
 /// `-ls`, polled for change, each session displayed through its own attachment.
 pub struct Screen {
@@ -106,9 +100,7 @@ impl Mux for Screen {
     }
 
     fn event_source(&self) -> EventSource {
-        EventSource::Poll {
-            interval_ms: SCREEN_POLL_MS,
-        }
+        EventSource::Poll
     }
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         vocab::new_session(&self.bin, name)
@@ -158,12 +150,7 @@ mod tests {
         assert_eq!(m.kind(), "screen");
         assert_eq!(m.server_model(), ServerModel::PerSession);
         assert_eq!(m.death_signal(), DeathSignal::Eof);
-        assert_eq!(
-            m.event_source(),
-            EventSource::Poll {
-                interval_ms: SCREEN_POLL_MS
-            }
-        );
+        assert_eq!(m.event_source(), EventSource::Poll);
         assert!(
             !m.takes_server_socket(),
             "screen's -S is a session name, not a socket"
