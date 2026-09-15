@@ -411,4 +411,21 @@ mod display_identity_tests {
             "the key is sanitized, not injected: {danger}"
         );
     }
+
+    #[test]
+    fn record_prefix_keys_the_tty_file_per_instance_not_just_per_host() {
+        // Two xmux instances sharing one remote host pass `{host}-{instance}` keys, so
+        // each records/reads its OWN display client's tty - a `switch-client` then moves
+        // THIS instance's client, never the other instance's. A single per-host file
+        // would otherwise be overwritten by the second instance (last-writer-wins) and
+        // the first would switch the wrong client.
+        let a = record_prefix("jup-first");
+        let b = record_prefix("jup-second");
+        assert_ne!(a, b, "distinct instances get distinct tty-record files");
+        let shared = record_prefix("jup");
+        assert_ne!(
+            a, shared,
+            "the instance key extends, never reuses, the bare host key"
+        );
+    }
 }

@@ -240,6 +240,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
@@ -290,6 +291,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
@@ -361,6 +363,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
@@ -424,6 +427,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
@@ -451,6 +455,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
@@ -506,6 +511,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
@@ -573,6 +579,7 @@ mod tests {
             let mut ctx = DriverCtx {
                 registry: &mut registry,
                 hosts: &mut hosts,
+                instance_name: "test",
                 mgr: &mgr,
                 worker: &worker,
                 pty_tx: &cap_tx,
