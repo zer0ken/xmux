@@ -380,7 +380,7 @@ impl Runtime {
                 // `None` (only the control client attached so far) clears any stale tty.
                 if let Some(h) = hosts.get_mut(&host) {
                     if tty.is_some() {
-                        tracing::debug!(host, ?tty, "display_tty_recorded");
+                        tracing::info!(host, ?tty, "display_tty_recorded");
                     }
                     h.record_display_tty(tty);
                 }
@@ -986,7 +986,7 @@ impl Runtime {
                             if let Some(tty) =
                                 child_tty.filter(|_| !h.transport.runs_through_shell())
                             {
-                                tracing::debug!(host = %hid, tty, "display_tty_from_pty");
+                                tracing::info!(host = %hid, tty, "display_tty_from_pty");
                                 h.record_display_tty(Some(tty));
                             }
                             // A shell-routed (remote) attach cannot read its client tty from

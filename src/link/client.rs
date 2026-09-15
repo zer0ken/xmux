@@ -115,8 +115,9 @@ impl HostClient {
 
         // Writer thread: owns the child stdin, drains the command channel.
         let writer_in_flight = Arc::clone(&in_flight);
+        let writer_host = host.clone();
         let writer = std::thread::spawn(move || {
-            run_writer(cmd_rx, proto, &mut stdin, &writer_in_flight);
+            run_writer(&writer_host, cmd_rx, proto, &mut stdin, &writer_in_flight);
         });
 
         // Connect sequence: size the client, then run the mux's connect preamble
@@ -160,11 +161,16 @@ impl HostClient {
     /// NOT via an in-band attach-shell marker — a Windows ConPTY consumes the marker's
     /// OSC before the display pump can read it, so the marker never lands for a remote
     /// host. With the tty known, a session switch is an in-place `switch-client -c <tty>`.
-    pub fn capture_display_tty(&self) {
-        let _ = self.cmd_tx.send(HostCmd::Query {
-            line: self.proto.display_clients_line(),
-            reply: PendingReply::DisplayClientTty,
-        });
+    /// Returns whether the probe reached the writer thread. A writer that has returned
+    /// on a broken pipe has dropped the receiver, so the send reports the refusal
+    /// instead of leaving a command that never went out looking delivered.
+    pub fn capture_display_tty(&self) -> bool {
+        self.cmd_tx
+            .send(HostCmd::Query {
+                line: self.proto.display_clients_line(),
+                reply: PendingReply::DisplayClientTty,
+            })
+            .is_ok()
     }
 
     /// Move xmux's display client (`display_tty`) to `session` over THIS control
@@ -173,20 +179,30 @@ impl HostClient {
     /// fresh `ssh` per switch — on Windows ssh has no ControlMaster, so each fresh
     /// exec pays a full connect+auth handshake (~0.5s), which is the switch lag (#2).
     /// The server moves the named client regardless of which client issues the command.
-    pub fn switch_client_on(&self, display_tty: &str, session: &str) {
-        let _ = self.cmd_tx.send(HostCmd::Send(
-            self.proto.switch_client_line(display_tty, session),
-        ));
+    /// Returns whether the command reached the writer thread, which is as far as this
+    /// side can observe: the writer owns the child's stdin, and it drops the receiver
+    /// when a write breaks. A refused send is a switch that provably never went out,
+    /// so the caller must not record the client as moved. A send that is accepted is
+    /// not yet a switch that landed — only the mux's own session-changed notice says
+    /// that.
+    pub fn switch_client_on(&self, display_tty: &str, session: &str) -> bool {
+        self.cmd_tx
+            .send(HostCmd::Send(
+                self.proto.switch_client_line(display_tty, session),
+            ))
+            .is_ok()
     }
 
     /// Force a full redraw of xmux's display client (`refresh-client -t <tty>`) over THIS
     /// control connection, issued right after a `switch-client`. A switch moves the client
     /// but does not always repaint a locally-cleared grid; a fresh attach repaints fully,
     /// and this gives the in-place switch the same full repaint so the new session shows.
-    pub fn refresh_client_on(&self, display_tty: &str) {
-        let _ = self
-            .cmd_tx
-            .send(HostCmd::Send(self.proto.refresh_client_line(display_tty)));
+    /// Returns whether the command reached the writer thread, on the same terms as
+    /// [`HostClient::switch_client_on`].
+    pub fn refresh_client_on(&self, display_tty: &str) -> bool {
+        self.cmd_tx
+            .send(HostCmd::Send(self.proto.refresh_client_line(display_tty)))
+            .is_ok()
     }
 
     /// Tell the child its new client size (the metadata client's size; the PTY
