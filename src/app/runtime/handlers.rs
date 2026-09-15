@@ -991,14 +991,20 @@ impl Runtime {
                             }
                             // A shell-routed (remote) attach cannot read its client tty from
                             // the PTY it runs in - a ConPTY consumes the in-band record
-                            // marker before the display pump sees it - so capture it over
-                            // the already-open -CC control connection with one `list-clients`
-                            // probe, but only while it is still unknown. Without the tty the
+                            // marker before the display pump sees it - so read it back over
+                            // the already-open -CC control connection, but only while it is
+                            // still unknown. The probe is keyed by host AND instance, the
+                            // same key the attach recorded itself under, so what comes back
+                            // is this instance's own display client and never the user's own
+                            // client on the same host. Without the tty the
                             // client-session-changed follow can never match our display
                             // client, so a native session switch would not move the nav.
                             if h.display_tty.0.is_none() && h.transport.runs_through_shell() {
                                 if let Some(client) = self.mgr.get(&hid) {
-                                    client.capture_display_tty();
+                                    client.capture_display_tty(&format!(
+                                        "{hid}-{}",
+                                        self.instance_name
+                                    ));
                                 }
                             }
                         }

@@ -222,26 +222,17 @@ pub fn parse_notif(line: &str) -> Notif<'_> {
     }
 }
 
-/// Picks xmux's display-client tty from a `list-clients` block body. Each line is
-/// `<client_tty> <client_flags>`; the display attach is the FIRST client whose flags
-/// do NOT contain `control-mode` (that flag marks the `-CC` metadata connection). The
-/// selection is applied at capture so a multi-client reply resolves deterministically.
-/// `None` when only the control client is attached (the display attach has not landed
-/// yet) — the caller then clears any prior tty rather than mis-targeting the control client.
-pub(crate) fn parse_display_client_tty(body: &[String]) -> Option<String> {
-    body.iter().find_map(|line| {
-        let line = line.trim();
-        if line.is_empty() {
-            return None;
-        }
-        let mut parts = line.splitn(2, ' ');
-        let tty = parts.next()?;
-        let flags = parts.next().unwrap_or("");
-        if flags.split(',').any(|f| f == "control-mode") {
-            return None;
-        }
-        Some(tty.to_string())
-    })
+/// Reads the display-client tty out of the record-file read's reply block. The block
+/// carries what the attach shell wrote: one line holding a tty path. Blank lines are
+/// skipped (a missing file answers with nothing), and only a value that looks like a
+/// device path is accepted, so an error message the shell printed instead is not taken
+/// for a tty. `None` leaves the tty unknown, which keeps a switch off a client xmux
+/// cannot prove is its own.
+pub(crate) fn parse_display_tty(body: &[String]) -> Option<String> {
+    body.iter()
+        .map(|line| line.trim())
+        .find(|line| line.starts_with('/') && !line.contains(char::is_whitespace))
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -413,28 +404,30 @@ mod tests {
     }
 
     #[test]
-    fn display_clients_line_pins_the_tmux_wire_format() {
+    fn display_tty_line_reads_this_instances_own_record_file() {
         use crate::mux::ControlProtocol;
+        // The query names the recording key, so two xmux instances on one host each read
+        // their own file and neither can be handed the other's client.
         assert_eq!(
-            super::super::TmuxControl.display_clients_line(),
-            "list-clients -F '#{client_tty} #{client_flags}'\n"
+            super::super::TmuxControl.display_tty_line("jupiter06-solid-osprey"),
+            "run-shell \"cat /tmp/.xmux-cli-jupiter06-solid-osprey\"\n"
         );
     }
 
     #[test]
-    fn parse_display_client_tty_picks_the_non_control_client() {
-        // The display attach is the FIRST client WITHOUT the control-mode flag (that flag
-        // marks the -CC metadata connection), regardless of line order.
-        let body = vec![
-            "/dev/pts/7 control-mode".to_string(),
-            "/dev/pts/3 active-pane,focused".to_string(),
-        ];
-        assert_eq!(
-            parse_display_client_tty(&body).as_deref(),
-            Some("/dev/pts/3")
-        );
-        // Only the -CC control client is attached → None (the display attach has not landed).
-        let only_control = vec!["/dev/pts/7 control-mode".to_string()];
-        assert_eq!(parse_display_client_tty(&only_control), None);
+    fn parse_display_tty_takes_the_recorded_tty() {
+        let body = vec!["/dev/pts/76".to_string()];
+        assert_eq!(parse_display_tty(&body).as_deref(), Some("/dev/pts/76"));
+    }
+
+    #[test]
+    fn parse_display_tty_ignores_a_reply_that_names_no_tty() {
+        // A missing record file answers with nothing, and a shell that complains answers
+        // with prose. Neither is a tty, and taking either would aim a switch at a client
+        // xmux cannot prove is its own - the whole point of reading the file.
+        assert_eq!(parse_display_tty(&[]), None);
+        assert_eq!(parse_display_tty(&["".to_string()]), None);
+        let complaint = vec!["cat: /tmp/.xmux-cli-x: No such file or directory".to_string()];
+        assert_eq!(parse_display_tty(&complaint), None);
     }
 }
