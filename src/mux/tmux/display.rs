@@ -101,7 +101,7 @@ impl MuxDriver for TmuxDriver {
             let tty = host.display_tty.0.clone().filter(|t| !t.is_empty());
             if host.transport.runs_through_shell() && tty.is_none() {
                 if let Some(client) = ctx.mgr.get(&sel.source) {
-                    client.capture_display_tty();
+                    client.capture_display_tty(&tty_key);
                 }
             }
             // A shell-routed host keeps an open `-CC` control connection, so the switch

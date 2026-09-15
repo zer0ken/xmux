@@ -155,19 +155,21 @@ impl HostClient {
         });
     }
 
-    /// Probes this host's display-client tty over the -CC control connection
-    /// (`list-clients`). The reply resolves to a [`HostEvent::DisplayTty`] the
-    /// supervisor records on `Host.display_tty`. Captured over the control connection,
-    /// NOT via an in-band attach-shell marker — a Windows ConPTY consumes the marker's
-    /// OSC before the display pump can read it, so the marker never lands for a remote
-    /// host. With the tty known, a session switch is an in-place `switch-client -c <tty>`.
-    /// Returns whether the probe reached the writer thread. A writer that has returned
-    /// on a broken pipe has dropped the receiver, so the send reports the refusal
-    /// instead of leaving a command that never went out looking delivered.
-    pub fn capture_display_tty(&self) -> bool {
+    /// Probes this host's display-client tty over the -CC control connection. The reply
+    /// resolves to a [`HostEvent::DisplayTty`] the supervisor records on
+    /// `Host.display_tty`. Carried over the control connection, NOT via an in-band
+    /// attach-shell marker — a Windows ConPTY consumes the marker's OSC before the
+    /// display pump can read it, so the marker never lands for a remote host. With the
+    /// tty known, a session switch is an in-place `switch-client -c <tty>`.
+    /// Probes this host's display-client tty for `host_key`, the key the display attach
+    /// recorded itself under. Returns whether the probe reached the writer thread. A
+    /// writer that has returned on a broken pipe has dropped the receiver, so the send
+    /// reports the refusal instead of leaving a command that never went out looking
+    /// delivered.
+    pub fn capture_display_tty(&self, host_key: &str) -> bool {
         self.cmd_tx
             .send(HostCmd::Query {
-                line: self.proto.display_clients_line(),
+                line: self.proto.display_tty_line(host_key),
                 reply: PendingReply::DisplayClientTty,
             })
             .is_ok()

@@ -134,7 +134,7 @@ fn resolve_block<E: FnMut(HostEvent)>(
             // - the reader names no wire detail.
             emit(HostEvent::DisplayTty {
                 host: host.to_string(),
-                tty: proto.parse_display_client_tty(body),
+                tty: proto.parse_display_tty(body),
             });
         }
         PendingReply::Ignore => {}
@@ -638,8 +638,8 @@ mod tests {
 
     #[test]
     fn reader_resolves_display_tty_block_into_event() {
-        // A list-clients block resolves to the NON-control client's tty (xmux's display
-        // attach), ignoring the -CC metadata client regardless of line order.
+        // The record-file read resolves to the tty the display attach wrote, which is
+        // xmux's own client by construction.
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();
         in_flight
@@ -649,8 +649,7 @@ mod tests {
         let mut events = Vec::new();
         let lines = vec![
             "%begin 1 5 1".to_string(),
-            "/dev/pts/7 control-mode".to_string(),
-            "/dev/pts/3 active-pane".to_string(),
+            "/dev/pts/3".to_string(),
             "%end 1 5 1".to_string(),
         ]
         .into_iter();
@@ -667,7 +666,7 @@ mod tests {
                 e,
                 HostEvent::DisplayTty { host, tty: Some(t) } if host == "jupiter00" && t == "/dev/pts/3"
             )),
-            "a list-clients block resolves to the non-control client's tty"
+            "the record-file read resolves to the recorded tty"
         );
     }
 }

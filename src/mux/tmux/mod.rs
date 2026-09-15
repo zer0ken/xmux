@@ -296,12 +296,21 @@ impl ControlProtocol for TmuxControl {
         format!("refresh-client -C {cols}x{rows}\n")
     }
 
-    fn display_clients_line(&self) -> String {
-        "list-clients -F '#{client_tty} #{client_flags}'\n".to_string()
+    /// Reads back the file the display attach wrote its own controlling tty to before
+    /// exec'ing (`record_prefix`). Only xmux's own attach writes that file, so the tty it
+    /// answers with is xmux's own client by construction. A client listing would name the
+    /// user's own clients and any client an earlier attach left behind in exactly the same
+    /// shape, with nothing in the reply to tell them apart - and a host xmux attaches to
+    /// and detaches from repeatedly accumulates them, which is when picking wrong becomes
+    /// likely. `run-shell` hands the command's output back in this query's own reply
+    /// block, so the read rides the open control connection and asks the host for no
+    /// second one.
+    fn display_tty_line(&self, host_key: &str) -> String {
+        format!("run-shell \"cat {}\"\n", display_tty_path(host_key))
     }
 
-    fn parse_display_client_tty(&self, body: &[String]) -> Option<String> {
-        control_proto::parse_display_client_tty(body)
+    fn parse_display_tty(&self, body: &[String]) -> Option<String> {
+        control_proto::parse_display_tty(body)
     }
 }
 
