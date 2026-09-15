@@ -5,7 +5,10 @@
 //! placed re-runs that same script, and a winget or Homebrew install runs its
 //! package manager, because those already fetch prebuilt binaries and overwriting
 //! one would leave the manager out of step. `--method` forces a path, so a cargo
-//! install can still be handed back to `cargo install` explicitly.
+//! install can still be handed back to `cargo install` explicitly. On Android
+//! Termux the published builds cannot run: they are glibc-linked and Termux's
+//! libc is bionic, so an update there never downloads and a source build is the
+//! only path.
 //!
 //! On Windows a running process locks its own image file against deletion and
 //! overwrite but not against rename. The script install is unaffected, because the
@@ -203,6 +206,22 @@ fn platform() -> Platform {
     }
 }
 
+/// True when running on Android Termux, where the glibc-linked release builds
+/// cannot run on the bionic libc, so the release-download path never applies.
+fn is_termux() -> bool {
+    is_termux_from(std::env::var_os("PREFIX").as_deref())
+}
+
+/// Decides Termux from `$PREFIX`, the one variable Termux always sets. A
+/// parameter (not `env`), like `classify`, so the decision is unit-testable on
+/// any host. The prefix is the package's data directory, so `com.termux` names
+/// it.
+fn is_termux_from(prefix: Option<&OsStr>) -> bool {
+    prefix
+        .and_then(|p| p.to_str())
+        .is_some_and(|p| p.contains("com.termux"))
+}
+
 fn parse_method(s: &str) -> Result<InstallMethod, String> {
     match s {
         "cargo" => Ok(InstallMethod::Cargo),
@@ -277,10 +296,27 @@ fn run_blocking(args: &Args) -> Result<(), String> {
     match method {
         // A cargo install updates from the release like a self-install: compiling is
         // never the fast path. Only an explicitly forced `--method cargo` still runs
-        // the package manager, for an install whose owner should stay cargo.
-        InstallMethod::Cargo if !forced => release::update(args, p),
+        // the package manager, for an install whose owner should stay cargo. On
+        // Termux the release path never applies (no runnable build), so a cargo
+        // install updates from source instead.
+        InstallMethod::Cargo if !forced && !is_termux() => release::update(args, p),
         InstallMethod::Cargo => run_cargo(args, p),
-        InstallMethod::Self_ => release::update(args, p),
+        InstallMethod::Self_ if !is_termux() => release::update(args, p),
+        // A self-placed binary on Termux can only have come from a source build,
+        // since no published build runs there, and source is also how it updates.
+        InstallMethod::Self_ => {
+            if args.check {
+                println!(
+                    "no release build for Termux; update from source with `cargo install xmux`"
+                );
+                Ok(())
+            } else {
+                Err(
+                    "no release build for Termux; update from source with `cargo install xmux`"
+                        .to_string(),
+                )
+            }
+        }
         InstallMethod::Script => run_script(args, p),
         InstallMethod::Winget => run_winget(args, p),
         InstallMethod::Brew => run_brew(args),
@@ -789,6 +825,15 @@ mod tests {
         let (m, forced) = super::resolve_method(Some("cargo")).unwrap();
         assert_eq!(m, InstallMethod::Cargo);
         assert!(forced);
+    }
+
+    #[test]
+    fn termux_prefix_names_termux() {
+        assert!(super::is_termux_from(Some(OsStr::new(
+            "/data/data/com.termux/files/usr"
+        ))));
+        assert!(!super::is_termux_from(Some(OsStr::new("/usr/local"))));
+        assert!(!super::is_termux_from(None));
     }
 
     #[test]
