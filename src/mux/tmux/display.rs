@@ -115,9 +115,27 @@ impl MuxDriver for TmuxDriver {
                 && ctx.mgr.get(&sel.source).is_some();
             let (switched, reason) = if over_control {
                 let client = ctx.mgr.get(&sel.source).unwrap();
-                client.switch_client_on(tty.as_deref().unwrap(), &sel.session);
-                client.refresh_client_on(tty.as_deref().unwrap());
-                (true, "control")
+                // A control connection whose writer has returned on a broken pipe still
+                // has a live HostClient, so its presence is no proof that a command can
+                // still be sent. Take the send's own answer: a refused send is a switch
+                // that never reached the host, and reporting it as done would record the
+                // client on a session it never moved to. The belief and the selection
+                // would then agree, which is the one condition that asks for a switch, so
+                // nothing would ever ask again and the terminal view would hold the old
+                // session for the rest of the run. A refusal falls through to the reattach
+                // below instead — the same answer this arm already gives when the recorded
+                // tty plan cannot switch, and still one attempt answering one user action.
+                let sent = client.switch_client_on(tty.as_deref().unwrap(), &sel.session)
+                    && client.refresh_client_on(tty.as_deref().unwrap());
+                if !sent {
+                    tracing::warn!(
+                        host = %sel.source,
+                        session = %sel.session,
+                        tty = tty.as_deref().unwrap_or(""),
+                        "control_switch_not_sent"
+                    );
+                }
+                (sent, "control")
             } else {
                 let switched = host
                     .mux
