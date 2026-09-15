@@ -1,10 +1,10 @@
 PackageIdentifier: zer0ken.xmux
-PackageVersion: 0.9.14
+PackageVersion: 0.9.15
 InstallerType: portable
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/zer0ken/xmux/releases/download/v0.9.14/xmux-v0.9.14-x86_64-pc-windows-msvc.exe
-    InstallerSha256: 6e069b81176960dcf338cf4694d060e5688d73b40820cf78e3b4145fe4d0f591
+    InstallerUrl: https://github.com/zer0ken/xmux/releases/download/v0.9.15/xmux-v0.9.15-x86_64-pc-windows-msvc.exe
+    InstallerSha256: 6e6a23a7fefd85844f222a2926d9e0c7e3268d9081a089f112151d7ed4bc42cf
     Commands:
       - xmux
 ManifestType: installer
