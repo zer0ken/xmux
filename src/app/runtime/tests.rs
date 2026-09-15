@@ -851,6 +851,7 @@ fn current_grid_returns_none_for_empty_displayed() {
         &crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            instance_name: "test",
             mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
@@ -907,6 +908,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
         &mut crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            instance_name: "test",
             mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
@@ -929,6 +931,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
         &mut crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            instance_name: "test",
             mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
@@ -978,6 +981,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
         &mut crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            instance_name: "test",
             mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
@@ -1021,6 +1025,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
         &mut crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            instance_name: "test",
             mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
@@ -1077,6 +1082,7 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
         &mut crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            instance_name: "test",
             mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
@@ -1165,6 +1171,7 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
         &mut crate::driver::DriverCtx {
             registry: &mut registry,
             hosts: &mut hosts,
+            instance_name: "test",
             mgr: &mgr,
             worker: &worker,
             pty_tx: &pty_tx,
