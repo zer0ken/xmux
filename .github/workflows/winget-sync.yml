@@ -76,46 +76,10 @@ jobs:
 
       - name: Submit to winget-pkgs
         if: steps.present.outputs.already == 'false' && env.WINGET_PKGS_TOKEN != ''
-        env:
-          API: https://api.github.com
-          FORK: zer0ken/winget-pkgs
-          UPSTREAM: microsoft/winget-pkgs
-          AUTH: "Authorization: Bearer ${{ secrets.WINGET_PKGS_TOKEN }}"
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
           SHA="${{ steps.checksum.outputs.sha }}"
-          BR="add/zer0ken.xmux.v${VERSION}"
-
-          # Every call fails the step on an HTTP error and prints GitHub's reply, so a
-          # token that cannot write shows up as a red run instead of a `null` URL.
-          api() {
-            local out
-            # A refusal's body goes to stderr: callers discard stdout, and the
-            # message is the only place the reason exists.
-            if ! out=$(curl --fail-with-body -sS -H "$AUTH" -H "Accept: application/vnd.github+json" "$@"); then
-              printf '%s\n' "$out" >&2
-              return 1
-            fi
-            printf '%s' "$out"
-          }
-
-          # Base the branch on the newest commit the fork and upstream share.
-          # Upstream's newer commits change .github/workflows, and a ref that
-          # brings them into the fork is refused to a token without Workflows
-          # write; the fork's own master holds commits upstream never took, which
-          # would ride into the PR. The merge base is in both, so the branch adds
-          # exactly the manifests. The single-ref lookup takes `heads/<branch>`,
-          # not `refs/heads/<branch>`.
-          UP=$(api "$API/repos/$UPSTREAM/compare/master...${FORK%%/*}:${FORK#*/}:master" \
-            | jq -er .merge_base_commit.sha)
-          if api "$API/repos/$FORK/git/ref/heads/$BR" >/dev/null 2>&1; then
-            api -X PATCH "$API/repos/$FORK/git/refs/heads/$BR" \
-              -d "{\"sha\":\"$UP\",\"force\":true}" >/dev/null
-          else
-            api -X POST "$API/repos/$FORK/git/refs" \
-              -d "{\"ref\":\"refs/heads/$BR\",\"sha\":\"$UP\"}" >/dev/null
-          fi
 
           # Build the three manifests in a temp dir.
           mkdir -p "/tmp/manifests/z/zer0ken/xmux/$VERSION"
@@ -152,25 +116,7 @@ jobs:
           ManifestVersion: 1.6.0
           EOF
 
-          # Push each manifest via the fork contents API.
-          for f in zer0ken.xmux.yaml zer0ken.xmux.installer.yaml zer0ken.xmux.locale.en-US.yaml; do
-            B64=$(base64 -w0 "/tmp/manifests/z/zer0ken/xmux/$VERSION/$f")
-            jq -n --arg b64 "$B64" --arg msg "Add zer0ken.xmux $VERSION manifest" --arg br "$BR" \
-              '{message:$msg, content:$b64, branch:$br}' > /tmp/body.json
-            api -X PUT "$API/repos/$FORK/contents/manifests/z/zer0ken/xmux/$VERSION/$f" \
-              --data-binary @/tmp/body.json >/dev/null
-          done
-
-          # Open a PR if one does not already exist for this branch.
-          PR_EXISTS=$(api "$API/repos/$UPSTREAM/pulls?head=zer0ken:$BR" | jq -e 'length')
-          if [ "$PR_EXISTS" = "0" ]; then
-            jq -n --arg head "zer0ken:$BR" --arg title "New version: zer0ken.xmux version $VERSION" \
-              --arg body "Updates the winget manifest to zer0ken.xmux $VERSION. Generated automatically by the xmux winget-sync workflow." \
-              '{title:$title, head:$head, base:"master", body:$body}' > /tmp/pr.json
-            api -X POST "$API/repos/$UPSTREAM/pulls" --data-binary @/tmp/pr.json | jq -er '.html_url'
-          else
-            echo "winget-pkgs PR already exists for $BR."
-          fi
+          VERSION="$VERSION" MANIFEST_DIR="/tmp/manifests/z/zer0ken/xmux/$VERSION" bash .github/scripts/winget-submit.sh
 
       - name: Skip submission
         if: steps.present.outputs.already == 'true' || env.WINGET_PKGS_TOKEN == ''
