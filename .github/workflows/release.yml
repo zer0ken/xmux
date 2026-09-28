@@ -118,6 +118,11 @@ jobs:
     name: Update packaging manifests
     needs: [build, release]
     runs-on: ubuntu-latest
+    # The distribution channels below publish from exactly the commit this job
+    # pushed, not whatever main is by the time they run.
+    outputs:
+      version: ${{ steps.checksums.outputs.version }}
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -128,6 +133,7 @@ jobs:
           merge-multiple: true
 
       - name: Resolve version and checksums
+        id: checksums
         run: |
           set -euo pipefail
           # Assigned before echoing: `set -e` does not abort on a failing
@@ -140,6 +146,7 @@ jobs:
           LINUX_ARM_SHA=$(sha256sum artifacts/*aarch64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)
           LINUX_INTEL_SHA=$(sha256sum artifacts/*x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "WIN_SHA=$WIN_SHA" >> "$GITHUB_ENV"
           echo "ARM_SHA=$ARM_SHA" >> "$GITHUB_ENV"
           echo "INTEL_SHA=$INTEL_SHA" >> "$GITHUB_ENV"
@@ -211,6 +218,7 @@ jobs:
           EOF
 
       - name: Commit and push to main
+        id: commit
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -222,14 +230,31 @@ jobs:
             git commit -m "packaging: refresh manifests for v$VERSION"
             git push origin HEAD:main
           fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      # Optional: submit the refreshed manifests to the community winget-pkgs
-      # repository. Requires a WINGET_PKGS_TOKEN secret (a PAT able to write to
-      # the zer0ken/winget-pkgs fork and open PRs there).
+  # The two distribution channels depend on the committed manifests and on
+  # nothing of each other, so each is its own job: one refusing (a token without
+  # the right scope) fails that job, visibly, and never skips the other. A failed
+  # channel re-runs alone with `gh run rerun --failed`.
+
+  # Optional: submit the refreshed manifests to the community winget-pkgs
+  # repository. Requires a WINGET_PKGS_TOKEN secret: a classic PAT with
+  # `public_repo`. A fine-grained token can write the zer0ken/winget-pkgs fork
+  # but is refused opening the PR on microsoft/winget-pkgs, which it cannot be
+  # granted.
+  submit-winget:
+    name: Submit to winget-pkgs
+    needs: update-packaging
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.update-packaging.outputs.version }}
+      WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.update-packaging.outputs.sha }}
       - name: Submit to winget-pkgs
         if: env.WINGET_PKGS_TOKEN != ''
-        env:
-          WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
         run: |
           set -euo pipefail
           API=https://api.github.com
@@ -241,10 +266,24 @@ jobs:
           # Every call fails the step on an HTTP error and prints GitHub's reply, so a
           # token that cannot write shows up as a red run instead of a `null` URL.
           api() {
-            curl --fail-with-body -sS -H "$AUTH" -H "Accept: application/vnd.github+json" "$@"
+            local out
+            # A refusal's body goes to stderr: callers discard stdout, and the
+            # message is the only place the reason exists.
+            if ! out=$(curl --fail-with-body -sS -H "$AUTH" -H "Accept: application/vnd.github+json" "$@"); then
+              printf '%s\n' "$out" >&2
+              return 1
+            fi
+            printf '%s' "$out"
           }
 
-          UP=$(api "$API/repos/$UPSTREAM/commits/master" | jq -er .sha)
+          # Base the branch on the newest commit the fork and upstream share.
+          # Upstream's newer commits change .github/workflows, and a ref that
+          # brings them into the fork is refused to a token without Workflows
+          # write; the fork's own master holds commits upstream never took, which
+          # would ride into the PR. The merge base is in both, so the branch adds
+          # exactly the manifests.
+          UP=$(api "$API/repos/$UPSTREAM/compare/master...${FORK%%/*}:${FORK#*/}:master" \
+            | jq -er .merge_base_commit.sha)
           # The single-ref lookup takes `heads/<branch>`, not `refs/heads/<branch>`.
           if api "$API/repos/$FORK/git/ref/heads/$BR" >/dev/null 2>&1; then
             api -X PATCH "$API/repos/$FORK/git/refs/heads/$BR" \
@@ -284,14 +323,23 @@ jobs:
             echo "Posted Microsoft policy agreement on winget-pkgs PR #$PR_NUM."
           fi
 
-      # Optional: sync the refreshed formula into the homebrew-xmux tap repo.
-      # The GitHub token is scoped to this repo, so pushing to the separate
-      # tap repo needs a dedicated HOMEBREW_TAP_TOKEN secret (a PAT able to
-      # write to zer0ken/homebrew-xmux).
+  # Optional: sync the refreshed formula into the homebrew-xmux tap repo. The
+  # GitHub token is scoped to this repo, so pushing to the separate tap repo
+  # needs a dedicated HOMEBREW_TAP_TOKEN secret (a PAT able to write to
+  # zer0ken/homebrew-xmux).
+  sync-homebrew:
+    name: Sync Homebrew tap
+    needs: update-packaging
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.update-packaging.outputs.version }}
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.update-packaging.outputs.sha }}
       - name: Sync Homebrew tap
         if: env.HOMEBREW_TAP_TOKEN != ''
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
           TAP=zer0ken/homebrew-xmux
