@@ -50,6 +50,14 @@ impl Console {
         let _ = self.child.kill();
     }
 
+    /// Whether the child has already exited, without waiting for it. The reader's EOF is
+    /// not that signal everywhere: a Windows pseudoconsole keeps its output pipe open
+    /// until the console itself closes, so a child that exited there leaves a reader that
+    /// never disconnects while this console lives.
+    pub fn has_exited(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
+    }
+
     /// Waits for the child and returns its exit code, dropping the control channel first
     /// so the control thread releases the master. Blocking, and bounded only by the
     /// child: call it from a thread that may wait.
@@ -191,5 +199,46 @@ mod tests {
             "the console reported the cursor position to the child: {seen:?}"
         );
         let _ = console.wait();
+    }
+
+    /// A child that is gone says so without a wait, so a caller polling on a quiet tap
+    /// learns the conversation ended on the platforms whose reader never disconnects.
+    #[test]
+    fn an_exited_child_is_seen_without_waiting() {
+        let (mut console, _tap) = spawn_console(&sh("exit 3"), &[]).expect("spawn");
+        assert!(poll_exited(&mut console), "the exit was seen");
+        assert_eq!(console.wait(), Some(3));
+    }
+}
+
+/// Polls `has_exited` for up to ten seconds.
+#[cfg(test)]
+fn poll_exited(console: &mut Console) -> bool {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < end {
+        if console.has_exited() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
+/// The Windows half of the exit mechanics: a pseudoconsole keeps its output pipe open
+/// after the child exits, so the tap never disconnects and `has_exited` is the only word
+/// that the conversation ended.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn an_exited_child_is_seen_while_the_tap_stays_connected() {
+        let argv: Vec<String> = ["cmd", "/c", "exit 3"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (mut console, _tap) = spawn_console(&argv, &[]).expect("spawn");
+        assert!(poll_exited(&mut console), "the exit was seen");
+        assert_eq!(console.wait(), Some(3));
     }
 }

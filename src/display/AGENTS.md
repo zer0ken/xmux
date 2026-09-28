@@ -62,6 +62,10 @@ back to the app, which owns the registry.
   because a caller that must RECOGNISE something in the stream needs the stream. It
   emulates no screen: a child that asks where the cursor is is told the top-left corner,
   which keeps it talking and costs nothing, since nobody is looking at what it draws.
+  The reader's EOF is not the child's exit everywhere: a Windows pseudoconsole keeps its
+  output pipe open until the console closes, and the console holds its master until it
+  is waited on, so a caller that needs to know the child is gone asks the child
+  (`has_exited`) rather than waiting for the stream to end.
 - Reading one environment variable out of a live attach child is its own seam,
   beside the attachment. It answers what the running process holds NOW, not what
   the spawn was given, which is the only way to observe a mux that moves its
