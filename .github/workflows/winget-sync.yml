@@ -9,8 +9,9 @@
 # if that version is not yet present in winget-pkgs it opens a fresh submission
 # PR. It therefore also self-heals the gap left by 0.5.0 / 0.6.0.
 #
-# Requires a WINGET_PKGS_TOKEN secret: a PAT able to write to the
-# zer0ken/winget-pkgs fork and open PRs against microsoft/winget-pkgs.
+# Requires a WINGET_PKGS_TOKEN secret: a classic PAT with `public_repo`. A
+# fine-grained token can write the zer0ken/winget-pkgs fork but is refused
+# opening the PR on microsoft/winget-pkgs, which it cannot be granted.
 
 name: winget-sync
 
@@ -99,9 +100,15 @@ jobs:
             printf '%s' "$out"
           }
 
-          # Sync the fork branch onto the latest upstream master. The single-ref
-          # lookup takes `heads/<branch>`, not `refs/heads/<branch>`.
-          UP=$(api "$API/repos/$UPSTREAM/commits/master" | jq -er .sha)
+          # Base the branch on the newest commit the fork and upstream share.
+          # Upstream's newer commits change .github/workflows, and a ref that
+          # brings them into the fork is refused to a token without Workflows
+          # write; the fork's own master holds commits upstream never took, which
+          # would ride into the PR. The merge base is in both, so the branch adds
+          # exactly the manifests. The single-ref lookup takes `heads/<branch>`,
+          # not `refs/heads/<branch>`.
+          UP=$(api "$API/repos/$UPSTREAM/compare/master...${FORK%%/*}:${FORK#*/}:master" \
+            | jq -er .merge_base_commit.sha)
           if api "$API/repos/$FORK/git/ref/heads/$BR" >/dev/null 2>&1; then
             api -X PATCH "$API/repos/$FORK/git/refs/heads/$BR" \
               -d "{\"sha\":\"$UP\",\"force\":true}" >/dev/null
