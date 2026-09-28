@@ -503,14 +503,16 @@ no function, and no test, so renaming code is never a documentation change.
   occurrence, so the first is kept, the scale is kept, and a repeating internal error
   cannot bury the file. A panic that ends the app is always written whole.
 
-- **FR-D8** - One command installs xmux, on every OS with a published build. The
-  install script reads the OS and the architecture from the machine it runs on,
-  downloads that build from the release, and refuses to install it unless its SHA-256
-  matches the checksum the release publishes. It reports where the launcher went and,
-  when that directory is not on `PATH`, either adds it or states exactly what to add;
-  it writes only the user's own `PATH`, never the machine's, so it needs no elevation.
-  A named version installs instead of the newest one, which is what makes going back to
-  an older build a command rather than a manual download.
+- **FR-D8** - One command installs xmux, on every OS with a published build and from
+  every shell that OS ships: `sh` on unix-likes, and both PowerShell and CMD on Windows,
+  each of which ends in the same install. The install script reads the OS and the
+  architecture from the machine it runs on, downloads that build from the release, and
+  refuses to install it unless its SHA-256 matches the checksum the release publishes.
+  It reports where the launcher went and, when that directory is not on `PATH`, either
+  adds it or states exactly what to add; it writes only the user's own `PATH`, never the
+  machine's, so it needs no elevation. A named version installs instead of the newest
+  one, which is what makes going back to an older build a command rather than a manual
+  download.
 - **FR-D9** - Installing a version never writes the binary a running xmux is
   executing. Each version goes into a directory named after it, and only the launcher
   is repointed, so an upgrade during a session leaves every running instance on the

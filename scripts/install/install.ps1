@@ -13,10 +13,10 @@ new build in its place. The renamed file is left for a later run to clean up,
 because the process still holding it cannot delete its own image.
 
 .EXAMPLE
-irm https://raw.githubusercontent.com/zer0ken/xmux/main/scripts/install/install.ps1 | iex
+irm https://github.com/zer0ken/xmux/releases/latest/download/install.ps1 | iex
 
 .EXAMPLE
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/zer0ken/xmux/main/scripts/install/install.ps1))) -Version 0.9.6
+& ([scriptblock]::Create((irm https://github.com/zer0ken/xmux/releases/latest/download/install.ps1))) -Version 0.9.6
 #>
 [CmdletBinding()]
 param(
