@@ -238,34 +238,36 @@ jobs:
           BR="add/zer0ken.xmux.v${VERSION}"
           AUTH="Authorization: Bearer $WINGET_PKGS_TOKEN"
 
-          UP=$(curl -s -H "$AUTH" "$API/repos/$UPSTREAM/commits/master" | jq -r .sha)
-          REF="refs/heads/$BR"
-          if curl -s -H "$AUTH" "$API/repos/$FORK/git/ref/$REF" | jq -e '.ref' >/dev/null 2>&1; then
-            curl -s -X PATCH -H "$AUTH" -H "Accept: application/vnd.github+json" \
-              "$API/repos/$FORK/git/refs/$BR" \
+          # Every call fails the step on an HTTP error and prints GitHub's reply, so a
+          # token that cannot write shows up as a red run instead of a `null` URL.
+          api() {
+            curl --fail-with-body -sS -H "$AUTH" -H "Accept: application/vnd.github+json" "$@"
+          }
+
+          UP=$(api "$API/repos/$UPSTREAM/commits/master" | jq -er .sha)
+          # The single-ref lookup takes `heads/<branch>`, not `refs/heads/<branch>`.
+          if api "$API/repos/$FORK/git/ref/heads/$BR" >/dev/null 2>&1; then
+            api -X PATCH "$API/repos/$FORK/git/refs/heads/$BR" \
               -d "{\"sha\":\"$UP\",\"force\":true}" >/dev/null
           else
-            curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
-              "$API/repos/$FORK/git/refs" \
-              -d "{\"ref\":\"$REF\",\"sha\":\"$UP\"}" >/dev/null
+            api -X POST "$API/repos/$FORK/git/refs" \
+              -d "{\"ref\":\"refs/heads/$BR\",\"sha\":\"$UP\"}" >/dev/null
           fi
 
           for f in zer0ken.xmux.yaml zer0ken.xmux.installer.yaml zer0ken.xmux.locale.en-US.yaml; do
             B64=$(base64 -w0 "packaging/winget/$f")
             jq -n --arg b64 "$B64" --arg msg "Add zer0ken.xmux $VERSION manifest" --arg br "$BR" \
               '{message:$msg, content:$b64, branch:$br}' > /tmp/body.json
-            curl -s -X PUT -H "$AUTH" -H "Accept: application/vnd.github+json" \
-              "$API/repos/$FORK/contents/manifests/z/zer0ken/xmux/$VERSION/$f" \
+            api -X PUT "$API/repos/$FORK/contents/manifests/z/zer0ken/xmux/$VERSION/$f" \
               --data-binary @/tmp/body.json >/dev/null
           done
 
-          PR_EXISTS=$(curl -s -H "$AUTH" "$API/repos/$UPSTREAM/pulls?head=zer0ken:$BR" | jq 'length')
+          PR_EXISTS=$(api "$API/repos/$UPSTREAM/pulls?head=zer0ken:$BR" | jq -e 'length')
           if [ "$PR_EXISTS" = "0" ]; then
             jq -n --arg head "zer0ken:$BR" --arg title "New version: zer0ken.xmux version $VERSION" \
               --arg body "Updates the winget manifest to zer0ken.xmux $VERSION. Generated automatically by the xmux release workflow." \
               '{title:$title, head:$head, base:"master", body:$body}' > /tmp/pr.json
-            curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
-              "$API/repos/$UPSTREAM/pulls" --data-binary @/tmp/pr.json | jq -r '.html_url'
+            api -X POST "$API/repos/$UPSTREAM/pulls" --data-binary @/tmp/pr.json | jq -er '.html_url'
           else
             echo "winget-pkgs PR already exists for $BR."
           fi
@@ -275,10 +277,9 @@ jobs:
           # `@microsoft-github-policy-service agree` comment from the author; post
           # it as the token owner (the PR author) on every submission, whether the
           # PR was just opened or already exists, so a stale PR is also unblocked.
-          PR_NUM=$(curl -s -H "$AUTH" "$API/repos/$UPSTREAM/pulls?head=zer0ken:$BR" | jq -r '.[0].number')
+          PR_NUM=$(api "$API/repos/$UPSTREAM/pulls?head=zer0ken:$BR" | jq -r '.[0].number')
           if [ -n "$PR_NUM" ] && [ "$PR_NUM" != "null" ]; then
-            curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
-              "$API/repos/$UPSTREAM/issues/$PR_NUM/comments" \
+            api -X POST "$API/repos/$UPSTREAM/issues/$PR_NUM/comments" \
               -d '{"body":"@microsoft-github-policy-service agree"}' >/dev/null
             echo "Posted Microsoft policy agreement on winget-pkgs PR #$PR_NUM."
           fi
