@@ -76,6 +76,7 @@ jobs:
         run: |
           cp scripts/install/install.sh artifacts/install.sh
           cp scripts/install/install.ps1 artifacts/install.ps1
+          cp scripts/install/install.cmd artifacts/install.cmd
       - name: Write checksums
         run: |
           cd artifacts
