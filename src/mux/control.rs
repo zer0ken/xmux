@@ -52,17 +52,30 @@ pub trait ControlProtocol: Send + Sync {
     /// `refresh-client -C <cols>x<rows>` — the client-size formatter.
     fn size_line(&self, cols: u16, rows: u16) -> String;
 
-    /// The correlated query line whose block resolves xmux's OWN display-client tty for
-    /// `host_key`. It must identify the client by something only xmux's own display
-    /// attach could have produced: a client listing cannot, because the mux reports the
-    /// user's own clients and a stale client in the same shape as ours, and targeting one
-    /// of those moves someone else's terminal instead of the display. The wire format is
-    /// the mux's own; the host reader names none of it.
-    fn display_tty_line(&self, host_key: &str) -> String;
+    /// The lines that resolve xmux's OWN display-client tty for `host_key`. They must
+    /// identify the client by something only xmux's own display attach could have
+    /// produced: a client listing cannot, because the mux reports the user's own clients
+    /// and a stale client in the same shape as ours, and targeting one of those moves
+    /// someone else's terminal instead of the display. The wire format is the mux's own;
+    /// the host reader names none of it.
+    fn display_tty_lines(&self, host_key: &str) -> DisplayTtyRead;
 
-    /// Reads the display-client tty out of that query's block body. `None` when the
+    /// Reads the display-client tty out of the `read` line's block body. `None` when the
     /// answer names no tty (the display attach has not landed yet, or left nothing
     /// behind), so the caller leaves the tty unknown rather than targeting a client it
     /// cannot prove is xmux's own.
     fn parse_display_tty(&self, body: &[String]) -> Option<String>;
+}
+
+/// The control lines that read xmux's own display-client tty back, sent in the order the
+/// fields are declared. Each line is one command answering with one reply block, and the
+/// reader pairs every block with the line it answers, so only `read` is a correlated
+/// query; `stage` and `clear` are sent as plain lines whose replies are dropped.
+pub struct DisplayTtyRead {
+    /// Stages the recorded tty where `read` can answer with it.
+    pub stage: String,
+    /// The query whose reply block carries the tty.
+    pub read: String,
+    /// Removes what `stage` left on the mux.
+    pub clear: String,
 }

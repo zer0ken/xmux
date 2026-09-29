@@ -26,7 +26,7 @@ pub mod vocab;
 mod zellij;
 
 pub use abduco::{Abduco, AbducoDriver};
-pub use control::{ControlProtocol, Line, Notif};
+pub use control::{ControlProtocol, DisplayTtyRead, Line, Notif};
 pub use psmux::Psmux;
 pub use screen::Screen;
 pub use tmux::{Tmux, TmuxControl};
