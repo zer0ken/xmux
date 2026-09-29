@@ -74,6 +74,13 @@ impl Transport for Local {
     fn clone_box(&self) -> Box<dyn Transport> {
         Box::new(self.clone())
     }
+
+    fn clone_as(&self, id: &str) -> Box<dyn Transport> {
+        Box::new(Self {
+            id: id.to_string(),
+            ..self.clone()
+        })
+    }
 }
 
 #[cfg(test)]

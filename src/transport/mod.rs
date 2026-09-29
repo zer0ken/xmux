@@ -107,6 +107,12 @@ pub trait Transport: Send + Sync {
     /// Clones into a fresh box — a spawned poll task needs an owned transport, and a
     /// trait object cannot derive `Clone`.
     fn clone_box(&self) -> Box<dyn Transport>;
+
+    /// The same machine, reached exactly as this transport reaches it (the recorded
+    /// login and shell family included), answering as the source `id`. A source found on
+    /// a machine after it connected is built from this, so its first command already
+    /// knows what the machine's probe and login established.
+    fn clone_as(&self, id: &str) -> Box<dyn Transport>;
 }
 
 impl Clone for Box<dyn Transport> {
@@ -160,6 +166,9 @@ impl Transport for Box<dyn Transport> {
     }
     fn clone_box(&self) -> Box<dyn Transport> {
         (**self).clone_box()
+    }
+    fn clone_as(&self, id: &str) -> Box<dyn Transport> {
+        (**self).clone_as(id)
     }
 }
 

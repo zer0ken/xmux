@@ -450,15 +450,18 @@ impl Env {
     /// added on machines the fresh roster still names.
     ///
     /// The roster names MACHINES; which muxes a machine serves is answered by probing the
-    /// machine, and resolving a roster probes nothing remote. Dropping a carried source
-    /// would make every re-scan tear a discovered mux card down and re-find it a moment
-    /// later.
+    /// machine, and resolving a roster probes nothing remote. A machine that leaves its
+    /// muxes to xmux has no source in the fresh roster at all, so it is named by the host
+    /// list rather than by its sources. Dropping a carried source would make every re-scan
+    /// tear a discovered mux card down and re-find it a moment later.
     pub fn replace_roster(&self, mut fresh: Roster) {
         let mut cur = self.roster.write().expect("roster lock");
+        let auto = fresh.cfg.auto_hosts(&fresh.ssh_aliases, &fresh.wsl_distros);
         let machines: HashSet<&str> = fresh
             .sources
             .iter()
             .map(|s| crate::session::machine_of(&s.alias))
+            .chain(auto.iter().map(String::as_str))
             .collect();
         let named: HashSet<&str> = fresh.sources.iter().map(|s| s.alias.as_str()).collect();
         let carried: Vec<Source> = cur
@@ -474,6 +477,81 @@ impl Env {
         drop(named);
         fresh.sources.extend(carried);
         *cur = fresh;
+    }
+
+    /// Asks each host on the roster that leaves its muxes to xmux which of them it
+    /// serves, and registers a source for every mux that answered, named the way a
+    /// written list names them. `only` narrows the question to one host. Returns the
+    /// hosts that gained no source, in roster order.
+    ///
+    /// The app asks this of a host once it connects; a CLI command has no connected host
+    /// to wait on, so it asks here, as part of the one request it is, and in the same
+    /// order: the host's reachability probe first, and its muxes only once it connected.
+    /// Hosts are asked concurrently, and each host one command at a time.
+    pub async fn discover_hosts(&self, only: Option<&str>) -> Vec<Unanswered> {
+        let machines: Vec<String> = {
+            let r = self.roster();
+            r.cfg
+                .auto_hosts(&r.ssh_aliases, &r.wsl_distros)
+                .into_iter()
+                .filter(|m| only.is_none_or(|o| o == m))
+                .filter(|m| {
+                    !r.sources
+                        .iter()
+                        .any(|s| crate::session::machine_of(&s.alias) == m)
+                })
+                .collect()
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY));
+        let mut set = tokio::task::JoinSet::new();
+        for (i, machine) in machines.iter().cloned().enumerate() {
+            let sem = sem.clone();
+            let transport = crate::transport::kind_for(
+                &machine,
+                machine.clone(),
+                current_os(),
+                &self.xmux_dir,
+                None,
+            )
+            .transport();
+            set.spawn(async move {
+                let _permit = sem.acquire().await.expect("semaphore not closed");
+                (i, ask_host(transport).await)
+            });
+        }
+        let mut answers: Vec<(usize, Result<Vec<String>, String>)> = set.join_all().await;
+        answers.sort_by_key(|(i, _)| *i);
+        let mut unanswered = Vec::new();
+        for (i, answer) in answers {
+            let machine = &machines[i];
+            let found = match answer {
+                Ok(found) => found,
+                Err(reason) => {
+                    unanswered.push(Unanswered {
+                        host: machine.clone(),
+                        reason: Some(reason),
+                    });
+                    continue;
+                }
+            };
+            if found.is_empty() {
+                unanswered.push(Unanswered {
+                    host: machine.clone(),
+                    reason: None,
+                });
+            }
+            for spec in config::host_specs_for(machine, &found) {
+                self.add_source(source::for_machine_mux(
+                    machine,
+                    &spec.bin,
+                    spec.id,
+                    current_os(),
+                    &self.xmux_dir,
+                    None,
+                ));
+            }
+        }
+        unanswered
     }
 
     /// Probes every source and returns the merged, name-ordered host/session
@@ -568,6 +646,33 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
     (lines, None)
 }
 
+/// A host [`Env::discover_hosts`] registered no source for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unanswered {
+    pub host: String,
+    /// Why the host could not be asked, or `None` when it answered and no mux xmux
+    /// supports is installed there.
+    pub reason: Option<String>,
+}
+
+/// One host's reachability probe, then, once it connected, its mux discovery over the
+/// shell family the probe read. `Err` carries the reason the host could not be asked.
+async fn ask_host(
+    mut transport: Box<dyn crate::transport::Transport>,
+) -> Result<Vec<String>, String> {
+    use crate::model::source::Runner;
+    if transport.is_remote() {
+        if let Some(argv) = transport.raw_shell_argv(crate::transport::vocab::SHELL_PROBE) {
+            let out = source::ExecRunner
+                .run(&argv[0], &argv[1..])
+                .await
+                .map_err(|e| e.to_string())?;
+            transport.set_remote_shell(crate::transport::vocab::RemoteShell::from_probe(&out));
+        }
+    }
+    crate::mux::host_muxes(&*transport, &source::ExecRunner).await
+}
+
 /// The live [`Ops`] implementation over a [`Env`].
 struct EnvOps {
     env: Arc<Env>,
@@ -631,8 +736,19 @@ impl Ops for EnvOps {
     }
 
     fn login_argv(&self, source: &str, login: &crate::transport::Login) -> Option<Vec<String>> {
-        let src = self.source(source).ok()?;
-        src.host().transport.login_argv(login)
+        // A login authenticates the MACHINE, which may serve no source yet: a host whose
+        // muxes xmux asks for has none until it answers, and it cannot answer until the
+        // login lets xmux in.
+        let machine = crate::session::machine_of(source);
+        crate::transport::kind_for(
+            machine,
+            machine.to_string(),
+            current_os(),
+            &self.env.xmux_dir,
+            None,
+        )
+        .transport()
+        .login_argv(login)
     }
 
     fn login_remote(&self, register_key: bool) -> String {
@@ -903,6 +1019,41 @@ mod tests {
             ],
             "the carried source keeps its place behind the ones the roster named"
         );
+    }
+
+    #[test]
+    fn replace_roster_carries_what_a_host_that_writes_no_mux_answered() {
+        // A host that leaves its muxes to xmux has no source in any fresh roster: every
+        // source it has came from its own answer. The roster still names the HOST, so
+        // those sources are carried rather than dropped on every re-scan.
+        let env = env_with(&["win"]);
+        env.replace_roster(Roster {
+            ssh_aliases: vec!["win".to_string()],
+            ..Default::default()
+        });
+        assert_eq!(aliases_of(&env), vec!["win".to_string()]);
+    }
+
+    #[test]
+    fn a_host_with_no_source_yet_can_be_logged_into() {
+        // A login authenticates the machine, and a host whose muxes xmux asks for has no
+        // source until it answers, which a locked host cannot do before the login.
+        let env = Arc::new(Env::new(
+            Roster {
+                ssh_aliases: vec!["win".to_string()],
+                ..Default::default()
+            },
+            "C-g".into(),
+            PathBuf::from("."),
+            None,
+            None,
+        ));
+        assert!(env.source("win").is_none(), "precondition");
+        let argv = env
+            .ops()
+            .login_argv("win", &crate::transport::Login::default())
+            .expect("an ssh host has a login");
+        assert!(argv.iter().any(|a| a == "win"), "{argv:?}");
     }
 
     #[test]

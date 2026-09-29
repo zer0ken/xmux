@@ -13,8 +13,22 @@ fn fake_source(alias: &str) -> Source {
     }
 }
 
+/// A roster whose every ssh host writes `tmux` as its mux, so the host registry builds
+/// the same sources the list names.
 fn fake_roster(aliases: &[&str]) -> crate::provision::env::Roster {
+    let cfg = crate::provision::config::Config {
+        hosts: aliases
+            .iter()
+            .filter(|a| **a != crate::session::LOCAL_SOURCE)
+            .map(|a| crate::provision::config::HostConfig {
+                ssh: a.to_string(),
+                mux: "tmux".into(),
+            })
+            .collect(),
+        ..Default::default()
+    };
     crate::provision::env::Roster {
+        cfg,
         sources: aliases.iter().map(|a| fake_source(a)).collect(),
         local_muxes: vec!["tmux".into()],
         ssh_aliases: aliases
@@ -27,12 +41,30 @@ fn fake_roster(aliases: &[&str]) -> crate::provision::env::Roster {
 }
 
 fn fake_env_with_sources(aliases: &[&str]) -> Env {
+    fake_env_from(fake_roster(aliases))
+}
+
+/// An env over `fake_roster(written)` plus the ssh hosts `auto`, which write no mux and so
+/// have no source until they answer which muxes they serve.
+fn fake_env_with_auto_hosts(written: &[&str], auto: &[&str]) -> Env {
+    fake_env_from(auto_roster(written, auto))
+}
+
+fn auto_roster(written: &[&str], auto: &[&str]) -> crate::provision::env::Roster {
+    let mut roster = fake_roster(written);
+    roster
+        .ssh_aliases
+        .extend(auto.iter().map(|a| a.to_string()));
+    roster
+}
+
+fn fake_env_from(roster: crate::provision::env::Roster) -> Env {
     // A real throwaway dir, not `.`: tests that exercise pref persistence (e.g.
     // resize_axis saving nav_height) write `<xmux_dir>/<file>`, and `.` would
     // pollute the repository root with stray pref files.
     let xmux_dir = std::env::temp_dir().join(format!("xmux-test-env-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&xmux_dir);
-    Env::new(fake_roster(aliases), "C-g".into(), xmux_dir, None, None)
+    Env::new(roster, "C-g".into(), xmux_dir, None, None)
 }
 
 #[test]
@@ -1246,7 +1278,7 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
     );
     rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
         machine: "prod".into(),
-        muxes: vec!["tmux".into(), "zellij".into()],
+        muxes: Ok(vec!["tmux".into(), "zellij".into()]),
     });
     // tmux is what `prod` was already painted as, so it is left exactly as it is: its
     // BARE id is what the frozen order, the saved selection, and anything the user typed
@@ -1293,7 +1325,7 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
     let before = rt.state.groups.len();
     rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
         machine: "prod".into(),
-        muxes: vec!["tmux".into(), "zellij".into()],
+        muxes: Ok(vec!["tmux".into(), "zellij".into()]),
     });
     assert_eq!(rt.state.groups.len(), before, "no duplicate card");
 }
@@ -1309,7 +1341,7 @@ async fn a_discovered_source_sorts_into_place_and_leaves_the_selection_put() {
     };
     rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
         machine: "db".into(),
-        muxes: vec!["zellij".into()],
+        muxes: Ok(vec!["zellij".into()]),
     });
     let after: Vec<String> = rt.state.groups.iter().map(|g| g.source.clone()).collect();
     assert_eq!(
@@ -1323,6 +1355,196 @@ async fn a_discovered_source_sorts_into_place_and_leaves_the_selection_put() {
         selected,
         "the selection stays put"
     );
+}
+
+fn cards(rt: &Runtime) -> Vec<String> {
+    rt.state.groups.iter().map(|g| g.source.clone()).collect()
+}
+
+#[tokio::test]
+async fn a_host_that_writes_no_mux_is_one_card_with_no_source() {
+    // Nothing is assumed about a host that left its muxes to xmux: it is a card that
+    // reads the host alone and spins, and it has no source for any op to reach.
+    let rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    assert_eq!(cards(&rt), vec!["local", "win"]);
+    assert!(rt.state.scanning.contains("win"), "the card spins");
+    assert!(rt.hosts.get("win").is_none(), "no mux is assumed for it");
+    assert!(rt.env.source("win").is_none());
+    assert_eq!(
+        rt.hosts.machines(),
+        vec!["local", "win"],
+        "the host is still probed"
+    );
+}
+
+#[tokio::test]
+async fn a_windows_host_serving_psmux_is_one_psmux_card() {
+    // psmux installs a `tmux` alias of itself. Only the host's own answer decides what it
+    // serves, and it answers psmux alone, so it is one card, on psmux's own binary.
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(vec!["psmux".into()]),
+    });
+    assert_eq!(
+        cards(&rt),
+        vec!["local", "win"],
+        "one card, under the host's name"
+    );
+    let h = rt.hosts.get("win").expect("the answered source");
+    assert_eq!((h.mux.kind(), h.mux.bin()), ("psmux", "psmux"));
+    assert!(
+        h.detected,
+        "the answer came from psmux's own identity probe"
+    );
+    assert_eq!(
+        rt.env.source("win").expect("the ops know it").binary,
+        "psmux"
+    );
+    assert!(
+        rt.state.scanning.contains("win"),
+        "the card spins until its first listing"
+    );
+}
+
+#[tokio::test]
+async fn a_host_answering_several_muxes_has_a_card_for_each() {
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(vec!["psmux".into(), "zellij".into()]),
+    });
+    assert_eq!(
+        cards(&rt),
+        vec!["local", "win:psmux", "win:zellij"],
+        "each mux names itself, and the card that stood for the host is gone"
+    );
+}
+
+#[tokio::test]
+async fn a_host_where_no_mux_answers_has_no_card() {
+    // The host connected and answered nothing, so there is nothing to show: it has no
+    // card, exactly as this box has no local card when nothing is installed here.
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(Vec::new()),
+    });
+    assert_eq!(cards(&rt), vec!["local"]);
+    assert!(rt.hosts.get("win").is_none());
+}
+
+#[tokio::test]
+async fn a_host_that_could_not_be_asked_keeps_its_card_with_the_reason() {
+    // A connection that failed while the host was being asked says nothing about what it
+    // serves, so the card stays, settled, and says why; it is not taken for a host with
+    // nothing installed.
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Err("command failed (exit 255): Connection reset".into()),
+    });
+    assert_eq!(cards(&rt), vec!["local", "win"]);
+    assert!(!rt.state.scanning.contains("win"), "settled");
+    let g = rt.state.groups.iter().find(|g| g.source == "win").unwrap();
+    assert!(g.err.as_deref().unwrap().contains("Connection reset"));
+    // Asked again (a re-scan or a login), it answers, and its source takes the card over
+    // as in flight rather than inheriting the failure.
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(vec!["psmux".into()]),
+    });
+    let g = rt.state.groups.iter().find(|g| g.source == "win").unwrap();
+    assert!(g.err.is_none());
+    assert!(rt.state.scanning.contains("win"));
+}
+
+#[tokio::test]
+async fn a_failed_ask_leaves_a_host_that_serves_sources_alone() {
+    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "prod".into(),
+        muxes: Err("timed out".into()),
+    });
+    let g = rt.state.groups.iter().find(|g| g.source == "prod").unwrap();
+    assert!(g.err.is_none(), "its own source reports for it");
+    assert!(rt.state.scanning.contains("prod"));
+}
+
+#[tokio::test]
+async fn the_card_of_a_host_with_no_source_says_how_the_host_is_reached() {
+    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+        roster: Box::new(auto_roster(&["prod"], &["win"])),
+    });
+    let reach = rt
+        .state
+        .chrome
+        .source_reach
+        .get("win")
+        .expect("the host has a reach entry");
+    assert!(reach.machine.contains("win"), "{reach:?}");
+    assert!(!reach.probe.is_empty(), "the reachability probe is shown");
+    assert!(
+        reach.mux.is_empty() && reach.kind.is_empty(),
+        "no mux is named"
+    );
+}
+
+#[tokio::test]
+async fn a_source_found_on_a_host_is_reached_as_the_host_is() {
+    // The host's probe read its shell family before it was asked for its muxes, so the
+    // source it answered with composes its first command for that family.
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.hosts.for_each_transport_of("win", |t| {
+        t.set_remote_shell(crate::transport::vocab::RemoteShell::Other)
+    });
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(vec!["psmux".into()]),
+    });
+    let h = rt.hosts.get("win").unwrap();
+    assert_eq!(
+        h.transport.remote_shell(),
+        crate::transport::vocab::RemoteShell::Other
+    );
+    assert_eq!(
+        h.transport.host_id(),
+        "win",
+        "it answers as its own source id"
+    );
+}
+
+#[tokio::test]
+async fn a_re_scan_keeps_what_a_host_that_writes_no_mux_answered() {
+    // The fresh roster names the host and none of its sources, since those came from its
+    // own answer. Every registry keeps them, so a re-scan tears no card down.
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(vec!["psmux".into()]),
+    });
+    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+        roster: Box::new(auto_roster(&[], &["win"])),
+    });
+    assert!(rt.hosts.get("win").is_some(), "the registry keeps it");
+    assert!(rt.env.source("win").is_some(), "the off-loop ops keep it");
+    assert_eq!(cards(&rt), vec!["local", "win"], "and the card stays put");
+}
+
+#[tokio::test]
+async fn a_re_scan_adds_and_drops_the_card_of_a_host_that_writes_no_mux() {
+    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+        roster: Box::new(auto_roster(&["prod"], &["win"])),
+    });
+    assert_eq!(cards(&rt), vec!["local", "prod", "win"]);
+    assert!(rt.state.scanning.contains("win"));
+    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+        roster: Box::new(fake_roster(&["prod"])),
+    });
+    assert_eq!(cards(&rt), vec!["local", "prod"]);
+    assert!(!rt.hosts.machines().contains(&"win".to_string()));
 }
 
 fn test_rt(env: Env) -> Runtime {
@@ -1348,7 +1570,7 @@ fn test_rt(env: Env) -> Runtime {
         env.local_socket.clone(),
     );
     drop(roster);
-    let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
+    let mut state = crate::state::State::from_sources(hosts.card_ids());
     let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
     let ops = env.ops();
     let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();

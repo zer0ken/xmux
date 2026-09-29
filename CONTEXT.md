@@ -342,7 +342,9 @@ UI elements a user perceives as distinct things:
   paints and scans but refuses every operation, or the reverse.
 - mux discovery - how a host's mux list is decided when it named no mux (`mux` unset
   or `auto`): every mux xmux supports is asked whether it is installed there, and each one
-  that answers becomes a source. Two halves, in that order: the candidate set is what xmux
+  that answers becomes a source. No mux is assumed for such a host: until it answers it
+  serves no source and its card reads the host alone, and a host where nothing answers
+  has no card. Two halves, in that order: the candidate set is what xmux
   can DRIVE, and the question asked of each candidate is the same identity probe a
   configured mux gets, so a binary carrying a mux's
   name while being another mux is not that mux (where psmux answers, a `tmux` that answers
@@ -354,8 +356,11 @@ UI elements a user perceives as distinct things:
   two cannot disagree on which sources exist. A REMOTE machine is asked only AFTER it is
   found to CONNECT: discovery leads with a bounded machine `reachability` probe, and mux
   discovery (one task per machine, which nothing may wait for) fires only for a connected
-  one. The answer arrives as a source event, and the loop adds a scanning card for every
-  mux the machine does not already serve. That add is
+  one, over the machine's own transport, which carries what its reachability probe and
+  login established into every source found on it. The answer arrives as a source event,
+  and the loop adds a scanning card for every mux the machine does not already serve. A
+  machine that served nothing yet names its sources as a written list would (one mux
+  takes the bare host alias, several are each qualified). Otherwise the add is
   ADD-ONLY: an added source's id is always qualified (`prod:zellij`) and the mux already
   served keeps the id it was painted with, because that id is what the deterministic
   order, the
@@ -503,9 +508,10 @@ value on a card.
 
 - A mux is named only when it is CONFIRMED. A settled host's enumeration
   answered through its mux, and a source id that names its own mux was
-  resolved from what the machine actually serves. An unreachable host's
-  assumed mux stays off its card: the card reads the host alone rather
-  than claim a mux the failed probe never confirmed.
+  resolved from what the machine actually serves. No mux is assumed for a
+  host that named none, and an unreachable host's written mux stays off its
+  card: the card reads the host alone rather than claim a mux the failed
+  probe never confirmed.
 - An answer that has not arrived is shown as in flight, never as a value.
   A scanning host's card turns the spinner trailing its line, and no card spins
   for a session once its host has resolved.

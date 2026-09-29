@@ -277,7 +277,7 @@ check = true                          # ask once a day whether a newer release e
 
 [[hosts]]
 ssh = "prod"          # an ssh-config alias
-mux = "tmux"          # defaults to "tmux" when omitted
+mux = "tmux"          # omitted or "auto": every mux the host answers it has
 ```
 
 - **Live reload.** The `[ui]` presentation settings (theme, the per-role colour

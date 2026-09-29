@@ -209,6 +209,20 @@ fn print_stderr(line: &str) {
 /// resolves, so a reachable source shows up immediately instead of the command
 /// looking frozen while a dead host is still timing out.
 async fn run_ls(env: &Env) -> i32 {
+    // A host that could not be asked which muxes it serves is reported like a source that
+    // could not be listed; one that answered with none has nothing to list.
+    let unreached: Vec<crate::ui::tree::Group> = env
+        .discover_hosts(None)
+        .await
+        .into_iter()
+        .filter_map(|u| {
+            Some(crate::ui::tree::Group {
+                source: u.host,
+                err: Some(u.reason?),
+                sessions: Vec::new(),
+            })
+        })
+        .collect();
     let mut rx = env.scan_stream().await;
     let mut total = 0usize;
     let mut reachable = 0usize;
@@ -217,7 +231,11 @@ async fn run_ls(env: &Env) -> i32 {
     // must not open a gap on stdout (and a source with sessions neither on stderr).
     let mut out_emitted = false;
     let mut err_emitted = false;
-    while let Some(g) = rx.recv().await {
+    let mut unreached = unreached.into_iter();
+    while let Some(g) = match unreached.next() {
+        Some(g) => Some(g),
+        None => rx.recv().await,
+    } {
         total += 1;
         let (lines, unreachable) = ls_lines_one(&g);
         if unreachable.is_none() {
@@ -249,7 +267,34 @@ async fn run_ls(env: &Env) -> i32 {
 
 /// Attaches one `source`/`session` without the tree.
 async fn run_direct_attach(env: &Env, source: &str, session: &str) -> i32 {
+    let machine = crate::session::machine_of(source);
+    let unanswered = if env.source(source).is_none() {
+        env.discover_hosts(Some(machine)).await
+    } else {
+        Vec::new()
+    };
     let Some(src) = env.source(source) else {
+        if let Some(u) = unanswered.first() {
+            match &u.reason {
+                Some(reason) => eprintln!("xmux: {machine}: {reason}"),
+                None => eprintln!("xmux: {machine}: no mux answered"),
+            }
+            return 1;
+        }
+        let served: Vec<String> = env
+            .source_list()
+            .into_iter()
+            .map(|s| s.alias)
+            .filter(|id| crate::session::machine_of(id) == machine)
+            .collect();
+        if !served.is_empty() {
+            eprintln!(
+                "xmux: unknown source {:?} ({machine} serves {})",
+                source,
+                served.join(", ")
+            );
+            return 1;
+        }
         eprintln!(
             "xmux: unknown source {:?} (not local or an ssh-config host)",
             source
@@ -360,7 +405,14 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
             .join(", ")
     );
 
+    let unanswered = env.discover_hosts(None).await;
     println!("sources:");
+    for u in unanswered {
+        match u.reason {
+            Some(reason) => print_outcome(&u.host, Err(reason)),
+            None => println!("  {}: no mux answered", u.host),
+        }
+    }
     for s in &env.source_list() {
         // The pair reads as one label, the way every surface shows it. The binary follows
         // only where it is not the mux's own name (an alias, a path), which is a fact the
@@ -385,19 +437,24 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
             };
             crate::session::source_label(crate::session::machine_of(&s.alias), mux)
         };
-        // A failure the user could answer inside the app is reported as such, in the
-        // word the app's own cards use. A diagnostic that called every failure
-        // unreachable would send the user hunting for a dead machine when the machine
-        // answered, or when the only thing missing was an address.
-        match outcome {
-            Ok(n) => println!("  {label}{via}: ok, {n} session(s)"),
-            Err(e) if crate::mux::is_blocked(&e) => {
-                println!("  {label}{via}: LOGIN REQUIRED — {e}")
-            }
-            Err(e) => println!("  {label}{via}: UNREACHABLE — {e}"),
-        }
+        print_outcome(&format!("{label}{via}"), outcome);
     }
     i32::from(config_broken)
+}
+
+/// One `doctor` source line: what the thing `label` names answered.
+fn print_outcome(label: &str, outcome: Result<usize, String>) {
+    // A failure the user could answer inside the app is reported as such, in the
+    // word the app's own cards use. A diagnostic that called every failure
+    // unreachable would send the user hunting for a dead machine when the machine
+    // answered, or when the only thing missing was an address.
+    match outcome {
+        Ok(n) => println!("  {label}: ok, {n} session(s)"),
+        Err(e) if crate::mux::is_blocked(&e) => {
+            println!("  {label}: LOGIN REQUIRED — {e}")
+        }
+        Err(e) => println!("  {label}: UNREACHABLE — {e}"),
+    }
 }
 
 /// Sends one command (or a stdin stream of them) to the instance `id` names. `id` is

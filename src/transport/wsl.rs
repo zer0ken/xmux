@@ -123,6 +123,13 @@ impl Transport for Wsl {
     fn clone_box(&self) -> Box<dyn Transport> {
         Box::new(self.clone())
     }
+
+    fn clone_as(&self, id: &str) -> Box<dyn Transport> {
+        Box::new(Self {
+            id: id.to_string(),
+            ..self.clone()
+        })
+    }
 }
 
 /// The WSL distributions installed on this machine, as MACHINE names (`wsl.Ubuntu-24.04`).
