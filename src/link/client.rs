@@ -167,12 +167,16 @@ impl HostClient {
     /// reports the refusal instead of leaving a command that never went out looking
     /// delivered.
     pub fn capture_display_tty(&self, host_key: &str) -> bool {
-        self.cmd_tx
-            .send(HostCmd::Query {
-                line: self.proto.display_tty_line(host_key),
-                reply: PendingReply::DisplayClientTty,
-            })
-            .is_ok()
+        let lines = self.proto.display_tty_lines(host_key);
+        self.cmd_tx.send(HostCmd::Send(lines.stage)).is_ok()
+            && self
+                .cmd_tx
+                .send(HostCmd::Query {
+                    line: lines.read,
+                    reply: PendingReply::DisplayClientTty,
+                })
+                .is_ok()
+            && self.cmd_tx.send(HostCmd::Send(lines.clear)).is_ok()
     }
 
     /// Move xmux's display client (`display_tty`) to `session` over THIS control

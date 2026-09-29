@@ -404,13 +404,35 @@ mod tests {
     }
 
     #[test]
-    fn display_tty_line_reads_this_instances_own_record_file() {
+    fn display_tty_lines_read_this_instances_own_record_file() {
         use crate::mux::ControlProtocol;
-        // The query names the recording key, so two xmux instances on one host each read
-        // their own file and neither can be handed the other's client.
+        // Every line names the recording key, so two xmux instances on one host each read
+        // their own file through their own buffer and neither can be handed the other's
+        // client.
+        let lines = super::super::TmuxControl.display_tty_lines("jupiter06-solid-osprey");
         assert_eq!(
-            super::super::TmuxControl.display_tty_line("jupiter06-solid-osprey"),
-            "run-shell \"cat /tmp/.xmux-cli-jupiter06-solid-osprey\"\n"
+            lines.stage,
+            "load-buffer -b xmux-cli-jupiter06-solid-osprey /tmp/.xmux-cli-jupiter06-solid-osprey\n"
+        );
+        assert_eq!(
+            lines.read,
+            "show-buffer -b xmux-cli-jupiter06-solid-osprey\n"
+        );
+        assert_eq!(
+            lines.clear,
+            "delete-buffer -b xmux-cli-jupiter06-solid-osprey\n"
+        );
+    }
+
+    #[test]
+    fn display_tty_lines_keep_a_hostile_key_inside_one_argument() {
+        use crate::mux::ControlProtocol;
+        // A key carrying spaces or command separators must not split a line into several
+        // commands, which would shift every later reply off the line it answers.
+        let lines = super::super::TmuxControl.display_tty_lines("a b;c");
+        assert_eq!(
+            lines.stage,
+            "load-buffer -b xmux-cli-a_b_c /tmp/.xmux-cli-a_b_c\n"
         );
     }
 

@@ -4,8 +4,8 @@
 use super::*;
 
 use crate::link::HostEvent;
-use crate::mux::ControlProtocol;
 use crate::mux::{quote_target, SESSION_FORMAT};
+use crate::mux::{ControlProtocol, DisplayTtyRead};
 
 pub mod control_proto;
 pub mod display;
@@ -19,13 +19,11 @@ fn mux_control_argv(bin: &str) -> Vec<String> {
     vec![bin.to_string(), "-CC".to_string(), "attach".to_string()]
 }
 
-/// The per-host file where tmux's display client records its own tty: one file per
-/// shared host so a switch reads back THIS client's tty and moves only it. Under
-/// `/tmp` (present + writable on every POSIX host). `host_key` is sanitized to a safe
-/// filename token so a host id with shell metacharacters cannot break out of the path
-/// when the record prefix is embedded in a remote shell command.
-fn display_tty_path(host_key: &str) -> String {
-    let safe: String = host_key
+/// `host_key` as a safe filename and buffer-name token, so a host id with shell
+/// metacharacters cannot break out of the path when the record prefix is embedded in a
+/// remote shell command, nor out of a control-mode command line.
+fn display_tty_token(host_key: &str) -> String {
+    host_key
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
@@ -34,8 +32,21 @@ fn display_tty_path(host_key: &str) -> String {
                 '_'
             }
         })
-        .collect();
-    format!("/tmp/.xmux-cli-{safe}")
+        .collect()
+}
+
+/// The per-host file where tmux's display client records its own tty: one file per
+/// shared host so a switch reads back THIS client's tty and moves only it. Under
+/// `/tmp` (present + writable on every POSIX host).
+fn display_tty_path(host_key: &str) -> String {
+    format!("/tmp/.xmux-cli-{}", display_tty_token(host_key))
+}
+
+/// The named paste buffer the record file is staged in while the control connection
+/// reads it back. Keyed like the file, so two xmux instances on one server never read
+/// or delete each other's buffer.
+fn display_tty_buffer(host_key: &str) -> String {
+    format!("xmux-cli-{}", display_tty_token(host_key))
 }
 
 /// The shell prefix a shared attach prepends to its remote command so the attach shell
@@ -302,11 +313,20 @@ impl ControlProtocol for TmuxControl {
     /// user's own clients and any client an earlier attach left behind in exactly the same
     /// shape, with nothing in the reply to tell them apart - and a host xmux attaches to
     /// and detaches from repeatedly accumulates them, which is when picking wrong becomes
-    /// likely. `run-shell` hands the command's output back in this query's own reply
-    /// block, so the read rides the open control connection and asks the host for no
-    /// second one.
-    fn display_tty_line(&self, host_key: &str) -> String {
-        format!("run-shell \"cat {}\"\n", display_tty_path(host_key))
+    /// likely.
+    ///
+    /// The file goes through a named paste buffer because `show-buffer` prints into its
+    /// own reply block, while `run-shell` prints its command's output after its block has
+    /// closed, where no reply is read. Every line rides the open control connection and
+    /// asks the host for no second one. A missing file leaves no buffer, so `show-buffer`
+    /// answers with an error that names no tty.
+    fn display_tty_lines(&self, host_key: &str) -> DisplayTtyRead {
+        let buffer = display_tty_buffer(host_key);
+        DisplayTtyRead {
+            stage: format!("load-buffer -b {buffer} {}\n", display_tty_path(host_key)),
+            read: format!("show-buffer -b {buffer}\n"),
+            clear: format!("delete-buffer -b {buffer}\n"),
+        }
     }
 
     fn parse_display_tty(&self, body: &[String]) -> Option<String> {

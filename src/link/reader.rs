@@ -637,6 +637,97 @@ mod tests {
     }
 
     #[test]
+    fn reader_takes_the_tty_from_the_show_buffer_block_of_a_readback() {
+        // A tmux 3.5a readback as the server answers it: one reply block per line, with the
+        // buffer notifications between them. The FIFO holds what the writer pushed for the
+        // three lines, so only the middle block is read as the tty.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        in_flight.lock().unwrap().extend([
+            PendingReply::Ignore,
+            PendingReply::DisplayClientTty,
+            PendingReply::Ignore,
+        ]);
+        let mut events = Vec::new();
+        let lines = [
+            "%begin 1790659557 277 1",
+            "%end 1790659557 277 1",
+            "%paste-buffer-changed xmux-cli-jup-x",
+            "%begin 1790659557 279 1",
+            "/dev/pts/99",
+            "",
+            "%end 1790659557 279 1",
+            "%begin 1790659557 280 1",
+            "%end 1790659557 280 1",
+            "%paste-buffer-deleted xmux-cli-jup-x",
+        ]
+        .map(str::to_string)
+        .into_iter();
+        run_reader(
+            "jup",
+            test_control_proto(),
+            lines,
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
+        let ttys: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                HostEvent::DisplayTty { tty, .. } => Some(tty.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ttys, vec![Some("/dev/pts/99".to_string())]);
+        assert!(
+            in_flight.lock().unwrap().is_empty(),
+            "every line's reply was consumed"
+        );
+    }
+
+    #[test]
+    fn reader_names_no_tty_when_the_record_file_is_missing() {
+        // A tmux 3.5a readback with no record file: load-buffer closes its block cleanly and
+        // prints its complaint after it, and show-buffer answers with an error block. None
+        // of it names a tty.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        in_flight.lock().unwrap().extend([
+            PendingReply::Ignore,
+            PendingReply::DisplayClientTty,
+            PendingReply::Ignore,
+        ]);
+        let mut events = Vec::new();
+        let lines = [
+            "%begin 1790660989 278 1",
+            "%end 1790660989 278 1",
+            "/tmp/.xmux-cli-jup-x: No such file or directory",
+            "%begin 1790660989 279 1",
+            "no buffer xmux-cli-jup-x",
+            "%error 1790660989 279 1",
+            "%begin 1790660989 280 1",
+            "unknown buffer: xmux-cli-jup-x",
+            "%error 1790660989 280 1",
+        ]
+        .map(str::to_string)
+        .into_iter();
+        run_reader(
+            "jup",
+            test_control_proto(),
+            lines,
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, HostEvent::DisplayTty { tty: None, .. })));
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, HostEvent::DisplayTty { tty: Some(_), .. })));
+    }
+
+    #[test]
     fn reader_resolves_display_tty_block_into_event() {
         // The record-file read resolves to the tty the display attach wrote, which is
         // xmux's own client by construction.
