@@ -914,6 +914,23 @@ impl Switcher {
         self.restore_focus(prior, state);
     }
 
+    /// Puts the card of `source` back in flight: it spins and carries no failure, for an
+    /// answer that is on its way. Idempotent, and a source the nav does not show is left
+    /// alone.
+    pub fn mark_scanning(&mut self, source: &str, state: &mut crate::state::State) {
+        let Some(g) = state.groups.iter_mut().find(|g| g.source == source) else {
+            return;
+        };
+        if g.err.is_none() && state.scanning.contains(source) {
+            return;
+        }
+        let prior = self.capture_focus();
+        g.err = None;
+        state.scanning.insert(source.to_string());
+        self.rebuild(state);
+        self.restore_focus(prior, state);
+    }
+
     /// Drops a source whose MACHINE the roster no longer names, and everything the nav
     /// held for it. Idempotent: a source the nav does not show is left alone.
     ///

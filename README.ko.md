@@ -268,7 +268,7 @@ check = true                          # 하루에 한 번 새 릴리스가 있�
 
 [[hosts]]
 ssh = "prod"          # ssh-config 별칭
-mux = "tmux"          # 생략하면 "tmux"
+mux = "tmux"          # 생략하거나 "auto"이면 호스트가 답한 mux 전부
 ```
 
 - **실시간 반영.** `config.toml`이 바뀌면 `[ui]` 표시 설정(테마, 역할별 색

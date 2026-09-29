@@ -161,10 +161,14 @@ pub enum EventEffect {
     /// inventory (re-run list-sessions).
     Refetch { host: String },
     /// `MuxesFound`: add a source for every mux in `muxes` that `machine` does not
-    /// already serve. The loop owns it because it needs the host registry (to know what
+    /// already serve, and settle the card of a machine that serves none yet. The loop
+    /// owns it because it needs the host registry (to know what
     /// the machine already serves, and to insert the new hosts) and the manager (to kick
     /// each new source's first scan).
-    AddDiscoveredSources { machine: String, muxes: Vec<String> },
+    AddDiscoveredSources {
+        machine: String,
+        muxes: Result<Vec<String>, String>,
+    },
     /// `RosterResolved`: reconcile the freshly resolved roster against the three
     /// registries that must agree about which machines exist (the host registry, the
     /// source list the off-loop ops resolve against, and the nav), then scan what was

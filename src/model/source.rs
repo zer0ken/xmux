@@ -241,7 +241,14 @@ mod tests {
 
     #[test]
     fn build_puts_local_first() {
-        let cfg = Config::default();
+        // `db` writes no mux, so it has no source until it answers which it serves.
+        let cfg = Config {
+            hosts: vec![crate::provision::config::HostConfig {
+                ssh: "prod".into(),
+                mux: "tmux".into(),
+            }],
+            ..Config::default()
+        };
         let aliases: Vec<String> = ["prod", "db"].iter().map(|s| s.to_string()).collect();
         let srcs = build(
             &cfg,
@@ -252,7 +259,7 @@ mod tests {
             Path::new("/home/u/.xmux"),
             None,
         );
-        assert_eq!(srcs.len(), 3);
+        assert_eq!(srcs.len(), 2);
         assert_eq!(srcs[0].alias, "local");
         assert!(matches!(srcs[0].kind, MachineKind::Local { .. }));
         assert_eq!(srcs[1].alias, "prod");

@@ -752,9 +752,10 @@ fn spawn_host_detection(
     });
 }
 
-/// Runs one MACHINE's mux discovery off the loop, cloning the transport of a source that
-/// already reaches it so the probes travel the same axes as everything else. The answer
-/// is emitted as `HostEvent::MuxesFound`.
+/// Runs one MACHINE's mux discovery off the loop, over a clone of the transport that
+/// reaches the machine, so the probes travel the same axes as everything else and carry
+/// what its reachability probe and login established. The answer is emitted as
+/// `HostEvent::MuxesFound`.
 ///
 /// Fire and forget, and deliberately AFTER a machine connects: a remote probe is an ssh
 /// round trip per mux, and only a reachable machine is worth asking. Nothing waits for
@@ -772,11 +773,10 @@ fn spawn_mux_discovery(
         let Ok(_permit) = gate.acquire().await else {
             return;
         };
-        let muxes =
-            crate::mux::installed_muxes(&*transport, &crate::model::source::ExecRunner).await;
-        if !muxes.is_empty() {
-            let _ = tx.send(HostEvent::MuxesFound { machine, muxes });
-        }
+        let muxes = crate::mux::host_muxes(&*transport, &crate::model::source::ExecRunner).await;
+        // Every answer is sent, an empty one and a failed one too: a host that serves no
+        // source yet is waiting on it, and either is what settles its card.
+        let _ = tx.send(HostEvent::MuxesFound { machine, muxes });
     });
 }
 
@@ -869,21 +869,21 @@ fn spawn_machine_probe(
     });
 }
 
-/// Probes ONE machine's reachability, named by any source `id` it serves. A local or
-/// WSL machine is on this box, so it is reachable without an ssh round trip and connects
-/// inline; a remote machine is probed off the loop under `gate`.
+/// Probes ONE machine's reachability. A local or WSL machine is on this box, so it is
+/// reachable without an ssh round trip and connects inline; a remote machine is probed
+/// off the loop under `gate`.
 fn probe_machine(
-    id: &str,
+    machine: &str,
     hosts: &crate::model::Hosts,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
     gate: &std::sync::Arc<tokio::sync::Semaphore>,
     rescan: bool,
 ) {
-    let Some(host) = hosts.get(id) else {
+    let Some(transport) = hosts.host_transport(machine) else {
         return;
     };
-    let machine = crate::session::machine_of(id).to_string();
-    if !host.transport.is_remote() {
+    let machine = machine.to_string();
+    if !transport.is_remote() {
         let _ = tx.send(HostEvent::MachineProbed {
             machine,
             err: None,
@@ -894,7 +894,7 @@ fn probe_machine(
         });
         return;
     }
-    spawn_machine_probe(machine, host.transport.clone(), tx, gate.clone(), rescan);
+    spawn_machine_probe(machine, transport.clone_box(), tx, gate.clone(), rescan);
 }
 
 /// Probes the reachability of every MACHINE the roster serves, once each (deduped by
@@ -907,11 +907,8 @@ fn probe_machines(
     gate: &std::sync::Arc<tokio::sync::Semaphore>,
     rescan: bool,
 ) {
-    let mut seen: HashSet<&str> = HashSet::new();
-    for id in hosts.ids() {
-        if seen.insert(crate::session::machine_of(id)) {
-            probe_machine(id, hosts, tx.clone(), gate, rescan);
-        }
+    for machine in hosts.machines() {
+        probe_machine(&machine, hosts, tx.clone(), gate, rescan);
     }
 }
 

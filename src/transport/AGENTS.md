@@ -71,7 +71,9 @@ and nothing in `transport/` imports a mux type or a source.
   login RECORDS them there. The login's own connection ends; a value left only in its
   argv is gone with it, and every later command would name no account and reach the
   machine as whoever runs xmux. The values are the machine's, not one source's, so the
-  recording covers every source that machine serves. A transport rebuilt from the roster
+  recording covers every source that machine serves, and a source found on the machine
+  later is cloned from the machine's transport rather than rebuilt, so it starts out
+  holding them. A transport rebuilt from the roster
   loses the recording, which is why the roster reconcile is add-only for an id it
   already holds.
 - The host kind's own query methods are the ONLY code that matches on the

@@ -8,17 +8,25 @@ use crate::model::{Host, Liveness};
 use crate::mux::for_binary;
 use crate::provision::config::Config;
 use crate::session::LOCAL_SOURCE;
+use crate::transport::Transport;
 
 /// Every host, keyed by host id, in display order (local first). The single owner of
 /// each machine's `Host` for the app loop, so a host is present here or nowhere.
+///
+/// A host whose muxes are xmux's to decide has no source until the host itself answers
+/// which muxes it serves, so it is also held as a HOST: its name and the transport that
+/// reaches it. That transport is what probes the host and asks it for its muxes, and every
+/// source found on it is built from it.
 #[derive(Default)]
 pub struct Hosts {
     order: Vec<String>,
     map: HashMap<String, Host>,
+    auto: Vec<(String, Box<dyn Transport>)>,
 }
 
-/// What one [`Hosts::reconcile`] changed: the host ids it added, and the ids it dropped
-/// because the fresh roster no longer names their machine. The loop acts on both, so the
+/// What one [`Hosts::reconcile`] changed: the card ids it added, and the ids it dropped
+/// because the fresh roster no longer names their machine. A card id is a source id, or
+/// the bare name of a host whose muxes are not known yet. The loop acts on both, so the
 /// registry, the source list, the nav, and the live connections stay one answer.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct RosterDelta {
@@ -46,6 +54,8 @@ impl Hosts {
     /// Assembles the hosts for a config: this machine's hosts first (one per entry of the
     /// RESOLVED `local_muxes`, its socket from `$TMUX`), then each ssh host in order,
     /// then each WSL distribution. Mirrors `source::build` but yields owning `Host`s.
+    /// A host whose muxes are xmux's to decide is held by name and transport, with no
+    /// source until it answers.
     /// `xmux_dir` seeds each ssh transport's ControlMaster socket path
     /// (`cm-<alias>.sock`), exactly as `source::build` does.
     pub fn build(
@@ -91,6 +101,10 @@ impl Hosts {
                 local_socket.clone(),
             ));
         }
+        for machine in cfg.auto_hosts(ssh_aliases, wsl_distros) {
+            let kind = crate::transport::kind_for(&machine, machine.clone(), os, xmux_dir, None);
+            hosts.auto.push((machine, kind.transport()));
+        }
         hosts
     }
 
@@ -116,29 +130,56 @@ impl Hosts {
     ///
     /// A surviving host keeps the display position it had and an added one appends, so a
     /// card the user is looking at does not move because another machine answered.
+    ///
+    /// A host whose muxes are xmux's to decide survives on its NAME, and keeps the
+    /// transport it had, which holds what its probe and login established. While it
+    /// serves no source its card is its bare name, which is added and dropped with it.
     pub fn reconcile(&mut self, mut fresh: Hosts) -> RosterDelta {
         let mut machines: HashSet<&str> = fresh
             .order
             .iter()
             .map(|id| crate::session::machine_of(id))
+            .chain(fresh.auto.iter().map(|(machine, _)| machine.as_str()))
             .collect();
         // This box always exists. The local machine's presence in `fresh` depends on a
         // probe (the resolved local mux list), and a probe result is a verdict on which
         // muxes are here, never on whether the machine exists - so it must not be able
         // to reap every local source on a re-scan where the probe failed to answer.
         machines.insert(LOCAL_SOURCE);
-        let removed: Vec<String> = self
+        let mut removed: Vec<String> = self
             .order
             .iter()
             .filter(|id| !machines.contains(crate::session::machine_of(id)))
             .cloned()
             .collect();
+        let gone_auto: Vec<String> = self
+            .auto
+            .iter()
+            .map(|(machine, _)| machine.clone())
+            .filter(|machine| !fresh.auto.iter().any(|(m, _)| m == machine))
+            .collect();
         drop(machines);
+        for machine in &gone_auto {
+            if !self.serves_any(machine) {
+                removed.push(machine.clone());
+            }
+        }
+        self.auto
+            .retain(|(machine, _)| !gone_auto.contains(machine));
         self.order.retain(|id| !removed.contains(id));
         for id in &removed {
             self.map.remove(id);
         }
         let mut added = Vec::new();
+        for (machine, transport) in std::mem::take(&mut fresh.auto) {
+            if self.auto.iter().any(|(m, _)| *m == machine) {
+                continue;
+            }
+            if !self.serves_any(&machine) {
+                added.push(machine.clone());
+            }
+            self.auto.push((machine, transport));
+        }
         for id in std::mem::take(&mut fresh.order) {
             if self.map.contains_key(&id) {
                 continue;
@@ -160,12 +201,92 @@ impl Hosts {
 
     /// Whether `machine` already serves a source running the mux binary `bin`. The
     /// discovery add path asks before adding, so a mux the machine was already
-    /// configured (or assumed) to run is never duplicated under a second id.
+    /// configured to run is never duplicated under a second id.
     pub fn machine_serves(&self, machine: &str, bin: &str) -> bool {
         self.order.iter().any(|id| {
             crate::session::machine_of(id) == machine
                 && self.map.get(id).is_some_and(|h| h.mux.bin() == bin)
         })
+    }
+
+    /// Whether `machine` serves any source at all.
+    pub fn serves_any(&self, machine: &str) -> bool {
+        self.order
+            .iter()
+            .any(|id| crate::session::machine_of(id) == machine)
+    }
+
+    /// The ids the nav starts from: every source, then the bare name of each host whose
+    /// muxes are not known yet. That card reads the host alone and turns a spinner until
+    /// the host answers.
+    pub fn card_ids(&self) -> Vec<String> {
+        let mut ids = self.order.clone();
+        ids.extend(
+            self.auto
+                .iter()
+                .map(|(machine, _)| machine.clone())
+                .filter(|machine| !self.serves_any(machine)),
+        );
+        ids
+    }
+
+    /// Every host, once each: the machines the sources name, then the hosts that serve
+    /// no source yet.
+    pub fn machines(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let named = self
+            .order
+            .iter()
+            .map(|id| crate::session::machine_of(id))
+            .chain(self.auto.iter().map(|(machine, _)| machine.as_str()));
+        for machine in named {
+            if !out.iter().any(|m| m == machine) {
+                out.push(machine.to_string());
+            }
+        }
+        out
+    }
+
+    /// The transport that reaches `machine`: its own, when it is a host whose muxes xmux
+    /// asks for, and otherwise that of the first source it serves.
+    pub fn host_transport(&self, machine: &str) -> Option<&dyn Transport> {
+        if let Some((_, t)) = self.auto.iter().find(|(m, _)| m == machine) {
+            return Some(t.as_ref());
+        }
+        self.order
+            .iter()
+            .find(|id| crate::session::machine_of(id) == machine)
+            .and_then(|id| self.map.get(id))
+            .map(|h| h.transport.as_ref())
+    }
+
+    /// Applies `f` to every transport that reaches `machine`, so a fact the machine
+    /// established (the shell family its probe read, the values a login authenticated
+    /// with) holds for every command sent to it, and for every source found on it later.
+    pub fn for_each_transport_of(&mut self, machine: &str, mut f: impl FnMut(&mut dyn Transport)) {
+        for (m, t) in self.auto.iter_mut() {
+            if m == machine {
+                f(t.as_mut());
+            }
+        }
+        for (id, host) in self.map.iter_mut() {
+            if crate::session::machine_of(id) == machine {
+                f(host.transport.as_mut());
+            }
+        }
+    }
+
+    /// A host for the mux binary `bin` that `machine` answered it serves, answering as
+    /// the source `id`, reached exactly as the machine is reached now. `None` for a
+    /// machine this registry does not reach or a name no kind owns.
+    ///
+    /// It is DETECTED already: the answer came from the mux's own identity probe, the
+    /// same one detection would run again.
+    pub fn discovered_host(&self, machine: &str, bin: &str, id: &str) -> Option<Host> {
+        let transport = self.host_transport(machine)?.clone_as(id);
+        let mut host = Host::new(transport, for_binary(bin)?);
+        host.detected = true;
+        Some(host)
     }
 
     pub fn get(&self, id: &str) -> Option<&Host> {
@@ -297,11 +418,27 @@ mod tests {
         );
     }
 
-    /// A registry for the ssh aliases named, on a box serving one local mux.
+    /// A config in which every host named writes `tmux` as its mux.
+    fn tmux_on(aliases: &[&str]) -> Config {
+        Config {
+            hosts: aliases
+                .iter()
+                .map(|a| crate::provision::config::HostConfig {
+                    ssh: a.to_string(),
+                    mux: "tmux".into(),
+                })
+                .collect(),
+            ..Config::default()
+        }
+    }
+
+    /// A registry for the ssh aliases named, each writing `tmux`, on a box serving one
+    /// local mux.
     fn built(aliases: &[&str]) -> Hosts {
+        let cfg = tmux_on(aliases);
         let aliases: Vec<String> = aliases.iter().map(|a| a.to_string()).collect();
         Hosts::build(
-            &Config::default(),
+            &cfg,
             &aliases,
             &[],
             "linux",
@@ -392,6 +529,56 @@ mod tests {
     }
 
     #[test]
+    fn a_host_that_writes_no_mux_is_held_without_a_source() {
+        let hosts = Hosts::build(
+            &Config::default(),
+            &["win".to_string()],
+            &[],
+            "linux",
+            &local(),
+            std::path::Path::new("/x"),
+            None,
+        );
+        assert_eq!(
+            hosts.ids(),
+            &["local".to_string()],
+            "no mux is assumed for it"
+        );
+        assert_eq!(hosts.card_ids(), vec!["local", "win"]);
+        assert_eq!(hosts.machines(), vec!["local", "win"]);
+        let t = hosts.host_transport("win").expect("it is still reached");
+        assert!(t.is_remote());
+        assert_eq!(t.host_id(), "win");
+    }
+
+    #[test]
+    fn reconcile_keeps_the_transport_a_host_that_writes_no_mux_already_has() {
+        // The transport holds what the host's probe and login established, so a re-scan
+        // that still names the host must not swap in a fresh one.
+        let build = || {
+            Hosts::build(
+                &Config::default(),
+                &["win".to_string()],
+                &[],
+                "linux",
+                &local(),
+                std::path::Path::new("/x"),
+                None,
+            )
+        };
+        let mut hosts = build();
+        hosts.for_each_transport_of("win", |t| {
+            t.set_remote_shell(crate::transport::vocab::RemoteShell::Other)
+        });
+        let delta = hosts.reconcile(build());
+        assert_eq!(delta, RosterDelta::default());
+        assert_eq!(
+            hosts.host_transport("win").unwrap().remote_shell(),
+            crate::transport::vocab::RemoteShell::Other
+        );
+    }
+
+    #[test]
     fn reconcile_keeps_local_when_the_fresh_roster_fails_to_name_it() {
         // A roster resolution whose local mux probe answered nothing names no `local`
         // machine at all. That probe result is a verdict on which muxes are installed,
@@ -465,7 +652,7 @@ mod tests {
     fn machine_serves_asks_by_machine_and_mux_not_by_id() {
         // The discovery add path asks this before adding, and it must see through the id
         // spelling: `prod` (bare) serves tmux just as `prod:tmux` would.
-        let cfg = Config::default();
+        let cfg = tmux_on(&["prod"]);
         let hosts = Hosts::build(
             &cfg,
             &["prod".to_string()],
@@ -485,7 +672,7 @@ mod tests {
 
     #[test]
     fn build_puts_local_first_then_ssh_hosts_in_order() {
-        let cfg = Config::default();
+        let cfg = tmux_on(&["prod", "db"]);
         let aliases: Vec<String> = ["prod", "db"].iter().map(|s| s.to_string()).collect();
         let hosts = Hosts::build(
             &cfg,
@@ -533,7 +720,7 @@ mod tests {
 
     #[test]
     fn get_mut_and_iter_mut_reach_every_host() {
-        let cfg = Config::default();
+        let cfg = tmux_on(&["prod"]);
         let mut hosts = Hosts::build(
             &cfg,
             &["prod".to_string()],
@@ -551,7 +738,7 @@ mod tests {
     #[test]
     fn apply_exited_clears_tty_and_marks_unreachable() {
         let mut hosts = Hosts::build(
-            &Config::default(),
+            &tmux_on(&["jup"]),
             &["jup".to_string()],
             &[],
             "linux",
@@ -578,7 +765,7 @@ mod tests {
     #[test]
     fn apply_connected_marks_live() {
         let mut hosts = Hosts::build(
-            &Config::default(),
+            &tmux_on(&["jup"]),
             &["jup".to_string()],
             &[],
             "linux",
@@ -598,16 +785,14 @@ mod tests {
         // The single runtime registry's projection (`Hosts::ids`) must list the SAME
         // hosts in the SAME order as the `source::build` list it replaces: local first,
         // then ssh specs in config order (ssh-config aliases, then config-only hosts).
-        // Seeding `State` from `hosts.ids()` is therefore byte-identical to the retired
-        // `env.srcs` seed - a reordered or dropped host would be a live regression.
+        // The cards `State` is seeded with lead with these ids, so they match the source
+        // list exactly - a reordered or dropped host would be a live regression.
         // A config-only host (declared in config.toml, not ssh-config) with a mux override.
-        let cfg = Config {
-            hosts: vec![crate::provision::config::HostConfig {
-                ssh: "cfgonly".into(),
-                mux: "psmux".into(),
-            }],
-            ..Config::default()
-        };
+        let mut cfg = tmux_on(&["prod", "db"]);
+        cfg.hosts.push(crate::provision::config::HostConfig {
+            ssh: "cfgonly".into(),
+            mux: "psmux".into(),
+        });
         let aliases: Vec<String> = ["prod", "db"].iter().map(|s| s.to_string()).collect();
         let os = "linux";
         let dir = std::path::Path::new("/home/u/.xmux");
@@ -636,7 +821,11 @@ mod tests {
         // The registry projection and the source list must agree on the WSL implementation too,
         // and the implementation has to survive as a transport: the ids an existing install had
         // keep their positions, and the new ones follow.
-        let cfg = Config::default();
+        let mut cfg = tmux_on(&["prod"]);
+        cfg.wsl.push(crate::provision::config::WslConfig {
+            distro: "Ubuntu-24.04".into(),
+            mux: "tmux".into(),
+        });
         let aliases = vec!["prod".to_string()];
         let distros = vec!["wsl.Ubuntu-24.04".to_string()];
         let dir = std::path::Path::new("/x");

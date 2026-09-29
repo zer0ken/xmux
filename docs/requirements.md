@@ -81,17 +81,22 @@ no function, and no test, so renaming code is never a documentation change.
   another mux is not counted as that mux: where psmux answers, a `tmux` that also answers
   is psmux's own alias of itself (which names itself by the name it was invoked under, so
   no probe can tell it apart) and is dropped. A WRITTEN value is never probed, keeping
-  FR-A7's rule that a name the user wrote stays visible even when it is missing; a host
-  where nothing answers keeps the mux it was assumed to run, so the nav names what is
-  unreachable rather than showing nothing.
+  FR-A7's rule that a name the user wrote stays visible even when it is missing. No mux
+  is ever assumed for a host that named none: it serves exactly what answered, and a
+  host where nothing answers serves nothing and has no card, as this machine has no
+  local card when nothing is installed here.
 - **FR-A10** - A REMOTE host is discovered AFTER launch, asynchronously, and its
   answer only ADDS. The app paints the sources the config names first (a remote probe is
-  an ssh round trip per mux, and nothing may wait for that), then each host's answer
+  an ssh round trip per mux, and nothing may wait for that), and a host that named no mux
+  as one card that reads the host alone and turns a spinner. Each host's answer then
   arrives and every mux it reports that the host does not already serve becomes a
-  scanning card on the spot. An added source's id is always qualified (`prod:zellij`)
-  while the mux already served keeps the id it was painted with: that id is what the
-  deterministic order, the persisted selection, and anything the user typed are keyed
-  to, so
+  scanning card on the spot. A host that served nothing yet names its sources as a
+  written list would: one mux takes the bare host alias, which is the card the host
+  was already showing, and several are each qualified, replacing that card. On a host
+  that already serves a source, an added source's id is always qualified
+  (`prod:zellij`) while the mux already served keeps the id it was painted with: that
+  id is what the deterministic order, the persisted selection, and anything the user
+  typed are keyed to, so
   nothing is renamed and nothing is removed. A new card sorts into its name position,
   so the deterministic order holds while a card the user is looking at does not move
   because another host answered. An added source is

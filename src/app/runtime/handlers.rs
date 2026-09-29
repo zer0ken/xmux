@@ -164,28 +164,61 @@ impl Runtime {
                 // serve becomes a source of its own, RIGHT NOW: the card appears scanning
                 // and streams its sessions in like any other.
                 //
-                // The id of an added source is always qualified (`prod:zellij`). The mux
-                // already served keeps the id it was painted with, bare or not, because
+                // A machine that serves no source yet names its sources the way a written
+                // list would: one mux takes the bare machine name, which is the card the
+                // machine has been showing, and several are each qualified. A machine
+                // that already serves a source adds each new one qualified (`prod:zellij`),
+                // and the one already served keeps the id it was painted with, because
                 // that id is what the frozen order, the persisted selection, and anything
                 // the user typed are keyed to - renaming it mid-run would break all three.
                 let (vc, vr) = terminal_view_size(cols, rows, nav);
-                for bin in muxes {
-                    if hosts.machine_serves(&machine, &bin) {
-                        continue;
+                let first = !hosts.serves_any(&machine);
+                let muxes = match muxes {
+                    Ok(muxes) => muxes,
+                    // The machine could not be asked at all, which says nothing about what
+                    // it serves. A machine standing as its own card keeps it and shows the
+                    // failure there; one that serves sources has them report for it.
+                    Err(reason) => {
+                        tracing::warn!(machine = %machine, error = %reason, "mux discovery failed");
+                        if first {
+                            switcher.apply_source_result(machine, Vec::new(), Some(reason), state);
+                        }
+                        return false;
                     }
-                    let id = crate::session::source_id(&machine, &bin, true);
+                };
+                let found: Vec<String> = muxes
+                    .into_iter()
+                    .filter(|bin| !hosts.machine_serves(&machine, bin))
+                    .collect();
+                let specs: Vec<(String, String)> = if first {
+                    crate::provision::config::host_specs_for(&machine, &found)
+                        .into_iter()
+                        .map(|spec| (spec.bin, spec.id))
+                        .collect()
+                } else {
+                    found
+                        .into_iter()
+                        .map(|bin| {
+                            let id = crate::session::source_id(&machine, &bin, true);
+                            (bin, id)
+                        })
+                        .collect()
+                };
+                // The card that stood for the machine goes when no source takes its name:
+                // nothing answered, so there is nothing to show, or several muxes did and
+                // each has a card of its own.
+                if first && !specs.iter().any(|(_, id)| *id == machine) {
+                    switcher.remove_source(&machine, state);
+                }
+                for (bin, id) in specs {
                     if hosts.get(&id).is_some() {
                         continue;
                     }
+                    let Some(host) = hosts.discovered_host(&machine, &bin, &id) else {
+                        continue;
+                    };
                     tracing::info!(machine = %machine, mux = %bin, source = %id, "mux discovered");
-                    hosts.insert(crate::model::host_for(
-                        &machine,
-                        &bin,
-                        id.clone(),
-                        std::env::consts::OS,
-                        &env.xmux_dir,
-                        env.local_socket.clone(),
-                    ));
+                    hosts.insert(host);
                     // The loop drives the `Host`; the OFF-LOOP ops (create a session, read
                     // panes, read border styles) resolve a source by id through `Env`. Both
                     // have to learn the source, or it paints and scans but refuses every
@@ -198,7 +231,11 @@ impl Runtime {
                         &env.xmux_dir,
                         env.local_socket.clone(),
                     ));
+                    state.chrome.set_source_reach(reach_map(env));
+                    // A source that takes the card the machine stood as inherits that card,
+                    // whatever it last showed; its own first listing is now in flight.
                     switcher.add_source(id.clone(), state);
+                    switcher.mark_scanning(&id, state);
                     scan_or_dispatch_host(mgr, hosts, detecting, &id, vc, vr, scan_pool);
                 }
             }
@@ -235,12 +272,7 @@ impl Runtime {
                     .chrome
                     .set_login_defaults(roster.host_addresses.clone(), local_user());
                 env.replace_roster(*roster);
-                state.chrome.set_source_reach(
-                    env.source_list()
-                        .iter()
-                        .map(|s| (s.alias.clone(), source_reach(s)))
-                        .collect(),
-                );
+                state.chrome.set_source_reach(reach_map(env));
                 let delta = hosts.reconcile(fresh);
                 for id in &delta.removed {
                     tracing::info!(source = %id, "roster dropped a source");
@@ -269,8 +301,9 @@ impl Runtime {
                 // those, so nothing is probed twice for one re-scan.
                 let mut probed: HashSet<&str> = HashSet::new();
                 for id in &delta.added {
-                    if probed.insert(crate::session::machine_of(id)) {
-                        probe_machine(id, hosts, mgr.events(), scan_pool, false);
+                    let machine = crate::session::machine_of(id);
+                    if probed.insert(machine) {
+                        probe_machine(machine, hosts, mgr.events(), scan_pool, false);
                     }
                 }
             }
@@ -300,9 +333,7 @@ impl Runtime {
                 // switch are composed for a shell family, so the first command must
                 // already know which one answered.
                 if let Some(shell) = shell {
-                    for_each_source_of(hosts, &machine, |host| {
-                        host.transport.set_remote_shell(shell)
-                    });
+                    hosts.for_each_transport_of(&machine, |t| t.set_remote_shell(shell));
                 }
                 // The machine's reachability probe connected: resolve every source it
                 // serves onto its metadata channel (a re-scan re-enumerates a live one; a
@@ -335,10 +366,10 @@ impl Runtime {
                 if !crate::session::is_local_source(&machine)
                     && env.roster().cfg.mux_is_auto(&machine)
                 {
-                    if let Some(host) = sources.first().and_then(|id| hosts.get(id)) {
+                    if let Some(transport) = hosts.host_transport(&machine) {
                         spawn_mux_discovery(
                             machine,
-                            host.transport.clone(),
+                            transport.clone_box(),
                             mgr.events(),
                             scan_pool.clone(),
                         );
@@ -475,7 +506,7 @@ impl Runtime {
 
         // The app's runtime state (single source of truth), seeded from the host ids;
         // events stream the nav in.
-        let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
+        let mut state = crate::state::State::from_sources(hosts.card_ids());
         let mut switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
         // The one session the terminal view refuses: the one xmux is running in. Named
         // once here, because the environment that names it cannot change under a run.
@@ -507,12 +538,7 @@ impl Runtime {
         // And how each source is REACHED, so an unreachable one states what was asked of
         // it and over what, not only that it failed. Resolved to words here for the same
         // reason the providers are: the screen prints them and nothing branches on them.
-        state.chrome.set_source_reach(
-            env.source_list()
-                .iter()
-                .map(|s| (s.alias.clone(), source_reach(s)))
-                .collect(),
-        );
+        state.chrome.set_source_reach(reach_map(&env));
         // Where the whole history of dispatched commands is written, so the screen can name
         // the file instead of leaving the user to know about it.
         state.chrome.set_log_path(
@@ -1291,19 +1317,24 @@ impl Runtime {
             // over, so a value left only in its argv would be gone: every later command
             // would reach the machine as whoever runs xmux, which is a different account
             // and a refusal.
-            for_each_source_of(
-                &mut self.hosts,
-                crate::session::machine_of(&source),
-                |host| host.transport.set_login(login.clone()),
-            );
+            self.hosts
+                .for_each_transport_of(crate::session::machine_of(&source), |t| {
+                    t.set_login(login.clone())
+                });
             // The machine the user just authenticated is the one they are waiting on, so
             // hiding stops applying to it: the login it offered no longer blocks, and
             // without this that success is what would take the card off the list.
             self.state
                 .logged_in
                 .insert(crate::session::machine_of(&source).to_string());
+            // A host that serves no source yet has one card, and the answer it now waits
+            // on (which muxes the host serves) is in flight.
+            let machine = crate::session::machine_of(&source);
+            if !self.hosts.serves_any(machine) {
+                self.switcher.mark_scanning(machine, &mut self.state);
+            }
             probe_machine(
-                &source,
+                crate::session::machine_of(&source),
                 &self.hosts,
                 self.mgr.events(),
                 &self.scan_pool,
@@ -1595,43 +1626,6 @@ impl Runtime {
     }
 }
 
-/// How xmux reaches `s`, reduced to the words the unreachable screen prints.
-///
-/// The reduction happens HERE, at the wiring, for the reason the roster providers are
-/// reduced here: the screen prints these and branches on none of them, so the UI layer
-/// never learns what a machine kind or a mux binary is. Each field comes from the one
-/// place that owns it - the machine describes its own addressing, the host composes its
-/// own listing command - rather than being re-derived from a source id.
-/// This machine's own account name, which is the login ssh falls back to when nothing
-/// names another. Empty when the environment says nothing, and then the login pane's
-/// username simply starts blank rather than carrying a guess.
-/// Applies `f` to every source the `machine` serves.
-///
-/// What a probe or a login learns is the MACHINE's, not one source's: the shell family
-/// that answered and the values that authenticated hold for every mux on that box. A
-/// fact recorded on only the source that happened to carry the round trip would leave
-/// its siblings composing commands from what they were built with, so the next command
-/// out of a different source would go wrong for a reason nothing on screen explains.
-fn for_each_source_of(
-    hosts: &mut crate::model::Hosts,
-    machine: &str,
-    mut f: impl FnMut(&mut crate::model::Host),
-) {
-    // The ids are taken first: naming the sources borrows the roster, and reaching into
-    // one to change it borrows it again.
-    let served: Vec<String> = hosts
-        .ids()
-        .iter()
-        .filter(|id| crate::session::machine_of(id) == machine)
-        .cloned()
-        .collect();
-    for id in served {
-        if let Some(host) = hosts.get_mut(&id) {
-            f(host);
-        }
-    }
-}
-
 /// The last line the attachment `id`'s pane holds, or a placeholder when there is none.
 ///
 /// Read BEFORE the attachment is reaped: the reap drops the grid, and the grid is the only
@@ -1648,12 +1642,69 @@ fn last_pane_line(registry: &crate::display::registry::AttachRegistry, id: u64) 
         .unwrap_or_else(|| "(blank)".to_string())
 }
 
+/// This machine's own account name, which is the login ssh falls back to when nothing
+/// names another. Empty when the environment says nothing, and then the login pane's
+/// username simply starts blank rather than carrying a guess.
 fn local_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_default()
 }
 
+/// How xmux reaches every card: each source, and each host that serves no source yet.
+/// A host's entry names the machine and its reachability probe, and no mux, because
+/// none has answered for it.
+fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::ui::chrome::SourceReach> {
+    let sources = env.source_list();
+    let mut reach: std::collections::HashMap<String, crate::ui::chrome::SourceReach> = sources
+        .iter()
+        .map(|s| (s.alias.clone(), source_reach(s)))
+        .collect();
+    let roster = env.roster();
+    for machine in roster
+        .cfg
+        .auto_hosts(&roster.ssh_aliases, &roster.wsl_distros)
+    {
+        if sources
+            .iter()
+            .any(|s| crate::session::machine_of(&s.alias) == machine)
+        {
+            continue;
+        }
+        let kind = crate::transport::kind_for(
+            &machine,
+            machine.clone(),
+            std::env::consts::OS,
+            &env.xmux_dir,
+            None,
+        );
+        let addressed = kind.addressed_as();
+        let socket = kind.socket_path();
+        let probe = kind
+            .transport()
+            .raw_shell_argv(crate::transport::vocab::SHELL_PROBE)
+            .map(|argv| shell_line(&argv))
+            .unwrap_or_default();
+        reach.insert(
+            machine,
+            crate::ui::chrome::SourceReach {
+                probe,
+                machine: addressed,
+                socket,
+                ..Default::default()
+            },
+        );
+    }
+    reach
+}
+
+/// How xmux reaches `s`, reduced to the words the unreachable screen prints.
+///
+/// The reduction happens HERE, at the wiring, for the reason the roster providers are
+/// reduced here: the screen prints these and branches on none of them, so the UI layer
+/// never learns what a machine kind or a mux binary is. Each field comes from the one
+/// place that owns it - the machine describes its own addressing, the host composes its
+/// own listing command - rather than being re-derived from a source id.
 pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrome::SourceReach {
     crate::ui::chrome::SourceReach {
         probe: shell_line(&s.host().list_sessions_command()),

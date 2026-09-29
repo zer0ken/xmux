@@ -95,12 +95,16 @@ pub enum HostEvent {
     /// `Host.display_tty` so a later `switch-client -c <tty>` targets xmux's own client.
     DisplayTty { host: String, tty: Option<String> },
     /// A machine's MUX DISCOVERY resolved: `muxes` is every mux xmux supports that
-    /// answered on `machine`. Emitted once per machine by a fire-and-forget task, AFTER
-    /// launch, so the app paints its configured sources immediately and the muxes nobody
-    /// wrote down arrive as they are found. Carries the machine (not a source id): the
-    /// answer is about the machine, and each mux beyond the one already served becomes a
-    /// source of its own.
-    MuxesFound { machine: String, muxes: Vec<String> },
+    /// answered on `machine` (empty when none did), or the reason the machine could not
+    /// be asked at all. Emitted once per machine by a
+    /// fire-and-forget task, AFTER launch, so the app paints its configured sources
+    /// immediately and the muxes nobody wrote down arrive as they are found. Carries the
+    /// machine (not a source id): the answer is about the machine, and each mux it does
+    /// not already serve becomes a source of its own.
+    MuxesFound {
+        machine: String,
+        muxes: Result<Vec<String>, String>,
+    },
     /// A ROSTER RE-RESOLUTION resolved: which machines the config and the roster
     /// providers name RIGHT NOW. Emitted by a fire-and-forget task a re-scan starts, so
     /// the subprocess each provider runs never blocks the loop. The loop reconciles it

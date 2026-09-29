@@ -1974,7 +1974,7 @@ mod tests {
         let effects = state.apply_event(
             HostEvent::MuxesFound {
                 machine: "prod".into(),
-                muxes: vec!["tmux".into(), "zellij".into()],
+                muxes: Ok(vec!["tmux".into(), "zellij".into()]),
             },
             &mut sw,
             &mut connected,
@@ -1983,7 +1983,8 @@ mod tests {
             matches!(
                 &effects[..],
                 [EventEffect::AddDiscoveredSources { machine, muxes }]
-                    if machine == "prod" && muxes == &["tmux".to_string(), "zellij".to_string()]
+                    if machine == "prod"
+                        && muxes == &Ok(vec!["tmux".to_string(), "zellij".to_string()])
             ),
             "{effects:?}"
         );
