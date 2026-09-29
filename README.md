@@ -10,6 +10,16 @@ a split view: a **nav list** of every reachable session on the left, the
 selected session's **terminal view** on the right. Move the cursor and the
 terminal view switches to that session in place.
 
+xmux is built for people who:
+
+- **Work across many remote machines, mostly servers.** xmux reaches each of them
+  and switches between their sessions without a manual reconnect.
+- **Would rather not install anything on those machines.** xmux does everything
+  over ssh and the mux each machine already runs, so it is installed on one
+  machine only: the one you use it from.
+- **Trust tmux.** xmux is not an alternative to tmux. It only makes getting to
+  your tmux sessions simpler.
+
 ![The xmux split view: a nav list of psmux sessions on this machine and tmux
 sessions inside a WSL distribution, with the selected session's terminal view
 filling the right side.](docs/assets/xmux.png)
