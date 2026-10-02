@@ -762,12 +762,18 @@ impl State {
         }
     }
 
-    /// Flashes a transient message in the tree-column hint bar (an error or notice).
+    /// Flashes a transient message in the tree-column hint bar (an error).
     /// The next tree key clears it (the switcher's `handle_key` clear path), and so does
     /// its own ten-second life, so the normal help/status hint bar returns whether or not
     /// the user presses anything. Delegates to the chrome's flash API.
     pub(crate) fn flash(&mut self, msg: impl Into<String>) {
         self.chrome.flash(msg);
+    }
+
+    /// Shows a transient notice in the hint bar: information that is not a failure, with
+    /// the same life and clearing as a flash. Delegates to the chrome's notice API.
+    pub(crate) fn notice(&mut self, msg: impl Into<String>) {
+        self.chrome.notice(msg);
     }
 }
 

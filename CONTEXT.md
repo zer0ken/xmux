@@ -79,8 +79,10 @@ UI elements a user perceives as distinct things:
   every row it owns. At rest it shows the prefix and collapse button; while a prefix interaction is
   live (the prefix ready, or its key still held) it shows the keys that interaction
   unlocks. A flash, the scan indicator, and the active filter outrank both, in that
-  order. A flash floats across the whole window and wraps instead of clipping. A shown
-  flash paints it in the error style.
+  order. A flash floats across the whole window and wraps instead of clipping. An error
+  flash paints the bar in the error style with a warning mark; a notice (a newer release
+  being available) paints it in the bar's own background with its key accent and no
+  mark.
 - view screen - what fills the terminal-view region in place of a mux, for a selection
   with no grid to show there. Where a card states the selection's STATE, the screen
   states WHY: it is the one surface with the room to hold a tool's diagnostic whole.
