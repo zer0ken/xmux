@@ -22,6 +22,7 @@ mod control;
 mod psmux;
 mod screen;
 mod tmux;
+mod tuios;
 pub mod vocab;
 mod zellij;
 
@@ -30,6 +31,7 @@ pub use control::{ControlProtocol, DisplayTtyRead, Line, Notif};
 pub use psmux::Psmux;
 pub use screen::Screen;
 pub use tmux::{Tmux, TmuxControl};
+pub use tuios::{Tuios, TuiosDriver};
 pub use zellij::Zellij;
 // Re-export the pure mux builders at the crate::mux root so `crate::mux::<fn>`
 // call sites resolve unchanged whether the item is the Mux trait/factory or a
@@ -378,6 +380,10 @@ fn known_muxes() -> &'static [MuxKind] {
         MuxKind {
             name: "screen",
             make: |bin| Box::new(Screen { bin }),
+        },
+        MuxKind {
+            name: "tuios",
+            make: |bin| Box::new(Tuios { bin }),
         },
     ]
 }
@@ -931,7 +937,10 @@ mod tests {
         // The candidate set IS the supported set, so discovery can never turn up a name
         // xmux has no implementation for: every candidate resolves to a mux of its own kind.
         let names = supported_muxes();
-        assert_eq!(names, vec!["tmux", "abduco", "psmux", "zellij", "screen"]);
+        assert_eq!(
+            names,
+            vec!["tmux", "abduco", "psmux", "zellij", "screen", "tuios"]
+        );
         for name in names {
             assert_eq!(
                 for_binary(name).unwrap().kind(),
@@ -1195,6 +1204,34 @@ Usage: zellij [OPTIONS]",
         assert_eq!(got.kind(), "abduco");
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(got.attach_plan("api"), argv(&["abduco", "-a", "api"]));
+    }
+
+    #[tokio::test]
+    async fn detect_backend_classifies_tuios_by_version_marker() {
+        let transport = crate::transport::local(None);
+        let runner =
+            ProbeRunner::new(None, None).low_version(Some("tuios version 0.8.4 [pure-Go backend]"));
+        let got = detect_backend(&transport, "tuios", &runner)
+            .await
+            .0
+            .unwrap();
+        assert_eq!(got.kind(), "tuios");
+        assert_eq!(got.server_model(), ServerModel::PerSession);
+        assert_eq!(got.attach_plan("api"), argv(&["tuios", "attach", "api"]));
+    }
+
+    #[test]
+    fn no_other_mux_claims_tuios_output_as_its_own_identity() {
+        let output = "tuios version 0.8.4 [pure-go backend]";
+        for kind in ["tmux", "abduco", "psmux", "zellij", "screen"] {
+            let mux = for_binary(kind).unwrap();
+            let outputs = mux
+                .identity_probes()
+                .iter()
+                .map(|_| Some(output.to_string()))
+                .collect::<Vec<_>>();
+            assert_ne!(mux.classify_identity(&outputs), Some(kind), "{kind}");
+        }
     }
 
     #[tokio::test]

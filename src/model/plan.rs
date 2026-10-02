@@ -5,9 +5,13 @@
 //! helpers in `model::death` build over this one enum.
 
 /// How a Host detects that a displayed session/attachment died, so a `switch-client`
-/// is never aimed at a detached/dead tty (the blank-pane class). One PUSH per mux.
+/// is never aimed at a detached/dead tty (the blank-pane class). A mux may have no
+/// death push when attachment lifetime and session lifetime are independent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeathSignal {
+    /// No push reports session death. The attachment may end while the session stays
+    /// live, so inventory changes are learned only when an asked-for poll runs.
+    None,
     /// The session's display PTY hit master EOF. PerSession (psmux): the attachment
     /// dying IS the session dying.
     Eof,
@@ -41,6 +45,7 @@ mod tests {
 
     #[test]
     fn death_signal_variants_are_distinct() {
+        assert_ne!(DeathSignal::None, DeathSignal::Eof);
         assert_ne!(DeathSignal::Eof, DeathSignal::ControlNotice);
         assert_eq!(
             DeathSignal::PathStat {
