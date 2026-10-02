@@ -127,10 +127,10 @@ every key, and `Ctrl-g q` quits.
 
 ## Supported muxes
 
-| Platform   | Muxes                                             |
-| ---------- | ------------------------------------------------- |
-| unix-likes | `tmux`, GNU `screen`, `zellij`, `abduco`, `tuios` |
-| Windows    | `psmux`                                           |
+| Platform   | Muxes                                                      |
+| ---------- | ---------------------------------------------------------- |
+| unix-likes | `tmux`, GNU `screen`, `zellij`, `abduco`, `tuios`, `herdr` |
+| Windows    | `psmux`, `herdr`                                            |
 
 A host's mux is detected from the binary it answers as, so a mix of these across
 your hosts needs no configuration.
@@ -269,7 +269,7 @@ exclude = ["bastion", "wsl.docker-desktop"]   # hide these machines
 
 [local]
 mux = "auto"          # "auto" (default): every mux installed here,
-                      # or a list: ["psmux", "zellij", "abduco", "tuios"]
+                      # or a list: ["psmux", "zellij", "abduco", "tuios", "herdr"]
 
 [ui]
 theme = "auto-dark"                  # built-in ANSI theme: "auto-dark" (default)

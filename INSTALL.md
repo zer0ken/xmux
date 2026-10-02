@@ -84,10 +84,11 @@ release. See [`packaging/`](packaging/) for the manifests.
 
 Running xmux needs `ssh` on the machine that runs it, for remote hosts, and a
 supported multiplexer on each host you target: `tmux`, GNU `screen`, `zellij`,
-`abduco`, or `tuios` on unix-likes, and `psmux` on Windows. A host's multiplexer is
-detected from the binary it answers as, so a mix across your hosts needs no
-configuration. Termux ships without `ssh`; `pkg install openssh` adds it. See
-the [README](README.md) for what the program does and how to use it.
+`abduco`, or `tuios` on unix-likes, `psmux` on Windows, and `herdr` on either.
+A host's multiplexer is detected from the binary it answers as, so a mix across
+your hosts needs no configuration. Termux ships without `ssh`; `pkg install
+openssh` adds it. See the [README](README.md) for what the program does and how
+to use it.
 
 ---
 

@@ -23,7 +23,7 @@ One concept, one word. The two axes and the runtime:
   knows nothing about the mux. "host" is the concept; `Transport` is the
   trait.
 - `Mux` (MUX axis) - the per-mux behavior trait (tmux / psmux / zellij / abduco /
-  screen / tuios); a source
+  screen / tuios / herdr); a source
   holds one. "mux" is the concept; `Mux` is the trait.
 - host - a machine that HOSTS muxes and that xmux can reach. The `roster` decides
   the set: of all the machines there are, the hosts are the ones it names. "machine"
@@ -109,8 +109,8 @@ UI elements a user perceives as distinct things:
   PTY CHILDREN, so nothing it opens is a terminal handover that a mux would refuse. It
   costs one thing, the `own session`.
 - own session - the mux session xmux is ITSELF running in, named once at startup from
-  what the mux says (tuios, zellij, abduco, and screen put it in the environment;
-  tmux and psmux are asked). The one
+  what the mux says (herdr, tuios, zellij, abduco, and screen put it in the
+  environment; tmux and psmux are asked). The one
   address the terminal view refuses: mirroring it would attach a second client to the
   session holding xmux, moving the user's own client and painting xmux inside itself. A
   session running a DIFFERENT xmux is not it, and mirrors like any other.
@@ -547,7 +547,7 @@ Two orthogonal axes describe every connection, and no module conflates them:
   assembly) lives beside the implementations. `Transport` owns where a command runs and
   how its argv is executed; it knows nothing about the mux.
 - MUX - `src/mux/<kind>/`. Each mux implementation (`tmux/`, `psmux/`, `zellij/`,
-  `abduco/`, `screen/`, `tuios/`) owns its metadata and command plans behind the `Mux` trait
+  `abduco/`, `screen/`, `tuios/`, `herdr/`) owns its metadata and command plans behind the `Mux` trait
   and its display driver beside them. A mux builds its OWN driver, so mux selection
   lives in the mux implementation,
   never a central `match`. Shared mux builders live beside the implementations. The

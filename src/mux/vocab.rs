@@ -12,11 +12,23 @@ pub const SESSION_FORMAT: &str = "#{session_windows}\t#{session_attached}\t#{ses
 /// Whether `key` is a mux session variable that a child spawned by xmux must not
 /// inherit (it would mis-target the server or be refused as nesting). This is the
 /// SSOT for the mux env vars: matches exactly tmux's session markers and any
-/// psmux var; and tuios's session markers. This is NOT a blanket `TMUX` prefix,
-/// which would also drop unrelated vars like `TMUX_TMPDIR` (selects the socket dir)
-/// or `TMUXP_*` (the separate tmuxp tool).
+/// psmux var; tuios's session markers; and herdr's nesting and routing state. This
+/// is NOT a blanket mux prefix, which would also drop unrelated user configuration.
 pub fn is_mux_var(key: &str) -> bool {
-    matches!(key, "TMUX" | "TMUX_PANE" | "TUIOS_SESSION" | "TUIOS_ENV") || key.starts_with("PSMUX")
+    matches!(
+        key,
+        "TMUX"
+            | "TMUX_PANE"
+            | "TUIOS_SESSION"
+            | "TUIOS_ENV"
+            | "HERDR_ENV"
+            | "HERDR_SESSION"
+            | "HERDR_SOCKET_PATH"
+            | "HERDR_CLIENT_SOCKET_PATH"
+            | "HERDR_PANE_ID"
+            | "HERDR_TAB_ID"
+            | "HERDR_WORKSPACE_ID"
+    ) || key.starts_with("PSMUX")
 }
 
 /// From a set of env var names, the subset that are mux session vars - the keys a
@@ -151,10 +163,23 @@ mod tests {
         assert!(is_mux_var("PSMUX_SESSION"));
         assert!(is_mux_var("TUIOS_SESSION"));
         assert!(is_mux_var("TUIOS_ENV"));
+        for key in [
+            "HERDR_ENV",
+            "HERDR_SESSION",
+            "HERDR_SOCKET_PATH",
+            "HERDR_CLIENT_SOCKET_PATH",
+            "HERDR_PANE_ID",
+            "HERDR_TAB_ID",
+            "HERDR_WORKSPACE_ID",
+        ] {
+            assert!(is_mux_var(key), "{key}");
+        }
         // Keeps unrelated vars that merely share the TMUX prefix.
         assert!(!is_mux_var("TMUXP_LAYOUT")); // tmuxp, a different tool
         assert!(!is_mux_var("TMUX_TMPDIR")); // selects the socket dir - must survive
         assert!(!is_mux_var("TERM_PROGRAM")); // terminal metadata, not routing state
+        assert!(!is_mux_var("HERDR_CONFIG_PATH"));
+        assert!(!is_mux_var("HERDR_BIN_PATH"));
         assert!(!is_mux_var("PATH"));
     }
 
