@@ -545,11 +545,27 @@ pub(crate) fn request_attach(
     argv: Vec<String>,
     size: (u16, u16),
 ) -> u64 {
+    request_attach_with_id(registry, worker, display, attach_seq, key, |_| argv, size)
+}
+
+/// Issues an attach whose argv depends on the allocated attachment id. The id is
+/// allocated before the argv is finalized so a mux can give external state one identity
+/// for exactly this attachment.
+pub(crate) fn request_attach_with_id(
+    registry: &mut AttachRegistry,
+    worker: &DisplayWorker,
+    display: &mut crate::model::HostDisplay,
+    attach_seq: &mut u64,
+    key: &str,
+    argv: impl FnOnce(u64) -> Vec<String>,
+    size: (u16, u16),
+) -> u64 {
     // A new request owns this key. Any fresh attachment still waiting to paint belongs
     // to the superseded selection and must not receive input or survive as an orphan.
     display.cancel_pending_paint(key);
     registry.remove_pending(key);
     let id = registry.alloc_id();
+    let argv = argv(id);
     *attach_seq += 1;
     // The command the display terminal IS. A pane that dies is diagnosed by comparing
     // what xmux ran against what the same command does by hand, so the argv has to be on

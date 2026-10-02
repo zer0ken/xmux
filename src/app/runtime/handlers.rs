@@ -1051,6 +1051,7 @@ impl Runtime {
     ) {
         let selected_key = display_key(&self.hosts, &self.state.selection);
         let hid = host_of_key(&key).to_string();
+        let attach_id = attachment.id();
         let child_tty = attachment.child_tty().map(str::to_string);
         self.registry.remove(&key);
         self.registry.insert(&key, attachment);
@@ -1062,7 +1063,8 @@ impl Runtime {
             }
             if h.display_tty.0.is_none() && h.transport.runs_through_shell() {
                 if let Some(client) = self.mgr.get(&hid) {
-                    client.capture_display_tty(&format!("{hid}-{}", self.instance_name));
+                    let tty_key = crate::mux::display_tty_key(&hid, &self.instance_name, attach_id);
+                    client.capture_display_tty(&tty_key);
                 }
             }
         }
