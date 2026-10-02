@@ -50,10 +50,8 @@ impl Target {
 pub struct DriverCtx<'a> {
     pub registry: &'a mut AttachRegistry,
     pub hosts: &'a mut Hosts,
-    /// This instance's name (`ctl-<name>.sock`). Keys the per-host display-tty record so
-    /// two xmux instances sharing one remote host never overwrite each other's recorded
-    /// display-client tty (a `switch-client` would otherwise move the wrong instance's
-    /// client).
+    /// This instance's public name (`ctl-<name>.sock`). The tmux driver combines it with
+    /// the process run and attachment identity when naming a display-tty record.
     pub instance_name: &'a str,
     /// The open control channel, so a driver can route an in-place session switch
     /// over a host's already-open `-CC` connection instead of spawning a fresh process

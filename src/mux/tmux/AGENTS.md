@@ -19,8 +19,9 @@ beside them, behind the shared control-protocol trait.
 tmux is a SHARED-server mux: one aggregate server holds every session. The display
 driver keeps ONE PTY per source, warmed on the first session and MOVED to another
 session with `switch-client`, an in-place move with no teardown. A remote shared
-attach records its OWN controlling tty to a per-source file before exec, so a later
-switch targets xmux's own display client and never the user's own attached client.
+attach records its OWN controlling tty to a file unique to that process run and
+attachment before exec, so a later switch targets xmux's own display client and never
+the user's own attached client.
 A LOCAL shared source has no remote shell to record or read the tty, so it
 reattaches instead.
 
@@ -30,7 +31,7 @@ dispatches the host execution, and the tmux implementation never hardcodes ssh.
 
 ## Module Seams
 
-- The implementation root holds the mux itself, the per-source display-tty file helpers
+- The implementation root holds the mux itself, the per-attach display-tty file helpers
   (the path, the implementation-private record prefix, and the in-place switch plan that
   reads the recorded tty), the control argv, and the control-protocol
   implementation.
@@ -46,7 +47,7 @@ dispatches the host execution, and the tmux implementation never hardcodes ssh.
 
 - A shared source keeps ONE PTY, keyed by source id; a session change MOVES it rather
   than tearing it down.
-- A remote in-place switch reads the tty the attach recorded to its per-source file,
+- A remote in-place switch reads the tty the live attach recorded to its own file,
   so it moves xmux's own display client and never the user's. It never runs with
   an empty client tty.
 - Sync warms the source PTY on the first session and reaps it when the source has no
