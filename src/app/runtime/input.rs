@@ -133,6 +133,7 @@ impl Runtime {
             env,
             hosts,
             nav_width_natural,
+            nav_collapsed,
             nav_height,
             nav_position,
             cols,
@@ -179,10 +180,12 @@ impl Runtime {
                 width: nav_width,
                 height: *nav_height,
                 position: *nav_position,
+                collapsed: *nav_collapsed,
             },
             1,
         );
         let on_view_border = nav_width > 0
+            && !*nav_collapsed
             && regions
                 .view_border
                 .contains(ratatui::layout::Position { x: col0, y: row0 });
@@ -250,6 +253,21 @@ impl Runtime {
         // nav/terminal/view border behind it.
         if state.is_modal_popup_open() {
             return dirty;
+        }
+        let button = crate::ui::switcher::collapse_button_rect(
+            regions.hint_bar,
+            *nav_position,
+            *nav_collapsed,
+        );
+        let transient_bar = crate::ui::switcher::hint_bar_floats(state);
+        if is_left_press
+            && !transient_bar
+            && button.contains(ratatui::layout::Position { x: col0, y: row0 })
+        {
+            *nav_collapsed = !*nav_collapsed;
+            crate::ui::prefs::save_nav_collapsed(&env.xmux_dir, *nav_collapsed);
+            st.hovered_view_border = false;
+            return true;
         }
         if is_left_press && on_view_border {
             st.dragging_view_border = true; // grabbed the view border

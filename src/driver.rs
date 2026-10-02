@@ -67,9 +67,9 @@ pub struct DriverCtx<'a> {
     pub attach_seq: &'a mut u64,
     pub cols: u16,
     pub body_rows: u16,
-    /// The nav's live size (the width the user set, the width on screen, the `Top` band
-    /// height), so the driver sizes the PTY to the same terminal region the renderer
-    /// draws, in either layout.
+    /// The nav's live size (the width the user set, the width on screen, the band's
+    /// height, the attachment side, and the collapsed state), so the driver sizes the PTY
+    /// to the same terminal region the renderer draws.
     pub nav: crate::ui::switcher::NavSize,
 }
 

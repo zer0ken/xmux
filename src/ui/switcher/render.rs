@@ -5,28 +5,12 @@ use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarStat
 
 use crate::ui::palette;
 
-/// Whether the hint bar floats over the whole window this frame instead of sitting in
-/// the nav column.
-///
-/// Three states make it float, and they are the three where xmux must speak RIGHT
-/// NOW: the prefix is armed (the cheatsheet is wanted, and says more than a nav column
-/// fits), an input is open (the line being typed needs the room, and the user must see
-/// it even when the nav is hidden), or a refusal flash is showing while the nav is
-/// hidden (there is no nav row to put it in, and a refusal the user cannot see is worse
-/// than a row borrowed for a moment).
-///
-/// Scan progress and the active filter deliberately do NOT float: they persist, and a
-/// hidden nav means the user asked for the whole screen to be the mux.
-fn hint_bar_floats(nav_width: u16, state: &crate::state::State) -> bool {
-    state.is_inputting() || state.chrome.armed || (nav_width == 0 && !state.chrome.flash.is_empty())
-}
-
 /// Where the hint bar actually paints. At rest it is the nav-local rect
 /// `compute_regions` derived (empty when the nav is hidden, so the mux keeps every row).
-/// Floating, it spans the whole window width: on the nav's own rows when the nav is
-/// visible, and on the window's bottom rows when the nav is hidden and the layout
-/// reserved none. Only the paint moves; the layout is untouched, so nothing reflows.
-fn hint_bar_rect(nav_local: Rect, area: Rect, hint_bar_h: u16, floating: bool) -> Rect {
+/// Floating, it spans the whole window width. A multi-row bar grows down from a collapsed
+/// top nav and up from every other visible edge. Only the paint moves; the layout is
+/// untouched, so nothing reflows.
+pub(super) fn hint_bar_rect(nav_local: Rect, area: Rect, hint_bar_h: u16, floating: bool) -> Rect {
     if !floating {
         return nav_local;
     }
@@ -40,10 +24,17 @@ fn hint_bar_rect(nav_local: Rect, area: Rect, hint_bar_h: u16, floating: bool) -
             height: h,
         };
     }
+    let h = hint_bar_h.min(area.height);
+    let y = if nav_local.y == area.y {
+        area.y
+    } else {
+        nav_local.bottom().saturating_sub(h).max(area.y)
+    };
     Rect {
         x: area.x,
+        y,
         width: area.width,
-        ..nav_local
+        height: h,
     }
 }
 
@@ -129,10 +120,10 @@ impl Switcher {
                     frame.set_cursor_position(terminal_cursor_pos(area, g.cursor()));
                 }
             }
-            // The bar still floats for the two states that must be seen even here: the
-            // armed prefix and a refusal flash. Hiding the nav hides the status line, not
-            // xmux's ability to answer a keypress.
-            if hint_bar_floats(nav_width, state) {
+            // The bar still floats for the states that must be seen even here: an armed
+            // prefix, open input, or refusal flash. Hiding the nav hides the status line,
+            // not xmux's ability to answer a keypress.
+            if hint_bar_floats(state) {
                 let h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
                 let rect = hint_bar_rect(Rect::default(), area, h, true);
                 state
@@ -150,11 +141,17 @@ impl Switcher {
         // row; a long flash wraps, so size it to the wrapped line count (never clipped).
         // Measured at the width it will RENDER at: the nav column normally, the whole
         // window whenever the bar floats (see `hint_bar_floats` / `hint_bar_rect`).
-        let floating = hint_bar_floats(nav_width, state);
+        let floating = hint_bar_floats(state);
         let bar_w = if floating { area.width } else { nav_width };
         let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
         let r = compute_regions(area, nav, hint_bar_h);
-        let hidden = self.render_nav(frame, r.tree, state);
+        let hidden = if nav.collapsed {
+            self.nav_inner = Rect::default();
+            self.nav_cells.clear();
+            None
+        } else {
+            self.render_nav(frame, r.tree, state)
+        };
         // The view border marks focus between the two views (vertical in a column, horizontal in a band).
         state
             .chrome
@@ -191,25 +188,45 @@ impl Switcher {
         } else {
             crate::ui::chrome::BarFill::Content
         };
+        let button = if floating || nav.collapsed {
+            Rect::default()
+        } else {
+            collapse_button_rect(r.hint_bar, nav.position, false)
+        };
+        let resting_bar = if button.is_empty() {
+            r.hint_bar
+        } else {
+            Rect {
+                width: button.x.saturating_sub(r.hint_bar.x),
+                ..r.hint_bar
+            }
+        };
         if let (Some(counts), crate::ui::chrome::BarFill::Content) = (hidden, fill) {
             let chip = state
                 .chrome
-                .hint_bar_chip_width(r.hint_bar.width, state)
-                .min(r.hint_bar.width);
+                .hint_bar_chip_width(resting_bar.width, state)
+                .min(resting_bar.width);
             let track = Rect {
-                x: r.hint_bar.x + chip,
-                width: r.hint_bar.width - chip,
+                x: resting_bar.x + chip,
+                width: resting_bar.width - chip,
                 height: 1,
-                ..r.hint_bar
+                ..resting_bar
             };
             Self::render_hidden_counts(frame, track, counts);
         }
-        state.chrome.render_hint_bar(
-            frame,
-            hint_bar_rect(r.hint_bar, area, hint_bar_h, floating),
-            state,
-            fill,
-        );
+        let bar_rect = hint_bar_rect(resting_bar, area, hint_bar_h, floating);
+        if nav.collapsed && !floating {
+            state
+                .chrome
+                .render_collapsed_hint_bar(frame, bar_rect, nav.position);
+        } else {
+            state.chrome.render_hint_bar(frame, bar_rect, state, fill);
+            if !button.is_empty() {
+                state
+                    .chrome
+                    .render_collapse_button(frame, r.hint_bar, nav.position, false);
+            }
+        }
         // In the terminal view, place the real cursor at the grid's cursor so typing in the
         // mux is visible and tracks. Skipped when the child hid its cursor.
         if terminal_focused {

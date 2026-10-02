@@ -47,19 +47,21 @@ impl Runtime {
             body_rows: rows,
             nav_width,
             nav_width_natural,
+            nav_collapsed,
             nav_height,
             nav_position,
             ..
         } = self;
         let (cols, rows) = (*cols, *rows);
         // The nav's live size as one value, read once for this effect: the width the user
-        // set, the width on screen, the band height, and the attachment side. Every
-        // geometry below is cut from it, so none of them re-derives one of the four.
+        // set, the width on screen, the band height, the attachment side, and whether it
+        // is collapsed. Every geometry below is cut from it, so none re-derives a part.
         let nav = crate::ui::switcher::NavSize {
             natural: *nav_width_natural,
             width: *nav_width,
             height: *nav_height,
             position: *nav_position,
+            collapsed: *nav_collapsed,
         };
         match effect {
             EventEffect::ApplyInventory { host, sessions } => {
@@ -459,7 +461,12 @@ impl Runtime {
             0,
             &env.ui_prefix,
         );
-        let nav_width = nav_width_natural;
+        let nav_collapsed = crate::ui::prefs::load_nav_collapsed(&env.xmux_dir);
+        let nav_width = if nav_collapsed {
+            crate::ui::switcher::collapsed_nav_width(&env.ui_prefix)
+        } else {
+            nav_width_natural
+        };
         // Restore the band-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
         let nav_height = crate::ui::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
@@ -595,12 +602,15 @@ impl Runtime {
             body_rows,
             nav_width,
             nav_width_natural,
+            nav_collapsed,
             nav_height,
             nav_position,
             nav_position_pinned,
             nav_default,
             applied_nav_height: u16::MAX,
+            applied_nav_collapsed: !nav_collapsed,
             auto_hide_nav,
+            nav_was_focused: true,
             mouse_state: MouseState::default(),
             term_input,
             nav_decoder,
@@ -635,8 +645,8 @@ impl Runtime {
     /// width persist, then draw the gated frame. `term` is the loop-local ratatui
     /// terminal.
     /// The nav's live size, in one place: the width the user set, the width on screen
-    /// (0 while auto-hide has taken it), the band height the user set, and the side the
-    /// nav is attached to. Every geometry the loop computes reads this instead of picking
+    /// (0 while auto-hide has taken it), the band height the user set, the side the nav is
+    /// attached to, and the collapsed state. Every geometry the loop computes reads this instead of picking
     /// fields out of `self`, so a resize while xmux runs cannot reach one consumer and
     /// miss another.
     pub(super) fn nav_size(&self) -> crate::ui::switcher::NavSize {
@@ -645,6 +655,7 @@ impl Runtime {
             width: self.nav_width,
             height: self.nav_height,
             position: self.nav_position,
+            collapsed: self.nav_collapsed,
         }
     }
 
@@ -673,6 +684,13 @@ impl Runtime {
         // the modal/view reconciliation).
         let modal_kind = self.state.modal_kind();
         self.state.focus.sync_modal(modal_kind);
+        let nav_focused = self.state.focus.view_is_nav();
+        if nav_focused && !self.nav_was_focused && self.nav_collapsed {
+            self.nav_collapsed = false;
+            crate::ui::prefs::save_nav_collapsed(&self.env.xmux_dir, false);
+            self.dirty = true;
+        }
+        self.nav_was_focused = nav_focused;
         // The single owner of the effective nav width: reconcile it to the focus + the
         // hide setting + any natural-width change. On a change, resize the PTYs so the
         // mux reflows, and mark dirty.
@@ -681,6 +699,8 @@ impl Runtime {
             self.auto_hide_nav,
             prefix_active,
             self.nav_width_natural,
+            self.nav_collapsed,
+            &self.env.ui_prefix,
         );
         // The nav's attachment side is resolved here too, every frame: a pinned side
         // wins, else the [ui] default. The nav never moves on its own.
@@ -691,6 +711,7 @@ impl Runtime {
         // PTYs or the grid mismatches the draw.
         if want_nav_width != self.nav_width
             || self.nav_height != self.applied_nav_height
+            || self.nav_collapsed != self.applied_nav_collapsed
             || want_position != self.nav_position
         {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY; a stale wide-char
@@ -702,6 +723,7 @@ impl Runtime {
             self.nav_position = want_position;
             self.nav_width = want_nav_width;
             self.applied_nav_height = self.nav_height;
+            self.applied_nav_collapsed = self.nav_collapsed;
             let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
             self.registry.resize_all(vc, vr);
             self.mgr.resize_all(vc, vr);
@@ -762,6 +784,7 @@ impl Runtime {
         if self.dirty && self.last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
             // Render the CONFIRMED display truth (`displayed`), not the selection: the prior
             // session stays on screen until the new one is ready (stale-while-revalidate).
+            let nav = self.nav_size();
             let grid_arc = current_grid(
                 &self.state.displayed,
                 &crate::driver::DriverCtx {
@@ -774,9 +797,7 @@ impl Runtime {
                     attach_seq: &mut self.attach_seq,
                     cols: self.cols,
                     body_rows: self.body_rows,
-                    nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                        .with_height(self.nav_height)
-                        .with_position(self.nav_position),
+                    nav,
                 },
             );
             let terminal_focused = self.state.focus.is_terminal_focused();
@@ -806,7 +827,6 @@ impl Runtime {
                     }
                     // Split-borrow so the draw closure captures only these fields, not all
                     // of `self` (the fingerprint block's borrows have ended above).
-                    let nav = self.nav_size();
                     let switcher = &mut self.switcher;
                     let state = &self.state;
                     term.draw(|f| {
@@ -1162,6 +1182,7 @@ impl Runtime {
                     width: 80,
                     height: 24,
                 });
+                let nav = self.nav_size();
                 let grid_arc = current_grid(
                     &self.state.displayed,
                     &crate::driver::DriverCtx {
@@ -1174,9 +1195,7 @@ impl Runtime {
                         attach_seq: &mut self.attach_seq,
                         cols: self.cols,
                         body_rows: self.body_rows,
-                        nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                            .with_height(self.nav_height)
-                            .with_position(self.nav_position),
+                        nav,
                     },
                 );
                 let dump = match &grid_arc {
@@ -1257,7 +1276,11 @@ impl Runtime {
                             }
                             self.dirty = true;
                         }
-                    } else if let Some(host) = self.hosts.get(&self.state.displayed.source) {
+                    } else {
+                        let nav = self.nav_size();
+                        let Some(host) = self.hosts.get(&self.state.displayed.source) else {
+                            return false;
+                        };
                         // Inject into the VISIBLE session (`displayed`), matching the
                         // interactive keystroke path.
                         let mut driver = crate::driver::driver_for(host);
@@ -1271,9 +1294,7 @@ impl Runtime {
                             attach_seq: &mut self.attach_seq,
                             cols: self.cols,
                             body_rows: self.body_rows,
-                            nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                                .with_height(self.nav_height)
-                                .with_position(self.nav_position),
+                            nav,
                         };
                         driver.input(&self.state.displayed, bytes, &ctx);
                     }
@@ -1375,6 +1396,7 @@ impl Runtime {
                 }
                 crate::model::Command::Attach(sel) => {
                     let t = std::time::Instant::now();
+                    let nav = self.nav_size();
                     // select_attach picks the host's driver and hands it the intent.
                     let shown = select_attach(
                         &sel,
@@ -1388,9 +1410,7 @@ impl Runtime {
                             attach_seq: &mut self.attach_seq,
                             cols: self.cols,
                             body_rows: self.body_rows,
-                            nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                                .with_height(self.nav_height)
-                                .with_position(self.nav_position),
+                            nav,
                         },
                     );
                     if shown {

@@ -83,10 +83,10 @@ pub enum ViewLayout {
 /// away entirely, and `prefix p` moves the attachment), so every consumer reads them
 /// from here rather than deriving any of the four.
 ///
-/// `natural` and `width` differ only while the nav is HIDDEN, and keeping both is the
-/// point: `natural` keeps the width the user set while `width` is 0 during auto-hide, so
-/// unhiding restores exactly what was set, while the regions are cut from `width`,
-/// which is what is actually on screen.
+/// `natural` and `width` differ while the nav is hidden or a side nav is collapsed.
+/// `natural` keeps the width the user set while `width` carries the effective on-screen
+/// width, so showing and expanding restore exactly what was set and every region is cut
+/// from the same visible answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NavSize {
     /// The width the user set: the saved pref, `prefix h`/`l`, or a border drag.
@@ -97,6 +97,8 @@ pub struct NavSize {
     pub height: u16,
     /// Which side of the terminal view the nav is attached to this frame.
     pub position: NavPosition,
+    /// Whether the nav shows only its resting hint bar and collapse button.
+    pub collapsed: bool,
 }
 
 impl NavSize {
@@ -107,6 +109,7 @@ impl NavSize {
             width: natural,
             height: 0,
             position: NavPosition::Left,
+            collapsed: false,
         }
     }
 
@@ -118,6 +121,7 @@ impl NavSize {
             width: 0,
             height: 0,
             position: NavPosition::Left,
+            collapsed: false,
         }
     }
 
@@ -130,6 +134,41 @@ impl NavSize {
     pub fn with_position(self, position: NavPosition) -> Self {
         NavSize { position, ..self }
     }
+}
+
+/// The token painted at the far end of the resting hint bar. In the expanded state it
+/// points toward the nav's edge; in the collapsed state it points back into the screen.
+pub(crate) fn collapse_button_token(position: NavPosition, collapsed: bool) -> &'static str {
+    match (position, collapsed) {
+        (NavPosition::Left, false) | (NavPosition::Right, true) => "<<",
+        (NavPosition::Right, false) | (NavPosition::Left, true) => ">>",
+        (NavPosition::Top, false) | (NavPosition::Bottom, true) => "▲",
+        (NavPosition::Bottom, false) | (NavPosition::Top, true) => "▼",
+    }
+}
+
+/// The collapsed width of a side nav: its resting prefix hint, one separating space,
+/// and the two-cell button token.
+pub(crate) fn collapsed_nav_width(ui_prefix: &str) -> u16 {
+    UnicodeWidthStr::width(ui_prefix)
+        .saturating_add(4)
+        .min(u16::MAX as usize) as u16
+}
+
+/// The clickable button rect at the far end of a nav-local hint bar.
+pub(crate) fn collapse_button_rect(hint_bar: Rect, position: NavPosition, collapsed: bool) -> Rect {
+    let width = UnicodeWidthStr::width(collapse_button_token(position, collapsed)) as u16;
+    if hint_bar.height == 0 || hint_bar.width < width {
+        return Rect::default();
+    }
+    Rect::new(hint_bar.x + hint_bar.width - width, hint_bar.y, width, 1)
+}
+
+/// Whether the hint bar floats over the whole window instead of resting inside the nav.
+/// The same policy gates collapse-button rendering and hit testing, so an invisible
+/// button can never consume a click.
+pub(crate) fn hint_bar_floats(state: &crate::state::State) -> bool {
+    state.is_inputting() || state.chrome.armed || !state.chrome.flash.is_empty()
 }
 
 /// The auto band-layout tree height for a body of `body_rows` rows (before the hint bar row
@@ -156,6 +195,8 @@ fn top_nav_height(body_h: u16) -> u16 {
 /// or stacked (`Band`, sized by `nav_height`), parted by the one-cell view border;
 /// the hint bar is the BOTTOM of the nav region, not a full-width strip, so it reads
 /// as the nav's own status line and the terminal view keeps every row it owns.
+/// A collapsed nav gives the cards no region and keeps only the hint bar. A side nav
+/// arrives with its collapsed width already resolved; a top or bottom nav takes one row.
 /// `nav_width == 0` is the tree-hidden sentinel: the terminal owns the whole area (and
 /// there is no nav to carry a hint bar). `nav_height == 0` means the band height is
 /// auto (~40% of the area).
@@ -189,6 +230,22 @@ fn split_nav(nav: Rect, hint_bar_h: u16) -> (Rect, Rect) {
     (r[0], r[1])
 }
 
+fn collapsed_hint_bar(nav: Rect) -> Rect {
+    if nav.height == 0 {
+        Rect::default()
+    } else {
+        Rect::new(nav.x, nav.y + nav.height - 1, nav.width, 1)
+    }
+}
+
+fn split_nav_for_state(nav: Rect, hint_bar_h: u16, collapsed: bool) -> (Rect, Rect) {
+    if collapsed {
+        (Rect::default(), collapsed_hint_bar(nav))
+    } else {
+        split_nav(nav, hint_bar_h)
+    }
+}
+
 pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
     // The layout follows the attachment position: a left or right placement is a column,
     // a top or bottom one a band. The position travels with the hidden nav unchanged, so
@@ -213,7 +270,7 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
                 Constraint::Min(0),
             ])
             .split(area);
-            let (tree, hint_bar) = split_nav(c[0], hint_bar_h);
+            let (tree, hint_bar) = split_nav_for_state(c[0], hint_bar_h, nav.collapsed);
             Regions {
                 layout,
                 tree,
@@ -232,7 +289,7 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
                 Constraint::Length(nav_width),
             ])
             .split(area);
-            let (tree, hint_bar) = split_nav(c[2], hint_bar_h);
+            let (tree, hint_bar) = split_nav_for_state(c[2], hint_bar_h, nav.collapsed);
             Regions {
                 layout,
                 tree,
@@ -242,14 +299,18 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
             }
         }
         NavPosition::Top => {
-            let th = top_nav_height_for(area.height, nav_height);
+            let th = if nav.collapsed {
+                1
+            } else {
+                top_nav_height_for(area.height, nav_height)
+            };
             let r = Layout::vertical([
                 Constraint::Length(th),
                 Constraint::Length(1),
                 Constraint::Min(0),
             ])
             .split(area);
-            let (tree, hint_bar) = split_nav(r[0], hint_bar_h);
+            let (tree, hint_bar) = split_nav_for_state(r[0], hint_bar_h, nav.collapsed);
             Regions {
                 layout,
                 tree,
@@ -262,14 +323,18 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
             // The top band mirrored, down to the split order: the tree region is the top
             // band's shape and `split_nav` keeps the status line on the region's bottom
             // row, which with a bottom attachment is the bottom row of the screen.
-            let th = top_nav_height_for(area.height, nav_height);
+            let th = if nav.collapsed {
+                1
+            } else {
+                top_nav_height_for(area.height, nav_height)
+            };
             let r = Layout::vertical([
                 Constraint::Min(0),
                 Constraint::Length(1),
                 Constraint::Length(th),
             ])
             .split(area);
-            let (tree, hint_bar) = split_nav(r[2], hint_bar_h);
+            let (tree, hint_bar) = split_nav_for_state(r[2], hint_bar_h, nav.collapsed);
             Regions {
                 layout,
                 tree,
