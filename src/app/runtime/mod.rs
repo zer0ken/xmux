@@ -1292,7 +1292,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
             crate::cli::update::notify::read(&rt.env.xmux_dir).as_ref(),
             current,
         ) {
-            rt.state.flash(line);
+            rt.state.notice(line);
         }
         crate::cli::update::notify::refresh_in_background(&rt.env.xmux_dir, check_enabled);
     }

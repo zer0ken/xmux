@@ -204,13 +204,33 @@ pub(crate) fn palette_overrides(
 /// The hint bar's refusal style: a solid error bar (the active palette's
 /// `error` as the background, the bar's own text slot on top) that breaks hard
 /// from the calm default so a refused action reads as an
-/// error at a glance, not as more of the key cheatsheet. Every flash today is a
-/// refusal, so a shown flash always paints this. Fixed, not configurable: an
-/// error must stay legible regardless of any `[ui] hint-bar-style` override.
+/// error at a glance, not as more of the key cheatsheet. Every error flash paints
+/// this. Fixed, not configurable: an error must stay legible regardless of any
+/// `[ui] hint-bar-style` override.
 pub(crate) fn error_flash_style() -> Style {
     Style::default()
         .bg(crate::ui::palette::get().error)
         .fg(crate::ui::palette::get().bar_fg)
+}
+
+/// The hint bar's notice style: the bar's own background with its key accent as the
+/// text. A notice tells the user something worth acting on (a newer release) without
+/// anything having gone wrong, so it reads apart from the cheatsheet but never as the
+/// error bar.
+pub(crate) fn notice_flash_style() -> Style {
+    Style::default()
+        .bg(crate::ui::palette::get().bar_bg)
+        .fg(crate::ui::palette::get().bar_accent)
+}
+
+/// What a flash is about, which decides how the bar paints it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum FlashKind {
+    /// A refused action or a failure: the error bar and the `⚠` mark.
+    #[default]
+    Error,
+    /// Information that is not a failure: the notice style and no mark.
+    Notice,
 }
 
 /// How much of its row the hint bar paints.
@@ -390,6 +410,8 @@ pub struct Chrome {
     pub(crate) flash: String,
     /// When the flash stops showing itself, or `None` when nothing is flashing.
     flash_until: Option<Instant>,
+    /// Whether the current flash is an error or a notice.
+    flash_kind: FlashKind,
     /// Auto-hide-tree mode (set by the app each frame). Drives the view border glyph:
     /// ║ (double) when on, │ (single) when off - the only on-screen cue, since while
     /// the mode is on but the tree is focused the tree still shows.
@@ -451,6 +473,7 @@ impl Default for Chrome {
         Chrome {
             flash: String::new(),
             flash_until: None,
+            flash_kind: FlashKind::Error,
             auto_hide: false,
             view_border_hovered: false,
             spinner: HashSet::new(),
@@ -471,12 +494,22 @@ impl Default for Chrome {
 }
 
 impl Chrome {
-    /// Sets the transient flash message shown in the nav's hint bar (an error
-    /// or notice). The next tree key clears it (the switcher's `handle_key`), and
-    /// [`FLASH_TTL`] clears it for a user who presses nothing, so the normal
-    /// help/status hint bar returns either way.
+    /// Sets the transient error flash shown in the nav's hint bar. The next tree key
+    /// clears it (the switcher's `handle_key`), and [`FLASH_TTL`] clears it for a user
+    /// who presses nothing, so the normal help/status hint bar returns either way.
     pub(crate) fn flash(&mut self, msg: impl Into<String>) {
-        self.flash = msg.into();
+        self.show_flash(msg.into(), FlashKind::Error);
+    }
+
+    /// Sets a transient notice in the nav's hint bar: the same life as a flash, painted
+    /// as information rather than as an error.
+    pub(crate) fn notice(&mut self, msg: impl Into<String>) {
+        self.show_flash(msg.into(), FlashKind::Notice);
+    }
+
+    fn show_flash(&mut self, msg: String, kind: FlashKind) {
+        self.flash = msg;
+        self.flash_kind = kind;
         self.flash_until = Some(Instant::now() + FLASH_TTL);
     }
 
@@ -1110,7 +1143,10 @@ impl Chrome {
         if !self.flash.is_empty() {
             // A flash outranks even an open input: a dead jump number flashed its range
             // while leaving the input open, so the range must show over the input line.
-            format!(" ⚠ {}", self.flash)
+            match self.flash_kind {
+                FlashKind::Error => format!(" ⚠ {}", self.flash),
+                FlashKind::Notice => format!(" {}", self.flash),
+            }
         } else if let Some(Modal::Input(input)) = &state.modal {
             crate::ui::modal::input_hint_text(input, width)
         } else if self.armed {
@@ -1185,14 +1221,17 @@ impl Chrome {
     }
 
     /// The style the hint bar paints with this frame. While a flash is showing it is
-    /// the [`error_flash_style`] (every flash is a refusal); otherwise the configured
-    /// status style. Split from [`Self::render_hint_bar`] so the choice is unit-testable
-    /// without a backend.
+    /// the [`error_flash_style`] for an error or the [`notice_flash_style`] for a
+    /// notice; otherwise the configured status style. Split from
+    /// [`Self::render_hint_bar`] so the choice is unit-testable without a backend.
     pub(crate) fn hint_bar_render_style(&self) -> Style {
         if self.flash.is_empty() {
             self.hint_bar_style
         } else {
-            error_flash_style()
+            match self.flash_kind {
+                FlashKind::Error => error_flash_style(),
+                FlashKind::Notice => notice_flash_style(),
+            }
         }
     }
 
@@ -1288,7 +1327,7 @@ impl Chrome {
         let lines = self.hint_bar_lines(text_w, state);
         // Key tokens get the accent only on the built-in default style with no flash
         // showing: a `[ui] hint-bar-style` override keeps its exact colours (uniform,
-        // as configured), and a flash stays solid error-red.
+        // as configured), and a flash keeps the one solid style of its kind.
         let width = lines
             .iter()
             .map(|l| l.chars().count() as u16)
@@ -1307,7 +1346,7 @@ impl Chrome {
         };
         // The hint bar is a solid status bar: the configured status style
         // (`hint_bar_default_style` / the `[ui] hint-bar-style` override) normally, or the
-        // `error_flash_style` while a refusal flash shows. The style fills the whole area,
+        // flash style of its kind while a flash shows. The style fills the whole area,
         // so the bar spans full width even where the text does not; unstyled spans
         // inherit the bar's fg/bg.
         //
@@ -1435,6 +1474,28 @@ mod tests {
 
     /// A key that takes the flash down takes its deadline with it, so nothing is left to
     /// fire later at a bar the user already cleared.
+    /// A notice is information, not a failure: it has a flash's life but paints the
+    /// notice style without the `⚠` mark, while an error keeps both.
+    #[test]
+    fn a_notice_paints_apart_from_an_error() {
+        let state = crate::state::State::default();
+        let mut c = Chrome::default();
+        c.notice("xmux 9.9.9 is available");
+        assert_eq!(c.hint_bar_render_style(), notice_flash_style());
+        let text = c.hint_bar_text(80, &state);
+        assert!(!text.contains('⚠'), "{text:?}");
+        assert!(text.contains("xmux 9.9.9 is available"), "{text:?}");
+        assert!(
+            c.expire_flash(Instant::now() + FLASH_TTL),
+            "a notice has the same life"
+        );
+
+        c.flash("boom");
+        assert_eq!(c.hint_bar_render_style(), error_flash_style());
+        assert!(c.hint_bar_text(80, &state).contains('⚠'));
+        assert_ne!(notice_flash_style(), error_flash_style());
+    }
+
     #[test]
     fn clearing_a_flash_leaves_nothing_to_expire() {
         let mut c = Chrome::default();
