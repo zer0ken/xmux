@@ -17,6 +17,49 @@ use crate::provision::config::Config;
 use crate::session;
 use crate::transport::MachineKind;
 
+/// The shell family each remote machine answered its probe with, keyed by machine and
+/// shared by every [`Source`] one [`Env`](crate::provision::env::Env) holds. A value
+/// host assembled off the event loop starts from the transport's default family, so
+/// without this record a command composed there would assume POSIX on a machine already
+/// known to answer with PowerShell.
+///
+/// `probe_locks` holds one lock per machine so concurrent first operations on the same
+/// machine run its probe once.
+#[derive(Clone, Default)]
+pub(crate) struct RemoteShells {
+    shells: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, crate::transport::vocab::RemoteShell>>,
+    >,
+    probe_locks:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+}
+
+impl RemoteShells {
+    pub(crate) fn get(&self, machine: &str) -> Option<crate::transport::vocab::RemoteShell> {
+        self.shells
+            .read()
+            .expect("remote shell lock")
+            .get(machine)
+            .copied()
+    }
+
+    pub(crate) fn record(&self, machine: &str, shell: crate::transport::vocab::RemoteShell) {
+        self.shells
+            .write()
+            .expect("remote shell lock")
+            .insert(machine.to_string(), shell);
+    }
+
+    fn probe_lock(&self, machine: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.probe_locks
+            .lock()
+            .expect("remote shell probe lock")
+            .entry(machine.to_string())
+            .or_default()
+            .clone()
+    }
+}
+
 /// A failed command's outcome. Only a real non-zero exit carries stderr (and can
 /// be classified benign); a missing binary or a connection failure surfaces as
 /// [`RunError::Other`] (never benign).
@@ -130,6 +173,7 @@ pub struct Source {
     pub kind: MachineKind,
     /// injectable; `None` ⇒ the real exec runner.
     pub runner: Option<Arc<dyn Runner>>,
+    pub(crate) remote_shells: RemoteShells,
 }
 
 impl Source {
@@ -146,10 +190,45 @@ impl Source {
     /// borrow the event loop's live `&mut Host`. The runner stays with the source
     /// (`run_with`), injected into the host's enumerate/manage/attach calls.
     pub(crate) fn host(&self) -> crate::model::Host {
+        let mut transport = self.kind.clone().transport();
+        if let Some(shell) = self
+            .remote_shells
+            .get(crate::session::machine_of(&self.alias))
+        {
+            transport.set_remote_shell(shell);
+        }
         crate::model::Host::new(
-            self.kind.clone().transport(),
+            transport,
             crate::mux::for_binary(&self.binary).expect("a source's binary is a registry name"),
         )
+    }
+
+    /// [`host`](Self::host) for an operation about to run a command: a remote machine
+    /// with no recorded shell family is probed first, so the command is composed for
+    /// the shell that will read it. Called only from an operation something asked for,
+    /// so the probe adds one round trip to that request and never runs on its own.
+    pub(crate) async fn host_for_op(&self) -> Result<crate::model::Host, RunError> {
+        let machine = crate::session::machine_of(&self.alias);
+        let mut host = self.host();
+        if host.transport.is_remote() && self.remote_shells.get(machine).is_none() {
+            let probe_lock = self.remote_shells.probe_lock(machine);
+            let _probe = probe_lock.lock().await;
+            match self.remote_shells.get(machine) {
+                Some(shell) => host.transport.set_remote_shell(shell),
+                None => {
+                    if let Some(argv) = host
+                        .transport
+                        .raw_shell_argv(crate::transport::vocab::SHELL_PROBE)
+                    {
+                        let out = self.run_with().run(&argv[0], &argv[1..]).await?;
+                        let shell = crate::transport::vocab::RemoteShell::from_probe(&out);
+                        self.remote_shells.record(machine, shell);
+                        host.transport.set_remote_shell(shell);
+                    }
+                }
+            }
+        }
+        Ok(host)
     }
 }
 
@@ -232,6 +311,7 @@ pub fn for_machine_mux(
         binary: bin.to_string(),
         kind: crate::transport::kind_for(machine, id, os, xmux_dir, local_socket),
         runner: None,
+        remote_shells: RemoteShells::default(),
     }
 }
 

@@ -10,6 +10,7 @@ fn fake_source(alias: &str) -> Source {
             socket: None,
         },
         runner: None,
+        remote_shells: Default::default(),
     }
 }
 
@@ -3793,6 +3794,7 @@ fn a_sources_reach_names_its_mux_and_the_machine_it_is_asked_over() {
             os: "linux".into(),
         },
         runner: None,
+        remote_shells: Default::default(),
     };
     let reach = super::handlers::source_reach(&s);
     assert_eq!(reach.mux, "tmux");

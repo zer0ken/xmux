@@ -21,8 +21,8 @@ use crate::ui::tree::{self, Group};
 use tokio::sync::mpsc;
 
 const SCAN_CONCURRENCY: usize = 8;
-const SCAN_TIMEOUT: Duration = Duration::from_secs(6); // must exceed the ssh connect timeout (5s)
-const DETAIL_TIMEOUT: Duration = Duration::from_secs(6);
+const SCAN_TIMEOUT: Duration = crate::mux::POLL_SWEEP_BUDGET;
+const DETAIL_TIMEOUT: Duration = crate::mux::POLL_SWEEP_BUDGET;
 /// Everything a config resolution decides about WHICH sources exist.
 ///
 /// One value because every field answers the same question from the same read of config
@@ -64,6 +64,7 @@ pub struct Env {
     /// Behind a lock because a re-scan swaps it. Read it through [`Env::roster`] and the
     /// accessors over it; never hold the guard across an await.
     roster: std::sync::RwLock<Roster>,
+    remote_shells: source::RemoteShells,
     pub ui_prefix: String,
     pub xmux_dir: PathBuf,
     /// The [`crate::session::Address`] of the session xmux is ITSELF running in
@@ -349,14 +350,19 @@ impl Env {
     /// Assembles the runtime around an already-resolved roster. The roster is the only
     /// part a re-scan replaces; everything else here is fixed for the life of the process.
     pub fn new(
-        roster: Roster,
+        mut roster: Roster,
         ui_prefix: String,
         xmux_dir: PathBuf,
         own_session: Option<crate::session::Address>,
         local_socket: Option<String>,
     ) -> Self {
+        let remote_shells = source::RemoteShells::default();
+        for source in &mut roster.sources {
+            source.remote_shells = remote_shells.clone();
+        }
         Env {
             roster: std::sync::RwLock::new(roster),
+            remote_shells,
             ui_prefix,
             xmux_dir,
             own_session,
@@ -390,13 +396,24 @@ impl Env {
             .cloned()
     }
 
+    /// Records the shell family a machine's probe read, for every source this
+    /// environment holds.
+    pub(crate) fn record_remote_shell(
+        &self,
+        machine: &str,
+        shell: crate::transport::vocab::RemoteShell,
+    ) {
+        self.remote_shells.record(machine, shell);
+    }
+
     /// Registers a source found after launch (async mux discovery). Idempotent: false
     /// when one already answers as that alias.
-    pub fn add_source(&self, src: Source) -> bool {
+    pub fn add_source(&self, mut src: Source) -> bool {
         let mut r = self.roster.write().expect("roster lock");
         if r.sources.iter().any(|s| s.alias == src.alias) {
             return false;
         }
+        src.remote_shells = self.remote_shells.clone();
         r.sources.push(src);
         true
     }
@@ -476,6 +493,9 @@ impl Env {
         drop(machines);
         drop(named);
         fresh.sources.extend(carried);
+        for source in &mut fresh.sources {
+            source.remote_shells = self.remote_shells.clone();
+        }
         *cur = fresh;
     }
 
@@ -506,6 +526,7 @@ impl Env {
         let mut set = tokio::task::JoinSet::new();
         for (i, machine) in machines.iter().cloned().enumerate() {
             let sem = sem.clone();
+            let remote_shells = self.remote_shells.clone();
             let transport = crate::transport::kind_for(
                 &machine,
                 machine.clone(),
@@ -516,7 +537,7 @@ impl Env {
             .transport();
             set.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore not closed");
-                (i, ask_host(transport).await)
+                (i, ask_host(&machine, transport, remote_shells).await)
             });
         }
         let mut answers: Vec<(usize, Result<Vec<String>, String>)> = set.join_all().await;
@@ -658,7 +679,9 @@ pub struct Unanswered {
 /// One host's reachability probe, then, once it connected, its mux discovery over the
 /// shell family the probe read. `Err` carries the reason the host could not be asked.
 async fn ask_host(
+    machine: &str,
     mut transport: Box<dyn crate::transport::Transport>,
+    remote_shells: source::RemoteShells,
 ) -> Result<Vec<String>, String> {
     use crate::model::source::Runner;
     if transport.is_remote() {
@@ -667,7 +690,9 @@ async fn ask_host(
                 .run(&argv[0], &argv[1..])
                 .await
                 .map_err(|e| e.to_string())?;
-            transport.set_remote_shell(crate::transport::vocab::RemoteShell::from_probe(&out));
+            let shell = crate::transport::vocab::RemoteShell::from_probe(&out);
+            remote_shells.record(machine, shell);
+            transport.set_remote_shell(shell);
         }
     }
     crate::mux::host_muxes(&*transport, &source::ExecRunner).await
@@ -712,8 +737,8 @@ impl Ops for EnvOps {
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>> {
         let src = self.source(source)?;
         let _permit = self.sem.acquire().await?;
-        with_timeout(SCAN_TIMEOUT, async move {
-            let mut host = src.host();
+        let mut host = with_timeout(SCAN_TIMEOUT, src.host_for_op()).await?;
+        with_timeout(SCAN_TIMEOUT, async {
             host.enumerate_with(src.run_with())
                 .await
                 .map(|()| host.inventory.sessions)
@@ -723,7 +748,7 @@ impl Ops for EnvOps {
 
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
         let src = self.source(source)?;
-        let host = src.host();
+        let host = with_timeout(DETAIL_TIMEOUT, src.host_for_op()).await?;
         let assigned =
             with_timeout(DETAIL_TIMEOUT, manage::create(&host, src.run_with(), name)).await?;
         Ok(Session {
@@ -944,6 +969,12 @@ mod tests {
         assert_eq!(cfg.ui_prefix(), "C-a");
     }
 
+    #[test]
+    fn operation_timeouts_leave_the_runner_cleanup_margin() {
+        assert!(SCAN_TIMEOUT > crate::mux::POLL_CMD_TIMEOUT);
+        assert!(DETAIL_TIMEOUT > crate::mux::POLL_CMD_TIMEOUT);
+    }
+
     /// Returns canned list-sessions output, ignoring the command.
     struct StaticRunner(Vec<u8>);
 
@@ -956,6 +987,77 @@ mod tests {
 
     fn runner(line: &str) -> std::sync::Arc<dyn Runner> {
         std::sync::Arc::new(StaticRunner(line.as_bytes().to_vec()))
+    }
+
+    struct RecordingRunner {
+        answers: std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>,
+        commands: std::sync::Mutex<Vec<(String, Vec<String>)>>,
+    }
+
+    impl RecordingRunner {
+        fn new(answers: &[&str]) -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                answers: std::sync::Mutex::new(
+                    answers
+                        .iter()
+                        .map(|answer| answer.as_bytes().to_vec())
+                        .collect(),
+                ),
+                commands: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn commands(&self) -> Vec<(String, Vec<String>)> {
+            self.commands.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Runner for RecordingRunner {
+        async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+            self.commands
+                .lock()
+                .unwrap()
+                .push((name.to_string(), args.to_vec()));
+            Ok(self.answers.lock().unwrap().pop_front().unwrap_or_default())
+        }
+    }
+
+    fn remote_psmux(runner: std::sync::Arc<dyn Runner>) -> Source {
+        remote_psmux_as("prod", runner)
+    }
+
+    fn remote_psmux_as(alias: &str, runner: std::sync::Arc<dyn Runner>) -> Source {
+        Source {
+            alias: alias.into(),
+            binary: "psmux".into(),
+            kind: crate::transport::MachineKind::Ssh {
+                id: alias.into(),
+                alias: "prod".into(),
+                control_path: String::new(),
+                os: "windows".into(),
+            },
+            runner: Some(runner),
+            remote_shells: Default::default(),
+        }
+    }
+
+    struct SlowProbeRunner {
+        probes: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Runner for SlowProbeRunner {
+        async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+            if args.last().map(String::as_str) == Some(crate::transport::vocab::SHELL_PROBE) {
+                self.probes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Ok(b"\n".to_vec())
+            } else {
+                Ok(b"api\n".to_vec())
+            }
+        }
     }
 
     fn test_source(alias: &str, remote: bool, line: &str) -> Source {
@@ -977,6 +1079,7 @@ mod tests {
             binary: "tmux".into(),
             kind,
             runner: Some(runner(line)),
+            remote_shells: Default::default(),
         }
     }
 
@@ -1169,6 +1272,90 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].name, "editor");
         assert_eq!(sessions[0].source, "local");
+    }
+
+    #[tokio::test]
+    async fn create_uses_the_recorded_non_posix_shell() {
+        let runner = RecordingRunner::new(&["api\n"]);
+        let env = Arc::new(Env::new(
+            Roster {
+                sources: vec![remote_psmux(runner.clone())],
+                ..Default::default()
+            },
+            "C-g".into(),
+            PathBuf::from("."),
+            None,
+            None,
+        ));
+        env.record_remote_shell("prod", crate::transport::vocab::RemoteShell::Other);
+
+        env.ops().new_session("prod", "api").await.unwrap();
+
+        let commands = runner.commands();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].0, "ssh");
+        assert_eq!(
+            commands[0].1.last().map(String::as_str),
+            Some("psmux new-session -A -d -P -F '#{session_name}' -s api")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_probes_an_unrecorded_remote_before_the_command() {
+        let runner = RecordingRunner::new(&["\n", "api\n"]);
+        let env = Arc::new(Env::new(
+            Roster {
+                sources: vec![remote_psmux(runner.clone())],
+                ..Default::default()
+            },
+            "C-g".into(),
+            PathBuf::from("."),
+            None,
+            None,
+        ));
+
+        env.ops().new_session("prod", "api").await.unwrap();
+
+        let commands = runner.commands();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(
+            commands[0].1.last().map(String::as_str),
+            Some(crate::transport::vocab::SHELL_PROBE)
+        );
+        assert_eq!(
+            commands[1].1.last().map(String::as_str),
+            Some("psmux new-session -A -d -P -F '#{session_name}' -s api")
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_operations_share_one_shell_probe_per_machine() {
+        let runner = Arc::new(SlowProbeRunner {
+            probes: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let env = Arc::new(Env::new(
+            Roster {
+                sources: vec![
+                    remote_psmux_as("prod:psmux", runner.clone()),
+                    remote_psmux_as("prod:tmux", runner.clone()),
+                ],
+                ..Default::default()
+            },
+            "C-g".into(),
+            PathBuf::from("."),
+            None,
+            None,
+        ));
+        let ops = env.ops();
+
+        let (first, second) = tokio::join!(
+            ops.new_session("prod:psmux", "api"),
+            ops.new_session("prod:tmux", "api")
+        );
+
+        first.unwrap();
+        second.unwrap();
+        assert_eq!(runner.probes.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     fn group(source: &str, err: Option<&str>, sessions: Vec<Session>) -> Group {

@@ -301,7 +301,14 @@ async fn run_direct_attach(env: &Env, source: &str, session: &str) -> i32 {
         );
         return 1;
     };
-    if let Err(e) = attach::run_attach(&OsExecer, &src.host().interactive_attach_command(session)) {
+    let host = match src.host_for_op().await {
+        Ok(host) => host,
+        Err(e) => {
+            eprintln!("xmux: attach failed: {e}");
+            return 1;
+        }
+    };
+    if let Err(e) = attach::run_attach(&OsExecer, &host.interactive_attach_command(session)) {
         eprintln!("xmux: attach failed: {e}");
         return 1;
     }
@@ -660,13 +667,18 @@ fn format_table<const N: usize>(rows: &[[String; N]]) -> String {
 }
 
 async fn probe(s: &Source) -> Result<usize, String> {
+    let mut host = match tokio::time::timeout(crate::mux::POLL_SWEEP_BUDGET, s.host_for_op()).await
+    {
+        Ok(Ok(host)) => host,
+        Ok(Err(e)) => return Err(e.to_string()),
+        Err(_) => return Err("timed out".to_string()),
+    };
     let probe = async {
-        let mut host = s.host();
         host.enumerate_with(s.run_with())
             .await
             .map(|()| host.inventory.sessions.len())
     };
-    match tokio::time::timeout(std::time::Duration::from_secs(6), probe).await {
+    match tokio::time::timeout(crate::mux::POLL_SWEEP_BUDGET, probe).await {
         Ok(Ok(n)) => Ok(n),
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err("timed out".to_string()),
