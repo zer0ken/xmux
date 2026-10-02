@@ -339,6 +339,7 @@ impl Runtime {
                 // switch are composed for a shell family, so the first command must
                 // already know which one answered.
                 if let Some(shell) = shell {
+                    env.record_remote_shell(&machine, shell);
                     hosts.for_each_transport_of(&machine, |t| t.set_remote_shell(shell));
                 }
                 // The machine's reachability probe connected: resolve every source it

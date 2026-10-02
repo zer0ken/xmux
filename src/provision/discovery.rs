@@ -33,6 +33,53 @@ impl ScanResult {
     }
 }
 
+/// Enumerates one source. The shell probe a first contact needs and the listing each
+/// get their own `per_source_timeout`, so a slow first contact does not eat the
+/// listing's budget.
+async fn scan_one(s: Source, per_source_timeout: Duration) -> ScanResult {
+    let alias = s.alias.clone();
+    let mut host = match timeout(per_source_timeout, s.host_for_op()).await {
+        Ok(Ok(host)) => host,
+        Ok(Err(e)) => {
+            return ScanResult {
+                source: alias,
+                sessions: Vec::new(),
+                err: Some(e.to_string()),
+            };
+        }
+        Err(_) => {
+            return ScanResult {
+                source: alias,
+                sessions: Vec::new(),
+                err: Some(format!(
+                    "timed out after {}s",
+                    per_source_timeout.as_secs_f64()
+                )),
+            };
+        }
+    };
+    match timeout(per_source_timeout, host.enumerate_with(s.run_with())).await {
+        Ok(Ok(())) => ScanResult {
+            source: alias,
+            sessions: host.inventory.sessions,
+            err: None,
+        },
+        Ok(Err(e)) => ScanResult {
+            source: alias,
+            sessions: Vec::new(),
+            err: Some(e.to_string()),
+        },
+        Err(_) => ScanResult {
+            source: alias,
+            sessions: Vec::new(),
+            err: Some(format!(
+                "timed out after {}s",
+                per_source_timeout.as_secs_f64()
+            )),
+        },
+    }
+}
+
 /// Probes every source concurrently and returns one [`ScanResult`] per source,
 /// in input order. At most `max_concurrent` probes run at once; each probe is
 /// bounded by `timeout`. One unreachable source never blocks or fails the others.
@@ -52,37 +99,7 @@ pub async fn scan_all(
             // Acquire a slot BEFORE starting the timeout so a queued source does
             // not burn its budget waiting for a free slot.
             let _permit = sem.acquire().await.expect("semaphore not closed");
-            let alias = s.alias.clone();
-            // Assemble a value host from this source's config and enumerate it with the
-            // source's runner — the single enumeration path (`Host::enumerate_with`),
-            // reused off the live loop.
-            let probe = async {
-                let mut host = s.host();
-                match host.enumerate_with(s.run_with()).await {
-                    Ok(()) => Ok(host.inventory.sessions),
-                    Err(e) => Err(e),
-                }
-            };
-            let result = match timeout(per_source_timeout, probe).await {
-                Ok(Ok(sessions)) => ScanResult {
-                    source: alias,
-                    sessions,
-                    err: None,
-                },
-                Ok(Err(e)) => ScanResult {
-                    source: alias,
-                    sessions: Vec::new(),
-                    err: Some(e.to_string()),
-                },
-                Err(_elapsed) => ScanResult {
-                    source: alias,
-                    sessions: Vec::new(),
-                    err: Some(format!(
-                        "timed out after {}s",
-                        per_source_timeout.as_secs_f64()
-                    )),
-                },
-            };
+            let result = scan_one(s, per_source_timeout).await;
             (i, result)
         });
     }
@@ -121,36 +138,7 @@ pub async fn scan_stream(
             // Acquire a slot BEFORE starting the timeout so a queued source does
             // not burn its budget waiting for a free slot.
             let _permit = sem.acquire().await.expect("semaphore not closed");
-            let alias = s.alias.clone();
-            // The same single enumeration path as [`scan_all`] (`Host::enumerate_with`),
-            // reused off the live loop.
-            let probe = async {
-                let mut host = s.host();
-                match host.enumerate_with(s.run_with()).await {
-                    Ok(()) => Ok(host.inventory.sessions),
-                    Err(e) => Err(e),
-                }
-            };
-            let result = match timeout(per_source_timeout, probe).await {
-                Ok(Ok(sessions)) => ScanResult {
-                    source: alias,
-                    sessions,
-                    err: None,
-                },
-                Ok(Err(e)) => ScanResult {
-                    source: alias,
-                    sessions: Vec::new(),
-                    err: Some(e.to_string()),
-                },
-                Err(_elapsed) => ScanResult {
-                    source: alias,
-                    sessions: Vec::new(),
-                    err: Some(format!(
-                        "timed out after {}s",
-                        per_source_timeout.as_secs_f64()
-                    )),
-                },
-            };
+            let result = scan_one(s, per_source_timeout).await;
             let _ = tx.send(result).await;
         });
     }
@@ -204,6 +192,7 @@ mod tests {
                 os: "linux".into(),
             },
             runner: Some(r),
+            remote_shells: Default::default(),
         }
     }
 
@@ -347,6 +336,30 @@ mod tests {
             tokio::time::sleep(Duration::from_secs(10)).await;
             Ok(b"1\t0\ts\n".to_vec())
         }
+    }
+
+    struct SlowFirstUseRunner;
+
+    #[async_trait]
+    impl Runner for SlowFirstUseRunner {
+        async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            if args.last().map(String::as_str) == Some(crate::transport::vocab::SHELL_PROBE) {
+                Ok(b"\n".to_vec())
+            } else {
+                Ok(b"1\t0\tready\n".to_vec())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn first_shell_probe_has_a_separate_timeout_from_the_listing() {
+        let srcs = vec![scan_source("prod", Arc::new(SlowFirstUseRunner))];
+
+        let got = scan_all(&srcs, Duration::from_millis(40), 1).await;
+
+        assert!(got[0].err.is_none(), "{:?}", got[0].err);
+        assert_eq!(got[0].sessions[0].name, "ready");
     }
 
     #[tokio::test]

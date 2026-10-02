@@ -136,7 +136,7 @@ pub(crate) const POLL_CMD_TIMEOUT: std::time::Duration = std::time::Duration::fr
 /// this fires. It exists to bound a runner that does NOT self-limit - a fake runner
 /// under test, or a future runner that forgets its own budget - so a hung command can
 /// never freeze the whole poll sweep.
-const POLL_SWEEP_BUDGET: std::time::Duration =
+pub(crate) const POLL_SWEEP_BUDGET: std::time::Duration =
     std::time::Duration::from_secs(POLL_CMD_TIMEOUT.as_secs() + 1);
 
 /// Runs `fut` under [`POLL_SWEEP_BUDGET`], mapping a timeout to a [`RunError`] naming
