@@ -145,6 +145,14 @@ flatten renders for the dump verb.
   where the sessions that will be found land. As each source resolves, its section and
   cards move to the top / left, so a scan reads as the pending hosts draining toward the
   sessions they become.
+- The host band's hiding (terminal view focused from a session card) is a PAINT decision:
+  the rows stay whole and only what is painted shrinks to the rows above the boundary,
+  with no boundary to part. So card numbers, the selection and the list-walking keys are
+  identical either way, and the hit-test reads the shorter paint like any other. The
+  decision is latched on the nav-to-terminal edge from the effective view (a modal keeps
+  the view behind it), not re-derived each frame from the selection. A live prefix
+  overrides the paint without clearing the latch, so the band is painted while the hint
+  bar offers a jump to every card and hidden again when the prefix ends.
 - A card's rect is decided by the PAINT and read back from it, in both layouts. Neither
   layout puts cards on a fixed pitch the paint ignores (a column parts its bands, a
   band runs columns), so a hit-test that measured its own pitch would land clicks

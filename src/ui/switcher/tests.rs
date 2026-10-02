@@ -5908,3 +5908,98 @@ async fn unreachable_host_screen_names_the_log_file() {
         "and carries the path:\n{out}"
     );
 }
+
+#[tokio::test]
+async fn moving_into_the_terminal_view_from_a_session_card_hides_the_host_band() {
+    let mut h = Harness::new(scan_with_a_host_band());
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Session { .. })));
+    h.sw.sync_view_focus(true);
+    h.draw();
+    let nav = h.nav_cards_text();
+    assert!(
+        !nav.contains("db-2") && !nav.contains("db-3"),
+        "no host card is painted:\n{nav}"
+    );
+    assert!(nav.contains("editor"), "the session cards stay:\n{nav}");
+    let boundary = h.sw.band_boundary().expect("the list has a host card");
+    assert!(
+        h.sw.nav_cells.iter().all(|(i, _)| *i < boundary),
+        "a hidden card takes no click"
+    );
+    h.sw.sync_view_focus(false);
+    h.draw();
+    assert!(
+        h.nav_cards_text().contains("db-2"),
+        "the move back into the nav shows the band again"
+    );
+}
+
+#[tokio::test]
+async fn moving_into_the_terminal_view_from_a_host_card_keeps_the_host_band() {
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.key(KeyCode::Right).await; // local → jupiter00
+    h.key(KeyCode::Right).await; // jupiter00 → the band
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { .. })));
+    h.sw.sync_view_focus(true);
+    h.draw();
+    let nav = h.nav_cards_text();
+    assert!(
+        nav.contains("db-2") && nav.contains("db-3"),
+        "the host band stays:\n{nav}"
+    );
+}
+
+#[tokio::test]
+async fn the_decision_holds_while_the_terminal_view_keeps_the_focus() {
+    // Decided once, on the move: a later sync with the terminal view still focused does
+    // not re-decide, whatever the selection is by then.
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.key(KeyCode::Right).await;
+    h.key(KeyCode::Right).await; // a host card
+    h.sw.sync_view_focus(true);
+    h.key(KeyCode::Left).await; // back onto a session card, the band still shown
+    h.sw.sync_view_focus(true);
+    h.draw();
+    assert!(h.nav_cards_text().contains("db-2"), "the band stays shown");
+}
+
+#[tokio::test]
+async fn a_live_prefix_paints_the_hidden_host_band_until_it_ends() {
+    // The hint bar offers a jump to any card by number, so the cards it can reach are on
+    // screen while the prefix lasts; the band stays hidden underneath and returns to
+    // hidden once the prefix ends.
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.sw.sync_view_focus(true);
+    h.draw();
+    assert!(!h.nav_cards_text().contains("db-2"));
+    h.sw.sync_prefix(true);
+    h.draw();
+    let nav = h.nav_cards_text();
+    assert!(
+        nav.contains("db-2") && nav.contains("db-3"),
+        "the prefix paints the host band:
+{nav}"
+    );
+    h.sw.sync_prefix(false);
+    h.draw();
+    assert!(
+        !h.nav_cards_text().contains("db-2"),
+        "the band is hidden again once the prefix ends"
+    );
+}
+
+#[tokio::test]
+async fn a_hidden_band_shows_again_once_the_selection_lands_in_it() {
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.sw.sync_view_focus(true);
+    h.draw();
+    assert!(!h.nav_cards_text().contains("db-2"));
+    h.key(KeyCode::Right).await;
+    h.key(KeyCode::Right).await; // the selection reaches the band
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { .. })));
+    let nav = h.nav_cards_text();
+    assert!(
+        nav.contains("db-2"),
+        "a selected card is never hidden:\n{nav}"
+    );
+}

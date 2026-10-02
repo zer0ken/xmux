@@ -680,11 +680,16 @@ impl Runtime {
             self.dirty = true;
         }
         self.state.chrome.set_armed(prefix_active);
+        self.switcher.sync_prefix(prefix_active);
         // Derive the modal dimension of focus from the open-modal kind (single owner of
         // the modal/view reconciliation).
         let modal_kind = self.state.modal_kind();
         self.state.focus.sync_modal(modal_kind);
         let nav_focused = self.state.focus.view_is_nav();
+        // The nav decides its host band on the move into the terminal view. The view
+        // behind a modal counts as the focused one: a popup over the terminal view is not
+        // a move back into the nav.
+        self.switcher.sync_view_focus(!nav_focused);
         if nav_focused && !self.nav_was_focused && self.nav_collapsed {
             self.nav_collapsed = false;
             crate::ui::prefs::save_nav_collapsed(&self.env.xmux_dir, false);

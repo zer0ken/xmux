@@ -334,7 +334,17 @@ no function, and no test, so renaming code is never a documentation change.
   list with NOTHING but host cards is the host band alone, and it still takes its side of
   the split: anchored to the bottom (side) / right edge (portrait), the blank rows or
   columns opposite being where the sessions that will be found land, so a scan reads as
-  the pending hosts draining toward the sessions they become.
+  the pending hosts draining toward the sessions they become. The host band is HIDDEN
+  while the terminal view holds the focus, decided once on the move from the nav into
+  it: a session card selected then hides the band, because what the user went to look
+  at is a session and hosts with nothing to show are noise beside it; a host card
+  selected keeps it, because the screen beside the nav is that host's own. A modal
+  over the terminal view is not a move back, the move back into the nav shows the band
+  again, and a selection that reaches a host card while the band is hidden shows it,
+  since a selected card is never one nobody can see. While a prefix is live the band is
+  painted, because the hint bar offers a jump to any card by number, and it is hidden
+  again when the prefix ends. Hiding takes the cards off the screen, not off the list:
+  their numbers and the keys that walk the list stay the same.
 - **FR-B22** - A host and its mux are SHOWN as one label, `{host}/{mux}`, wherever the pair
   is read: a nav section title, the screen a card selects, the doctor's source list.
   Always that separator, never the one a source id parts its two halves with, because an id

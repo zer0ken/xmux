@@ -261,6 +261,12 @@ impl Switcher {
         // (render_view_border) separates it from the terminal view.
         self.nav_inner = area;
         self.nav_cells.clear();
+        // The selection can reach a host card while the band is hidden (a jump by number,
+        // the selected session going away): the band shows again rather than leave the
+        // selection on a card nobody can see.
+        if self.host_band_hidden && !matches!(self.current_ref(), Some(RowRef::Session { .. })) {
+            self.host_band_hidden = false;
+        }
         let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
         let num_w = self.number_width();
         match self.layout {
@@ -289,12 +295,12 @@ impl Switcher {
         num_w: usize,
         spinner_glyph: char,
     ) {
-        let heights = vec![1u16; self.rows.len()];
+        let heights = vec![1u16; self.painted_rows()];
         // The placement decides whether the list scrolls, and the strip is a COLUMN, so
         // reserving it after the fact takes nothing away from what was just laid out.
         let flow = side::place(
             &heights,
-            self.band_boundary(),
+            self.painted_boundary(),
             area.height,
             self.list_state.offset(),
             self.selected,
@@ -360,17 +366,17 @@ impl Switcher {
         num_w: usize,
         spinner_glyph: char,
     ) -> Option<(usize, usize)> {
-        let cards: Vec<columns::Card> = (0..self.rows.len())
+        let cards: Vec<columns::Card> = (0..self.painted_rows())
             .map(|i| self.flow_card(i, num_w, spinner_glyph))
             .collect();
         let band = area;
-        let boundary = self.band_boundary().unwrap_or(cards.len());
+        let boundary = self.painted_boundary().unwrap_or(cards.len());
         let placed = columns::place(&cards, band.height, boundary);
         // Which cards stand in the column their own section title stands in. A section
         // taller than a whole column is the one that splits, and its continuation opens
         // the next column under a RE-STATED title; the connector marks the title that
         // owns the group, so it stops at the break rather than running under a repeat.
-        let mut home_col = vec![false; self.rows.len()];
+        let mut home_col = vec![false; cards.len()];
         let mut head_col = None;
         for (i, flag) in home_col.iter_mut().enumerate() {
             if self.starts_run(i) {
@@ -572,7 +578,7 @@ impl Switcher {
     /// marker, not furniture. Counted in cards (not screen rows) over the variable card
     /// heights, from the placement the cards were painted with.
     fn render_nav_scrollbar(&mut self, frame: &mut Frame, bar: Rect, flow: &side::Flow) {
-        let total = self.rows.len();
+        let total = self.painted_rows();
         if bar.width == 0 || bar.height == 0 {
             return;
         }

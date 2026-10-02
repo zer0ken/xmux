@@ -190,7 +190,13 @@ UI elements a user perceives as distinct things:
   the host band alone, and it still takes its side of the split: anchored to the
   bottom (column) / right edge (band), the blank rows or columns opposite being where
   the sessions that will be found land, so a scan reads as the pending hosts draining
-  toward the sessions they become.
+  toward the sessions they become. The host band is hidden while the terminal view
+  holds the focus when a session card was selected on the move into it, and shown
+  again on the move back into the nav or once the selection reaches a host card; a
+  host card selected on the move keeps it. A live prefix paints the band while it lasts,
+  since its hint bar offers a jump to any card by number, and the band is hidden again
+  when the prefix ends. Hidden cards leave the screen, not the list, so card numbers do
+  not shift.
 - level color - the per-segment card color, from the palette. Every foreground role
   is ANSI-16, so the terminal theme resolves the hue. There is one TEXT colour, one
   ACCENT, and the section title's quiet header role: a session card reads as one
