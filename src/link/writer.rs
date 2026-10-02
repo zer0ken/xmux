@@ -3,8 +3,6 @@
 
 use std::io::Write;
 
-use crate::mux::ControlProtocol;
-
 use super::{HostCmd, InFlight, PendingReply};
 
 /// Drains the command channel, writing exact command bytes to `w` and pushing ONE
@@ -20,7 +18,6 @@ use super::{HostCmd, InFlight, PendingReply};
 pub fn run_writer<W: Write>(
     host: &str,
     rx: std::sync::mpsc::Receiver<HostCmd>,
-    proto: &dyn ControlProtocol,
     w: &mut W,
     in_flight: &InFlight,
 ) {
@@ -29,13 +26,6 @@ pub fn run_writer<W: Write>(
             HostCmd::Send(line) => {
                 in_flight.lock().unwrap().push_back(PendingReply::Ignore);
                 if let Err(e) = w.write_all(line.as_bytes()) {
-                    tracing::warn!(host, error = %e, "control_writer_broken");
-                    return;
-                }
-            }
-            HostCmd::Resize { cols, rows } => {
-                in_flight.lock().unwrap().push_back(PendingReply::Ignore);
-                if let Err(e) = w.write_all(proto.size_line(cols, rows).as_bytes()) {
                     tracing::warn!(host, error = %e, "control_writer_broken");
                     return;
                 }
@@ -56,8 +46,6 @@ pub fn run_writer<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::link::test_control_proto;
-
     #[test]
     fn writer_serializes_commands_and_correlates() {
         // The writer writes each command's exact bytes and pushes ONE Ignore
@@ -65,18 +53,18 @@ mod tests {
         // `%begin` blocks the reader pops.
         let (tx, rx) = std::sync::mpsc::channel::<HostCmd>();
         let in_flight: InFlight = Default::default();
-        tx.send(HostCmd::Send("refresh-client -f no-output\n".to_string()))
-            .unwrap();
-        tx.send(HostCmd::Resize { cols: 80, rows: 24 }).unwrap();
+        tx.send(HostCmd::Send(
+            "refresh-client -f no-output,ignore-size\n".to_string(),
+        ))
+        .unwrap();
         tx.send(HostCmd::Shutdown).unwrap();
         drop(tx);
         let mut out: Vec<u8> = Vec::new();
-        run_writer("test", rx, test_control_proto(), &mut out, &in_flight);
+        run_writer("test", rx, &mut out, &in_flight);
         let s = String::from_utf8(out).unwrap();
-        assert!(s.contains("refresh-client -f no-output\n"));
-        assert!(s.contains("refresh-client -C 80x24\n"));
-        // One Ignore per command line written: send + resize = 2.
-        assert_eq!(in_flight.lock().unwrap().len(), 2);
+        assert!(s.contains("refresh-client -f no-output,ignore-size\n"));
+        assert!(!s.contains("refresh-client -C"));
+        assert_eq!(in_flight.lock().unwrap().len(), 1);
     }
 
     /// A writer whose child is gone must not let later commands look delivered. The
@@ -102,7 +90,7 @@ mod tests {
         ))
         .unwrap();
         let mut out = BrokenPipe;
-        run_writer("test", rx, test_control_proto(), &mut out, &in_flight);
+        run_writer("test", rx, &mut out, &in_flight);
         assert!(
             tx.send(HostCmd::Send(
                 "switch-client -c /dev/pts/17 -t b\n".to_string()
@@ -124,7 +112,7 @@ mod tests {
         tx.send(HostCmd::Shutdown).unwrap();
         drop(tx);
         let mut out: Vec<u8> = Vec::new();
-        run_writer("test", rx, test_control_proto(), &mut out, &in_flight);
+        run_writer("test", rx, &mut out, &in_flight);
         let s = String::from_utf8(out).unwrap();
         assert!(
             s.contains("list-clients"),

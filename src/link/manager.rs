@@ -157,12 +157,6 @@ impl HostManager {
         }
     }
 
-    pub fn resize_all(&mut self, cols: u16, rows: u16) {
-        for c in self.clients.values_mut() {
-            c.resize(cols, rows);
-        }
-    }
-
     /// Drains and tears down every channel (bounded join per control client; abort per poll task).
     pub fn teardown_all(self) {
         for (_, c) in self.clients {

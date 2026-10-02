@@ -54,6 +54,9 @@ dispatches the host execution, and the tmux implementation never hardcodes ssh.
   sessions. The driver value itself carries no state, so constructing a fresh one
   per call is fine: the state lives on the source and the attachment registry.
 - A reachable empty tmux enumerates as an empty list; unreachable is an error.
+- The `-CC` metadata client sets `ignore-size` and never sends a client size
+  (`refresh-client -C`), so it cannot shrink the session it lands in, which is often
+  the one xmux itself runs in.
 
 ## Common Pitfalls
 

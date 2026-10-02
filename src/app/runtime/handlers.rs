@@ -740,7 +740,6 @@ impl Runtime {
             self.applied_nav_collapsed = self.nav_collapsed;
             let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
             self.registry.resize_all(vc, vr);
-            self.mgr.resize_all(vc, vr);
             if crossed_hidden || crossed_position {
                 if let Err(e) = clear_screen(term) {
                     tracing::warn!(error = %e, "term_clear_failed");
@@ -1630,7 +1629,6 @@ impl Runtime {
                 self.body_rows = body;
                 let (vc, vr) = terminal_view_size(c, body, self.nav_size());
                 self.registry.resize_all(vc, vr);
-                self.mgr.resize_all(vc, vr);
                 let _ = term.autoresize();
                 // A console resize reflows the existing cells; force a full repaint.
                 if let Err(e) = clear_screen(term) {
