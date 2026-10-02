@@ -38,7 +38,7 @@ xmux는 다음 사용자를 위한 도구다.
 
 **기본 설치 (권장)**
 
-macOS, Linux, WSL:
+macOS, Linux, WSL, Android Termux:
 
 ```sh
 curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh
