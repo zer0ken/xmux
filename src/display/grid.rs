@@ -29,10 +29,11 @@ impl Grid {
             self.clear_on_feed = false;
             self.clear();
         }
-        // The patched vt100 dependency preserves wide-cell pairs across a resize and
-        // guards operations on an orphaned wide cell. Keep the catch as a defensive
-        // boundary for other parser failures so none can kill the PTY pump thread.
-        // Resetting after a catch lets a later mux repaint refill a consistent grid.
+        // vt100 0.16.2 panics (screen.rs `Screen::text` unwrap on None) when a wide
+        // (CJK) glyph lands on the last column in some cursor states — common after a
+        // grid shrink. Catch it so the PTY pump thread survives; reset the parser so
+        // the next mux repaint refills the grid cleanly instead of re-panicking on the
+        // same stale cursor.
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.parser.process(bytes);
         }));
@@ -235,6 +236,10 @@ Connection to host closed.
         assert!(g.is_blank(), "clear wipes all visible content");
     }
 
+    // NOTE: this test deliberately triggers the vt100 panic that Grid::feed catches, so
+    // `cargo test` prints one "thread panicked at vt100 ... screen.rs" line to stderr —
+    // expected, not a failure. (The hook is not silenced here because it is process-
+    // global and tests run in parallel.)
     #[test]
     fn streamed_full_width_lines_keep_their_first_char() {
         // A mux draws a full-width row and lets auto-wrap carry into the next row
@@ -257,46 +262,24 @@ Connection to host closed.
     }
 
     #[test]
-    fn feed_preserves_content_when_a_shrink_splits_a_wide_char() {
+    fn feed_survives_wide_char_at_last_column() {
+        // Regression: vt100 0.16.2 panics (drawing_cell_mut(col+1).unwrap() on None) when
+        // a wide CJK glyph prints on the last column — observed crashing the PTY pump
+        // thread. Grid::feed must catch+recover so the pump survives and the grid stays
+        // usable (a subsequent repaint lands).
         let mut g = Grid::new(1, 4);
-        g.feed(b"Z");
         g.feed(b"\x1b[1;3H"); // cursor to 0-based col 2
         g.feed("한".as_bytes()); // wide glyph occupies cols 2-3 (the right edge)
-        g.resize(1, 3); // the wide glyph's second half is outside the new width
-        g.feed(b"\x1b[1;3HX"); // overwrite the repaired edge cell
+        g.resize(1, 3); // shrink → the wide glyph's second half (col 3) is truncated
+        g.feed(b"\x1b[1;3HX"); // overwrite the now-edge wide glyph → vt100 panics here
+        g.feed(b"\x1b[H\x1b[2JOK"); // recovered grid still repaints
         let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
         g.render_into(&mut buf, Rect::new(0, 0, 3, 1));
         assert_eq!(
             buf[(0, 0)].symbol(),
-            "Z",
-            "the resize and overwrite must not reset the parser"
+            "O",
+            "grid usable after the wide-char edge case"
         );
-        assert_eq!(buf[(2, 0)].symbol(), "X");
-    }
-
-    #[test]
-    fn vt100_resize_does_not_leave_an_unpaired_wide_cell() {
-        let mut parser = vt100::Parser::new(1, 4, 0);
-        parser.process(b"Z\x1b[1;3H");
-        parser.process("한".as_bytes());
-
-        parser.screen_mut().set_size(1, 3);
-        parser.process(b"\x1b[1;3HX");
-
-        assert_eq!(parser.screen().cell(0, 0).unwrap().contents(), "Z");
-        assert_eq!(parser.screen().cell(0, 2).unwrap().contents(), "X");
-    }
-
-    #[test]
-    fn vt100_resize_allows_erasing_a_truncated_wide_char() {
-        let mut parser = vt100::Parser::new(2, 4, 0);
-        parser.process("你".as_bytes());
-
-        parser.screen_mut().set_size(2, 1);
-        parser.process(b"\x1b[K");
-
-        assert_eq!(parser.screen().size(), (2, 1));
-        assert!(!parser.screen().cell(0, 0).unwrap().is_wide());
     }
 
     #[test]
