@@ -181,7 +181,7 @@ no function, and no test, so renaming code is never a documentation change.
   screen. A session xmux cannot name (the mux does not say, and cannot be asked) is not
   refused either, because a refusal keyed to a guess would hide a session at random.
 - **FR-B9** - The nav's bottom row is a status line, not a screen-wide footer. At
-  rest it names only the prefix; the states that outrank it (a refusal, scan progress,
+  rest it names the prefix and collapse button; the states that outrank it (a refusal, scan progress,
   an active filter) take the row while they apply. Arming the prefix widens the PAINT
   to the whole window so the cheatsheet floats over the view border and the live grid,
   leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
@@ -213,9 +213,10 @@ no function, and no test, so renaming code is never a documentation change.
   is free to answer no colour query at all. `[ui] selection-style` names a background
   anyway, in the same colour slots as the view border, and `xmux doctor` reports
   which of the two is in effect because it is invisible on a screenshot. The view
-  border's two halves hold the same two slots on every source: what the border states is
-  which VIEW holds focus, a fact about xmux, so no host and no mux may recolour it and a
-  selection moving between hosts leaves it exactly as it was.
+  border uses one slot across the whole rule: `primary` while the nav holds focus and
+  `disabled` while the terminal holds focus. What the border states is which VIEW holds
+  focus, a fact about xmux, so no host and no mux may recolour it and a selection moving
+  between hosts leaves it exactly as it was.
 - **FR-B12** - On a portrait screen the nav is a wide, short band, and its rows flow
   into COLUMNS: down a column, then right. A column takes whole SECTIONS (a
   `{host}/{mux}` title over its session cards), so a source's rows stay together under
@@ -271,13 +272,22 @@ no function, and no test, so renaming code is never a documentation change.
   live: the saved prefs seed them, the resize keys and `prefix p` step them, a border drag
   sets the size, and auto-hide takes
   the width away while no prefix interaction is live (a live one brings the nav back). The
-  width has a floor at the resting prefix label plus a one-cell gap each side, so the
-  border can collapse to just past the `C-g` status line and a wider configured prefix
+  width has a floor at the resting prefix label, a separating cell, and the collapse
+  button, so the whole resting control stays visible and a wider configured prefix
   raises the floor. The values therefore travel as ONE value carrying
-  the width the user set, the width on screen, the band height, and the attachment side,
+  the width the user set, the width on screen, the band height, the attachment side, and
+  the collapsed state,
   so the renderer, the PTY sizing and mouse hit-testing cannot read different answers,
   and the effective width keeps its single owner. Hiding the nav does not move the
   layout: the side travels with the hidden nav, so the nav returns the shape it left.
+  The far end of the resting nav status line carries one collapse button. Its token
+  follows the nav side and whether clicking it will collapse or expand:
+  `<<`/`>>` for left and right, and `▲`/`▼` for top and bottom. A collapsed side nav is
+  exactly wide enough for the resting prefix hint, one space, and the button; a collapsed
+  band is one row. It renders no cards, keeps the view border, and preserves the natural
+  width and height for expansion. Focusing the nav by keyboard expands it. Auto-hide wins
+  while active and restores the prior collapsed state when the nav returns. The collapsed
+  state is persisted, and its view border cannot be drag-resized.
 - **FR-B17** - The status row is a bar where it owns its row and a label where it does not:
   the side column's bar fills its row, and so does any ready or flashing bar, which has to
   be readable over what it covers; the portrait band's resting bar paints its text plus a

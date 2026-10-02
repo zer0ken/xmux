@@ -58,17 +58,17 @@ UI elements a user perceives as distinct things:
   between the two bands. Modelled on tmux's pane
   border, but it borders views (not panes), so it is a `view border`, never a
   "pane border" or a bare "divider". Its colour is FIXED and the same on every
-  source: the palette accent on the lit half, its own `border_inactive` muted tone on
-  the other, yellow for the drag-hover cue. The border states which VIEW holds focus,
+  source: the palette `primary` across the whole rule while the nav is focused,
+  `disabled` across it while the terminal is focused, and the hover colour for the
+  drag-hover cue. The border states which VIEW holds focus,
   which is a fact
   about xmux and not about the mux on the other side of it, so nothing a host or a
   mux reports may move it. Its color config keys are `view-border-style` /
   `view-active-border-style` / `view-border-hover-style`. These keys are OVERRIDES:
   unset (empty), that side keeps the fixed colour; a non-empty key replaces it.
-- active view border - the view border half painted the active color to mark which
-  view holds focus (tmux `pane-active-border-style`; the halves follow the nav
-  position - the nav's half sits toward the nav's side, and the nav riding the right
-  or below swaps the halves, the same flip as the focus-arrow pair).
+- active view border - the whole view border painted the active color while the nav
+  holds focus (tmux `pane-active-border-style`); terminal focus paints the whole rule
+  with the inactive color.
 - view border lines - the view border's line-drawing style (tmux
   `pane-border-lines`): `single │` (default), `double ║` (auto-hide-nav on),
   `heavy ┃` (hover - the drag-resize grab cue).
@@ -76,11 +76,11 @@ UI elements a user perceives as distinct things:
   the view screens.
 - hint bar - the nav's own status line: the bottom row(s) of the nav region, ending
   at the view border rather than spanning the screen, so the terminal view keeps
-  every row it owns. At rest it shows only the prefix; while a prefix interaction is
+  every row it owns. At rest it shows the prefix and collapse button; while a prefix interaction is
   live (the prefix ready, or its key still held) it shows the keys that interaction
-  unlocks. A flash, the scan indicator, and the active
-  filter outrank both, in that order. A long flash wraps across as many nav rows as
-  it needs instead of clipping. A shown flash paints it in the error style.
+  unlocks. A flash, the scan indicator, and the active filter outrank both, in that
+  order. A flash floats across the whole window and wraps instead of clipping. A shown
+  flash paints it in the error style.
 - view screen - what fills the terminal-view region in place of a mux, for a selection
   with no grid to show there. Where a card states the selection's STATE, the screen
   states WHY: it is the one surface with the room to hold a tool's diagnostic whole.
@@ -138,14 +138,20 @@ UI elements a user perceives as distinct things:
   title never takes either.
 - nav size - the nav's live geometry as one value: the width the user SET, the width ON
   SCREEN this frame (0 while auto-hide has taken it and no prefix interaction is live),
-  the band height the
-  user set (0 = auto), and the side the nav is attached to. All four are settable while
+  the band height the user set (0 = auto), the side the nav is attached to, and whether
+  the nav is collapsed. All five are settable while
   xmux runs, so every consumer takes the
   whole value rather than picking fields out of the runtime: the effective width
   has one owner, and a resize cannot reach the renderer and miss the PTY sizing. The set
-  width and the on-screen width differ only while the nav is hidden, and that is exactly
-  why both travel: the regions are cut from what is on screen, the set width is the
-  one the nav returns to when unhidden.
+  width and the on-screen width differ while the nav is hidden or a side nav is collapsed,
+  and that is exactly why both travel: the regions are cut from what is on screen, while
+  the set width is the one the nav returns to when shown and expanded.
+- collapsed nav - the nav reduced by its resting hint-bar button while retaining its
+  natural width and height. A left or right nav keeps the prefix hint, one space, and
+  the two-cell button; a top or bottom nav keeps one row. Cards do not render, the view
+  border remains, and keyboard focus into the nav expands it. Auto-hide still removes
+  the nav completely and returns it to the collapsed state. A collapsed view border is
+  not draggable.
 - column flow - how a band lays its rows out: down a column, then right, identical for a
   top and a bottom band. A
   column takes whole SECTIONS (a `{host}/{mux}` title over its session cards), so a

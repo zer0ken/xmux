@@ -136,12 +136,19 @@ moving it outward grows the nav; on a right or bottom nav the border is the nav'
 edge, so the same movement shrinks it. The width floor is just past the resting `C-g`
 status line.
 
+The button at the far end of the resting status line collapses or expands the nav.
+Its arrows point in the direction the nav will move. A collapsed left or right nav keeps
+only enough width for the prefix, one space, and the button; a collapsed top or bottom nav
+keeps one row. Cards are not shown while collapsed, and focusing the nav by keyboard
+expands it. Auto-hide still takes the whole nav away and restores the same collapsed or
+expanded state when it returns. Drag-resizing is disabled while the nav is collapsed.
+
 ## The status line
 
 The nav's bottom row is its status line, in all four placements. With the nav as a left or
 right column, or a top band, that is the lowest row the nav owns on screen; with the nav as
-a bottom band it is the bottom row of the screen itself. At rest it shows one thing, the
-prefix, and stops at the view border so the terminal view keeps every row it has. In a band
+  a bottom band it is the bottom row of the screen itself. At rest it shows the prefix and
+  collapse button, and stops at the view border so the terminal view keeps every row it has. In a band
 it stops at its own text instead, because it shares that row with the
 offscreen-card counts. Press the prefix and the same row widens to the whole window,
 floating over the border and the terminal view to list the keys that prefix unlocks; it
@@ -165,11 +172,11 @@ With the nav auto-hidden the mux owns every row, status line included, until a p
 interaction starts: then the nav comes back for the moment it is needed, so a jump can
 read the card numbers, and it hides again when the interaction ends. The bar also floats
 over the bottom of the window for the two things that must be seen the moment they
-happen: a live prefix, and a refusal. Scan progress and the active filter
+happen: a live prefix, and a refusal. A refusal floats over the whole window and wraps
+instead of clipping. Scan progress and the active filter
 persist, so they stay in the nav and never take a row back from a hidden one. Four
 states outrank the prefix while they apply, in order: a refusal message (in yellow), the
 scan progress, the active filter, and then the resting prefix. A
-refusal too long for the nav width wraps onto more rows rather than clipping.
 
 ## Focus
 
@@ -211,8 +218,9 @@ forwarded raw to the session's active pane, so programs running inside the mux
 |---|---|
 | left-click a card | select that card (nav focused) |
 | left-click a view | focus that view |
+| left-click `<<`, `>>`, `▲`, or `▼` | collapse or expand the nav |
 | wheel over the nav | move the selection (nav focused) |
-| drag the view border | resize the nav (at any of the four borders: the drag mirrors the placement, measuring from the near edge) |
+| drag the view border | resize the expanded nav (at any of the four borders: the drag mirrors the placement, measuring from the near edge) |
 | drag a modal's border | move the modal |
 
 There is no context menu: every action a right-click could offer is either a

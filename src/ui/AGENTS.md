@@ -5,7 +5,7 @@
 `ui` owns the session switcher: pure row-model transforms, side-effecting UI
 operations, control socket serving helpers, interactive switcher state, rendering,
 and the lightweight preferences that persist UI hints (last-selected address, nav
-width and height, auto-hide-nav, nav position) across runs.
+width and height, collapsed state, auto-hide-nav, nav position) across runs.
 
 ## Mental Model
 
@@ -19,8 +19,8 @@ transient popup geometry.
 The chrome is the view border, the hint bar, and the host screens, plus its
 view-local state (flash, spinner, view border colours, prefix, ready). The hint
 bar is the NAV's bottom row or rows, not a full-width strip, and shows the prefix
-alone until a prefix interaction is live (the prefix ready), when it lists the keys
-that interaction unlocks. The chrome instance
+and collapse button until a prefix interaction is live (the prefix ready), when it
+lists the keys that interaction unlocks. The chrome instance
 itself lives in the runtime state, fed by the app each frame and rendered from it.
 
 The operations module holds the off-loop mux-action boundary: the trait over the
@@ -42,8 +42,8 @@ flatten renders for the dump verb.
   the selection style), so the theme changes in one place. A theme is a named
   role→ANSI-slot assignment; the palette holds the registry (`auto-dark`,
   `auto-light`) and `[ui] theme` selects one. `decoration` is the CONTENT furniture
-  (card number, `/`, the rules); the view border's dim half is the separate
-  `disabled` role because it states focus, not a card mark. The hint
+  (card number, `/`, the rules); the view border uses `primary` across the whole rule
+  for nav focus and `disabled` across it for terminal focus. The hint
   bar reads its OWN accent (`bar_accent`) because it sits on a different surface than
   the cards - a slot that reads on one may not read on the other. What lives in the
   chrome is only the override layer over these (the per-role `[ui]` colour keys).

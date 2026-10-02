@@ -58,11 +58,10 @@ const FRAME_MS: u64 = 33;
 
 pub(crate) const NAV_WIDTH_MAX: u16 = 100;
 
-/// The nav's floor width: the resting prefix label plus a one-cell breathing gap on
-/// each side, so the view border can sit right after the `[C-g]` status text and a
-/// wider configured prefix still fits.
+/// The nav's floor width: its resting prefix, a separating cell, and the collapse
+/// button. A wider configured prefix raises the floor.
 pub(crate) fn nav_width_min(ui_prefix: &str) -> u16 {
-    ui_prefix.chars().count() as u16 + 2
+    crate::ui::switcher::collapsed_nav_width(ui_prefix)
 }
 
 /// The band-layout nav height drag range. The min keeps a few nav rows; compute_regions
@@ -305,7 +304,8 @@ fn self_tty() -> String {
 
 /// The EFFECTIVE nav width to render and size the terminal view against. Hidden (0,
 /// terminal view full width) only while the terminal view is focused, auto-hide-nav
-/// mode is on, and no prefix interaction is active; otherwise the nav's natural width.
+/// mode is on, and no prefix interaction is active. Otherwise it uses the compact width
+/// while collapsed and the user's natural width while expanded.
 /// A prefix press is an interaction with xmux, so the nav comes back for it even under
 /// auto-hide (the user needs the card numbers to jump, resize, or act on a card).
 /// Pure so the focus/mode interaction is unit-testable; the loop owns the natural
@@ -315,9 +315,13 @@ fn reconciled_nav_width(
     auto_hide_nav: bool,
     prefix_active: bool,
     natural: u16,
+    collapsed: bool,
+    ui_prefix: &str,
 ) -> u16 {
     if terminal_focused && auto_hide_nav && !prefix_active {
         0
+    } else if collapsed {
+        crate::ui::switcher::collapsed_nav_width(ui_prefix)
     } else {
         natural
     }
@@ -1400,6 +1404,9 @@ struct Runtime {
     nav_width: u16,
     /// The nav's natural width (what prefix h/l adjusts; restored when shown again).
     nav_width_natural: u16,
+    /// Whether the nav shows only its resting hint bar and collapse button. Its natural
+    /// width and height stay untouched so expanding restores them.
+    nav_collapsed: bool,
     /// The band-layout nav height, set by dragging the horizontal view border or the resize
     /// keys. 0 = auto (~40% of the body). Only used in a band layout; ignored in a column.
     nav_height: u16,
@@ -1417,7 +1424,13 @@ struct Runtime {
     /// mux terminals when the band height changes (not only on a width change). `u16::MAX`
     /// forces the first reconcile to size them.
     applied_nav_height: u16,
+    /// The collapsed state last applied to PTY sizing. A band can change height while its
+    /// width stays constant, so this participates in the resize reconcile directly.
+    applied_nav_collapsed: bool,
     auto_hide_nav: bool,
+    /// Whether the nav side held focus on the preceding loop pass. A transition into nav
+    /// focus expands a collapsed nav without expanding a persisted collapsed startup.
+    nav_was_focused: bool,
     mouse_state: MouseState,
     term_input: crate::display::input::TermInput,
     nav_decoder: crate::display::decode::KeyDecoder,

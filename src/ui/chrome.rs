@@ -67,11 +67,11 @@ pub fn map_color(s: &str) -> Color {
     }
 }
 
-/// The tree|terminal view border's three colours: `active` marks the focused side,
-/// `inactive` the unfocused side, and `hover` the drag-resize grab cue.
+/// The tree|terminal view border's three colours: `active` marks nav focus,
+/// `inactive` marks terminal focus, and `hover` is the drag-resize grab cue.
 ///
-/// The defaults are xmux's own and the same on every source: the palette's `accent` for
-/// the lit half, its muted `overlay` for the other, and yellow for the grab cue. The
+/// The defaults are xmux's own and the same on every source: the palette's `primary`
+/// for nav focus, `disabled` for terminal focus, and `accent` for the grab cue. The
 /// border says which VIEW holds focus, which is a fact about xmux and not about the mux
 /// on the other side of it, so a border that changed hue as the selection moved between
 /// hosts was reading as a state change where there was none.
@@ -430,9 +430,9 @@ pub struct Chrome {
     pub(crate) ui_prefix: String,
     /// True while the prefix has been pressed and the app is waiting for the command
     /// key (set by the app each frame from the live input state, in either focus). The
-    /// hint bar shows the prefix alone until this flips, then the keys it unlocks - so
-    /// the cheatsheet appears exactly when it is needed and never competes with the
-    /// cards for room.
+    /// resting hint bar shows the prefix and collapse button until this flips, then the
+    /// floating bar shows the keys it unlocks. The cheatsheet appears exactly when it is
+    /// needed and never competes with the cards for room.
     pub(crate) armed: bool,
     /// The side the nav is attached to this frame (set by the app each frame from the
     /// runtime's resolved position). The cheatsheet's focus segment names the arrow
@@ -639,25 +639,19 @@ impl Chrome {
         self.log_path = path;
     }
 
-    /// The rule between the tree and the terminal view. It splits into two halves and the
-    /// accent half marks WHICH view holds focus: in a column the vertical rule splits
-    /// top/bottom and in a band the horizontal rule splits left/right, with the nav's half
-    /// facing the nav's side and the terminal's half the other. A single rule cannot lean
-    /// toward either view, so the accent half's position carries the signal (adapting
-    /// tmux's active-pane border). The nav riding the RIGHT or BOTTOM swaps which half is
-    /// which, the same flip that turns the focus-arrow pair around, so the accent always
-    /// agrees with the arrows the cheatsheet and help modal name. Replaces the per-pane
-    /// box borders. The glyph also encodes auto-hide-nav mode: ║ (double) when on, │ when
-    /// off - so a visible tree that will vanish on blur is distinguishable from a pinned one.
+    /// The rule between the tree and the terminal view. The whole rule uses the active
+    /// colour while the nav is focused and the inactive colour while the terminal is
+    /// focused. The glyph also encodes auto-hide-nav mode: a double line when on and a
+    /// single line when off, so a visible nav that will vanish on blur is distinguishable
+    /// from a pinned one. Hover keeps its heavy glyph and hover colour.
     pub(crate) fn render_view_border(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
-        let active = self.colors.active;
-        let inactive = self.colors.inactive;
-        // The nav on the right or below flips the half assignment (and the focus arrows),
-        // so the accent follows the placement instead of a fixed left/top convention.
-        let swapped = !self.nav_position.forward_arrows_face_terminal();
-        // Band layout: the view border runs HORIZONTALLY between the nav band and the
-        // terminal. Split left/right to cue focus (nav half lit = nav focus, terminal
-        // half = terminal focus), mirroring the vertical rule's top/bottom split.
+        let color = if terminal_focused {
+            self.colors.inactive
+        } else {
+            self.colors.active
+        };
+        // Band layout: the view border runs horizontally between the nav band and the
+        // terminal. It uses one colour across its full length, like the vertical rule.
         if area.width > area.height {
             let g = if self.view_border_hovered {
                 "━"
@@ -666,34 +660,18 @@ impl Chrome {
             } else {
                 "─"
             };
-            let n = area.width;
-            let cells: Vec<Span> = if self.view_border_hovered {
-                let s = Style::default().fg(self.colors.hover);
-                (0..n).map(|_| Span::styled(g, s)).collect()
-            } else if n <= 1 {
-                vec![Span::styled(g, Style::default().fg(active))]
+            let style = Style::default().fg(if self.view_border_hovered {
+                self.colors.hover
             } else {
-                let left_cols = n.div_ceil(2);
-                let (nav_half, term_half) = if terminal_focused {
-                    (inactive, active)
-                } else {
-                    (active, inactive)
-                };
-                // Left/top: nav half on the left, terminal half on the right; right/bottom
-                // (swapped): the terminal half takes the left and the nav half the right.
-                let (left, right) = if swapped {
-                    (term_half, nav_half)
-                } else {
-                    (nav_half, term_half)
-                };
-                (0..n)
-                    .map(|x| {
-                        let c = if x < left_cols { left } else { right };
-                        Span::styled(g, Style::default().fg(c))
-                    })
-                    .collect()
-            };
-            frame.render_widget(Paragraph::new(Line::from(cells)), area);
+                color
+            });
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    g.repeat(area.width as usize),
+                    style,
+                ))),
+                area,
+            );
             return;
         }
         let glyph = if self.auto_hide { "║" } else { "│" };
@@ -712,31 +690,9 @@ impl Chrome {
             frame.render_widget(Paragraph::new(bars), area);
             return;
         }
-        let colors: Vec<Color> = if area.height <= 1 {
-            // Too short to split: show the active-marker color in the single cell.
-            vec![active; area.height as usize]
-        } else {
-            let top_rows = area.height.div_ceil(2); // top takes the extra row on odd heights
-            let (nav_half, term_half) = if terminal_focused {
-                (inactive, active)
-            } else {
-                (active, inactive)
-            };
-            // Left/top: nav half on top, terminal half below; right/bottom (swapped): the
-            // terminal half takes the top and the nav half the bottom.
-            let (top, bottom) = if swapped {
-                (term_half, nav_half)
-            } else {
-                (nav_half, term_half)
-            };
-            (0..area.height)
-                .map(|y| if y < top_rows { top } else { bottom })
-                .collect()
-        };
         let bars = Text::from(
-            colors
-                .into_iter()
-                .map(|c| Line::from(Span::styled(glyph, Style::default().fg(c))))
+            (0..area.height)
+                .map(|_| Line::from(Span::styled(glyph, Style::default().fg(color))))
                 .collect::<Vec<_>>(),
         );
         frame.render_widget(Paragraph::new(bars), area);
@@ -1140,10 +1096,9 @@ impl Chrome {
         out
     }
 
-    /// The hint bar's logical text, fit to `width`. Modeled on zellij's status bar:
-    /// at rest it shows only the prefix, so the nav's bottom row is a quiet reminder
-    /// of the one key that opens everything; once the prefix is ARMED it becomes the
-    /// list of keys that prefix unlocks, which is the moment the user needs it. An
+    /// The hint bar's logical text, fit to `width`. At rest this text is only the prefix,
+    /// with the collapse button painted separately at the row's far end. Once the prefix
+    /// is armed, the text becomes the list of keys that prefix unlocks. An
     /// open input outranks everything: the bar BECOMES the input line (feature name,
     /// guide text, and the windowed buffer), so what is being typed is what the bar
     /// says. The transient states outrank the rest, in order: a flash (a refusal),
@@ -1193,6 +1148,7 @@ impl Chrome {
                     format!(" {sp} scanning hosts {done}/{total}…"),
                     format!(" {sp} scanning {done}/{total}…"),
                     format!(" {sp} {done}/{total}"),
+                    format!(" {sp}{done}/{total}"),
                 ],
                 width,
             )
@@ -1207,7 +1163,7 @@ impl Chrome {
                 width,
             )
         } else {
-            // At rest: the prefix alone. Everything else is one keypress away.
+            // At rest the text portion is the prefix. The renderer adds the button.
             fit(&[format!(" {p}"), p.to_string()], width)
         }
     }
@@ -1388,6 +1344,50 @@ impl Chrome {
         }
     }
 
+    /// Paints the resting prefix and the collapse button across a collapsed nav's whole
+    /// hint bar. Transient bars are handled by the ordinary floating-bar path instead.
+    pub(crate) fn render_collapsed_hint_bar(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        position: crate::ui::switcher::NavPosition,
+    ) {
+        frame.render_widget(Clear, area);
+        let line = self.hint_bar_line_spans(format!(" {}", self.ui_prefix));
+        frame.render_widget(
+            Paragraph::new(line).style(self.hint_bar_render_style()),
+            area,
+        );
+        self.render_collapse_button(frame, area, position, true);
+    }
+
+    /// Paints the collapse/expand token at the far end of a nav-local hint bar.
+    pub(crate) fn render_collapse_button(
+        &self,
+        frame: &mut Frame,
+        hint_bar: Rect,
+        position: crate::ui::switcher::NavPosition,
+        collapsed: bool,
+    ) {
+        let rect = crate::ui::switcher::collapse_button_rect(hint_bar, position, collapsed);
+        if rect.is_empty() {
+            return;
+        }
+        let token = crate::ui::switcher::collapse_button_token(position, collapsed);
+        let token_style = if self.hint_bar_style == hint_bar_default_style() {
+            Style::default()
+                .fg(crate::ui::palette::get().bar_accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(token, token_style)))
+                .style(self.hint_bar_render_style()),
+            rect,
+        );
+    }
+
     /// How many cells a [`BarFill::Content`] bar paints, so whatever else is on the row
     /// (the portrait flow's scrollbar) can start where the bar stops instead of being
     /// painted over.
@@ -1533,7 +1533,7 @@ mod tests {
     fn hint_bar_shows_the_prefix_at_rest_and_its_keys_when_armed() {
         let mut c = Chrome::default();
         let state = crate::state::State::default();
-        // At rest: the prefix alone. That is the whole resting cheatsheet.
+        // At rest the logical text is the prefix; the switcher paints the button.
         assert_eq!(c.hint_bar_text(80, &state).trim(), "C-g");
         // Armed: the keys the prefix unlocks. Wide enough for the full descriptions,
         // the rows run in the bar's fixed order (focus nav, focus terminal, jump, new,
