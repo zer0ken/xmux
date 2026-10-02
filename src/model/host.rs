@@ -471,14 +471,16 @@ impl Host {
         )
     }
 
-    /// True when `session` is still live under this mux's death signal. PerSession
-    /// (psmux) ⇒ the `.port` stat; any other model ⇒ always live (death arrives by
-    /// EOF/ControlNotice, not a port file).
+    /// True when `session` is still live under this mux's death signal. A psmux host
+    /// in the local registry scope uses its `.port` file. Other hosts stay live here
+    /// because death arrives through the attachment PTY or control channel.
     pub fn session_is_live(&self, session: &str) -> bool {
         match self.mux.death_signal() {
             crate::model::DeathSignal::PathStat {
                 dir_is_psmux_registry: true,
-            } => crate::model::death::psmux_session_is_live(session),
+            } if self.transport.local_registry_scope() => {
+                crate::model::death::psmux_session_is_live(session)
+            }
             _ => true,
         }
     }
@@ -1256,6 +1258,17 @@ mod tests {
         assert!(h.session_is_live(&name), "a present .port ⇒ live");
         std::fs::remove_file(&path).unwrap();
         assert!(!h.session_is_live(&name), "a vanished .port ⇒ not live");
+    }
+
+    #[test]
+    fn remote_psmux_host_is_live_without_a_local_port() {
+        let h = Host::new(
+            crate::transport::ssh("jup".into(), String::new(), "windows".into()),
+            crate::mux::for_binary("psmux").unwrap(),
+        );
+        let name = format!("xmux-remote-hostlive-{:?}", std::time::SystemTime::now());
+        assert!(!crate::model::death::psmux_port_path(&name).exists());
+        assert!(h.session_is_live(&name));
     }
 
     #[test]
