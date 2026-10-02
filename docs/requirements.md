@@ -1,7 +1,7 @@
 # xmux: functional requirements & use cases
 
 xmux is a stateless cross-environment session switcher: one terminal that sees and
-moves between every reachable tmux/psmux/zellij/screen session, local and over ssh,
+moves between every reachable tmux/psmux/zellij/screen/tuios session, local and over ssh,
 regardless of OS or mux kind. Its reason to exist is to deliver tmux's `prefix + s`
 (choose-tree / switch-client) experience **across hosts**: instant, in-place
 switching to any host's session.
@@ -53,7 +53,7 @@ no function, and no test, so renaming code is never a documentation change.
   the roster still names keeps the sources it is serving, including any that were found by
   asking the machine rather than by configuration.
 - **FR-A6** - A host's mux is identified by what its binary answers as, not by the
-  name it was invoked under, so tmux, psmux, zellij, abduco, and screen mix freely
+  name it was invoked under, so tmux, psmux, zellij, abduco, screen, and tuios mix freely
   across hosts with no configuration. Each mux is one implementation behind the mux axis: the
   command plans default to tmux-compatible argv (so a tmux-compatible mux is identity
   plus a few overrides), and a mux that shares no argv with tmux overrides every plan
@@ -63,6 +63,9 @@ no function, and no test, so renaming code is never a documentation change.
   because it offers no push channel. abduco is the simplest case: one server per
   session, no windows, no control stream, and no per-session query, so its sessions are
   polled from the bare listing and each resolves as the session alone.
+  tuios has one daemon for all sessions but the same display behavior: its JSON listing
+  answers the whole poll in one command, and every selected session is shown through a
+  fresh attachment because no external command can retarget a named client.
 - **FR-A7** - A SOURCE is one mux on one host, so a host running several
   muxes at once contributes one source per mux and every one of them is listed. A `mux`
   value is a name or a LIST of names, in `[local]` and in `[[hosts]]` alike. A host
@@ -81,17 +84,22 @@ no function, and no test, so renaming code is never a documentation change.
   another mux is not counted as that mux: where psmux answers, a `tmux` that also answers
   is psmux's own alias of itself (which names itself by the name it was invoked under, so
   no probe can tell it apart) and is dropped. A WRITTEN value is never probed, keeping
-  FR-A7's rule that a name the user wrote stays visible even when it is missing; a host
-  where nothing answers keeps the mux it was assumed to run, so the nav names what is
-  unreachable rather than showing nothing.
+  FR-A7's rule that a name the user wrote stays visible even when it is missing. No mux
+  is ever assumed for a host that named none: it serves exactly what answered, and a
+  host where nothing answers serves nothing and has no card, as this machine has no
+  local card when nothing is installed here.
 - **FR-A10** - A REMOTE host is discovered AFTER launch, asynchronously, and its
   answer only ADDS. The app paints the sources the config names first (a remote probe is
-  an ssh round trip per mux, and nothing may wait for that), then each host's answer
+  an ssh round trip per mux, and nothing may wait for that), and a host that named no mux
+  as one card that reads the host alone and turns a spinner. Each host's answer then
   arrives and every mux it reports that the host does not already serve becomes a
-  scanning card on the spot. An added source's id is always qualified (`prod:zellij`)
-  while the mux already served keeps the id it was painted with: that id is what the
-  deterministic order, the persisted selection, and anything the user typed are keyed
-  to, so
+  scanning card on the spot. A host that served nothing yet names its sources as a
+  written list would: one mux takes the bare host alias, which is the card the host
+  was already showing, and several are each qualified, replacing that card. On a host
+  that already serves a source, an added source's id is always qualified
+  (`prod:zellij`) while the mux already served keeps the id it was painted with: that
+  id is what the deterministic order, the persisted selection, and anything the user
+  typed are keyed to, so
   nothing is renamed and nothing is removed. A new card sorts into its name position,
   so the deterministic order holds while a card the user is looking at does not move
   because another host answered. An added source is
@@ -124,9 +132,12 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B2** - Render-first: the source skeleton paints instantly; each source's
   sessions stream in independently.
 - **FR-B3** - The terminal view shows the confirmed session's live grid and follows
-  the cursor. A switch keeps the prior grid on screen until the new one is ready
-  (stale-while-revalidate); only the first launch, before any grid exists, shows a
-  blank view. An attachment a host warms on a session of its own choosing is kept
+  the cursor. A switch keeps the prior grid on screen until the fresh attachment
+  shows a visible frame and its output then settles for 50 ms, continuous output after
+  that frame reaches 400 ms, or 3 s pass without a visible frame
+  (stale-while-revalidate). Input targets the fresh attachment during that wait, and
+  resize reaches both attachments. Only the first launch, before any grid exists, shows
+  a blank view. An attachment a host warms on a session of its own choosing is kept
   live, because that is what makes its host instant to reach, but it is never
   confirmed and so cannot take the view. Whenever the confirmed session is not the
   one the cursor names, the view is carried back to the cursor for as long as the two
@@ -173,7 +184,7 @@ no function, and no test, so renaming code is never a documentation change.
   screen. A session xmux cannot name (the mux does not say, and cannot be asked) is not
   refused either, because a refusal keyed to a guess would hide a session at random.
 - **FR-B9** - The nav's bottom row is a status line, not a screen-wide footer. At
-  rest it names only the prefix; the states that outrank it (a refusal, scan progress,
+  rest it names the prefix and collapse button; the states that outrank it (a refusal, scan progress,
   an active filter) take the row while they apply. Arming the prefix widens the PAINT
   to the whole window so the cheatsheet floats over the view border and the live grid,
   leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
@@ -205,9 +216,10 @@ no function, and no test, so renaming code is never a documentation change.
   is free to answer no colour query at all. `[ui] selection-style` names a background
   anyway, in the same colour slots as the view border, and `xmux doctor` reports
   which of the two is in effect because it is invisible on a screenshot. The view
-  border's two halves hold the same two slots on every source: what the border states is
-  which VIEW holds focus, a fact about xmux, so no host and no mux may recolour it and a
-  selection moving between hosts leaves it exactly as it was.
+  border uses one slot across the whole rule: `primary` while the nav holds focus and
+  `disabled` while the terminal holds focus. What the border states is which VIEW holds
+  focus, a fact about xmux, so no host and no mux may recolour it and a selection moving
+  between hosts leaves it exactly as it was.
 - **FR-B12** - On a portrait screen the nav is a wide, short band, and its rows flow
   into COLUMNS: down a column, then right. A column takes whole SECTIONS (a
   `{host}/{mux}` title over its session cards), so a source's rows stay together under
@@ -263,13 +275,22 @@ no function, and no test, so renaming code is never a documentation change.
   live: the saved prefs seed them, the resize keys and `prefix p` step them, a border drag
   sets the size, and auto-hide takes
   the width away while no prefix interaction is live (a live one brings the nav back). The
-  width has a floor at the resting prefix label plus a one-cell gap each side, so the
-  border can collapse to just past the `C-g` status line and a wider configured prefix
+  width has a floor at the resting prefix label, a separating cell, and the collapse
+  button, so the whole resting control stays visible and a wider configured prefix
   raises the floor. The values therefore travel as ONE value carrying
-  the width the user set, the width on screen, the band height, and the attachment side,
+  the width the user set, the width on screen, the band height, the attachment side, and
+  the collapsed state,
   so the renderer, the PTY sizing and mouse hit-testing cannot read different answers,
   and the effective width keeps its single owner. Hiding the nav does not move the
   layout: the side travels with the hidden nav, so the nav returns the shape it left.
+  The far end of the resting nav status line carries one collapse button. Its token
+  follows the nav side and whether clicking it will collapse or expand:
+  `<<`/`>>` for left and right, and `▲`/`▼` for top and bottom. A collapsed side nav is
+  exactly wide enough for the resting prefix hint, one space, and the button; a collapsed
+  band is one row. It renders no cards, keeps the view border, and preserves the natural
+  width and height for expansion. Focusing the nav by keyboard expands it. Auto-hide wins
+  while active and restores the prior collapsed state when the nav returns. The collapsed
+  state is persisted, and its view border cannot be drag-resized.
 - **FR-B17** - The status row is a bar where it owns its row and a label where it does not:
   the side column's bar fills its row, and so does any ready or flashing bar, which has to
   be readable over what it covers; the portrait band's resting bar paints its text plus a
@@ -456,8 +477,10 @@ no function, and no test, so renaming code is never a documentation change.
   attach is debounced so rapid navigation does not storm.
 - **FR-C2** - A cross-host pick switches entirely in process, with no picker and no
   detach between. Each source keeps its own live PTY attachment; the target
-  source's driver takes over, the previously shown session stays on screen until the fresh grid is ready
-  (stale-while-revalidate), and the canonical selection is synced immediately.
+  source's driver takes over, the previously shown session stays on screen until the
+  fresh attachment has painted or reaches its bounded wait (stale-while-revalidate),
+  input already targets the fresh attachment, and the canonical selection is synced
+  immediately.
 - **FR-C3** - Source degradation is graceful, never a silent loss: an unreachable source
   is marked `⚠ unreachable`, and its view screen states everything known about the
   failure rather than leaving the user with a message alone - the reason its transport
@@ -511,14 +534,16 @@ no function, and no test, so renaming code is never a documentation change.
   occurrence, so the first is kept, the scale is kept, and a repeating internal error
   cannot bury the file. A panic that ends the app is always written whole.
 
-- **FR-D8** - One command installs xmux, on every OS with a published build. The
-  install script reads the OS and the architecture from the machine it runs on,
-  downloads that build from the release, and refuses to install it unless its SHA-256
-  matches the checksum the release publishes. It reports where the launcher went and,
-  when that directory is not on `PATH`, either adds it or states exactly what to add;
-  it writes only the user's own `PATH`, never the machine's, so it needs no elevation.
-  A named version installs instead of the newest one, which is what makes going back to
-  an older build a command rather than a manual download.
+- **FR-D8** - One command installs xmux, on every OS with a published build and from
+  every shell that OS ships: `sh` on unix-likes, and both PowerShell and CMD on Windows,
+  each of which ends in the same install. The install script reads the OS and the
+  architecture from the machine it runs on, downloads that build from the release, and
+  refuses to install it unless its SHA-256 matches the checksum the release publishes.
+  It reports where the launcher went and, when that directory is not on `PATH`, either
+  adds it or states exactly what to add; it writes only the user's own `PATH`, never the
+  machine's, so it needs no elevation. A named version installs instead of the newest
+  one, which is what makes going back to an older build a command rather than a manual
+  download.
 - **FR-D9** - Installing a version never writes the binary a running xmux is
   executing. Each version goes into a directory named after it, and only the launcher
   is repointed, so an upgrade during a session leaves every running instance on the

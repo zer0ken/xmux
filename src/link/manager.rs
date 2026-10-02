@@ -309,6 +309,68 @@ mod tests {
             .output();
     }
 
+    /// LIVE: reads a display-tty record file back over a REAL `-CC` control connection,
+    /// so the lines the reader correlates are the replies a real server sends, not a
+    /// transcript of them. `#[ignore]` because it needs a local tmux and writes a record
+    /// file under `/tmp`:
+    ///   cargo test -p xmux link::manager::tests::live_tmux_display_tty_readback -- --ignored
+    #[ignore = "live: needs a local tmux; run on demand"]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn live_tmux_display_tty_readback() {
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+
+        let pid = std::process::id();
+        let sock = std::env::temp_dir().join(format!("xmux-test-tty-{pid}.sock"));
+        let sock_s = sock.to_string_lossy().into_owned();
+        let start = Command::new("tmux")
+            .args(["-S", &sock_s, "new-session", "-d", "-s", "demo"])
+            .output()
+            .expect("start a throwaway tmux server");
+        assert!(start.status.success(), "tmux server start: {start:?}");
+        let key = format!("xmux-test-{pid}");
+        let record = format!("/tmp/.xmux-cli-{key}");
+        std::fs::write(&record, "/dev/pts/77\n").expect("write the record file");
+
+        let host = crate::model::Host::new(
+            crate::transport::local(Some(sock_s.clone())),
+            crate::mux::for_binary("tmux").unwrap(),
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let mut mgr = HostManager::new(tx);
+        mgr.ensure("local", &host, 80, 24)
+            .expect("spawn the pty control client");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut asked = false;
+        let mut tty = None;
+        while tty.is_none() && Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
+                Ok(Some(HostEvent::Connected { .. })) if !asked => {
+                    assert!(mgr.get("local").unwrap().capture_display_tty(&key));
+                    asked = true;
+                }
+                Ok(Some(HostEvent::DisplayTty { tty: t, .. })) => tty = Some(t),
+                Ok(Some(_)) => continue,
+                _ => break,
+            }
+        }
+        mgr.teardown_all();
+        let buffers = Command::new("tmux")
+            .args(["-S", &sock_s, "list-buffers", "-F", "#{buffer_name}"])
+            .output()
+            .expect("list the server's buffers");
+        let _ = Command::new("tmux")
+            .args(["-S", &sock_s, "kill-server"])
+            .output();
+        let _ = std::fs::remove_file(&record);
+        assert_eq!(tty, Some(Some("/dev/pts/77".to_string())));
+        assert!(
+            !String::from_utf8_lossy(&buffers.stdout).contains("xmux-cli-"),
+            "the readback leaves no buffer behind"
+        );
+    }
+
     /// A constructible LOCAL `Source` for the manager tests: its runner defaults to the
     /// real exec runner and its `cmd.exe` binary is a real local program, so if `ensure`
     /// ever did spawn it the process would exist rather than fail to launch. In these

@@ -91,7 +91,7 @@ the debounced attach, and renders the live split view.
   (how a command REACHES a host) and from discovery (scanning a source for
   sessions).
 - Preferences (`ui/prefs`) persist the lightweight UI hints across runs
-  (last-selected session address, nav width and height, auto-hide-nav), one small
+  (last-selected session address, nav width and height, collapsed state, auto-hide-nav), one small
   file each under the xmux dir. Every value is best-effort: a stale, missing, or
   unparsable file falls back to the built-in default, so xmux stays stateless
   about sessions themselves.
@@ -108,7 +108,8 @@ the debounced attach, and renders the live split view.
 ## Invariants
 
 - The nav's live size travels as one value (the width the user set, the width on screen,
-  the portrait band's height), never as two loose numbers: the effective width has a single
+  the portrait band's height, the attachment side, and the collapsed state), never as
+  loose values: the effective width has a single
   owner, and every geometry - the draw, the PTY sizing, mouse hit-testing - is cut from the
   same value, so a resize while xmux runs cannot reach one consumer and miss another.
 - Applying a domain action to the runtime state is the single intent-driven

@@ -1927,10 +1927,10 @@ async fn hint_bar_shows_scanning_progress_then_clears() {
         !hint_bar.contains("scanning"),
         "the scanning indicator clears once all hosts settle:\n{hint_bar:?}"
     );
-    assert_eq!(
-        hint_bar.trim(),
-        "C-g",
-        "the hint bar returns to the resting prefix indicator:\n{hint_bar:?}"
+    assert!(hint_bar.contains("C-g"));
+    assert!(
+        hint_bar.trim_end().ends_with("<<"),
+        "the resting hint bar carries the collapse button:\n{hint_bar:?}"
     );
 }
 
@@ -1966,27 +1966,41 @@ async fn armed_hint_bar_fits_a_narrow_nav() {
 
 #[test]
 fn the_nav_renders_at_the_minimum_width() {
-    // The side nav may be collapsed to just after the resting `[C-g]` hint bar (the
-    // floor is the prefix label "C-g" plus a one-cell gap each side = 5 cells). At
-    // that width the bar text " C-g" fills the column and the cards clip; it must
-    // render without a panic and keep the terminal view usable.
+    // The side nav may be shrunk to its resting prefix, separating cell, and collapse
+    // button. At that width the full control stays visible and the cards clip.
     let min = crate::app::runtime::nav_width_min("C-g");
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
     term.draw(|f| sw.render(f, None, false, NavSize::visible(min), &state))
         .unwrap();
-    // The hint bar still shows the resting prefix at this width.
-    let text = state.chrome.hint_bar_text(min, &state);
-    assert!(text.contains("C-g"), "resting bar at min width: {text:?}");
+    let buf = term.backend().buffer();
+    let y = buf.area.height - 1;
+    let text: String = (0..min).map(|x| buf[(x, y)].symbol()).collect();
+    assert_eq!(text, " C-g <<", "resting bar at min width");
+
+    state.scanning.insert("local".into());
+    term.draw(|f| sw.render(f, None, false, NavSize::visible(min), &state))
+        .unwrap();
+    let buf = term.backend().buffer();
+    let text: String = (0..min).map(|x| buf[(x, y)].symbol()).collect();
+    let total = state.groups.len();
+    let done = total.saturating_sub(state.scanning.len());
+    assert!(
+        text.contains(&format!("{done}/{total}")),
+        "scan progress stays intact beside the button: {text:?}"
+    );
+    assert!(
+        text.ends_with("<<"),
+        "button stays at the far end: {text:?}"
+    );
 }
 
 #[test]
 fn hint_bar_has_status_bar_background() {
-    // The hint bar is a solid dark status bar fit to what it has to say: resting it is
-    // the prefix alone, so in the side layout it reads as a label on the nav's last
-    // row - the cells it owns carry the dark bar bg, and the columns past the text are
-    // left to the view beneath, not painted. Key tokens carry the accent over that base.
+    // The hint bar is a solid dark status bar fit to what it has to say: at rest the
+    // prefix and collapse button sit on the nav's last row. The cells it owns carry the
+    // dark bar background, while columns outside the controls remain with the view below.
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     // Wide enough that the terminal view stays landscape, so the layout is a column and the
@@ -3574,6 +3588,41 @@ fn long_flash_wraps_in_narrow_hint_bar_instead_of_clipping() {
     );
 }
 
+#[test]
+fn a_collapsed_nav_renders_every_wrapped_flash_line() {
+    let mut state = crate::state::State::from_scan(sample());
+    state.chrome.flash = "host unreachable, cannot create here".into();
+    let mut sw = Switcher::new(&mut state);
+    let mut term = Terminal::new(TestBackend::new(24, 8)).unwrap();
+    let width = collapsed_nav_width("C-g");
+    let nav = NavSize {
+        natural: NAV_WIDTH,
+        width,
+        height: 0,
+        position: NavPosition::Left,
+        collapsed: true,
+    };
+    term.draw(|f| sw.render(f, None, false, nav, &state))
+        .unwrap();
+
+    let buf = term.backend().buffer();
+    let lines = state.chrome.hint_bar_lines(buf.area.width, &state);
+    assert!(lines.len() > 1);
+    let first = buf.area.height - lines.len() as u16;
+    let painted = (first..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        painted.contains("cannot create here"),
+        "all wrapped flash text remains visible: {painted:?}"
+    );
+}
+
 #[tokio::test]
 async fn flash_clears_on_next_key_restoring_the_hint_bar() {
     // A flash (e.g. "host unreachable, cannot create here") is transient: any key
@@ -3978,6 +4027,10 @@ fn the_armed_hint_bar_floats_across_the_whole_window() {
         !armed.contains('X'),
         "the armed bar covers the grid across its whole row: {armed:?}"
     );
+    assert!(
+        !armed.trim_end().ends_with("<<"),
+        "a floating bar carries no collapse button: {armed:?}"
+    );
     assert_eq!(
         row(&term, 0),
         cards_before,
@@ -4350,9 +4403,11 @@ fn a_hidden_nav_keeps_no_status_line_until_it_has_something_to_say() {
 #[tokio::test]
 async fn hint_bar_and_help_reflect_new_model() {
     let mut h = Harness::new(sample());
-    // At rest the bar names only the prefix (zellij's resting status line): the keys it
-    // unlocks are one keypress away, so they do not crowd the nav's bottom row.
-    assert_eq!(h.hint_bar_text().trim(), "C-g");
+    // At rest the bar names the prefix and collapse button. The keys it unlocks are one
+    // keypress away, so they do not crowd the nav's bottom row.
+    let resting = h.hint_bar_text();
+    assert!(resting.contains("C-g"));
+    assert!(resting.trim_end().ends_with("<<"));
     // Armed, it becomes the cheatsheet for exactly those keys.
     h.state.chrome.set_armed(true);
     h.draw();
@@ -4371,6 +4426,10 @@ async fn hint_bar_and_help_reflect_new_model() {
         "help explains focusing the terminal view:\n{help}"
     );
     assert!(
+        help.contains("collapse / expand the nav"),
+        "help explains the collapse button:\n{help}"
+    );
+    assert!(
         help.contains("previous / next host/mux (host cards as one)"),
         "help names what ←/→ walk, since the two steps differ:\n{help}"
     );
@@ -4386,8 +4445,8 @@ async fn hint_bar_and_help_reflect_new_model() {
 
 #[tokio::test]
 async fn view_border_uses_configured_colors() {
-    // The `[ui] view-*-border-style` colours drive the view border: active on the
-    // focused half, inactive on the other, hover overrides both while hovered.
+    // The `[ui] view-*-border-style` colours drive the whole view border: active for
+    // nav focus, inactive for terminal focus, and hover overrides either state.
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
@@ -4401,20 +4460,27 @@ async fn view_border_uses_configured_colors() {
     let (top, bottom) = (2u16, 27u16);
     let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
-    // Tree focused: top = active(Blue), bottom = inactive(Gray).
+    // Nav focused: the whole rule is active.
     term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
         fg(&buf, top),
         Color::Blue,
-        "configured active on the focused half"
+        "configured active across the rule"
     );
     assert_eq!(
         fg(&buf, bottom),
-        Color::Gray,
-        "configured inactive on the unfocused half"
+        Color::Blue,
+        "configured active across the rule"
     );
+
+    // Terminal focused: the whole rule is inactive.
+    term.draw(|f| sw.render(f, None, true, NavSize::visible(NAV_WIDTH), &state))
+        .unwrap();
+    let buf = term.backend().buffer().clone();
+    assert_eq!(fg(&buf, top), Color::Gray);
+    assert_eq!(fg(&buf, bottom), Color::Gray);
 
     // Hovering the rule overrides with the configured hover colour.
     state.chrome.set_view_border_hovered(true);
@@ -4429,9 +4495,7 @@ async fn view_border_uses_configured_colors() {
 }
 
 #[tokio::test]
-async fn view_border_splits_top_bottom_to_mark_focused_side() {
-    // The rule splits into halves: the accent half marks WHICH pane has focus - top =
-    // tree (left), bottom = terminal (right) - and the other half is the muted tone.
+async fn view_border_uses_one_color_for_both_focus_states() {
     let pal = crate::ui::palette::get();
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
@@ -4441,41 +4505,152 @@ async fn view_border_splits_top_bottom_to_mark_focused_side() {
     let (top, bottom) = (2u16, 27u16); // within the top / bottom halves of height 30
     let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
-    // Terminal focused: accent on the bottom (terminal side), the muted tone on top.
+    // Terminal focused: every cell uses the inactive colour.
     term.draw(|f| sw.render(f, None, true, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(buf[(x, top)].symbol(), "│", "view border still drawn");
     assert_eq!(
         fg(&buf, bottom),
-        pal.primary,
-        "terminal-view focus: bottom half primary"
+        pal.disabled,
+        "terminal focus: whole rule inactive"
     );
     assert_eq!(
         fg(&buf, top),
         pal.disabled,
-        "terminal-view focus: top half disabled"
+        "terminal focus: whole rule inactive"
     );
 
-    // Tree focused: primary on the top (tree side), disabled on bottom.
+    // Nav focused: every cell uses the active colour.
     term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(fg(&buf, top), pal.primary, "tree focus: top half primary");
+    assert_eq!(fg(&buf, top), pal.primary, "nav focus: whole rule active");
     assert_eq!(
         fg(&buf, bottom),
-        pal.disabled,
-        "tree focus: bottom half disabled"
+        pal.primary,
+        "nav focus: whole rule active"
     );
 }
 
+#[test]
+fn compute_regions_collapsed_geometry_for_all_positions() {
+    use ratatui::layout::Rect;
+
+    let area = Rect::new(0, 0, 140, 30);
+    let width = collapsed_nav_width("C-g");
+    let left = compute_regions(
+        area,
+        NavSize {
+            natural: 48,
+            width,
+            height: 0,
+            position: NavPosition::Left,
+            collapsed: true,
+        },
+        1,
+    );
+    assert_eq!(left.tree, Rect::default());
+    assert_eq!(left.hint_bar, Rect::new(0, 29, width, 1));
+    assert_eq!(left.view_border, Rect::new(width, 0, 1, 30));
+    assert_eq!(left.terminal, Rect::new(width + 1, 0, 140 - width - 1, 30));
+
+    let right = compute_regions(
+        area,
+        NavSize {
+            natural: 48,
+            width,
+            height: 0,
+            position: NavPosition::Right,
+            collapsed: true,
+        },
+        1,
+    );
+    assert_eq!(right.tree, Rect::default());
+    assert_eq!(right.hint_bar, Rect::new(140 - width, 29, width, 1));
+    assert_eq!(right.view_border, Rect::new(139 - width, 0, 1, 30));
+    assert_eq!(right.terminal, Rect::new(0, 0, 139 - width, 30));
+
+    let top = compute_regions(
+        area,
+        NavSize {
+            collapsed: true,
+            position: NavPosition::Top,
+            ..NavSize::visible(48)
+        },
+        1,
+    );
+    assert_eq!(top.tree, Rect::default());
+    assert_eq!(top.hint_bar, Rect::new(0, 0, 140, 1));
+    assert_eq!(top.view_border, Rect::new(0, 1, 140, 1));
+    assert_eq!(top.terminal, Rect::new(0, 2, 140, 28));
+
+    let bottom = compute_regions(
+        area,
+        NavSize {
+            collapsed: true,
+            position: NavPosition::Bottom,
+            ..NavSize::visible(48)
+        },
+        1,
+    );
+    assert_eq!(bottom.tree, Rect::default());
+    assert_eq!(bottom.terminal, Rect::new(0, 0, 140, 28));
+    assert_eq!(bottom.view_border, Rect::new(0, 28, 140, 1));
+    assert_eq!(bottom.hint_bar, Rect::new(0, 29, 140, 1));
+}
+
+#[test]
+fn collapse_button_hit_rect_tracks_position_and_state() {
+    let bar = Rect::new(10, 20, 30, 1);
+    for position in [
+        NavPosition::Left,
+        NavPosition::Top,
+        NavPosition::Right,
+        NavPosition::Bottom,
+    ] {
+        for collapsed in [false, true] {
+            let rect = collapse_button_rect(bar, position, collapsed);
+            let token_width = UnicodeWidthStr::width(collapse_button_token(position, collapsed));
+            assert_eq!(rect.width as usize, token_width);
+            assert_eq!(rect.x + rect.width, bar.x + bar.width);
+            assert!(rect.contains(Position::new(bar.x + bar.width - 1, bar.y)));
+        }
+    }
+}
+
+#[test]
+fn collapse_button_tokens_match_position_and_state() {
+    let cases = [
+        (NavPosition::Left, false, "<<"),
+        (NavPosition::Left, true, ">>"),
+        (NavPosition::Right, false, ">>"),
+        (NavPosition::Right, true, "<<"),
+        (NavPosition::Top, false, "▲"),
+        (NavPosition::Top, true, "▼"),
+        (NavPosition::Bottom, false, "▼"),
+        (NavPosition::Bottom, true, "▲"),
+    ];
+    for (position, collapsed, expected) in cases {
+        assert_eq!(collapse_button_token(position, collapsed), expected);
+    }
+}
+
+#[test]
+fn a_floating_bar_grows_inward_from_a_collapsed_nav() {
+    let area = Rect::new(0, 0, 24, 8);
+    let top = super::render::hint_bar_rect(Rect::new(0, 0, 24, 1), area, 3, true);
+    assert_eq!(top, Rect::new(0, 0, 24, 3));
+
+    let bottom = super::render::hint_bar_rect(Rect::new(0, 7, 24, 1), area, 3, true);
+    assert_eq!(bottom, Rect::new(0, 5, 24, 3));
+
+    let side = super::render::hint_bar_rect(Rect::new(0, 7, 7, 1), area, 3, true);
+    assert_eq!(side, Rect::new(0, 5, 24, 3));
+}
+
 #[tokio::test]
-async fn view_border_accent_flips_with_the_nav_on_the_right_or_bottom() {
-    // The accent half follows the nav position: with the nav on the RIGHT the vertical
-    // rule's halves swap (nav focus → bottom, terminal focus → top), and with the nav
-    // BELOW the horizontal rule's halves swap (nav focus → right, terminal focus →
-    // left) - the same flip that turns the focus-arrow pair around. The hover cue
-    // (whole-rule highlight) is untouched by the placement.
+async fn view_border_color_is_independent_of_nav_position() {
     let pal = crate::ui::palette::get();
     let fg = |buf: &Buffer, x: u16, y: u16| buf[(x, y)].fg;
 
@@ -4488,34 +4663,34 @@ async fn view_border_accent_flips_with_the_nav_on_the_right_or_bottom() {
     let x = 91;
     let (top, bottom) = (2u16, 27u16);
 
-    // Nav focused: accent on the bottom (nav's side on the right), muted on top.
+    // Nav focused: both ends use the active colour.
     term.draw(|f| sw.render(f, None, false, right, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
         fg(&buf, x, bottom),
         pal.primary,
-        "right nav focus: bottom half primary"
+        "right nav focus: whole rule active"
     );
     assert_eq!(
         fg(&buf, x, top),
-        pal.disabled,
-        "right nav focus: top half disabled"
+        pal.primary,
+        "right nav focus: whole rule active"
     );
 
-    // Terminal focused: the halves swap back, accent on the top.
+    // Terminal focused: both ends use the inactive colour.
     term.draw(|f| sw.render(f, None, true, right, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
         fg(&buf, x, top),
-        pal.primary,
-        "right terminal focus: top half primary"
+        pal.disabled,
+        "right terminal focus: whole rule inactive"
     );
     assert_eq!(
         fg(&buf, x, bottom),
         pal.disabled,
-        "right terminal focus: bottom half disabled"
+        "right terminal focus: whole rule inactive"
     );
 
     // Band with the nav pinned bottom: the 1-row border at y=59 across 40 columns.
@@ -4526,34 +4701,34 @@ async fn view_border_accent_flips_with_the_nav_on_the_right_or_bottom() {
     state.chrome.set_nav_position(NavPosition::Bottom);
     let (y, left, right_col) = (59u16, 0u16, 39u16);
 
-    // Nav focused: accent on the right (nav's side below), muted on the left.
+    // Nav focused: both ends use the active colour.
     term.draw(|f| sw.render(f, None, false, bottom, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
         fg(&buf, right_col, y),
         pal.primary,
-        "bottom nav focus: right half primary"
+        "bottom nav focus: whole rule active"
     );
     assert_eq!(
         fg(&buf, left, y),
-        pal.disabled,
-        "bottom nav focus: left half disabled"
+        pal.primary,
+        "bottom nav focus: whole rule active"
     );
 
-    // Terminal focused: the halves swap back, accent on the left.
+    // Terminal focused: both ends use the inactive colour.
     term.draw(|f| sw.render(f, None, true, bottom, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
         fg(&buf, left, y),
-        pal.primary,
-        "bottom terminal focus: left half primary"
+        pal.disabled,
+        "bottom terminal focus: whole rule inactive"
     );
     assert_eq!(
         fg(&buf, right_col, y),
         pal.disabled,
-        "bottom terminal focus: right half disabled"
+        "bottom terminal focus: whole rule inactive"
     );
 }
 
@@ -5286,8 +5461,12 @@ fn the_hidden_columns_are_counted_on_the_status_row() {
         "the bar still names the prefix: {at_left:?}"
     );
     assert!(
-        at_left.trim_end().ends_with("more >>"),
+        at_left.contains("more >>"),
         "and the cards off to the right are counted at that end: {at_left:?}"
+    );
+    assert!(
+        at_left.trim_end().ends_with('▲'),
+        "the collapse button owns the far end of the status row: {at_left:?}"
     );
     assert!(
         !at_left.contains("<<"),

@@ -230,6 +230,16 @@ fn converse(
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // ssh is done even though the reader is not: a Windows pseudoconsole
+                // never reports EOF while it is open, so waiting for the disconnect below
+                // would call a finished login a timeout. What it wrote on the way out is
+                // still read, so a refusal is still named as one.
+                if console.has_exited() {
+                    while let Ok(chunk) = tap.recv_timeout(POLL) {
+                        answerer.feed(&String::from_utf8_lossy(&chunk));
+                    }
+                    break None;
+                }
                 if Instant::now() >= deadline {
                     console.kill();
                     break Some(UnlockOutcome::Timeout);

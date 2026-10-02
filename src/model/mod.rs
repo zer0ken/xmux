@@ -18,6 +18,7 @@ pub use death::{
     display_tty_marker_prefix, matches_display_tty, parse_display_tty_marker, psmux_port_path,
     psmux_session_is_live,
 };
+pub(crate) use host::PendingInstall;
 pub use host::{Host, HostDisplay, Liveness, ReadyOutcome};
 pub use hosts::{host_for, Hosts, RosterDelta};
 pub use plan::{DeathSignal, DisplayTty, EventSource};

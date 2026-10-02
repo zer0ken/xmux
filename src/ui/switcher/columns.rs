@@ -518,7 +518,7 @@ mod tests {
         let sess = cells.iter().find(|c| c.idx == 0).unwrap().rect;
         assert_eq!(sess.x, 0, "the session column holds the left edge");
         assert!(
-            cells.iter().find(|c| c.idx == 2).is_none(),
+            !cells.iter().any(|c| c.idx == 2),
             "the host band is off screen until the run scrolls"
         );
     }

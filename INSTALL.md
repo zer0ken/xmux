@@ -13,6 +13,15 @@ curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh |
 irm https://github.com/zer0ken/xmux/releases/latest/download/install.ps1 | iex
 ```
 
+```batch
+curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.cmd -o install.cmd && install.cmd && del install.cmd
+```
+
+The first line is for macOS, Linux and WSL, the second for Windows PowerShell,
+and the third for Windows CMD. The CMD script installs nothing of its own: it
+hands the install to the PowerShell script from the same release, so all three
+end in the same install.
+
 The script reads which OS and architecture it is running on, downloads that
 build from the latest release, and refuses to install it unless its SHA-256
 matches the checksum the release publishes. It then unpacks the build into a
@@ -36,7 +45,8 @@ there. On unix it appends a marked block to your shell profile; on Windows it
 writes your own user `PATH`, never the machine one, so it needs no elevation.
 Pass `--no-modify-path` and it prints what to add instead.
 
-Both scripts take the same options:
+The scripts take the same options; the PowerShell and CMD scripts spell them
+`-Version`, `-BinDir`, `-Root` and `-NoModifyPath`:
 
 | Option | Environment variable | Effect |
 |---|---|---|
@@ -53,23 +63,28 @@ curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh |
 & ([scriptblock]::Create((irm https://github.com/zer0ken/xmux/releases/latest/download/install.ps1))) -Version 0.9.5
 ```
 
+```batch
+curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.cmd -o install.cmd && install.cmd -Version 0.9.5 && del install.cmd
+```
+
 ## Package managers
 
 | OS | Command |
 |---|---|
 | macOS | `brew install zer0ken/xmux/xmux` |
-| Windows, Linux, any OS with Rust | `cargo install xmux` |
+| Windows | `winget install --id zer0ken.xmux` |
+| Any OS with Rust | `cargo install xmux` |
 
-There is no winget install: the manifest in
-[`packaging/winget`](packaging/winget) is not registered in the community
-winget-pkgs repository. See [`packaging/`](packaging/) for the manifests and the
-registration steps.
+A package-manager install does not update itself; run `xmux update`, which hands
+the upgrade to that package manager. The winget catalog is updated through a
+review in the community winget-pkgs repository, so it can trail the newest
+release. See [`packaging/`](packaging/) for the manifests.
 
 ## Prerequisites
 
 Running xmux needs `ssh` on the machine that runs it, for remote hosts, and a
 supported multiplexer on each host you target: `tmux`, GNU `screen`, `zellij`,
-or `abduco` on unix-likes, and `psmux` on Windows. A host's multiplexer is
+`abduco`, or `tuios` on unix-likes, and `psmux` on Windows. A host's multiplexer is
 detected from the binary it answers as, so a mix across your hosts needs no
 configuration. See the [README](README.md) for what the program does and how to
 use it.
@@ -80,18 +95,34 @@ use it.
 
 ### Install script
 
+In PowerShell:
+
 ```powershell
 irm https://github.com/zer0ken/xmux/releases/latest/download/install.ps1 | iex
 ```
+
+In CMD:
+
+```batch
+curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.cmd -o install.cmd && install.cmd && del install.cmd
+```
+
+If you see `The token '&&' is not a valid statement separator`, you are in
+PowerShell, not CMD. If you see `'irm' is not recognized as an internal or
+external command`, you are in CMD, not PowerShell. A PowerShell prompt starts
+with `PS C:\`; a CMD prompt is just `C:\`.
 
 Open a new terminal afterwards, so it picks up the `PATH` the script wrote.
 
 ### Package manager
 
-There is no winget package: the manifest in
-[`packaging/winget`](packaging/winget) is not registered in the community
-winget-pkgs repository, so `winget install --id zer0ken.xmux` finds nothing.
-With Rust installed, `cargo install xmux` works.
+```powershell
+winget install --id zer0ken.xmux
+```
+
+The winget catalog can trail the newest release, because each version is
+reviewed in the community repository before it is listed. With Rust installed,
+`cargo install xmux` works too.
 
 ### Prebuilt binary
 

@@ -36,8 +36,11 @@ back to the app, which owns the registry.
   resize, and reap operations. The registry also serves, for a key whose
   attachment was reaped, the last grid that attachment fed, until a fresh
   attachment installs under the key: a display whose client died keeps its last
-  frame on screen across the reattach that replaces it, the same
-  stale-while-revalidate a session change follows.
+  frame on screen across the reattach that replaces it. A session change follows the
+  same stale-while-revalidate rule: the fresh attachment stays off-screen until it shows a
+  visible frame and its output then settles for 50 ms, continuous output after that frame
+  reaches 400 ms, or 3 s pass without a visible frame. Input
+  targets the fresh attachment while it waits, and resize reaches both attachments.
 - The grid owns the terminal-emulation cell state. It also answers a content
   fingerprint, which the runtime compares across successive frames to decide
   whether a display transition actually changed the visible screen; the
@@ -62,6 +65,10 @@ back to the app, which owns the registry.
   because a caller that must RECOGNISE something in the stream needs the stream. It
   emulates no screen: a child that asks where the cursor is is told the top-left corner,
   which keeps it talking and costs nothing, since nobody is looking at what it draws.
+  The reader's EOF is not the child's exit everywhere: a Windows pseudoconsole keeps its
+  output pipe open until the console closes, and the console holds its master until it
+  is waited on, so a caller that needs to know the child is gone asks the child
+  (`has_exited`) rather than waiting for the stream to end.
 - Reading one environment variable out of a live attach child is its own seam,
   beside the attachment. It answers what the running process holds NOW, not what
   the spawn was given, which is the only way to observe a mux that moves its

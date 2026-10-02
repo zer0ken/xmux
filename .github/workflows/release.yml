@@ -76,6 +76,7 @@ jobs:
         run: |
           cp scripts/install/install.sh artifacts/install.sh
           cp scripts/install/install.ps1 artifacts/install.ps1
+          cp scripts/install/install.cmd artifacts/install.cmd
       - name: Write checksums
         run: |
           cd artifacts
@@ -118,6 +119,11 @@ jobs:
     name: Update packaging manifests
     needs: [build, release]
     runs-on: ubuntu-latest
+    # The distribution channels below publish from exactly the commit this job
+    # pushed, not whatever main is by the time they run.
+    outputs:
+      version: ${{ steps.checksums.outputs.version }}
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -128,6 +134,7 @@ jobs:
           merge-multiple: true
 
       - name: Resolve version and checksums
+        id: checksums
         run: |
           set -euo pipefail
           # Assigned before echoing: `set -e` does not abort on a failing
@@ -140,6 +147,7 @@ jobs:
           LINUX_ARM_SHA=$(sha256sum artifacts/*aarch64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)
           LINUX_INTEL_SHA=$(sha256sum artifacts/*x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "WIN_SHA=$WIN_SHA" >> "$GITHUB_ENV"
           echo "ARM_SHA=$ARM_SHA" >> "$GITHUB_ENV"
           echo "INTEL_SHA=$INTEL_SHA" >> "$GITHUB_ENV"
@@ -211,6 +219,7 @@ jobs:
           EOF
 
       - name: Commit and push to main
+        id: commit
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -222,75 +231,52 @@ jobs:
             git commit -m "packaging: refresh manifests for v$VERSION"
             git push origin HEAD:main
           fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      # Optional: submit the refreshed manifests to the community winget-pkgs
-      # repository. Requires a WINGET_PKGS_TOKEN secret (a PAT able to write to
-      # the zer0ken/winget-pkgs fork and open PRs there).
+  # The two distribution channels depend on the committed manifests and on
+  # nothing of each other, so each is its own job: one refusing (a token without
+  # the right scope) fails that job, visibly, and never skips the other. A failed
+  # channel re-runs alone with `gh run rerun --failed`.
+
+  # Optional: submit the refreshed manifests to the community winget-pkgs
+  # repository. Requires a WINGET_PKGS_TOKEN secret: a classic PAT with
+  # `public_repo`. A fine-grained token can write the zer0ken/winget-pkgs fork
+  # but is refused opening the PR on microsoft/winget-pkgs, which it cannot be
+  # granted.
+  submit-winget:
+    name: Submit to winget-pkgs
+    needs: update-packaging
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.update-packaging.outputs.version }}
+      WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.update-packaging.outputs.sha }}
       - name: Submit to winget-pkgs
         if: env.WINGET_PKGS_TOKEN != ''
         env:
-          WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
-        run: |
-          set -euo pipefail
-          API=https://api.github.com
-          FORK=zer0ken/winget-pkgs
-          UPSTREAM=microsoft/winget-pkgs
-          BR="add/zer0ken.xmux.v${VERSION}"
-          AUTH="Authorization: Bearer $WINGET_PKGS_TOKEN"
+          MANIFEST_DIR: packaging/winget
+        run: bash .github/scripts/winget-submit.sh
 
-          UP=$(curl -s -H "$AUTH" "$API/repos/$UPSTREAM/commits/master" | jq -r .sha)
-          REF="refs/heads/$BR"
-          if curl -s -H "$AUTH" "$API/repos/$FORK/git/ref/$REF" | jq -e '.ref' >/dev/null 2>&1; then
-            curl -s -X PATCH -H "$AUTH" -H "Accept: application/vnd.github+json" \
-              "$API/repos/$FORK/git/refs/$BR" \
-              -d "{\"sha\":\"$UP\",\"force\":true}" >/dev/null
-          else
-            curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
-              "$API/repos/$FORK/git/refs" \
-              -d "{\"ref\":\"$REF\",\"sha\":\"$UP\"}" >/dev/null
-          fi
-
-          for f in zer0ken.xmux.yaml zer0ken.xmux.installer.yaml zer0ken.xmux.locale.en-US.yaml; do
-            B64=$(base64 -w0 "packaging/winget/$f")
-            jq -n --arg b64 "$B64" --arg msg "Add zer0ken.xmux $VERSION manifest" --arg br "$BR" \
-              '{message:$msg, content:$b64, branch:$br}' > /tmp/body.json
-            curl -s -X PUT -H "$AUTH" -H "Accept: application/vnd.github+json" \
-              "$API/repos/$FORK/contents/manifests/z/zer0ken/xmux/$VERSION/$f" \
-              --data-binary @/tmp/body.json >/dev/null
-          done
-
-          PR_EXISTS=$(curl -s -H "$AUTH" "$API/repos/$UPSTREAM/pulls?head=zer0ken:$BR" | jq 'length')
-          if [ "$PR_EXISTS" = "0" ]; then
-            jq -n --arg head "zer0ken:$BR" --arg title "New version: zer0ken.xmux version $VERSION" \
-              --arg body "Updates the winget manifest to zer0ken.xmux $VERSION. Generated automatically by the xmux release workflow." \
-              '{title:$title, head:$head, base:"master", body:$body}' > /tmp/pr.json
-            curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
-              "$API/repos/$UPSTREAM/pulls" --data-binary @/tmp/pr.json | jq -r '.html_url'
-          else
-            echo "winget-pkgs PR already exists for $BR."
-          fi
-
-          # Microsoft requires the author to agree to the CLA before the PR can
-          # merge. The microsoft-github-policy-service bot reacts to an
-          # `@microsoft-github-policy-service agree` comment from the author; post
-          # it as the token owner (the PR author) on every submission, whether the
-          # PR was just opened or already exists, so a stale PR is also unblocked.
-          PR_NUM=$(curl -s -H "$AUTH" "$API/repos/$UPSTREAM/pulls?head=zer0ken:$BR" | jq -r '.[0].number')
-          if [ -n "$PR_NUM" ] && [ "$PR_NUM" != "null" ]; then
-            curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
-              "$API/repos/$UPSTREAM/issues/$PR_NUM/comments" \
-              -d '{"body":"@microsoft-github-policy-service agree"}' >/dev/null
-            echo "Posted Microsoft policy agreement on winget-pkgs PR #$PR_NUM."
-          fi
-
-      # Optional: sync the refreshed formula into the homebrew-xmux tap repo.
-      # The GitHub token is scoped to this repo, so pushing to the separate
-      # tap repo needs a dedicated HOMEBREW_TAP_TOKEN secret (a PAT able to
-      # write to zer0ken/homebrew-xmux).
+  # Optional: sync the refreshed formula into the homebrew-xmux tap repo. The
+  # GitHub token is scoped to this repo, so pushing to the separate tap repo
+  # needs a dedicated HOMEBREW_TAP_TOKEN secret (a PAT able to write to
+  # zer0ken/homebrew-xmux).
+  sync-homebrew:
+    name: Sync Homebrew tap
+    needs: update-packaging
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.update-packaging.outputs.version }}
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.update-packaging.outputs.sha }}
       - name: Sync Homebrew tap
         if: env.HOMEBREW_TAP_TOKEN != ''
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
           TAP=zer0ken/homebrew-xmux

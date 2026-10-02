@@ -17,11 +17,14 @@ const DOWNLOAD_BASE: &str = "https://github.com/zer0ken/xmux/releases/download";
 
 /// The release build asset name for a version, OS, and architecture. `None` when
 /// the running platform has no published build. Mirrors the release workflow's
-/// asset naming exactly.
+/// asset naming exactly. There is no `android` mapping: the ARM Linux build is
+/// glibc-linked, so it cannot run on Termux's bionic libc, and `update` routes
+/// Termux away from this path before an asset is ever named.
 pub fn asset_name(version: &str, os: &str, arch: &str) -> Option<String> {
     let target = match (os, arch) {
         ("windows", "x86_64") => "x86_64-pc-windows-msvc.exe",
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu.tar.gz",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu.tar.gz",
         ("macos", "aarch64") => "aarch64-apple-darwin.tar.gz",
         ("macos", "x86_64") => "x86_64-apple-darwin.tar.gz",
         _ => return None,
@@ -276,6 +279,10 @@ mod tests {
             "xmux-v0.6.4-x86_64-unknown-linux-gnu.tar.gz"
         );
         assert_eq!(
+            asset_name("0.6.4", "linux", "aarch64").unwrap(),
+            "xmux-v0.6.4-aarch64-unknown-linux-gnu.tar.gz"
+        );
+        assert_eq!(
             asset_name("0.6.4", "macos", "aarch64").unwrap(),
             "xmux-v0.6.4-aarch64-apple-darwin.tar.gz"
         );
@@ -284,6 +291,7 @@ mod tests {
             "xmux-v0.6.4-x86_64-apple-darwin.tar.gz"
         );
         assert!(asset_name("0.6.4", "windows", "aarch64").is_none());
+        assert!(asset_name("0.6.4", "android", "aarch64").is_none());
     }
 
     #[test]

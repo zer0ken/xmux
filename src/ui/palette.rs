@@ -33,9 +33,9 @@ use ratatui::style::{Color, Modifier, Style};
 /// override any role (see [`Overrides`] and `Colour ownership` in `CONTEXT.md`).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Palette {
-    /// The view border's FOCUS half - the lit side of the nav|terminal divider that
-    /// marks which view holds focus. Its own role, apart from the card accent, so the
-    /// divider is tuned independently of the selection mark / session name.
+    /// The whole view border while the nav holds focus. Its own role, apart from the
+    /// card accent, so the divider is tuned independently of the selection mark and
+    /// session name.
     pub primary: Color,
     /// The host/mux text wherever it appears: the host half of a host-state card and
     /// the `{host}/{mux}` section title above a group of session cards. The group
@@ -56,8 +56,7 @@ pub(crate) struct Palette {
     pub warning: Color,
     /// Failure state: error text and the refusal bar's background.
     pub error: Color,
-    /// The view border's NON-focus half - the dim side of the nav|terminal divider
-    /// that marks which half does NOT hold focus.
+    /// The whole view border while the terminal holds focus.
     pub disabled: Color,
     /// The hint bar's background: a single ANSI slot, so the bar reads as chrome
     /// rather than content. `[ui] hint-bar-style` overrides it.

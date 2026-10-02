@@ -60,6 +60,10 @@ dispatches the host execution, and the tmux implementation never hardcodes ssh.
   through the mux, never through a match on server model.
 - Do not fold the display-tty record prefix into a LOCAL attach. There is no shell
   to run it, and it would corrupt the argv's session-name argument.
+- Do not read a file back over the control connection with `run-shell`. tmux prints
+  its output after the command's reply block has closed, so the correlated reply is
+  empty. Stage the file in a named buffer and read it with `show-buffer`, whose output
+  lands inside its own block.
 - Do not thread a remoteness boolean through the mux. The driver reads the
   transport's capability predicate for whether an attach runs through a host
   shell, which is what gates the tty record, and the mux stays transport-blind.

@@ -404,13 +404,16 @@ pub(crate) fn help_lines(
         ),
         HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
         HelpRow::Key("click a view".into(), "focus that view".into()),
+        HelpRow::Key(
+            "click << / >> / ▲ / ▼".into(),
+            "collapse / expand the nav".into(),
+        ),
         HelpRow::Key("drag the view border".into(), "resize the nav".into()),
         HelpRow::Key(format!("{p} q"), "quit".into()),
         HelpRow::Key(
             format!("{p} {p}"),
             format!("send a literal {p} to the mux (terminal focus)"),
         ),
-        HelpRow::Gap,
         // Terminal section - no configurable keys; keep as literals.
         HelpRow::Head("terminal (focused)".into()),
         HelpRow::Note("keys, scroll & clicks go to the pane"),

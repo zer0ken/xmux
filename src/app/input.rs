@@ -790,7 +790,7 @@ mod tests {
     #[test]
     fn view_border_drag_width_clamps_to_range() {
         // The dragged 1-based column becomes the 0-based nav width, clamped to range.
-        // The floor is the resting prefix "C-g" (3 cells) plus a one-cell gap each side.
+        // The floor holds the resting prefix, a separating cell, and the collapse button.
         assert_eq!(view_border_drag_width(51, "C-g", 140, false), 50);
         assert_eq!(
             view_border_drag_width(5, "C-g", 140, false),

@@ -1,7 +1,7 @@
 #!/bin/sh
 # xmux installer for macOS and Linux.
 #
-#   curl -fsSL https://raw.githubusercontent.com/zer0ken/xmux/main/scripts/install/install.sh | sh
+#   curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- --version 0.9.6
 #
 # It downloads the release build for this machine, verifies its SHA-256 against

@@ -54,9 +54,12 @@ the card numbers it needs.
   REACHABILITY probe (bounded): a machine that connects goes on to detection, its
   metadata channels, and, when it named no mux, MUX DISCOVERY (a fire-and-forget probe
   whose answers become new sources through an effect); a machine that fails classifies
-  its cards locked or unreachable and opens no channel. It is the loop's job because
-  only the loop holds the source registry (what a host already serves, and where a new
-  source goes) and the manager that kicks the new source's first scan.
+  its cards locked or unreachable and opens no channel. A host that named no mux is
+  held by name and transport with no source until its answer arrives, so the probe,
+  the login, and mux discovery address a HOST, never a source it may not have yet. It is
+  the loop's job because only the loop holds the source registry (what a host already
+  serves, and where a new source goes) and the manager that kicks the new source's first
+  scan.
 - Input routing has a pure, stateless core (key resolution, mouse chains, the
   predicates, the input outcome types); the stateful handlers are runtime methods
   that call into it. The prefix is tracked as ready (an interaction is live): the end

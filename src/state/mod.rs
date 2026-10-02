@@ -39,8 +39,9 @@ pub struct State {
     /// the single display truth, and the target of both rendering and input. The
     /// terminal view always shows THIS session's grid; on a switch it stays on the
     /// prior session until the new one is confirmed (stale-while-revalidate), then
-    /// advances. Set only at confirmation (a synchronous in-place switch, or
-    /// DisplayReady). Empty before the first confirmation → the view is blank.
+    /// advances. Set only at confirmation (a synchronous in-place switch, or an
+    /// attachment whose paint gate opened). Empty before the first confirmation means
+    /// the view is blank.
     pub displayed: Selection,
     /// When set, a settled selection is attached once this instant passes.
     pub attach_deadline: Option<Instant>,
@@ -1205,7 +1206,7 @@ mod tests {
     #[test]
     fn apply_confirm_display_sets_displayed() {
         // ConfirmDisplay advances the display truth to the given selection - the
-        // in-place-attach / DisplayReady confirmation, folded at the single site.
+        // in-place attach or painted-attachment confirmation, folded at the single site.
         let mut s = State::default();
         assert!(s.displayed.is_empty());
         let cmds = s.apply(Action::ConfirmDisplay(sel("api")));
@@ -1974,7 +1975,7 @@ mod tests {
         let effects = state.apply_event(
             HostEvent::MuxesFound {
                 machine: "prod".into(),
-                muxes: vec!["tmux".into(), "zellij".into()],
+                muxes: Ok(vec!["tmux".into(), "zellij".into()]),
             },
             &mut sw,
             &mut connected,
@@ -1983,7 +1984,8 @@ mod tests {
             matches!(
                 &effects[..],
                 [EventEffect::AddDiscoveredSources { machine, muxes }]
-                    if machine == "prod" && muxes == &["tmux".to_string(), "zellij".to_string()]
+                    if machine == "prod"
+                        && muxes == &Ok(vec!["tmux".to_string(), "zellij".to_string()])
             ),
             "{effects:?}"
         );

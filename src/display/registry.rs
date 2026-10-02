@@ -1,10 +1,10 @@
-//! The `AttachRegistry`: an `Address → Attachment` map holding one live PTY-attached
-//! mux client per session. Sessions are added via `insert` (the DisplayWorker spawns
-//! and hands off the finished attachment) and removed on close (`remove`) or master
-//! EOF (`reap`); the user mandate is to keep EVERY session attached and alive, so
-//! there is no cap or LRU eviction — the map size tracks the live session count. All
-//! blocking PTY work lives on each `Attachment`'s control and pump threads, so
-//! registry methods never block the event loop.
+//! The `AttachRegistry`: an `Address → Attachment` map holding the installed
+//! PTY-attached mux client per session, plus one optional fresh client parked under a
+//! key while it paints. Sessions are added via `insert` (the DisplayWorker spawns and
+//! hands off the finished attachment) and removed on close (`remove`) or master EOF
+//! (`reap`); the user mandate is to keep every session attached and alive, so there is
+//! no cap or LRU eviction. All blocking PTY work lives on each `Attachment`'s control
+//! and pump threads, so registry methods never block the event loop.
 //!
 //! A reaped attachment's last grid is kept beside the map, under the same key, and
 //! `grid` serves it until a fresh attachment installs there. The renderer reads the
@@ -23,6 +23,9 @@ use crate::display::grid::Grid;
 pub struct AttachRegistry {
     /// Keyed by `Session::address()` (`source/session`).
     map: HashMap<String, Attachment>,
+    /// Fresh attachments kept live but off-screen while their grids paint. Input and
+    /// resize target these before the stale visible attachment under the same key.
+    pending: HashMap<String, Attachment>,
     /// The last grid of each reaped attachment, keyed by its address. Served by
     /// `grid` until a fresh attachment installs under the key, so a display whose
     /// client died keeps its last frame on screen instead of dropping to blank.
@@ -34,6 +37,7 @@ impl AttachRegistry {
     pub fn new() -> Self {
         AttachRegistry {
             map: HashMap::new(),
+            pending: HashMap::new(),
             stale_grids: HashMap::new(),
             next_id: 1,
         }
@@ -43,7 +47,7 @@ impl AttachRegistry {
         self.map.contains_key(addr)
     }
 
-    /// The number of currently-kept attachments.
+    /// The number of installed attachments supplying visible grids.
     pub fn len(&self) -> usize {
         self.map.len()
     }
@@ -83,13 +87,16 @@ impl AttachRegistry {
     /// when nothing is attached at `addr` or the child gives no answer. Reads the running
     /// process, so it reports a rewrite the mux made after the spawn.
     pub fn child_env(&self, addr: &str, name: &str) -> Option<String> {
-        self.map.get(addr)?.child_env(name)
+        self.pending
+            .get(addr)
+            .or_else(|| self.map.get(addr))?
+            .child_env(name)
     }
 
     /// Whether `addr`'s attach is still establishing (drives the spinner). `true`
     /// for an absent address (nothing attached yet ⇒ still "connecting").
     pub fn connecting(&self, addr: &str) -> bool {
-        match self.map.get(addr) {
+        match self.pending.get(addr).or_else(|| self.map.get(addr)) {
             Some(att) => att.connecting.load(std::sync::atomic::Ordering::Acquire),
             None => true,
         }
@@ -97,7 +104,7 @@ impl AttachRegistry {
 
     /// Queue input bytes to `addr`'s child (a no-op if it is not attached).
     pub fn input(&self, addr: &str, bytes: Vec<u8>) {
-        if let Some(att) = self.map.get(addr) {
+        if let Some(att) = self.pending.get(addr).or_else(|| self.map.get(addr)) {
             att.input(bytes);
         }
     }
@@ -109,11 +116,22 @@ impl AttachRegistry {
         for att in self.map.values() {
             att.clear_pending();
         }
+        for att in self.pending.values() {
+            att.clear_pending();
+        }
     }
 
-    /// The set of currently-attached addresses, for diffing against the inventory.
+    /// Every owned attachment address, installed or paint-pending, for inventory
+    /// reconciliation and source cleanup.
     pub fn addresses(&self) -> Vec<String> {
-        self.map.keys().cloned().collect()
+        let mut addresses: Vec<String> = self.map.keys().cloned().collect();
+        addresses.extend(
+            self.pending
+                .keys()
+                .filter(|addr| !self.map.contains_key(*addr))
+                .cloned(),
+        );
+        addresses
     }
 
     /// Issues the next attachment id WITHOUT spawning — for the off-loop path where the
@@ -133,10 +151,62 @@ impl AttachRegistry {
         self.map.insert(addr.to_string(), att);
     }
 
+    /// Parks a fresh attachment off-screen under `addr`. A newer parked attachment for
+    /// the same key tears down the older one immediately.
+    pub fn park_pending(&mut self, addr: &str, att: Attachment) -> Option<u64> {
+        let replaced = self.pending.insert(addr.to_string(), att);
+        let id = replaced.as_ref().map(Attachment::id);
+        if let Some(att) = replaced {
+            att.teardown();
+        }
+        id
+    }
+
+    /// Takes the parked attachment under `addr` for installation.
+    pub fn take_pending(&mut self, addr: &str) -> Option<Attachment> {
+        self.pending.remove(addr)
+    }
+
+    /// Tears down a parked attachment superseded or abandoned under `addr`.
+    pub fn remove_pending(&mut self, addr: &str) -> Option<u64> {
+        let att = self.pending.remove(addr)?;
+        let id = att.id();
+        att.teardown();
+        Some(id)
+    }
+
+    /// The key whose parked attachment has `id`, if any.
+    pub fn pending_address_of_id(&self, id: u64) -> Option<String> {
+        self.pending
+            .iter()
+            .find(|(_, att)| att.id() == id)
+            .map(|(addr, _)| addr.clone())
+    }
+
+    /// Records a visible paint on the parked attachment with `id`, for headless tests.
+    #[cfg(test)]
+    pub fn mark_pending_painted_for_test(&self, id: u64, at: std::time::Instant) {
+        if let Some(att) = self.pending.values().find(|att| att.id() == id) {
+            att.mark_painted_for_test(at);
+        }
+    }
+
+    /// The latest pump output time for the parked attachment with `id`.
+    pub fn pending_last_output(&self, id: u64) -> Option<std::time::Instant> {
+        self.pending
+            .values()
+            .find(|att| att.id() == id)?
+            .output_times()
+            .map(|(_, last)| last)
+    }
+
     /// Tears down and removes `addr`'s attachment (its session closed), together with
     /// any stale grid kept for the key. A no-op if it is not attached.
     pub fn remove(&mut self, addr: &str) {
         if let Some(att) = self.map.remove(addr) {
+            att.teardown();
+        }
+        if let Some(att) = self.pending.remove(addr) {
             att.teardown();
         }
         self.stale_grids.remove(addr);
@@ -169,12 +239,18 @@ impl AttachRegistry {
         for att in self.map.values_mut() {
             att.resize(cols, rows);
         }
+        for att in self.pending.values_mut() {
+            att.resize(cols, rows);
+        }
     }
 
     /// Tears down every attachment (on quit). Each `teardown` signals its control
     /// thread and returns at once; the threads drop their masters off the loop.
     pub fn teardown_all(self) {
         for (_addr, att) in self.map {
+            att.teardown();
+        }
+        for (_addr, att) in self.pending {
             att.teardown();
         }
     }
@@ -186,6 +262,7 @@ impl AttachRegistry {
             .iter()
             .find(|(_, a)| a.id() == id)
             .map(|(addr, _)| addr.clone())
+            .or_else(|| self.pending_address_of_id(id))
     }
 }
 
@@ -317,9 +394,18 @@ mod tests {
         let mut reg = empty_registry();
         reg.insert_fake("local/a", 1);
         reg.insert_fake("jupiter06/b", 2);
+        reg.park_pending("local/a", crate::display::attachment::fake_attachment(3));
+        reg.park_pending("saturn/c", crate::display::attachment::fake_attachment(4));
         let mut got = reg.addresses();
         got.sort();
-        assert_eq!(got, vec!["jupiter06/b".to_string(), "local/a".to_string()]);
+        assert_eq!(
+            got,
+            vec![
+                "jupiter06/b".to_string(),
+                "local/a".to_string(),
+                "saturn/c".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -348,6 +434,64 @@ mod tests {
     fn input_to_absent_is_noop() {
         let reg = empty_registry();
         reg.input("absent", b"x".to_vec()); // must not panic
+    }
+
+    #[test]
+    fn pending_attachment_receives_input_instead_of_the_stale_one() {
+        let mut reg = empty_registry();
+        let (stale, stale_log) = crate::display::attachment::fake_attachment_with_input_log(1);
+        let (fresh, fresh_log) = crate::display::attachment::fake_attachment_with_input_log(2);
+        reg.insert("local", stale);
+        reg.park_pending("local", fresh);
+
+        reg.input("local", b"typed".to_vec());
+
+        assert!(stale_log.lock().unwrap().is_empty());
+        assert_eq!(&*fresh_log.lock().unwrap(), &[b"typed".to_vec()]);
+    }
+
+    #[test]
+    fn resize_reaches_stale_and_pending_attachments() {
+        let mut reg = empty_registry();
+        reg.insert_fake("local", 1);
+        reg.park_pending("local", crate::display::attachment::fake_attachment(2));
+
+        reg.resize_all(101, 37);
+
+        assert_eq!(reg.map["local"].size, (101, 37));
+        assert_eq!(reg.pending["local"].size, (101, 37));
+    }
+
+    #[test]
+    fn newer_pending_attachment_tears_down_and_replaces_the_older() {
+        let mut reg = empty_registry();
+        let (older, older_killed) =
+            crate::display::attachment::fake_attachment_with_teardown_flag(2);
+        assert_eq!(reg.park_pending("local", older), None);
+        assert_eq!(
+            reg.park_pending("local", crate::display::attachment::fake_attachment(3)),
+            Some(2)
+        );
+        assert!(older_killed.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(reg.pending["local"].id(), 3);
+        assert_eq!(reg.pending_address_of_id(2), None);
+        assert_eq!(reg.pending_address_of_id(3).as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn removing_a_key_tears_down_installed_and_pending_children() {
+        let mut reg = empty_registry();
+        let (stale, stale_killed) =
+            crate::display::attachment::fake_attachment_with_teardown_flag(1);
+        let (fresh, fresh_killed) =
+            crate::display::attachment::fake_attachment_with_teardown_flag(2);
+        reg.insert("local", stale);
+        reg.park_pending("local", fresh);
+
+        reg.remove("local");
+
+        assert!(stale_killed.load(std::sync::atomic::Ordering::Acquire));
+        assert!(fresh_killed.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]

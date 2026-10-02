@@ -13,8 +13,22 @@ fn fake_source(alias: &str) -> Source {
     }
 }
 
+/// A roster whose every ssh host writes `tmux` as its mux, so the host registry builds
+/// the same sources the list names.
 fn fake_roster(aliases: &[&str]) -> crate::provision::env::Roster {
+    let cfg = crate::provision::config::Config {
+        hosts: aliases
+            .iter()
+            .filter(|a| **a != crate::session::LOCAL_SOURCE)
+            .map(|a| crate::provision::config::HostConfig {
+                ssh: a.to_string(),
+                mux: "tmux".into(),
+            })
+            .collect(),
+        ..Default::default()
+    };
     crate::provision::env::Roster {
+        cfg,
         sources: aliases.iter().map(|a| fake_source(a)).collect(),
         local_muxes: vec!["tmux".into()],
         ssh_aliases: aliases
@@ -27,12 +41,30 @@ fn fake_roster(aliases: &[&str]) -> crate::provision::env::Roster {
 }
 
 fn fake_env_with_sources(aliases: &[&str]) -> Env {
+    fake_env_from(fake_roster(aliases))
+}
+
+/// An env over `fake_roster(written)` plus the ssh hosts `auto`, which write no mux and so
+/// have no source until they answer which muxes they serve.
+fn fake_env_with_auto_hosts(written: &[&str], auto: &[&str]) -> Env {
+    fake_env_from(auto_roster(written, auto))
+}
+
+fn auto_roster(written: &[&str], auto: &[&str]) -> crate::provision::env::Roster {
+    let mut roster = fake_roster(written);
+    roster
+        .ssh_aliases
+        .extend(auto.iter().map(|a| a.to_string()));
+    roster
+}
+
+fn fake_env_from(roster: crate::provision::env::Roster) -> Env {
     // A real throwaway dir, not `.`: tests that exercise pref persistence (e.g.
     // resize_axis saving nav_height) write `<xmux_dir>/<file>`, and `.` would
     // pollute the repository root with stray pref files.
     let xmux_dir = std::env::temp_dir().join(format!("xmux-test-env-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&xmux_dir);
-    Env::new(fake_roster(aliases), "C-g".into(), xmux_dir, None, None)
+    Env::new(roster, "C-g".into(), xmux_dir, None, None)
 }
 
 #[test]
@@ -345,15 +377,36 @@ fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
 #[test]
 fn reconciled_nav_width_hides_only_when_focused_and_enabled_and_no_prefix() {
     // Tree focused (terminal_focused = false): always the natural width.
-    assert_eq!(reconciled_nav_width(false, true, false, 48), 48);
-    assert_eq!(reconciled_nav_width(false, false, true, 48), 48);
+    assert_eq!(
+        reconciled_nav_width(false, true, false, 48, false, "C-g"),
+        48
+    );
+    assert_eq!(
+        reconciled_nav_width(false, false, true, 48, false, "C-g"),
+        48
+    );
     // Terminal view focused + setting on + no prefix interaction: hidden (0).
-    assert_eq!(reconciled_nav_width(true, true, false, 48), 0);
+    assert_eq!(reconciled_nav_width(true, true, false, 48, false, "C-g"), 0);
     // Terminal view focused + setting on + prefix active: shown.
-    assert_eq!(reconciled_nav_width(true, true, true, 48), 48);
+    assert_eq!(reconciled_nav_width(true, true, true, 48, false, "C-g"), 48);
     // Terminal view focused + setting off: stays shown regardless.
-    assert_eq!(reconciled_nav_width(true, false, false, 48), 48);
-    assert_eq!(reconciled_nav_width(true, false, true, 48), 48);
+    assert_eq!(
+        reconciled_nav_width(true, false, false, 48, false, "C-g"),
+        48
+    );
+    assert_eq!(
+        reconciled_nav_width(true, false, true, 48, false, "C-g"),
+        48
+    );
+    assert_eq!(
+        reconciled_nav_width(false, false, false, 48, true, "C-g"),
+        7
+    );
+    assert_eq!(
+        reconciled_nav_width(true, true, false, 48, true, "C-g"),
+        0,
+        "auto-hide wins over collapse"
+    );
 }
 
 #[test]
@@ -391,7 +444,7 @@ fn spinner_frame_advances_with_wall_clock() {
 
 #[test]
 fn nav_width_adjust_clamps() {
-    // The floor is the resting prefix "C-g" (3 cells) plus a one-cell gap each side.
+    // The floor holds the resting prefix, a separating cell, and the collapse button.
     let min = nav_width_min("C-g");
     assert_eq!(adjust_nav_width(48, 1, "C-g"), 49);
     assert_eq!(adjust_nav_width(48, -1, "C-g"), 47);
@@ -407,7 +460,7 @@ fn nav_width_adjust_clamps() {
     );
     assert_eq!(
         nav_width_min("C-Space"),
-        9,
+        11,
         "a wider prefix raises the floor"
     );
 }
@@ -1005,7 +1058,8 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
         let id = attachment.id();
         assert!(
             matches!(
-                h.display.resolve_ready(&key, seq, id),
+                h.display
+                    .resolve_ready(&key, seq, id, false, None, std::time::Instant::now()),
                 crate::model::ReadyOutcome::Install { .. }
             ),
             "the current reply installs"
@@ -1041,8 +1095,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
     assert!(h.display.in_flight_contains("local"));
     assert!(
         registry.contains("local"),
-        "old psmux display attach is HELD on screen until the reattach is ready \
-             (stale-while-revalidate); DisplayReady swaps it in and tears the old down"
+        "old psmux display attach is HELD on screen until the reattach paints"
     );
 }
 
@@ -1097,8 +1150,7 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
     assert!(h.display.in_flight_contains("local"));
     assert!(
         registry.contains("local"),
-        "psmux select_attach requests a reattach even when bookkeeping is stale, but \
-             HOLDS the prior grid on screen until DisplayReady swaps in the fresh one"
+        "psmux select_attach requests a reattach while holding the prior grid until paint"
     );
 }
 
@@ -1246,7 +1298,7 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
     );
     rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
         machine: "prod".into(),
-        muxes: vec!["tmux".into(), "zellij".into()],
+        muxes: Ok(vec!["tmux".into(), "zellij".into()]),
     });
     // tmux is what `prod` was already painted as, so it is left exactly as it is: its
     // BARE id is what the frozen order, the saved selection, and anything the user typed
@@ -1293,7 +1345,7 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
     let before = rt.state.groups.len();
     rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
         machine: "prod".into(),
-        muxes: vec!["tmux".into(), "zellij".into()],
+        muxes: Ok(vec!["tmux".into(), "zellij".into()]),
     });
     assert_eq!(rt.state.groups.len(), before, "no duplicate card");
 }
@@ -1309,7 +1361,7 @@ async fn a_discovered_source_sorts_into_place_and_leaves_the_selection_put() {
     };
     rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
         machine: "db".into(),
-        muxes: vec!["zellij".into()],
+        muxes: Ok(vec!["zellij".into()]),
     });
     let after: Vec<String> = rt.state.groups.iter().map(|g| g.source.clone()).collect();
     assert_eq!(
@@ -1323,6 +1375,196 @@ async fn a_discovered_source_sorts_into_place_and_leaves_the_selection_put() {
         selected,
         "the selection stays put"
     );
+}
+
+fn cards(rt: &Runtime) -> Vec<String> {
+    rt.state.groups.iter().map(|g| g.source.clone()).collect()
+}
+
+#[tokio::test]
+async fn a_host_that_writes_no_mux_is_one_card_with_no_source() {
+    // Nothing is assumed about a host that left its muxes to xmux: it is a card that
+    // reads the host alone and spins, and it has no source for any op to reach.
+    let rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    assert_eq!(cards(&rt), vec!["local", "win"]);
+    assert!(rt.state.scanning.contains("win"), "the card spins");
+    assert!(rt.hosts.get("win").is_none(), "no mux is assumed for it");
+    assert!(rt.env.source("win").is_none());
+    assert_eq!(
+        rt.hosts.machines(),
+        vec!["local", "win"],
+        "the host is still probed"
+    );
+}
+
+#[tokio::test]
+async fn a_windows_host_serving_psmux_is_one_psmux_card() {
+    // psmux installs a `tmux` alias of itself. Only the host's own answer decides what it
+    // serves, and it answers psmux alone, so it is one card, on psmux's own binary.
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(vec!["psmux".into()]),
+    });
+    assert_eq!(
+        cards(&rt),
+        vec!["local", "win"],
+        "one card, under the host's name"
+    );
+    let h = rt.hosts.get("win").expect("the answered source");
+    assert_eq!((h.mux.kind(), h.mux.bin()), ("psmux", "psmux"));
+    assert!(
+        h.detected,
+        "the answer came from psmux's own identity probe"
+    );
+    assert_eq!(
+        rt.env.source("win").expect("the ops know it").binary,
+        "psmux"
+    );
+    assert!(
+        rt.state.scanning.contains("win"),
+        "the card spins until its first listing"
+    );
+}
+
+#[tokio::test]
+async fn a_host_answering_several_muxes_has_a_card_for_each() {
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(vec!["psmux".into(), "zellij".into()]),
+    });
+    assert_eq!(
+        cards(&rt),
+        vec!["local", "win:psmux", "win:zellij"],
+        "each mux names itself, and the card that stood for the host is gone"
+    );
+}
+
+#[tokio::test]
+async fn a_host_where_no_mux_answers_has_no_card() {
+    // The host connected and answered nothing, so there is nothing to show: it has no
+    // card, exactly as this box has no local card when nothing is installed here.
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(Vec::new()),
+    });
+    assert_eq!(cards(&rt), vec!["local"]);
+    assert!(rt.hosts.get("win").is_none());
+}
+
+#[tokio::test]
+async fn a_host_that_could_not_be_asked_keeps_its_card_with_the_reason() {
+    // A connection that failed while the host was being asked says nothing about what it
+    // serves, so the card stays, settled, and says why; it is not taken for a host with
+    // nothing installed.
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Err("command failed (exit 255): Connection reset".into()),
+    });
+    assert_eq!(cards(&rt), vec!["local", "win"]);
+    assert!(!rt.state.scanning.contains("win"), "settled");
+    let g = rt.state.groups.iter().find(|g| g.source == "win").unwrap();
+    assert!(g.err.as_deref().unwrap().contains("Connection reset"));
+    // Asked again (a re-scan or a login), it answers, and its source takes the card over
+    // as in flight rather than inheriting the failure.
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(vec!["psmux".into()]),
+    });
+    let g = rt.state.groups.iter().find(|g| g.source == "win").unwrap();
+    assert!(g.err.is_none());
+    assert!(rt.state.scanning.contains("win"));
+}
+
+#[tokio::test]
+async fn a_failed_ask_leaves_a_host_that_serves_sources_alone() {
+    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "prod".into(),
+        muxes: Err("timed out".into()),
+    });
+    let g = rt.state.groups.iter().find(|g| g.source == "prod").unwrap();
+    assert!(g.err.is_none(), "its own source reports for it");
+    assert!(rt.state.scanning.contains("prod"));
+}
+
+#[tokio::test]
+async fn the_card_of_a_host_with_no_source_says_how_the_host_is_reached() {
+    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+        roster: Box::new(auto_roster(&["prod"], &["win"])),
+    });
+    let reach = rt
+        .state
+        .chrome
+        .source_reach
+        .get("win")
+        .expect("the host has a reach entry");
+    assert!(reach.machine.contains("win"), "{reach:?}");
+    assert!(!reach.probe.is_empty(), "the reachability probe is shown");
+    assert!(
+        reach.mux.is_empty() && reach.kind.is_empty(),
+        "no mux is named"
+    );
+}
+
+#[tokio::test]
+async fn a_source_found_on_a_host_is_reached_as_the_host_is() {
+    // The host's probe read its shell family before it was asked for its muxes, so the
+    // source it answered with composes its first command for that family.
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.hosts.for_each_transport_of("win", |t| {
+        t.set_remote_shell(crate::transport::vocab::RemoteShell::Other)
+    });
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(vec!["psmux".into()]),
+    });
+    let h = rt.hosts.get("win").unwrap();
+    assert_eq!(
+        h.transport.remote_shell(),
+        crate::transport::vocab::RemoteShell::Other
+    );
+    assert_eq!(
+        h.transport.host_id(),
+        "win",
+        "it answers as its own source id"
+    );
+}
+
+#[tokio::test]
+async fn a_re_scan_keeps_what_a_host_that_writes_no_mux_answered() {
+    // The fresh roster names the host and none of its sources, since those came from its
+    // own answer. Every registry keeps them, so a re-scan tears no card down.
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(vec!["psmux".into()]),
+    });
+    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+        roster: Box::new(auto_roster(&[], &["win"])),
+    });
+    assert!(rt.hosts.get("win").is_some(), "the registry keeps it");
+    assert!(rt.env.source("win").is_some(), "the off-loop ops keep it");
+    assert_eq!(cards(&rt), vec!["local", "win"], "and the card stays put");
+}
+
+#[tokio::test]
+async fn a_re_scan_adds_and_drops_the_card_of_a_host_that_writes_no_mux() {
+    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+        roster: Box::new(auto_roster(&["prod"], &["win"])),
+    });
+    assert_eq!(cards(&rt), vec!["local", "prod", "win"]);
+    assert!(rt.state.scanning.contains("win"));
+    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+        roster: Box::new(fake_roster(&["prod"])),
+    });
+    assert_eq!(cards(&rt), vec!["local", "prod"]);
+    assert!(!rt.hosts.machines().contains(&"win".to_string()));
 }
 
 fn test_rt(env: Env) -> Runtime {
@@ -1348,7 +1590,7 @@ fn test_rt(env: Env) -> Runtime {
         env.local_socket.clone(),
     );
     drop(roster);
-    let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
+    let mut state = crate::state::State::from_sources(hosts.card_ids());
     let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
     let ops = env.ops();
     let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1373,12 +1615,15 @@ fn test_rt(env: Env) -> Runtime {
         body_rows: 24,
         nav_width: crate::ui::switcher::NAV_WIDTH,
         nav_width_natural: crate::ui::switcher::NAV_WIDTH,
+        nav_collapsed: false,
         nav_height: 0,
         nav_position: crate::ui::switcher::NavPosition::Left,
         nav_position_pinned: None,
         nav_default: crate::ui::switcher::NavPosition::Left,
         applied_nav_height: u16::MAX,
+        applied_nav_collapsed: true,
         auto_hide_nav: false,
+        nav_was_focused: true,
         mouse_state: MouseState::default(),
         term_input: crate::display::input::TermInput::new(prefix),
         nav_decoder: crate::display::decode::KeyDecoder::new(),
@@ -2758,6 +3003,126 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
 }
 
 #[test]
+fn collapse_button_click_toggles_without_focus_or_drag() {
+    use crate::ui::switcher::{collapse_button_rect, compute_regions, Scan, Switcher};
+
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.cols = 140;
+    rt.body_rows = 29;
+    let area = ratatui::layout::Rect::new(0, 0, 140, 30);
+    let regions = compute_regions(area, rt.nav_size(), 1);
+    let button = collapse_button_rect(regions.hint_bar, rt.nav_position, false);
+    let press = crate::display::mouse::MouseEvent {
+        cb: 0,
+        col: button.x + button.width,
+        row: button.y + 1,
+        pressed: true,
+    };
+    let focus_before = rt.state.focus;
+    let mut focus_toggle = false;
+    let mut wheel = false;
+    assert!(rt.handle_mouse_event(
+        &press,
+        &Selection::default(),
+        &mut focus_toggle,
+        &mut wheel,
+        regions.terminal,
+    ));
+    assert!(rt.nav_collapsed, "the button collapses the nav");
+    assert_eq!(
+        rt.state.focus, focus_before,
+        "the button does not move focus"
+    );
+    assert!(!focus_toggle);
+    assert!(!rt.mouse_state.dragging_view_border);
+
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    let regions = compute_regions(area, rt.nav_size(), 1);
+    let button = collapse_button_rect(regions.hint_bar, rt.nav_position, true);
+    let press = crate::display::mouse::MouseEvent {
+        cb: 0,
+        col: button.x + button.width,
+        row: button.y + 1,
+        pressed: true,
+    };
+    assert!(rt.handle_mouse_event(
+        &press,
+        &Selection::default(),
+        &mut focus_toggle,
+        &mut wheel,
+        regions.terminal,
+    ));
+    assert!(!rt.nav_collapsed, "the button expands the nav");
+    assert_eq!(rt.state.focus, focus_before);
+    assert!(!focus_toggle);
+    assert!(!rt.mouse_state.dragging_view_border);
+    rt.prepare_and_draw(&mut term);
+    assert_eq!(rt.nav_width, rt.nav_width_natural);
+}
+
+#[test]
+fn focusing_the_nav_expands_a_collapsed_nav() {
+    use crate::ui::switcher::{Scan, Switcher};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.nav_collapsed = true;
+    rt.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
+    rt.applied_nav_collapsed = true;
+    rt.nav_was_focused = false;
+
+    let out = rt.handle_stdin_bytes(b"\x07\x1b[D", &Selection::default());
+    assert!(out.focus_nav, "the prefix-left path requests nav focus");
+    let mut term = Terminal::new(TestBackend::new(80, 25)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    assert!(!rt.nav_collapsed, "entering nav focus expands it");
+    assert_eq!(rt.nav_width, rt.nav_width_natural);
+}
+
+#[test]
+fn a_collapsed_view_border_cannot_start_a_resize_drag() {
+    use crate::ui::switcher::{compute_regions, Scan, Switcher};
+
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.cols = 140;
+    rt.body_rows = 29;
+    rt.nav_collapsed = true;
+    rt.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
+    let regions = compute_regions(ratatui::layout::Rect::new(0, 0, 140, 30), rt.nav_size(), 1);
+    let press = crate::display::mouse::MouseEvent {
+        cb: 0,
+        col: regions.view_border.x + 1,
+        row: regions.view_border.y + 1,
+        pressed: true,
+    };
+    rt.handle_mouse_event(
+        &press,
+        &Selection::default(),
+        &mut false,
+        &mut false,
+        regions.terminal,
+    );
+    assert!(!rt.mouse_state.dragging_view_border);
+}
+
+#[test]
 fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     use crate::ui::switcher::{Scan, Switcher};
     // In a band layout the view border is a HORIZONTAL rule; a left-press on that
@@ -3230,10 +3595,123 @@ async fn a_warm_attach_for_another_host_does_not_take_the_terminal_view() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_attach_for_the_selected_host_takes_the_terminal_view() {
-    // The floor under the test above: the attach the selection IS displayed through
-    // confirms as the view, so the rule that keeps a warm attach out cannot keep the
-    // real one out too.
+async fn ready_holds_the_stale_frame_until_the_fresh_attachment_paints() {
+    let mut rt = a_settled_psmux_runtime();
+    rt.state.selection.session = "b".into();
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .set_shows("local", "b");
+    the_reattach_lands_for(&mut rt, 11, "b");
+
+    assert_eq!(
+        rt.registry.get("local").map(|att| att.id()),
+        Some(OWN_CLIENT)
+    );
+    assert_eq!(
+        rt.registry.pending_address_of_id(OWN_CLIENT + 3).as_deref(),
+        Some("local")
+    );
+    assert_eq!(
+        rt.state.displayed.session, "a",
+        "Ready alone keeps the stale frame confirmed"
+    );
+
+    let debounce_start = std::time::Instant::now();
+    rt.drive_attach_beat(debounce_start);
+    rt.drive_attach_beat(
+        debounce_start + std::time::Duration::from_millis(crate::state::ATTACH_DEBOUNCE_MS + 1),
+    );
+    assert_eq!(
+        rt.registry.pending_address_of_id(OWN_CLIENT + 3).as_deref(),
+        Some("local"),
+        "the attach debounce treats a paint-pending client as work already underway"
+    );
+    assert_eq!(
+        rt.state.displayed.session, "a",
+        "the pending client cannot confirm before its paint gate opens"
+    );
+
+    // Output that has left nothing visible (a clear-screen, terminal queries) must not
+    // open the paint gate: the fresh grid is still empty.
+    let unpainted_at = std::time::Instant::now();
+    rt.note_pending_output(OWN_CLIENT + 3);
+    assert!(
+        !rt.promote_due_pending(unpainted_at + crate::model::host::PAINT_SETTLE),
+        "bytes without a visible frame keep the stale frame up"
+    );
+    assert_eq!(rt.state.displayed.session, "a");
+
+    let output_at = std::time::Instant::now();
+    rt.registry
+        .mark_pending_painted_for_test(OWN_CLIENT + 3, output_at);
+    rt.note_pending_output(OWN_CLIENT + 3);
+    assert!(rt.promote_due_pending(output_at + crate::model::host::PAINT_SETTLE));
+    assert_eq!(
+        rt.registry.get("local").map(|att| att.id()),
+        Some(OWN_CLIENT + 3),
+        "the painted attachment replaces the stale one"
+    );
+    assert_eq!(
+        rt.state.displayed.session, "b",
+        "the painted selected attachment confirms the view"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn first_display_installs_immediately_without_a_stale_attachment() {
+    let mut rt = a_settled_psmux_runtime();
+    rt.registry.remove("local");
+    rt.state.selection = Selection {
+        source: "local".into(),
+        session: "b".into(),
+    };
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .set_shows("local", "b");
+
+    the_reattach_lands_for(&mut rt, 11, "b");
+
+    assert_eq!(
+        rt.registry.get("local").map(|att| att.id()),
+        Some(OWN_CLIENT + 3)
+    );
+    assert!(rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_none());
+    assert_eq!(rt.state.displayed.session, "b");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_exit_retires_the_stale_attachment_and_applies_the_exit() {
+    let mut rt = a_settled_psmux_runtime();
+    rt.state.selection = Selection {
+        source: "local".into(),
+        session: "b".into(),
+    };
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .set_shows("local", "b");
+    the_reattach_lands_for(&mut rt, 11, "b");
+    let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    rt.on_pty_event(PtyEvent::Exited { id: OWN_CLIENT + 3 }, &mut rx);
+
+    assert!(!rt.registry.contains("local"));
+    assert_eq!(rt.registry.address_of_id(OWN_CLIENT), None);
+    assert_eq!(rt.registry.address_of_id(OWN_CLIENT + 3), None);
+    assert!(
+        rt.registry.grid("local").is_some(),
+        "the exited fresh attachment leaves its own final grid"
+    );
+    assert_eq!(rt.state.displayed.session, "b");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn newer_request_tears_down_the_older_pending_attachment() {
     let mut rt = a_settled_psmux_runtime();
     rt.hosts
         .get_mut("local")
@@ -3241,10 +3719,31 @@ async fn an_attach_for_the_selected_host_takes_the_terminal_view() {
         .display
         .set_shows("local", "b");
     the_reattach_lands_for(&mut rt, 11, "b");
-    assert_eq!(
-        rt.state.displayed.session, "b",
-        "the selected host's landed attach is the view"
+    assert!(rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_some());
+
+    let id = request_attach(
+        &mut rt.registry,
+        &rt.worker,
+        &mut rt.hosts.get_mut("local").unwrap().display,
+        &mut rt.attach_seq,
+        "local",
+        vec!["fake".into()],
+        (80, 24),
     );
+
+    assert!(
+        rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_none(),
+        "the superseded pending PTY is no longer owned"
+    );
+    assert_eq!(
+        rt.hosts
+            .get("local")
+            .unwrap()
+            .display
+            .in_flight_seq("local"),
+        Some(rt.attach_seq)
+    );
+    assert_ne!(id, OWN_CLIENT + 3);
 }
 
 /// Lands a worker `Ready` on the local host under `seq`, answering for `session`.

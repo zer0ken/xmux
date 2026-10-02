@@ -110,6 +110,11 @@ mod tests {
         let ours = DisplayTty(Some("/dev/pts/3".into()));
         assert!(!matches_display_tty(&DeathSignal::Eof, "/dev/pts/3", &ours));
         assert!(!matches_display_tty(
+            &DeathSignal::None,
+            "/dev/pts/3",
+            &ours
+        ));
+        assert!(!matches_display_tty(
             &DeathSignal::PathStat {
                 dir_is_psmux_registry: true
             },

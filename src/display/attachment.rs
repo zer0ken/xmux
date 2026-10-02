@@ -381,6 +381,9 @@ pub struct Attachment {
     /// True until the first output chunk proves the attach is live (drives the
     /// connecting spinner). Cleared by the pump on the first read.
     pub connecting: Arc<AtomicBool>,
+    /// First and latest output times since the grid first showed something, recorded by
+    /// the pump so output that races ahead of the worker's Ready handoff still counts.
+    output_times: Arc<Mutex<Option<(std::time::Instant, std::time::Instant)>>>,
     /// Coalesces output wakeups: the pump sends a single `Output` event then sets
     /// this, and skips further sends until the app clears it after a redraw. A
     /// busy unselected session thus enqueues at most ONE pending event between
@@ -403,6 +406,16 @@ pub struct Attachment {
 impl Attachment {
     pub fn id(&self) -> u64 {
         self.id
+    }
+    /// The first and latest instants at which the pump fed output since the grid first
+    /// showed something, if it has painted.
+    pub fn output_times(&self) -> Option<(std::time::Instant, std::time::Instant)> {
+        *self.output_times.lock().unwrap()
+    }
+    /// Records a visible paint at `at`, standing in for the pump in headless tests.
+    #[cfg(test)]
+    pub fn mark_painted_for_test(&self, at: std::time::Instant) {
+        *self.output_times.lock().unwrap() = Some((at, at));
     }
     /// The attach CHILD's controlling terminal: the name of the PTY this attachment
     /// opened. It is the mux client's OWN tty only when the child IS the mux binary,
@@ -528,9 +541,11 @@ pub fn spawn_attachment(
 
     let grid = Arc::new(Mutex::new(Grid::new(rows, cols)));
     let connecting = Arc::new(AtomicBool::new(true));
+    let output_times = Arc::new(Mutex::new(None));
     let pending = Arc::new(AtomicBool::new(false));
     let pump_grid = grid.clone();
     let pump_connecting = connecting.clone();
+    let pump_output_times = output_times.clone();
     let pump_pending = pending.clone();
     // The pump answers the child's terminal queries (DSR/DA) over this sender, since
     // there is no real terminal behind the PTY to answer - without it the child
@@ -542,6 +557,7 @@ pub fn spawn_attachment(
         let mut qtail: Vec<u8> = Vec::new();
         let mut marker_acc: Vec<u8> = Vec::new();
         let mut marker_done = false;
+        let mut painted = false;
         // Holds OSC-in-progress between reads so an OSC 52 split at a read boundary
         // is still found (and a non-52 OSC's payload is skipped, not misread).
         let mut osc52 = Osc52Scanner::default();
@@ -550,13 +566,15 @@ pub fn spawn_attachment(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let cursor = {
+                    let (cursor, visible) = {
                         let mut g = match pump_grid.lock() {
                             Ok(g) => g,
                             Err(_) => break,
                         };
                         g.feed(&buf[..n]);
-                        g.cursor()
+                        // Only checked until the first visible frame: after that every
+                        // chunk counts, so a full-grid scan never runs per chunk.
+                        (g.cursor(), painted || !g.is_blank())
                     };
                     // Answer DSR/DA queries so the child does not block (empty-pane bug).
                     // Carry only an INCOMPLETE trailing query prefix to the next read -
@@ -569,6 +587,19 @@ pub fn spawn_attachment(
                     let keep = trailing_partial_query(&qtail).len();
                     let cut = qtail.len() - keep;
                     qtail.drain(0..cut);
+                    // Paint time starts at the first chunk that leaves something visible
+                    // on the grid. A client that clears the screen and then waits on its
+                    // own terminal queries has produced bytes but no frame, and swapping
+                    // it in then would show an empty view.
+                    if visible {
+                        painted = true;
+                        let output_at = std::time::Instant::now();
+                        let mut times = pump_output_times.lock().unwrap();
+                        match &mut *times {
+                            Some((_, last)) => *last = output_at,
+                            None => *times = Some((output_at, output_at)),
+                        }
+                    }
                     pump_connecting.store(false, Ordering::Release);
                     if !marker_done {
                         // Diagnostic: does the display-tty marker sentinel even reach our
@@ -617,6 +648,7 @@ pub fn spawn_attachment(
         control_tx,
         size: (cols, rows),
         connecting,
+        output_times,
         pending,
         child,
         id,
@@ -636,16 +668,21 @@ pub fn spawn_attachment(
 /// ConPTY. `portable_pty::Child` in 0.9 requires `ChildKiller + Downcast + Send`;
 /// `Downcast` comes free via `downcast_rs`'s blanket impl for any `'static` type.
 #[cfg(test)]
-#[derive(Debug)]
-pub struct DummyChild;
+#[derive(Debug, Default)]
+pub struct DummyChild {
+    killed: Arc<AtomicBool>,
+}
 
 #[cfg(test)]
 impl portable_pty::ChildKiller for DummyChild {
     fn kill(&mut self) -> std::io::Result<()> {
+        self.killed.store(true, Ordering::Release);
         Ok(())
     }
     fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
-        Box::new(DummyChild)
+        Box::new(DummyChild {
+            killed: self.killed.clone(),
+        })
     }
 }
 
@@ -670,19 +707,35 @@ impl portable_pty::Child for DummyChild {
 /// Used by the registry's headless tests.
 #[cfg(test)]
 pub fn fake_attachment(id: u64) -> Attachment {
+    fake_attachment_with_child(id, DummyChild::default())
+}
+
+#[cfg(test)]
+fn fake_attachment_with_child(id: u64, child: DummyChild) -> Attachment {
     let (control_tx, _control_rx) = std::sync::mpsc::channel::<PtyCmd>();
     Attachment {
         grid: Arc::new(Mutex::new(Grid::new(24, 80))),
         control_tx,
         size: (80, 24),
         connecting: Arc::new(AtomicBool::new(true)),
+        output_times: Arc::new(Mutex::new(None)),
         pending: Arc::new(AtomicBool::new(false)),
-        child: Box::new(DummyChild),
+        child: Box::new(child),
         id,
         child_tty: None,
         input_log: None,
         env_answer: None,
     }
+}
+
+/// A fake attachment plus a flag set synchronously when teardown kills its child.
+#[cfg(test)]
+pub fn fake_attachment_with_teardown_flag(id: u64) -> (Attachment, Arc<AtomicBool>) {
+    let killed = Arc::new(AtomicBool::new(false));
+    let child = DummyChild {
+        killed: killed.clone(),
+    };
+    (fake_attachment_with_child(id, child), killed)
 }
 
 /// A `fake_attachment` whose PTY reports `tty`, standing in for the unix PTY name a

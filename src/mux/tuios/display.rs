@@ -1,7 +1,6 @@
-//! The abduco display driver: a per-session mux (one server per session) displayed
-//! through ONE per-host PTY that is REATTACHED whenever the selected session changes.
-//! `Abduco::driver` constructs it, so mux selection lives in the abduco implementation, not a
-//! central match.
+//! The tuios display driver: one daemon owns every session, but no external command
+//! can retarget a particular client, so display selection uses per-session reattach
+//! semantics.
 
 use std::sync::{Arc, Mutex};
 
@@ -10,15 +9,13 @@ use crate::display::grid::Grid;
 use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
-/// Per-session mux (abduco): one server per session, displayed through ONE per-host
-/// PTY that is REATTACHED whenever the selected session changes (`abduco -a <name>`
-/// attaches to that session's own server). `Abduco::driver` constructs it for a
-/// `PerSession` host.
-pub struct AbducoDriver;
+/// tuios display orchestration through one per-source PTY, reattached whenever a
+/// session is selected.
+pub struct TuiosDriver;
 
-impl MuxDriver for AbducoDriver {
+impl MuxDriver for TuiosDriver {
     fn kind(&self) -> &str {
-        "abduco"
+        "tuios"
     }
 
     fn show(&mut self, sel: &Selection, ctx: &mut DriverCtx) -> bool {
@@ -33,10 +30,6 @@ impl MuxDriver for AbducoDriver {
         let live = ctx.registry.contains(&key);
         let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
 
-        // REATTACH, always: the only way to move abduco's display. The stale attachment
-        // is KEPT in the registry so its grid stays on screen until the fresh client
-        // paints or reaches its bounded wait (stale-while-revalidate). At first display
-        // there is nothing to keep, so Ready installs immediately.
         let reason = if live { "reshow" } else { "no-live-client" };
         tracing::info!(
             host = %sel.source,
@@ -77,8 +70,6 @@ impl MuxDriver for AbducoDriver {
     }
 
     fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
-        // Per-session attaches are selected on demand by `show`, not pre-warmed: sync
-        // only tears down the host PTY when the host has no sessions left.
         if sessions.is_empty() {
             ctx.registry.remove(source);
             if let Some(host) = ctx.hosts.get_mut(source) {

@@ -47,19 +47,21 @@ impl Runtime {
             body_rows: rows,
             nav_width,
             nav_width_natural,
+            nav_collapsed,
             nav_height,
             nav_position,
             ..
         } = self;
         let (cols, rows) = (*cols, *rows);
         // The nav's live size as one value, read once for this effect: the width the user
-        // set, the width on screen, the band height, and the attachment side. Every
-        // geometry below is cut from it, so none of them re-derives one of the four.
+        // set, the width on screen, the band height, the attachment side, and whether it
+        // is collapsed. Every geometry below is cut from it, so none re-derives a part.
         let nav = crate::ui::switcher::NavSize {
             natural: *nav_width_natural,
             width: *nav_width,
             height: *nav_height,
             position: *nav_position,
+            collapsed: *nav_collapsed,
         };
         match effect {
             EventEffect::ApplyInventory { host, sessions } => {
@@ -164,28 +166,61 @@ impl Runtime {
                 // serve becomes a source of its own, RIGHT NOW: the card appears scanning
                 // and streams its sessions in like any other.
                 //
-                // The id of an added source is always qualified (`prod:zellij`). The mux
-                // already served keeps the id it was painted with, bare or not, because
+                // A machine that serves no source yet names its sources the way a written
+                // list would: one mux takes the bare machine name, which is the card the
+                // machine has been showing, and several are each qualified. A machine
+                // that already serves a source adds each new one qualified (`prod:zellij`),
+                // and the one already served keeps the id it was painted with, because
                 // that id is what the frozen order, the persisted selection, and anything
                 // the user typed are keyed to - renaming it mid-run would break all three.
                 let (vc, vr) = terminal_view_size(cols, rows, nav);
-                for bin in muxes {
-                    if hosts.machine_serves(&machine, &bin) {
-                        continue;
+                let first = !hosts.serves_any(&machine);
+                let muxes = match muxes {
+                    Ok(muxes) => muxes,
+                    // The machine could not be asked at all, which says nothing about what
+                    // it serves. A machine standing as its own card keeps it and shows the
+                    // failure there; one that serves sources has them report for it.
+                    Err(reason) => {
+                        tracing::warn!(machine = %machine, error = %reason, "mux discovery failed");
+                        if first {
+                            switcher.apply_source_result(machine, Vec::new(), Some(reason), state);
+                        }
+                        return false;
                     }
-                    let id = crate::session::source_id(&machine, &bin, true);
+                };
+                let found: Vec<String> = muxes
+                    .into_iter()
+                    .filter(|bin| !hosts.machine_serves(&machine, bin))
+                    .collect();
+                let specs: Vec<(String, String)> = if first {
+                    crate::provision::config::host_specs_for(&machine, &found)
+                        .into_iter()
+                        .map(|spec| (spec.bin, spec.id))
+                        .collect()
+                } else {
+                    found
+                        .into_iter()
+                        .map(|bin| {
+                            let id = crate::session::source_id(&machine, &bin, true);
+                            (bin, id)
+                        })
+                        .collect()
+                };
+                // The card that stood for the machine goes when no source takes its name:
+                // nothing answered, so there is nothing to show, or several muxes did and
+                // each has a card of its own.
+                if first && !specs.iter().any(|(_, id)| *id == machine) {
+                    switcher.remove_source(&machine, state);
+                }
+                for (bin, id) in specs {
                     if hosts.get(&id).is_some() {
                         continue;
                     }
+                    let Some(host) = hosts.discovered_host(&machine, &bin, &id) else {
+                        continue;
+                    };
                     tracing::info!(machine = %machine, mux = %bin, source = %id, "mux discovered");
-                    hosts.insert(crate::model::host_for(
-                        &machine,
-                        &bin,
-                        id.clone(),
-                        std::env::consts::OS,
-                        &env.xmux_dir,
-                        env.local_socket.clone(),
-                    ));
+                    hosts.insert(host);
                     // The loop drives the `Host`; the OFF-LOOP ops (create a session, read
                     // panes, read border styles) resolve a source by id through `Env`. Both
                     // have to learn the source, or it paints and scans but refuses every
@@ -198,7 +233,11 @@ impl Runtime {
                         &env.xmux_dir,
                         env.local_socket.clone(),
                     ));
+                    state.chrome.set_source_reach(reach_map(env));
+                    // A source that takes the card the machine stood as inherits that card,
+                    // whatever it last showed; its own first listing is now in flight.
                     switcher.add_source(id.clone(), state);
+                    switcher.mark_scanning(&id, state);
                     scan_or_dispatch_host(mgr, hosts, detecting, &id, vc, vr, scan_pool);
                 }
             }
@@ -235,12 +274,7 @@ impl Runtime {
                     .chrome
                     .set_login_defaults(roster.host_addresses.clone(), local_user());
                 env.replace_roster(*roster);
-                state.chrome.set_source_reach(
-                    env.source_list()
-                        .iter()
-                        .map(|s| (s.alias.clone(), source_reach(s)))
-                        .collect(),
-                );
+                state.chrome.set_source_reach(reach_map(env));
                 let delta = hosts.reconcile(fresh);
                 for id in &delta.removed {
                     tracing::info!(source = %id, "roster dropped a source");
@@ -269,8 +303,9 @@ impl Runtime {
                 // those, so nothing is probed twice for one re-scan.
                 let mut probed: HashSet<&str> = HashSet::new();
                 for id in &delta.added {
-                    if probed.insert(crate::session::machine_of(id)) {
-                        probe_machine(id, hosts, mgr.events(), scan_pool, false);
+                    let machine = crate::session::machine_of(id);
+                    if probed.insert(machine) {
+                        probe_machine(machine, hosts, mgr.events(), scan_pool, false);
                     }
                 }
             }
@@ -300,9 +335,7 @@ impl Runtime {
                 // switch are composed for a shell family, so the first command must
                 // already know which one answered.
                 if let Some(shell) = shell {
-                    for_each_source_of(hosts, &machine, |host| {
-                        host.transport.set_remote_shell(shell)
-                    });
+                    hosts.for_each_transport_of(&machine, |t| t.set_remote_shell(shell));
                 }
                 // The machine's reachability probe connected: resolve every source it
                 // serves onto its metadata channel (a re-scan re-enumerates a live one; a
@@ -335,10 +368,10 @@ impl Runtime {
                 if !crate::session::is_local_source(&machine)
                     && env.roster().cfg.mux_is_auto(&machine)
                 {
-                    if let Some(host) = sources.first().and_then(|id| hosts.get(id)) {
+                    if let Some(transport) = hosts.host_transport(&machine) {
                         spawn_mux_discovery(
                             machine,
-                            host.transport.clone(),
+                            transport.clone_box(),
                             mgr.events(),
                             scan_pool.clone(),
                         );
@@ -428,7 +461,12 @@ impl Runtime {
             0,
             &env.ui_prefix,
         );
-        let nav_width = nav_width_natural;
+        let nav_collapsed = crate::ui::prefs::load_nav_collapsed(&env.xmux_dir);
+        let nav_width = if nav_collapsed {
+            crate::ui::switcher::collapsed_nav_width(&env.ui_prefix)
+        } else {
+            nav_width_natural
+        };
         // Restore the band-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
         let nav_height = crate::ui::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
@@ -475,7 +513,7 @@ impl Runtime {
 
         // The app's runtime state (single source of truth), seeded from the host ids;
         // events stream the nav in.
-        let mut state = crate::state::State::from_sources(hosts.ids().to_vec());
+        let mut state = crate::state::State::from_sources(hosts.card_ids());
         let mut switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
         // The one session the terminal view refuses: the one xmux is running in. Named
         // once here, because the environment that names it cannot change under a run.
@@ -507,12 +545,7 @@ impl Runtime {
         // And how each source is REACHED, so an unreachable one states what was asked of
         // it and over what, not only that it failed. Resolved to words here for the same
         // reason the providers are: the screen prints them and nothing branches on them.
-        state.chrome.set_source_reach(
-            env.source_list()
-                .iter()
-                .map(|s| (s.alias.clone(), source_reach(s)))
-                .collect(),
-        );
+        state.chrome.set_source_reach(reach_map(&env));
         // Where the whole history of dispatched commands is written, so the screen can name
         // the file instead of leaving the user to know about it.
         state.chrome.set_log_path(
@@ -569,12 +602,15 @@ impl Runtime {
             body_rows,
             nav_width,
             nav_width_natural,
+            nav_collapsed,
             nav_height,
             nav_position,
             nav_position_pinned,
             nav_default,
             applied_nav_height: u16::MAX,
+            applied_nav_collapsed: !nav_collapsed,
             auto_hide_nav,
+            nav_was_focused: true,
             mouse_state: MouseState::default(),
             term_input,
             nav_decoder,
@@ -609,8 +645,8 @@ impl Runtime {
     /// width persist, then draw the gated frame. `term` is the loop-local ratatui
     /// terminal.
     /// The nav's live size, in one place: the width the user set, the width on screen
-    /// (0 while auto-hide has taken it), the band height the user set, and the side the
-    /// nav is attached to. Every geometry the loop computes reads this instead of picking
+    /// (0 while auto-hide has taken it), the band height the user set, the side the nav is
+    /// attached to, and the collapsed state. Every geometry the loop computes reads this instead of picking
     /// fields out of `self`, so a resize while xmux runs cannot reach one consumer and
     /// miss another.
     pub(super) fn nav_size(&self) -> crate::ui::switcher::NavSize {
@@ -619,6 +655,7 @@ impl Runtime {
             width: self.nav_width,
             height: self.nav_height,
             position: self.nav_position,
+            collapsed: self.nav_collapsed,
         }
     }
 
@@ -647,11 +684,17 @@ impl Runtime {
         // the modal/view reconciliation).
         let modal_kind = self.state.modal_kind();
         self.state.focus.sync_modal(modal_kind);
+        let nav_focused = self.state.focus.view_is_nav();
         // The nav decides its host band on the move into the terminal view. The view
         // behind a modal counts as the focused one: a popup over the terminal view is not
         // a move back into the nav.
-        self.switcher
-            .sync_view_focus(!self.state.focus.view_is_nav());
+        self.switcher.sync_view_focus(!nav_focused);
+        if nav_focused && !self.nav_was_focused && self.nav_collapsed {
+            self.nav_collapsed = false;
+            crate::ui::prefs::save_nav_collapsed(&self.env.xmux_dir, false);
+            self.dirty = true;
+        }
+        self.nav_was_focused = nav_focused;
         // The single owner of the effective nav width: reconcile it to the focus + the
         // hide setting + any natural-width change. On a change, resize the PTYs so the
         // mux reflows, and mark dirty.
@@ -660,6 +703,8 @@ impl Runtime {
             self.auto_hide_nav,
             prefix_active,
             self.nav_width_natural,
+            self.nav_collapsed,
+            &self.env.ui_prefix,
         );
         // The nav's attachment side is resolved here too, every frame: a pinned side
         // wins, else the [ui] default. The nav never moves on its own.
@@ -670,6 +715,7 @@ impl Runtime {
         // PTYs or the grid mismatches the draw.
         if want_nav_width != self.nav_width
             || self.nav_height != self.applied_nav_height
+            || self.nav_collapsed != self.applied_nav_collapsed
             || want_position != self.nav_position
         {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY; a stale wide-char
@@ -681,6 +727,7 @@ impl Runtime {
             self.nav_position = want_position;
             self.nav_width = want_nav_width;
             self.applied_nav_height = self.nav_height;
+            self.applied_nav_collapsed = self.nav_collapsed;
             let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
             self.registry.resize_all(vc, vr);
             self.mgr.resize_all(vc, vr);
@@ -740,7 +787,8 @@ impl Runtime {
         // cannot flood the terminal.
         if self.dirty && self.last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
             // Render the CONFIRMED display truth (`displayed`), not the selection: the prior
-            // session stays on screen until the new one is ready (stale-while-revalidate).
+            // session stays on screen until the fresh one paints (stale-while-revalidate).
+            let nav = self.nav_size();
             let grid_arc = current_grid(
                 &self.state.displayed,
                 &crate::driver::DriverCtx {
@@ -753,9 +801,7 @@ impl Runtime {
                     attach_seq: &mut self.attach_seq,
                     cols: self.cols,
                     body_rows: self.body_rows,
-                    nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                        .with_height(self.nav_height)
-                        .with_position(self.nav_position),
+                    nav,
                 },
             );
             let terminal_focused = self.state.focus.is_terminal_focused();
@@ -785,7 +831,6 @@ impl Runtime {
                     }
                     // Split-borrow so the draw closure captures only these fields, not all
                     // of `self` (the fingerprint block's borrows have ended above).
-                    let nav = self.nav_size();
                     let switcher = &mut self.switcher;
                     let state = &self.state;
                     term.draw(|f| {
@@ -862,8 +907,35 @@ impl Runtime {
         ev: PtyEvent,
         pty_rx: &mut tokio::sync::mpsc::UnboundedReceiver<PtyEvent>,
     ) {
-        // Capture the viewed attach id BEFORE any reap removes it; a background session
-        // dropping (nav focus, or a non-displayed attach) is just reaped.
+        let mut detached = self.handle_one_pty_event(ev);
+        let mut budget = EVENT_DRAIN_BUDGET;
+        while budget > 0 {
+            match pty_rx.try_recv() {
+                Ok(ev) => {
+                    detached |= self.handle_one_pty_event(ev);
+                    budget -= 1;
+                }
+                Err(_) => break,
+            }
+        }
+        if detached {
+            // The viewed session's client detached or exited. The view keeps the last
+            // frame it drew and NOTHING re-attaches: the re-attach would be a fresh
+            // connection raised by the death of the connection before it, and when the
+            // session is gone every attempt dies the same way, so the chain does not stop
+            // on its own. The user recovers the pane by selecting its card again or
+            // re-scanning. Repaint so the pane shows what it is now.
+            self.dirty = true;
+        }
+    }
+
+    /// Applies one PTY event. Returns whether the displayed attachment exited.
+    fn handle_one_pty_event(&mut self, ev: PtyEvent) -> bool {
+        if let PtyEvent::Exited { id } = &ev {
+            self.promote_pending_exit(*id);
+        }
+        // Capture the viewed attach id after a pending exit is promoted but before reap
+        // removes it. A background attachment dropping is just reaped.
         let displayed_attach_id = (self.state.focus.is_terminal_focused()
             && !self.state.selection.is_empty())
         .then(|| {
@@ -872,12 +944,8 @@ impl Runtime {
                 .map(|a| a.id())
         })
         .flatten();
-        let mut detached = false;
         match ev {
             PtyEvent::Exited { id } => {
-                if Some(id) == displayed_attach_id {
-                    detached = true;
-                }
                 // Read before the reap: the reap drops the grid the reason is written on.
                 let last = last_pane_line(&self.registry, id);
                 clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
@@ -895,54 +963,20 @@ impl Runtime {
                     // from a reattach decision gone wrong.
                     tracing::info!(id, established = true, last = %last, "attach_exited");
                 }
+                Some(id) == displayed_attach_id
             }
             PtyEvent::DisplayTty { id, tty } => {
-                record_display_tty(&mut self.hosts, &self.registry, id, tty)
+                record_display_tty(&mut self.hosts, &self.registry, id, tty);
+                false
             }
-            PtyEvent::Output { .. } => {}
-            PtyEvent::Osc52 { seq } => Self::emit_osc52(&seq),
-        }
-        let mut budget = EVENT_DRAIN_BUDGET;
-        while budget > 0 {
-            match pty_rx.try_recv() {
-                Ok(PtyEvent::Exited { id }) => {
-                    if Some(id) == displayed_attach_id {
-                        detached = true;
-                    }
-                    let last = last_pane_line(&self.registry, id);
-                    clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
-                    if !self.registry.reap(id) {
-                        self.hosts
-                            .iter_mut()
-                            .any(|h| h.display.mark_reaped_if_pending(id));
-                        tracing::info!(id, established = false, last = %last, "attach_exited");
-                    } else {
-                        tracing::info!(id, established = true, last = %last, "attach_exited");
-                    }
-                    budget -= 1;
-                }
-                Ok(PtyEvent::Output { .. }) => {
-                    budget -= 1;
-                }
-                Ok(PtyEvent::DisplayTty { id, tty }) => {
-                    record_display_tty(&mut self.hosts, &self.registry, id, tty);
-                    budget -= 1;
-                }
-                Ok(PtyEvent::Osc52 { seq }) => {
-                    Self::emit_osc52(&seq);
-                    budget -= 1;
-                }
-                Err(_) => break,
+            PtyEvent::Output { id } => {
+                self.note_pending_output(id);
+                false
             }
-        }
-        if detached {
-            // The viewed session's client detached or exited. The view keeps the last
-            // frame it drew and NOTHING re-attaches: the re-attach would be a fresh
-            // connection raised by the death of the connection before it, and when the
-            // session is gone every attempt dies the same way, so the chain does not stop
-            // on its own. The user recovers the pane by selecting its card again or
-            // re-scanning. Repaint so the pane shows what it is now.
-            self.dirty = true;
+            PtyEvent::Osc52 { seq } => {
+                Self::emit_osc52(&seq);
+                false
+            }
         }
     }
 
@@ -957,76 +991,30 @@ impl Runtime {
             } => {
                 let hid = host_of_key(&key).to_string();
                 let id = attachment.id();
-                // The key the SELECTION is displayed through, read before the host is
-                // borrowed mutably below. What the terminal view shows is decided by it.
-                let selected_key = display_key(&self.hosts, &self.state.selection);
+                let output_times = attachment.output_times();
+                let hold_for_paint = self.registry.contains(&key);
                 let outcome = match self.hosts.get_mut(&hid) {
                     Some(h) => {
                         tracing::info!(key, seq, id, "attach_ready");
-                        Some(h.display.resolve_ready(&key, seq, id))
+                        Some(h.display.resolve_ready(
+                            &key,
+                            seq,
+                            id,
+                            hold_for_paint,
+                            output_times,
+                            std::time::Instant::now(),
+                        ))
                     }
                     None => None,
                 };
                 match outcome {
                     Some(crate::model::ReadyOutcome::Install { shown }) => {
-                        // Swap: tear down the stale attachment held under this key (the prior
-                        // session, kept on screen until now) and install the fresh one. The
-                        // attach child's own PTY name is read off the attachment first,
-                        // since installing it hands ownership to the registry.
-                        let child_tty = attachment.child_tty().map(str::to_string);
-                        self.registry.remove(&key);
-                        self.registry.insert(&key, attachment);
-                        // xmux's display-client tty, established now that the attach is
-                        // confirmed LIVE (Ready), and recorded ONLY when the attach itself
-                        // proves the identity: a machine that spawns the mux binary
-                        // DIRECTLY puts the mux client in the PTY xmux opened, so that
-                        // PTY's own name IS the client's tty. A client list cannot stand in
-                        // for that proof, because a client the list names may be a separate
-                        // terminal of the user's; a mux that can name no client of its own
-                        // reattaches instead.
-                        if let Some(h) = self.hosts.get_mut(&hid) {
-                            // Identity by ownership: xmux opened this PTY, so no probe and
-                            // no wait for the mux to register a client, and an external
-                            // client sharing the session cannot be mistaken for ours.
-                            if let Some(tty) =
-                                child_tty.filter(|_| !h.transport.runs_through_shell())
-                            {
-                                tracing::info!(host = %hid, tty, "display_tty_from_pty");
-                                h.record_display_tty(Some(tty));
-                            }
-                            // A shell-routed (remote) attach cannot read its client tty from
-                            // the PTY it runs in - a ConPTY consumes the in-band record
-                            // marker before the display pump sees it - so read it back over
-                            // the already-open -CC control connection, but only while it is
-                            // still unknown. The probe is keyed by host AND instance, the
-                            // same key the attach recorded itself under, so what comes back
-                            // is this instance's own display client and never the user's own
-                            // client on the same host. Without the tty the
-                            // client-session-changed follow can never match our display
-                            // client, so a native session switch would not move the nav.
-                            if h.display_tty.0.is_none() && h.transport.runs_through_shell() {
-                                if let Some(client) = self.mgr.get(&hid) {
-                                    client.capture_display_tty(&format!(
-                                        "{hid}-{}",
-                                        self.instance_name
-                                    ));
-                                }
-                            }
-                        }
-                        // Only the attach the SELECTION is displayed through may claim the
-                        // terminal view. A host warms a PTY on a session of its own
-                        // choosing as its inventory arrives (the shared model's `sync`),
-                        // and that attachment earns its place in the registry - it is what
-                        // makes its host instant to reach - but it names a session nobody
-                        // selected, so confirming it would move the view to a host the
-                        // user never asked for. It installs warm and the view stays put.
-                        if key == selected_key {
-                            self.state
-                                .apply(crate::model::Action::ConfirmDisplay(Selection {
-                                    source: hid.clone(),
-                                    session: shown,
-                                }));
-                        }
+                        self.install_attachment(key, attachment, shown);
+                    }
+                    Some(crate::model::ReadyOutcome::Hold { shown, replaced }) => {
+                        let registry_replaced = self.registry.park_pending(&key, attachment);
+                        debug_assert_eq!(replaced, registry_replaced);
+                        tracing::info!(key, id, session = shown, "attach_waiting_for_paint");
                     }
                     // Reaped-race, stale seq, or unknown host: tear the fresh attachment down
                     // (resolve_ready already cleared the bookkeeping for the first two).
@@ -1040,6 +1028,104 @@ impl Runtime {
                 }
                 tracing::warn!(key, error = %message, "attach_failed");
             }
+        }
+    }
+
+    /// Installs one attachment whose display gate has opened and confirms it only when
+    /// its key is the one the current selection renders through.
+    fn install_attachment(
+        &mut self,
+        key: String,
+        attachment: crate::display::attachment::Attachment,
+        shown: String,
+    ) {
+        let selected_key = display_key(&self.hosts, &self.state.selection);
+        let hid = host_of_key(&key).to_string();
+        let child_tty = attachment.child_tty().map(str::to_string);
+        self.registry.remove(&key);
+        self.registry.insert(&key, attachment);
+
+        if let Some(h) = self.hosts.get_mut(&hid) {
+            if let Some(tty) = child_tty.filter(|_| !h.transport.runs_through_shell()) {
+                tracing::info!(host = %hid, tty, "display_tty_from_pty");
+                h.record_display_tty(Some(tty));
+            }
+            if h.display_tty.0.is_none() && h.transport.runs_through_shell() {
+                if let Some(client) = self.mgr.get(&hid) {
+                    client.capture_display_tty(&format!("{hid}-{}", self.instance_name));
+                }
+            }
+        }
+
+        if key == selected_key {
+            self.state
+                .apply(crate::model::Action::ConfirmDisplay(Selection {
+                    source: hid,
+                    session: shown,
+                }));
+        }
+    }
+
+    /// Promotes one parked attachment after its paint gate opens.
+    fn promote_pending(&mut self, pending: crate::model::PendingInstall) -> bool {
+        let Some(attachment) = self.registry.take_pending(&pending.key) else {
+            return false;
+        };
+        if attachment.id() != pending.id {
+            tracing::warn!(
+                key = %pending.key,
+                expected = pending.id,
+                actual = attachment.id(),
+                "pending_attachment_id_mismatch"
+            );
+            attachment.teardown();
+            return false;
+        }
+        tracing::info!(key = %pending.key, id = pending.id, "attach_painted");
+        self.install_attachment(pending.key, attachment, pending.shown);
+        true
+    }
+
+    /// Advances every parked attachment whose settle, hard, or no-output cap elapsed.
+    pub(super) fn promote_due_pending(&mut self, now: std::time::Instant) -> bool {
+        let mut due = Vec::new();
+        for host in self.hosts.iter_mut() {
+            due.extend(host.display.take_due_pending(now));
+        }
+        let mut promoted = false;
+        for pending in due {
+            promoted |= self.promote_pending(pending);
+        }
+        promoted
+    }
+
+    /// Records output timing for a parked attachment without coupling PTY mechanics to
+    /// a mux kind. Output that has not yet left anything visible on the grid records
+    /// nothing, so bytes such as a clear-screen or terminal queries never open the
+    /// paint gate on an empty frame.
+    pub(super) fn note_pending_output(&mut self, id: u64) {
+        let Some(key) = self.registry.pending_address_of_id(id) else {
+            return;
+        };
+        let Some(output_at) = self.registry.pending_last_output(id) else {
+            return;
+        };
+        if let Some(host) = self.hosts.get_mut(host_of_key(&key)) {
+            host.display.note_pending_output(id, output_at);
+        }
+    }
+
+    /// Promotes a parked attachment immediately before applying the normal installed
+    /// attachment exit path. This retires the stale session and leaves the fresh grid,
+    /// even when blank, as the exited session's final frame.
+    fn promote_pending_exit(&mut self, id: u64) {
+        let pending = self
+            .registry
+            .pending_address_of_id(id)
+            .and_then(|key| self.hosts.get_mut(host_of_key(&key)))
+            .and_then(|host| host.display.take_pending_exit(id));
+        if let Some(pending) = pending {
+            self.promote_pending(pending);
         }
     }
 
@@ -1141,6 +1227,7 @@ impl Runtime {
                     width: 80,
                     height: 24,
                 });
+                let nav = self.nav_size();
                 let grid_arc = current_grid(
                     &self.state.displayed,
                     &crate::driver::DriverCtx {
@@ -1153,9 +1240,7 @@ impl Runtime {
                         attach_seq: &mut self.attach_seq,
                         cols: self.cols,
                         body_rows: self.body_rows,
-                        nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                            .with_height(self.nav_height)
-                            .with_position(self.nav_position),
+                        nav,
                     },
                 );
                 let dump = match &grid_arc {
@@ -1236,9 +1321,14 @@ impl Runtime {
                             }
                             self.dirty = true;
                         }
-                    } else if let Some(host) = self.hosts.get(&self.state.displayed.source) {
-                        // Inject into the VISIBLE session (`displayed`), matching the
-                        // interactive keystroke path.
+                    } else {
+                        let nav = self.nav_size();
+                        let Some(host) = self.hosts.get(&self.state.selection.source) else {
+                            return false;
+                        };
+                        // Follow the selected destination, matching the interactive
+                        // keystroke path. While its fresh client is paint-pending, the
+                        // registry routes input there instead of into the stale frame.
                         let mut driver = crate::driver::driver_for(host);
                         let ctx = crate::driver::DriverCtx {
                             registry: &mut self.registry,
@@ -1250,11 +1340,9 @@ impl Runtime {
                             attach_seq: &mut self.attach_seq,
                             cols: self.cols,
                             body_rows: self.body_rows,
-                            nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                                .with_height(self.nav_height)
-                                .with_position(self.nav_position),
+                            nav,
                         };
-                        driver.input(&self.state.displayed, bytes, &ctx);
+                        driver.input(&self.state.selection, bytes, &ctx);
                     }
                 }
             }
@@ -1296,19 +1384,24 @@ impl Runtime {
             // over, so a value left only in its argv would be gone: every later command
             // would reach the machine as whoever runs xmux, which is a different account
             // and a refusal.
-            for_each_source_of(
-                &mut self.hosts,
-                crate::session::machine_of(&source),
-                |host| host.transport.set_login(login.clone()),
-            );
+            self.hosts
+                .for_each_transport_of(crate::session::machine_of(&source), |t| {
+                    t.set_login(login.clone())
+                });
             // The machine the user just authenticated is the one they are waiting on, so
             // hiding stops applying to it: the login it offered no longer blocks, and
             // without this that success is what would take the card off the list.
             self.state
                 .logged_in
                 .insert(crate::session::machine_of(&source).to_string());
+            // A host that serves no source yet has one card, and the answer it now waits
+            // on (which muxes the host serves) is in flight.
+            let machine = crate::session::machine_of(&source);
+            if !self.hosts.serves_any(machine) {
+                self.switcher.mark_scanning(machine, &mut self.state);
+            }
             probe_machine(
-                &source,
+                crate::session::machine_of(&source),
                 &self.hosts,
                 self.mgr.events(),
                 &self.scan_pool,
@@ -1349,6 +1442,7 @@ impl Runtime {
                 }
                 crate::model::Command::Attach(sel) => {
                     let t = std::time::Instant::now();
+                    let nav = self.nav_size();
                     // select_attach picks the host's driver and hands it the intent.
                     let shown = select_attach(
                         &sel,
@@ -1362,21 +1456,18 @@ impl Runtime {
                             attach_seq: &mut self.attach_seq,
                             cols: self.cols,
                             body_rows: self.body_rows,
-                            nav: crate::ui::switcher::NavSize::visible(self.nav_width)
-                                .with_height(self.nav_height)
-                                .with_position(self.nav_position),
+                            nav,
                         },
                     );
                     if shown {
                         // Advance the display truth synchronously ONLY for a confirmed
                         // in-place path: a live grid for the key exists AND no reattach
                         // is in flight. A pending reattach KEEPS the prior session's grid
-                        // (stale-while-revalidate) until DisplayReady swaps it in.
+                        // (stale-while-revalidate) until the paint gate swaps it in.
                         let k = display_key(&self.hosts, &sel);
-                        let reattach_pending = self
-                            .hosts
-                            .get(&sel.source)
-                            .is_some_and(|h| h.display.in_flight_contains(&k));
+                        let reattach_pending = self.hosts.get(&sel.source).is_some_and(|h| {
+                            h.display.in_flight_contains(&k) || h.display.pending_paint_contains(&k)
+                        });
                         if self.registry.contains(&k) && !reattach_pending {
                             self.state
                                 .apply(crate::model::Action::ConfirmDisplay(sel.clone()));
@@ -1461,7 +1552,7 @@ impl Runtime {
     /// by answering, not by being named here.
     ///
     /// The read is REFUSED while a reattach is in flight for the display key. The stale
-    /// client is deliberately kept on screen until the fresh one is ready, and it is still
+    /// client is deliberately kept on screen until the fresh one paints, and it is still
     /// sitting on the session the selection just left - reading it then would report the
     /// old session as where the display is and send the reconcile chasing a client that is
     /// already on its way somewhere else.
@@ -1492,7 +1583,7 @@ impl Runtime {
             return false;
         };
         let key = host_selection_key(host);
-        if host.display.in_flight_contains(&key) {
+        if host.display.in_flight_contains(&key) || host.display.pending_paint_contains(&key) {
             return false;
         }
         let Some(session) = crate::driver::live_client_session(host, &self.registry) else {
@@ -1516,6 +1607,9 @@ impl Runtime {
     /// control clients, force a full repaint), read xmux's own display client for a
     /// mux-side session change, and refresh the connecting-spinner set.
     pub(super) fn on_tick(&mut self, term: &mut Term) {
+        if self.promote_due_pending(std::time::Instant::now()) {
+            self.dirty = true;
+        }
         // Resize detection: poll the console size (an ioctl, not a stdin read).
         if let Ok((c, r)) = ratatui::crossterm::terminal::size() {
             if (c, r) != (self.cols, self.body_rows + 1) {
@@ -1600,43 +1694,6 @@ impl Runtime {
     }
 }
 
-/// How xmux reaches `s`, reduced to the words the unreachable screen prints.
-///
-/// The reduction happens HERE, at the wiring, for the reason the roster providers are
-/// reduced here: the screen prints these and branches on none of them, so the UI layer
-/// never learns what a machine kind or a mux binary is. Each field comes from the one
-/// place that owns it - the machine describes its own addressing, the host composes its
-/// own listing command - rather than being re-derived from a source id.
-/// This machine's own account name, which is the login ssh falls back to when nothing
-/// names another. Empty when the environment says nothing, and then the login pane's
-/// username simply starts blank rather than carrying a guess.
-/// Applies `f` to every source the `machine` serves.
-///
-/// What a probe or a login learns is the MACHINE's, not one source's: the shell family
-/// that answered and the values that authenticated hold for every mux on that box. A
-/// fact recorded on only the source that happened to carry the round trip would leave
-/// its siblings composing commands from what they were built with, so the next command
-/// out of a different source would go wrong for a reason nothing on screen explains.
-fn for_each_source_of(
-    hosts: &mut crate::model::Hosts,
-    machine: &str,
-    mut f: impl FnMut(&mut crate::model::Host),
-) {
-    // The ids are taken first: naming the sources borrows the roster, and reaching into
-    // one to change it borrows it again.
-    let served: Vec<String> = hosts
-        .ids()
-        .iter()
-        .filter(|id| crate::session::machine_of(id) == machine)
-        .cloned()
-        .collect();
-    for id in served {
-        if let Some(host) = hosts.get_mut(&id) {
-            f(host);
-        }
-    }
-}
-
 /// The last line the attachment `id`'s pane holds, or a placeholder when there is none.
 ///
 /// Read BEFORE the attachment is reaped: the reap drops the grid, and the grid is the only
@@ -1653,12 +1710,69 @@ fn last_pane_line(registry: &crate::display::registry::AttachRegistry, id: u64) 
         .unwrap_or_else(|| "(blank)".to_string())
 }
 
+/// This machine's own account name, which is the login ssh falls back to when nothing
+/// names another. Empty when the environment says nothing, and then the login pane's
+/// username simply starts blank rather than carrying a guess.
 fn local_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_default()
 }
 
+/// How xmux reaches every card: each source, and each host that serves no source yet.
+/// A host's entry names the machine and its reachability probe, and no mux, because
+/// none has answered for it.
+fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::ui::chrome::SourceReach> {
+    let sources = env.source_list();
+    let mut reach: std::collections::HashMap<String, crate::ui::chrome::SourceReach> = sources
+        .iter()
+        .map(|s| (s.alias.clone(), source_reach(s)))
+        .collect();
+    let roster = env.roster();
+    for machine in roster
+        .cfg
+        .auto_hosts(&roster.ssh_aliases, &roster.wsl_distros)
+    {
+        if sources
+            .iter()
+            .any(|s| crate::session::machine_of(&s.alias) == machine)
+        {
+            continue;
+        }
+        let kind = crate::transport::kind_for(
+            &machine,
+            machine.clone(),
+            std::env::consts::OS,
+            &env.xmux_dir,
+            None,
+        );
+        let addressed = kind.addressed_as();
+        let socket = kind.socket_path();
+        let probe = kind
+            .transport()
+            .raw_shell_argv(crate::transport::vocab::SHELL_PROBE)
+            .map(|argv| shell_line(&argv))
+            .unwrap_or_default();
+        reach.insert(
+            machine,
+            crate::ui::chrome::SourceReach {
+                probe,
+                machine: addressed,
+                socket,
+                ..Default::default()
+            },
+        );
+    }
+    reach
+}
+
+/// How xmux reaches `s`, reduced to the words the unreachable screen prints.
+///
+/// The reduction happens HERE, at the wiring, for the reason the roster providers are
+/// reduced here: the screen prints these and branches on none of them, so the UI layer
+/// never learns what a machine kind or a mux binary is. Each field comes from the one
+/// place that owns it - the machine describes its own addressing, the host composes its
+/// own listing command - rather than being re-derived from a source id.
 pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrome::SourceReach {
     crate::ui::chrome::SourceReach {
         probe: shell_line(&s.host().list_sessions_command()),

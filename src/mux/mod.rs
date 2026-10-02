@@ -22,14 +22,16 @@ mod control;
 mod psmux;
 mod screen;
 mod tmux;
+mod tuios;
 pub mod vocab;
 mod zellij;
 
 pub use abduco::{Abduco, AbducoDriver};
-pub use control::{ControlProtocol, Line, Notif};
+pub use control::{ControlProtocol, DisplayTtyRead, Line, Notif};
 pub use psmux::Psmux;
 pub use screen::Screen;
 pub use tmux::{Tmux, TmuxControl};
+pub use tuios::{Tuios, TuiosDriver};
 pub use zellij::Zellij;
 // Re-export the pure mux builders at the crate::mux root so `crate::mux::<fn>`
 // call sites resolve unchanged whether the item is the Mux trait/factory or a
@@ -379,6 +381,10 @@ fn known_muxes() -> &'static [MuxKind] {
             name: "screen",
             make: |bin| Box::new(Screen { bin }),
         },
+        MuxKind {
+            name: "tuios",
+            make: |bin| Box::new(Tuios { bin }),
+        },
     ]
 }
 
@@ -418,6 +424,17 @@ const DETECT_TIMEOUT_REMOTE: std::time::Duration = std::time::Duration::from_sec
 /// help. No classification reads ANOTHER mux's name as its own identity, and the one
 /// name a stage may drop is one that stage itself has a reason to skip.
 pub async fn installed_muxes(transport: &dyn Transport, runner: &dyn Runner) -> Vec<String> {
+    host_muxes(transport, runner).await.unwrap_or_default()
+}
+
+/// [`installed_muxes`], telling a machine that answered apart from one that could not be
+/// asked: `Err` carries the first failure when not one probe reached the machine (the
+/// connection itself failed or never answered), so an empty `Ok` means the machine
+/// answered and no candidate is installed there.
+pub async fn host_muxes(
+    transport: &dyn Transport,
+    runner: &dyn Runner,
+) -> Result<Vec<String>, String> {
     // Ask the candidates ONE AT A TIME. Each candidate is one or more commands, and on a
     // remote machine each command is its own connection, so asking them together opens a
     // handful of connections to one machine in the same instant. An ssh server counts the
@@ -437,18 +454,35 @@ pub async fn installed_muxes(transport: &dyn Transport, runner: &dyn Runner) -> 
         DETECT_TIMEOUT
     };
     let mut found = Vec::new();
+    let mut reached = false;
+    let mut first_err: Option<String> = None;
     for name in names {
         let Some(mux) = for_binary(name) else {
             continue;
         };
         let probe = probe_identity(transport, mux.as_ref(), runner);
-        if let Ok((Some(kind), _)) = tokio::time::timeout(budget, probe).await {
-            if kind == name {
-                found.push(name.to_string());
+        match tokio::time::timeout(budget, probe).await {
+            Ok(answer) => {
+                reached |= answer.reached;
+                if answer.kind == Some(name) {
+                    found.push(name.to_string());
+                }
+                if first_err.is_none() {
+                    first_err = answer.err;
+                }
+            }
+            Err(_) => {
+                if first_err.is_none() {
+                    first_err = Some(format!("{name} did not answer within {budget:?}"));
+                }
             }
         }
     }
-    found
+    if reached || !found.is_empty() {
+        Ok(found)
+    } else {
+        Err(first_err.unwrap_or_else(|| "no probe reached the machine".to_string()))
+    }
 }
 
 /// The mux whose name `text` contains, in registry order. `skip` drops one kind's
@@ -504,6 +538,21 @@ pub fn is_recognized(name: &str) -> bool {
     known_muxes().iter().any(|k| k.name == name)
 }
 
+/// What one mux's identity probes read on a machine.
+struct IdentityAnswer {
+    /// The mux the answers name, if any.
+    kind: Option<&'static str>,
+    /// The first probe error, kept only when nothing identified the mux.
+    err: Option<String>,
+    /// Whether any probe reached the machine: its command ran there, whatever it said. A
+    /// command that is not installed still reaches it; ssh failing to connect does not.
+    reached: bool,
+}
+
+/// The exit status ssh reserves for its own failure (it could not connect or
+/// authenticate), as opposed to the remote command's.
+const SSH_OWN_FAILURE: i32 = 255;
+
 /// Runs the mux's own identity probes over `transport` and reads the answers. Each
 /// argv is one probe run; a probe that errors (an absent command, a rejected flag, an
 /// unreachable host) collects `None`, and the outputs aligned with
@@ -515,14 +564,19 @@ async fn probe_identity(
     transport: &dyn Transport,
     mux: &dyn Mux,
     runner: &dyn Runner,
-) -> (Option<&'static str>, Option<String>) {
+) -> IdentityAnswer {
     let mut outs: Vec<Option<String>> = Vec::new();
     let mut first_err: Option<String> = None;
+    let mut reached = false;
     for argv in mux.identity_probes() {
         let (name, args) = transport.exec_argv(false, &argv);
         match runner.run(&name, &args).await {
-            Ok(out) => outs.push(Some(String::from_utf8_lossy(&out).to_lowercase())),
+            Ok(out) => {
+                reached = true;
+                outs.push(Some(String::from_utf8_lossy(&out).to_lowercase()));
+            }
             Err(e) => {
+                reached |= matches!(e, RunError::Exit { code, .. } if code != SSH_OWN_FAILURE);
                 if first_err.is_none() {
                     first_err = Some(e.to_string());
                 }
@@ -533,7 +587,11 @@ async fn probe_identity(
     let kind = mux.classify_identity(&outs);
     // The error matters only when nothing identified the mux: a resolved kind is a
     // detection success, and its error was just one probe that failed along the way.
-    (kind, if kind.is_none() { first_err } else { None })
+    IdentityAnswer {
+        kind,
+        err: if kind.is_none() { first_err } else { None },
+        reached,
+    }
 }
 
 /// Probes a server's true identity over `transport`, independent of its binary name
@@ -555,10 +613,10 @@ pub async fn detect_backend(
     let Some(mux) = for_binary(bin) else {
         return (None, None);
     };
-    let (kind, err) = probe_identity(transport, mux.as_ref(), runner).await;
-    match kind {
+    let answer = probe_identity(transport, mux.as_ref(), runner).await;
+    match answer.kind {
         Some(kind) => (for_kind(kind, bin), None),
-        None => (None, err),
+        None => (None, answer.err),
     }
 }
 
@@ -879,7 +937,10 @@ mod tests {
         // The candidate set IS the supported set, so discovery can never turn up a name
         // xmux has no implementation for: every candidate resolves to a mux of its own kind.
         let names = supported_muxes();
-        assert_eq!(names, vec!["tmux", "abduco", "psmux", "zellij", "screen"]);
+        assert_eq!(
+            names,
+            vec!["tmux", "abduco", "psmux", "zellij", "screen", "tuios"]
+        );
         for name in names {
             assert_eq!(
                 for_binary(name).unwrap().kind(),
@@ -926,6 +987,34 @@ mod tests {
         assert_eq!(
             installed_muxes(&t, &MachineWith::new(&["tmux", "psmux"])).await,
             vec!["tmux", "psmux"]
+        );
+    }
+
+    /// Every command exits with `code` and says nothing.
+    struct ExitsWith(i32);
+
+    #[async_trait]
+    impl Runner for ExitsWith {
+        async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+            Err(RunError::Exit {
+                stderr: format!("exit {}", self.0),
+                code: self.0,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_machine_that_answers_with_no_mux_is_told_from_one_never_reached() {
+        // A command that is not installed still ran on the machine, so the machine
+        // answered: nothing is installed. ssh's own failure means no command ran, which
+        // says nothing about what is installed.
+        let t = crate::transport::ssh("win".into(), String::new(), "windows".into());
+        assert_eq!(host_muxes(&t, &ExitsWith(127)).await, Ok(Vec::new()));
+        let err = host_muxes(&t, &ExitsWith(255)).await.unwrap_err();
+        assert!(err.contains("exit 255"), "the reason is ssh's own: {err}");
+        assert!(
+            installed_muxes(&t, &ExitsWith(255)).await.is_empty(),
+            "and the list form reads either as nothing installed"
         );
     }
 
@@ -1115,6 +1204,34 @@ Usage: zellij [OPTIONS]",
         assert_eq!(got.kind(), "abduco");
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(got.attach_plan("api"), argv(&["abduco", "-a", "api"]));
+    }
+
+    #[tokio::test]
+    async fn detect_backend_classifies_tuios_by_version_marker() {
+        let transport = crate::transport::local(None);
+        let runner =
+            ProbeRunner::new(None, None).low_version(Some("tuios version 0.8.4 [pure-Go backend]"));
+        let got = detect_backend(&transport, "tuios", &runner)
+            .await
+            .0
+            .unwrap();
+        assert_eq!(got.kind(), "tuios");
+        assert_eq!(got.server_model(), ServerModel::PerSession);
+        assert_eq!(got.attach_plan("api"), argv(&["tuios", "attach", "api"]));
+    }
+
+    #[test]
+    fn no_other_mux_claims_tuios_output_as_its_own_identity() {
+        let output = "tuios version 0.8.4 [pure-go backend]";
+        for kind in ["tmux", "abduco", "psmux", "zellij", "screen"] {
+            let mux = for_binary(kind).unwrap();
+            let outputs = mux
+                .identity_probes()
+                .iter()
+                .map(|_| Some(output.to_string()))
+                .collect::<Vec<_>>();
+            assert_ne!(mux.classify_identity(&outputs), Some(kind), "{kind}");
+        }
     }
 
     #[tokio::test]

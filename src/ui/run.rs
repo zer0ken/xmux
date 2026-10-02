@@ -300,7 +300,7 @@ mod tests {
         let out = dump_switcher(&mut sw, &state, 100, 30);
         assert!(out.contains("editor"));
         // The dump renders the full screen (tree + hint bar); at rest the bar shows the
-        // prefix alone, which is the one thing always present.
+        // prefix and collapse button.
         assert!(out.contains("C-g"), "hint bar prefix present:\n{out}");
     }
 

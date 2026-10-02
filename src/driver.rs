@@ -67,9 +67,9 @@ pub struct DriverCtx<'a> {
     pub attach_seq: &'a mut u64,
     pub cols: u16,
     pub body_rows: u16,
-    /// The nav's live size (the width the user set, the width on screen, the `Top` band
-    /// height), so the driver sizes the PTY to the same terminal region the renderer
-    /// draws, in either layout.
+    /// The nav's live size (the width the user set, the width on screen, the band's
+    /// height, the attachment side, and the collapsed state), so the driver sizes the PTY
+    /// to the same terminal region the renderer draws.
     pub nav: crate::ui::switcher::NavSize,
 }
 
@@ -251,7 +251,7 @@ pub(crate) mod tests {
     /// answers, so the two conditions are independent and both are load-bearing.
     #[test]
     fn a_mux_that_names_no_variable_has_no_client_to_read() {
-        for bin in ["tmux", "abduco", "screen"] {
+        for bin in ["tmux", "abduco", "screen", "tuios"] {
             let host = crate::model::Host::new(
                 crate::transport::local(None),
                 crate::mux::for_binary(bin).unwrap(),
@@ -298,10 +298,15 @@ pub(crate) mod tests {
         let _p: Box<dyn MuxDriver> = driver_for(&psmux_host);
         let z: Box<dyn MuxDriver> = driver_for(&zellij_host);
         assert_eq!(z.kind(), "zellij", "each mux constructs its own driver");
+        let tuios_host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("tuios").unwrap(),
+        );
+        assert_eq!(driver_for(&tuios_host).kind(), "tuios");
     }
 
     /// The decision is a Mux method, not a `match` in the app: a Shared host is
-    /// driven by the tmux driver, a PerSession host by the psmux driver. This is
+    /// driven by the tmux driver, a PerSession host by its mux-specific driver. This is
     /// `driver_for` delegating to `host.mux.driver()` — each mux builds its own.
     #[test]
     fn driver_for_picks_the_mux_specific_driver_by_backend() {
@@ -317,78 +322,78 @@ pub(crate) mod tests {
         assert_eq!(driver_for(&psmux_host).kind(), "psmux");
     }
 
-    /// Through the driver boundary, a psmux selection REPLACES the single host-keyed
+    /// Through the driver boundary, a per-session mux selection REPLACES the host-keyed
     /// display attachment (the per-session reattach). This pins the seam by its observable
     /// effect rather than by which helper carries it out, because a per-session mux reaches
     /// another session only by reattaching, whatever owns the decision. Headless: a fake
-    /// spawner, no live psmux.
+    /// spawner, no live mux.
     #[tokio::test(flavor = "current_thread")]
-    async fn seam_show_replaces_the_psmux_display_attachment() {
-        let mut hosts = crate::model::Hosts::default();
-        hosts.insert(crate::model::Host::new(
-            crate::transport::local(None),
-            crate::mux::for_binary("psmux").unwrap(),
-        ));
-        // A stale attachment + bookkeeping for a different session: show() must drop it
-        // and reattach for the selected session (psmux is one PTY per host, reattached).
-        hosts
-            .get_mut("local")
-            .unwrap()
-            .display
-            .set_shows("local", "old");
+    async fn seam_show_replaces_per_session_display_attachments() {
+        for bin in ["psmux", "tuios"] {
+            let mut hosts = crate::model::Hosts::default();
+            hosts.insert(crate::model::Host::new(
+                crate::transport::local(None),
+                crate::mux::for_binary(bin).unwrap(),
+            ));
+            // A stale attachment + bookkeeping for a different session: show() must
+            // reattach for the selection while retaining the old frame until painted.
+            hosts
+                .get_mut("local")
+                .unwrap()
+                .display
+                .set_shows("local", "old");
 
-        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
-        let worker = crate::display::DisplayWorker::with_spawner(
-            ptx,
-            Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
-                Ok(crate::display::attachment::fake_attachment(id))
-            }),
-        );
-        let mut registry = AttachRegistry::new();
-        registry.insert("local", crate::display::attachment::fake_attachment(99));
-        let mut attach_seq = 0u64;
-        let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+            let worker = crate::display::DisplayWorker::with_spawner(
+                ptx,
+                Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
+                    Ok(crate::display::attachment::fake_attachment(id))
+                }),
+            );
+            let mut registry = AttachRegistry::new();
+            registry.insert("local", crate::display::attachment::fake_attachment(99));
+            let mut attach_seq = 0u64;
+            let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let sel = Selection {
-            source: "local".into(),
-            session: "target".into(),
-        };
-
-        // Through the Mux dispatch (driver_for → host.mux.driver()) + the concrete
-        // driver — the same path the app takes — so this pins the whole boundary.
-        let mut driver = driver_for(hosts.get("local").unwrap());
-        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
-        let shown = {
-            let mut ctx = DriverCtx {
-                registry: &mut registry,
-                hosts: &mut hosts,
-                instance_name: "test",
-                mgr: &mgr,
-                worker: &worker,
-                pty_tx: &cap_tx,
-                attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            let sel = Selection {
+                source: "local".into(),
+                session: "target".into(),
             };
-            driver.show(&sel, &mut ctx)
-        };
 
-        assert!(shown, "a selection with a session has something to show");
-        let h = hosts.get("local").unwrap();
-        assert_eq!(
-            h.display.shows("local"),
-            Some("target"),
-            "show records the newly-selected session on the host key"
-        );
-        assert!(
-            h.display.in_flight_contains("local"),
-            "show requests a fresh per-session reattach"
-        );
-        assert!(
-            registry.contains("local"),
-            "the stale attachment is HELD (kept on screen) while the fresh reattach is \
-             requested; the swap + teardown happens at DisplayReady (stale-while-revalidate)"
-        );
+            // Through the Mux dispatch and concrete driver, as in the app.
+            let mut driver = driver_for(hosts.get("local").unwrap());
+            let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
+            let shown = {
+                let mut ctx = DriverCtx {
+                    registry: &mut registry,
+                    hosts: &mut hosts,
+                    instance_name: "test",
+                    mgr: &mgr,
+                    worker: &worker,
+                    pty_tx: &cap_tx,
+                    attach_seq: &mut attach_seq,
+                    cols: 80,
+                    body_rows: 24,
+                    nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                };
+                driver.show(&sel, &mut ctx)
+            };
+
+            assert!(shown, "{bin}: a session selection has something to show");
+            let h = hosts.get("local").unwrap();
+            assert_eq!(
+                h.display.shows("local"),
+                Some("target"),
+                "{bin}: show records the selected session on the host key"
+            );
+            assert!(
+                h.display.in_flight_contains("local"),
+                "{bin}: show requests a fresh per-session reattach"
+            );
+            assert!(
+                registry.contains("local"),
+                "{bin}: the stale attachment remains until the fresh one is painted"
+            );
+        }
     }
 }
