@@ -132,9 +132,12 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B2** - Render-first: the source skeleton paints instantly; each source's
   sessions stream in independently.
 - **FR-B3** - The terminal view shows the confirmed session's live grid and follows
-  the cursor. A switch keeps the prior grid on screen until the new one is ready
-  (stale-while-revalidate); only the first launch, before any grid exists, shows a
-  blank view. An attachment a host warms on a session of its own choosing is kept
+  the cursor. A switch keeps the prior grid on screen until the fresh attachment
+  shows a visible frame and its output then settles for 50 ms, continuous output after
+  that frame reaches 400 ms, or 3 s pass without a visible frame
+  (stale-while-revalidate). Input targets the fresh attachment during that wait, and
+  resize reaches both attachments. Only the first launch, before any grid exists, shows
+  a blank view. An attachment a host warms on a session of its own choosing is kept
   live, because that is what makes its host instant to reach, but it is never
   confirmed and so cannot take the view. Whenever the confirmed session is not the
   one the cursor names, the view is carried back to the cursor for as long as the two
@@ -466,8 +469,10 @@ no function, and no test, so renaming code is never a documentation change.
   attach is debounced so rapid navigation does not storm.
 - **FR-C2** - A cross-host pick switches entirely in process, with no picker and no
   detach between. Each source keeps its own live PTY attachment; the target
-  source's driver takes over, the previously shown session stays on screen until the fresh grid is ready
-  (stale-while-revalidate), and the canonical selection is synced immediately.
+  source's driver takes over, the previously shown session stays on screen until the
+  fresh attachment has painted or reaches its bounded wait (stale-while-revalidate),
+  input already targets the fresh attachment, and the canonical selection is synced
+  immediately.
 - **FR-C3** - Source degradation is graceful, never a silent loss: an unreachable source
   is marked `⚠ unreachable`, and its view screen states everything known about the
   failure rather than leaving the user with a message alone - the reason its transport

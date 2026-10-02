@@ -783,7 +783,7 @@ impl Runtime {
         // cannot flood the terminal.
         if self.dirty && self.last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
             // Render the CONFIRMED display truth (`displayed`), not the selection: the prior
-            // session stays on screen until the new one is ready (stale-while-revalidate).
+            // session stays on screen until the fresh one paints (stale-while-revalidate).
             let nav = self.nav_size();
             let grid_arc = current_grid(
                 &self.state.displayed,
@@ -903,8 +903,35 @@ impl Runtime {
         ev: PtyEvent,
         pty_rx: &mut tokio::sync::mpsc::UnboundedReceiver<PtyEvent>,
     ) {
-        // Capture the viewed attach id BEFORE any reap removes it; a background session
-        // dropping (nav focus, or a non-displayed attach) is just reaped.
+        let mut detached = self.handle_one_pty_event(ev);
+        let mut budget = EVENT_DRAIN_BUDGET;
+        while budget > 0 {
+            match pty_rx.try_recv() {
+                Ok(ev) => {
+                    detached |= self.handle_one_pty_event(ev);
+                    budget -= 1;
+                }
+                Err(_) => break,
+            }
+        }
+        if detached {
+            // The viewed session's client detached or exited. The view keeps the last
+            // frame it drew and NOTHING re-attaches: the re-attach would be a fresh
+            // connection raised by the death of the connection before it, and when the
+            // session is gone every attempt dies the same way, so the chain does not stop
+            // on its own. The user recovers the pane by selecting its card again or
+            // re-scanning. Repaint so the pane shows what it is now.
+            self.dirty = true;
+        }
+    }
+
+    /// Applies one PTY event. Returns whether the displayed attachment exited.
+    fn handle_one_pty_event(&mut self, ev: PtyEvent) -> bool {
+        if let PtyEvent::Exited { id } = &ev {
+            self.promote_pending_exit(*id);
+        }
+        // Capture the viewed attach id after a pending exit is promoted but before reap
+        // removes it. A background attachment dropping is just reaped.
         let displayed_attach_id = (self.state.focus.is_terminal_focused()
             && !self.state.selection.is_empty())
         .then(|| {
@@ -913,12 +940,8 @@ impl Runtime {
                 .map(|a| a.id())
         })
         .flatten();
-        let mut detached = false;
         match ev {
             PtyEvent::Exited { id } => {
-                if Some(id) == displayed_attach_id {
-                    detached = true;
-                }
                 // Read before the reap: the reap drops the grid the reason is written on.
                 let last = last_pane_line(&self.registry, id);
                 clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
@@ -936,54 +959,20 @@ impl Runtime {
                     // from a reattach decision gone wrong.
                     tracing::info!(id, established = true, last = %last, "attach_exited");
                 }
+                Some(id) == displayed_attach_id
             }
             PtyEvent::DisplayTty { id, tty } => {
-                record_display_tty(&mut self.hosts, &self.registry, id, tty)
+                record_display_tty(&mut self.hosts, &self.registry, id, tty);
+                false
             }
-            PtyEvent::Output { .. } => {}
-            PtyEvent::Osc52 { seq } => Self::emit_osc52(&seq),
-        }
-        let mut budget = EVENT_DRAIN_BUDGET;
-        while budget > 0 {
-            match pty_rx.try_recv() {
-                Ok(PtyEvent::Exited { id }) => {
-                    if Some(id) == displayed_attach_id {
-                        detached = true;
-                    }
-                    let last = last_pane_line(&self.registry, id);
-                    clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
-                    if !self.registry.reap(id) {
-                        self.hosts
-                            .iter_mut()
-                            .any(|h| h.display.mark_reaped_if_pending(id));
-                        tracing::info!(id, established = false, last = %last, "attach_exited");
-                    } else {
-                        tracing::info!(id, established = true, last = %last, "attach_exited");
-                    }
-                    budget -= 1;
-                }
-                Ok(PtyEvent::Output { .. }) => {
-                    budget -= 1;
-                }
-                Ok(PtyEvent::DisplayTty { id, tty }) => {
-                    record_display_tty(&mut self.hosts, &self.registry, id, tty);
-                    budget -= 1;
-                }
-                Ok(PtyEvent::Osc52 { seq }) => {
-                    Self::emit_osc52(&seq);
-                    budget -= 1;
-                }
-                Err(_) => break,
+            PtyEvent::Output { id } => {
+                self.note_pending_output(id);
+                false
             }
-        }
-        if detached {
-            // The viewed session's client detached or exited. The view keeps the last
-            // frame it drew and NOTHING re-attaches: the re-attach would be a fresh
-            // connection raised by the death of the connection before it, and when the
-            // session is gone every attempt dies the same way, so the chain does not stop
-            // on its own. The user recovers the pane by selecting its card again or
-            // re-scanning. Repaint so the pane shows what it is now.
-            self.dirty = true;
+            PtyEvent::Osc52 { seq } => {
+                Self::emit_osc52(&seq);
+                false
+            }
         }
     }
 
@@ -998,76 +987,30 @@ impl Runtime {
             } => {
                 let hid = host_of_key(&key).to_string();
                 let id = attachment.id();
-                // The key the SELECTION is displayed through, read before the host is
-                // borrowed mutably below. What the terminal view shows is decided by it.
-                let selected_key = display_key(&self.hosts, &self.state.selection);
+                let output_times = attachment.output_times();
+                let hold_for_paint = self.registry.contains(&key);
                 let outcome = match self.hosts.get_mut(&hid) {
                     Some(h) => {
                         tracing::info!(key, seq, id, "attach_ready");
-                        Some(h.display.resolve_ready(&key, seq, id))
+                        Some(h.display.resolve_ready(
+                            &key,
+                            seq,
+                            id,
+                            hold_for_paint,
+                            output_times,
+                            std::time::Instant::now(),
+                        ))
                     }
                     None => None,
                 };
                 match outcome {
                     Some(crate::model::ReadyOutcome::Install { shown }) => {
-                        // Swap: tear down the stale attachment held under this key (the prior
-                        // session, kept on screen until now) and install the fresh one. The
-                        // attach child's own PTY name is read off the attachment first,
-                        // since installing it hands ownership to the registry.
-                        let child_tty = attachment.child_tty().map(str::to_string);
-                        self.registry.remove(&key);
-                        self.registry.insert(&key, attachment);
-                        // xmux's display-client tty, established now that the attach is
-                        // confirmed LIVE (Ready), and recorded ONLY when the attach itself
-                        // proves the identity: a machine that spawns the mux binary
-                        // DIRECTLY puts the mux client in the PTY xmux opened, so that
-                        // PTY's own name IS the client's tty. A client list cannot stand in
-                        // for that proof, because a client the list names may be a separate
-                        // terminal of the user's; a mux that can name no client of its own
-                        // reattaches instead.
-                        if let Some(h) = self.hosts.get_mut(&hid) {
-                            // Identity by ownership: xmux opened this PTY, so no probe and
-                            // no wait for the mux to register a client, and an external
-                            // client sharing the session cannot be mistaken for ours.
-                            if let Some(tty) =
-                                child_tty.filter(|_| !h.transport.runs_through_shell())
-                            {
-                                tracing::info!(host = %hid, tty, "display_tty_from_pty");
-                                h.record_display_tty(Some(tty));
-                            }
-                            // A shell-routed (remote) attach cannot read its client tty from
-                            // the PTY it runs in - a ConPTY consumes the in-band record
-                            // marker before the display pump sees it - so read it back over
-                            // the already-open -CC control connection, but only while it is
-                            // still unknown. The probe is keyed by host AND instance, the
-                            // same key the attach recorded itself under, so what comes back
-                            // is this instance's own display client and never the user's own
-                            // client on the same host. Without the tty the
-                            // client-session-changed follow can never match our display
-                            // client, so a native session switch would not move the nav.
-                            if h.display_tty.0.is_none() && h.transport.runs_through_shell() {
-                                if let Some(client) = self.mgr.get(&hid) {
-                                    client.capture_display_tty(&format!(
-                                        "{hid}-{}",
-                                        self.instance_name
-                                    ));
-                                }
-                            }
-                        }
-                        // Only the attach the SELECTION is displayed through may claim the
-                        // terminal view. A host warms a PTY on a session of its own
-                        // choosing as its inventory arrives (the shared model's `sync`),
-                        // and that attachment earns its place in the registry - it is what
-                        // makes its host instant to reach - but it names a session nobody
-                        // selected, so confirming it would move the view to a host the
-                        // user never asked for. It installs warm and the view stays put.
-                        if key == selected_key {
-                            self.state
-                                .apply(crate::model::Action::ConfirmDisplay(Selection {
-                                    source: hid.clone(),
-                                    session: shown,
-                                }));
-                        }
+                        self.install_attachment(key, attachment, shown);
+                    }
+                    Some(crate::model::ReadyOutcome::Hold { shown, replaced }) => {
+                        let registry_replaced = self.registry.park_pending(&key, attachment);
+                        debug_assert_eq!(replaced, registry_replaced);
+                        tracing::info!(key, id, session = shown, "attach_waiting_for_paint");
                     }
                     // Reaped-race, stale seq, or unknown host: tear the fresh attachment down
                     // (resolve_ready already cleared the bookkeeping for the first two).
@@ -1081,6 +1024,104 @@ impl Runtime {
                 }
                 tracing::warn!(key, error = %message, "attach_failed");
             }
+        }
+    }
+
+    /// Installs one attachment whose display gate has opened and confirms it only when
+    /// its key is the one the current selection renders through.
+    fn install_attachment(
+        &mut self,
+        key: String,
+        attachment: crate::display::attachment::Attachment,
+        shown: String,
+    ) {
+        let selected_key = display_key(&self.hosts, &self.state.selection);
+        let hid = host_of_key(&key).to_string();
+        let child_tty = attachment.child_tty().map(str::to_string);
+        self.registry.remove(&key);
+        self.registry.insert(&key, attachment);
+
+        if let Some(h) = self.hosts.get_mut(&hid) {
+            if let Some(tty) = child_tty.filter(|_| !h.transport.runs_through_shell()) {
+                tracing::info!(host = %hid, tty, "display_tty_from_pty");
+                h.record_display_tty(Some(tty));
+            }
+            if h.display_tty.0.is_none() && h.transport.runs_through_shell() {
+                if let Some(client) = self.mgr.get(&hid) {
+                    client.capture_display_tty(&format!("{hid}-{}", self.instance_name));
+                }
+            }
+        }
+
+        if key == selected_key {
+            self.state
+                .apply(crate::model::Action::ConfirmDisplay(Selection {
+                    source: hid,
+                    session: shown,
+                }));
+        }
+    }
+
+    /// Promotes one parked attachment after its paint gate opens.
+    fn promote_pending(&mut self, pending: crate::model::PendingInstall) -> bool {
+        let Some(attachment) = self.registry.take_pending(&pending.key) else {
+            return false;
+        };
+        if attachment.id() != pending.id {
+            tracing::warn!(
+                key = %pending.key,
+                expected = pending.id,
+                actual = attachment.id(),
+                "pending_attachment_id_mismatch"
+            );
+            attachment.teardown();
+            return false;
+        }
+        tracing::info!(key = %pending.key, id = pending.id, "attach_painted");
+        self.install_attachment(pending.key, attachment, pending.shown);
+        true
+    }
+
+    /// Advances every parked attachment whose settle, hard, or no-output cap elapsed.
+    pub(super) fn promote_due_pending(&mut self, now: std::time::Instant) -> bool {
+        let mut due = Vec::new();
+        for host in self.hosts.iter_mut() {
+            due.extend(host.display.take_due_pending(now));
+        }
+        let mut promoted = false;
+        for pending in due {
+            promoted |= self.promote_pending(pending);
+        }
+        promoted
+    }
+
+    /// Records output timing for a parked attachment without coupling PTY mechanics to
+    /// a mux kind. Output that has not yet left anything visible on the grid records
+    /// nothing, so bytes such as a clear-screen or terminal queries never open the
+    /// paint gate on an empty frame.
+    pub(super) fn note_pending_output(&mut self, id: u64) {
+        let Some(key) = self.registry.pending_address_of_id(id) else {
+            return;
+        };
+        let Some(output_at) = self.registry.pending_last_output(id) else {
+            return;
+        };
+        if let Some(host) = self.hosts.get_mut(host_of_key(&key)) {
+            host.display.note_pending_output(id, output_at);
+        }
+    }
+
+    /// Promotes a parked attachment immediately before applying the normal installed
+    /// attachment exit path. This retires the stale session and leaves the fresh grid,
+    /// even when blank, as the exited session's final frame.
+    fn promote_pending_exit(&mut self, id: u64) {
+        let pending = self
+            .registry
+            .pending_address_of_id(id)
+            .and_then(|key| self.hosts.get_mut(host_of_key(&key)))
+            .and_then(|host| host.display.take_pending_exit(id));
+        if let Some(pending) = pending {
+            self.promote_pending(pending);
         }
     }
 
@@ -1278,11 +1319,12 @@ impl Runtime {
                         }
                     } else {
                         let nav = self.nav_size();
-                        let Some(host) = self.hosts.get(&self.state.displayed.source) else {
+                        let Some(host) = self.hosts.get(&self.state.selection.source) else {
                             return false;
                         };
-                        // Inject into the VISIBLE session (`displayed`), matching the
-                        // interactive keystroke path.
+                        // Follow the selected destination, matching the interactive
+                        // keystroke path. While its fresh client is paint-pending, the
+                        // registry routes input there instead of into the stale frame.
                         let mut driver = crate::driver::driver_for(host);
                         let ctx = crate::driver::DriverCtx {
                             registry: &mut self.registry,
@@ -1296,7 +1338,7 @@ impl Runtime {
                             body_rows: self.body_rows,
                             nav,
                         };
-                        driver.input(&self.state.displayed, bytes, &ctx);
+                        driver.input(&self.state.selection, bytes, &ctx);
                     }
                 }
             }
@@ -1417,12 +1459,11 @@ impl Runtime {
                         // Advance the display truth synchronously ONLY for a confirmed
                         // in-place path: a live grid for the key exists AND no reattach
                         // is in flight. A pending reattach KEEPS the prior session's grid
-                        // (stale-while-revalidate) until DisplayReady swaps it in.
+                        // (stale-while-revalidate) until the paint gate swaps it in.
                         let k = display_key(&self.hosts, &sel);
-                        let reattach_pending = self
-                            .hosts
-                            .get(&sel.source)
-                            .is_some_and(|h| h.display.in_flight_contains(&k));
+                        let reattach_pending = self.hosts.get(&sel.source).is_some_and(|h| {
+                            h.display.in_flight_contains(&k) || h.display.pending_paint_contains(&k)
+                        });
                         if self.registry.contains(&k) && !reattach_pending {
                             self.state
                                 .apply(crate::model::Action::ConfirmDisplay(sel.clone()));
@@ -1507,7 +1548,7 @@ impl Runtime {
     /// by answering, not by being named here.
     ///
     /// The read is REFUSED while a reattach is in flight for the display key. The stale
-    /// client is deliberately kept on screen until the fresh one is ready, and it is still
+    /// client is deliberately kept on screen until the fresh one paints, and it is still
     /// sitting on the session the selection just left - reading it then would report the
     /// old session as where the display is and send the reconcile chasing a client that is
     /// already on its way somewhere else.
@@ -1538,7 +1579,7 @@ impl Runtime {
             return false;
         };
         let key = host_selection_key(host);
-        if host.display.in_flight_contains(&key) {
+        if host.display.in_flight_contains(&key) || host.display.pending_paint_contains(&key) {
             return false;
         }
         let Some(session) = crate::driver::live_client_session(host, &self.registry) else {
@@ -1562,6 +1603,9 @@ impl Runtime {
     /// control clients, force a full repaint), read xmux's own display client for a
     /// mux-side session change, and refresh the connecting-spinner set.
     pub(super) fn on_tick(&mut self, term: &mut Term) {
+        if self.promote_due_pending(std::time::Instant::now()) {
+            self.dirty = true;
+        }
         // Resize detection: poll the console size (an ioctl, not a stdin read).
         if let Ok((c, r)) = ratatui::crossterm::terminal::size() {
             if (c, r) != (self.cols, self.body_rows + 1) {

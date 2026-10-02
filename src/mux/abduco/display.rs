@@ -34,10 +34,9 @@ impl MuxDriver for AbducoDriver {
         let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
 
         // REATTACH, always: the only way to move abduco's display. The stale attachment
-        // is KEPT in the registry (not removed) so its grid stays on screen until
-        // DisplayReady swaps in the new one and tears the stale one down
-        // (stale-while-revalidate). At first display there is nothing to keep, so the
-        // view is blank until Ready.
+        // is KEPT in the registry so its grid stays on screen until the fresh client
+        // paints or reaches its bounded wait (stale-while-revalidate). At first display
+        // there is nothing to keep, so Ready installs immediately.
         let reason = if live { "reshow" } else { "no-live-client" };
         tracing::info!(
             host = %sel.source,

@@ -49,8 +49,9 @@ and owns the concrete display decision. The transport dispatches the host execut
 - A per-session attach uses `abduco -a <name>`, which reaches that session's own
   server.
 - A session change ALWAYS reattaches; on a reattach the stale attachment is HELD,
-  not removed, so its grid stays on screen until the fresh one is ready
-  (stale-while-revalidate).
+  not removed, so its grid stays on screen until the fresh attachment paints or
+  reaches its bounded wait (stale-while-revalidate). Input goes to the fresh
+  attachment while it waits.
 - There is no session change to follow. abduco cannot move an attached client from
   inside a session, so the nav follow that tmux's `%client-session-changed` drives
   has nothing to fire on here: a detach ends the attachment instead of retargeting

@@ -26,8 +26,9 @@ re-arms the attach deadline, on every pending selection, so rapid navigation
 coalesces into one trailing attach. Once the deadline elapses and the pure attach
 gate holds, the attach command is returned, plus a persist command on an address
 change. The gate reads the selection against the displayed address; the terminal
-view renders and routes input to the DISPLAYED session, which lags the selection
-until the new attach is confirmed (stale-while-revalidate). Creating a session is
+view renders the DISPLAYED session, which lags the selection until the fresh attach
+has painted or reaches its bounded wait (stale-while-revalidate). Input already targets
+the fresh attachment during that wait. Creating a session is
 the one session-lifecycle intent, and it is a pure effect emitter: no domain
 state is mutated, and a single deferred operation is returned for the run loop to
 run off-loop, with the inventory change arriving later as that operation's
@@ -70,9 +71,10 @@ holds the modal state plus its popup geometry and forwards to that module.
 - The selection is the source / session the display SHOULD show.
 - The displayed address is the one whose content is confirmed live on screen; it
   is set only at confirmation, by a synchronous in-place switch or by the display
-  becoming ready. The terminal view always renders the displayed grid, so on a
-  switch the prior session stays on screen until the new one is confirmed
-  (stale-while-revalidate); there is no transitional placeholder.
+  becoming painted or reaching its bounded wait. The terminal view always renders the
+  displayed grid, so on a switch the prior session stays on screen until that point
+  (stale-while-revalidate); there is no transitional placeholder, while input already
+  goes to the fresh attachment.
 - The focus is the single source of truth for which view owns keys and which
   modal, if any, is open; a modal carries the view it restores to.
 - The modal is the single source of truth for WHICH modal is open and its
