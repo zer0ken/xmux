@@ -22,8 +22,6 @@ pub struct HostClient {
     pub host: String,
     /// True until any wire activity proves the channel is live.
     pub connecting: Arc<AtomicBool>,
-    /// Current client size; updated by `resize`.
-    pub size: (u16, u16),
     /// The mux's control-mode protocol — builds every command line this client
     /// sends. Shared `'static` (the impl is stateless), so the reader/writer threads
     /// borrow it without owning a clone.
@@ -54,7 +52,7 @@ impl HostClient {
     /// Spawns `argv` as a control-mode child at `cols×rows` - through a pty when
     /// `pty` (a transport says its `-CC` client needs a terminal on its stdin),
     /// else as a piped child - starts the reader + writer OS threads, and queues
-    /// the connect sequence (resize → flow-control pause → list-sessions).
+    /// the connect sequence (mux preamble, then list-sessions).
     /// `events` is the app's loop sink.
     #[allow(clippy::too_many_arguments)] // one cohesive spawn API; callers pass all eight
     pub fn spawn(
@@ -88,6 +86,7 @@ impl HostClient {
             }
             #[cfg(not(unix))]
             {
+                let _ = (cols, rows);
                 unreachable!("a pty control spawn is Unix-only; no native local -CC on Windows")
             }
         } else {
@@ -117,14 +116,11 @@ impl HostClient {
         let writer_in_flight = Arc::clone(&in_flight);
         let writer_host = host.clone();
         let writer = std::thread::spawn(move || {
-            run_writer(&writer_host, cmd_rx, proto, &mut stdin, &writer_in_flight);
+            run_writer(&writer_host, cmd_rx, &mut stdin, &writer_in_flight);
         });
 
-        // Connect sequence: size the client, then run the mux's connect preamble
-        // (it SUPPRESSES %output — this control connection is a metadata / change-event /
-        // `switch-client` channel ONLY; the per-session PTY attaches own the pixels), then
-        // list sessions (the correlated query whose block resolves the inventory).
-        let _ = cmd_tx.send(HostCmd::Resize { cols, rows });
+        // Connect sequence: run the mux's metadata-client preamble, then list sessions
+        // (the correlated query whose block resolves the inventory).
         for line in proto.connect_lines() {
             let _ = cmd_tx.send(HostCmd::Send(line));
         }
@@ -136,7 +132,6 @@ impl HostClient {
         Ok(HostClient {
             host,
             connecting,
-            size: (cols, rows),
             proto,
             cmd_tx,
             child,
@@ -209,13 +204,6 @@ impl HostClient {
         self.cmd_tx
             .send(HostCmd::Send(self.proto.refresh_client_line(display_tty)))
             .is_ok()
-    }
-
-    /// Tell the child its new client size (the metadata client's size; the PTY
-    /// attachments are sized independently by the app).
-    pub fn resize(&mut self, cols: u16, rows: u16) {
-        self.size = (cols, rows);
-        let _ = self.cmd_tx.send(HostCmd::Resize { cols, rows });
     }
 
     /// Stop the host: the writer returns on `Shutdown`, `child.kill()` closes the

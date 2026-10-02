@@ -1,6 +1,5 @@
 //! Pure control-mode (`-CC`) wire functions for the metadata channel: line
-//! framing/classification, the notification parse table, and the
-//! `refresh-client -C WxH` size formatter. No I/O — every wire detail is
+//! framing/classification and the notification parse table. No I/O: every wire detail is
 //! unit-testable headlessly against tmux 3.3.x.
 
 /// A single stdout line from tmux control mode, classified by shape.

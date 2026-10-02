@@ -310,7 +310,9 @@ impl ControlProtocol for TmuxControl {
         // streaming pane output here is pure waste (and risks flooding the loop).
         // `no-output` keeps notifications flowing but stops %output. An older mux that
         // lacks the flag just %errors it (correlated as Ignore) - harmless.
-        vec!["refresh-client -f no-output\n".to_string()]
+        // `ignore-size` keeps this client out of window sizing: it attaches to whatever
+        // session tmux picks, often the one xmux itself runs in, and must never shrink it.
+        vec!["refresh-client -f no-output,ignore-size\n".to_string()]
     }
 
     fn list_sessions_line(&self) -> String {
@@ -329,11 +331,6 @@ impl ControlProtocol for TmuxControl {
 
     fn refresh_client_line(&self, display_tty: &str) -> String {
         format!("refresh-client -t {}\n", display_tty)
-    }
-
-    fn size_line(&self, cols: u16, rows: u16) -> String {
-        // `refresh-client -C WxH` - the `x`-form is correct for 3.3.x (`[research §7]`).
-        format!("refresh-client -C {cols}x{rows}\n")
     }
 
     /// Reads back the file the display attach wrote its own controlling tty to before
@@ -368,8 +365,11 @@ mod control_tests {
     use super::*;
 
     #[test]
-    fn size_line_uses_x_form() {
-        assert_eq!(TmuxControl.size_line(80, 24), "refresh-client -C 80x24\n"); // x-form, NOT comma
+    fn connect_keeps_the_metadata_client_out_of_window_sizing() {
+        assert_eq!(
+            TmuxControl.connect_lines(),
+            vec!["refresh-client -f no-output,ignore-size\n".to_string()]
+        );
     }
 }
 

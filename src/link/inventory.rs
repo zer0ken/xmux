@@ -32,10 +32,6 @@ impl Default for HostInventory {
 pub enum HostCmd {
     /// A ready command line (newline-terminated).
     Send(String),
-    Resize {
-        cols: u16,
-        rows: u16,
-    },
     /// A command line whose `%begin` block carries a meaningful reply. The writer
     /// pushes `reply` onto the FIFO in lockstep with writing `line`, so the
     /// correlation cannot race the writer (pushing from the calling thread could).

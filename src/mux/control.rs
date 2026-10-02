@@ -34,8 +34,8 @@ pub trait ControlProtocol: Send + Sync {
     ) -> Option<HostEvent>;
 
     /// The plain (`Send`, no meaningful reply) command lines of the connect preamble,
-    /// in order. The client size is set separately via `size_line` (a `Resize` cmd) and
-    /// `list-sessions` separately via `list_sessions_line` (a correlated `Query`).
+    /// in order. `list-sessions` is sent separately via `list_sessions_line` as a
+    /// correlated `Query`.
     fn connect_lines(&self) -> Vec<String>;
 
     /// `list-sessions -F <fmt>` — the correlated query whose block resolves the inventory.
@@ -48,9 +48,6 @@ pub trait ControlProtocol: Send + Sync {
     /// `switch-client` moves the client but need not repaint a locally-cleared grid; a
     /// fresh attach repaints fully, and this gives an in-place switch the same full repaint.
     fn refresh_client_line(&self, display_tty: &str) -> String;
-
-    /// `refresh-client -C <cols>x<rows>` — the client-size formatter.
-    fn size_line(&self, cols: u16, rows: u16) -> String;
 
     /// The lines that resolve xmux's OWN display-client tty for `host_key`. They must
     /// identify the client by something only xmux's own display attach could have

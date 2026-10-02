@@ -157,12 +157,6 @@ impl HostManager {
         }
     }
 
-    pub fn resize_all(&mut self, cols: u16, rows: u16) {
-        for c in self.clients.values_mut() {
-            c.resize(cols, rows);
-        }
-    }
-
     /// Drains and tears down every channel (bounded join per control client; abort per poll task).
     pub fn teardown_all(self) {
         for (_, c) in self.clients {
@@ -424,8 +418,8 @@ mod tests {
 
     #[test]
     fn control_argv_remote_forces_pty_over_batch_ssh() {
-        // A remote Control host forces a pty (`-tt`) and runs `<bin> -CC attach` over
-        // a BatchMode ssh connection.
+        // A remote Control host forces a pty (`-tt`) and runs `<bin> -CC attach` through
+        // a quiet login shell over a BatchMode ssh connection.
         let host = ssh_host("prod", "tmux", "linux", "");
         let got = control_argv(&host).expect("a Control host has a control argv");
         assert_eq!(got[0], "ssh");
@@ -434,7 +428,10 @@ mod tests {
             got.iter().any(|s: &String| s.contains("BatchMode=yes")),
             "{got:?}"
         );
-        assert_eq!(got.last().unwrap(), "tmux -CC attach");
+        assert_eq!(
+            got.last().unwrap(),
+            "sh -lc '{ tmux -CC attach\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+        );
     }
 
     #[test]
