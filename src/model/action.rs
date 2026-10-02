@@ -204,6 +204,13 @@ pub enum EventEffect {
         detected: Option<Box<dyn crate::mux::Mux>>,
         err: Option<String>,
     },
+    /// A re-enumeration renamed `from` to `to` on `source`: carry the host's display record
+    /// across, so the display reads as still on the session it is on.
+    RenameDisplayed {
+        source: String,
+        from: String,
+        to: String,
+    },
     /// `Sessions` (poll host, no enumeration error): drop any stale attach whose
     /// registry `.port` vanished, then sync `source`'s display terminal(s).
     /// (`apply_event` has already applied the enumerated sessions to the nav.)
@@ -279,6 +286,12 @@ impl std::fmt::Debug for EventEffect {
                 .field("source", source)
                 .field("detected_some", &detected.is_some())
                 .field("err", err)
+                .finish(),
+            EventEffect::RenameDisplayed { source, from, to } => f
+                .debug_struct("RenameDisplayed")
+                .field("source", source)
+                .field("from", from)
+                .field("to", to)
                 .finish(),
             EventEffect::SyncPollSessions { source, sessions } => f
                 .debug_struct("SyncPollSessions")

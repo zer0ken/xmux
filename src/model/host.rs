@@ -119,6 +119,15 @@ impl HostDisplay {
     pub fn shows(&self, key: &str) -> Option<&str> {
         self.current.get(key).map(String::as_str)
     }
+    /// Carry every record of `from` across to `to`: the session was renamed under the
+    /// attachment, which still shows the same session.
+    pub fn rename_session(&mut self, from: &str, to: &str) {
+        for shown in self.current.values_mut() {
+            if shown == from {
+                *shown = to.to_string();
+            }
+        }
+    }
     /// Record that `key`'s attachment now shows `session`.
     pub fn set_shows(&mut self, key: &str, session: &str) {
         self.current.insert(key.to_string(), session.to_string());

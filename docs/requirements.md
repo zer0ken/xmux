@@ -372,6 +372,10 @@ no function, and no test, so renaming code is never a documentation change.
   environment on this machine. A mux that offers no such reading, and a host whose client
   runs on the far side of ssh or a WSL distribution, are not guessed at, and a mux that
   cannot move a client between sessions at all (screen, abduco) has nothing to follow.
+  A session RENAMED under the selection is not a move: the selection and the record of
+  what is on screen take the new name, so neither region moves. A listing carries names
+  only, so a rename is read off one session leaving the list as exactly one other joins
+  it, and any other difference is read as sessions made or ended.
 
 - **FR-B24** - The nav hides the hosts no scan has reached: an unreachable host takes no
   card by default, and `[ui] hide-unreachable` (default true) turns the hiding off. The

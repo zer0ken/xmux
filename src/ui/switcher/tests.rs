@@ -5078,6 +5078,44 @@ async fn input_esc_cancels_without_acting() {
 }
 
 #[test]
+fn a_renamed_session_keeps_the_selection_and_the_displayed_record() {
+    // The selected, displayed session is renamed under the user: the card they are on
+    // is still the card they are on, under its new name, and the selection and the
+    // displayed record follow it, so nothing reads the rename as a move elsewhere.
+    let scan = Scan {
+        groups: vec![Group {
+            source: "jup".into(),
+            err: None,
+            sessions: vec![sess("jup", "api", 1, false), sess("jup", "zeta", 1, false)],
+        }],
+    };
+    let mut state = crate::state::State::from_scan(scan);
+    let mut sw = Switcher::new(&mut state);
+    sw.user_moved = true;
+    assert!(matches!(sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "api"));
+    // The loop syncs the selection off the switcher; stand in for it.
+    state.selection = crate::model::Selection {
+        source: "jup".into(),
+        session: "api".into(),
+    };
+    state.displayed = state.selection.clone();
+
+    let renamed = sw.apply_source_result(
+        "jup".into(),
+        vec![sess("jup", "web", 1, false), sess("jup", "zeta", 1, false)],
+        None,
+        &mut state,
+    );
+    assert_eq!(renamed, Some(("api".into(), "web".into())));
+    assert!(
+        matches!(sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "web"),
+        "the selection stays on the renamed card"
+    );
+    assert_eq!(state.selection.session, "web");
+    assert_eq!(state.displayed.session, "web");
+}
+
+#[test]
 fn selection_survives_a_rebuild() {
     // Selection on jup/api's card survives a bare rebuild (the same node, so the
     // selection stays put).

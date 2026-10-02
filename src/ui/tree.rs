@@ -23,6 +23,19 @@ pub fn sort_by_name(sessions: &mut [Session]) {
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
 }
 
+/// The one session a re-enumeration RENAMED, as `(from, to)`: exactly one name left the
+/// list and exactly one name joined it. A listing carries names only, so a rename is
+/// recognised by that shape alone; any other difference (sessions created or killed, or
+/// several changed at once) is not read as a rename.
+pub fn renamed_session(old: &[Session], new: &[Session]) -> Option<(String, String)> {
+    let mut gone = old.iter().filter(|o| !new.iter().any(|n| n.name == o.name));
+    let mut came = new.iter().filter(|n| !old.iter().any(|o| o.name == n.name));
+    match (gone.next(), gone.next(), came.next(), came.next()) {
+        (Some(from), None, Some(to), None) => Some((from.name.clone(), to.name.clone())),
+        _ => None,
+    }
+}
+
 /// Reports whether `pattern` is a case-insensitive subsequence of `s`: every
 /// char of `pattern` appears in `s` in order, not necessarily contiguously. An
 /// empty pattern always matches.
@@ -468,6 +481,23 @@ mod tests {
             name: name.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_rename_is_one_name_gone_and_one_name_new() {
+        let names = |ns: &[&str]| ns.iter().map(|n| sess("s", n)).collect::<Vec<_>>();
+        assert_eq!(
+            renamed_session(&names(&["a", "b"]), &names(&["b", "c"])),
+            Some(("a".into(), "c".into()))
+        );
+        // A session made or killed, or two changed at once, is not a rename.
+        assert_eq!(renamed_session(&names(&["a"]), &names(&["a", "b"])), None);
+        assert_eq!(renamed_session(&names(&["a", "b"]), &names(&["a"])), None);
+        assert_eq!(
+            renamed_session(&names(&["a", "b"]), &names(&["c", "d"])),
+            None
+        );
+        assert_eq!(renamed_session(&names(&["a"]), &names(&["a"])), None);
     }
 
     fn sample_groups() -> Vec<Group> {

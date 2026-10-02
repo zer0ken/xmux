@@ -78,7 +78,11 @@ impl Runtime {
                 // (`apply_source_result`) or resyncing its dead terminals. (`ApplyInventory`
                 // is emitted only for control-mode hosts, so a poll host is never gated out.)
                 if mgr.get(&host).is_some() {
-                    switcher.apply_source_result(host.clone(), sessions.clone(), None, state);
+                    let renamed =
+                        switcher.apply_source_result(host.clone(), sessions.clone(), None, state);
+                    if let (Some((from, to)), Some(h)) = (renamed, hosts.get_mut(&host)) {
+                        h.display.rename_session(&from, &to);
+                    }
                     let n = sessions.len();
                     let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
                     tracing::info!(host, n, ?names, "sessions_applied");
@@ -376,6 +380,11 @@ impl Runtime {
                             scan_pool.clone(),
                         );
                     }
+                }
+            }
+            EventEffect::RenameDisplayed { source, from, to } => {
+                if let Some(h) = hosts.get_mut(&source) {
+                    h.display.rename_session(&from, &to);
                 }
             }
             EventEffect::SyncPollSessions { source, sessions } => {
