@@ -1,5 +1,5 @@
 #!/bin/sh
-# xmux installer for macOS and Linux.
+# xmux installer for macOS, Linux, and Android Termux.
 #
 #   curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- --version 0.9.6
@@ -85,7 +85,13 @@ target_triple() {
         [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = "1" ]; then
         arch="arm64"
     fi
+    # Android's kernel reports Linux, but Termux runs on bionic rather than glibc,
+    # so the operating system name is what tells it apart from a Linux build host.
+    if [ "$os" = "Linux" ] && [ "$(uname -o 2>/dev/null)" = "Android" ]; then
+        os="Android"
+    fi
     case "$os/$arch" in
+        Android/aarch64|Android/arm64) echo "aarch64-linux-android" ;;
         Linux/x86_64|Linux/amd64) echo "x86_64-unknown-linux-gnu" ;;
         Linux/aarch64|Linux/arm64) echo "aarch64-unknown-linux-gnu" ;;
         Darwin/arm64|Darwin/aarch64) echo "aarch64-apple-darwin" ;;

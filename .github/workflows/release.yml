@@ -25,6 +25,11 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             ext: .tar.gz
+          # Termux runs on Android's bionic libc, which the glibc Linux builds
+          # cannot load, so Android gets a build linked by the NDK the runner ships.
+          - os: ubuntu-24.04
+            target: aarch64-linux-android
+            ext: .tar.gz
           - os: macos-14
             target: aarch64-apple-darwin
             ext: .tar.gz
@@ -39,6 +44,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
+      # API 24 is the oldest Android release Termux supports.
+      - name: Link with the Android NDK
+        if: matrix.target == 'aarch64-linux-android'
+        run: |
+          test -d "$ANDROID_NDK_HOME" || { echo "::error::the runner has no Android NDK" >&2; exit 1; }
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
       - name: Stage artifacts

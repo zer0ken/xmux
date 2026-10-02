@@ -41,7 +41,7 @@ filling the right side.](docs/assets/xmux.png)
 
 **Native install (recommended)**
 
-macOS, Linux, WSL:
+macOS, Linux, WSL, Android Termux:
 
 ```sh
 curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh

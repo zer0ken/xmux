@@ -17,7 +17,7 @@ irm https://github.com/zer0ken/xmux/releases/latest/download/install.ps1 | iex
 curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.cmd -o install.cmd && install.cmd && del install.cmd
 ```
 
-The first line is for macOS, Linux and WSL, the second for Windows PowerShell,
+The first line is for macOS, Linux, WSL and Android Termux, the second for Windows PowerShell,
 and the third for Windows CMD. The CMD script installs nothing of its own: it
 hands the install to the PowerShell script from the same release, so all three
 end in the same install.
@@ -289,6 +289,20 @@ cargo install --path .
 
 This places the `xmux` command on your `PATH` (commonly under
 `~/.cargo/bin`). To build without installing, use `cargo build --release`.
+
+---
+
+## Android (Termux)
+
+### Install script
+
+```sh
+curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh
+```
+
+The build is published for `aarch64` and needs Android 7.0 or later. It is linked
+against Android's own libc, so it runs inside Termux, where the Linux builds cannot
+load. `xmux update` fetches the same build.
 
 ---
 
