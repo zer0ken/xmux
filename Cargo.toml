@@ -44,10 +44,7 @@ toml = "1.1.2"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# The vendored crate carries https://github.com/doy/vt100-rust/pull/30 through
-# commit 131a75e. It preserves the wide-cell pair invariant when a row shrinks
-# and guards erase operations against an orphaned wide cell.
-vt100 = { path = "vendor/vt100" }
+vt100 = "0.16"
 portable-pty = "0.9"
 unicode-width = "0.2"
 sha2 = "0.10"
