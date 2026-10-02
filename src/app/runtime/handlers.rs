@@ -680,6 +680,7 @@ impl Runtime {
             self.dirty = true;
         }
         self.state.chrome.set_armed(prefix_active);
+        self.switcher.sync_prefix(prefix_active);
         // Derive the modal dimension of focus from the open-modal kind (single owner of
         // the modal/view reconciliation).
         let modal_kind = self.state.modal_kind();

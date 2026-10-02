@@ -341,8 +341,10 @@ no function, and no test, so renaming code is never a documentation change.
   selected keeps it, because the screen beside the nav is that host's own. A modal
   over the terminal view is not a move back, the move back into the nav shows the band
   again, and a selection that reaches a host card while the band is hidden shows it,
-  since a selected card is never one nobody can see. Hiding takes the cards off the
-  screen, not off the list: their numbers and the keys that walk the list stay the same.
+  since a selected card is never one nobody can see. While a prefix is live the band is
+  painted, because the hint bar offers a jump to any card by number, and it is hidden
+  again when the prefix ends. Hiding takes the cards off the screen, not off the list:
+  their numbers and the keys that walk the list stay the same.
 - **FR-B22** - A host and its mux are SHOWN as one label, `{host}/{mux}`, wherever the pair
   is read: a nav section title, the screen a card selects, the doctor's source list.
   Always that separator, never the one a source id parts its two halves with, because an id

@@ -402,6 +402,10 @@ pub struct Switcher {
     /// beside it; a host card selected keeps it, since the screen beside the nav is that
     /// host's own. Cleared on the move back into the nav.
     host_band_hidden: bool,
+    /// Whether a prefix interaction is live. The hint bar it raises offers a jump to any
+    /// card by number, so every card it can reach is painted while it lasts; the hidden
+    /// band returns to hidden when the prefix ends.
+    prefix_active: bool,
 
     list_state: ListState,
     nav_inner: Rect,
@@ -453,6 +457,7 @@ impl Switcher {
             hide_unreachable: false,
             terminal_view: false,
             host_band_hidden: false,
+            prefix_active: false,
             list_state: ListState::default(),
             nav_inner: Rect::default(),
             nav_cells: Vec::new(),
@@ -517,6 +522,17 @@ impl Switcher {
             self.host_band_hidden = false;
         }
         self.terminal_view = terminal;
+    }
+
+    /// Tells the nav whether a prefix interaction is live (see `prefix_active`).
+    pub fn sync_prefix(&mut self, active: bool) {
+        self.prefix_active = active;
+    }
+
+    /// Whether the paint leaves the host band out: hidden by the move into the terminal
+    /// view, and not overridden by a live prefix.
+    fn band_unpainted(&self) -> bool {
+        self.host_band_hidden && !self.prefix_active
     }
 
     /// Whether `(source, target)` addresses the session xmux is ITSELF running in.
@@ -653,7 +669,7 @@ impl Switcher {
     /// while it is hidden. The rows themselves stay whole, so the card numbers, the
     /// selection and the keys that walk the list are the same whether the band shows.
     fn painted_rows(&self) -> usize {
-        if self.host_band_hidden {
+        if self.band_unpainted() {
             self.band_boundary().unwrap_or(self.rows.len())
         } else {
             self.rows.len()
@@ -663,7 +679,7 @@ impl Switcher {
     /// The band boundary as the paint sees it: none while the host band is hidden, since
     /// there is no second band on screen to part from the first.
     fn painted_boundary(&self) -> Option<usize> {
-        if self.host_band_hidden {
+        if self.band_unpainted() {
             None
         } else {
             self.band_boundary()

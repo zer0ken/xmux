@@ -5964,6 +5964,31 @@ async fn the_decision_holds_while_the_terminal_view_keeps_the_focus() {
 }
 
 #[tokio::test]
+async fn a_live_prefix_paints_the_hidden_host_band_until_it_ends() {
+    // The hint bar offers a jump to any card by number, so the cards it can reach are on
+    // screen while the prefix lasts; the band stays hidden underneath and returns to
+    // hidden once the prefix ends.
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.sw.sync_view_focus(true);
+    h.draw();
+    assert!(!h.nav_cards_text().contains("db-2"));
+    h.sw.sync_prefix(true);
+    h.draw();
+    let nav = h.nav_cards_text();
+    assert!(
+        nav.contains("db-2") && nav.contains("db-3"),
+        "the prefix paints the host band:
+{nav}"
+    );
+    h.sw.sync_prefix(false);
+    h.draw();
+    assert!(
+        !h.nav_cards_text().contains("db-2"),
+        "the band is hidden again once the prefix ends"
+    );
+}
+
+#[tokio::test]
 async fn a_hidden_band_shows_again_once_the_selection_lands_in_it() {
     let mut h = Harness::new(scan_with_a_host_band());
     h.sw.sync_view_focus(true);
