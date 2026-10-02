@@ -6,6 +6,7 @@ use super::*;
 use crate::link::HostEvent;
 use crate::mux::{quote_target, SESSION_FORMAT};
 use crate::mux::{ControlProtocol, DisplayTtyRead};
+use std::sync::OnceLock;
 
 pub mod control_proto;
 pub mod display;
@@ -33,6 +34,33 @@ fn display_tty_token(host_key: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Stable for this process and different for a later process, including one that reuses
+/// the same public instance name. The timestamp and process id together distinguish
+/// sequential runs, while the attachment id distinguishes records within this run.
+fn display_tty_run_token() -> &'static str {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN.get_or_init(|| {
+        let started = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("{}-{started}", std::process::id())
+    })
+}
+
+fn display_tty_key_for_run(
+    host_key: &str,
+    instance_name: &str,
+    run_token: &str,
+    attach_id: u64,
+) -> String {
+    format!("{host_key}-{instance_name}-{run_token}-{attach_id}")
+}
+
+pub(crate) fn display_tty_key(host_key: &str, instance_name: &str, attach_id: u64) -> String {
+    display_tty_key_for_run(host_key, instance_name, display_tty_run_token(), attach_id)
 }
 
 /// The per-host file where tmux's display client records its own tty: one file per
@@ -348,6 +376,26 @@ mod control_tests {
 #[cfg(test)]
 mod display_identity_tests {
     use super::*;
+
+    #[test]
+    fn same_name_restart_uses_a_different_tty_record() {
+        let previous = display_tty_path(&display_tty_key_for_run("jup", "steady", "first-run", 1));
+        let restarted =
+            display_tty_path(&display_tty_key_for_run("jup", "steady", "second-run", 1));
+
+        assert_ne!(
+            previous, restarted,
+            "a restarted instance must not read the prior run's tty record"
+        );
+    }
+
+    #[test]
+    fn each_attach_uses_a_different_tty_record() {
+        let first = display_tty_path(&display_tty_key_for_run("jup", "steady", "run", 1));
+        let second = display_tty_path(&display_tty_key_for_run("jup", "steady", "run", 2));
+
+        assert_ne!(first, second, "each attach owns its tty record");
+    }
 
     /// tmux's in-place switch is an opaque `SwitchPlan::Shell`: a self-contained remote
     /// shell command that READS the tty the attach recorded to its per-host file, then
