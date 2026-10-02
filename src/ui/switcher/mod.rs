@@ -984,13 +984,38 @@ impl Switcher {
     /// (unreachable). The host authoritatively owns its session list. Ordering is
     /// not this function's concern: `rebuild` applies the deterministic display
     /// order, which a scan result and a routine poll reproduce exactly.
+    ///
+    /// A result that RENAMED one session ([`tree::renamed_session`]) carries the selection
+    /// and the displayed record across to the new name, so the card the user is on stays
+    /// the card they are on and nothing reads the rename as a move to another session.
+    /// The rename is returned so the loop can carry its own display record across too.
     pub fn apply_source_result(
         &mut self,
         source: String,
         sessions: Vec<Session>,
         err: Option<String>,
         state: &mut crate::state::State,
-    ) {
+    ) -> Option<(String, String)> {
+        let renamed = state
+            .groups
+            .iter()
+            .find(|g| g.source == source)
+            .filter(|_| err.is_none())
+            .and_then(|g| tree::renamed_session(&g.sessions, &sessions));
+        if let Some((from, to)) = &renamed {
+            for row in self.rows.iter_mut() {
+                if let RowRef::Session { sess } = &mut row.reference {
+                    if sess.source == source && sess.name == *from {
+                        sess.name = to.clone();
+                    }
+                }
+            }
+            for sel in [&mut state.selection, &mut state.displayed] {
+                if sel.source == source && sel.session == *from {
+                    sel.session = to.clone();
+                }
+            }
+        }
         let prior = self.capture_focus();
         state.scanning.remove(&source);
         // The failure run, counted where every result lands so no path can skip it: a
@@ -1016,6 +1041,7 @@ impl Switcher {
         }
         self.rebuild(state);
         self.restore_focus(prior, state);
+        renamed
     }
 
     /// Adds a source that was not there at launch (a mux discovery answered) as a

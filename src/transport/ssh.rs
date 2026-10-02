@@ -128,6 +128,12 @@ impl Transport for Ssh {
         true
     }
 
+    /// Only where this side multiplexes: every run then rides the one master the first
+    /// run authenticated. Without multiplexing every run is a login of its own.
+    fn reuses_connection(&self) -> bool {
+        self.multiplexes()
+    }
+
     fn remote_shell(&self) -> RemoteShell {
         self.shell
     }

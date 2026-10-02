@@ -75,6 +75,11 @@ impl Transport for Wsl {
         true
     }
 
+    /// `wsl.exe` is a local process with no network hop, so a repeat opens nothing.
+    fn reuses_connection(&self) -> bool {
+        true
+    }
+
     /// `tty` is ignored: a WSL child inherits the Windows console it was spawned on, and
     /// the distribution allocates its pty from that. There is no option to ask for one.
     fn exec_argv(&self, _tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {

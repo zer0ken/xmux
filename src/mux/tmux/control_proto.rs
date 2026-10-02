@@ -56,6 +56,12 @@ pub enum Notif<'a> {
         name: &'a str,
     },
     SessionsChanged,
+    /// `%session-renamed <$id> <name>`: a session's name changed. tmux sends this alone,
+    /// with no `%sessions-changed` beside it, so it is the only word a rename leaves.
+    SessionRenamed {
+        id: &'a str,
+        name: &'a str,
+    },
     WindowAdd {
         window: &'a str,
     },
@@ -176,6 +182,10 @@ pub fn parse_notif(line: &str) -> Notif<'_> {
             _ => Notif::Other,
         },
         "%sessions-changed" => Notif::SessionsChanged,
+        "%session-renamed" => match (it.next(), it.next()) {
+            (Some(id), Some(name)) => Notif::SessionRenamed { id, name },
+            _ => Notif::Other,
+        },
         // `%unlinked-window-*` is the same structural change as `%window-*` but for a
         // window NOT in the control client's own attached session — tmux sends the
         // unlinked form there. Both must refetch (→ Changed), so they map to the same
@@ -326,6 +336,14 @@ mod tests {
             parse_notif("%sessions-changed"),
             Notif::SessionsChanged
         ));
+        assert!(matches!(
+            parse_notif("%session-renamed $2 build"),
+            Notif::SessionRenamed {
+                id: "$2",
+                name: "build"
+            }
+        ));
+        assert!(matches!(parse_notif("%session-renamed $2"), Notif::Other));
         assert!(matches!(
             parse_notif("%window-add @4"),
             Notif::WindowAdd { window: "@4" }

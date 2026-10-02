@@ -372,6 +372,10 @@ no function, and no test, so renaming code is never a documentation change.
   environment on this machine. A mux that offers no such reading, and a host whose client
   runs on the far side of ssh or a WSL distribution, are not guessed at, and a mux that
   cannot move a client between sessions at all (screen, abduco) has nothing to follow.
+  A session RENAMED under the selection is not a move: the selection and the record of
+  what is on screen take the new name, so neither region moves. A listing carries names
+  only, so a rename is read off one session leaving the list as exactly one other joins
+  it, and any other difference is read as sessions made or ended.
 
 - **FR-B24** - The nav hides the hosts no scan has reached: an unreachable host takes no
   card by default, and `[ui] hide-unreachable` (default true) turns the hiding off. The
@@ -527,9 +531,9 @@ no function, and no test, so renaming code is never a documentation change.
   separate picker mode; `prefix q`
   quits.
 - **FR-D6** - The log records what HAPPENED. An enumeration logs INFO with the session
-  list on success and WARN on failure - one line per enumeration, and an enumeration
-  happens only when something asked for one, so the file carries what the user did
-  rather than a cadence and no silent host can fill it on its own.
+  list when that list changed (or is the first) and WARN on failure, so a connected host
+  refreshing on its cadence writes a line only when its sessions changed, and the file
+  carries what changed rather than a cadence.
 - **FR-D7** - No log grows without end. The daily files are kept for a bounded window and
   the oldest goes as a new day opens. A panic that a worker recovers from and hits again on
   the next frame is written by its SITE at each doubling of its count, not once per
@@ -645,9 +649,12 @@ nothing to switch to until one exists.
   own retry, because a request that answers a failed request cannot stop: a machine that
   refuses one connection refuses the next identically, so a client reconnecting on every
   refusal reconnects without end, which is what a machine's own defences are built to read
-  as an attack. A POLL source is enumerated exactly when something asked for it - the
-  launch scan or an explicit re-scan - and never on a cadence of its own, so a machine is
-  never queried for no one. What the user sees follows from this and is deliberate: a
+  as an attack. A POLL source that answered is re-enumerated on a cadence only over a path
+  the machine already holds open (the local box, a WSL distribution, or an ssh master
+  this side shares across runs), because a repeat there opens no connection; where every
+  repeat would be a fresh login, it is enumerated only when something asked for it - the
+  launch scan or an explicit re-scan. The first enumeration that fails ends the cadence.
+  What the user sees follows from this and is deliberate: a
   metadata channel that dropped stays dropped, a display whose client died keeps the last
   frame it drew, and an unreachable or locked card stays as it is - each until the user
   asks. A push stream is one open connection the far side speaks over, so it carries

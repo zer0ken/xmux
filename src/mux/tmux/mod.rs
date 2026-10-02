@@ -221,6 +221,7 @@ impl ControlProtocol for TmuxControl {
     ) -> Option<HostEvent> {
         match notif {
             Notif::SessionsChanged
+            | Notif::SessionRenamed { .. }
             | Notif::WindowAdd { .. }
             | Notif::WindowClose { .. }
             | Notif::WindowRenamed { .. } => {

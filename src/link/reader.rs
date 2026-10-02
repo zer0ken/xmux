@@ -252,6 +252,7 @@ mod tests {
             "%window-close @4",
             "%window-renamed @4 logs",
             "%sessions-changed",
+            "%session-renamed $2 build",
         ] {
             let state = test_state(80, 24);
             let in_flight: InFlight = Default::default();

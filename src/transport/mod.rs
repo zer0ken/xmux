@@ -48,6 +48,16 @@ pub trait Transport: Send + Sync {
         false
     }
 
+    /// True when running one more command on this machine opens no new connection to it.
+    /// The local box and a WSL distribution are reached by a local process, and an ssh
+    /// machine is reached over one authenticated master when this side shares it across
+    /// runs. A POLL source refreshes on a cadence only over such a path, because there a
+    /// repeat costs the machine nothing it is not already honouring; anywhere else every
+    /// repeat is a fresh login. `false` (the default) is the side that must not repeat.
+    fn reuses_connection(&self) -> bool {
+        false
+    }
+
     /// Which shell family answers this machine's remote commands. `Posix` (the default)
     /// for every machine whose shell is known to be POSIX and for one not yet asked; a
     /// remote learns its own answer from the reachability probe. NOT derived from the
@@ -136,6 +146,9 @@ impl Transport for Box<dyn Transport> {
     }
     fn local_registry_scope(&self) -> bool {
         (**self).local_registry_scope()
+    }
+    fn reuses_connection(&self) -> bool {
+        (**self).reuses_connection()
     }
     fn remote_shell(&self) -> vocab::RemoteShell {
         (**self).remote_shell()
@@ -566,6 +579,18 @@ mod tests {
         assert!(!wsl.is_remote());
         assert!(wsl.runs_through_shell());
         assert!(!wsl.local_registry_scope());
+    }
+
+    #[test]
+    fn only_a_path_already_open_reuses_its_connection() {
+        // A repeat over the local box or a WSL distribution is a local process, and an
+        // ssh machine repeats over its master only where this side multiplexes. A Windows
+        // side, or an ssh machine with no control socket, would log in again each time.
+        assert!(local(None).reuses_connection());
+        assert!(wsl("Ubuntu".into()).reuses_connection());
+        assert!(ssh("prod".into(), "/tmp/cm.sock".into(), "linux".into()).reuses_connection());
+        assert!(!ssh("prod".into(), "/tmp/cm.sock".into(), "windows".into()).reuses_connection());
+        assert!(!ssh("prod".into(), String::new(), "linux".into()).reuses_connection());
     }
 }
 

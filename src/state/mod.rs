@@ -686,11 +686,21 @@ impl State {
                 // hand the sessions back so the loop drops any stale attach + syncs the
                 // PTY set; a transient failure shows the error but keeps attachments.
                 let had_err = err.is_some();
-                switcher.apply_source_result(source.clone(), sessions.clone(), err, self);
+                let renamed =
+                    switcher.apply_source_result(source.clone(), sessions.clone(), err, self);
                 if had_err {
                     Vec::new()
                 } else {
-                    vec![EventEffect::SyncPollSessions { source, sessions }]
+                    let mut effects: Vec<EventEffect> = renamed
+                        .map(|(from, to)| EventEffect::RenameDisplayed {
+                            source: source.clone(),
+                            from,
+                            to,
+                        })
+                        .into_iter()
+                        .collect();
+                    effects.push(EventEffect::SyncPollSessions { source, sessions });
+                    effects
                 }
             }
         }

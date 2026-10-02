@@ -1,77 +1,111 @@
-//! A POLL host's one-shot enumeration task, owned by `HostManager` for muxes with no
-//! host-level control stream: it enumerates once when something asks for it - the launch
-//! scan, a detection, or an explicit re-scan - and emits the result onto the same event
-//! bus the control clients use.
+//! A POLL host's enumeration task, owned by `HostManager` for muxes with no host-level
+//! control stream: it enumerates when something asks for it - the launch scan, a
+//! detection, or an explicit re-scan - and, over a path that is already open, keeps the
+//! answering host's list current on a cadence. It emits onto the same event bus the
+//! control clients use.
+
+use std::time::Duration;
 
 use super::HostEvent;
 
-/// A POLL host's one-shot enumeration task. A poll host has no host-level control stream,
-/// so the [`HostManager`](super::HostManager) owns this task to enumerate its sessions +
-/// panes and emit them as [`HostEvent`]s onto the same bus the control clients use.
+/// How often a connected POLL host is re-enumerated over a path it already holds open.
+/// Short enough that a rename or a session made inside the mux reaches the nav while the
+/// user is still looking, and well inside the shared ssh master's 60 s persistence, so
+/// the master the first enumeration opened is the one every later one rides.
+pub(super) const POLL_REFRESH: Duration = Duration::from_secs(3);
+
+/// A POLL host's enumeration task. A poll host has no host-level control stream, so the
+/// [`HostManager`](super::HostManager) owns this task to enumerate its sessions + panes
+/// and emit them as [`HostEvent`]s onto the same bus the control clients use.
 ///
-/// The enumeration runs ONCE, at spawn, and the task then returns. It does not repeat on
-/// a cadence: a POLL host's list is fetched exactly when something asked for it - the
-/// launch scan, a detection, or an explicit re-scan
-/// ([`HostManager::rescan`](super::HostManager::rescan)) - and never on a timer of its
-/// own, so a machine is never queried for no one.
+/// The enumeration runs at spawn. `refresh` is `Some` only for a host reached over a path
+/// that is already open (the local box, a WSL distribution, or an ssh machine whose runs
+/// share one master), and then the enumeration repeats on that cadence WHILE the host
+/// keeps answering: a repeat there opens nothing on the machine, so it is the open path
+/// carrying changes, not a new request. With `refresh` `None` every repeat would be a
+/// fresh login, so the task returns after its one enumeration and the host is asked again
+/// only by an explicit re-scan.
 ///
-/// The task is re-armed only by that explicit re-scan. Selecting the card does not re-arm
-/// it, and a probe does not: the finished handle stays for the re-scan to remove and
-/// re-spawn. The task is aborted by a reap or the app exiting.
+/// An enumeration that FAILS is the last one. A request that answers nothing is one a
+/// later request cannot answer either, so the task returns and the host is asked again
+/// only when the user asks ([`HostManager::rescan`](super::HostManager::rescan)). The
+/// task is aborted by a reap or the app exiting.
 pub(super) async fn run_poll(
     source: String,
     transport: Box<dyn crate::transport::Transport>,
     mux: Box<dyn crate::mux::Mux>,
+    refresh: Option<Duration>,
     events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
 ) {
-    // The one enumeration this spawn was asked for. A failure is still an answer (the nav
-    // shows the host unreachable), so the task returns either way.
-    mux.poll_once(
-        &source,
-        &transport,
-        &crate::model::source::ExecRunner,
-        &mut |ev| {
-            // Log at the producer, where `err` is in hand. A success lists the sessions;
-            // a failure is WARN.
-            if let HostEvent::Sessions {
-                source: ref host,
-                ref sessions,
-                ref err,
-            } = ev
-            {
-                match err {
-                    Some(error) => tracing::warn!(host, error, "enumeration_failed"),
-                    None => {
-                        let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
-                        tracing::info!(
-                            host,
-                            n = sessions.len(),
-                            names = ?names,
-                            "sessions_enumerated"
-                        );
+    // The last answered name list, so an unchanged refresh does not log on its cadence:
+    // the file records what changed, not that a timer fired.
+    let mut last_names: Option<Vec<String>> = None;
+    loop {
+        // A failed enumeration and a dropped receiver (the app exiting) both end the task.
+        let mut stop = false;
+        mux.poll_once(
+            &source,
+            &transport,
+            &crate::model::source::ExecRunner,
+            &mut |ev| {
+                // Log at the producer, where `err` is in hand. A success that changed the
+                // session list (or is the first) is INFO; an unchanged one is TRACE. A
+                // failure is WARN.
+                if let HostEvent::Sessions {
+                    source: ref host,
+                    ref sessions,
+                    ref err,
+                } = ev
+                {
+                    match err {
+                        Some(error) => {
+                            stop = true;
+                            tracing::warn!(host, error, "enumeration_failed");
+                        }
+                        None => {
+                            let names: Vec<String> =
+                                sessions.iter().map(|s| s.name.clone()).collect();
+                            if last_names.as_ref() != Some(&names) {
+                                tracing::info!(
+                                    host,
+                                    n = sessions.len(),
+                                    names = ?names,
+                                    "sessions_enumerated"
+                                );
+                                last_names = Some(names);
+                            } else {
+                                tracing::trace!(host, n = sessions.len(), "sessions_unchanged");
+                            }
+                        }
                     }
                 }
-            }
-            let _ = events.send(ev);
-        },
-    )
-    .await;
+                if events.send(ev).is_err() {
+                    stop = true;
+                }
+            },
+        )
+        .await;
+        match refresh {
+            Some(every) if !stop => tokio::time::sleep(every).await,
+            _ => return,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A POLL host is enumerated exactly once per spawn and the task then returns rather
-    /// than polling on its own: a machine is never queried for no one. Uses a LOCAL
-    /// psmux, whose local-registry enumeration succeeds (possibly empty) without any
-    /// binary or network.
+    /// Without a refresh cadence a POLL host is enumerated exactly once per spawn and the
+    /// task then returns: a path where every repeat is a fresh login is never repeated on
+    /// its own. Uses a LOCAL psmux, whose local-registry enumeration succeeds (possibly
+    /// empty) without any binary or network.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_task_enumerates_once_and_returns() {
+    async fn without_a_refresh_the_task_enumerates_once_and_returns() {
         let transport = crate::transport::local(None);
         let mux = crate::mux::for_binary("psmux").expect("psmux is a known mux");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
-        let task = tokio::spawn(run_poll("src".to_string(), transport, mux, tx));
+        let task = tokio::spawn(run_poll("src".to_string(), transport, mux, None, tx));
 
         let first = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
             .await
@@ -89,8 +123,37 @@ mod tests {
             .expect("the task body returns cleanly");
     }
 
+    /// With a refresh cadence an answering host is enumerated again and again, so a change
+    /// made inside the mux reaches the nav without anyone asking, and the task stays live.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn with_a_refresh_an_answering_host_is_enumerated_again() {
+        let transport = crate::transport::local(None);
+        let mux = crate::mux::for_binary("psmux").expect("psmux is a known mux");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        let task = tokio::spawn(run_poll(
+            "src".to_string(),
+            transport,
+            mux,
+            Some(Duration::from_millis(50)),
+            tx,
+        ));
+        for sweep in 0..2 {
+            let ev = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                .await
+                .expect("each sweep answers within its own budget")
+                .expect("each sweep emits its result");
+            assert!(
+                matches!(&ev, HostEvent::Sessions { source, err: None, .. } if source == "src"),
+                "sweep {sweep} lands as an answered enumeration"
+            );
+        }
+        assert!(!task.is_finished(), "an answering host keeps its task live");
+        task.abort();
+    }
+
     /// A failing enumeration is still an answer - the nav shows the host unreachable -
-    /// and the task returns after it rather than repeating the request.
+    /// and the task returns after it rather than repeating the request, even where a
+    /// refresh cadence was given.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_task_returns_after_a_failed_enumeration() {
         let transport = crate::transport::ssh(
@@ -100,7 +163,14 @@ mod tests {
         );
         let mux = crate::mux::for_binary("psmux").expect("psmux is a known mux");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
-        let task = tokio::spawn(run_poll("src".to_string(), transport, mux, tx));
+        // A cadence is given, so returning is the failure's doing, not a missing refresh.
+        let task = tokio::spawn(run_poll(
+            "src".to_string(),
+            transport,
+            mux,
+            Some(Duration::from_millis(50)),
+            tx,
+        ));
 
         let first = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
             .await
