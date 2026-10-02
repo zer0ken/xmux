@@ -65,9 +65,11 @@ state; raw key and text injection is an unstable low-level surface.
   Every request traces to one of three things: the launch scan, a user action (a
   re-scan, a login, selecting a card, an operation on a session), or a push stream
   that is already open. A push stream is not a repeated request: one connection stays
-  open and the far side speaks over it. A POLL source is enumerated exactly when
-  something asked for it - the launch scan or an explicit re-scan - and never on a
-  cadence of its own, so a machine is never queried for no one. No failure raises its
+  open and the far side speaks over it. A POLL source that ANSWERED is kept current on a
+  cadence only over a path the machine already holds open (the local box, a WSL
+  distribution, or an ssh master this side shares across runs), because a repeat there
+  opens no connection; where every repeat would be a fresh login, it is enumerated only
+  when something asked for it - the launch scan or an explicit re-scan. No failure raises its
   own retry and nothing repeats against a host that stops answering - a request that
   answers a failed request is a retry loop a machine's own defences read as an attack.
   So a dropped channel stays dropped, a dead display keeps its last frame, and an

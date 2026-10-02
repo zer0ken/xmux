@@ -36,6 +36,11 @@ impl Transport for Local {
         true
     }
 
+    /// A local command is a local process: there is no connection to open.
+    fn reuses_connection(&self) -> bool {
+        true
+    }
+
     fn exec_argv(&self, _tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
         let mut args: Vec<String> = Vec::new();
         if let Some(sock) = self.socket.as_deref().filter(|s| !s.is_empty()) {

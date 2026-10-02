@@ -61,12 +61,15 @@ and the composed control argv.
 - Ensuring a source is idempotent: re-ensuring a live source is a no-op.
 - The control argv is composed from the transport and mux axes; no mux verb or
   ssh invocation is hardcoded here.
-- A POLL source is enumerated exactly once when something asks for it - the launch
-  scan or an explicit re-scan - and never on a cadence of its own. Its task runs one
-  enumeration and returns, so a machine is never queried for no one.
-- Re-enumerating a POLL source is abort-and-respawn, and only an explicit re-scan raises
-  it. A host that did not answer is not asked again until that re-scan: selecting the
-  card and a probe both leave a stopped host as it stands.
+- A POLL source is enumerated when something asks for it - the launch scan or an
+  explicit re-scan. Its task then keeps re-enumerating the host on a cadence ONLY when
+  the transport reuses a connection the machine already holds open (the local box, a WSL
+  distribution, an ssh master this side shares), and only while the host keeps answering.
+  Over any other path the task runs one enumeration and returns, because there every
+  repeat is a fresh login.
+- The first failed enumeration ends the task. Re-arming a POLL source is abort-and-respawn,
+  and only an explicit re-scan raises it: selecting the card and a probe both leave a
+  stopped host as it stands.
 - Ensuring a channel is not a request. It opens one a host does not have and leaves a
   host that has one exactly as it stands, which is what lets the input paths call it on
   every keystroke.

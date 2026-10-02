@@ -590,9 +590,13 @@ No failure raises its own retry.
 
 A user action means a re-scan, a login, selecting a card, or an operation on a session.
 A push stream is one connection that stays open while the far side speaks over it, which
-is not a repeated request however much it carries. A POLL source is enumerated exactly
-when something asked for it - the launch scan or an explicit re-scan - and never on a
-cadence of its own, so a machine is never queried for no one.
+is not a repeated request however much it carries. A POLL source that answered is kept
+current on a cadence over a path the machine already holds open: the local box and a WSL
+distribution are a local process, and an ssh machine is reached over the one master this
+side shares across runs, so a repeat there opens no connection and the nav shows what the
+mux is doing now. Where every repeat would be a fresh login (an ssh side that cannot
+multiplex), a POLL source is enumerated only when something asked for it - the launch
+scan or an explicit re-scan. The first enumeration that fails ends the cadence either way.
 
 The rule exists because a request that answers a failed request cannot stop. A machine
 that refuses one connection refuses the next identically, so a client that reconnects on

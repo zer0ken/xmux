@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use super::poll::run_poll;
+use super::poll::{run_poll, POLL_REFRESH};
 use super::{HostClient, HostEvent};
 
 /// The `-CC` control child's argv for `host`, composed across the two orthogonal axes:
@@ -44,7 +44,8 @@ impl HostManager {
     /// Ensures `id`'s metadata channel is live, picking the channel from the host's
     /// `event_source()` - the ONE place that reads it. CONTROL → spawn a `-CC` client
     /// (connect sequence queued by `HostClient::spawn`); POLL → spawn a task that
-    /// re-enumerates on its cadence. A no-op (`Ok(false)`) if the channel is already
+    /// enumerates, and keeps re-enumerating an answering host only over a path the
+    /// machine already holds open. A no-op (`Ok(false)`) if the channel is already
     /// present.
     ///
     /// Ensuring is therefore not a request on its own: it opens a channel a host does not
@@ -52,7 +53,7 @@ impl HostManager {
     /// input paths call it freely - a keystroke on a live card asks the machine nothing.
     ///
     /// A POLL channel is never re-armed from here. A poll task that exists - whether it
-    /// is mid-enumeration or has already returned - reads as present, so `ensure` returns
+    /// is refreshing or has already returned - reads as present, so `ensure` returns
     /// `Ok(false)` rather than respawning it: only an explicit
     /// [`rescan`](Self::rescan) re-arms a poll host. This is what keeps a probe or a
     /// card selection from re-enumerating a host.
@@ -94,10 +95,14 @@ impl HostManager {
                 self.clients.insert(id.to_string(), client);
             }
             crate::model::EventSource::Poll => {
+                // A cadence only over a path the machine already holds open; anywhere else
+                // a repeat is a fresh login, so the host is enumerated once.
+                let refresh = host.transport.reuses_connection().then_some(POLL_REFRESH);
                 let handle = tokio::spawn(run_poll(
                     id.to_string(),
                     host.transport.clone(),
                     host.mux.clone_box(),
+                    refresh,
                     self.events.clone(),
                 ));
                 self.polls.insert(id.to_string(), handle);
@@ -124,8 +129,9 @@ impl HostManager {
     /// again. Branches on which channel the manager holds - it does NOT read the mux's
     /// event source.
     ///
-    /// This is the ONLY thing that re-enumerates a poll host, so every re-enumeration
-    /// traces back to something that asked for one.
+    /// Apart from the refresh a connected host gets over a path it already holds open,
+    /// this is the ONLY thing that re-enumerates a poll host, and the only thing that asks
+    /// a host that stopped answering again.
     pub fn rescan(&mut self, id: &str, host: &crate::model::Host, cols: u16, rows: u16) {
         if let Some(c) = self.clients.get(id) {
             c.list_sessions();
