@@ -36,11 +36,14 @@ AND its display driver, and is re-exported from the root:
 - `abduco/` owns the abduco mux, its listing parser (the bare
   binary IS the listing), its driver (which reattaches on every session change),
   and the one-card-per-session rule. abduco is the simplest implementation: no control
-  stream, no server-socket flag, and no per-session query — a poll enumerates
+  stream, no server-socket flag, and no per-session query; a poll enumerates
   once and resolves each session as the session alone. See `abduco/AGENTS.md`.
 - `screen/` owns the GNU screen mux, its `-ls`
   parser, and its driver (which reattaches on every session change because
   screen offers no client switch). See `screen/AGENTS.md`.
+- `tuios/` owns the tuios JSON listing and its driver, which reattaches on every
+  selection because no external command can retarget a named client. One daemon owns
+  every session, but callers use per-session display semantics. See `tuios/AGENTS.md`.
 
 Sub-modules pull the shared trait, value types, and imports from the parent. A
 mux's driver is constructed by the mux itself, so no caller names a concrete
@@ -54,7 +57,8 @@ seam; each mux's concrete driver lives in its own implementation directory and i
 constructed by the mux, so a mux owns BOTH its argv, server model, and
 enumeration AND its display orchestration. Shared muxes such as tmux use one
 aggregate server and a source-level control stream. Per-session muxes such as psmux,
-zellij, abduco, and screen enumerate differently and supply a per-session attach plan.
+zellij, abduco, screen, and tuios enumerate differently and supply a per-session attach
+plan.
 
 The command-plan verbs default to tmux-compatible argv, so a tmux-compatible mux
 is identity plus a few overrides. A mux that shares no argv with tmux overrides
@@ -84,7 +88,7 @@ it prints are one decision, so they move together.
   values callers use instead of branching on mux names. The mux constructs the
   source's driver, so mux selection lives in the mux implementation and never in a central
   match on server model; the wrapper in `src/driver.rs` only resolves it. tmux
-  keeps one PTY per source with an in-place switch; psmux, zellij, and abduco
+  keeps one PTY per source with an in-place switch; psmux, zellij, abduco, and tuios
   reattach on every change, since none can name a client from outside its own
   session. abduco additionally has no per-session query, so its poll resolves each
   session as the session alone rather than running one.

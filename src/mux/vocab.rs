@@ -12,10 +12,11 @@ pub const SESSION_FORMAT: &str = "#{session_windows}\t#{session_attached}\t#{ses
 /// Whether `key` is a mux session variable that a child spawned by xmux must not
 /// inherit (it would mis-target the server or be refused as nesting). This is the
 /// SSOT for the mux env vars: matches exactly tmux's session markers and any
-/// psmux var; NOT a blanket `TMUX` prefix, which would also drop unrelated vars like
-/// `TMUX_TMPDIR` (selects the socket dir) or `TMUXP_*` (the separate tmuxp tool).
+/// psmux var; and tuios's session markers. This is NOT a blanket `TMUX` prefix,
+/// which would also drop unrelated vars like `TMUX_TMPDIR` (selects the socket dir)
+/// or `TMUXP_*` (the separate tmuxp tool).
 pub fn is_mux_var(key: &str) -> bool {
-    matches!(key, "TMUX" | "TMUX_PANE") || key.starts_with("PSMUX")
+    matches!(key, "TMUX" | "TMUX_PANE" | "TUIOS_SESSION" | "TUIOS_ENV") || key.starts_with("PSMUX")
 }
 
 /// From a set of env var names, the subset that are mux session vars - the keys a
@@ -143,14 +144,17 @@ mod tests {
     }
 
     #[test]
-    fn is_mux_var_matches_exactly_tmux_and_psmux_markers() {
-        // Strips exactly tmux's session markers and psmux vars.
+    fn is_mux_var_matches_mux_session_markers() {
+        // Strips tmux's and tuios's exact session markers and psmux vars.
         assert!(is_mux_var("TMUX"));
         assert!(is_mux_var("TMUX_PANE"));
         assert!(is_mux_var("PSMUX_SESSION"));
+        assert!(is_mux_var("TUIOS_SESSION"));
+        assert!(is_mux_var("TUIOS_ENV"));
         // Keeps unrelated vars that merely share the TMUX prefix.
         assert!(!is_mux_var("TMUXP_LAYOUT")); // tmuxp, a different tool
         assert!(!is_mux_var("TMUX_TMPDIR")); // selects the socket dir - must survive
+        assert!(!is_mux_var("TERM_PROGRAM")); // terminal metadata, not routing state
         assert!(!is_mux_var("PATH"));
     }
 
@@ -159,11 +163,29 @@ mod tests {
         // The caller (display's attach spawner) hands us the current process env
         // keys; we return exactly the mux session vars to strip, order preserved.
         let out = mux_env_keys_to_clear(
-            ["TMUX", "PATH", "PSMUX_SESSION", "TMUX_PANE", "TMUX_TMPDIR"]
-                .into_iter()
-                .map(String::from),
+            [
+                "TMUX",
+                "PATH",
+                "PSMUX_SESSION",
+                "TUIOS_SESSION",
+                "TMUX_PANE",
+                "TUIOS_ENV",
+                "TERM_PROGRAM",
+                "TMUX_TMPDIR",
+            ]
+            .into_iter()
+            .map(String::from),
         );
-        assert_eq!(out, vec!["TMUX", "PSMUX_SESSION", "TMUX_PANE"]);
+        assert_eq!(
+            out,
+            vec![
+                "TMUX",
+                "PSMUX_SESSION",
+                "TUIOS_SESSION",
+                "TMUX_PANE",
+                "TUIOS_ENV"
+            ]
+        );
     }
 
     #[test]

@@ -419,7 +419,7 @@ impl Config {
         for name in self.local.mux.names() {
             if name != "auto" && !crate::mux::is_recognized(&name) {
                 warnings.push(format!(
-                    "local mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen); no source is created for it"
+                    "local mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen/tuios); no source is created for it"
                 ));
             }
         }
@@ -427,7 +427,7 @@ impl Config {
             for name in h.mux.names() {
                 if !crate::mux::is_recognized(&name) {
                     warnings.push(format!(
-                        "host {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen); no source is created for it",
+                        "host {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen/tuios); no source is created for it",
                         h.ssh
                     ));
                 }
@@ -437,7 +437,7 @@ impl Config {
             for name in w.mux.names() {
                 if !crate::mux::is_recognized(&name) {
                     warnings.push(format!(
-                        "wsl {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen); no source is created for it",
+                        "wsl {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen/tuios); no source is created for it",
                         w.distro
                     ));
                 }
@@ -1500,7 +1500,10 @@ mux = "tmux"
     #[test]
     fn value_warnings_flags_unrecognized_mux() {
         // Documented defaults and recognized muxes never warn.
-        for mux in ["", "auto", "tmux", "psmux", "zellij"] {
+        for mux in ["", "auto"]
+            .into_iter()
+            .chain(crate::mux::supported_muxes())
+        {
             let c = Config {
                 local: LocalConfig { mux: mux.into() },
                 ..Default::default()
