@@ -47,6 +47,21 @@ pub enum PtyCmd {
     Resize { cols: u16, rows: u16 },
 }
 
+/// Signals `PtyEvent::Output` for one pump chunk and returns `false` once the app is
+/// gone. A chunk is coalesced into an Output already pending since the last draw, except
+/// the chunk that first leaves something visible on the grid: a parked attachment's
+/// output never causes a draw, so an Output spent on invisible startup bytes would
+/// otherwise hold back the signal for the frame that follows.
+fn notify_output(
+    events: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
+    pending: &AtomicBool,
+    id: u64,
+    first_visible: bool,
+) -> bool {
+    let already_pending = pending.swap(true, Ordering::AcqRel);
+    (already_pending && !first_visible) || events.send(PtyEvent::Output { id }).is_ok()
+}
+
 /// Accumulates pump output into `acc` until ONE whole display-tty marker is seen,
 /// then sets `captured` and stops growing `acc` (a bounded one-shot). After
 /// capture, further reads are ignored here - the marker is xmux's attach shell's
@@ -591,6 +606,7 @@ pub fn spawn_attachment(
                     // on the grid. A client that clears the screen and then waits on its
                     // own terminal queries has produced bytes but no frame, and swapping
                     // it in then would show an empty view.
+                    let first_visible = visible && !painted;
                     if visible {
                         painted = true;
                         let output_at = std::time::Instant::now();
@@ -627,13 +643,11 @@ pub fn spawn_attachment(
                             break 'pump; // the app is gone - stop pumping
                         }
                     }
-                    // Coalesce: signal a redraw only if no Output is already pending
-                    // for this attachment (the app clears it after the next
-                    // draw). Bounds the channel to ≤1 pending event per attachment,
-                    // so a busy unselected session cannot flood the loop.
-                    if !pump_pending.swap(true, Ordering::AcqRel)
-                        && events.send(PtyEvent::Output { id }).is_err()
-                    {
+                    // Coalesce output until the next draw, except for the first chunk
+                    // that makes the grid visible. This bounds each attachment to two
+                    // pending events while ensuring invisible startup output cannot
+                    // hide the frame that follows it.
+                    if !notify_output(&events, &pump_pending, id, first_visible) {
                         break; // the app is gone - stop pumping
                     }
                 }
@@ -828,6 +842,38 @@ mod tests {
         // A query embedded in other bytes is still answered.
         let r = query_responses(b"abc\x1b[6ndef", (0, 0));
         assert_eq!(r, b"\x1b[1;1R");
+    }
+
+    #[test]
+    fn first_visible_chunk_notifies_while_output_is_pending() {
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let pending = AtomicBool::new(false);
+        let mut grid = Grid::new(24, 80);
+        let mut painted = false;
+
+        for chunk in [
+            b"\x1b[6n".as_slice(),
+            b"painted".as_slice(),
+            b" more".as_slice(),
+        ] {
+            grid.feed(chunk);
+            let first_visible = !painted && !grid.is_blank();
+            painted |= first_visible;
+            assert!(notify_output(&events, &pending, 7, first_visible));
+        }
+
+        assert!(matches!(
+            received.try_recv(),
+            Ok(PtyEvent::Output { id: 7 })
+        ));
+        assert!(matches!(
+            received.try_recv(),
+            Ok(PtyEvent::Output { id: 7 })
+        ));
+        assert!(matches!(
+            received.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[test]
