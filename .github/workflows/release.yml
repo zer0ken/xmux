@@ -19,10 +19,13 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             ext: .exe
-          - os: ubuntu-latest
+          # The glibc a Linux build links against is the runner's own, and the binary
+          # then refuses older ones. 22.04 (glibc 2.35) is the oldest release the
+          # Linux builds support, so both Linux targets build there.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             ext: .tar.gz
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             ext: .tar.gz
           # Termux runs on Android's bionic libc, which the glibc Linux builds
@@ -52,6 +55,16 @@ jobs:
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
+      - name: Check the glibc floor
+        if: endsWith(matrix.target, '-unknown-linux-gnu')
+        run: |
+          NEWEST=$(objdump -T "target/${{ matrix.target }}/release/xmux" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "newest required glibc symbol: $NEWEST"
+          [ -n "$NEWEST" ] || { echo "::error::no glibc symbol versions found" >&2; exit 1; }
+          [ "$(printf '%s\nGLIBC_2.35\n' "$NEWEST" | sort -V | tail -1)" = GLIBC_2.35 ] || {
+            echo "::error::the binary needs $NEWEST, newer than the supported GLIBC_2.35" >&2
+            exit 1
+          }
       - name: Stage artifacts
         shell: bash
         run: |
