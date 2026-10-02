@@ -1,8 +1,8 @@
 # xmux: functional requirements & use cases
 
 xmux is a stateless cross-environment session switcher: one terminal that sees and
-moves between every reachable tmux/psmux/zellij/screen/tuios session, local and over ssh,
-regardless of OS or mux kind. Its reason to exist is to deliver tmux's `prefix + s`
+moves between every reachable tmux/psmux/zellij/screen/tuios/herdr session, local and
+over ssh, regardless of OS or mux kind. Its reason to exist is to deliver tmux's `prefix + s`
 (choose-tree / switch-client) experience **across hosts**: instant, in-place
 switching to any host's session.
 
@@ -53,7 +53,7 @@ no function, and no test, so renaming code is never a documentation change.
   the roster still names keeps the sources it is serving, including any that were found by
   asking the machine rather than by configuration.
 - **FR-A6** - A host's mux is identified by what its binary answers as, not by the
-  name it was invoked under, so tmux, psmux, zellij, abduco, screen, and tuios mix freely
+  name it was invoked under, so tmux, psmux, zellij, abduco, screen, tuios, and herdr mix freely
   across hosts with no configuration. Each mux is one implementation behind the mux axis: the
   command plans default to tmux-compatible argv (so a tmux-compatible mux is identity
   plus a few overrides), and a mux that shares no argv with tmux overrides every plan
@@ -66,6 +66,9 @@ no function, and no test, so renaming code is never a documentation change.
   tuios has one daemon for all sessions but the same display behavior: its JSON listing
   answers the whole poll in one command, and every selected session is shown through a
   fresh attachment because no external command can retarget a named client.
+  herdr has one persistent server per session and the same display behavior. Its JSON
+  listing offers only running, reachable sessions, and the first attachment creates a
+  session because herdr has no detached-create command.
 - **FR-A7** - A SOURCE is one mux on one host, so a host running several
   muxes at once contributes one source per mux and every one of them is listed. A `mux`
   value is a name or a LIST of names, in `[local]` and in `[[hosts]]` alike. A host

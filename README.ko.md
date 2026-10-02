@@ -122,10 +122,10 @@ xmux
 
 ## 지원 mux
 
-| 플랫폼     | mux                                               |
-| ---------- | ------------------------------------------------- |
-| unix 계열  | `tmux`, GNU `screen`, `zellij`, `abduco`, `tuios` |
-| Windows    | `psmux`                                           |
+| 플랫폼     | mux                                                        |
+| ---------- | ---------------------------------------------------------- |
+| unix 계열  | `tmux`, GNU `screen`, `zellij`, `abduco`, `tuios`, `herdr` |
+| Windows    | `psmux`, `herdr`                                            |
 
 xmux는 호스트가 어느 바이너리로 응답하는지를 보고 그 호스트의 mux를 판별한다.
 따라서 호스트마다 다른 mux가 설치되어 있어도 설정할 것이 없다.
@@ -259,7 +259,7 @@ exclude = ["bastion", "wsl.docker-desktop"]   # 이 머신들은 목록에서 �
 
 [local]
 mux = "auto"          # "auto"(기본값)는 이 머신에 설치된 mux 전부를 뜻한다.
-                      # ["psmux", "zellij", "abduco", "tuios"]처럼 목록도 받는다.
+                      # ["psmux", "zellij", "abduco", "tuios", "herdr"]처럼 목록도 받는다.
 
 [ui]
 theme = "auto-dark"                  # 내장 ANSI 테마: "auto-dark"(기본값) 또는

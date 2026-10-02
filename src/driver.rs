@@ -251,7 +251,7 @@ pub(crate) mod tests {
     /// answers, so the two conditions are independent and both are load-bearing.
     #[test]
     fn a_mux_that_names_no_variable_has_no_client_to_read() {
-        for bin in ["tmux", "abduco", "screen", "tuios"] {
+        for bin in ["tmux", "abduco", "screen", "tuios", "herdr"] {
             let host = crate::model::Host::new(
                 crate::transport::local(None),
                 crate::mux::for_binary(bin).unwrap(),
@@ -303,6 +303,11 @@ pub(crate) mod tests {
             crate::mux::for_binary("tuios").unwrap(),
         );
         assert_eq!(driver_for(&tuios_host).kind(), "tuios");
+        let herdr_host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("herdr").unwrap(),
+        );
+        assert_eq!(driver_for(&herdr_host).kind(), "herdr");
     }
 
     /// The decision is a Mux method, not a `match` in the app: a Shared host is
@@ -329,7 +334,7 @@ pub(crate) mod tests {
     /// spawner, no live mux.
     #[tokio::test(flavor = "current_thread")]
     async fn seam_show_replaces_per_session_display_attachments() {
-        for bin in ["psmux", "tuios"] {
+        for bin in ["psmux", "tuios", "herdr"] {
             let mut hosts = crate::model::Hosts::default();
             hosts.insert(crate::model::Host::new(
                 crate::transport::local(None),

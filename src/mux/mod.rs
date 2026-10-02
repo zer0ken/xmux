@@ -19,6 +19,7 @@ use crate::transport::Transport;
 
 mod abduco;
 mod control;
+mod herdr;
 mod psmux;
 mod screen;
 mod tmux;
@@ -28,6 +29,7 @@ mod zellij;
 
 pub use abduco::{Abduco, AbducoDriver};
 pub use control::{ControlProtocol, DisplayTtyRead, Line, Notif};
+pub use herdr::{Herdr, HerdrDriver};
 pub use psmux::Psmux;
 pub use screen::Screen;
 pub use tmux::{Tmux, TmuxControl};
@@ -384,6 +386,10 @@ fn known_muxes() -> &'static [MuxKind] {
         MuxKind {
             name: "tuios",
             make: |bin| Box::new(Tuios { bin }),
+        },
+        MuxKind {
+            name: "herdr",
+            make: |bin| Box::new(Herdr { bin }),
         },
     ]
 }
@@ -939,7 +945,7 @@ mod tests {
         let names = supported_muxes();
         assert_eq!(
             names,
-            vec!["tmux", "abduco", "psmux", "zellij", "screen", "tuios"]
+            vec!["tmux", "abduco", "psmux", "zellij", "screen", "tuios", "herdr"]
         );
         for name in names {
             assert_eq!(
@@ -1220,10 +1226,41 @@ Usage: zellij [OPTIONS]",
         assert_eq!(got.attach_plan("api"), argv(&["tuios", "attach", "api"]));
     }
 
+    #[tokio::test]
+    async fn detect_backend_classifies_herdr_by_version_marker() {
+        let transport = crate::transport::local(None);
+        let runner = ProbeRunner::new(None, None)
+            .low_version(Some("herdr 0.9.2-preview.2026-09-29-8e78f929d8f0"));
+        let got = detect_backend(&transport, "herdr", &runner)
+            .await
+            .0
+            .unwrap();
+        assert_eq!(got.kind(), "herdr");
+        assert_eq!(got.server_model(), ServerModel::PerSession);
+        assert_eq!(
+            got.attach_plan("api"),
+            argv(&["herdr", "session", "attach", "api"])
+        );
+    }
+
     #[test]
     fn no_other_mux_claims_tuios_output_as_its_own_identity() {
         let output = "tuios version 0.8.4 [pure-go backend]";
         for kind in ["tmux", "abduco", "psmux", "zellij", "screen"] {
+            let mux = for_binary(kind).unwrap();
+            let outputs = mux
+                .identity_probes()
+                .iter()
+                .map(|_| Some(output.to_string()))
+                .collect::<Vec<_>>();
+            assert_ne!(mux.classify_identity(&outputs), Some(kind), "{kind}");
+        }
+    }
+
+    #[test]
+    fn no_other_mux_claims_herdr_output_as_its_own_identity() {
+        let output = "herdr 0.9.2-preview.2026-09-29-8e78f929d8f0";
+        for kind in ["tmux", "abduco", "psmux", "zellij", "screen", "tuios"] {
             let mux = for_binary(kind).unwrap();
             let outputs = mux
                 .identity_probes()
@@ -1320,6 +1357,7 @@ Usage: zellij [OPTIONS]",
         assert!(is_recognized("psmux"));
         assert!(is_recognized("zellij"));
         assert!(is_recognized("screen"));
+        assert!(is_recognized("herdr"));
         assert!(!is_recognized("byobu"));
         assert!(!is_recognized(""));
     }

@@ -41,8 +41,8 @@ state; raw key and text injection is an unstable low-level surface.
 - `src/transport/` - the TRANSPORT axis: the `Transport` trait, the per-host
   implementations, and the shared shell helpers. A source builds one at construction.
 - `src/mux/` - the MUX axis: the `Mux` trait, the per-mux implementations (`tmux/`,
-  `psmux/`, `zellij/`, `abduco/`, `screen/`, `tuios/`) owning metadata, command plans,
-  and a display driver, and
+  `psmux/`, `zellij/`, `abduco/`, `screen/`, `tuios/`, `herdr/`) owning metadata,
+  command plans, and a display driver, and
   the shared mux builders.
 - `src/model/` - runtime domain values: sources, the action set, and the
   command set.
