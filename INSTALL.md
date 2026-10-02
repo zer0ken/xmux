@@ -245,17 +245,15 @@ This is the universal CLI install and works on any OS with a Rust toolchain
 installed; it is enabled by publishing the crate to crates.io (see the release
 workflow). Linux has no distro-specific package yet.
 
-Prebuilt packages are provided for `x86_64` (most desktop and server
-installations).
-
 ### Prebuilt binary
 
-1. Download `xmux-v<version>-x86_64-unknown-linux-gnu.tar.gz` from the
+1. Download `xmux-v<version>-x86_64-unknown-linux-gnu.tar.gz` on `x86_64`, or
+   `xmux-v<version>-aarch64-unknown-linux-gnu.tar.gz` on `aarch64`, from the
    [releases](https://github.com/zer0ken/xmux/releases) page.
 2. Extract it and move the `xmux` binary onto your `PATH`:
 
 ```sh
-tar -xzf xmux-v<version>-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf xmux-v<version>-<arch>-unknown-linux-gnu.tar.gz
 sudo mv xmux /usr/local/bin/
 ```
 
