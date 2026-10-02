@@ -1183,18 +1183,25 @@ mod tests {
         let got = rem.interactive_attach_command("api");
         assert_eq!(got[0], "ssh");
         assert!(got.iter().any(|s| s == "-t"), "{got:?}");
-        assert_eq!(got.last().unwrap(), "exec tmux attach -t api");
+        assert_eq!(
+            got.last().unwrap(),
+            "sh -lc '{ exec tmux attach -t api\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+        );
     }
 
     #[test]
     fn interactive_attach_remote_psmux_uses_attach_plan_over_ssh() {
         // A REMOTE psmux host is attached the generic way; the attach argv still comes
-        // from Mux::attach_plan (`new-session -A -s`) and is `exec`d over `ssh -t`.
+        // from Mux::attach_plan (`new-session -A -s`) and is `exec`d through the login
+        // shell over `ssh -t`.
         let rem = attach_host("psmux", true);
         let got = rem.interactive_attach_command("api");
         assert_eq!(got[0], "ssh");
         assert!(got.iter().any(|s| s == "-t"), "{got:?}");
-        assert_eq!(got.last().unwrap(), "exec psmux new-session -A -s api");
+        assert_eq!(
+            got.last().unwrap(),
+            "sh -lc '{ exec psmux new-session -A -s api\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+        );
     }
 
     #[test]

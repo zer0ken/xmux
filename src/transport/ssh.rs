@@ -1,8 +1,8 @@
 //! The ssh machine transport: wraps a mux argv in an ssh connection with the
-//! right tty/batch/ControlMaster options. Untrusted argv elements are per-arg
-//! quoted via [`super::vocab::remote_command`].
+//! right tty/batch/ControlMaster options and a quiet login shell. Untrusted argv
+//! elements are per-arg quoted via [`super::vocab::remote_command`].
 
-use super::vocab::{remote_command, RemoteShell};
+use super::vocab::{remote_command, RemoteShell, SHELL_PROBE};
 use super::Transport;
 
 /// Bounds the ssh TCP connect; the per-host scan timeout must exceed it so a
@@ -108,6 +108,24 @@ impl Ssh {
         a.push(self.alias.clone());
         a
     }
+
+    /// Runs a command through the remote's login PATH without letting shell startup
+    /// output enter the command's stdout or stderr.
+    ///
+    /// The outer shell saves ssh's streams on file descriptors 3 and 4, then starts the
+    /// login shell with its ordinary streams pointed at `/dev/null`. The command group restores
+    /// both streams only after login startup has completed. This keeps parsed mux output
+    /// clean, including the control path where ssh allocates a pty and combines streams.
+    fn login_shell_command(&self, command: &str) -> String {
+        if !self.shell.runs_posix_snippets() {
+            return command.to_string();
+        }
+        // The group carries the restoring redirection for every command in a multi-command
+        // snippet, not only the last one; the newline lets a snippet end in `;` or `&`.
+        let command = format!("{{ {command}\n}} 1>&3 2>&4");
+        let shell = remote_command(&["sh".into(), "-lc".into(), command]);
+        format!("{shell} 3>&1 4>&2 1>/dev/null 2>/dev/null")
+    }
 }
 
 impl Transport for Ssh {
@@ -148,7 +166,7 @@ impl Transport for Ssh {
 
     fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
         let mut args = self.ssh_opts(tty);
-        args.push(remote_command(mux_argv));
+        args.push(self.login_shell_command(&remote_command(mux_argv)));
         ("ssh".into(), args)
     }
 
@@ -167,7 +185,7 @@ impl Transport for Ssh {
             attach
         };
         let mut args = self.ssh_opts(true);
-        args.push(remote_cmd);
+        args.push(self.login_shell_command(&remote_cmd));
         ("ssh".into(), args)
     }
 
@@ -176,18 +194,27 @@ impl Transport for Ssh {
     fn control_argv(&self, mux_control_argv: &[String]) -> Vec<String> {
         let mut args = vec!["-tt".to_string()];
         args.extend(self.ssh_opts(false));
-        args.push(remote_command(mux_control_argv));
+        args.push(self.login_shell_command(&remote_command(mux_control_argv)));
         let mut v = vec!["ssh".to_string()];
         v.extend(args);
         v
     }
 
-    /// Joins a raw remote shell command behind the ssh options. The caller must
-    /// `quote` any untrusted value inside `remote_cmd` (see [`super::vocab::quote`]).
+    /// Joins a raw remote shell command behind the ssh options. A POSIX command uses the
+    /// same quiet login shell as mux argv, except for the shell-family probe that decides
+    /// whether POSIX syntax is valid. The caller must `quote` any untrusted value inside
+    /// `remote_cmd` (see [`super::vocab::quote`]).
     fn raw_shell_argv(&self, remote_cmd: &str) -> Option<Vec<String>> {
         let mut v = vec!["ssh".to_string()];
         v.extend(self.ssh_opts(false));
-        v.push(remote_cmd.to_string());
+        // The probe must reach the account's default shell directly: it is how xmux
+        // learns whether POSIX syntax, including this login wrapper, is valid there.
+        let command = if remote_cmd == SHELL_PROBE {
+            remote_cmd.to_string()
+        } else {
+            self.login_shell_command(remote_cmd)
+        };
+        v.push(command);
         Some(v)
     }
 
@@ -302,7 +329,7 @@ mod tests {
         let mut t = ssh("prod", "linux", "");
         assert_eq!(
             t.interactive_attach_argv(&attach).1.last().unwrap(),
-            "exec tmux attach -t api",
+            "sh -lc '{ exec tmux attach -t api\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null",
             "a POSIX remote keeps the exec"
         );
 
@@ -348,7 +375,28 @@ mod tests {
         let (n, a) =
             ssh("prod", "linux", "").exec_argv(false, &argv(&["tmux", "kill-session", "-t", "x"]));
         assert_eq!(n, "ssh");
-        assert_eq!(a.last().unwrap(), "tmux kill-session -t x");
+        assert_eq!(
+            a.last().unwrap(),
+            "sh -lc '{ tmux kill-session -t x\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+        );
+    }
+
+    #[test]
+    fn login_shell_wrapper_preserves_quoted_mux_arguments() {
+        let (_n, a) = ssh("prod", "linux", "").exec_argv(
+            false,
+            &argv(&[
+                "tmux",
+                "rename-session",
+                "-t",
+                "old",
+                "evil'; touch /tmp/pwned; echo '",
+            ]),
+        );
+        assert_eq!(
+            a.last().unwrap(),
+            "sh -lc '{ tmux rename-session -t old '\\''evil'\\''\\'\\'''\\''; touch /tmp/pwned; echo '\\''\\'\\'''\\'''\\''\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+        );
     }
 
     #[test]
@@ -360,7 +408,10 @@ mod tests {
             got.iter().any(|s: &String| s.contains("BatchMode=yes")),
             "{got:?}"
         );
-        assert_eq!(got.last().unwrap(), "tmux -CC attach");
+        assert_eq!(
+            got.last().unwrap(),
+            "sh -lc '{ tmux -CC attach\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+        );
     }
 
     #[test]
@@ -369,7 +420,10 @@ mod tests {
             .raw_shell_argv("c=$(tty); echo $c")
             .unwrap();
         assert_eq!(got[0], "ssh");
-        assert_eq!(got.last().unwrap(), "c=$(tty); echo $c");
+        assert_eq!(
+            got.last().unwrap(),
+            "sh -lc '{ c=$(tty); echo $c\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+        );
         assert!(
             got.iter().any(|s: &String| s.contains("BatchMode=yes")),
             "{got:?}"
@@ -487,6 +541,17 @@ mod tests {
         assert_eq!(n, "ssh");
         assert!(a.iter().any(|s| s == "-t"), "{a:?}");
         assert!(!a.join(" ").contains("BatchMode"), "{a:?}");
-        assert_eq!(a.last().unwrap(), "exec tmux attach -t api");
+        assert_eq!(
+            a.last().unwrap(),
+            "sh -lc '{ exec tmux attach -t api\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+        );
+    }
+
+    #[test]
+    fn shell_probe_stays_direct_until_the_remote_shell_is_known() {
+        let got = ssh("prod", "linux", "")
+            .raw_shell_argv(super::super::vocab::SHELL_PROBE)
+            .unwrap();
+        assert_eq!(got.last().unwrap(), "echo $0");
     }
 }

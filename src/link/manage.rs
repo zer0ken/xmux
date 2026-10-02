@@ -262,7 +262,7 @@ mod tests {
 
     // Each op composes the Mux plan through the Transport and runs it via the
     // injected runner: for a REMOTE host the recorded command is `ssh …` and the
-    // trailing arg is the mux argv joined per-arg-quoted.
+    // trailing arg is the per-arg-quoted mux argv inside the quiet login shell.
     #[tokio::test]
     async fn create_remote_wraps_new_session_in_ssh() {
         let fr = RecordingRunner::new("api\n", false);
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(fr.name(), "ssh");
         assert_eq!(
             fr.args().last().unwrap(),
-            "tmux new-session -A -d -P -F '#{session_name}' -s api"
+            "sh -lc '{ tmux new-session -A -d -P -F '\\''#{session_name}'\\'' -s api\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
         );
     }
 }
