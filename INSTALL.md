@@ -17,10 +17,10 @@ irm https://github.com/zer0ken/xmux/releases/latest/download/install.ps1 | iex
 curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.cmd -o install.cmd && install.cmd && del install.cmd
 ```
 
-The first line is for macOS, Linux, WSL and Android Termux, the second for Windows PowerShell,
-and the third for Windows CMD. The CMD script installs nothing of its own: it
-hands the install to the PowerShell script from the same release, so all three
-end in the same install.
+The first line is for macOS, Linux, WSL and Android Termux, the second for
+Windows PowerShell, and the third for Windows CMD. The CMD script installs
+nothing of its own: it hands the install to the PowerShell script from the same
+release, so all three end in the same install.
 
 The script reads which OS and architecture it is running on, downloads that
 build from the latest release, and refuses to install it unless its SHA-256
@@ -86,8 +86,8 @@ Running xmux needs `ssh` on the machine that runs it, for remote hosts, and a
 supported multiplexer on each host you target: `tmux`, GNU `screen`, `zellij`,
 `abduco`, or `tuios` on unix-likes, and `psmux` on Windows. A host's multiplexer is
 detected from the binary it answers as, so a mix across your hosts needs no
-configuration. See the [README](README.md) for what the program does and how to
-use it.
+configuration. Termux ships without `ssh`; `pkg install openssh` adds it. See
+the [README](README.md) for what the program does and how to use it.
 
 ---
 
@@ -296,13 +296,39 @@ This places the `xmux` command on your `PATH` (commonly under
 
 ### Install script
 
+In Termux:
+
 ```sh
 curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh
 ```
 
 The build is published for `aarch64` and needs Android 7.0 or later. It is linked
 against Android's own libc, so it runs inside Termux, where the Linux builds cannot
-load. `xmux update` fetches the same build.
+load. The script adds `~/.local/bin` to `PATH` in your shell profile, and Termux's
+bash reads `~/.bashrc` in every new session, so a new session picks it up.
+
+### Prebuilt binary
+
+Download the archive inside Termux and extract it into Termux's own `bin`
+directory, which is already on `PATH`:
+
+```sh
+curl -fLO https://github.com/zer0ken/xmux/releases/download/v<version>/xmux-v<version>-aarch64-linux-android.tar.gz
+tar -xzf xmux-v<version>-aarch64-linux-android.tar.gz -C "$PREFIX/bin"
+```
+
+Android mounts shared storage without execute permission, so a binary saved to
+the Downloads folder by a browser cannot run from there.
+
+### From source
+
+```sh
+pkg install rust
+cargo install xmux
+```
+
+`cargo install` places the `xmux` command in `~/.cargo/bin`, which is not on
+`PATH` until you add it.
 
 ---
 
