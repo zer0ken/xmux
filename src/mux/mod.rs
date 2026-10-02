@@ -30,6 +30,7 @@ pub use abduco::{Abduco, AbducoDriver};
 pub use control::{ControlProtocol, DisplayTtyRead, Line, Notif};
 pub use psmux::Psmux;
 pub use screen::Screen;
+pub(crate) use tmux::display_tty_key;
 pub use tmux::{Tmux, TmuxControl};
 pub use tuios::{Tuios, TuiosDriver};
 pub use zellij::Zellij;

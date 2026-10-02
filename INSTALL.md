@@ -233,7 +233,8 @@ This places the `xmux` command on your `PATH` (commonly under
 curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh
 ```
 
-Builds are published for `x86_64` and `aarch64`.
+Builds are published for `x86_64` and `aarch64`, and need glibc 2.35 or newer
+(Ubuntu 22.04 or a distro of the same age).
 
 ### Package manager
 
