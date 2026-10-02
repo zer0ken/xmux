@@ -647,6 +647,11 @@ impl Runtime {
         // the modal/view reconciliation).
         let modal_kind = self.state.modal_kind();
         self.state.focus.sync_modal(modal_kind);
+        // The nav decides its host band on the move into the terminal view. The view
+        // behind a modal counts as the focused one: a popup over the terminal view is not
+        // a move back into the nav.
+        self.switcher
+            .sync_view_focus(!self.state.focus.view_is_nav());
         // The single owner of the effective nav width: reconcile it to the focus + the
         // hide setting + any natural-width change. On a change, resize the PTYs so the
         // mux reflows, and mark dirty.

@@ -328,6 +328,15 @@ pub struct Switcher {
     /// toggle. The filter naming a hidden host keeps its card, which is the
     /// unreachable screen's one entry point.
     hide_unreachable: bool,
+    /// Whether the terminal view held the focus at the last [`Switcher::sync_view_focus`],
+    /// so the move from the nav into the terminal view is seen as the one edge it is.
+    terminal_view: bool,
+    /// Whether the nav leaves its host band unpainted. Decided on the move into the
+    /// terminal view: a session card selected then hides the band, since what the user
+    /// went to look at is a session and the hosts with nothing to show are only noise
+    /// beside it; a host card selected keeps it, since the screen beside the nav is that
+    /// host's own. Cleared on the move back into the nav.
+    host_band_hidden: bool,
 
     list_state: ListState,
     nav_inner: Rect,
@@ -377,6 +386,8 @@ impl Switcher {
             terminal_view_target: TerminalViewTarget::default(),
             own_session: None,
             hide_unreachable: false,
+            terminal_view: false,
+            host_band_hidden: false,
             list_state: ListState::default(),
             nav_inner: Rect::default(),
             nav_cells: Vec::new(),
@@ -429,6 +440,18 @@ impl Switcher {
         }
         self.hide_unreachable = on;
         self.rebuild(state);
+    }
+
+    /// Tells the nav which view holds the focus, the one behind a modal included. The
+    /// move from the nav into the terminal view decides whether the host band is hidden
+    /// (see `host_band_hidden`); the move back into the nav shows it again.
+    pub fn sync_view_focus(&mut self, terminal: bool) {
+        if terminal && !self.terminal_view {
+            self.host_band_hidden = matches!(self.current_ref(), Some(RowRef::Session { .. }));
+        } else if !terminal {
+            self.host_band_hidden = false;
+        }
+        self.terminal_view = terminal;
     }
 
     /// Whether `(source, target)` addresses the session xmux is ITSELF running in.
@@ -559,6 +582,27 @@ impl Switcher {
         self.rows
             .iter()
             .position(|r| matches!(r.reference, RowRef::Host { .. }))
+    }
+
+    /// How many rows the nav paints: every row, or only the rows above the host band
+    /// while it is hidden. The rows themselves stay whole, so the card numbers, the
+    /// selection and the keys that walk the list are the same whether the band shows.
+    fn painted_rows(&self) -> usize {
+        if self.host_band_hidden {
+            self.band_boundary().unwrap_or(self.rows.len())
+        } else {
+            self.rows.len()
+        }
+    }
+
+    /// The band boundary as the paint sees it: none while the host band is hidden, since
+    /// there is no second band on screen to part from the first.
+    fn painted_boundary(&self) -> Option<usize> {
+        if self.host_band_hidden {
+            None
+        } else {
+            self.band_boundary()
+        }
     }
 
     /// The index of the section title the SELECTED row hangs under: the Section row
