@@ -1058,7 +1058,8 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
         let id = attachment.id();
         assert!(
             matches!(
-                h.display.resolve_ready(&key, seq, id),
+                h.display
+                    .resolve_ready(&key, seq, id, false, None, std::time::Instant::now()),
                 crate::model::ReadyOutcome::Install { .. }
             ),
             "the current reply installs"
@@ -1094,8 +1095,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
     assert!(h.display.in_flight_contains("local"));
     assert!(
         registry.contains("local"),
-        "old psmux display attach is HELD on screen until the reattach is ready \
-             (stale-while-revalidate); DisplayReady swaps it in and tears the old down"
+        "old psmux display attach is HELD on screen until the reattach paints"
     );
 }
 
@@ -1150,8 +1150,7 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
     assert!(h.display.in_flight_contains("local"));
     assert!(
         registry.contains("local"),
-        "psmux select_attach requests a reattach even when bookkeeping is stale, but \
-             HOLDS the prior grid on screen until DisplayReady swaps in the fresh one"
+        "psmux select_attach requests a reattach while holding the prior grid until paint"
     );
 }
 
@@ -3596,10 +3595,123 @@ async fn a_warm_attach_for_another_host_does_not_take_the_terminal_view() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_attach_for_the_selected_host_takes_the_terminal_view() {
-    // The floor under the test above: the attach the selection IS displayed through
-    // confirms as the view, so the rule that keeps a warm attach out cannot keep the
-    // real one out too.
+async fn ready_holds_the_stale_frame_until_the_fresh_attachment_paints() {
+    let mut rt = a_settled_psmux_runtime();
+    rt.state.selection.session = "b".into();
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .set_shows("local", "b");
+    the_reattach_lands_for(&mut rt, 11, "b");
+
+    assert_eq!(
+        rt.registry.get("local").map(|att| att.id()),
+        Some(OWN_CLIENT)
+    );
+    assert_eq!(
+        rt.registry.pending_address_of_id(OWN_CLIENT + 3).as_deref(),
+        Some("local")
+    );
+    assert_eq!(
+        rt.state.displayed.session, "a",
+        "Ready alone keeps the stale frame confirmed"
+    );
+
+    let debounce_start = std::time::Instant::now();
+    rt.drive_attach_beat(debounce_start);
+    rt.drive_attach_beat(
+        debounce_start + std::time::Duration::from_millis(crate::state::ATTACH_DEBOUNCE_MS + 1),
+    );
+    assert_eq!(
+        rt.registry.pending_address_of_id(OWN_CLIENT + 3).as_deref(),
+        Some("local"),
+        "the attach debounce treats a paint-pending client as work already underway"
+    );
+    assert_eq!(
+        rt.state.displayed.session, "a",
+        "the pending client cannot confirm before its paint gate opens"
+    );
+
+    // Output that has left nothing visible (a clear-screen, terminal queries) must not
+    // open the paint gate: the fresh grid is still empty.
+    let unpainted_at = std::time::Instant::now();
+    rt.note_pending_output(OWN_CLIENT + 3);
+    assert!(
+        !rt.promote_due_pending(unpainted_at + crate::model::host::PAINT_SETTLE),
+        "bytes without a visible frame keep the stale frame up"
+    );
+    assert_eq!(rt.state.displayed.session, "a");
+
+    let output_at = std::time::Instant::now();
+    rt.registry
+        .mark_pending_painted_for_test(OWN_CLIENT + 3, output_at);
+    rt.note_pending_output(OWN_CLIENT + 3);
+    assert!(rt.promote_due_pending(output_at + crate::model::host::PAINT_SETTLE));
+    assert_eq!(
+        rt.registry.get("local").map(|att| att.id()),
+        Some(OWN_CLIENT + 3),
+        "the painted attachment replaces the stale one"
+    );
+    assert_eq!(
+        rt.state.displayed.session, "b",
+        "the painted selected attachment confirms the view"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn first_display_installs_immediately_without_a_stale_attachment() {
+    let mut rt = a_settled_psmux_runtime();
+    rt.registry.remove("local");
+    rt.state.selection = Selection {
+        source: "local".into(),
+        session: "b".into(),
+    };
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .set_shows("local", "b");
+
+    the_reattach_lands_for(&mut rt, 11, "b");
+
+    assert_eq!(
+        rt.registry.get("local").map(|att| att.id()),
+        Some(OWN_CLIENT + 3)
+    );
+    assert!(rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_none());
+    assert_eq!(rt.state.displayed.session, "b");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_exit_retires_the_stale_attachment_and_applies_the_exit() {
+    let mut rt = a_settled_psmux_runtime();
+    rt.state.selection = Selection {
+        source: "local".into(),
+        session: "b".into(),
+    };
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .set_shows("local", "b");
+    the_reattach_lands_for(&mut rt, 11, "b");
+    let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    rt.on_pty_event(PtyEvent::Exited { id: OWN_CLIENT + 3 }, &mut rx);
+
+    assert!(!rt.registry.contains("local"));
+    assert_eq!(rt.registry.address_of_id(OWN_CLIENT), None);
+    assert_eq!(rt.registry.address_of_id(OWN_CLIENT + 3), None);
+    assert!(
+        rt.registry.grid("local").is_some(),
+        "the exited fresh attachment leaves its own final grid"
+    );
+    assert_eq!(rt.state.displayed.session, "b");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn newer_request_tears_down_the_older_pending_attachment() {
     let mut rt = a_settled_psmux_runtime();
     rt.hosts
         .get_mut("local")
@@ -3607,10 +3719,31 @@ async fn an_attach_for_the_selected_host_takes_the_terminal_view() {
         .display
         .set_shows("local", "b");
     the_reattach_lands_for(&mut rt, 11, "b");
-    assert_eq!(
-        rt.state.displayed.session, "b",
-        "the selected host's landed attach is the view"
+    assert!(rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_some());
+
+    let id = request_attach(
+        &mut rt.registry,
+        &rt.worker,
+        &mut rt.hosts.get_mut("local").unwrap().display,
+        &mut rt.attach_seq,
+        "local",
+        vec!["fake".into()],
+        (80, 24),
     );
+
+    assert!(
+        rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_none(),
+        "the superseded pending PTY is no longer owned"
+    );
+    assert_eq!(
+        rt.hosts
+            .get("local")
+            .unwrap()
+            .display
+            .in_flight_seq("local"),
+        Some(rt.attach_seq)
+    );
+    assert_ne!(id, OWN_CLIENT + 3);
 }
 
 /// Lands a worker `Ready` on the local host under `seq`, answering for `session`.

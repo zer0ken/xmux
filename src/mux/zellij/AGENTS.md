@@ -74,7 +74,8 @@ behaves as though there were none to read.
   the display decision finds a belief the client backs, and the client the user
   just moved is never torn down to reach the session it is already in.
 - On a reattach the stale attachment is HELD, not removed, so its grid stays on
-  screen until the fresh one is ready (stale-while-revalidate).
+  screen until the fresh attachment paints or reaches its bounded wait
+  (stale-while-revalidate). Input goes to the fresh attachment while it waits.
 - Sync never pre-warms, since attaches are selected on demand when a session is
   shown; it only reaps the source PTY when the source has no sessions left.
 

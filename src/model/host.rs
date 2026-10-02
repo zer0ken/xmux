@@ -5,6 +5,7 @@
 //! the bookkeeping of which session each attachment shows.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use crate::link::HostInventory;
 use crate::model::source::Runner;
@@ -54,6 +55,40 @@ pub struct HostDisplay {
     /// pre-Ready Exited (registry has no id yet) can be attributed to THIS host's
     /// reaped_ids. Cleared when the attachment registers (Ready) or fails.
     pending: std::collections::HashMap<u64, String>,
+    /// Fresh attachments held off-screen until their grid has painted enough to replace
+    /// the live stale frame. The PTYs themselves remain owned by the display registry.
+    painting: HashMap<String, PendingPaint>,
+}
+
+/// Quiet time after visible output that lets a fresh attachment finish one visual burst
+/// before replacing the stale frame. Output counts only once the fresh grid shows
+/// something, since a client that clears the screen and waits on its own terminal
+/// queries has sent bytes but no frame.
+pub(crate) const PAINT_SETTLE: Duration = Duration::from_millis(50);
+
+/// Maximum time continuous output may postpone a swap, counted from the first visible
+/// output, so a chatty client cannot keep the stale frame indefinitely.
+pub(crate) const PAINT_HARD_CAP: Duration = Duration::from_millis(400);
+
+/// Maximum time a fresh attachment may go without a visible frame before it replaces the
+/// stale frame, so a silent or stalled client cannot freeze the old session indefinitely.
+pub(crate) const PAINT_NO_OUTPUT_CAP: Duration = Duration::from_secs(3);
+
+#[derive(Debug)]
+struct PendingPaint {
+    id: u64,
+    shown: String,
+    ready_at: Instant,
+    first_output: Option<Instant>,
+    last_output: Option<Instant>,
+}
+
+/// A fresh attachment whose paint gate has opened and may replace the stale attachment.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PendingInstall {
+    pub(crate) key: String,
+    pub(crate) id: u64,
+    pub(crate) shown: String,
 }
 
 /// How a worker `Ready` reply resolves against a host's display bookkeeping — the
@@ -67,6 +102,13 @@ pub enum ReadyOutcome {
     /// This reply is the latest in-flight request for its key — install it as the live
     /// grid. `shown` is the session it displays (the confirmed display truth).
     Install { shown: String },
+    /// This reply is current, but a live attachment still supplies the key's visible
+    /// frame. Park the fresh attachment until it paints. `replaced` identifies an older
+    /// parked attachment superseded under the same key.
+    Hold {
+        shown: String,
+        replaced: Option<u64>,
+    },
     /// A newer attach superseded this seq — tear it down without touching the key's
     /// in-flight seq (the newer request owns it).
     TearDownStale,
@@ -99,6 +141,7 @@ impl HostDisplay {
         self.current.remove(key);
         self.in_flight.remove(key);
         self.pending.retain(|_, k| k != key);
+        self.painting.remove(key);
     }
 
     /// True when an attach is in flight for `key` (a spawn requested, its `Ready`/`Failed`
@@ -117,6 +160,11 @@ impl HostDisplay {
         self.in_flight.get(key).copied()
     }
 
+    /// True while a fresh attachment for `key` is parked until its grid paints.
+    pub(crate) fn pending_paint_contains(&self, key: &str) -> bool {
+        self.painting.contains_key(key)
+    }
+
     /// True when a worker `Ready`/`Failed` reply carrying `seq` is still the latest
     /// in-flight request for `key`. A stale reply (the key was re-requested after a reap,
     /// so a newer seq is in flight, or the key is no longer in flight) must not
@@ -131,7 +179,15 @@ impl HostDisplay {
     /// installs (clears in-flight + pending, returns the shown session); a stale seq
     /// tears down (clears only this id's pending). The run loop performs the registry
     /// install/teardown the outcome names — this owns only the bookkeeping decision.
-    pub fn resolve_ready(&mut self, key: &str, seq: u64, id: u64) -> ReadyOutcome {
+    pub fn resolve_ready(
+        &mut self,
+        key: &str,
+        seq: u64,
+        id: u64,
+        hold_for_paint: bool,
+        output_times: Option<(Instant, Instant)>,
+        now: Instant,
+    ) -> ReadyOutcome {
         if self.reaped_ids.remove(&id) {
             // Clear the in-flight slot only when THIS reaped reply is still the current
             // one. A reattach-flap can request a newer attach for the same key after the
@@ -147,7 +203,24 @@ impl HostDisplay {
             self.in_flight.remove(key);
             self.pending.remove(&id);
             let shown = self.current.get(key).cloned().unwrap_or_default();
-            ReadyOutcome::Install { shown }
+            if hold_for_paint {
+                let replaced = self
+                    .painting
+                    .insert(
+                        key.to_string(),
+                        PendingPaint {
+                            id,
+                            shown: shown.clone(),
+                            ready_at: now,
+                            first_output: output_times.map(|(first, _)| first),
+                            last_output: output_times.map(|(_, last)| last),
+                        },
+                    )
+                    .map(|old| old.id);
+                ReadyOutcome::Hold { shown, replaced }
+            } else {
+                ReadyOutcome::Install { shown }
+            }
         } else {
             self.pending.remove(&id);
             ReadyOutcome::TearDownStale
@@ -176,6 +249,67 @@ impl HostDisplay {
             true
         } else {
             false
+        }
+    }
+
+    /// Records output from a parked attachment. Returns whether this host owns `id`.
+    pub(crate) fn note_pending_output(&mut self, id: u64, now: Instant) -> bool {
+        let Some(pending) = self.painting.values_mut().find(|pending| pending.id == id) else {
+            return false;
+        };
+        pending.first_output.get_or_insert(now);
+        pending.last_output = Some(now);
+        true
+    }
+
+    /// Takes every parked attachment whose paint gate has opened at `now`.
+    pub(crate) fn take_due_pending(&mut self, now: Instant) -> Vec<PendingInstall> {
+        let due: Vec<String> = self
+            .painting
+            .iter()
+            .filter(|(_, pending)| pending.is_due(now))
+            .map(|(key, _)| key.clone())
+            .collect();
+        due.into_iter()
+            .filter_map(|key| {
+                self.painting.remove(&key).map(|pending| PendingInstall {
+                    key,
+                    id: pending.id,
+                    shown: pending.shown,
+                })
+            })
+            .collect()
+    }
+
+    /// Takes a parked attachment that exited before its paint gate opened.
+    pub(crate) fn take_pending_exit(&mut self, id: u64) -> Option<PendingInstall> {
+        let key = self
+            .painting
+            .iter()
+            .find(|(_, pending)| pending.id == id)
+            .map(|(key, _)| key.clone())?;
+        let pending = self.painting.remove(&key)?;
+        Some(PendingInstall {
+            key,
+            id: pending.id,
+            shown: pending.shown,
+        })
+    }
+
+    /// Cancels the parked attachment under `key` when a newer request supersedes it.
+    pub(crate) fn cancel_pending_paint(&mut self, key: &str) -> Option<u64> {
+        self.painting.remove(key).map(|pending| pending.id)
+    }
+}
+
+impl PendingPaint {
+    fn is_due(&self, now: Instant) -> bool {
+        match (self.first_output, self.last_output) {
+            (Some(first), Some(last)) => {
+                now.saturating_duration_since(last) >= PAINT_SETTLE
+                    || now.saturating_duration_since(first) >= PAINT_HARD_CAP
+            }
+            _ => now.saturating_duration_since(self.ready_at) >= PAINT_NO_OUTPUT_CAP,
         }
     }
 }
@@ -557,7 +691,7 @@ mod tests {
         // Exited raced ahead of Ready: tear the fresh attachment down and clear
         // the key's in-flight + this id's pending so nothing leaks.
         assert_eq!(
-            d.resolve_ready("local/w", 3, 42),
+            d.resolve_ready("local/w", 3, 42, false, None, Instant::now()),
             ReadyOutcome::TearDownReaped
         );
         assert!(!d.in_flight_contains("local/w"), "in-flight cleared");
@@ -577,7 +711,7 @@ mod tests {
         // The late Ready for the DEAD id (seq=3) tears its own attachment down but must
         // NOT clear the newer in-flight seq=7, or the live attach resolves as stale.
         assert_eq!(
-            d.resolve_ready("local/w", 3, 42),
+            d.resolve_ready("local/w", 3, 42, false, None, Instant::now()),
             ReadyOutcome::TearDownReaped
         );
         assert_eq!(
@@ -600,7 +734,7 @@ mod tests {
         d.mark_in_flight("local/w", 3);
         d.pending.insert(42, "local/w".into());
         assert_eq!(
-            d.resolve_ready("local/w", 3, 42),
+            d.resolve_ready("local/w", 3, 42, false, None, Instant::now()),
             ReadyOutcome::Install {
                 shown: "work".into()
             }
@@ -621,7 +755,7 @@ mod tests {
         d.mark_in_flight("local/w", 9); // a newer seq is in flight
         d.pending.insert(42, "local/w".into());
         assert_eq!(
-            d.resolve_ready("local/w", 3, 42),
+            d.resolve_ready("local/w", 3, 42, false, None, Instant::now()),
             ReadyOutcome::TearDownStale
         );
         assert!(
@@ -657,6 +791,117 @@ mod tests {
         assert!(
             !d.mark_reaped_if_pending(99),
             "an id we never spawned is not ours"
+        );
+    }
+
+    fn hold_ready(d: &mut HostDisplay, now: Instant, id: u64) -> ReadyOutcome {
+        d.set_shows("local", "fresh");
+        d.mark_in_flight("local", id);
+        d.mark_pending(id, "local");
+        d.resolve_ready("local", id, id, true, None, now)
+    }
+
+    #[test]
+    fn host_display_holds_a_current_ready_for_paint() {
+        let now = Instant::now();
+        let mut d = HostDisplay::default();
+        assert_eq!(
+            hold_ready(&mut d, now, 7),
+            ReadyOutcome::Hold {
+                shown: "fresh".into(),
+                replaced: None,
+            }
+        );
+        assert!(!d.in_flight_contains("local"));
+        assert!(d.take_due_pending(now + PAINT_SETTLE).is_empty());
+    }
+
+    #[test]
+    fn pending_paint_swaps_after_output_settles() {
+        let now = Instant::now();
+        let mut d = HostDisplay::default();
+        hold_ready(&mut d, now, 7);
+        assert!(d.note_pending_output(7, now + Duration::from_millis(10)));
+        assert!(d
+            .take_due_pending(now + Duration::from_millis(59))
+            .is_empty());
+        assert_eq!(
+            d.take_due_pending(now + Duration::from_millis(60)),
+            vec![PendingInstall {
+                key: "local".into(),
+                id: 7,
+                shown: "fresh".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn output_that_precedes_ready_still_opens_the_settle_gate() {
+        let now = Instant::now();
+        let first = now - Duration::from_millis(100);
+        let mut d = HostDisplay::default();
+        d.set_shows("local", "fresh");
+        d.mark_in_flight("local", 7);
+        d.mark_pending(7, "local");
+        assert!(matches!(
+            d.resolve_ready("local", 7, 7, true, Some((first, now)), now),
+            ReadyOutcome::Hold { .. }
+        ));
+        let just_before_cap = first + PAINT_HARD_CAP - Duration::from_millis(1);
+        d.note_pending_output(7, just_before_cap);
+        assert!(d.take_due_pending(just_before_cap).is_empty());
+        assert_eq!(d.take_due_pending(first + PAINT_HARD_CAP)[0].id, 7);
+    }
+
+    #[test]
+    fn continuous_output_swaps_at_the_hard_cap() {
+        let now = Instant::now();
+        let mut d = HostDisplay::default();
+        hold_ready(&mut d, now, 7);
+        d.note_pending_output(7, now + Duration::from_millis(10));
+        for ms in [50, 100, 200, 300, 409] {
+            d.note_pending_output(7, now + Duration::from_millis(ms));
+            assert!(d
+                .take_due_pending(now + Duration::from_millis(ms))
+                .is_empty());
+        }
+        assert_eq!(
+            d.take_due_pending(now + Duration::from_millis(410))[0].id,
+            7
+        );
+    }
+
+    #[test]
+    fn silent_pending_swaps_at_the_no_output_cap() {
+        let now = Instant::now();
+        let mut d = HostDisplay::default();
+        hold_ready(&mut d, now, 7);
+        assert!(d
+            .take_due_pending(now + PAINT_NO_OUTPUT_CAP - Duration::from_millis(1))
+            .is_empty());
+        assert_eq!(d.take_due_pending(now + PAINT_NO_OUTPUT_CAP)[0].id, 7);
+    }
+
+    #[test]
+    fn newer_pending_replaces_the_older_and_exit_can_take_it() {
+        let now = Instant::now();
+        let mut d = HostDisplay::default();
+        hold_ready(&mut d, now, 7);
+        assert_eq!(
+            hold_ready(&mut d, now + Duration::from_millis(1), 8),
+            ReadyOutcome::Hold {
+                shown: "fresh".into(),
+                replaced: Some(7),
+            }
+        );
+        assert!(d.take_pending_exit(7).is_none());
+        assert_eq!(
+            d.take_pending_exit(8),
+            Some(PendingInstall {
+                key: "local".into(),
+                id: 8,
+                shown: "fresh".into(),
+            })
         );
     }
 

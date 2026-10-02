@@ -527,7 +527,7 @@ fn selection_attach_in_flight(hosts: &crate::model::Hosts, selection: &Selection
     let key = display_key(hosts, selection);
     hosts
         .get(&selection.source)
-        .map(|h| h.display.in_flight_contains(&key))
+        .map(|h| h.display.in_flight_contains(&key) || h.display.pending_paint_contains(&key))
         .unwrap_or(false)
 }
 
@@ -545,6 +545,10 @@ pub(crate) fn request_attach(
     argv: Vec<String>,
     size: (u16, u16),
 ) -> u64 {
+    // A new request owns this key. Any fresh attachment still waiting to paint belongs
+    // to the superseded selection and must not receive input or survive as an orphan.
+    display.cancel_pending_paint(key);
+    registry.remove_pending(key);
     let id = registry.alloc_id();
     *attach_seq += 1;
     // The command the display terminal IS. A pane that dies is diagnosed by comparing

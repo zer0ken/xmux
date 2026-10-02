@@ -83,9 +83,9 @@ impl MuxDriver for PsmuxDriver {
             // route reached, which is a separate psmux terminal of the user's. A reattach
             // is addressed by session NAME, so it can only ever land on xmux's own PTY.
             // The stale attachment is KEPT in the registry (not removed) so its grid stays
-            // on screen until the new attach is confirmed: DisplayReady swaps it in and
-            // tears the stale one down (stale-while-revalidate). At first display there is
-            // nothing to keep, so the view is blank until Ready.
+            // on screen until the fresh client paints or reaches its bounded wait
+            // (stale-while-revalidate). At first display there is nothing to keep, so
+            // Ready installs immediately.
             let reason = if live { "reshow" } else { "no-live-client" };
             tracing::info!(
                 host = %sel.source,
@@ -314,7 +314,7 @@ mod tests {
         );
         assert!(
             registry.contains("local"),
-            "the stale attachment is held on screen until the fresh one is ready"
+            "the stale attachment is held on screen until the fresh one paints"
         );
         assert_eq!(
             hosts.get("local").unwrap().display.shows("local"),
@@ -388,8 +388,7 @@ mod tests {
         );
         assert!(
             registry.contains("local"),
-            "the stale attachment is HELD (kept on screen) while the fresh reattach is \
-             requested; the swap + teardown happens at DisplayReady (stale-while-revalidate)"
+            "the stale attachment is HELD while the fresh reattach paints"
         );
     }
 
@@ -592,8 +591,7 @@ mod tests {
         }
         assert!(
             registry.contains("local"),
-            "no tty ⇒ the stale attachment is HELD on screen while a fresh reattach is \
-             requested (stale-while-revalidate); the swap happens at DisplayReady"
+            "no tty means the stale attachment is HELD while a fresh reattach paints"
         );
         assert!(
             hosts

@@ -6,8 +6,8 @@
 //! whichever client RUNS it, and a client cannot be named from outside the session it
 //! is in, so xmux has no way to aim a switch at its own display client the way it aims
 //! tmux's and psmux's. Every session change is therefore a fresh attach, and the stale
-//! attachment is kept until the new one is ready so the view never blanks between the
-//! two.
+//! attachment is kept until the new one's paint gate opens, either after settled output
+//! or the bounded wait.
 
 use std::sync::{Arc, Mutex};
 
@@ -53,9 +53,9 @@ impl MuxDriver for ZellijDriver {
         }
 
         // REATTACH: the only way to move zellij's display. The stale attachment is KEPT
-        // in the registry (not removed) so its grid stays on screen until DisplayReady
-        // swaps in the new one and tears the stale one down (stale-while-revalidate).
-        // At first display there is nothing to keep, so the view is blank until Ready.
+        // in the registry so its grid stays on screen until the fresh client paints or
+        // reaches its bounded wait (stale-while-revalidate). At first display there is
+        // nothing to keep, so Ready installs immediately.
         let reason = if live {
             "other-session"
         } else {
@@ -244,7 +244,7 @@ mod tests {
         assert_eq!(
             registry.get("local").map(|a| a.id()),
             Some(42),
-            "the stale attachment is HELD until DisplayReady swaps the fresh one in"
+            "the stale attachment is HELD until the fresh one paints"
         );
     }
 }

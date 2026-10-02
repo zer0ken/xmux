@@ -76,7 +76,8 @@ and owns the concrete display decision. The transport dispatches the host execut
   when psmux moves the client itself. With no such report, for any reason at all,
   the reattach happens.
 - On a reattach the stale attachment is HELD, not removed, so its grid stays on
-  screen until the fresh one is ready (stale-while-revalidate).
+  screen until the fresh attachment paints or reaches its bounded wait
+  (stale-while-revalidate). Input goes to the fresh attachment while it waits.
 - Sync never pre-warms, since attaches are selected on demand when a session is
   shown; it only reaps the source PTY when the source has no sessions left.
 - A LOCAL psmux source reads the per-host registry; a REMOTE one enumerates over

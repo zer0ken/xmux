@@ -336,7 +336,7 @@ pub(crate) mod tests {
                 crate::mux::for_binary(bin).unwrap(),
             ));
             // A stale attachment + bookkeeping for a different session: show() must
-            // reattach for the selection while retaining the old frame until ready.
+            // reattach for the selection while retaining the old frame until painted.
             hosts
                 .get_mut("local")
                 .unwrap()
@@ -392,7 +392,7 @@ pub(crate) mod tests {
             );
             assert!(
                 registry.contains("local"),
-                "{bin}: the stale attachment remains until the fresh one is ready"
+                "{bin}: the stale attachment remains until the fresh one is painted"
             );
         }
     }

@@ -51,8 +51,8 @@ impl MuxDriver for ScreenDriver {
         }
 
         // REATTACH: the only way to move screen's display. The stale attachment is KEPT
-        // in the registry so its grid stays on screen until DisplayReady swaps in the new
-        // one (stale-while-revalidate).
+        // in the registry so its grid stays on screen until the fresh client paints or
+        // reaches its bounded wait (stale-while-revalidate).
         let reason = if live {
             "other-session"
         } else {

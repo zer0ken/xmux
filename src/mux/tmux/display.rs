@@ -165,7 +165,8 @@ impl MuxDriver for TmuxDriver {
                 // No in-place switch (a LOCAL shared host has no remote shell to record /
                 // read the tty, or the mux uses no recorded-tty strategy): reattach the
                 // host PTY to the new session. Reattach needs no tty and repaints fully;
-                // the held grid stays on screen until DisplayReady swaps it.
+                // the held grid stays on screen until the fresh attachment's paint gate
+                // opens after settled output or the bounded wait.
                 tracing::info!(
                     host = %sel.source,
                     model = "shared",

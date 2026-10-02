@@ -71,8 +71,9 @@ pub enum Action {
         display_astray: bool,
     },
     /// Advance the display truth (`state.displayed`) to this selection - the
-    /// confirmation of a synchronous in-place switch or a `DisplayReady`. The loop
-    /// makes the confirmation DECISION (a live grid exists, no reattach in flight)
+    /// confirmation of a synchronous in-place switch or an attachment whose paint gate
+    /// opened. The loop makes the confirmation DECISION (a live grid exists, no
+    /// reattach in flight)
     /// and folds the resulting truth here so `apply` owns the mutation.
     ConfirmDisplay(Selection),
     /// Blank the display truth - the `r` reattach-kick tears the current display
