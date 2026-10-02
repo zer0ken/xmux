@@ -52,6 +52,11 @@ pub fn log_files(xmux_dir: &Path) -> std::path::PathBuf {
 /// is absent or contains an invalid directive the subscriber falls back to
 /// `xmux=info`, which logs all `info`-and-above events inside the `xmux` crate.
 pub fn init(xmux_dir: &Path) -> LogGuard {
+    // The retention builder lists the directory as it is built, so on a first run the
+    // directory has to exist first or tracing-appender prints a stray ENOENT line. A
+    // failure here is not fatal: the appenders below report it and fall back.
+    let _ = std::fs::create_dir_all(xmux_dir);
+
     // The bounded window is the whole reason this is built rather than taken from the
     // one-line `daily` helper, which keeps every file it ever opens. A builder that cannot
     // be built falls back to that helper: logging without retention beats no logging.
