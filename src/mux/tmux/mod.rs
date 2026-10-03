@@ -316,8 +316,8 @@ impl ControlProtocol for TmuxControl {
     }
 
     fn list_sessions_line(&self) -> String {
-        // SESSION_FORMAT contains TABs; single-quote it so tmux's line parser keeps it
-        // as one arg (an unquoted tab would split the format).
+        // Single-quote the format so tmux's command parser keeps `#{...}` as one arg
+        // and reads neither `#` as a comment nor `{` as a block.
         format!("list-sessions -F '{SESSION_FORMAT}'\n")
     }
 

@@ -1542,7 +1542,7 @@ Usage: zellij [OPTIONS]",
         impl Runner for OkRunner {
             async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
                 // session row parsed by mux::parse_sessions.
-                Ok(b"1\t1\t1700000000\twork\n".to_vec())
+                Ok(b"1:1:work\n".to_vec())
             }
         }
 

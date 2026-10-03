@@ -236,7 +236,7 @@ mod tests {
         // host id. The result is EXACTLY the parsed rows - no local registry name is
         // merged in as a phantom (the regression `for_binary("psmux")` would cause).
         let m = psmux();
-        let runner = CannedRunner::ok("2\t1\teditor\n1\t0\tbuild\n");
+        let runner = CannedRunner::ok("2:1:editor\n1:0:build\n");
         let got = m.enumerate(&ssh("prod"), &runner).await.unwrap();
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(

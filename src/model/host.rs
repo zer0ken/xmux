@@ -1102,7 +1102,7 @@ mod tests {
             crate::transport::local(None),
             crate::mux::for_binary("tmux").unwrap(),
         );
-        let r = CannedRunner::ok("3\t1\teditor\n1\t0\tbuild\n");
+        let r = CannedRunner::ok("3:1:editor\n1:0:build\n");
         h.enumerate_with(&r).await.unwrap();
         assert_eq!(h.liveness, Liveness::Live);
         let names: Vec<&str> = h

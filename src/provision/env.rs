@@ -1397,7 +1397,7 @@ mod tests {
         // sessions (the per-host streaming probe the event loop fans out).
         let env = Arc::new(Env::new(
             Roster {
-                sources: vec![test_source("local", false, "2\t1\teditor\n")],
+                sources: vec![test_source("local", false, "2:1:editor\n")],
                 local_muxes: vec!["tmux".into()],
                 ..Default::default()
             },
