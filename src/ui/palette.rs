@@ -23,8 +23,6 @@
 //! terminal, their choice; those user-named colours are the only ones that may leave
 //! the sixteen slots (see [`Overrides`]).
 
-use std::sync::RwLock;
-
 use ratatui::style::{Color, Modifier, Style};
 
 /// The semantic colour set. One field per UI role - callers name the role, never
@@ -75,11 +73,10 @@ pub(crate) struct Palette {
     pub selection_bg: Option<Color>,
 }
 
-/// The two built-in themes' names. `[ui] theme` names one; `auto` is not a mode, the
-/// two names ARE the two ANSI-only themes - `auto-light` for a light terminal, `auto-
-/// dark` for a dark one, each following the terminal's own palette by painting only
+/// The light built-in theme's name; the dark one is the config default
+/// (`auto-dark`). `[ui] theme` names one; `auto` is not a mode, the two names ARE the
+/// two ANSI-only themes - `auto-light` for a light terminal, `auto-dark` for a dark one, each following the terminal's own palette by painting only
 /// ANSI slots. See the module doc and `Colour ownership` in `CONTEXT.md`.
-pub(crate) const AUTO_DARK: &str = "auto-dark";
 pub(crate) const AUTO_LIGHT: &str = "auto-light";
 
 /// `auto-dark`: for a dark terminal background. Painted with the dark-slot ends of the
@@ -130,14 +127,9 @@ static AUTO_LIGHT_THEME: Palette = auto_light();
 /// invariant; a future theme that names a colour of its own would carry that exception
 /// on itself rather than loosening the guard.
 pub(crate) static THEMES: &[(&str, &Palette)] = &[
-    (AUTO_DARK, &AUTO_DARK_THEME),
+    (crate::provision::config::DEFAULT_THEME, &AUTO_DARK_THEME),
     (AUTO_LIGHT, &AUTO_LIGHT_THEME),
 ];
-
-/// The active set, installable again on every config change so a `[ui]` edit applies
-/// live. A read guard on the render path is a cheap atomic; the write happens once per
-/// config reload, off the render's read path.
-static ACTIVE: RwLock<Palette> = RwLock::new(auto_dark());
 
 /// Resolves a theme name to its canonical name and [`Palette`]. Unknown names resolve
 /// to `None`, leaving the caller's fallback (the default `auto-dark`) to apply.
@@ -148,10 +140,9 @@ pub(crate) fn resolve_theme(name: &str) -> Option<(&'static str, &'static Palett
         .map(|(n, p)| (*n, *p))
 }
 
-/// Resolves a theme name, or the default `auto-dark` when unknown. Split from
-/// [`apply`] so the fallback is testable without touching the process-wide lock.
+/// Resolves a theme name, or the default `auto-dark` when unknown.
 fn resolve_or_default(name: &str) -> (&'static str, &'static Palette) {
-    resolve_theme(name).unwrap_or((AUTO_DARK, &AUTO_DARK_THEME))
+    resolve_theme(name).unwrap_or((crate::provision::config::DEFAULT_THEME, &AUTO_DARK_THEME))
 }
 
 /// The per-role overrides a user can name in `[ui]`; `None` leaves that role at the
@@ -174,19 +165,14 @@ pub(crate) struct Overrides {
     pub selection_bg: Option<Color>,
 }
 
-/// Installs a theme + the user's overrides, REPLACING the active palette. Called at
-/// startup and again on every config change, so a `[ui] theme` / role-colour /
-/// `selection-style` edit applies live. `theme` names a built-in theme (an unknown
-/// name falls back to `auto-dark`); each `Some` in `ov` replaces that role's slot,
-/// each `None` keeps the theme's own.
-pub(crate) fn apply(theme: &str, ov: Overrides) {
+/// Resolves a theme and layers the user's overrides over it. An unknown theme name
+/// falls back to `auto-dark`; each `Some` in `ov` replaces that role's slot, and each
+/// `None` keeps the theme's own.
+pub(crate) fn resolve(theme: &str, ov: Overrides) -> Palette {
     let (_name, base) = resolve_or_default(theme);
-    *ACTIVE.write().unwrap() = apply_overrides(*base, ov);
+    apply_overrides(*base, ov)
 }
 
-/// [`apply`] as a function of the base palette alone, so a test can exercise the
-/// override layering without touching the process-wide `ACTIVE` lock (one test
-/// setting it would change what every other test in the binary renders).
 fn apply_overrides(base: Palette, ov: Overrides) -> Palette {
     let mut p = base;
     p.primary = ov.primary.unwrap_or(p.primary);
@@ -203,9 +189,13 @@ fn apply_overrides(base: Palette, ov: Overrides) -> Palette {
     p
 }
 
-/// The active palette.
-pub(crate) fn get() -> std::sync::RwLockReadGuard<'static, Palette> {
-    ACTIVE.read().unwrap()
+impl Default for Palette {
+    fn default() -> Self {
+        resolve(
+            crate::provision::config::DEFAULT_THEME,
+            Overrides::default(),
+        )
+    }
 }
 
 /// The style the SELECTED card is painted with.
@@ -218,13 +208,10 @@ pub(crate) fn get() -> std::sync::RwLockReadGuard<'static, Palette> {
 ///
 /// `[ui] selection-style` replaces the whole thing with that background, keeping the
 /// level colours on top, for a user who would rather have a surface.
-pub(crate) fn selection_style() -> Style {
-    selection_style_for(get().selection_bg)
+pub(crate) fn selection_style(palette: &Palette) -> Style {
+    selection_style_for(palette.selection_bg)
 }
 
-/// [`selection_style`] as a function of the override alone, so a test can exercise both
-/// branches without installing a palette: `ACTIVE` is a process-wide `OnceLock`, and one
-/// test setting it would change what every other test in the binary renders.
 fn selection_style_for(selection_bg: Option<Color>) -> Style {
     match selection_bg {
         Some(bg) => Style::default().bg(bg),
@@ -366,8 +353,8 @@ mod tests {
         // `[ui] primary` names one role: it replaces that slot on the chosen theme and
         // every other role keeps the theme's own. `None` in an override means "the
         // theme's slot", not a reset.
-        let p = apply_overrides(
-            auto_dark(),
+        let p = resolve(
+            "auto-dark",
             Overrides {
                 primary: Some(Color::Red),
                 ..Default::default()
@@ -378,7 +365,7 @@ mod tests {
         assert_eq!(p.accent, auto_dark().accent);
         // selection_bg is replaced as given, even by None: that is the "reverse video"
         // default rather than "keep what was there".
-        let p = apply_overrides(auto_dark(), Overrides::default());
+        let p = resolve("auto-dark", Overrides::default());
         assert_eq!(p, auto_dark());
     }
 

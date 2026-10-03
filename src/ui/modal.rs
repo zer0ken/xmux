@@ -330,6 +330,7 @@ pub(crate) fn wrap_text(text: &str, width: u16) -> Vec<String> {
 pub(crate) fn help_lines(
     prefix: &str,
     nav_position: crate::ui::switcher::NavPosition,
+    palette: &palette::Palette,
 ) -> (String, Vec<Line<'static>>) {
     // tmux mode-tree style: a right-aligned, bold key column, a `│` rule, then
     // the description. `Head` breaks the flat list into navigation/focus/terminal sections;
@@ -429,8 +430,8 @@ pub(crate) fn help_lines(
         .max()
         .unwrap_or(0);
     let bold = Style::new().add_modifier(Modifier::BOLD);
-    let accent = Style::default().fg(palette::get().accent);
-    let rule = Span::styled("│ ", Style::default().fg(palette::get().decoration));
+    let accent = Style::default().fg(palette.accent);
+    let rule = Span::styled("│ ", Style::default().fg(palette.decoration));
     let lines: Vec<Line> = rows
         .into_iter()
         .map(|r| match r {
@@ -515,10 +516,14 @@ pub(crate) fn input_hint_text(input: &Input, width: u16) -> String {
 /// key accent, the guide text plain, and the buffer with a reversed-block caret at
 /// the edit position. The buffer is windowed (see [`input_segments`]) so the caret
 /// stays visible however long it grows.
-pub(crate) fn input_hint_line(input: &Input, width: u16) -> Line<'static> {
+pub(crate) fn input_hint_line(
+    input: &Input,
+    width: u16,
+    palette: &palette::Palette,
+) -> Line<'static> {
     let (title, guide, before, at, after) = input_segments(input, width);
     let accent = Style::default()
-        .fg(palette::get().bar_accent)
+        .fg(palette.bar_accent)
         .add_modifier(Modifier::BOLD);
     let caret = Style::default().add_modifier(Modifier::REVERSED);
     Line::from(vec![
@@ -549,6 +554,7 @@ pub(crate) fn render_popup(
     rect: Rect,
     title: &str,
     lines: Vec<Line>,
+    palette: &palette::Palette,
 ) {
     frame.render_widget(Clear, rect);
     // Rounded corners + a muted border + an accent bold title: the popup reads as a
@@ -556,11 +562,11 @@ pub(crate) fn render_popup(
     // base style keeps the interior opaque (see the doc comment above).
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette::get().decoration))
+        .border_style(Style::default().fg(palette.decoration))
         .title(Span::styled(
             format!(" {title} "),
             Style::default()
-                .fg(palette::get().accent)
+                .fg(palette.accent)
                 .add_modifier(Modifier::BOLD),
         ))
         .style(Style::reset());
@@ -755,13 +761,14 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let (t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Left);
+        let palette = palette::Palette::default();
+        let (t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Left, &palette);
         assert_eq!(t, "keys");
         let left = flat(&lines);
         assert!(left.contains("Enter · C-g →/↓"), "{left}");
         assert!(left.contains("C-g →/↓"), "{left}");
         assert!(left.contains("C-g ←/↑"), "{left}");
-        let (_t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Right);
+        let (_t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Right, &palette);
         let right = flat(&lines);
         assert!(right.contains("Enter · C-g ←/↑"), "{right}");
         assert!(right.contains("C-g ←/↑"), "{right}");
@@ -771,7 +778,8 @@ mod tests {
     #[test]
     fn help_lists_the_position_cycle() {
         // The `prefix p` row: the cycle order, with "auto" as the fifth stop.
-        let (_t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Left);
+        let palette = palette::Palette::default();
+        let (_t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Left, &palette);
         let all = lines
             .iter()
             .map(|l| {
@@ -870,6 +878,7 @@ mod tests {
                 rect,
                 "t",
                 vec![Line::from("focus"), Line::from("kill"), Line::from("x")],
+                &palette::Palette::default(),
             );
         })
         .unwrap();

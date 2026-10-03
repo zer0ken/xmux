@@ -1048,7 +1048,7 @@ async fn an_unselected_unreachable_card_keeps_the_warning_mark() {
     );
     assert_eq!(
         h.nav_fg_of("⚠"),
-        Some(crate::ui::palette::get().warning),
+        Some(crate::ui::palette::Palette::default().warning),
         "the mark keeps the warning colour on an unselected card"
     );
 }
@@ -2099,11 +2099,11 @@ fn hint_bar_has_status_bar_background() {
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1; // the one-line hint bar sits on the nav's last row
-    let bg = crate::ui::palette::get().bar_bg;
+    let bg = crate::ui::palette::Palette::default().bar_bg;
     assert_eq!(buf[(1, y)].bg, bg, "a text cell has the dark bar bg");
     assert_eq!(
         buf[(1, y)].fg,
-        crate::ui::palette::get().bar_accent,
+        crate::ui::palette::Palette::default().bar_accent,
         "the leading key token is accented with the bar's own accent"
     );
     // Resting text is " C-g" (4 cells) plus one cell of padding = 5 cells; the bar is
@@ -2560,10 +2560,14 @@ async fn both_host_screens_share_one_grammar() {
 }
 
 #[tokio::test]
-async fn levels_render_in_their_level_colors() {
+async fn levels_render_from_the_switchers_palette() {
     // The selection parks on a remote card so the local rows render UNSELECTED: the
     // section title reads in the secondary role, the session name in the accent.
     let mut h = Harness::new(sample());
+    h.sw.set_palette(crate::ui::palette::resolve(
+        "auto-light",
+        crate::ui::palette::Overrides::default(),
+    ));
     assert!(h.sw.select_address(
         &crate::session::Address::new("jupiter00", "inference"),
         &h.state
@@ -2571,12 +2575,12 @@ async fn levels_render_in_their_level_colors() {
     h.draw();
     assert_eq!(
         h.nav_fg_of("local"),
-        Some(crate::ui::palette::get().secondary),
+        Some(h.sw.palette().secondary),
         "the section title is the secondary role"
     );
     assert_eq!(
         h.nav_fg_of("editor"),
-        Some(crate::ui::palette::get().accent),
+        Some(h.sw.palette().accent),
         "the session name is the accent target"
     );
 }
@@ -2756,17 +2760,17 @@ async fn the_section_title_shows_host_mux_and_the_session_takes_the_accent() {
     );
     assert_eq!(
         h.nav_fg_of("srv"),
-        Some(crate::ui::palette::get().secondary),
+        Some(crate::ui::palette::Palette::default().secondary),
         "the host half is the secondary role"
     );
     assert_eq!(
         h.nav_fg_of("tmux"),
-        Some(crate::ui::palette::get().secondary),
+        Some(crate::ui::palette::Palette::default().secondary),
         "the mux half is the secondary role"
     );
     assert_eq!(
         h.nav_fg_of("alpha"),
-        Some(crate::ui::palette::get().accent),
+        Some(crate::ui::palette::Palette::default().accent),
         "the session name is the accent target"
     );
 }
@@ -3014,15 +3018,19 @@ async fn a_host_card_gives_its_mux_the_secondary() {
     );
     assert_eq!(
         h.nav_fg_of("psmux"),
-        Some(crate::ui::palette::get().secondary),
+        Some(crate::ui::palette::Palette::default().secondary),
         "the mux shares the host half's secondary role"
     );
     // The separator is furniture on both card kinds, and the host half is secondary.
     let (x, y) = locate(h.buf(), "srv/psmux", NAV_WIDTH).expect("the host card");
-    assert_eq!(h.buf()[(x, y)].fg, color_secondary(), "the host half");
+    assert_eq!(
+        h.buf()[(x, y)].fg,
+        crate::ui::palette::Palette::default().secondary,
+        "the host half"
+    );
     assert_eq!(
         h.buf()[(x + 3, y)].fg,
-        color_decoration(),
+        crate::ui::palette::Palette::default().decoration,
         "the separator is its own role"
     );
 }
@@ -4585,7 +4593,7 @@ async fn view_border_uses_configured_colors() {
 
 #[tokio::test]
 async fn view_border_uses_one_color_for_both_focus_states() {
-    let pal = crate::ui::palette::get();
+    let pal = crate::ui::palette::Palette::default();
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
@@ -4740,7 +4748,7 @@ fn a_floating_bar_grows_inward_from_a_collapsed_nav() {
 
 #[tokio::test]
 async fn view_border_color_is_independent_of_nav_position() {
-    let pal = crate::ui::palette::get();
+    let pal = crate::ui::palette::Palette::default();
     let fg = |buf: &Buffer, x: u16, y: u16| buf[(x, y)].fg;
 
     // Column with the nav pinned right: the 1-col border at x=91, terminal to its left.
@@ -4842,7 +4850,7 @@ async fn view_border_highlights_on_hover() {
         );
         assert_eq!(
             cell.fg,
-            crate::ui::palette::get().accent,
+            crate::ui::palette::Palette::default().accent,
             "hover: the border-hover cue reads in the accent role at row {y}"
         );
         assert!(
@@ -5275,9 +5283,11 @@ fn help_lines_reflects_configured_prefix() {
     // The focus-section rows must show the active prefix, not a hardcoded "C-g".
     let mut state = crate::state::State::default();
     state.chrome.set_ui_prefix("C-Space".into());
+    let palette = crate::ui::palette::Palette::default();
     let (_title, lines) = modal::help_lines(
         &state.chrome.ui_prefix,
         crate::ui::switcher::NavPosition::Left,
+        &palette,
     );
     let text: String = lines
         .iter()
@@ -5298,6 +5308,7 @@ fn help_lines_reflects_configured_prefix() {
     let (_title, lines_default) = modal::help_lines(
         &state_default.chrome.ui_prefix,
         crate::ui::switcher::NavPosition::Left,
+        &palette,
     );
     let text_default: String = lines_default
         .iter()
@@ -5600,7 +5611,7 @@ fn the_hidden_columns_are_counted_on_the_status_row() {
         "nothing is off to the left from the first column: {at_left:?}"
     );
     // The label sits on its own background, sized to itself; the counts do not.
-    let bar_bg = crate::ui::palette::get().bar_bg;
+    let bar_bg = crate::ui::palette::Palette::default().bar_bg;
     let buf = term.backend().buffer();
     let lit = (0..buf.area.width)
         .filter(|x| buf[(*x, bar_y)].bg == bar_bg)
@@ -5631,7 +5642,7 @@ fn the_portrait_status_line_is_a_label_until_the_prefix_is_armed() {
     // it has to say plus a cell of padding: a full-width slab of bar colour across a wide
     // window is a lot of paint for one word.
     let (_sw, mut term) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 20);
-    let bar_bg = crate::ui::palette::get().bar_bg;
+    let bar_bg = crate::ui::palette::Palette::default().bar_bg;
     let bar_y = 7;
     {
         let buf = term.backend().buffer();
