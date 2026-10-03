@@ -1204,15 +1204,7 @@ impl Runtime {
                 };
                 // dispatch_action spawns any RunOp off-loop itself; its OpResult folds back
                 // through op_tx as usual.
-                let (quit_op, wc) = dispatch_action(
-                    action,
-                    &mut self.switcher,
-                    &mut self.state,
-                    &mut self.nav_width_natural,
-                    &mut self.auto_hide_nav,
-                    &self.env.xmux_dir,
-                    (&self.ops, &self.op_tx, &self.driver_pty_tx),
-                );
+                let (quit_op, wc) = self.dispatch_action(action);
                 let _ = reply.send(resp);
                 if wc {
                     self.width_dirty = true;
@@ -1292,15 +1284,7 @@ impl Runtime {
                 // Route the FULL command batch through the single dispatcher (RunOp spawns
                 // off-loop, its OpResult folding back through op_tx).
                 let cmds = self.switcher.handle_key(k, &mut self.state);
-                let (quit_key, wc) = dispatch_commands(
-                    cmds,
-                    &mut self.switcher,
-                    &mut self.state,
-                    &mut self.nav_width_natural,
-                    &mut self.auto_hide_nav,
-                    &self.env.xmux_dir,
-                    (&self.ops, &self.op_tx, &self.driver_pty_tx),
-                );
+                let (quit_key, wc) = self.execute_commands(cmds);
                 if wc {
                     self.width_dirty = true;
                     self.width_flush_at =
@@ -1339,15 +1323,7 @@ impl Runtime {
                     } else if self.switcher.current_host_blocked() {
                         if let Some(source) = self.switcher.current_source() {
                             if let Some(cmd) = self.state.feed_login(&source, &bytes) {
-                                let _ = dispatch_commands(
-                                    vec![cmd],
-                                    &mut self.switcher,
-                                    &mut self.state,
-                                    &mut self.nav_width_natural,
-                                    &mut self.auto_hide_nav,
-                                    &self.env.xmux_dir,
-                                    (&self.ops, &self.op_tx, &self.driver_pty_tx),
-                                );
+                                let _ = self.execute_commands(vec![cmd]);
                             }
                             self.dirty = true;
                         }
@@ -1460,64 +1436,11 @@ impl Runtime {
     /// caller can drive the debounce across its whole span.
     pub(super) fn drive_attach_beat(&mut self, now: std::time::Instant) {
         let in_flight = selection_attach_in_flight(&self.hosts, &self.state.selection);
-        let cmds = self.state.apply(crate::model::Action::Tick {
+        let _ = self.dispatch_action(crate::model::Action::Tick {
             now,
             in_flight,
             display_astray: display_astray(&self.state, &self.hosts),
         });
-        for cmd in cmds {
-            match cmd {
-                crate::model::Command::PersistLastSession(addr) => {
-                    crate::app::prefs::save_last_session(&self.env.xmux_dir, &addr);
-                }
-                crate::model::Command::Attach(sel) => {
-                    let t = std::time::Instant::now();
-                    let nav = self.nav_size();
-                    // select_attach picks the host's driver and hands it the intent.
-                    let shown = select_attach(
-                        &sel,
-                        &mut crate::driver::DriverCtx {
-                            registry: &mut self.registry,
-                            hosts: &mut self.hosts,
-                            instance_name: &self.instance_name,
-                            mgr: &self.mgr,
-                            worker: &self.worker,
-                            pty_tx: &self.driver_pty_tx,
-                            attach_seq: &mut self.attach_seq,
-                            viewport: terminal_view_size(self.cols, self.body_rows, nav),
-                        },
-                    );
-                    if shown {
-                        // Advance the display truth synchronously ONLY for a confirmed
-                        // in-place path: a live grid for the key exists AND no reattach
-                        // is in flight. A pending reattach KEEPS the prior session's grid
-                        // (stale-while-revalidate) until the paint gate swaps it in.
-                        let k = display_key(&self.hosts, &sel);
-                        let reattach_pending = self.hosts.get(&sel.source).is_some_and(|h| {
-                            h.display.in_flight_contains(&k) || h.display.pending_paint_contains(&k)
-                        });
-                        if self.registry.contains(&k) && !reattach_pending {
-                            self.state
-                                .apply(crate::model::Action::ConfirmDisplay(sel.clone()));
-                        }
-                    }
-                    DrawObserver::slow_step("select_attach", t);
-                    self.dirty = true;
-                    let key = display_key(&self.hosts, &sel);
-                    let session = &sel.session;
-                    tracing::debug!(key, session, "selection");
-                }
-                // The settled-selection Tick never returns the synchronous key/ctl-only
-                // commands or a session-lifecycle RunOp.
-                crate::model::Command::SelectAddress(_)
-                | crate::model::Command::Rescan
-                | crate::model::Command::AdjustNavWidth(_)
-                | crate::model::Command::ToggleAutoHide
-                | crate::model::Command::RunOp(_)
-                | crate::model::Command::RunLogin { .. }
-                | crate::model::Command::Quit => {}
-            }
-        }
     }
 
     /// Moves the NAV SELECTION to the session the display client is on, while the

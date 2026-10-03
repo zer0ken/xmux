@@ -15,22 +15,12 @@ impl Runtime {
         bytes: &[u8],
         width_changed: &mut bool,
     ) -> (bool, bool, i32, i32, bool, bool) {
-        // Split-borrow the world state into the loose names the body uses (a nav read
-        // touches most of it: decoder, switcher/state, host orchestration, width prefs).
+        // Split-borrow the input and selection fields while commands are collected.
         let Self {
             nav_decoder,
             switcher,
             state,
-            mgr,
-            env,
-            hosts,
-            scan_pool,
-            ops,
-            op_tx,
-            driver_pty_tx,
-            nav_width_natural,
             nav_position,
-            auto_hide_nav,
             cols,
             body_rows: rows,
             nav_width,
@@ -75,25 +65,28 @@ impl Runtime {
                 Some(Action::Forward(_)) | Some(Action::FocusNav(_)) | None => {}
             }
         }
-        // Route the FULL command batch through the single dispatcher (not just RunOp): a
-        // switcher key emits only RunOp today, but dispatch_commands handles every variant
-        // so a future non-RunOp command is acted on, never silently dropped. quit/
-        // width-change it reports merge into this function's outputs.
-        let (cmd_quit, cmd_width_changed) = dispatch_commands(
-            key_cmds,
-            switcher,
-            state,
-            nav_width_natural,
-            auto_hide_nav,
-            &env.xmux_dir,
-            (&*ops, &*op_tx, &*driver_pty_tx),
-        );
+        // Route the full command batch through the runtime executor so every command a
+        // switcher key produces is acted on. Merge its loop signals into this input read.
+        let (cmd_quit, cmd_width_changed) = self.execute_commands(key_cmds);
         quit |= cmd_quit;
         if cmd_width_changed {
             *width_changed = true;
         }
-        ensure_current_host(mgr, hosts, switcher, cols, rows, nav_width);
-        kick_rescan(switcher, env, hosts, mgr, scan_pool);
+        ensure_current_host(
+            &mut self.mgr,
+            &self.hosts,
+            &self.switcher,
+            cols,
+            rows,
+            nav_width,
+        );
+        kick_rescan(
+            &mut self.switcher,
+            &self.env,
+            &self.hosts,
+            &self.mgr,
+            &self.scan_pool,
+        );
         (
             focus_terminal,
             quit,
@@ -599,15 +592,7 @@ impl Runtime {
                         } else if self.switcher.current_host_blocked() {
                             if let Some(source) = self.switcher.current_source() {
                                 if let Some(cmd) = self.state.feed_login(&source, &f) {
-                                    let (cq, cwc) = dispatch_commands(
-                                        vec![cmd],
-                                        &mut self.switcher,
-                                        &mut self.state,
-                                        &mut self.nav_width_natural,
-                                        &mut self.auto_hide_nav,
-                                        &self.env.xmux_dir,
-                                        (&self.ops, &self.op_tx, &self.driver_pty_tx),
-                                    );
+                                    let (cq, cwc) = self.execute_commands(vec![cmd]);
                                     *quit |= cq;
                                     if cwc {
                                         *width_changed = true;
@@ -662,15 +647,7 @@ impl Runtime {
                     // same tail after every read.
                     Action::NavKey(k) => {
                         let cmds = self.switcher.handle_key(k, &mut self.state);
-                        let (cq, cwc) = dispatch_commands(
-                            cmds,
-                            &mut self.switcher,
-                            &mut self.state,
-                            &mut self.nav_width_natural,
-                            &mut self.auto_hide_nav,
-                            &self.env.xmux_dir,
-                            (&self.ops, &self.op_tx, &self.driver_pty_tx),
-                        );
+                        let (cq, cwc) = self.execute_commands(cmds);
                         *quit |= cq;
                         if cwc {
                             *width_changed = true;

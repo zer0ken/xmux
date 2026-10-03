@@ -103,9 +103,8 @@ selected terminal display.
 
 Known exceptions:
 
-- Key, mouse, and source-event paths mutate state outside one update transition,
-  and effect execution is split across command, tick, and source-event paths.
-  `CONTEXT.md` names each current path.
+- Key, mouse, and source-event paths mutate state outside one update transition.
+  Source-event effects use their own executor. `CONTEXT.md` names each current path.
 
 - ASKED-FOR REQUESTS ONLY. xmux reaches a machine only when something asked it to.
   Every request traces to one of three things: the launch scan, a user action (a

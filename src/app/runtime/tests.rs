@@ -1628,6 +1628,57 @@ fn test_rt(env: Env) -> Runtime {
     }
 }
 
+#[test]
+fn execute_commands_runs_quit_and_attach_in_one_batch() {
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.dirty = false;
+    let selection = Selection {
+        source: "local".into(),
+        session: "work".into(),
+    };
+
+    let outcome = rt.execute_commands(vec![
+        crate::model::Command::Quit,
+        crate::model::Command::Attach(selection),
+    ]);
+
+    assert_eq!(outcome, (true, false));
+    assert_eq!(rt.attach_seq, 1, "the attach reaches the display driver");
+    assert!(rt.dirty, "the attach marks the frame dirty");
+}
+
+#[test]
+fn tick_commands_persist_and_attach_through_the_runtime_executor() {
+    let dir = std::env::temp_dir().join(format!(
+        "xmux-command-executor-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut env = fake_env_with_sources(&["local"]);
+    env.xmux_dir = dir.clone();
+    let mut rt = test_rt(env);
+    let selection = Selection {
+        source: "local".into(),
+        session: "work".into(),
+    };
+    let started = std::time::Instant::now();
+
+    rt.dispatch_action(crate::model::Action::Select(selection));
+    rt.drive_attach_beat(started);
+    rt.drive_attach_beat(started + std::time::Duration::from_millis(100));
+
+    assert_eq!(
+        std::fs::read_to_string(dir.join("last_session")).unwrap(),
+        "local\nwork"
+    );
+    assert_eq!(rt.attach_seq, 1, "the settled selection also attaches");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn detach_test_hosts(alias: &str) -> crate::model::Hosts {
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
@@ -2460,80 +2511,35 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
         }],
     };
     let mut state = crate::state::State::from_scan(scan);
-    let mut sw = Switcher::new(&mut state);
-    let mut natural = 48u16;
-    let mut hide = false;
-    let ops = crate::ui::switcher::tests_support::noop_ops();
-    let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel();
-    let dir = std::env::temp_dir().join(format!("xmux-apply-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.state = state;
+    rt.switcher = switcher;
+    rt.ops = crate::ui::switcher::tests_support::noop_ops();
+    rt.nav_width_natural = 48;
+    rt.auto_hide_nav = false;
 
     // Switch addr → selection lands on db; returns (quit=false, width_changed=false).
     assert_eq!(
-        dispatch_action(
-            Action::Switch(crate::session::Address::new("jup", "db")),
-            &mut sw,
-            &mut state,
-            &mut natural,
-            &mut hide,
-            &dir,
-            (&ops, &op_tx, &pty_tx),
-        ),
+        rt.dispatch_action(Action::Switch(crate::session::Address::new("jup", "db"))),
         (false, false)
     );
-    assert_eq!(sw.terminal_view_target().target, "db");
+    assert_eq!(rt.switcher.terminal_view_target().target, "db");
     // Focus(Terminal) leaves nav focus → terminal focus.
-    assert!(state.focus.is_nav_focused());
-    dispatch_action(
-        Action::Focus(FocusTarget::Terminal),
-        &mut sw,
-        &mut state,
-        &mut natural,
-        &mut hide,
-        &dir,
-        (&ops, &op_tx, &pty_tx),
-    );
-    assert_eq!(state.focus, Focus::Terminal);
+    assert!(rt.state.focus.is_nav_focused());
+    rt.dispatch_action(Action::Focus(FocusTarget::Terminal));
+    assert_eq!(rt.state.focus, Focus::Terminal);
     // Focus(Tree) returns to nav focus.
-    dispatch_action(
-        Action::Focus(FocusTarget::Nav),
-        &mut sw,
-        &mut state,
-        &mut natural,
-        &mut hide,
-        &dir,
-        (&ops, &op_tx, &pty_tx),
-    );
-    assert_eq!(state.focus, Focus::Nav);
+    rt.dispatch_action(Action::Focus(FocusTarget::Nav));
+    assert_eq!(rt.state.focus, Focus::Nav);
     // NavWidth adjusts the natural width and signals width_changed; Quit signals quit.
+    assert_eq!(rt.dispatch_action(Action::NavWidth(1)), (false, true));
+    assert_eq!(rt.nav_width_natural, 49);
     assert_eq!(
-        dispatch_action(
-            Action::NavWidth(1),
-            &mut sw,
-            &mut state,
-            &mut natural,
-            &mut hide,
-            &dir,
-            (&ops, &op_tx, &pty_tx),
-        ),
-        (false, true)
-    );
-    assert_eq!(natural, 49);
-    assert_eq!(
-        dispatch_action(
-            Action::Quit,
-            &mut sw,
-            &mut state,
-            &mut natural,
-            &mut hide,
-            &dir,
-            (&ops, &op_tx, &pty_tx),
-        ),
+        rt.dispatch_action(Action::Quit),
         (true, false),
         "Quit signals quit"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2601,36 +2607,25 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
         }],
     };
     let mut state = crate::state::State::from_scan(scan);
-    let mut sw = Switcher::new(&mut state);
-    let mut natural = 48u16;
-    let mut hide = false;
-    let ops = crate::ui::switcher::tests_support::noop_ops();
-    let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel();
-    let dir = std::env::temp_dir().join(format!("xmux-ctl-switch-sync-{}", std::process::id()));
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.state = state;
+    rt.switcher = switcher;
 
-    sync_selection_from_switcher(&mut state, &sw);
+    sync_selection_from_switcher(&mut rt.state, &rt.switcher);
     // api (name order) is the preselected top card, so switch to db to exercise a real
     // selection move.
-    dispatch_action(
-        Action::Switch(crate::session::Address::new("jup", "db")),
-        &mut sw,
-        &mut state,
-        &mut natural,
-        &mut hide,
-        &dir,
-        (&ops, &op_tx, &pty_tx),
-    );
+    rt.dispatch_action(Action::Switch(crate::session::Address::new("jup", "db")));
 
     // The switch moved the selection to db; the loop-top derive routes it through
     // apply(Select) - selection becomes jup/db and the attach is marked pending
     // (the deadline is armed by the next Tick, not here).
-    assert!(sync_selection_from_switcher(&mut state, &sw));
-    assert_eq!(state.selection.source, "jup");
-    assert_eq!(state.selection.session, "db");
-    assert!(state.attach_pending, "Select marks the attach pending");
+    assert!(sync_selection_from_switcher(&mut rt.state, &rt.switcher));
+    assert_eq!(rt.state.selection.source, "jup");
+    assert_eq!(rt.state.selection.session, "db");
+    assert!(rt.state.attach_pending, "Select marks the attach pending");
     assert!(
-        state.attach_deadline.is_none(),
+        rt.state.attach_deadline.is_none(),
         "Select arms no deadline - the trailing Tick does"
     );
 }
