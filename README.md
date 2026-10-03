@@ -2,7 +2,7 @@
 
 English · [한국어](README.ko.md)
 
-*A cross-host terminal-multiplexer switcher.*
+*A cross-machine, cross-mux session switcher.*
 
 xmux is a persistent, terminal-owning supervisor written in Rust. It owns the
 terminal it is launched in, keeps its live mux attachments running, and renders
