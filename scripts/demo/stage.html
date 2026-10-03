@@ -1,0 +1,133 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>xmux demo stage</title>
+<link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css">
+<style>
+  :root { --pane: #1e1e2e; --bar: #181825; --dim: #6c7086; --fg: #cdd6f4; --line: #313244; }
+  html, body { margin: 0; background: transparent; }
+  #stage { display: inline-flex; gap: 22px; padding: 2px; background: transparent; font-family: "Segoe UI", "DejaVu Sans", sans-serif; }
+  .pane { border: 3px solid var(--line); border-radius: 12px; background: var(--pane); overflow: hidden; }
+  .bar { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; background: var(--bar); color: var(--fg); font-size: 15px; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--line); }
+  .title { margin-left: 8px; font-weight: 600; letter-spacing: .02em; }
+  .timer { margin-left: auto; font: 600 15px var(--mono); color: var(--dim); }
+  .term { padding: 8px 10px 0; }
+  .term .xterm-viewport { overflow: hidden !important; background: var(--pane) !important; }
+  /* the key strip never widens the pane: overflow is clipped on the left so the newest key stays visible */
+  .foot { height: 46px; display: flex; align-items: center; gap: 12px; padding: 0 16px; overflow: hidden; }
+  .caption { margin-right: auto; flex: none; font-size: 16px; font-weight: 600; color: #f9e2af; letter-spacing: .02em; }
+  .keys { display: flex; gap: 5px; justify-content: flex-end; min-width: 0; overflow: hidden; margin-left: auto; }
+  .key { flex: none; min-width: 24px; height: 28px; padding: 0 7px; box-sizing: border-box; display: inline-flex; align-items: center;
+         justify-content: center; border-radius: 6px; background: #313244; color: #f5e0dc; border-bottom: 3px solid #45475a;
+         font: 600 15px var(--mono); }
+  .key.wide { padding: 0 10px; }
+  :root { --mono: "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script>
+// A pane replays one recording. The video clock starts LEAD seconds before the
+// pane's first key, so every pane starts typing at the same moment.
+const THEME = {
+  background: "#1e1e2e", foreground: "#cdd6f4", cursor: "#f5e0dc", cursorAccent: "#1e1e2e",
+  black: "#45475a", red: "#f38ba8", green: "#a6e3a1", yellow: "#f9e2af", blue: "#89b4fa",
+  magenta: "#f5c2e7", cyan: "#94e2d5", white: "#bac2de",
+  brightBlack: "#585b70", brightRed: "#f38ba8", brightGreen: "#a6e3a1", brightYellow: "#f9e2af",
+  brightBlue: "#89b4fa", brightMagenta: "#f5c2e7", brightCyan: "#94e2d5", brightWhite: "#a6adc8",
+};
+const LEAD = 0.8, PULSE = 1.8, KEY_LIFE = 2.6;
+let panes = [];
+let keyFrom = -Infinity, forcedCaption = null;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+// spec: [{ title, timer, pulse: "r,g,b" | null, rec: { cols, rows, events, keys, captions, done } }]
+function setup(spec) {
+  const stage = document.getElementById("stage");
+  for (const p of spec) {
+    const pane = el("div", "pane");
+    const bar = el("div", "bar");
+    for (let i = 0; i < 3; i++) bar.append(el("span", "dot"));
+    bar.append(el("span", "title", p.title));
+    const timer = el("span", "timer", p.timer ? "0.0s" : "");
+    bar.append(timer);
+    const host = el("div", "term");
+    const foot = el("div", "foot");
+    const caption = el("span", "caption");
+    const keys = el("span", "keys");
+    foot.append(caption, keys);
+    pane.append(bar, host, foot);
+    stage.append(pane);
+    const term = new Terminal({ cols: p.rec.cols, rows: p.rec.rows, theme: THEME, fontSize: 13, lineHeight: 1.0,
+      fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--mono"),
+      cursorBlink: false, scrollback: 0 });
+    term.open(host);
+    const first = p.rec.keys[0][0];
+    panes.push({ ...p, term, pane, timer, caption, keys, idx: 0, first, offset: first - LEAD });
+  }
+  // Fix every box at its first-frame size, so a growing key strip or timer never
+  // shifts a terminal sideways.
+  for (const p of panes) {
+    p.pane.style.width = p.pane.getBoundingClientRect().width + "px";
+    p.pane.style.flex = "none";
+  }
+  stage.style.width = stage.getBoundingClientRect().width + "px";
+  return panes.map(p => p.rec.done - p.first + LEAD);
+}
+
+function layout() {
+  return [...document.querySelectorAll(".pane")].map(p => {
+    const r = p.getBoundingClientRect();
+    return `${r.left},${r.top},${r.width},${r.height}`;
+  }).join(" ");
+}
+
+function setWindow(from, label) { keyFrom = from; forcedCaption = label; }
+
+const write = (term, s) => new Promise(r => term.write(s, r));
+
+async function frame(vt) {
+  for (const p of panes) {
+    const clock = p.offset + vt, rec = p.rec;
+    let buf = "";
+    while (p.idx < rec.events.length && rec.events[p.idx][0] <= clock) buf += rec.events[p.idx++][1];
+    if (buf) await write(p.term, buf);
+
+    if (p.timer.textContent) {
+      p.timer.textContent = (Math.max(0, Math.min(clock, rec.done) - p.first)).toFixed(1) + "s";
+    }
+    let cap = "";
+    for (const [t, c] of rec.captions) if (t <= clock) cap = c;
+    p.caption.textContent = forcedCaption ?? cap;
+
+    p.keys.replaceChildren();
+    const from = p.offset + keyFrom;
+    for (const [t, k] of rec.keys.filter(([t]) => t <= clock && t >= from && clock - t < KEY_LIFE)) {
+      const cap = el("span", "key" + (k.length > 1 ? " wide" : ""), k);
+      const age = clock - t;
+      cap.style.opacity = age > KEY_LIFE - 0.4 ? ((KEY_LIFE - age) / 0.4).toFixed(2) : "1";
+      p.keys.append(cap);
+    }
+
+    if (p.pulse && clock >= rec.done) {
+      const a = 0.5 - 0.5 * Math.cos(2 * Math.PI * (clock - rec.done) / PULSE);
+      const [r, g, b] = p.pulse.split(",").map(Number), k = 0.35 + 0.65 * a;
+      const mix = (c, base) => Math.round(base + (c - base) * k);
+      p.pane.style.borderColor = `rgb(${mix(r, 0x31)},${mix(g, 0x32)},${mix(b, 0x44)})`;
+      p.timer.style.color = `rgb(${p.pulse})`;
+    }
+  }
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+}
+</script>
+</body>
+</html>

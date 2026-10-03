@@ -1,0 +1,7 @@
+# The servers come from ~/.ssh/config; nothing else on the demo network is offered.
+[discovery]
+neighbors = false
+wsl = false
+
+[update]
+check = false

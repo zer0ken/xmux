@@ -5,10 +5,10 @@ English · [한국어](README.ko.md)
 *A cross-host terminal-multiplexer switcher.*
 
 xmux is a persistent, terminal-owning supervisor written in Rust. It owns the
-terminal you launch it in, keeps its live mux attachments running, and renders
-a split view: a **nav list** of every reachable session on the left, the
-selected session's **terminal view** on the right. Move the cursor and the
-terminal view switches to that session in place.
+terminal it is launched in, keeps its live mux attachments running, and renders
+a split view: the **nav** on the left holds a card for every reachable session,
+and the **terminal view** on the right shows the selected session. Moving the
+selection switches the terminal view to that session in place.
 
 xmux is built for people who:
 
@@ -17,27 +17,49 @@ xmux is built for people who:
     manual reconnect.
 - **Would rather not install anything on those machines**
   - xmux does everything over ssh and the mux each machine already runs, so it
-    is installed on one machine only: the one you use it from.
+    is installed only on the machine it is used from.
 - **Trust tmux**
-  - xmux is not an alternative to tmux. It only makes getting to your tmux
-    sessions simpler.
+  - xmux is not an alternative to tmux. It only makes reaching tmux sessions
+    simpler.
 
-![The xmux split view: a nav list of psmux sessions on this machine and tmux
-sessions inside a WSL distribution, with the selected session's terminal view
-filling the right side.](docs/assets/xmux.png)
+![Two terminals recorded side by side at the same typing speed. On the left,
+ssh gpu-01, tmux ls and tmux attach reach a remote tmux session in 7.1
+seconds; on the right, xmux selects the same session from its nav in 2.1
+seconds.](docs/assets/xmux-demo.gif)
 
-- **Every session in one list.** Sessions on this machine, on its WSL
-  distributions, and on every ssh host it can reach, side by side.
+- **Every session in one nav.** The sessions on this machine, on its WSL
+  distributions, and on every ssh host it reaches appear side by side.
 - **Real attachments.** The terminal view is a live mux client, not a
-  reconstruction, so what you see is what the mux draws.
-- **Nothing to configure.** Hosts come from `~/.ssh/config` and the machines
-  this box already reaches; each host's mux is detected from what it runs.
+  reconstruction, so it shows what the mux draws.
+- **Nothing to configure.** Hosts come from `~/.ssh/config` and from the
+  machines this one already reaches; each host's mux is detected from what it
+  runs.
 - **Scriptable.** Every running instance takes commands over a local control
   socket.
 
+**Switch sessions**
+
+![Moving down one card, then jumping to sessions 5 and 3 by number; the terminal
+view follows each selection.](docs/assets/xmux-nav-switch.gif)
+
+**Resize the nav**
+
+![Holding prefix Ctrl-→ widens the nav one column per press, and Ctrl-← narrows
+it back.](docs/assets/xmux-nav-resize.gif)
+
+**Move the nav**
+
+![Each prefix p moves the nav to the next side of the terminal view: top, right,
+bottom, then back to the left.](docs/assets/xmux-nav-move.gif)
+
+**Auto-hide the nav**
+
+![With auto-hide on, focusing the terminal view hides the nav and gives the
+terminal the full width; prefix Tab brings the nav back.](docs/assets/xmux-nav-autohide.gif)
+
 ## Quick start
 
-### 1. Install xmux
+### 1. Installation
 
 **Native install (recommended)**
 
@@ -59,18 +81,21 @@ Windows CMD:
 curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.cmd -o install.cmd && install.cmd && del install.cmd
 ```
 
-If you see `The token '&&' is not a valid statement separator`, you are in
-PowerShell, not CMD. If you see `'irm' is not recognized as an internal or
-external command`, you are in CMD, not PowerShell. A PowerShell prompt starts
-with `PS C:\`; a CMD prompt is just `C:\`.
+The error `The token '&&' is not a valid statement separator` means the CMD
+command ran in PowerShell, and `'irm' is not recognized as an internal or
+external command` means the PowerShell command ran in CMD. A PowerShell prompt
+starts with `PS C:\`; a CMD prompt is just `C:\`.
 
-The script downloads the build for your machine, refuses it unless it matches
-the checksum the release publishes, and puts the `xmux` command on your `PATH`
-without asking for elevation. Open a new terminal afterwards so it picks up the
-new `PATH`.
+The install script:
 
-> A native install is upgraded with `xmux update`. xmux tells you on startup
-> when a newer version has been released, but it never installs one on its own.
+- downloads the build for the machine it runs on
+- refuses the build unless it matches the checksum the release publishes
+- puts the `xmux` command on `PATH` without asking for elevation
+
+A terminal opened after the install picks up the new `PATH`.
+
+> `xmux update` upgrades a native install. xmux reports a newer release on
+> startup but never installs one on its own.
 
 **Homebrew** (macOS)
 
@@ -78,8 +103,8 @@ new `PATH`.
 brew install zer0ken/xmux/xmux
 ```
 
-> A Homebrew install does not update itself. Run `xmux update`, or
-> `brew upgrade zer0ken/xmux/xmux`, to pick up a new release.
+> A Homebrew install does not update itself. `xmux update` or
+> `brew upgrade zer0ken/xmux/xmux` installs a new release.
 
 **WinGet** (Windows)
 
@@ -87,10 +112,10 @@ brew install zer0ken/xmux/xmux
 winget install --id zer0ken.xmux
 ```
 
-> A WinGet install does not update itself. Run `xmux update`, or
-> `winget upgrade --id zer0ken.xmux`. The winget catalog is updated through a
-> review in the community repository, so it can trail the newest release; the
-> native install always gets the newest one.
+> A WinGet install does not update itself. `xmux update` or
+> `winget upgrade --id zer0ken.xmux` installs a new release. The winget catalog
+> is updated through a review in the community repository, so it can trail the
+> newest release; the native install always gets the newest one.
 
 **Cargo** (any OS with Rust)
 
@@ -98,10 +123,14 @@ winget install --id zer0ken.xmux
 cargo install xmux
 ```
 
-A pinned version, a custom install directory, the prebuilt binaries, and
-building from source are covered in [`INSTALL.md`](INSTALL.md).
+[`INSTALL.md`](INSTALL.md) covers the rest of installation:
 
-### 2. Check the install
+- pinning a version
+- a custom install directory
+- the prebuilt binaries
+- building from source
+
+### 2. Install check
 
 ```sh
 xmux version
@@ -111,19 +140,22 @@ xmux doctor
 `xmux doctor` reports which xmux is running and where it was installed, then
 checks the config and whether each source is reachable.
 
-xmux needs `ssh` on the machine that runs it, for remote hosts, and at least
-one [supported mux](#supported-muxes) on each host you target.
+Remote hosts need `ssh` on the machine that runs xmux, and at least one
+[supported mux](#supported-muxes) on each host.
 
-### 3. Open the app
+### 3. First launch
 
 ```sh
 xmux
 ```
 
-The nav list fills with this machine's sessions at once; remote hosts join as
-they answer. Move with `↑` / `↓`, press `Enter` to type into the selected
-session, and press `Ctrl-g` then `Tab` to get back to the nav. `Ctrl-g ?` shows
-every key, and `Ctrl-g q` quits.
+The nav fills with this machine's sessions at once, and remote hosts join as
+they answer. In the nav:
+
+- `↑` / `↓` move the selection.
+- `Enter` sends the keyboard to the selected session.
+- `Ctrl-g` then `Tab` returns focus to the nav.
+- `Ctrl-g ?` lists every key, and `Ctrl-g q` quits.
 
 ## Supported muxes
 
@@ -132,8 +164,8 @@ every key, and `Ctrl-g q` quits.
 | unix-likes | `tmux`, GNU `screen`, `zellij`, `abduco`, `tuios`, `herdr` |
 | Windows    | `psmux`, `herdr`                                            |
 
-A host's mux is detected from the binary it answers as, so a mix of these across
-your hosts needs no configuration.
+xmux detects a host's mux from the binary the host answers as, so hosts that
+run different muxes need no configuration.
 
 ## Usage
 
@@ -148,12 +180,12 @@ xmux update                   # update the installed binary
 xmux version
 ```
 
-The nav list fills the left side; the terminal view on the right shows the
-selected session's live grid. Keyboard focus is on one region at a time.
+The nav sits on the left and the terminal view on the right shows the selected
+session's live grid. Keyboard focus is on one view at a time.
 
 ## Keys
 
-In the nav list:
+The nav takes these keys while it holds focus:
 
 | Key                      | Action                                                                   |
 | ------------------------ | ------------------------------------------------------------------------ |
@@ -164,21 +196,21 @@ In the nav list:
 | `Enter`                  | move focus into the selected session's terminal view                     |
 | `prefix 1`-`prefix 9`    | jump to a session by the number in its left column (keep typing for 10+) |
 | `prefix n`               | start a new session on the selected host                                 |
-| `/`                      | fuzzy-filter the list                                                    |
+| `/`                      | fuzzy-filter the cards                                                   |
 | `prefix r`               | re-scan: refresh which machines exist, and every source's sessions       |
 
 xmux has its own prefix, like tmux's `set -g prefix`. The default is `Ctrl-g`,
-configurable via `[ui] prefix`. Press the prefix, then a chord:
+and `[ui] prefix` replaces it. A chord is the prefix followed by one key:
 
-| Chord        | Action                                          |
-| ------------ | ----------------------------------------------- |
-| `prefix q`   | quit                                            |
-| `prefix ?`   | toggle the keybinding help                      |
+| Chord        | Action                                           |
+| ------------ | ------------------------------------------------ |
+| `prefix q`   | quit                                             |
+| `prefix ?`   | toggle the keybinding help                       |
 | `prefix Tab` | move focus between the nav and the terminal view |
-| `prefix p`   | move the nav to the next side of the view       |
+| `prefix p`   | move the nav to the next side of the view        |
 
-The mouse works too: click a row to select it, click the terminal view to focus
-it. See [`docs/keybind.md`](docs/keybind.md) for the rest.
+A click on a card selects it, and a click on the terminal view focuses it.
+[`docs/keybind.md`](docs/keybind.md) lists the remaining keys.
 
 ## Hosts and sources
 
@@ -188,81 +220,85 @@ A source is named `local:psmux` when its host serves several muxes and `prod`
 when it serves one; that name is what the nav shows. Commands name a session by
 its source and its session separately (e.g. `switch prod api`).
 
-Remote hosts are probed after the app is up, so a source appears as its host
-answers.
+xmux probes remote hosts after the app is up, so each source appears as its
+host answers.
 
-### Logging in to a host
+### Host login
 
-A remote host xmux could not reach with the values ssh works out on its own
-shows `login required` (a `?` mark). Focus its panel in the terminal view:
+A remote host that ssh cannot reach with the values it works out on its own
+shows `login required` (a `?` mark). Its panel in the terminal view takes the
+login:
 
-1. The panel holds the address, the port and the username ssh will not ask you
-   for, each starting at what ssh would have used, plus an optional masked
-   password.
-2. Submitting hands those values to ssh. xmux answers the host-key question and
-   the password itself, so there is nothing to watch and nothing to type. Esc
-   ends the attempt.
+1. The panel holds the values ssh does not ask for, each starting at what ssh
+   would have used:
+   - the address
+   - the port
+   - the username
+   - an optional masked password
+2. On submit, xmux hands those values to ssh and answers the host-key question
+   and the password itself, so the login needs no further input. Esc ends the
+   attempt.
 3. A login that works re-probes that host, and the panel gives way to the
-   sessions it found. The values you submitted become the machine's, so
-   everything xmux runs there afterwards reaches it the way the login did.
+   sessions it found. The submitted values become the machine's, so everything
+   xmux runs there afterwards connects the way the login did.
 
-A login the values cannot finish says what the server asked for. Two checkboxes
-decide what a working login leaves behind: recording the values as an
-`~/.ssh/config` stanza, and registering your public key on the host so it stops
-asking for a password.
+A login the values cannot finish reports what the server asked for. Two
+checkboxes decide what a working login leaves behind:
+
+- the values, recorded as an `~/.ssh/config` stanza
+- the user's public key, registered on the host so it stops asking for a
+  password
 
 ## Roster
 
-The roster assembles the machine candidates xmux offers as hosts. It gathers
-ssh target names from three providers:
+The roster assembles the machines xmux offers as hosts. It gathers ssh target
+names from three providers:
 
 | Provider               | What it names                                              |
 | ---------------------- | ---------------------------------------------------------- |
 | ssh config             | the aliases in `~/.ssh/config`                             |
-| one-hop network        | the machines this box already reaches in one hop and that answer ssh |
+| neighbours             | the machines this one already reaches in one hop and that answer ssh |
 | WSL                    | this machine's WSL distributions                           |
 
 The roster is rebuilt at startup and on every rescan. `local`, this machine
 reached without ssh, is not part of the roster, and a machine no provider names
-is a machine xmux has nothing to do with. The `[discovery]` table disables
-providers individually; all are on by default.
+is a machine xmux has nothing to do with. The `[discovery]` table turns
+providers off one by one; all are on by default.
 
-Every provider yields ssh target names, and the downstream behavior is the same
-whichever one suggested a name. The suggesting provider is kept alongside the
-name and shown when the host becomes unreachable, so you can tell which provider
-to inspect or disable. A provider whose command is missing, whose OS will not
-answer, or whose output cannot be parsed counts as an empty list rather than an
-error, so one dead provider never hides the hosts the others suggest.
+Every provider yields ssh target names, and xmux behaves the same whichever
+provider suggested a name. The suggesting provider is kept beside the name and
+shown when the host becomes unreachable, which tells which provider to inspect
+or turn off. A provider whose command is missing, whose OS does not answer, or
+whose output cannot be parsed counts as an empty list rather than an error, so
+one failing provider never hides the hosts the others suggest.
 
-### How the one-hop network is read
+### Neighbour discovery
 
-The one-hop provider reads the operating system's own network state, so it
-needs no VPN client installed and no account anywhere. It reads it from the OS
-directly - over netlink on Linux and Android, through IP Helper on Windows - so
-it also runs where the usual command-line tools are missing or, as on Android,
-refused.
+The neighbours provider reads the operating system's own network state, so it
+needs no VPN client and no account anywhere. It asks the OS directly (over
+netlink on Linux and Android, through IP Helper on Windows), so it also runs
+where the usual command-line tools are missing or, as on Android, refused.
 
-- **Who is reachable.** Two records say so: the routing table, where a mesh VPN
-  writes one route per peer (or one for a handful of them, which is read as
-  those addresses), and the neighbour table (the ARP cache), which holds the
-  machines on this link this box has actually exchanged frames with. Where the
-  OS refuses the neighbour table, as Android does, the link this machine is on
-  is asked address by address instead.
+- **Who is reachable.** Two records say so. The routing table holds one route
+  per peer that a mesh VPN writes, or one route for a handful of peers, which
+  is read as those addresses. The neighbour table (the ARP cache) holds the
+  machines on this link this machine has exchanged frames with. Where the OS
+  refuses the neighbour table, as Android does, the provider asks the link this
+  machine is on address by address instead.
 - **Which of them are machines.** An entry that resolved to nothing, and one
   hardware address answering for many addresses (a router speaking for a
-  subnet), name no machine. What is left is asked whether it answers ssh,
-  because a printer on the same switch is a neighbour and not a host.
-- **What to call them.** The system resolver is asked first, which is where a
-  mesh VPN's own naming already lives, so a peer arrives under the name its
-  network gave it. A machine no resolver knows is asked for its own name, which
-  it answers over mDNS whether or not anyone registered it anywhere. A name is
-  used only when this machine can resolve it back, because the name is also
-  what ssh is given; a machine whose name leads nowhere keeps its address as its
-  name.
+  subnet), name no machine. Each remaining entry is asked whether it answers
+  ssh, because a printer on the same switch is a neighbour and not a host.
+- **What to call them.** The provider asks the system resolver first, which is
+  where a mesh VPN's own naming already lives, so a peer arrives under the name
+  its network gave it. A machine no resolver knows is asked for its own name,
+  which it answers over mDNS whether or not anyone registered it. A name is used
+  only when this machine can resolve it back, because the name is also what ssh
+  is given; a machine whose name leads nowhere keeps its address as its name.
 
 ## Configuration
 
-Configuration is entirely optional. xmux reads `~/.config/xmux/config.toml`:
+Configuration is optional. xmux reads `~/.config/xmux/config.toml`:
 
 ```toml
 exclude = ["bastion", "wsl.docker-desktop"]   # hide these machines
@@ -292,30 +328,38 @@ ssh = "prod"          # an ssh-config alias
 mux = "tmux"          # omitted or "auto": every mux the host answers it has
 ```
 
-- **Live reload.** The `[ui]` presentation settings (theme, the per-role colour
-  overrides, selection-style, hint-bar-style, view-border styles) are re-applied
-  as soon as `config.toml` changes, with no restart. Host and roster edits need
-  a `prefix r` rescan.
+- **Live reload.** When `config.toml` changes, xmux re-applies the `[ui]`
+  presentation settings without a restart:
+  - theme
+  - the per-role colour overrides
+  - selection-style
+  - hint-bar-style
+  - view-border styles
+
+  Host and roster edits take effect on a `prefix r` rescan.
 - **Nav position.** The nav rides on one of the four sides of the terminal view
-  (a left or right column, a top or bottom band); `[ui] nav-position` picks the
-  default and the nav never moves on its own. `prefix p` moves it one side
+  (a left or right column, a top or bottom band). `[ui] nav-position` picks the
+  default, and the nav never moves on its own. `prefix p` moves it one side
   clockwise (left → top → right → bottom → default) and remembers the choice in
   `~/.xmux/nav_position`, which wins over the setting until the key cycles back
   to the default.
-- **Hosts.** Hosts come from `~/.ssh/config` first; the config file augments
-  that discovery, never replaces it.
-- **State.** Persistent state (last selected session, the live auto-hide-nav
-  toggle, the pinned nav position, logs, and control sockets) lives under
-  `~/.xmux/`.
+- **Hosts.** Hosts come from `~/.ssh/config` first; the config file adds to
+  that discovery and never replaces it.
+- **State.** The state kept between runs lives under `~/.xmux/`:
+  - the last selected session
+  - the live auto-hide-nav toggle
+  - the pinned nav position
+  - logs
+  - control sockets
 
 ## Control socket
 
 Every running instance has a name and listens on `~/.xmux/ctl-<name>.sock`.
 Commands name a session by its source and its session separately (`switch
 <source> <session>`), which the nav shows joined as `<source>/<session>`. The
-socket speaks navigation verbs (`ping`, `status`, `dump`, `rescan`, `switch`,
+socket takes navigation verbs (`ping`, `status`, `dump`, `rescan`, `switch`,
 `focus`, `width`, `toggle-auto-hide`, `quit`) and one session-lifecycle verb
-(`new-session`). There are no kill, rename, or window verbs; the mux owns
+(`new-session`). It has no kill, rename, or window verbs, because the mux owns
 editing a session.
 
 ```sh
@@ -325,12 +369,16 @@ xmux send am focus terminal          # any unambiguous name prefix
 xmux send - dump                     # `-` when exactly one is running
 ```
 
-An unknown name, an ambiguous prefix, or `-` with several instances running is
-an error naming the candidates, never a guess.
+xmux answers each of these with an error that names the candidates, and never
+picks one by guessing:
+
+- an unknown name
+- a prefix matching several instances
+- `-` while several instances run
 
 ## License
 
-MIT - see [`LICENSE`](LICENSE).
+MIT. The full text is in [`LICENSE`](LICENSE).
 
 ## More
 
