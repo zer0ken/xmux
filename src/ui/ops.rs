@@ -3,32 +3,8 @@
 //! module decides the UI-facing result messages.
 
 use crate::model::MuxOp;
-use crate::session::Address;
-
 pub use crate::model::{KeyRegistration, LoginOutcome, OpResult, Ops, RegistrationOutcome};
-
-/// What the switcher must do after [`State::fold_op_result`] applies an op's
-/// inventory mutation: rebuild the rows and, per the op, move the cursor to the
-/// new session (a create) or, on failure, flash a message with no inventory
-/// change. The mutation is State's; the row rebuild + cursor restore is the
-/// switcher's.
-///
-/// [`State::fold_op_result`]: crate::state::State::fold_op_result
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OpFollow {
-    /// Rebuild, then move the cursor to this new session's row (a create).
-    Reselect(Address),
-    /// No inventory change - flash this message (a failed op).
-    Flash(String),
-    /// The login verdict: re-probe that `source`'s machine on success (only it could
-    /// have changed reach state), flash the failure reason otherwise. `login` rides along
-    /// so a success can be recorded on the machine before that re-probe goes out.
-    LoginResult {
-        source: String,
-        login: crate::transport::Login,
-        outcome: LoginOutcome,
-    },
-}
+pub use crate::state::OpFollow;
 
 /// Runs a [`MuxOp`] against the live mux and returns its [`OpResult`]. Pure over
 /// `ops` (no switcher state), so it runs in a detached task off the event loop.

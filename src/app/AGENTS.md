@@ -3,9 +3,8 @@
 ## Purpose
 
 `app` is the application orchestration layer: the app runtime that owns the
-terminal for the whole session, the application UI-state machine it folds
-through, the ctl socket server, and preference persistence. The app is the
-coordinator; focus is the focus/modal routing state it reads and mutates.
+terminal for the whole session, the ctl socket server, and preference
+persistence. The app coordinates the focus and modal state owned by `state`.
 
 ## Mental Model
 
@@ -73,8 +72,8 @@ the card numbers it needs.
   predicates, the input outcome types); the stateful handlers are runtime methods
   that call into it. The prefix is tracked as ready (an interaction is live): the end
   of the function it started, or a focus switch / mouse action (a cancel), clears it.
-- Focus holds the focus and modal state plus the transition helpers. The runtime
-  state embeds it; the app reads and mutates it through those helpers.
+- The runtime state owns focus and modal data plus their transition helpers. The
+  app reads and mutates them through the state layer.
 - The ctl server owns binding, endpoint permissions, stale endpoint replacement,
   request dispatch, and connection lifetime. Wire parsing and client discovery
   remain in `src/link`.

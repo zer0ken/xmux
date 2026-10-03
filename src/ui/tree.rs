@@ -6,8 +6,9 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-pub use crate::model::{sort_by_name, Group};
+pub use crate::model::{add_session, sort_by_name, Group};
 use crate::session::Session;
+pub(crate) use crate::state::RowRef;
 
 /// The one session a re-enumeration RENAMED, as `(from, to)`: exactly one name left the
 /// list and exactly one name joined it. A listing carries names only, so a rename is
@@ -86,42 +87,6 @@ pub fn filter_groups(groups: &[Group], pattern: &str) -> Vec<Group> {
     out
 }
 
-/// Returns groups with `s` placed in the group whose source matches `s.source`,
-/// replacing any existing session of the same name in place (dedup by name) or, when
-/// new, appending it at the group's end. It does NOT sort here: a session created
-/// mid-session is placed by the next rebuild's deterministic order, not by this
-/// mutation. If no group has the source, a new group is appended. Inputs are not
-/// mutated.
-pub fn add_session(groups: &[Group], s: Session) -> Vec<Group> {
-    let mut out = groups.to_vec();
-    for g in out.iter_mut() {
-        if g.source != s.source {
-            continue;
-        }
-        let mut sessions = Vec::with_capacity(g.sessions.len() + 1);
-        let mut replaced = false;
-        for existing in &g.sessions {
-            if existing.name == s.name {
-                sessions.push(s.clone());
-                replaced = true;
-            } else {
-                sessions.push(existing.clone());
-            }
-        }
-        if !replaced {
-            sessions.push(s.clone());
-        }
-        g.sessions = sessions;
-        return out;
-    }
-    out.push(Group {
-        source: s.source.clone(),
-        err: None,
-        sessions: vec![s],
-    });
-    out
-}
-
 /// Returns groups with the session at `address` removed from its group. The
 /// now-possibly-empty group is kept, since an empty reachable group is still a
 /// valid create target. Inputs are not mutated.
@@ -186,35 +151,6 @@ pub fn rename_session(
         }
     }
     out
-}
-
-/// What a navigation card references. Every card is a selectable target: a session
-/// card attaches to that session (the mux lands on its active window),
-/// a host-state card selects the host (so its host screen shows). A section title is
-/// not a card: it names the group under it and cannot take the selection.
-#[derive(Clone)]
-pub(crate) enum RowRef {
-    /// A host/mux SECTION TITLE: the non-selectable header row a group of sibling
-    /// session cards hangs under. It carries `{host}/{mux}` and is never numbered or
-    /// selectable - the numbers below it are the sessions'. `n` on one of those
-    /// sessions creates a sibling in the same section.
-    Section { source: String },
-    /// A session card: the session name on a single detail line. Every session card
-    /// carries its session name; the focused window it used to name is gone from the
-    /// card, and the `{host}/{mux}` it used to carry now lives on the section title
-    /// above it.
-    Session { sess: Session },
-    /// A host with no session to show (scanning / unreachable / blocked / empty) -
-    /// the only host-level entry, sunk to the bottom of the list. `scanning` is the
-    /// in-flight state: the card's unresolved level shows a spinner instead of a
-    /// settled mux. `blocked` refines `unreachable`: the failure is one the user can
-    /// answer from xmux, so its card is the entry to the login pane.
-    Host {
-        source: String,
-        unreachable: bool,
-        blocked: bool,
-        scanning: bool,
-    },
 }
 
 /// One navigation row: a session card is a single line carrying the session name,

@@ -1,12 +1,10 @@
-//! The switcher's chrome: the tree|terminal view border, the full-width hint_bar
-//! (help / status / wrapped flash), and the host screens that fill the terminal-view
-//! region in place of a mux. These own the view-local presentation state ([`Chrome`])
-//! and read the runtime inventory from `State`; the
-//! [`Switcher`](crate::ui::switcher::Switcher) holds a [`Chrome`] and delegates these
-//! draws to it.
+//! Rendering and layout for the switcher's chrome: the tree|terminal view border,
+//! hint bar, and host screens that fill the terminal-view region in place of a mux.
+//! [`State`](crate::state::State) owns the [`Chrome`] data this module paints.
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Instant;
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -14,6 +12,10 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
+#[cfg(test)]
+use crate::state::chrome::FLASH_TTL;
+use crate::state::{Chrome, FlashKind};
+pub use crate::state::{SourceReach, ViewBorderColors};
 use crate::ui::modal::{wrap_text, Modal};
 use crate::ui::switcher::fit;
 
@@ -78,13 +80,6 @@ pub fn map_color(s: &str) -> Color {
 ///
 /// [`Self::resolve`] layers one tier over that: a `[ui] view-*-border-style` value the
 /// user named. Their terminal, their choice.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ViewBorderColors {
-    pub active: Color,
-    pub inactive: Color,
-    pub hover: Color,
-}
-
 impl Default for ViewBorderColors {
     fn default() -> Self {
         Self::from_palette(&crate::ui::palette::Palette::default())
@@ -234,15 +229,6 @@ pub(crate) fn notice_flash_style(palette: &crate::ui::palette::Palette) -> Style
 }
 
 /// What a flash is about, which decides how the bar paints it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) enum FlashKind {
-    /// A refused action or a failure: the error bar and the `⚠` mark.
-    #[default]
-    Error,
-    /// Information that is not a failure: the notice style and no mark.
-    Notice,
-}
-
 /// How much of its row the hint bar paints.
 ///
 /// The bar is a status bar where it owns its row, and a label where it does not: the
@@ -343,25 +329,6 @@ fn siblings(
 /// REACHED cannot change under a run - only whether it answers can. Every field is
 /// already words: the screen prints them and nothing branches on any of them, which is
 /// what keeps this layer blind to which machine kind or which mux a source is.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SourceReach {
-    /// The command a session listing spawns, spelled so it can be run by hand. The one
-    /// datum that turns "it failed" into something the user can reproduce outside xmux.
-    pub probe: String,
-    /// The machine and how it is addressed, with the connect budget that applies to it.
-    pub machine: String,
-    /// The mux binary asked for on that machine.
-    pub mux: String,
-    /// What that mux is CALLED, which is the name every surface shows: the binary above is
-    /// what was asked for, and the two part company wherever a binary is an alias or a
-    /// path. One spelling, so a card and the screen reached from it cannot name one mux two
-    /// ways.
-    pub kind: String,
-    /// The socket / ControlMaster path the mux is addressed through. Empty ⇒ no row,
-    /// which is the honest answer for a machine addressed without one.
-    pub socket: String,
-}
-
 /// The left cell of a host-screen row: what the row is about, and how it reads.
 enum ScreenCell {
     /// A key the user can press on this screen. Bold and nothing else, the help modal's
@@ -392,68 +359,6 @@ impl ScreenCell {
             ScreenCell::Continued | ScreenCell::Gap => Style::default(),
         }
     }
-}
-
-/// How long a flash stays up with nothing pressed. A refusal is about something that
-/// already happened, so a bar holding one forever keeps the nav's own help text off
-/// screen over a message that has stopped being news. Ten seconds reads a wrapped line
-/// twice over.
-pub(crate) const FLASH_TTL: Duration = Duration::from_secs(10);
-
-/// The switcher's chrome view state: the view border/hint_bar/host-screen draws and
-/// their inputs (flash, spinner set + frame, auto-hide + hover cues, view border
-/// colours, the ssh-config text, the configured prefix string, whether the prefix is
-/// currently armed, and the hint bar style).
-pub struct Chrome {
-    pub(crate) flash: String,
-    /// When the flash stops showing itself, or `None` when nothing is flashing.
-    flash_until: Option<Instant>,
-    /// Whether the current flash is an error or a notice.
-    flash_kind: FlashKind,
-    /// Auto-hide-tree mode (set by the app each frame). Drives the view border glyph:
-    /// ║ (double) when on, │ (single) when off - the only on-screen cue, since while
-    /// the mode is on but the tree is focused the tree still shows.
-    pub(crate) auto_hide: bool,
-    /// True while the mouse is hovering the view border rule - the app sets this from
-    /// idle motion so the view border highlights as a grab cue for drag-resize.
-    pub(crate) view_border_hovered: bool,
-    /// Session addresses currently connecting / awaiting first output - a braille
-    /// spinner glyph renders right of their name in the tree.
-    pub(crate) spinner: HashSet<String>,
-    pub(crate) spinner_frame: usize,
-    login_defaults: HashMap<String, crate::provision::env::LoginDefaults>,
-    ssh_stanzas: HashMap<String, String>,
-    /// What offered each host to the roster, keyed by HOST name and already reduced to
-    /// the words to print (set once by the app). The unreachable host screen names it.
-    /// Empty in tests, where the row is then absent rather than blank.
-    pub(crate) roster_providers: HashMap<String, String>,
-    /// How xmux reaches each source, keyed by SOURCE id (set once by the app). The
-    /// unreachable screen states it: a host that failed is worth little without what was
-    /// asked of it and how. See [`SourceReach`].
-    pub(crate) source_reach: HashMap<String, SourceReach>,
-    /// The log file every dispatched command and its result is written to (set once by the
-    /// app). The unreachable screen names the path, so the full history of what was run
-    /// is findable rather than being something the user has to know about.
-    pub(crate) log_path: String,
-    /// The human-readable prefix string (e.g. `"C-g"`, `"C-Space"`) - set once by
-    /// the app from config so the help modal reflects the active binding.
-    pub(crate) ui_prefix: String,
-    /// True while the prefix has been pressed and the app is waiting for the command
-    /// key (set by the app each frame from the live input state, in either focus). The
-    /// resting hint bar shows the prefix and collapse button until this flips, then the
-    /// floating bar shows the keys it unlocks. The cheatsheet appears exactly when it is
-    /// needed and never competes with the cards for room.
-    pub(crate) armed: bool,
-    /// The side the nav is attached to this frame (set by the app each frame from the
-    /// runtime's resolved position). The cheatsheet's focus segment names the arrow
-    /// pair the placement makes active.
-    pub(crate) nav_position: crate::ui::switcher::NavPosition,
-    /// The tree|terminal view border colours (set once by the app from config; tmux defaults
-    /// otherwise). See [`ViewBorderColors`].
-    pub(crate) colors: ViewBorderColors,
-    /// The hint bar's style (set once by the app from `[ui] hint-bar-style`; the tmux
-    /// default otherwise). See [`hint_bar_default_style`].
-    pub(crate) hint_bar_style: Style,
 }
 
 impl Default for Chrome {
@@ -497,166 +402,6 @@ impl Chrome {
             palette,
         );
         self.hint_bar_style = parse_hint_bar_style(&ui.hint_bar_style, palette);
-    }
-
-    /// Sets the transient error flash shown in the nav's hint bar. The next tree key
-    /// clears it (the switcher's `handle_key`), and [`FLASH_TTL`] clears it for a user
-    /// who presses nothing, so the normal help/status hint bar returns either way.
-    pub(crate) fn flash(&mut self, msg: impl Into<String>) {
-        self.show_flash(msg.into(), FlashKind::Error);
-    }
-
-    /// Sets a transient notice in the nav's hint bar: the same life as a flash, painted
-    /// as information rather than as an error.
-    pub(crate) fn notice(&mut self, msg: impl Into<String>) {
-        self.show_flash(msg.into(), FlashKind::Notice);
-    }
-
-    fn show_flash(&mut self, msg: String, kind: FlashKind) {
-        self.flash = msg;
-        self.flash_kind = kind;
-        self.flash_until = Some(Instant::now() + FLASH_TTL);
-    }
-
-    /// Takes the flash down, however it came to be over: a key, or its own life.
-    pub(crate) fn clear_flash(&mut self) {
-        self.flash.clear();
-        self.flash_until = None;
-    }
-
-    /// Drops a flash that has been up for its whole life, and says whether the bar
-    /// changed, so a caller repaints only when it did.
-    pub(crate) fn expire_flash(&mut self, now: Instant) -> bool {
-        match self.flash_until {
-            Some(until) if now >= until => {
-                self.clear_flash();
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Replaces the set of session addresses currently connecting / awaiting
-    /// first output. The tree draws a braille spinner right of each matching
-    /// session name.
-    pub(crate) fn set_spinner(&mut self, addresses: HashSet<String>) {
-        self.spinner = addresses;
-    }
-
-    /// Sets the braille spinner frame index. The app derives it from elapsed
-    /// wall-clock time, so the spinner animates on every render rather than once
-    /// per animation tick (which can starve under a `%output` flood).
-    pub(crate) fn set_spinner_frame(&mut self, frame: usize) {
-        self.spinner_frame = frame;
-    }
-
-    /// Sets auto-hide-nav mode (the app owns it; the view border glyph reflects it).
-    pub(crate) fn set_auto_hide(&mut self, on: bool) {
-        self.auto_hide = on;
-    }
-
-    /// Sets whether the mouse is hovering the view border (the app derives it from
-    /// idle motion); when set, the view border highlights as a drag-resize grab cue.
-    pub(crate) fn set_view_border_hovered(&mut self, on: bool) {
-        self.view_border_hovered = on;
-    }
-
-    /// Replaces the tree|terminal view border colours with a resolved set.
-    #[cfg(test)]
-    pub(crate) fn set_view_border_colors(&mut self, colors: ViewBorderColors) {
-        self.colors = colors;
-    }
-
-    /// Sets the prefix string shown in the help modal. The app calls this once
-    /// at startup so the help modal reflects the binding from config's `[ui] prefix`.
-    pub(crate) fn set_ui_prefix(&mut self, prefix: String) {
-        self.ui_prefix = prefix;
-    }
-
-    /// Sets whether the prefix is armed (pressed, awaiting its command key). The app
-    /// calls this each frame from the live input state; the hint bar reads it to swap
-    /// between the resting prefix indicator and the unlocked-keys cheatsheet.
-    pub(crate) fn set_armed(&mut self, armed: bool) {
-        self.armed = armed;
-    }
-
-    /// Sets the nav's attachment side. The app calls this each frame from the runtime's
-    /// resolved position; the cheatsheet reads it to name the active arrow pair.
-    pub(crate) fn set_nav_position(&mut self, position: crate::ui::switcher::NavPosition) {
-        self.nav_position = position;
-    }
-
-    /// Sets what offered each host to the roster. The app calls this once at startup
-    /// with the assembled roster; a host missing from the map simply shows no such row,
-    /// which is the honest answer for one nothing recorded.
-    pub(crate) fn set_roster_providers(&mut self, providers: HashMap<String, String>) {
-        self.roster_providers = providers;
-    }
-
-    /// Sets the resolved login values and matching ssh stanzas the chrome renders.
-    pub(crate) fn set_login_defaults(
-        &mut self,
-        defaults: HashMap<String, crate::provision::env::LoginDefaults>,
-        stanzas: HashMap<String, String>,
-    ) {
-        self.login_defaults = defaults;
-        self.ssh_stanzas = stanzas;
-    }
-
-    /// What ssh WOULD use to reach `source`, as the login pane's starting values: the
-    /// address, the port, and the username.
-    ///
-    /// An effective ssh address, port, or user wins when present. Missing values fall back
-    /// to the provider address or host name, port 22, and this machine's account name.
-    /// A pane that opened on a failure therefore opens showing the effective connection
-    /// values, and the user changes the part that was wrong.
-    pub(crate) fn login_defaults(&self, source: &str) -> (String, String, String) {
-        let host = crate::session::machine_of(source);
-        self.login_defaults
-            .get(host)
-            .cloned()
-            .unwrap_or_else(|| (host.to_string(), "22".into(), String::new()))
-    }
-
-    /// Sets how xmux reaches each source, keyed by source id. The app calls this once at
-    /// startup from the assembled source list; a source missing from the map shows the
-    /// rows it has and no blanks for the rest.
-    /// What the mux on `source` is CALLED. The resolved reach answers it; a source id that
-    /// carries its own mux (a machine serving several) is the fallback, for the paths that
-    /// have a list of sources and no resolved reach yet. Empty while neither knows, which
-    /// is the state a card turns a spinner for.
-    pub(crate) fn source_mux<'a>(&'a self, source: &'a str) -> &'a str {
-        match self.source_reach.get(source) {
-            Some(reach) if !reach.kind.is_empty() => &reach.kind,
-            _ => crate::session::mux_of(source),
-        }
-    }
-
-    /// How `source` is SHOWN: `{host}/{mux}`, the one grammar the pair is read in.
-    pub(crate) fn source_label(&self, source: &str) -> String {
-        crate::session::source_label(crate::session::machine_of(source), self.source_mux(source))
-    }
-
-    /// The same label, for a surface that knows whether the host ANSWERED. A mux no
-    /// answer confirmed is left off, so the label never puts a guess where every other
-    /// one carries a fact.
-    pub(crate) fn source_label_when(&self, source: &str, answered: bool) -> String {
-        let mux = if crate::session::mux_may_be_named(source, answered) {
-            self.source_mux(source)
-        } else {
-            ""
-        };
-        crate::session::source_label(crate::session::machine_of(source), mux)
-    }
-
-    pub(crate) fn set_source_reach(&mut self, reach: HashMap<String, SourceReach>) {
-        self.source_reach = reach;
-    }
-
-    /// Sets the log file path the unreachable screen names. The app calls this once at
-    /// startup with the file logging actually opened.
-    pub(crate) fn set_log_path(&mut self, path: String) {
-        self.log_path = path;
     }
 
     /// The rule between the tree and the terminal view. The whole rule uses the active

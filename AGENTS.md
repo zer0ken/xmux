@@ -32,8 +32,8 @@ state; raw key and text injection is an unstable low-level surface.
 
 ## Module Seams
 
-- `src/app/` - the app: the runtime loop that owns the terminal, the focus and
-  modal routing state, the ctl socket server, and preference persistence.
+- `src/app/` - the app: the runtime loop that owns the terminal, the ctl socket
+  server, and preference persistence.
 - `src/cli/` - the CLI surface: argument parsing and command dispatch, plus the
   `xmux update` subcommand. It exposes ONE public entry, which the binary shim calls.
 - `src/provision/` - resolution: the TOML config, the roster of ssh targets, the
@@ -56,8 +56,9 @@ state; raw key and text injection is an unstable low-level surface.
   (control-mode reader and writer, poll tasks, live client ownership), the mux
   operations xmux issues, and the control-socket protocol.
 - `src/ui/` - nav row transforms, off-loop operation execution, interaction
-  state, and rendering.
-- `src/state/` - the explicit app runtime state and its two mutation sites.
+  behavior, and rendering.
+- `src/state/` - the explicit app runtime state, including focus, modal, and
+  chrome data, and its two mutation sites.
 - `src/session.rs` - the foundational cross-environment data types (a `Session`,
   its windows-and-panes detail, and the `<source>/<name>` address) that the axes
   and the model build on.
@@ -78,10 +79,8 @@ file.
 | `state` | `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `state`, `transport` |
 | `app`, `cli`, `lib`, `main`, `ui` | `app`, `cli`, `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `state`, `transport`, `ui` |
 
-The architecture check includes `#[cfg(test)]` modules and lists every known
-exception by source file and target module. The exception list is exact: a new
-edge fails the check, and removing an edge without removing its exception also
-fails the check.
+The architecture check includes `#[cfg(test)]` modules. The known-exception list
+is empty, and any new edge fails the check.
 
 ### View Purity
 

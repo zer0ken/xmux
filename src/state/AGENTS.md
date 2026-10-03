@@ -38,37 +38,28 @@ run off-loop, with the inventory change arriving later as that operation's
 result. There is no rename, kill, or window intent; the mux owns editing a
 session.
 
-Applying an EVENT is the inbound mirror: the single event-driven mutation site.
-It folds the arms whose data is SELF-CONTAINED in the event (a poll enumeration,
-an exit marking a source unreachable)
-into the state through the switcher, and returns the mux follow-ups it cannot
-perform itself as effects for the run loop. The once-connected set enters as
-DATA, like the clock on a tick: an exit from a once-connected source is a transient
-drop that keeps the last-known inventory. Connection and inventory events carry
-their parsed sessions, which the loop folds into the source's own inventory, the
-single owner; that fold needs the source registry the state layer does not hold, so
-it is the loop's job.
+Applying an EVENT is the inbound mirror: the single event-driven transition. It
+updates state-owned data and returns an ordered effect list for switcher changes,
+connection tracking, and backend follow-ups. The runtime applies that list because
+it owns the switcher, the once-connected set, source registry, and live clients.
+An exit from a once-connected source is a transient drop that keeps the last-known
+inventory. Connection and inventory events carry parsed sessions for the runtime
+to fold into the source's own inventory, the single owner.
 
 The modal is ONE optional value: at most one of help or inline input. A single
 option, rather than independent fields, makes the modals' mutual exclusion
-structural, so opening one drops whatever was open. The query helpers read it,
-delegating to the UI modal module, which owns the modal types, classifiers, and
-self-contained behavior (the help feed, the popup drag geometry); the switcher
-holds the modal state plus its popup geometry and forwards to that module.
+structural, so opening one drops whatever was open. State owns the modal types,
+classifiers, input editing, and help feed. The UI owns popup geometry and rendering.
 
 ## Module Seams
 
-- The state depends on the domain layer for inventory groups, login inputs,
-  operation results, the selection, and the action, command, and effect sets; on
-  the UI layer for the open modal and the switcher it rebuilds rows against; on
-  the app layer for the focus state machine; and on the connection layer for the
-  inbound events.
+- The state depends on backend layers for inventory groups, login inputs,
+  operation results, selection, action, command, effect, and inbound event data.
+  It owns the focus state machine and the modal and chrome data consumed by UI.
 - It stores state facts plus the two mutation sites. The run loop owns effect
-  dispatch, both the synchronous commands from an action (switcher selection move,
-  attach, preferences IO, quit) and the mux follow-ups from an event (inventory
-  fold and apply, refetch, probe, reap, sync, scan dispatch, source add), and
-  feeds the runtime attach facts back on the tick. No IO, spawning, or channel
-  sends happen here.
+  dispatch, including switcher and connection actions, inventory application,
+  refetch, probe, reap, sync, scan dispatch, and source addition. No IO, spawning,
+  channel sends, presentation behavior, or application orchestration happen here.
 
 ## Invariants
 
@@ -103,6 +94,8 @@ holds the modal state plus its popup geometry and forwards to that module.
   events over the state without a match on mux kind. Per-mux behavior lives behind
   the mux and driver seam the run loop reaches; the mux enters here only as domain
   data (sessions, windows, events).
+- This layer imports backend peers and itself. It has no application or UI
+  dependency and no known Layer Direction exception.
 
 ## Common Pitfalls
 

@@ -588,9 +588,9 @@ Attach argv is composed from a source's own mux + transport (the two axes
 together), so the two implementations are combined without either knowing the other.
 
 The supervisor branches on NOTHING mux-specific. `src/app/` (runtime loop,
-focus, input routing, ctl serving, preference persistence), `src/ui/` (switcher /
-rows / chrome / modal / ops rendering), and `src/state/` (the runtime state and
-its mutation sites) select display through the source's own driver and read the
+input routing, ctl serving, preference persistence), `src/ui/` (switcher / rows /
+chrome and modal rendering), and `src/state/` (the runtime state, focus, modal and
+chrome data, and its mutation sites) select display through the source's own driver and read the
 grid back from it; per-mux behavior lives behind that seam. These layers carry
 no PTY, grid, or terminal-protocol logic.
 
@@ -626,9 +626,8 @@ directory directly below `src/`, or to the root module named by its `.rs` file.
 | `app`, `cli`, `lib`, `main`, `ui` | `app`, `cli`, `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `state`, `transport`, `ui` |
 
 The repository architecture check scans production source and `#[cfg(test)]`
-modules. It names each known exception by source file and target module. That
-list is exact and may only shrink: an unlisted edge and an obsolete exception
-both fail the check.
+modules. Its known-exception list is empty, and any disallowed edge fails the
+check.
 
 ### View Purity
 
@@ -651,8 +650,8 @@ Known exceptions:
   applies a domain action.
 - Mouse row selection mutates the switcher directly before the runtime reconciles
   the selected display.
-- Source events use a separate state mutation site that also receives mutable
-  switcher and connection state.
+- Source events use a separate state transition that returns ordered switcher,
+  connection, and backend effects for the runtime to apply.
 - The runtime owns switcher, nav geometry, mouse state, connected sources, and
   detecting sources beside the state value.
 - Source-event effects use a separate exhaustive executor from commands.
@@ -740,13 +739,13 @@ At creation time, place a new source file by the axis it belongs to:
   the existing local or ssh implementation.
 - Mux-specific (a new mux implementation or per-mux behavior) → `src/mux/<kind>/`.
 - PTY / grid / terminal-protocol mechanics → `src/display/`.
-- Orchestration (runtime loop, focus) → `src/app/`.
+- Orchestration (runtime loop) → `src/app/`.
 - Per-source connection management → `src/link/`.
 - Domain types → `src/model/`.
 - Provisioning (config / roster / discovery / resolved env) → `src/provision/`.
 - CLI command surface → `src/cli/`.
 - Switcher / nav rows / status UI → `src/ui/`.
-- Runtime state → `src/state/`.
+- Runtime state, focus, modal data, and chrome data → `src/state/`.
 
 Then, if the module introduces a new directory, create that directory's
 `AGENTS.md` using the Working Notes Format above (all seven sections). Follow the

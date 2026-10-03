@@ -3,16 +3,15 @@
 ## Purpose
 
 `ui` owns the session switcher: pure row-model transforms, side-effecting UI
-operations, interactive switcher state, rendering, and off-screen render dumps.
+operations, interactive behavior, rendering, and off-screen render dumps.
 
 ## Mental Model
 
 The row model is side-effect-free logic over groups and sessions. `switcher/` is
 the aggregate interactive TUI surface: selection, flattened rows, modal and input
 BEHAVIOR and rendering, key and mouse handling, operation result application, and
-render state. The open modal itself lives in the runtime state, though the modal
-type is defined here; the switcher reads and writes it and owns only the
-transient popup geometry.
+render state. The runtime state owns the modal type and open-modal value; the
+switcher reads and writes it and owns only transient popup geometry.
 
 The chrome is the view border, the hint bar, and the host screens, plus its
 view-local state (flash, spinner, view border colours, prefix, ready). The hint
