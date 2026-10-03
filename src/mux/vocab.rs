@@ -1,13 +1,17 @@
 //! Builds the argv for mux (tmux/psmux) subcommands and parses their
-//! tab-delimited output. Builders are pure: they assemble `Vec<String>` argv with
+//! delimited output. Builders are pure: they assemble `Vec<String>` argv with
 //! no shell involved (`argv[0]` is the mux binary name). Parsers are pure
 //! functions over the raw command output.
 
 use crate::session::Session;
 
-/// The `list-sessions -F` template. The free-form session name is LAST so a tab
-/// inside a name cannot shift the fixed numeric columns.
-pub const SESSION_FORMAT: &str = "#{session_windows}\t#{session_attached}\t#{session_name}";
+/// The `list-sessions -F` template. Fields are joined with `:` because tmux in
+/// control mode rewrites a TAB in a format reply to `_`, while a `:` survives; tmux
+/// itself replaces `:` and `.` in a session name with `_`, so a tmux name never
+/// contains it. The free-form session name is LAST and [`parse_sessions`] splits at
+/// most three times, so a `:` inside a name from another mux cannot shift the
+/// fixed numeric columns.
+pub const SESSION_FORMAT: &str = "#{session_windows}:#{session_attached}:#{session_name}";
 
 /// Whether `key` is a mux session variable that a child spawned by xmux must not
 /// inherit (it would mis-target the server or be refused as nesting). This is the
@@ -101,12 +105,12 @@ fn split_lines(out: &str) -> Vec<&str> {
 /// Parses `list-sessions` output ([`SESSION_FORMAT`]) into sessions tagged with
 /// `source` and the enumerating mux's `mux` kind. Malformed lines (short,
 /// non-numeric numeric columns, or empty name) are skipped so banners and garbage
-/// cannot poison the list. The name is rejoined from `fields[2..]` so a tab
-/// inside a name survives. Order is preserved.
+/// cannot poison the list. The name is the whole remainder after the second `:`,
+/// so any character inside it survives. Order is preserved.
 pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in split_lines(out) {
-        let fields: Vec<&str> = ln.split('\t').collect();
+        let fields: Vec<&str> = ln.splitn(3, ':').collect();
         if fields.len() < 3 {
             continue;
         }
@@ -116,13 +120,13 @@ pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
         let Ok(attached_n) = fields[1].parse::<i64>() else {
             continue;
         };
-        let name = fields[2..].join("\t");
+        let name = fields[2];
         if name.is_empty() {
             continue;
         }
         sessions.push(Session {
             source: source.to_string(),
-            name,
+            name: name.to_string(),
             mux: mux.to_string(),
             windows,
             attached: attached_n > 0,
@@ -143,7 +147,7 @@ mod tests {
     fn session_format_template() {
         assert_eq!(
             SESSION_FORMAT,
-            "#{session_windows}\t#{session_attached}\t#{session_name}"
+            "#{session_windows}:#{session_attached}:#{session_name}"
         );
     }
 
@@ -269,7 +273,7 @@ mod tests {
 
     #[test]
     fn parse_sessions_basic() {
-        let out = "3\t1\tmain\n2\t0\tother\n";
+        let out = "3:1:main\n2:0:other\n";
         let got = parse_sessions("local", "tmux", out);
         assert_eq!(
             got,
@@ -294,7 +298,7 @@ mod tests {
 
     #[test]
     fn parse_sessions_crlf() {
-        let out = "1\t1\ta\r\n1\t0\tb\r\n";
+        let out = "1:1:a\r\n1:0:b\r\n";
         let got = parse_sessions("local", "tmux", out);
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].name, "a");
@@ -302,15 +306,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_sessions_name_with_tab_and_slash() {
-        let out = "4\t1\tproj/a\tb\n";
+    fn parse_sessions_name_with_tab_slash_and_colon() {
+        let out = "4:1:proj/a\tb:c\n";
         let got = parse_sessions("ssh-host", "tmux", out);
         assert_eq!(
             got,
             vec![Session {
                 source: "ssh-host".into(),
                 mux: "tmux".into(),
-                name: "proj/a\tb".into(),
+                name: "proj/a\tb:c".into(),
                 windows: 4,
                 attached: true,
             }]
@@ -322,10 +326,10 @@ mod tests {
         let out = concat!(
             "some random banner text\n",
             "\n",
-            "x\t1\tbadwin\n",
-            "1\tnope\tbadattach\n",
-            "1\t1\t\n",
-            "2\t1\tgood\n",
+            "x:1:badwin\n",
+            "1:nope:badattach\n",
+            "1:1:\n",
+            "2:1:good\n",
         );
         let got = parse_sessions("local", "tmux", out);
         assert_eq!(
@@ -347,9 +351,41 @@ mod tests {
 
     #[test]
     fn parse_sessions_order_preserved() {
-        let out = "1\t0\tz\n1\t0\ta\n1\t0\tm\n";
+        let out = "1:0:z\n1:0:a\n1:0:m\n";
         let got = parse_sessions("local", "tmux", out);
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["z", "a", "m"]);
+    }
+
+    /// tmux 3.3a in control mode answers `list-sessions -F` with its TAB separators
+    /// replaced by `_`, which left a row no parser could split. The `:` template
+    /// arrives as sent.
+    #[test]
+    fn parse_sessions_reads_the_tmux_3_3a_control_mode_reply() {
+        let got = parse_sessions("host", "tmux", "1:2:e2e-session\n");
+        assert_eq!(
+            got,
+            vec![Session {
+                source: "host".into(),
+                name: "e2e-session".into(),
+                mux: "tmux".into(),
+                windows: 1,
+                attached: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_sessions_name_with_underscores_and_spaces_is_verbatim() {
+        let got = parse_sessions("host", "tmux", "3:0:my_work session_2\n");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "my_work session_2");
+        assert_eq!(got[0].windows, 3);
+        assert!(!got[0].attached);
+    }
+
+    #[test]
+    fn session_format_has_no_tab() {
+        assert!(!SESSION_FORMAT.contains('\t'));
     }
 }
