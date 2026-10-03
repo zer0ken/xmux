@@ -426,6 +426,7 @@ pub struct Chrome {
     /// Raw `~/.ssh/config` text (set once by the app). The unreachable host screen shows
     /// the matching Host/Match stanza for the selected host. Empty in tests.
     pub(crate) ssh_config_text: String,
+    ssh_logins: HashMap<String, crate::transport::Login>,
     /// What offered each host to the roster, keyed by HOST name and already reduced to
     /// the words to print (set once by the app). The unreachable host screen names it.
     /// Empty in tests, where the row is then absent rather than blank.
@@ -479,6 +480,7 @@ impl Default for Chrome {
             spinner: HashSet::new(),
             spinner_frame: 0,
             ssh_config_text: String::new(),
+            ssh_logins: HashMap::new(),
             host_addresses: HashMap::new(),
             local_user: String::new(),
             roster_providers: HashMap::new(),
@@ -605,30 +607,39 @@ impl Chrome {
     pub(crate) fn set_login_defaults(
         &mut self,
         addresses: HashMap<String, String>,
+        ssh_logins: HashMap<String, crate::transport::Login>,
         local_user: String,
     ) {
         self.host_addresses = addresses;
+        self.ssh_logins = ssh_logins;
         self.local_user = local_user;
     }
 
     /// What ssh WOULD use to reach `source`, as the login pane's starting values: the
     /// address, the port, and the username.
     ///
-    /// Nothing here is a guess. The address is what the provider reported, else the host
-    /// name itself. The port is ssh's own default. The username is the ssh config's
-    /// `User` for this host, else this machine's account name, which is exactly ssh's
-    /// fallback. A pane that opened on a failure therefore opens showing what just
-    /// failed, and the user changes the part that was wrong.
+    /// An effective ssh address, port, or user wins when present. Missing values fall back
+    /// to the provider address or host name, port 22, and this machine's account name.
+    /// A pane that opened on a failure therefore opens showing the effective connection
+    /// values, and the user changes the part that was wrong.
     pub(crate) fn login_defaults(&self, source: &str) -> (String, String, String) {
         let host = crate::session::machine_of(source);
-        let address = self
-            .host_addresses
-            .get(host)
-            .cloned()
-            .unwrap_or_else(|| host.to_string());
-        let user = crate::provision::config::stanza_user(&self.ssh_config_text, host)
-            .unwrap_or_else(|| self.local_user.clone());
-        (address, "22".to_string(), user)
+        let configured =
+            self.ssh_logins.get(host).cloned().unwrap_or_else(|| {
+                crate::provision::config::stanza_login(&self.ssh_config_text, host)
+            });
+        let address = configured
+            .address
+            .filter(|address| address != host || !self.host_addresses.contains_key(host))
+            .unwrap_or_else(|| {
+                self.host_addresses
+                    .get(host)
+                    .cloned()
+                    .unwrap_or_else(|| host.to_string())
+            });
+        let port = configured.port.unwrap_or(22).to_string();
+        let user = configured.user.unwrap_or_else(|| self.local_user.clone());
+        (address, port, user)
     }
 
     /// Sets how xmux reaches each source, keyed by source id. The app calls this once at
@@ -827,13 +838,33 @@ impl Chrome {
             // fault. Nothing here is abbreviated to fit - a value too wide hangs under
             // its own rule (see below), because a datum the user came here to read is
             // worth more than a tidy column.
-            let reason = state
-                .groups
-                .iter()
-                .find(|g| g.source == source)
-                .and_then(|g| g.err.clone())
+            let login_report = state.login_reports.get(crate::session::machine_of(source));
+            let reason = login_report
+                .and_then(|report| report.connect.reason().map(str::to_string))
+                .or_else(|| {
+                    state
+                        .groups
+                        .iter()
+                        .find(|g| g.source == source)
+                        .and_then(|g| g.err.clone())
+                })
                 .unwrap_or_else(|| "connection closed".into());
             rows.push((ScreenCell::Label("reason"), reason));
+            if let Some(registration) = state
+                .registration_reports
+                .get(crate::session::machine_of(source))
+            {
+                use crate::ui::ops::RegistrationOutcome;
+                let registration = match registration {
+                    RegistrationOutcome::NotRequested => None,
+                    RegistrationOutcome::Registered => Some("registered".to_string()),
+                    RegistrationOutcome::Skipped(reason) => Some(format!("skipped: {reason}")),
+                    RegistrationOutcome::Failed(reason) => Some(format!("failed: {reason}")),
+                };
+                if let Some(registration) = registration {
+                    rows.push((ScreenCell::Label("public key"), registration));
+                }
+            }
             if let Some(runs) = state.failure_runs.get(source) {
                 rows.push((ScreenCell::Label("failures"), failure_run_words(*runs)));
             }
@@ -902,6 +933,22 @@ impl Chrome {
             }
             rows.push((ScreenCell::Gap, String::new()));
         } else {
+            if let Some(registration) = state
+                .registration_reports
+                .get(crate::session::machine_of(source))
+            {
+                use crate::ui::ops::RegistrationOutcome;
+                let value = match registration {
+                    RegistrationOutcome::NotRequested => None,
+                    RegistrationOutcome::Registered => Some("registered".to_string()),
+                    RegistrationOutcome::Skipped(reason) => Some(format!("skipped: {reason}")),
+                    RegistrationOutcome::Failed(reason) => Some(format!("failed: {reason}")),
+                };
+                if let Some(value) = value {
+                    rows.push((ScreenCell::Label("public key"), value));
+                    rows.push((ScreenCell::Gap, String::new()));
+                }
+            }
             // Creating under an unreachable host is refused, so `n` is offered only where
             // it can actually run.
             rows.push((

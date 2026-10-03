@@ -272,38 +272,59 @@ UI elements a user perceives as distinct things:
   (whose screen states "no sessions"); a card still scanning carries the spinner
   instead, because its spinner already says so. Not to be confused with the hint bar
   (below) or the `chrome`.
-- blocked - a host xmux REACHED, or could reach with different values, a state apart
-  from unreachable. What the login pane collects decides the set: ssh's auth-failure line
-  (`Permission denied (…`), its host-key verification-failed line, and a name that did
-  not resolve. A machine that refused, timed out, or had no route is down and stays
-  unreachable, as does output carrying ssh's changed-identification warning, which is
-  decided outside xmux. A blocked card keeps the `?` mark (warning, like unreachable's
+- blocked - a host ssh refused for a reason the submitted login answers, a state apart
+  from unreachable. ssh's final account-and-host authentication line enters this state,
+  and so does a host-key verification failure for a host with no recorded key when the
+  effective policy is `ask`, since the submitted login can accept that key. An unknown
+  key under a strict policy stays unreachable and names a command that displays its fingerprint. Remote command permissions, name resolution,
+  connectivity failures, and a changed host key stay unreachable. A blocked card keeps the `?` mark (warning, like unreachable's
   `⚠`), is never hidden by hide-unreachable (it is the one entry to the login pane), and
   shows that pane above the same failure facts the unreachable screen states. What it was
   blocked ON is not in its state word: the reason row carries ssh's own sentence.
 - login pane - the form a blocked host's panel opens, holding the three values ssh will
   not ask for and must know before it dials: the address, the port, and the username. A
   masked password field is optional beside them. Every value starts at what ssh WOULD
-  use - the address a provider reported, ssh's default port, the ssh config's `User` else
-  this machine's account name - so a pane that opened on a failure opens showing what
-  just failed. A required field is marked in its label; an empty optional one says so in
+  use. Address, port, and user come from OpenSSH's effective configuration when present;
+  missing values use a provider address or host name, port 22, and this machine's account
+  name. A required field is marked in its label; an empty optional one says so in
   the space its value would occupy. Two choices follow: whether to record the values, and
   whether to register this machine's public key on the host. The record choice appears
   only once a value differs from what ssh would have used, since a stanza repeating what
   ssh already resolves records nothing. Enter means one thing throughout - submit from
   the button, pass the focus on from anywhere else - and Space picks a choice. It is not
-  a modal and nothing in the nav drives it. The submitted password lives only in the
-  transient command and the PTY writer: never stored, logged, rendered, or serialized.
-- running a login - the ssh the pane started, had by xmux rather than by the user. ssh
-  asks for the host key and the password itself, on a terminal and nowhere else, so the
-  login runs on a PTY that nothing renders: the pane collected the answers before it
-  started, so the host-key question is answered once and the password typed once. The
-  pane says a login is under way in place of the button it offered and takes no input but
-  the Esc that ends it. The verdict is the child's exit code, except where ssh asks for
-  something the pane's values cannot answer, which ends the login on what ssh asked for
-  rather than on the idle budget. However it ends, the pane returns holding what was
-  typed, and a login that worked re-probes its host so the pane gives way to that host's
-  sessions.
+  a modal and nothing in the nav drives it. The submitted password is held only in xmux
+  process memory for that machine and is never logged, rendered, serialized, placed in a
+  command argument, child environment, or file. The held credential allocation and the
+  current password-field allocation are overwritten in full when released. Transient
+  terminal and IPC buffers remain process memory; operating-system crash dump policy is
+  outside xmux's control.
+- running a login - one ordinary ssh command using a pending credential unavailable to
+  every other command until that login succeeds. The ssh child receives a forced askpass
+  environment holding an opaque per-command token for a private local broker, not the
+  password. The token remains valid until the child is reaped and answers at most once.
+  The submitted address, port, and user are included in a bounded effective ssh
+  configuration query before the credential becomes available.
+  The helper answers an OpenSSH password or keyboard-interactive prompt only when its
+  account and host exactly match the held account and the target alias, resolved host name,
+  or host-key alias. A destination configured with `ProxyJump` or `ProxyCommand` does
+  not enter the password path because the proxy would inherit askpass. The helper
+  refuses every other prompt. The submitted login
+  accepts a new host key only when the effective ssh policy is `ask`, never weakens `yes`,
+  and refuses a changed key; background commands keep the user's host-key policy. The pane says a
+  login is under way in place of the button and takes no input but Esc. Its result keeps
+  ssh's own sanitized, bounded diagnostic and a failure category. A later probe cannot
+  replace that login diagnosis. A refusal that did not receive the held password remains
+  visible. A refused password, pending-login cancellation, roster removal, or
+  process exit forgets the matching credential, invalidates its outstanding tokens, and
+  releases its held plaintext; a working login re-probes its machine and
+  every direct ssh started by that running app can use the held password even when connection
+  sharing is unavailable. A command removes a held password only when it actually received
+  that credential, exits with ssh's connection-failure status, and carries ssh's own
+  authentication refusal. A probe result tagged with an older credential generation
+  cannot reclassify a machine after a newer login. The broker recreates its endpoint with
+  backoff after an accept failure; while it is unavailable commands remain non-interactive
+  and report that password login is unavailable. The separate command-line attach process has no access to the
+  running app's credential and uses keys or ssh's terminal prompt.
 - remembering a login - what the pane's record choice does once the connection works: an
   xmux-marked stanza naming the host, holding the values that reached it, written at the
   TOP of `~/.ssh/config` because ssh keeps the FIRST value it obtains for a keyword. The
@@ -312,11 +333,11 @@ UI elements a user perceives as distinct things:
   never recorded, because ssh config has nowhere to put one; the public-key choice is
   what stops the host asking again.
 - registering a key - what the pane's key choice does once the connection works. The
-  login's own remote command reads the host's shell family, because the registration is a
-  command for one family and a locked host's family is unknown until someone gets in. The
-  registration is then its own ssh, answered with the same values and password, because a
-  platform without connection sharing keeps no authenticated session to carry it; the key
-  it leaves ends the password, so every later probe needs nothing. A POSIX host gets the
+  login command reads the host's shell family, because the registration is a command for
+  one family and a locked host's family is unknown until someone gets in. Registration is
+  an ordinary ssh command over the machine's in-memory authentication and reports
+  registered, skipped with a reason, or failed with ssh's reason in a completion message,
+  the log, and host information. A POSIX host gets the
   line in `~/.ssh/authorized_keys`; a Windows host gets it there too, and in
   `administrators_authorized_keys` when its sshd reads an Administrators member's keys
   from that file. It adds the line only when that line is absent, so a second login

@@ -1304,7 +1304,7 @@ mod tests {
             },
             Group {
                 source: "pwbox".into(),
-                err: Some("Permission denied (publickey,password).".into()),
+                err: Some("alice@pwbox: Permission denied (publickey,password).".into()),
                 sessions: vec![],
             },
             Group {

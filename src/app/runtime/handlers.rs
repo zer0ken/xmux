@@ -7,7 +7,19 @@ impl Runtime {
     /// holds the host clients, the registry, and the display worker the state layer must
     /// not reach). Drained in a burst by `on_host_event`. Returns `true` when the caller
     /// should rearm `attach_deadline` + mark dirty (the matched-client detach-reap path).
-    pub(super) fn handle_host_event(&mut self, ev: HostEvent) -> bool {
+    pub(super) fn handle_host_event(&mut self, mut ev: HostEvent) -> bool {
+        if let HostEvent::MachineProbed {
+            machine,
+            credential_held,
+            current_credential_generation,
+            ..
+        } = &mut ev
+        {
+            *credential_held = self.env.credentials().contains(machine);
+            *current_credential_generation = self.env.credentials().generation(machine);
+        }
+        let held = self.env.credentials().machines();
+        self.state.logged_in = held;
         let mut rearm = false;
         for effect in self
             .state
@@ -255,7 +267,7 @@ impl Runtime {
                 // cannot reap a card through all three at once.
                 let mut roster = roster;
                 env.carry_probed(&mut roster);
-                let fresh = crate::model::Hosts::build(
+                let mut fresh = crate::model::Hosts::build(
                     &roster.cfg,
                     &roster.ssh_aliases,
                     &roster.wsl_distros,
@@ -264,6 +276,7 @@ impl Runtime {
                     &env.xmux_dir,
                     env.local_socket.clone(),
                 );
+                fresh.set_credentials(env.credentials());
                 // What offered each host, refreshed with the roster: a host added by this
                 // resolution has to be able to name the provider that offered it, exactly
                 // as one present since launch can.
@@ -274,10 +287,18 @@ impl Runtime {
                         .map(|(host, p)| (host.clone(), p.label().to_string()))
                         .collect(),
                 );
-                state
-                    .chrome
-                    .set_login_defaults(roster.host_addresses.clone(), local_user());
+                state.chrome.set_login_defaults(
+                    roster.host_addresses.clone(),
+                    roster
+                        .ssh_profiles
+                        .iter()
+                        .map(|(host, profile)| (host.clone(), profile.login.clone()))
+                        .collect(),
+                    local_user(),
+                );
                 env.replace_roster(*roster);
+                let held = env.credentials().machines();
+                state.logged_in.retain(|machine| held.contains(machine));
                 state.chrome.set_source_reach(reach_map(env));
                 let delta = hosts.reconcile(fresh);
                 for id in &delta.removed {
@@ -511,7 +532,7 @@ impl Runtime {
         // Host model: the single runtime registry, keyed by id (local first, then each
         // ssh alias in config order), built from the config-assembly products on `Env`.
         let host_os = std::env::consts::OS;
-        let hosts = crate::model::Hosts::build(
+        let mut hosts = crate::model::Hosts::build(
             &roster.cfg,
             &roster.ssh_aliases,
             &roster.wsl_distros,
@@ -520,6 +541,7 @@ impl Runtime {
             &env.xmux_dir,
             env.local_socket.clone(),
         );
+        hosts.set_credentials(env.credentials());
 
         // The app's runtime state (single source of truth), seeded from the host ids;
         // events stream the nav in.
@@ -549,9 +571,15 @@ impl Runtime {
         // And what the login pane starts from: the address a provider knew for each host,
         // and this machine's own account name. Both are what ssh would have used, so a
         // pane that opens on a failure opens showing what just failed.
-        state
-            .chrome
-            .set_login_defaults(roster.host_addresses.clone(), local_user());
+        state.chrome.set_login_defaults(
+            roster.host_addresses.clone(),
+            roster
+                .ssh_profiles
+                .iter()
+                .map(|(host, profile)| (host.clone(), profile.login.clone()))
+                .collect(),
+            local_user(),
+        );
         // And how each source is REACHED, so an unreachable one states what was asked of
         // it and over what, not only that it failed. Resolved to words here for the same
         // reason the providers are: the screen prints them and nothing branches on them.
@@ -1390,6 +1418,7 @@ impl Runtime {
     /// connected), so re-probe just it - over what the login left behind - instead of the
     /// whole roster. The re-probe is what turns the pane back into the host's sessions.
     pub(super) fn on_op_result(&mut self, result: crate::ui::switcher::OpResult) {
+        self.state.logged_in = self.env.credentials().machines();
         if let Some((source, login)) = self.switcher.apply_op_result(result, &mut self.state) {
             // The values that just authenticated become the machine's, before the
             // re-probe is the first command to use them. The login's own connection is
@@ -1400,12 +1429,14 @@ impl Runtime {
                 .for_each_transport_of(crate::session::machine_of(&source), |t| {
                     t.set_login(login.clone())
                 });
-            // The machine the user just authenticated is the one they are waiting on, so
-            // hiding stops applying to it: the login it offered no longer blocks, and
-            // without this that success is what would take the card off the list.
-            self.state
-                .logged_in
-                .insert(crate::session::machine_of(&source).to_string());
+            // Credential presence keeps the machine visible while the requested probe
+            // is pending. The mark is removed whenever the shared store no longer holds it.
+            let machine = crate::session::machine_of(&source);
+            if self.env.credentials().contains(machine) {
+                self.state.logged_in.insert(machine.to_string());
+            } else {
+                self.state.logged_in.remove(machine);
+            }
             // A host that serves no source yet has one card, and the answer it now waits
             // on (which muxes the host serves) is in flight.
             let machine = crate::session::machine_of(&source);

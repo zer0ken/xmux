@@ -53,22 +53,11 @@ back to the app, which owns the registry.
   with the last line its pane held. The loop reads a missing attachment as a client to
   replace, so a child that keeps stopping and a reattach decision that keeps firing look
   identical from the outside; only the exit being on record separates them.
+- An attachment owns its command's authentication guard until its child has been reaped,
+  because a long-lived ssh child can invoke askpass after spawn has returned.
 - Input decoding, dispatch, and mouse parsing turn terminal input into routing
   decisions or input actions. Terminal setup holds the prefix parsing, mouse
   capture, and the terminal guard.
-- A console is one PTY child owned by whoever spawned it rather than by the registry, for
-  a program that will only talk to a terminal. It shares the PTY mechanics with an
-  attachment - the control thread owning the writer and master, the terminal-query
-  answers - and differs in what comes out: an attachment is a live mux client the registry
-  keys, reaps, and renders, while a console is one bounded conversation its spawner sees
-  through to an exit code. What it hands back is the bytes the child wrote, in order,
-  because a caller that must RECOGNISE something in the stream needs the stream. It
-  emulates no screen: a child that asks where the cursor is is told the top-left corner,
-  which keeps it talking and costs nothing, since nobody is looking at what it draws.
-  The reader's EOF is not the child's exit everywhere: a Windows pseudoconsole keeps its
-  output pipe open until the console closes, and the console holds its master until it
-  is waited on, so a caller that needs to know the child is gone asks the child
-  (`has_exited`) rather than waiting for the stream to end.
 - Reading one environment variable out of a live attach child is its own seam,
   beside the attachment. It answers what the running process holds NOW, not what
   the spawn was given, which is the only way to observe a mux that moves its

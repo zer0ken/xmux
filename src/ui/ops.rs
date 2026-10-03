@@ -29,27 +29,18 @@ pub trait Ops: Send + Sync {
     /// unreachable (the message is shown as the host's failure reason).
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>>;
     async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session>;
-    /// The command that logs in to `source` with the pane's values, or `None` where the
-    /// machine has no login to run (it is local, or the platform leaves no reusable
-    /// master behind). Synchronous: it composes an argv and runs nothing, so the app can
-    /// ask for it on the loop and start the conversation itself.
-    fn login_argv(&self, source: &str, login: &crate::transport::Login) -> Option<Vec<String>>;
+    /// The command that validates the pane's values against `source`, or `None` where the
+    /// machine has no remote login to run. It resolves the effective ssh configuration,
+    /// installs a pending credential visible only to that command, and starts no login.
+    async fn login_command(
+        &self,
+        source: &str,
+        login: &crate::transport::Login,
+        password: String,
+    ) -> anyhow::Result<Option<crate::transport::CommandSpec>>;
 
-    /// The command appended to the login's argv and run inside the session the user
-    /// authenticates.
-    ///
-    /// Its exit code is the login's whole verdict, so it MUST report the authentication
-    /// and nothing else, in a word every shell family has: a locked host's shell family is
-    /// unknown by construction (the probe that reads it never got past the refusal that
-    /// locked the card), so a word only one family has turns an accepted password into a
-    /// refused one. A login that registers a key also has to READ that family, because
-    /// the registration is a command for one family; its command is a probe whose answer
-    /// every family writes and exits 0 on.
-    fn login_remote(&self, register_key: bool) -> String;
-
-    /// The pane's remaining choices, applied once a login has worked. Each
-    /// returns a note only when it could NOT do what it said, so a step that failed says
-    /// so instead of passing silently.
+    /// The pane's remaining choices, applied once a login has worked. A step that could
+    /// not do what it said returns an outcome or note for the completion message.
     ///
     /// It is called only after a connection that worked: neither is worth doing over one
     /// that did not. Registering a key is its own ssh, answered the way the login was,
@@ -60,18 +51,24 @@ pub trait Ops: Send + Sync {
         login: &crate::transport::Login,
         write_config: bool,
         register: Option<KeyRegistration>,
-    ) -> Vec<String>;
+    ) -> (RegistrationOutcome, Vec<String>);
 }
 
 /// The key registration a login asked for. It is handed over only once the login worked,
-/// because it authenticates the same way the login did. No `Debug`: it holds the password.
+/// because it authenticates through the machine's held credential.
 pub struct KeyRegistration {
     /// The shell family the login's own command read, or `None` when its answer was not in
     /// what ssh wrote. The registration is a command for one family, so without it there
     /// is nothing to send.
     pub shell: Option<crate::transport::vocab::RemoteShell>,
-    /// The answer the login gave, for the registration's own ssh.
-    pub password: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistrationOutcome {
+    NotRequested,
+    Registered,
+    Skipped(String),
+    Failed(String),
 }
 
 /// What one login run did. The connection is the verdict the app branches on; the
@@ -80,6 +77,7 @@ pub struct KeyRegistration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginOutcome {
     pub connect: crate::link::unlock::UnlockOutcome,
+    pub registration: RegistrationOutcome,
     pub notes: Vec<String>,
 }
 
@@ -100,8 +98,7 @@ pub enum OpResult {
     /// (re-probe the machine on success, a flash on failure), never a fold into the
     /// tree. `source` names the host that was logged in to, so success re-probes only
     /// its machine rather than the whole roster. `login` is what the connection was made
-    /// WITH, so a success can record it on the machine instead of leaving it in the
-    /// finished connection's argv.
+    /// WITH, so a success can record the non-secret values on the machine.
     Login {
         source: String,
         login: crate::transport::Login,
@@ -157,15 +154,19 @@ pub async fn run_login_follow_ups(
     register: Option<KeyRegistration>,
     ops: &dyn Ops,
 ) -> OpResult {
-    let notes = if connect == crate::link::unlock::UnlockOutcome::Ok {
+    let (registration, notes) = if connect.is_ok() {
         ops.login_follow_ups(source, login, write_config, register)
             .await
     } else {
-        Vec::new()
+        (RegistrationOutcome::NotRequested, Vec::new())
     };
     OpResult::Login {
         source: source.to_string(),
         login: login.clone(),
-        outcome: LoginOutcome { connect, notes },
+        outcome: LoginOutcome {
+            connect,
+            registration,
+            notes,
+        },
     }
 }

@@ -1,172 +1,89 @@
-//! The login conversation: one ssh xmux has on the user's behalf, with nothing on screen.
-//!
-//! ssh asks for two things xmux cannot decide in advance, the host key and the password,
-//! and it asks for them on a terminal and nowhere else. So the login runs on a PTY, and
-//! that PTY is the MEANS rather than a screen: the pane collected the answers before the
-//! login started, so the conversation is xmux's to have, and the user waits for a verdict
-//! instead of a prompt.
-//!
-//! The verdict is the child's exit code. A wrong password only means ssh asks again, so
-//! nothing here calls a login failed from what it read - except when ssh asks something
-//! this module has no answer for. Nobody is watching the PTY, so such a prompt would
-//! stand until the idle budget ran out; it ends the login instead, and what ssh asked for
-//! is what the app says.
-//!
-//! The prompt logic is a pure state machine ([`Answerer`]) tested without a PTY; the
-//! conversation runs on its own thread ([`start_login`]) because every part of it -
-//! opening the PTY, spawning ssh, reading it - waits on something the runtime thread
-//! must never wait on.
+//! One bounded, cancellable login attempt and its user-facing diagnosis.
 
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// How often the conversation wakes while ssh is silent. It bounds how long a cancel
-/// waits, and nothing else: the idle budget is counted from its own deadline.
-const POLL: Duration = Duration::from_millis(100);
-/// How much of what ssh wrote a conversation keeps. The remote command's answer comes
-/// last, after the prompts and any banner, so the bound is far above what a login writes.
-const OUTPUT_LIMIT: usize = 64 * 1024;
-
-/// How long a conversation may go with NOTHING said on it. It is counted from ssh's last
-/// word, so a server taking its time over a slow link never ends it, while an ssh that went
-/// quiet on something xmux cannot answer does. Nobody is typing into a conversation, so
-/// the budget only has to cover ssh's own pace.
+const POLL: Duration = Duration::from_millis(50);
+const REASON_LIMIT: usize = 4096;
 pub const LOGIN_IDLE: Duration = Duration::from_secs(30);
 
-/// The verdict of one login.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UnlockOutcome {
-    /// The master is established (the child exited 0); every later channel reuses it.
-    Ok,
-    /// The server refused the credentials.
-    AuthFailed,
-    /// Neither ssh nor the user said anything for the whole idle budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    WrongPassword,
+    AuthenticationRefused,
+    Unreachable,
+    HostKeyMismatch,
+    /// ssh could not verify the host key without asking, which the submitted login's
+    /// accept-new policy prevents unless the user's own ssh setup overrides it.
+    HostKeyUnverified,
+    ServerClosedAfterAuthentication,
     Timeout,
-    /// The user ended it.
     Cancelled,
-    /// The machine has no reusable master (local/WSL/Windows).
-    Unavailable,
-    /// A spawn/io/exit failure that is neither auth nor a timeout.
-    Failed(String),
+    Other,
 }
 
-/// What one conversation came to: the verdict, and what ssh wrote to the PTY on the way,
-/// which carries the remote command's own output after the prompts. The password is not
-/// in it, because xmux writes that only to the PTY input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnlockOutcome {
+    Ok,
+    Failed { kind: FailureKind, reason: String },
+    Unavailable,
+}
+
+impl UnlockOutcome {
+    pub fn is_ok(&self) -> bool {
+        matches!(self, Self::Ok)
+    }
+
+    pub fn refused_password(&self) -> bool {
+        matches!(
+            self,
+            Self::Failed {
+                kind: FailureKind::WrongPassword,
+                ..
+            }
+        )
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Failed { reason, .. } => Some(reason),
+            Self::Unavailable => Some("login is unavailable for this machine"),
+            Self::Ok => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conversation {
     pub outcome: UnlockOutcome,
     pub output: String,
+    pub shell: Option<crate::transport::vocab::RemoteShell>,
+    pub password_supplied: bool,
 }
 
-/// The pure prompt-answer state machine for one login. Fed the ssh child's output, it
-/// says what to type from the pane's values, and says when ssh has asked for something
-/// the pane's values cannot answer.
-///
-/// A password prompt it cannot answer is the end of the login: the pane's password is one
-/// answer, so a second prompt means the first was wrong, and an empty pane password means
-/// there was never one to give. Either way no answer will ever arrive, and saying so at
-/// once is the difference between a verdict and a wait.
-pub(crate) struct Answerer {
-    secret: String,
-    /// Whether the password was already typed.
-    replied: bool,
-    /// Whether the host-key question was already answered.
-    accepted: bool,
-    auth_failed: bool,
-    /// What ssh asked for that this machine has no answer to, once that has happened.
-    stalled: Option<UnlockOutcome>,
-}
-
-impl Answerer {
-    pub(crate) fn new(secret: String) -> Self {
-        Self {
-            secret,
-            replied: false,
-            accepted: false,
-            auth_failed: false,
-            stalled: None,
-        }
-    }
-
-    /// Feeds one chunk of the ssh child's output and returns what to type, if anything.
-    pub(crate) fn feed(&mut self, chunk: &str) -> Option<Vec<u8>> {
-        if chunk.contains("Permission denied") {
-            self.auth_failed = true;
-        }
-        // A prompt is what ssh is WAITING on, so it is the last thing on the stream with
-        // no newline after it. Matching the whole chunk would read a login banner that
-        // mentions a password as a question to answer, and answer a session that is
-        // already open.
-        let asking = chunk.rsplit('\n').next().unwrap_or("");
-        // The host-key question precedes the password and is its own one-shot: answering
-        // it does not spend the password, which ssh asks for next.
-        if !self.accepted && asking.contains("yes/no/[fingerprint]") {
-            self.accepted = true;
-            return Some(b"yes\n".to_vec());
-        }
-        if asking.contains("assword:") {
-            if self.secret.is_empty() {
-                self.stalled = Some(UnlockOutcome::Failed(
-                    "the server asked for a password".into(),
-                ));
-            } else if self.replied {
-                // The one answer the pane had was already given and ssh asked again.
-                self.stalled = Some(UnlockOutcome::AuthFailed);
-            } else {
-                self.replied = true;
-                return Some(format!("{}\n", self.secret).into_bytes());
-            }
-        }
-        None
-    }
-
-    /// The verdict for a login that cannot go on, once ssh has asked for something the
-    /// pane's values do not answer. `None` while the conversation can still get somewhere.
-    pub(crate) fn stalled(&self) -> Option<UnlockOutcome> {
-        self.stalled.clone()
-    }
-
-    /// The verdict for a child that exited with `code`. Zero is the master; anything else
-    /// is a failure, named auth when the output said so.
-    pub(crate) fn verdict(&self, code: Option<u32>) -> UnlockOutcome {
-        match code {
-            Some(0) => UnlockOutcome::Ok,
-            Some(c) if self.auth_failed => {
-                let _ = c;
-                UnlockOutcome::AuthFailed
-            }
-            Some(c) => UnlockOutcome::Failed(format!("ssh exit {c}")),
-            None if self.auth_failed => UnlockOutcome::AuthFailed,
-            None => UnlockOutcome::Failed("ssh did not report an exit".into()),
-        }
-    }
-}
-
-/// A login in progress: which host it is for, and the way to end it. It carries no
-/// screen, because the conversation is xmux's to have: ssh's two questions are answered
-/// from what the pane collected, and a question xmux does not know is one nobody here can
-/// answer either.
-///
-/// The handle is what the pane reads to say a login is under way, so the user is never
-/// looking at a form that appears to have done nothing.
 pub struct RunningLogin {
-    /// The blocked source this login is for. The pane belongs to one host, so a login
-    /// running for another is not this pane's.
     pub source: String,
     cancel: Arc<AtomicBool>,
 }
 
 impl RunningLogin {
-    /// Ends the conversation. The thread kills the child on its next wake, so the verdict
-    /// still arrives through the same channel as any other ending.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Release);
     }
 
-    /// A handle with no conversation behind it, for the callers that only ask WHETHER a
-    /// login is running.
+    pub(crate) fn pending(source: String) -> (Self, Arc<AtomicBool>) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        (
+            Self {
+                source,
+                cancel: cancel.clone(),
+            },
+            cancel,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn parked(source: &str) -> Self {
         Self {
@@ -176,117 +93,261 @@ impl RunningLogin {
     }
 }
 
-/// Starts the login and returns at once: the handle that says it is running, and the
-/// channel the verdict arrives on. Everything that waits - the PTY open, the ssh spawn,
-/// the reading - happens on the thread this starts, so the runtime thread stays free to
-/// draw the frames that say a login is under way.
-///
-/// `idle` bounds a conversation that is going nowhere: it is counted from the last thing
-/// ssh said, so a server taking its time does not end the login, while one that went quiet
-/// on a question xmux cannot answer does.
 pub fn start_login(
     source: String,
-    argv: Vec<String>,
-    remote: Box<dyn FnOnce() -> String + Send>,
-    password: String,
-    idle: Duration,
+    command: crate::transport::CommandSpec,
+    timeout: Duration,
 ) -> (RunningLogin, tokio::sync::oneshot::Receiver<Conversation>) {
-    let cancel = Arc::new(AtomicBool::new(false));
-    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-    let handle = RunningLogin {
-        source: source.clone(),
-        cancel: cancel.clone(),
-    };
-    std::thread::spawn(move || {
-        let _ = done_tx.send(converse(source, argv, remote, password, idle, cancel));
-    });
+    let (handle, cancel) = RunningLogin::pending(source.clone());
+    let done_rx = start_login_with_cancel(source, command, timeout, cancel);
     (handle, done_rx)
 }
 
-/// The conversation itself, on its own thread: spawn ssh on a PTY, type the pane's
-/// answers at the prompts that want them, and report what the child's exit says - or, for
-/// a prompt the pane cannot answer, what ssh asked for.
-fn converse(
+pub(crate) fn start_login_with_cancel(
     source: String,
-    mut argv: Vec<String>,
-    remote: Box<dyn FnOnce() -> String + Send>,
-    password: String,
-    idle: Duration,
+    command: crate::transport::CommandSpec,
+    timeout: Duration,
+    cancel: Arc<AtomicBool>,
+) -> tokio::sync::oneshot::Receiver<Conversation> {
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = done_tx.send(run(source, command, timeout, cancel));
+    });
+    done_rx
+}
+
+fn run(
+    source: String,
+    command: crate::transport::CommandSpec,
+    timeout: Duration,
     cancel: Arc<AtomicBool>,
 ) -> Conversation {
-    // Composing it can spawn (a machine with no key pair is given one), which is why it
-    // happens here and not where the login was asked for.
-    argv.push(remote());
-    let env_clear = crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
-    // The PTY is the MEANS, not a screen: ssh reads a password from a terminal and from
-    // nowhere else, so one is opened to answer it and nothing renders it.
-    let (mut console, tap) = match crate::display::console::spawn_console(&argv, &env_clear) {
-        Ok(v) => v,
-        Err(e) => {
-            return Conversation {
-                outcome: UnlockOutcome::Failed(e.to_string()),
-                output: String::new(),
-            }
+    let mut process = std::process::Command::new(command.program());
+    process
+        .args(command.args())
+        .envs(command.env().iter().cloned())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    if command.should_detach_tty() {
+        use std::os::unix::process::CommandExt as _;
+        unsafe {
+            process.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut child = match process.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            command.discard_credential();
+            return failed(FailureKind::Other, error.to_string(), false);
         }
     };
-
-    let mut answerer = Answerer::new(password);
-    let mut output = Vec::new();
-    let mut deadline = Instant::now() + idle;
-    // An ending that KILLS the child still waits for it, so a login the user walked away
-    // from leaves no process behind for the rest of the run.
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let out = std::thread::spawn(move || read_bounded(stdout));
+    let err = std::thread::spawn(move || read_bounded(stderr));
+    let started = Instant::now();
     let ended = loop {
         if cancel.load(Ordering::Acquire) {
-            console.kill();
-            break Some(UnlockOutcome::Cancelled);
+            let _ = child.kill();
+            break Err(FailureKind::Cancelled);
         }
-        match tap.recv_timeout(POLL) {
-            Ok(chunk) => {
-                deadline = Instant::now() + idle;
-                let remaining = OUTPUT_LIMIT.saturating_sub(output.len());
-                output.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-                let text = String::from_utf8_lossy(&chunk);
-                if let Some(reply) = answerer.feed(&text) {
-                    console.input(reply);
-                }
-                // ssh asked for what nobody here can give. Waiting out the idle budget
-                // would report a timeout for a login whose real answer is already known.
-                if let Some(stall) = answerer.stalled() {
-                    console.kill();
-                    break Some(stall);
-                }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            break Err(FailureKind::Timeout);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => std::thread::sleep(POLL),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = out.join();
+                let _ = err.join();
+                command.discard_credential();
+                return failed(
+                    FailureKind::Other,
+                    error.to_string(),
+                    command.password_was_supplied(),
+                );
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                // ssh is done even though the reader is not: a Windows pseudoconsole
-                // never reports EOF while it is open, so waiting for the disconnect below
-                // would call a finished login a timeout. What it wrote on the way out is
-                // still read, so a refusal is still named as one.
-                if console.has_exited() {
-                    while let Ok(chunk) = tap.recv_timeout(POLL) {
-                        let remaining = OUTPUT_LIMIT.saturating_sub(output.len());
-                        output.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-                        answerer.feed(&String::from_utf8_lossy(&chunk));
-                    }
-                    break None;
-                }
-                if Instant::now() >= deadline {
-                    console.kill();
-                    break Some(UnlockOutcome::Timeout);
-                }
-            }
-            // The master hit EOF: ssh is done and its code is the verdict.
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break None,
         }
     };
-    let code = console.wait();
-    let outcome = ended.unwrap_or_else(|| answerer.verdict(code));
-    let output = String::from_utf8_lossy(&output).into_owned();
-    // ssh writes its diagnostics to the same stream, so a failed login leaves the reason
-    // in the device log.
-    if outcome != UnlockOutcome::Ok {
-        tracing::warn!(source = %source, outcome = ?outcome, stderr = ?output.trim(), "login_failed");
+    let _ = child.wait();
+    let stdout = out.join().unwrap_or_default();
+    let stderr = err.join().unwrap_or_default();
+    let raw = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
+    let shell = crate::transport::vocab::RemoteShell::from_marked_probe(&raw);
+    let mut output = sanitize_output(&raw);
+    if let Some(reason) = command.auth_unavailable() {
+        let unavailable = sanitize_output(&format!("xmux credential broker unavailable: {reason}"));
+        if !output.is_empty() {
+            output.insert(0, '\n');
+        }
+        output.insert_str(0, &unavailable);
     }
-    Conversation { outcome, output }
+    if let Some(prompt) = command.refused_auth_prompt() {
+        let refusal = sanitize_output(&format!("xmux askpass refused prompt: {prompt}"));
+        if !refusal.is_empty() && !output.contains(&refusal) {
+            if !output.is_empty() {
+                output.push('\n');
+            }
+            output.push_str(&refusal);
+        }
+    }
+    let password_supplied = command.password_was_supplied();
+    let outcome = match ended {
+        Err(FailureKind::Cancelled) => UnlockOutcome::Failed {
+            kind: FailureKind::Cancelled,
+            reason: "cancelled".into(),
+        },
+        Err(FailureKind::Timeout) => UnlockOutcome::Failed {
+            kind: FailureKind::Timeout,
+            reason: format!(
+                "timed out\nssh did not finish within {}s",
+                timeout.as_secs()
+            ),
+        },
+        Err(_) => unreachable!(),
+        Ok(status) if status.success() => {
+            if !command.finish_successful_login() {
+                UnlockOutcome::Failed {
+                    kind: FailureKind::Cancelled,
+                    reason: "login was replaced by a newer attempt".into(),
+                }
+            } else {
+                UnlockOutcome::Ok
+            }
+        }
+        Ok(status) => {
+            command.forget_refused_password(status.code().unwrap_or(-1), &output);
+            command.discard_credential();
+            classify_failure_with_host_key(&output, password_supplied, command.host_key_command())
+        }
+    };
+    if matches!(
+        outcome,
+        UnlockOutcome::Failed {
+            kind: FailureKind::Timeout | FailureKind::Cancelled,
+            ..
+        }
+    ) {
+        command.discard_credential();
+    }
+    if !outcome.is_ok() {
+        tracing::warn!(source = %source, outcome = ?outcome, "login_failed");
+    }
+    Conversation {
+        outcome,
+        output,
+        shell,
+        password_supplied,
+    }
+}
+
+fn failed(kind: FailureKind, reason: String, password_supplied: bool) -> Conversation {
+    Conversation {
+        outcome: UnlockOutcome::Failed { kind, reason },
+        output: String::new(),
+        shell: None,
+        password_supplied,
+    }
+}
+
+fn read_bounded(mut reader: impl Read) -> Vec<u8> {
+    let mut all = Vec::new();
+    let _ = reader.read_to_end(&mut all);
+    if all.len() > REASON_LIMIT * 4 {
+        all.drain(..all.len() - REASON_LIMIT * 4);
+    }
+    all
+}
+
+#[cfg(test)]
+pub(crate) fn classify_failure(output: &str, password_supplied: bool) -> UnlockOutcome {
+    classify_failure_with_host_key(output, password_supplied, None)
+}
+
+fn classify_failure_with_host_key(
+    output: &str,
+    password_supplied: bool,
+    host_key_command: Option<&str>,
+) -> UnlockOutcome {
+    let lower = output.to_ascii_lowercase();
+    let broker_unavailable = lower.contains("xmux credential broker unavailable");
+    let kind = if broker_unavailable {
+        FailureKind::Other
+    } else if crate::transport::diagnostic::host_key_changed(output) {
+        FailureKind::HostKeyMismatch
+    } else if crate::transport::diagnostic::host_key_unknown(output) {
+        FailureKind::HostKeyUnverified
+    } else if password_supplied && crate::transport::diagnostic::contains_auth_refusal(output) {
+        FailureKind::WrongPassword
+    } else if crate::transport::diagnostic::contains_auth_refusal(output) {
+        FailureKind::AuthenticationRefused
+    } else if password_supplied
+        && (lower.contains("connection closed")
+            || lower.contains("connection reset")
+            || lower.contains("connection was closed"))
+    {
+        FailureKind::ServerClosedAfterAuthentication
+    } else if lower.contains("could not resolve hostname")
+        || lower.contains("connection refused")
+        || lower.contains("no route to host")
+        || lower.contains("network is unreachable")
+        || lower.contains("connection timed out")
+    {
+        FailureKind::Unreachable
+    } else {
+        FailureKind::Other
+    };
+    let summary = match kind {
+        FailureKind::WrongPassword => "the password was refused",
+        FailureKind::AuthenticationRefused => "authentication was refused",
+        FailureKind::ServerClosedAfterAuthentication => {
+            "the server accepted the password but closed the session before it started"
+        }
+        FailureKind::HostKeyMismatch => "the host key changed",
+        FailureKind::HostKeyUnverified => "the host key could not be verified",
+        FailureKind::Unreachable if lower.contains("could not resolve hostname") => {
+            "the host name could not be resolved"
+        }
+        FailureKind::Unreachable => "the host could not be reached",
+        FailureKind::Timeout => "timed out",
+        FailureKind::Cancelled => "cancelled",
+        FailureKind::Other if broker_unavailable => "xmux could not provide the held password",
+        FailureKind::Other if lower.contains("xmux askpass refused prompt") => {
+            "xmux refused an unexpected authentication prompt"
+        }
+        FailureKind::Other => "ssh failed",
+    };
+    let summary = if kind == FailureKind::HostKeyUnverified {
+        host_key_command
+            .map(|command| format!("the host key must be added first\nrun: {command}"))
+            .unwrap_or_else(|| summary.to_string())
+    } else {
+        summary.to_string()
+    };
+    let reason = if output.trim().is_empty() {
+        summary
+    } else {
+        format!("{summary}\n{output}")
+    };
+    UnlockOutcome::Failed { kind, reason }
+}
+
+pub(crate) fn sanitize_output(input: &str) -> String {
+    crate::transport::diagnostic::sanitize(input)
 }
 
 #[cfg(test)]
@@ -294,295 +355,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_answerer_accepts_the_host_key_then_types_the_pane_password() {
-        let mut a = Answerer::new("hunter2".into());
+    fn conpty_controls_prompts_and_shell_probe_are_removed() {
+        let sample = "\u{1b}[6n\u{1b}[?9001h...dev@127.0.0.1's password: \r\nxmux-shell:bash\r\n";
+        assert_eq!(sanitize_output(sample), "");
+    }
+
+    #[test]
+    fn meaningful_diagnostics_are_preserved_and_categorized() {
+        let output = sanitize_output(
+            "\u{1b}[31mdev@host: Permission denied (publickey,password,keyboard-interactive).\u{1b}[0m\r\n",
+        );
         assert_eq!(
-            a.feed(
-                "The authenticity of host 'x' can't be established.\n\
-                 Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+            classify_failure(&output, true),
+            UnlockOutcome::Failed {
+                kind: FailureKind::WrongPassword,
+                reason: "the password was refused\ndev@host: Permission denied (publickey,password,keyboard-interactive).".into(),
+            }
+        );
+        assert!(matches!(
+            classify_failure("Connection closed by 127.0.0.1 port 22", true),
+            UnlockOutcome::Failed {
+                kind: FailureKind::ServerClosedAfterAuthentication,
+                ..
+            }
+        ));
+        assert!(matches!(
+            classify_failure(
+                "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\nHost key verification failed.",
+                false
             ),
-            Some(b"yes\n".to_vec())
-        );
-        assert_eq!(a.feed("alice@x's password: "), Some(b"hunter2\n".to_vec()));
+            UnlockOutcome::Failed {
+                kind: FailureKind::HostKeyMismatch,
+                ..
+            }
+        ));
+        assert!(matches!(
+            classify_failure("Host key verification failed.", false),
+            UnlockOutcome::Failed {
+                kind: FailureKind::HostKeyUnverified,
+                ..
+            }
+        ));
     }
 
     #[test]
-    fn each_pane_value_is_typed_at_most_once() {
-        let mut a = Answerer::new("hunter2".into());
-        assert_eq!(a.feed("alice@x's password: "), Some(b"hunter2\n".to_vec()));
-        assert_eq!(
-            a.feed("alice@x's password: "),
-            None,
-            "the pane had one password and it is spent"
+    fn strict_host_key_failure_tells_the_user_how_to_add_it() {
+        let outcome = classify_failure_with_host_key(
+            "Host key verification failed.",
+            false,
+            Some("ssh -o User=dev -- box"),
         );
-        let mut a = Answerer::new("hunter2".into());
         assert_eq!(
-            a.feed("continue connecting (yes/no/[fingerprint])? "),
-            Some(b"yes\n".to_vec())
+            outcome.reason(),
+            Some(
+                "the host key must be added first\nrun: ssh -o User=dev -- box\nHost key verification failed."
+            )
         );
-        assert_eq!(a.feed("continue connecting (yes/no/[fingerprint])? "), None);
-    }
-
-    /// The pane's password is optional, and an empty one is not an answer: typing a bare
-    /// newline would spend ssh's attempt on nothing. A server that wants one is telling
-    /// the user what the pane is missing, so the login ends on that word.
-    #[test]
-    fn an_empty_pane_password_ends_the_login_on_what_the_server_wants() {
-        let mut a = Answerer::new(String::new());
-        assert_eq!(a.feed("alice@x's password: "), None);
-        assert_eq!(
-            a.stalled(),
-            Some(UnlockOutcome::Failed(
-                "the server asked for a password".into()
-            ))
-        );
-    }
-
-    /// A banner is not a question. A line about passwords that ssh has already finished
-    /// writing is part of a session that is open, and answering it would type the pane's
-    /// secret into a shell.
-    #[test]
-    fn a_banner_that_mentions_a_password_is_not_a_prompt() {
-        let mut a = Answerer::new("hunter2".into());
-        assert_eq!(
-            a.feed("Your password: expires in 3 days. Run passwd.\r\n"),
-            None
-        );
-        assert_eq!(a.stalled(), None);
-        assert_eq!(
-            a.feed("u@h's password: "),
-            Some(b"hunter2\n".to_vec()),
-            "the real prompt is still answered"
-        );
-    }
-
-    /// A prompt xmux does not recognise draws no answer, and is not called a failure
-    /// either: what a two-factor code or a key passphrase means for this login is not
-    /// something this machine can read out of the words.
-    #[test]
-    fn an_unrecognised_prompt_draws_no_answer() {
-        let mut a = Answerer::new("hunter2".into());
-        assert_eq!(
-            a.feed("Enter passphrase for key '/home/u/.ssh/id_ed25519': "),
-            None
-        );
-        assert_eq!(a.feed("Verification code: "), None);
-        assert_eq!(a.feed("암호: "), None);
-        assert_eq!(a.stalled(), None, "ssh may still get somewhere on its own");
-    }
-
-    /// ssh asking a second time means the pane's password was wrong. Nobody is watching
-    /// the PTY to type a better one, so the login ends on the answer that is already
-    /// known rather than on the idle budget.
-    #[test]
-    fn a_second_password_prompt_ends_the_login_as_an_auth_failure() {
-        let mut a = Answerer::new("hunter2".into());
-        assert_eq!(a.feed("alice@x's password: "), Some(b"hunter2\n".to_vec()));
-        assert_eq!(a.stalled(), None, "the first prompt was answered");
-        assert_eq!(
-            a.feed("Permission denied, please try again.\nalice@x's password: "),
-            None
-        );
-        assert_eq!(a.stalled(), Some(UnlockOutcome::AuthFailed));
     }
 
     #[test]
-    fn the_exit_code_is_the_verdict() {
-        let a = Answerer::new("hunter2".into());
-        assert_eq!(a.verdict(Some(0)), UnlockOutcome::Ok);
+    fn an_askpass_refusal_names_the_prompt() {
+        let output = sanitize_output("xmux askpass refused prompt: Password for dev@bastion:\n");
         assert_eq!(
-            a.verdict(Some(255)),
-            UnlockOutcome::Failed("ssh exit 255".into())
+            output,
+            "xmux askpass refused prompt: Password for dev@bastion:"
         );
     }
 
-    /// The auth-failure text only names the failure of a child that already exited
-    /// nonzero; it never stands in for the exit itself.
     #[test]
-    fn a_refused_login_is_named_auth_failure() {
-        let mut a = Answerer::new("hunter2".into());
-        let _ = a.feed("alice@x's password: ");
-        let _ = a.feed("Permission denied (publickey,password).");
-        assert_eq!(a.verdict(Some(255)), UnlockOutcome::AuthFailed);
-        assert_eq!(a.verdict(Some(0)), UnlockOutcome::Ok, "0 is still success");
-    }
-
-    /// The conversation drives a real PTY: it types what the pane carried at the prompt
-    /// that wants it, and returns the child's own code.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_login_answers_a_password_prompt_and_reports_the_exit() {
-        // Stands in for ssh: asks the way ssh asks, accepts one password, exits by it.
-        let argv = vec![
-            "/bin/sh".to_string(),
-            "-c".to_string(),
-            "printf \"u@h's password: \"; read -r p; test \"$p\" = hunter2".to_string(),
-        ];
-        let (login, done) = start_login(
-            "prod".into(),
-            argv,
-            Box::new(|| "true".to_string()),
-            "hunter2".into(),
-            Duration::from_secs(10),
-        );
-        assert_eq!(login.source, "prod");
+    fn key_only_authentication_refusal_is_explained() {
         assert_eq!(
-            done.await.expect("the verdict arrives").outcome,
-            UnlockOutcome::Ok,
-            "the pane's password was typed at the prompt"
+            classify_failure("dev@host: Permission denied (publickey).", false).reason(),
+            Some("authentication was refused\ndev@host: Permission denied (publickey).")
         );
-    }
-
-    /// ssh asking twice ends the login there and then. Nobody is watching the PTY, so a
-    /// login left to the idle budget would report a timeout minutes after the answer was
-    /// known: the child is killed and the verdict is the refusal.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_refused_password_ends_the_login_before_the_idle_budget() {
-        // Stands in for an ssh that refuses and asks again, then waits far past the test.
-        let argv = vec![
-            "/bin/sh".to_string(),
-            "-c".to_string(),
-            "printf \"u@h's password: \"; read -r p; \
-             printf '\\nPermission denied, please try again.\\n'; \
-             printf \"u@h's password: \"; sleep 60"
-                .to_string(),
-        ];
-        let started = Instant::now();
-        let (_login, done) = start_login(
-            "prod".into(),
-            argv,
-            Box::new(|| "true".to_string()),
-            "wrong".into(),
-            Duration::from_secs(60),
-        );
-        assert_eq!(
-            done.await.expect("the verdict arrives").outcome,
-            UnlockOutcome::AuthFailed
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(20),
-            "the verdict did not wait out the idle budget"
-        );
-    }
-
-    /// A server asking for a password the pane does not carry ends the login on what it
-    /// asked for, which is the one thing the user has to know to fill the pane in.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_password_the_pane_does_not_carry_ends_the_login_on_what_the_server_asked() {
-        let argv = vec![
-            "/bin/sh".to_string(),
-            "-c".to_string(),
-            "printf \"u@h's password: \"; sleep 60".to_string(),
-        ];
-        let (_login, done) = start_login(
-            "prod".into(),
-            argv,
-            Box::new(|| "true".to_string()),
-            String::new(),
-            Duration::from_secs(60),
-        );
-        assert_eq!(
-            done.await.expect("the verdict arrives").outcome,
-            UnlockOutcome::Failed("the server asked for a password".into())
-        );
-    }
-
-    /// Cancelling ends a conversation that is going nowhere, and says so.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cancelling_ends_the_login() {
-        let argv = vec![
-            "/bin/sh".to_string(),
-            "-c".to_string(),
-            "sleep 30".to_string(),
-        ];
-        let (login, done) = start_login(
-            "prod".into(),
-            argv,
-            Box::new(|| "true".to_string()),
-            String::new(),
-            Duration::from_secs(30),
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        login.cancel();
-        assert_eq!(
-            done.await.expect("the verdict arrives").outcome,
-            UnlockOutcome::Cancelled
-        );
-    }
-
-    /// An ssh that says nothing for the whole budget ends on its own, so a login nobody
-    /// is having cannot hold a child open for the rest of the run.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_silent_login_ends_on_the_idle_budget() {
-        let argv = vec![
-            "/bin/sh".to_string(),
-            "-c".to_string(),
-            "sleep 30".to_string(),
-        ];
-        let (_login, done) = start_login(
-            "prod".into(),
-            argv,
-            Box::new(|| "true".to_string()),
-            String::new(),
-            Duration::from_millis(300),
-        );
-        assert_eq!(
-            done.await.expect("the verdict arrives").outcome,
-            UnlockOutcome::Timeout
-        );
-    }
-
-    /// The live gate: the real login path against a real sshd, reaching a host by an
-    /// ADDRESS its own name does not resolve to - the shape the pane submits when a
-    /// machine is offered under a label this box cannot look up. Skipped (not just
-    /// ignored) when the env is absent, so a routine `cargo test` never depends on a live
-    /// host.
-    #[cfg(unix)]
-    #[tokio::test]
-    #[ignore = "live gate: set XMUX_LIVE_ADDRESS to a reachable sshd absent from known_hosts"]
-    async fn live_login_reaches_a_host_by_the_submitted_address() {
-        let Ok(address) = std::env::var("XMUX_LIVE_ADDRESS") else {
-            return;
-        };
-        let cp = "/tmp/xmux-live-login.sock".to_string();
-        let _ = std::fs::remove_file(&cp);
-        // A name that resolves to nothing, reached by the address the pane supplies.
-        let transport = crate::transport::ssh_as(
-            "xmux-live-nonexistent".into(),
-            "xmux-live-nonexistent".into(),
-            cp.clone(),
-            "linux".into(),
-        );
-        let login = crate::transport::Login {
-            address: Some(address),
-            port: Some(22),
-            user: std::env::var("USER").ok(),
-        };
-        let argv = crate::transport::Transport::login_argv(&*transport, &login)
-            .expect("a remote host has a login argv");
-        let (_running, done) = start_login(
-            "live".into(),
-            argv,
-            Box::new(|| "true".to_string()),
-            String::new(),
-            Duration::from_secs(30),
-        );
-        assert_eq!(
-            done.await.expect("the verdict arrives").outcome,
-            UnlockOutcome::Ok,
-            "the submitted address reaches the host the name does not"
-        );
-        // The master it left behind is what every later channel rides.
-        let (name, args) =
-            crate::transport::Transport::exec_argv(&*transport, false, &["true".to_string()]);
-        let status = std::process::Command::new(&name)
-            .args(&args)
-            .status()
-            .expect("ssh runs");
-        assert!(status.success(), "a later channel reuses the master");
     }
 }

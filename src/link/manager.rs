@@ -11,7 +11,7 @@ use super::{HostClient, HostEvent};
 /// `-CC attach` literal), and the MACHINE wraps it via `Transport::control_argv` (local
 /// `-S` splice, or `ssh -tt … <payload>`). `None` for a mux with no host-level control
 /// stream (it is polled), so a Poll host produces no argv.
-fn control_argv(host: &crate::model::Host) -> Option<Vec<String>> {
+fn control_argv(host: &crate::model::Host) -> Option<crate::transport::CommandSpec> {
     let mux_control = host.mux.control_argv()?;
     Some(host.transport.control_argv(&mux_control))
 }
@@ -89,7 +89,6 @@ impl HostManager {
                     cols,
                     rows,
                     self.events.clone(),
-                    &[],
                     host.transport.control_needs_pty(),
                 )?;
                 self.clients.insert(id.to_string(), client);
@@ -182,14 +181,14 @@ impl HostManager {
             .collect();
         #[cfg(not(windows))]
         let argv: Vec<String> = ["sh", "-c", "true"].iter().map(|s| s.to_string()).collect();
+        let command = crate::transport::CommandSpec::from_argv(argv);
         let client = HostClient::spawn(
             host,
             crate::link::test_control_proto(),
-            &argv,
+            &command,
             80,
             24,
             self.events.clone(),
-            &[],
             false,
         )
         .expect("spawn");
@@ -396,7 +395,11 @@ mod tests {
         let host = local_host("tmux", None);
         assert_eq!(
             control_argv(&host),
-            Some(vec!["tmux".to_string(), "-CC".into(), "attach".into()])
+            Some(crate::transport::CommandSpec::from_argv(vec![
+                "tmux".to_string(),
+                "-CC".into(),
+                "attach".into(),
+            ]))
         );
     }
 
@@ -406,13 +409,13 @@ mod tests {
         let host = local_host("tmux", Some("/tmp/tmux-1000/work"));
         assert_eq!(
             control_argv(&host),
-            Some(vec![
+            Some(crate::transport::CommandSpec::from_argv(vec![
                 "tmux".to_string(),
                 "-S".into(),
                 "/tmp/tmux-1000/work".into(),
                 "-CC".into(),
                 "attach".into()
-            ])
+            ]))
         );
     }
 

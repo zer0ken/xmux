@@ -41,30 +41,30 @@ impl Transport for Local {
         true
     }
 
-    fn exec_argv(&self, _tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
+    fn exec_argv(&self, _tty: bool, mux_argv: &[String]) -> super::CommandSpec {
         let mut args: Vec<String> = Vec::new();
         if let Some(sock) = self.socket.as_deref().filter(|s| !s.is_empty()) {
             args.push("-S".into());
             args.push(sock.to_string());
         }
         args.extend_from_slice(&mux_argv[1..]);
-        (mux_argv[0].clone(), args)
+        super::CommandSpec::new(mux_argv[0].clone(), args)
     }
 
     /// A LOCAL interactive attach hands the terminal to the bare attach argv (with
     /// `-S <socket>` injection).
-    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> (String, Vec<String>) {
+    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> super::CommandSpec {
         self.exec_argv(true, mux_attach_argv)
     }
 
-    fn control_argv(&self, mux_control_argv: &[String]) -> Vec<String> {
+    fn control_argv(&self, mux_control_argv: &[String]) -> super::CommandSpec {
         let mut v = vec![mux_control_argv[0].clone()];
         if let Some(sock) = self.socket.as_deref().filter(|s| !s.is_empty()) {
             v.push("-S".into());
             v.push(sock.to_string());
         }
         v.extend_from_slice(&mux_control_argv[1..]);
-        v
+        super::CommandSpec::from_argv(v)
     }
 
     /// A local `-CC` control child is spawned with the mux binary directly and, on
@@ -110,15 +110,15 @@ mod tests {
 
     #[test]
     fn exec_argv_local_plain_and_socket() {
-        let (n, a) = local(None).exec_argv(false, &argv(&["psmux", "list-sessions", "-F", "x"]));
-        assert_eq!(n, "psmux");
-        assert_eq!(a, argv(&["list-sessions", "-F", "x"]));
+        let command = local(None).exec_argv(false, &argv(&["psmux", "list-sessions", "-F", "x"]));
+        assert_eq!(command.program(), "psmux");
+        assert_eq!(command.args(), argv(&["list-sessions", "-F", "x"]));
 
-        let (n, a) = local(Some("/tmp/tmux-1000/work"))
+        let command = local(Some("/tmp/tmux-1000/work"))
             .exec_argv(false, &argv(&["tmux", "list-sessions", "-F", "x"]));
-        assert_eq!(n, "tmux");
+        assert_eq!(command.program(), "tmux");
         assert_eq!(
-            a,
+            command.args(),
             argv(&["-S", "/tmp/tmux-1000/work", "list-sessions", "-F", "x"])
         );
     }
@@ -158,15 +158,15 @@ mod tests {
         // A LOCAL interactive attach hands the terminal to a bare mux attach argv. A
         // non-default socket is injected via -S, exactly as exec_argv.
         let mux_attach = argv(&["psmux", "new-session", "-A", "-s", "dev"]);
-        let (n, a) = local(None).interactive_attach_argv(&mux_attach);
-        assert_eq!(n, "psmux");
-        assert_eq!(a, argv(&["new-session", "-A", "-s", "dev"]));
+        let command = local(None).interactive_attach_argv(&mux_attach);
+        assert_eq!(command.program(), "psmux");
+        assert_eq!(command.args(), argv(&["new-session", "-A", "-s", "dev"]));
         // Non-default socket is injected before the attach args.
-        let (n, a) = local(Some("/tmp/tmux-1000/work"))
+        let command = local(Some("/tmp/tmux-1000/work"))
             .interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]));
-        assert_eq!(n, "tmux");
+        assert_eq!(command.program(), "tmux");
         assert_eq!(
-            a,
+            command.args(),
             argv(&["-S", "/tmp/tmux-1000/work", "attach", "-t", "api"])
         );
     }

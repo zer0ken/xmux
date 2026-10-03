@@ -60,6 +60,11 @@ the card numbers it needs.
   the loop's job because only the loop holds the source registry (what a host already
   serves, and where a new source goes) and the manager that kicks the new source's first
   scan.
+- Every runtime host, including one discovered or reconciled after login, shares the
+  environment's machine credential store before it can spawn. A probe refusal removes a
+  held password only when askpass actually supplied it and ssh then refused it. A probe
+  carries the credential generation from spawn, so an older probe result cannot reclassify a
+  machine after a newer login.
 - Input routing has a pure, stateless core (key resolution, mouse chains, the
   predicates, the input outcome types); the stateful handlers are runtime methods
   that call into it. The prefix is tracked as ready (an interaction is live): the end

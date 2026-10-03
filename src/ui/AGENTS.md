@@ -106,31 +106,31 @@ flatten renders for the dump verb.
   unreachable screen, so the hiding must leave it reachable. A reachable empty host and
   a host still scanning never hide, and the prune runs before the filter, so the no-match
   fallback cannot resurrect a host the filter does not name.
-- A BLOCKED host (one the login pane's values could reach) never hides, whatever
+- A BLOCKED host, whose authentication ssh refused or whose first-seen host key needs
+  login-time approval under an effective `ask` policy, never hides, whatever
   hide-unreachable says: its card is the one entry to that pane, so the prune keeps it
-  alongside a filter-named card. The classification reads ONLY ssh's own failure lines,
-  never a generic "permission denied", so a machine that is down stays unreachable.
-- A host the user LOGGED IN to never hides either, for the rest of the run and however it
-  answers afterwards. The reason a blocked host is kept is that it is actionable, and
-  succeeding at the action does not make it less so: it is the host the user just chose,
-  and whatever it answers next is the answer they are waiting for. Read the transition,
-  not the state: without this rule the one action a card offers is the action that takes
-  the card off the list, because the login stops being blocked and nothing else keeps it.
-  The mark is per MACHINE, since a login authenticates the machine and not the one mux
-  whose card carried the pane.
+  alongside a filter-named card. The classification reads only ssh's own final
+  account-and-host authentication line or an approvable unknown host-key verification failure, never
+  a generic permission error, name resolution, connectivity, or changed host key.
+  An unknown key under a strict policy is unreachable and gives the fingerprint command.
+- A machine with a held credential never hides. It is the host the user just chose, and
+  whatever it answers next is the answer they are waiting for. The mark is synchronized
+  with credential presence and is per MACHINE, since a login authenticates the machine
+  and not the one mux whose card carried the pane.
 - The login pane holds what ssh will not ask for and nothing else. Every value starts at
-  what ssh would have used, so the pane never guesses and never looks a value up behind
-  the user's back. A blocked host's switch and create are refused. The password is never
-  rendered (its field draws bullets), never stored, and the rendered frame carries no
+  what OpenSSH reports it would use, with the matching ssh config entry as fallback. A
+  blocked host's switch and create are refused. The password is never rendered, and after
+  submit it lives only in the process credential broker. The rendered frame carries no
   plaintext.
 - Enter means one thing across the whole pane: submit from the button, pass the focus on
   from anywhere else. A key that sometimes toggles and sometimes submits would make
   filling the pane by feel unsafe.
 - Once the pane is submitted it says a login is under way in place of the button it
-  offered, and keeps the values on screen. xmux has the conversation itself, so there is
-  no prompt to show and nothing to type; a lone Esc ends it. The verdict brings the button
-  back with what was typed still there, so a failure is retried rather than retyped, and a
-  success re-probes that host and replaces the pane with its sessions.
+  offered and keeps the values on screen. A lone Esc ends it. The verdict brings the
+  button back with what was typed still there, so a failure is retried rather than
+  retyped. The pane shows the login's own categorized ssh reason separately from later
+  probe errors. Key registration reports through a completion message and remains in the
+  host information after the pane gives way to sessions. A success re-probes that host.
 - The dump should reflect the same split view the main draw path renders.
 - The nav's two bands are parted by the ROOM between them while the cards can spare a row
   for it, and by a rule once they cannot: a gap that scrolls out of view parts nothing a

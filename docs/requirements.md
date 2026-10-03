@@ -388,11 +388,11 @@ no function, and no test, so renaming code is never a documentation change.
   other hosts. A reachable host with no sessions keeps its card, and a host still scanning
   never hides, whatever stale failure it carries. A host that goes unreachable mid-run
   hides from that result on and returns when a scan answers. A host the user LOGGED IN to
-  never hides for the rest of the run, however it answers afterwards: a blocked host is
-  kept because it is actionable, and succeeding at the action does not make it less so, so
-  the one action a card offers is never the action that takes the card off the list. The
-  exemption is per machine, since a login authenticates the machine and not the one mux
-  whose card carried the pane.
+  keeps its card while xmux still holds that machine's credential. A blocked host is kept
+  because it is actionable, and a credential-backed host is kept while its requested
+  result is pending. The exemption ends when an authentication refusal, roster removal,
+  broker outage, or process exit makes the credential unavailable and is per machine, since a login authenticates
+  the machine and not the one mux whose card carried the pane.
 - **FR-B25** - The nav attaches on one of FOUR sides of the terminal view - a left or
   right column, a top or bottom band - and the placement is a user choice at two layers:
   a single `[ui] nav-position` setting (default `left`) names the placement when nothing
@@ -413,20 +413,24 @@ no function, and no test, so renaming code is never a documentation change.
   for the new split, and repaints the whole screen, since the border jumps to the
   opposite side. The focus arrow pairs follow the placement (FR-B14), and the cheatsheet
   and help modal name the pair the current placement makes active.
-- **FR-B26** - A failure the user could answer from xmux is BLOCKED, a state apart from
-  unreachable. What the login pane collects decides the set: ssh's auth-failure line
-  (`Permission denied (…`), its host-key verification-failed line, and a name that did
-  not resolve. A machine that refused, timed out, or had no route stays unreachable, as
-  does output carrying ssh's changed-identification warning, which is decided outside
-  xmux. A blocked host keeps its card whatever hide-unreachable says (it is the one entry
-  to the pane), renders the `?` mark, and shows the pane above the same failure facts the
-  unreachable screen states. What it was blocked ON is not in its state word: the reason
-  row carries ssh's own sentence.
+- **FR-B26** - BLOCKED means ssh refused the host for a reason the submitted login
+  answers. Two of ssh's own refusals enter this state: its final account-and-host
+  authentication line, and a host-key verification failure for a host with no recorded
+  key when the effective ssh policy is `ask`, which the submitted login resolves. An
+  unknown key under a strict policy stays unreachable and gives a command that displays
+  its fingerprint. Remote command
+  permissions, name resolution, connectivity failures, and a changed host key stay
+  unreachable. A
+  blocked host keeps its card whatever hide-unreachable says, renders the `?` mark, and
+  shows the pane above the same failure facts the unreachable screen states. What it was
+  blocked on is not in its state word: the reason row carries a plain-language summary
+  followed by ssh's sanitized detail.
 - **FR-B27** - The LOGIN PANE holds the three values ssh will not ask for and must know
   before it dials - the address, the port, and the username - with an optional masked
-  password beside them. Every value starts at what ssh WOULD use: the address a provider
-  reported else the host's own name, ssh's default port, and the ssh config's `User` else
-  this machine's account name. Nothing is guessed. A required field is marked in its
+  password beside them. Every value starts at what ssh WOULD use. An address, port, or
+  user from OpenSSH's effective configuration wins; the matching stanza is the fallback
+  when OpenSSH cannot report it. Missing values use the address a provider
+  reported else the host's own name, port 22, and this machine's account name. A required field is marked in its
   label and an empty optional one says so in the space its value would occupy. It is not
   a modal and nothing in the nav drives it. Enter means one thing throughout: submit from
   the button, pass the focus on from anywhere else. Space picks a choice, Tab and the
@@ -434,29 +438,53 @@ no function, and no test, so renaming code is never a documentation change.
   whole rather than landing in a field as text. While a login runs the pane keeps every
   value on screen and says so in place of the button it was submitted from, taking no key
   but the lone Esc that ends the attempt, since there is nothing left to fill in.
-- **FR-B28** - Submitting runs one ssh on a PTY (`ControlMaster=yes` over the same control
-  socket every other ssh shares) carrying the submitted values as `-o` overrides, so the
-  host keeps its alias and its ssh-config stanza still supplies whatever they do not
-  name. The PTY is the MEANS and not a screen: ssh reads a password from a terminal and
-  from nowhere else, so one is opened, nothing renders it, and xmux answers it - the
-  host-key question once, the password once and only if the pane carried one. A prompt
-  those values cannot answer ends the login on what ssh asked for rather than on the idle
-  budget, since nobody is watching the PTY to answer it: a second password prompt is an
-  auth failure, and a password prompt with no password in the pane is a server asking for
-  what the pane is missing. Where this side multiplexes it establishes the single authenticated master the
-  later channels reuse. The VERDICT is the authentication and nothing else: the remote
-  command the login carries ends by reporting it in a word every shell family has, so a
-  remote whose shell is outside the POSIX family does not turn an accepted password into a
-  refused one. Success records the submitted values on the machine, so everything xmux runs
-  there afterwards reaches it the way the login did rather than as whoever runs xmux; the
-  values are the machine's, not one source's, so every source it serves carries them.
-  Success re-probes ONLY that host (its reach is the only thing that
-  changed, so the whole roster is not re-scanned); any failure keeps the host blocked and
-  flashes why. The password lives only in the transient command and the PTY writer, never
-  stored, logged, rendered, or serialized. A side with no multiplexing (Windows, FR-G)
-  still runs the login and still records the host key and the values, and loses only the
-  reuse, so a password host there is asked again on the next probe. Only local and WSL
-  hosts have no login at all, having nothing to log in to.
+- **FR-B28** - Submitting creates a pending password in process memory and runs only the
+  submitted login with it. Success promotes that exact credential for the machine only
+  when that login actually requested the password;
+  failure or replacement removes only that exact credential. Every later ssh started by
+  the running app, including listing, metadata and control channels, session operations,
+  display attach, and key registration, tries keys first and may request the held
+  password through xmux's private local credential broker. The ssh child receives only
+  an opaque per-command token and a forced askpass environment. The token stays valid
+  until that child is reaped and can return the password at most once. The password is
+  never written to a file, argument, environment, log, rendered frame, or status. The
+  held credential allocation and current password-field allocation are overwritten in
+  full when released. Transient terminal and IPC buffers remain process memory;
+  operating-system crash dump policy is outside xmux's control. The submitted address,
+  port, and user are included in a bounded effective ssh configuration query before the
+  credential becomes available. When that query fails, a typed password is erased and the
+  login reports why, while a login without a password proceeds under the user's own
+  host-key policy. The helper answers an
+  OpenSSH password or keyboard-interactive prompt only when the account and host exactly
+  match the held account and the target alias, resolved host name, or host-key alias. A
+  destination configured with `ProxyJump` or `ProxyCommand` does not enter the password
+  path because the proxy would inherit askpass. The helper refuses other prompts without
+  consuming the token, along with host-key questions, key
+  passphrases, passcodes, and one-time codes. The
+  submitted login uses `accept-new` only when OpenSSH reports the effective policy as
+  `ask`; it never weakens `yes`. An unknown key under `yes` is unreachable and reports an
+  `ask` command that displays the fingerprint before the user decides whether to add it. A changed host key fails without approval, and
+  background probes never change host-key policy. One password answer is allowed per ssh
+  child. Without a held password ssh remains non-interactive.
+  Connection sharing remains enabled where the client supports it, but correctness never
+  depends on a master surviving. A successful login re-probes only that machine. A
+  refused password is removed and returns the host to the pane; changed values replace
+  the prior in-memory credential, and cancelling a pending login removes it. The pane
+  keeps the login's own bounded, control-free diagnostic, categorized as a refused
+  password, unreachable host, host-key mismatch, server session failure after
+  authentication, timeout, cancellation, or other ssh failure. A later probe cannot
+  replace that diagnosis. A refusal that did not receive the held password remains
+  visible rather than being suppressed. A password is removed only after ssh exits 255, the same command
+  actually received it, and ssh emitted its own authentication refusal line. Removing a
+  machine from the roster forgets its credential, and process exit forgets every
+  credential. Removal immediately invalidates outstanding command tokens and releases
+  the held plaintext. Probe results carry the credential generation from spawn, so an
+  older result cannot undo or reclassify a newer login. The broker recreates its endpoint with backoff
+  after any accept failure; while it is unavailable commands use batch mode and report
+  that password login is unavailable. OpenSSH before 8.4 is isolated from the controlling terminal on Unix. On
+  Windows, a client before 8.4 cannot accept a password from xmux and the pane says to
+  update OpenSSH or register a key. The separate `xmux attach` command runs in a fresh
+  process and uses keys or ssh's own terminal prompt. Only local and WSL hosts have no login.
 - **FR-B29** - RECORDING runs after a connection that worked and says so when it could
   not. It writes an xmux-marked stanza naming the host, with the values that reached it,
   at the TOP of `~/.ssh/config`, because ssh keeps the first value it obtains for a
@@ -464,18 +492,18 @@ no function, and no test, so renaming code is never a documentation change.
   and nothing the user wrote is touched. The choice is offered only once a value differs
   from what ssh would have used. A password is never recorded, because ssh config has
   nowhere to put one.
-- **FR-B30** - REGISTERING runs after a connection that worked and says so when it could
-  not. The login's own remote command reads the host's shell family, since a locked host's
-  family is unknown before it; the registration is then a second ssh answered the way the
-  login was, because a platform without connection sharing (FR-G) keeps no authenticated
-  connection to carry it. On a POSIX host it appends this machine's public key to
+- **FR-B30** - REGISTERING runs after a connection that worked and reports registered,
+  skipped with a reason, or failed with ssh's reason in a completion message, the log,
+  and the host information rows. The login command
+  reads the host's shell family, since a locked host's family is unknown before it. The
+  registration is an ordinary ssh command using the same per-machine authentication as
+  every other command, whether or not the client supports connection sharing. On a POSIX
+  host it appends this machine's public key to
   `~/.ssh/authorized_keys`; on a Windows host it runs Windows PowerShell, which both
   `cmd.exe` and PowerShell start the same way, and also adds the key to
   `administrators_authorized_keys` when the host's sshd reads an Administrators member's
   keys from there and the account is one. Either form adds the line only when it is
   absent, and an ed25519 pair is generated first when the machine has no key to send.
-  What it leaves is what makes a password host usable on such a platform at all: the key
-  ends the password.
 
 ## C. Switching (the keystone)
 
@@ -628,15 +656,25 @@ nothing to switch to until one exists.
 
 ## G. Transport & safety
 
-- **FR-G1** - ssh uses a connect-timeout; listing uses `BatchMode` (never hangs on a
-  prompt); attach requests a tty; ControlMaster multiplexing is added only off Windows.
+- **FR-G1** - ssh uses a connect timeout. The user-submitted login uses accept-new
+  host-key policy only when the effective policy is `ask`; every other command leaves the user's policy intact. Without a held
+  password every app-owned ssh uses batch mode and never waits on a prompt. With one,
+  every direct app-owned ssh forces the private askpass path and permits one password answer,
+  including a tty attach when the client supports forced askpass. An older Unix client
+  runs non-interactive children in a new session so it cannot read the user's terminal;
+  an older Windows client does not enter the password path. Attach requests a tty.
+  ControlMaster multiplexing is added only off Windows and remains an optimization.
+  Effective ssh configuration is resolved with bounded concurrency, and a timed-out
+  resolver process is terminated.
+  A destination configured with `ProxyJump` or `ProxyCommand` requires key authentication
+  because the proxy would inherit target askpass state.
 - **FR-G2** - A session name from a remote list is injection-safe when it re-enters
   a remote shell command (POSIX single-quote escaping).
 - **FR-G3** - Mux session env (`TMUX`/`TMUX_PANE`/`PSMUX*`) is stripped for listing so a
   command run from inside a mux is not refused as nesting; lookalikes survive.
 - **FR-G4** - A remote attach runs the mux-supplied attach argv in one `ssh -t`
-  connection (no second connection to hang or lose; local psmux routes to its
-  per-session server).
+  connection using the machine's current authentication environment. Its password can
+  never appear in the terminal view. Local psmux routes to its per-session server.
 - **FR-G5** - A command bound for a WSL distribution is exec'd there rather than handed
   to the launcher as a command LINE, so Windows quoting is never re-read as shell syntax
   and the POSIX quoting of FR-G2 stays the only boundary a session name crosses. The
@@ -648,7 +686,7 @@ nothing to switch to until one exists.
   A remote outside the POSIX family is then not sent POSIX-only syntax: it gets the attach
   by itself where a POSIX remote gets it behind a POSIX prefix. A LOCKED host's family is
   unknown, because the probe that reads it never got past the refusal that locked the card,
-  which is why the login's own command has to hold in every family (FR-B28).
+  so the login command reads the family without assuming POSIX syntax (FR-B28).
 - **FR-G7** - xmux reaches a machine only when something asked it to. Every request
   traces to the launch scan, to a user action (a re-scan, a login, selecting a card, an
   operation on a session), or to a push stream that is already open. No failure raises its

@@ -67,15 +67,26 @@ and nothing in `transport/` imports a mux type or a source.
   code reads them to pick a server model. In particular the shell family is NOT the
   shell-based predicate restated: a PowerShell remote runs its attach through a shell
   that records no tty for it.
-- A transport holds the connection values that reach its machine, and a successful
-  login RECORDS them there. The login's own connection ends; a value left only in its
-  argv is gone with it, and every later command would name no account and reach the
-  machine as whoever runs xmux. The values are the machine's, not one source's, so the
-  recording covers every source that machine serves, and a source found on the machine
-  later is cloned from the machine's transport rather than rebuilt, so it starts out
-  holding them. A transport rebuilt from the roster
-  loses the recording, which is why the roster reconcile is add-only for an id it
-  already holds.
+- A transport composes a command specification containing argv and child environment.
+  An ssh transport consults the process-memory credential store at composition time, so
+  every spawn path and every source on one machine receives current authentication.
+  Submitted connection values are the machine's, not one source's. A source found later
+  and a transport rebuilt from the roster receive the same store before use, so neither
+  can lose the machine credential.
+- A held ssh password is reached only through a private broker token in the child
+  environment. The token requires an exact target account-and-host match, answers at most once, and lives until the child
+  is reaped. The login uses a pending credential and promotes it only when the broker
+  served it. It may accept a new host key only when the effective policy is `ask`; later
+  commands use only a promoted credential and preserve the user's host-key policy. A
+  command without a credential uses batch mode. Older Unix ssh clients are detached from
+  the controlling terminal for non-interactive work, and older Windows clients do not
+  enter the password path.
+- A destination configured with `ProxyJump` or `ProxyCommand` requires key authentication
+  because its hop would inherit target askpass state.
+- A credential generation is captured when a command is composed. A probe result from
+  an older generation cannot undo or reclassify a newer login. Removing a credential
+  invalidates every outstanding token immediately. A broker accept failure makes
+  credentials temporarily unavailable while the endpoint is recreated with backoff.
 - The host kind's own query methods are the ONLY code that matches on the
   kind: one maps a kind to a concrete transport, another reads its server socket.
   No match on the kind is scattered across call sites; the trait object carries

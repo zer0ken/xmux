@@ -2,7 +2,7 @@
 //! right tty/batch/ControlMaster options and a quiet login shell. Untrusted argv
 //! elements are per-arg quoted via [`super::vocab::remote_command`].
 
-use super::vocab::{remote_command, RemoteShell, SHELL_PROBE};
+use super::vocab::{remote_command, RemoteShell, MARKED_SHELL_PROBE, SHELL_PROBE};
 use super::Transport;
 
 /// Bounds the ssh TCP connect; the per-host scan timeout must exceed it so a
@@ -23,6 +23,7 @@ pub struct Ssh {
     pub os: String,
     /// The connection values the user supplied for this machine, empty until they do.
     pub login: Login,
+    pub credentials: crate::transport::auth::Credentials,
     /// Which shell family the far side answers with. `Posix` until the reachability
     /// probe says otherwise, so a machine that has not been asked yet is addressed the
     /// way every POSIX remote is.
@@ -78,20 +79,62 @@ impl Ssh {
     }
 
     /// The ssh options preceding the remote command, ending with `-- <alias>` so an
-    /// alias beginning with `-` is the destination, never an option. `tty` requests
-    /// a pty and omits BatchMode so auth can prompt; else `BatchMode=yes` so a
-    /// listing never hangs. ControlMaster is multiplexed only on a non-windows local
-    /// side with a control path.
-    fn ssh_opts(&self, tty: bool) -> Vec<String> {
+    /// alias beginning with `-` is the destination, never an option. A held credential
+    /// forces askpass with one password attempt; without one, BatchMode keeps every
+    /// command non-interactive, including a tty attach. ControlMaster is multiplexed
+    /// only on a non-windows local side with a control path.
+    fn ssh_opts(
+        &self,
+        tty: bool,
+        purpose: SshPurpose,
+    ) -> (
+        Vec<String>,
+        Option<crate::transport::auth::AskpassAccess>,
+        Option<String>,
+    ) {
         let mut a: Vec<String> = Vec::new();
+        let requested_access = match purpose {
+            SshPurpose::Login => self.credentials.pending_access(&self.alias),
+            SshPurpose::Normal => self.credentials.access(&self.alias),
+            SshPurpose::CliAttach => None,
+        };
+        let force = self.credentials.force_askpass_supported();
+        let access = requested_access.filter(|_| force || (cfg!(unix) && !tty));
+        let unavailable = if access.is_none() && purpose != SshPurpose::CliAttach {
+            self.credentials
+                .unavailable_reason(&self.alias, purpose == SshPurpose::Login)
+                .or_else(|| {
+                    (!force && tty && self.credentials.contains(&self.alias)).then(|| {
+                        "this OpenSSH version cannot take a password from xmux; update OpenSSH or register a key from a terminal".to_string()
+                    })
+                })
+        } else {
+            None
+        };
         if tty {
             a.push("-t".into());
-        } else {
+        }
+        if access.is_none() && purpose != SshPurpose::CliAttach {
             a.push("-o".into());
             a.push("BatchMode=yes".into());
+        } else {
+            if access.is_some() {
+                a.push("-o".into());
+                a.push("NumberOfPasswordPrompts=1".into());
+                a.push("-o".into());
+                a.push("PreferredAuthentications=publickey,password,keyboard-interactive".into());
+            }
         }
         a.push("-o".into());
         a.push(format!("ConnectTimeout={CONNECT_TIMEOUT}"));
+        let strict = self
+            .credentials
+            .profile(&self.alias)
+            .and_then(|profile| profile.strict_host_key_checking);
+        if purpose == SshPurpose::Login && strict.as_deref() == Some("ask") {
+            a.push("-o".into());
+            a.push("StrictHostKeyChecking=accept-new".into());
+        }
         if self.multiplexes() {
             a.push("-o".into());
             a.push("ControlMaster=auto".into());
@@ -100,13 +143,41 @@ impl Ssh {
             a.push("-o".into());
             a.push("ControlPersist=60s".into());
         }
-        for opt in self.login.options() {
+        let login = access
+            .as_ref()
+            .map(crate::transport::auth::AskpassAccess::login)
+            .unwrap_or(&self.login);
+        for opt in login.options() {
             a.push("-o".into());
             a.push(opt);
         }
         a.push("--".into());
         a.push(self.alias.clone());
-        a
+        (a, access, unavailable)
+    }
+
+    fn command(
+        &self,
+        args: Vec<String>,
+        access: Option<crate::transport::auth::AskpassAccess>,
+        tty: bool,
+        unavailable: Option<String>,
+    ) -> crate::transport::CommandSpec {
+        let command = crate::transport::CommandSpec::new("ssh", args)
+            .with_credential_generation(self.credentials.generation(&self.alias))
+            .with_auth_unavailable(unavailable);
+        match access {
+            Some(access) => {
+                let old_unix = cfg!(unix) && !self.credentials.force_askpass_supported();
+                let command = command.with_auth(access, old_unix && !tty);
+                if !tty {
+                    command.detach_tty()
+                } else {
+                    command
+                }
+            }
+            None => command,
+        }
     }
 
     /// Runs a command through the remote's login PATH without letting shell startup
@@ -164,98 +235,159 @@ impl Transport for Ssh {
         self.login = login;
     }
 
-    fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
-        let mut args = self.ssh_opts(tty);
-        args.push(self.login_shell_command(&remote_command(mux_argv)));
-        ("ssh".into(), args)
+    fn set_credentials(&mut self, credentials: crate::transport::auth::Credentials) {
+        self.credentials = credentials;
     }
 
-    /// A REMOTE interactive attach requests a pty (`-t`, no BatchMode) and runs
-    /// `exec <attach>`: the `exec` replaces the ssh login shell so the connection
-    /// closes cleanly on detach.
+    fn has_credential(&self) -> bool {
+        self.credentials.contains(&self.alias)
+    }
+
+    fn credential_generation(&self) -> u64 {
+        self.credentials.generation(&self.alias)
+    }
+
+    fn probe_diagnostic(&self, diagnostic: String) -> String {
+        let strict = self
+            .credentials
+            .profile(&self.alias)
+            .and_then(|profile| profile.strict_host_key_checking);
+        if matches!(strict.as_deref(), Some("true" | "yes"))
+            && crate::transport::diagnostic::host_key_unknown(&diagnostic)
+        {
+            format!(
+                "the host key must be added first\nrun: ssh -o BatchMode=no -o StrictHostKeyChecking=ask -- {}",
+                shell_quote(&self.alias)
+            )
+        } else {
+            diagnostic
+        }
+    }
+
+    fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> crate::transport::CommandSpec {
+        let (mut args, access, unavailable) = self.ssh_opts(tty, SshPurpose::Normal);
+        args.push(self.login_shell_command(&remote_command(mux_argv)));
+        self.command(args, access, tty, unavailable)
+    }
+
+    /// A REMOTE interactive attach requests a pty and runs `exec <attach>`: the `exec`
+    /// replaces the ssh login shell so the connection closes cleanly on detach. Its
+    /// authentication remains forced askpass or BatchMode, never a terminal prompt.
     ///
     /// `exec` is POSIX shell syntax, so a remote outside that family gets the attach
     /// alone. What it costs there is one shell process living beside the attach for the
     /// length of the session; what prepending it would cost is the attach never running.
-    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> (String, Vec<String>) {
+    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> crate::transport::CommandSpec {
         let attach = remote_command(mux_attach_argv);
         let remote_cmd = if self.shell.runs_posix_snippets() {
             format!("exec {attach}")
         } else {
             attach
         };
-        let mut args = self.ssh_opts(true);
+        let (mut args, access, unavailable) = self.ssh_opts(true, SshPurpose::Normal);
         args.push(self.login_shell_command(&remote_cmd));
-        ("ssh".into(), args)
+        self.command(args, access, true, unavailable)
     }
 
-    /// The remote forces a pty with `-tt` (a pipe-only ssh dies before emitting
-    /// control-mode output) and runs over `BatchMode=yes`.
-    fn control_argv(&self, mux_control_argv: &[String]) -> Vec<String> {
+    fn cli_attach_argv(&self, mux_attach_argv: &[String]) -> crate::transport::CommandSpec {
+        let attach = remote_command(mux_attach_argv);
+        let remote_cmd = if self.shell.runs_posix_snippets() {
+            format!("exec {attach}")
+        } else {
+            attach
+        };
+        let (mut args, access, unavailable) = self.ssh_opts(true, SshPurpose::CliAttach);
+        args.push(self.login_shell_command(&remote_cmd));
+        self.command(args, access, true, unavailable)
+    }
+
+    /// The remote forces a pty with `-tt` because a pipe-only ssh dies before emitting
+    /// control-mode output. Authentication follows the same held-credential rule as
+    /// every other ssh command.
+    fn control_argv(&self, mux_control_argv: &[String]) -> crate::transport::CommandSpec {
         let mut args = vec!["-tt".to_string()];
-        args.extend(self.ssh_opts(false));
+        let (opts, access, unavailable) = self.ssh_opts(false, SshPurpose::Normal);
+        args.extend(opts);
         args.push(self.login_shell_command(&remote_command(mux_control_argv)));
-        let mut v = vec!["ssh".to_string()];
-        v.extend(args);
-        v
+        self.command(args, access, false, unavailable)
     }
 
     /// Joins a raw remote shell command behind the ssh options. A POSIX command uses the
     /// same quiet login shell as mux argv, except for the shell-family probe that decides
     /// whether POSIX syntax is valid. The caller must `quote` any untrusted value inside
     /// `remote_cmd` (see [`super::vocab::quote`]).
-    fn raw_shell_argv(&self, remote_cmd: &str) -> Option<Vec<String>> {
-        let mut v = vec!["ssh".to_string()];
-        v.extend(self.ssh_opts(false));
+    fn raw_shell_argv(&self, remote_cmd: &str) -> Option<crate::transport::CommandSpec> {
+        let (mut args, access, unavailable) = self.ssh_opts(false, SshPurpose::Normal);
         // The probe must reach the account's default shell directly: it is how xmux
         // learns whether POSIX syntax, including this login wrapper, is valid there.
-        let command = if remote_cmd == SHELL_PROBE {
+        let command = if matches!(remote_cmd, SHELL_PROBE | MARKED_SHELL_PROBE) {
             remote_cmd.to_string()
         } else {
             self.login_shell_command(remote_cmd)
         };
-        v.push(command);
-        Some(v)
+        args.push(command);
+        Some(self.command(args, access, false, unavailable))
     }
 
-    /// The login: a real ssh with no BatchMode, so every question it has reaches the
-    /// person watching it. The remote command is the caller's to append.
-    ///
-    /// Where this side multiplexes, it forces a NEW master over the SAME control socket
-    /// every other ssh shares and runs `true`, so what it leaves behind is an
-    /// authenticated connection the later `BatchMode` channels reuse. Where it does not -
-    /// Windows, whose ssh has no connection multiplexing - the same login runs without
-    /// those options and leaves nothing behind, which costs the reuse and NOTHING else:
-    /// ssh asks about the host key before it authenticates, and the answer is written to
-    /// `known_hosts`, so accepting a key is a login that outlasts any connection. A host
-    /// that then needs a password is asked for one again on the next probe, which is the
-    /// truth about that machine on this platform rather than a reason to refuse the login.
-    fn login_argv(&self, login: &Login) -> Option<Vec<String>> {
-        let mut v = vec![
-            "ssh".to_string(),
-            "-o".into(),
-            format!("ConnectTimeout={CONNECT_TIMEOUT}"),
-        ];
-        if self.multiplexes() {
-            v.push("-o".into());
-            v.push("ControlMaster=yes".into());
-            v.push("-o".into());
-            v.push(format!("ControlPath={}", self.control_path));
-            v.push("-o".into());
-            v.push("ControlPersist=60s".into());
-        }
-        // The values the user is submitting, not the ones this transport was built with:
-        // the whole point of the run is to try something that has not worked yet.
-        for opt in login.options() {
-            v.push("-o".into());
-            v.push(opt);
-        }
-        v.push("--".into());
-        v.push(self.alias.clone());
-        // No remote command: the caller appends the one this login is FOR. That command
-        // runs inside the session the user just authenticated, which is the only session
-        // some platforms will ever have.
-        Some(v)
+    fn login_argv(&self, remote_cmd: &str) -> Option<crate::transport::CommandSpec> {
+        let (mut args, access, unavailable) = self.ssh_opts(false, SshPurpose::Login);
+        let strict_yes = self
+            .credentials
+            .profile(&self.alias)
+            .and_then(|profile| profile.strict_host_key_checking)
+            .is_some_and(|value| matches!(value.as_str(), "true" | "yes"));
+        let help = strict_yes.then(|| {
+            // The suggested command runs in the user's terminal, where ssh must be free to
+            // show the fingerprint and ask: batch mode and xmux's prompt limits would stop it.
+            let mut check = Vec::with_capacity(args.len());
+            let mut options = args.iter();
+            while let Some(arg) = options.next() {
+                if arg == "-o" {
+                    if let Some(value) = options.next() {
+                        let interactive_only = [
+                            "BatchMode=",
+                            "NumberOfPasswordPrompts=",
+                            "PreferredAuthentications=",
+                        ]
+                        .iter()
+                        .any(|key| value.starts_with(key));
+                        if !interactive_only {
+                            check.push(arg.clone());
+                            check.push(value.clone());
+                        }
+                    }
+                } else {
+                    check.push(arg.clone());
+                }
+            }
+            let destination = check
+                .iter()
+                .position(|arg| arg == "--")
+                .unwrap_or(check.len());
+            check.splice(
+                destination..destination,
+                [
+                    "-o".to_string(),
+                    "BatchMode=no".to_string(),
+                    "-o".to_string(),
+                    "StrictHostKeyChecking=ask".to_string(),
+                ],
+            );
+            format!(
+                "ssh {}",
+                check
+                    .iter()
+                    .map(|arg| shell_quote(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        });
+        args.push(remote_cmd.to_string());
+        let command = self.command(args, access, false, unavailable);
+        Some(match help {
+            Some(help) => command.with_host_key_command(help),
+            None => command,
+        })
     }
 
     fn clone_box(&self) -> Box<dyn Transport> {
@@ -270,6 +402,30 @@ impl Transport for Ssh {
     }
 }
 
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':' | '='))
+    {
+        return value.to_string();
+    }
+    #[cfg(windows)]
+    {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+    #[cfg(not(windows))]
+    {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SshPurpose {
+    Normal,
+    Login,
+    CliAttach,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +437,7 @@ mod tests {
             control_path: cp.into(),
             os: os.into(),
             login: Login::default(),
+            credentials: crate::transport::auth::Credentials::default(),
             shell: RemoteShell::default(),
         }
     }
@@ -296,7 +453,9 @@ mod tests {
 
     #[test]
     fn ssh_opts_non_interactive_batches_and_multiplexes() {
-        let a = ssh("prod", "linux", "/tmp/cm.sock").ssh_opts(false);
+        let a = ssh("prod", "linux", "/tmp/cm.sock")
+            .ssh_opts(false, SshPurpose::Normal)
+            .0;
         let joined = a.join(" ");
         assert!(joined.contains("BatchMode=yes"), "{a:?}");
         assert!(joined.contains("ConnectTimeout=5"), "{a:?}");
@@ -306,16 +465,20 @@ mod tests {
     }
 
     #[test]
-    fn ssh_opts_interactive_requests_tty_no_batch() {
-        let a = ssh("prod", "linux", "").ssh_opts(true);
+    fn ssh_opts_interactive_without_password_is_non_interactive() {
+        let a = ssh("prod", "linux", "")
+            .ssh_opts(true, SshPurpose::Normal)
+            .0;
         let joined = a.join(" ");
         assert!(joined.contains("-t"), "{a:?}");
-        assert!(!joined.contains("BatchMode"), "{a:?}");
+        assert!(joined.contains("BatchMode=yes"), "{a:?}");
     }
 
     #[test]
     fn ssh_opts_windows_omits_control_master() {
-        let a = ssh("prod", "windows", "/tmp/cm.sock").ssh_opts(false);
+        let a = ssh("prod", "windows", "/tmp/cm.sock")
+            .ssh_opts(false, SshPurpose::Normal)
+            .0;
         assert!(!a.join(" ").contains("ControlMaster"), "{a:?}");
     }
 
@@ -328,14 +491,14 @@ mod tests {
 
         let mut t = ssh("prod", "linux", "");
         assert_eq!(
-            t.interactive_attach_argv(&attach).1.last().unwrap(),
+            t.interactive_attach_argv(&attach).last().unwrap(),
             "sh -lc '{ exec tmux attach -t api\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null",
             "a POSIX remote keeps the exec"
         );
 
         t.set_remote_shell(RemoteShell::Other);
         assert_eq!(
-            t.interactive_attach_argv(&attach).1.last().unwrap(),
+            t.interactive_attach_argv(&attach).last().unwrap(),
             "tmux attach -t api",
             "a non-POSIX remote gets the attach with no exec"
         );
@@ -348,7 +511,7 @@ mod tests {
         // account and ssh would fall back to whoever runs xmux - a different user on the
         // remote, and a refusal that reads as the login not having worked.
         let mut t = ssh("prod", "linux", "");
-        let before = t.exec_argv(false, &argv(&["tmux", "ls"])).1.join(" ");
+        let before = t.exec_argv(false, &argv(&["tmux", "ls"])).join(" ");
         assert!(!before.contains("User="), "{before}");
 
         t.set_login(Login {
@@ -356,7 +519,7 @@ mod tests {
             port: Some(2222),
             user: Some("hrlee".into()),
         });
-        let after = t.exec_argv(false, &argv(&["tmux", "ls"])).1.join(" ");
+        let after = t.exec_argv(false, &argv(&["tmux", "ls"])).join(" ");
         for expected in ["HostName=100.87.27.26", "Port=2222", "User=hrlee"] {
             assert!(after.contains(expected), "{expected} missing from {after}");
         }
@@ -372,9 +535,9 @@ mod tests {
 
     #[test]
     fn exec_argv_remote_wraps_in_ssh() {
-        let (n, a) =
+        let a =
             ssh("prod", "linux", "").exec_argv(false, &argv(&["tmux", "kill-session", "-t", "x"]));
-        assert_eq!(n, "ssh");
+        assert_eq!(a.program(), "ssh");
         assert_eq!(
             a.last().unwrap(),
             "sh -lc '{ tmux kill-session -t x\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
@@ -383,7 +546,7 @@ mod tests {
 
     #[test]
     fn login_shell_wrapper_preserves_quoted_mux_arguments() {
-        let (_n, a) = ssh("prod", "linux", "").exec_argv(
+        let a = ssh("prod", "linux", "").exec_argv(
             false,
             &argv(&[
                 "tmux",
@@ -431,30 +594,6 @@ mod tests {
     }
 
     #[test]
-    fn ssh_login_argv_forces_a_master_with_the_same_control_path() {
-        let login = Login {
-            user: Some("alice".into()),
-            ..Default::default()
-        };
-        let got = ssh("prod", "linux", "/tmp/cm.sock")
-            .login_argv(&login)
-            .unwrap();
-        assert_eq!(got[0], "ssh");
-        let joined = got.join(" ");
-        assert!(joined.contains("ControlMaster=yes"), "{joined}");
-        assert!(joined.contains("ControlPath=/tmp/cm.sock"), "{joined}");
-        assert!(joined.contains("User=alice"), "{joined}");
-        assert!(
-            !joined.contains("BatchMode"),
-            "the login must be able to prompt: {joined}"
-        );
-        assert!(
-            joined.ends_with("-- prod"),
-            "the destination ends it; what the login is FOR is appended by the caller: {joined}"
-        );
-    }
-
-    #[test]
     fn ssh_opts_carry_the_login_overrides_and_keep_the_alias() {
         // The overrides ride as `-o` keywords, so the destination stays the alias and the
         // machine's own ssh-config stanza still supplies whatever they do not name.
@@ -464,7 +603,7 @@ mod tests {
             port: Some(2222),
             user: Some("alice".into()),
         };
-        let joined = t.exec_argv(false, &["true".to_string()]).1.join(" ");
+        let joined = t.exec_argv(false, &["true".to_string()]).join(" ");
         assert!(joined.contains("HostName=100.88.0.0"), "{joined}");
         assert!(joined.contains("Port=2222"), "{joined}");
         assert!(joined.contains("User=alice"), "{joined}");
@@ -478,69 +617,256 @@ mod tests {
     fn ssh_opts_carry_nothing_when_no_login_was_supplied() {
         let joined = ssh("prod", "linux", "/tmp/cm.sock")
             .exec_argv(false, &["true".to_string()])
-            .1
             .join(" ");
         for k in ["HostName=", "Port=", "User="] {
             assert!(!joined.contains(k), "{k} must not appear: {joined}");
         }
     }
 
-    /// Windows ssh cannot share one authenticated connection, so the login leaves nothing
-    /// behind there. It still RUNS: ssh asks about the host key before it authenticates
-    /// and writes the answer to `known_hosts`, so accepting a key is a login whose whole
-    /// result outlives the connection. Refusing to run it would cost that for a reason
-    /// that only touches the reuse.
-    #[test]
-    fn a_login_runs_on_windows_without_the_options_windows_has_no_use_for() {
-        let argv = ssh("prod", "windows", "")
-            .login_argv(&Login::default())
-            .expect("a remote host has a login to run on any platform");
-        let joined = argv.join(" ");
+    #[tokio::test]
+    async fn a_held_password_uses_forced_askpass_without_putting_the_secret_in_argv_or_env() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-ssh-auth-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root.clone());
+        let pending = credentials
+            .begin(
+                "prod",
+                Login {
+                    address: Some("127.0.0.1".into()),
+                    port: Some(2222),
+                    user: Some("dev".into()),
+                },
+                "never-in-command".into(),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(pending.promote());
+        let mut transport = ssh("prod", "windows", "");
+        transport.set_credentials(credentials.clone());
+
+        let command = transport.exec_argv(false, &argv(&["tmux", "ls"]));
+        let joined = command.argv().join(" ");
+        assert!(!joined.contains("BatchMode=yes"), "{joined}");
+        assert!(joined.contains("NumberOfPasswordPrompts=1"), "{joined}");
         assert!(
-            !joined.contains("ControlMaster") && !joined.contains("ControlPath"),
-            "nothing is asked of an ssh that cannot multiplex: {joined}"
+            !joined.contains("StrictHostKeyChecking=accept-new"),
+            "{joined}"
         );
+        assert!(!joined.contains("never-in-command"), "{joined}");
+        assert!(command
+            .env()
+            .iter()
+            .any(|(key, value)| { key == "SSH_ASKPASS_REQUIRE" && value == "force" }));
+        assert!(command
+            .env()
+            .iter()
+            .all(|(_, value)| !value.contains("never-in-command")));
+        let endpoint = command
+            .env()
+            .iter()
+            .find(|(key, _)| key == "XMUX_ASKPASS_ENDPOINT")
+            .map(|(_, value)| std::path::PathBuf::from(value))
+            .unwrap();
+        let token = command
+            .env()
+            .iter()
+            .find(|(key, _)| key == "XMUX_ASKPASS_TOKEN")
+            .map(|(_, value)| value.as_str())
+            .unwrap();
+        let supplied = crate::transport::auth::request_password(
+            &endpoint,
+            token,
+            "dev@127.0.0.1's password: ",
+        )
+        .await
+        .expect("broker reply");
+        assert_eq!(supplied.as_deref(), Some("never-in-command"));
+        assert!(!command
+            .forget_refused_password(1, "dev@127.0.0.1: Permission denied (publickey,password)."));
+        assert!(credentials.contains("prod"));
+        assert!(!command.forget_refused_password(
+            255,
+            "tmux: error connecting to /tmp/tmux-1000/default (Permission denied)"
+        ));
+        assert!(credentials.contains("prod"));
+        assert!(command.forget_refused_password(
+            255,
+            "dev@127.0.0.1: Permission denied (publickey,password)."
+        ));
         assert!(
-            !joined.contains("BatchMode"),
-            "the login must be able to ask its questions: {joined}"
+            !credentials.contains("prod"),
+            "a refusal after askpass supplied the password forgets it"
         );
-        assert_eq!(
-            argv.last().unwrap(),
-            "prod",
-            "the destination ends it; the remote command is the caller's to append"
-        );
+        drop(transport);
+        let _ = std::fs::remove_dir_all(root);
     }
 
-    /// Where this side multiplexes, the login opens the master every later channel rides.
-    #[test]
-    fn a_login_opens_the_master_where_one_can_be_left() {
-        let joined = ssh("prod", "linux", "/tmp/cm.sock")
-            .login_argv(&Login::default())
-            .expect("a remote host has a login")
-            .join(" ");
-        assert!(joined.contains("ControlMaster=yes"), "{joined}");
-        assert!(joined.contains("ControlPath=/tmp/cm.sock"), "{joined}");
-        assert!(joined.contains("ControlPersist=60s"), "{joined}");
+    #[tokio::test]
+    async fn accept_new_is_only_on_the_submitted_login() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-ssh-login-policy-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root.clone());
+        credentials.set_profiles(std::collections::HashMap::from([(
+            "prod".into(),
+            crate::transport::auth::SshProfile {
+                strict_host_key_checking: Some("ask".into()),
+                ..Default::default()
+            },
+        )]));
+        credentials
+            .begin("prod", Login::default(), "secret".into())
+            .unwrap();
+        let mut transport = ssh("prod", "windows", "");
+        transport.set_credentials(credentials.clone());
+        let login = transport.login_argv("true").unwrap().join(" ");
+        assert!(login.contains("StrictHostKeyChecking=accept-new"));
+        assert!(!transport
+            .exec_argv(false, &argv(&["true"]))
+            .join(" ")
+            .contains("accept-new"));
+        credentials.shutdown();
+        let _ = std::fs::remove_dir_all(root);
     }
 
-    /// A machine with nowhere to put the socket is in the same position as Windows: the
-    /// login runs, and leaves no connection behind.
+    #[tokio::test]
+    async fn an_explicit_strict_host_key_policy_is_never_weakened() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-ssh-strict-policy-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root.clone());
+        credentials.set_profiles(std::collections::HashMap::from([(
+            "prod".into(),
+            crate::transport::auth::SshProfile {
+                strict_host_key_checking: Some("true".into()),
+                ..Default::default()
+            },
+        )]));
+        credentials
+            .begin("prod", Login::default(), "secret".into())
+            .unwrap();
+        let mut transport = ssh("prod", "windows", "");
+        transport.set_credentials(credentials.clone());
+        let login = transport.login_argv("true").unwrap();
+        assert!(!login.join(" ").contains("accept-new"));
+        assert!(login
+            .host_key_command()
+            .is_some_and(|command| command.contains("StrictHostKeyChecking=ask")
+                && !command.contains("NumberOfPasswordPrompts")));
+        credentials.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn the_suggested_host_key_command_can_ask_without_a_password() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-ssh-strict-key-only-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root.clone());
+        credentials.set_profiles(std::collections::HashMap::from([(
+            "prod".into(),
+            crate::transport::auth::SshProfile {
+                strict_host_key_checking: Some("true".into()),
+                ..Default::default()
+            },
+        )]));
+        let mut transport = ssh("prod", "windows", "");
+        transport.set_credentials(credentials.clone());
+        let login = transport.login_argv("true").unwrap();
+        assert!(login.join(" ").contains("BatchMode=yes"));
+        let help = login.host_key_command().expect("strict policy help");
+        assert!(help.contains("StrictHostKeyChecking=ask"), "{help}");
+        assert!(!help.contains("BatchMode=yes"), "{help}");
+        assert!(help.contains("BatchMode=no"), "{help}");
+        credentials.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn missing_effective_host_key_policy_does_not_add_accept_new() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-ssh-missing-policy-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root.clone());
+        credentials
+            .begin("prod", Login::default(), "secret".into())
+            .unwrap();
+        let mut transport = ssh("prod", "windows", "");
+        transport.set_credentials(credentials.clone());
+        let login = transport.login_argv("true").unwrap();
+        assert!(!login.join(" ").contains("accept-new"));
+        credentials.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
-    fn a_login_without_a_control_path_leaves_nothing_behind() {
-        let joined = ssh("prod", "linux", "")
-            .login_argv(&Login::default())
-            .expect("a remote host has a login")
-            .join(" ");
-        assert!(!joined.contains("ControlMaster"), "{joined}");
+    fn strict_unknown_host_key_is_unreachable_with_a_fingerprint_command() {
+        let transport = ssh("prod", "windows", "");
+        transport
+            .credentials
+            .set_profiles(std::collections::HashMap::from([(
+                "prod".into(),
+                crate::transport::auth::SshProfile {
+                    strict_host_key_checking: Some("true".into()),
+                    ..Default::default()
+                },
+            )]));
+        let reason = transport.probe_diagnostic("Host key verification failed.".into());
+        assert!(!crate::mux::is_blocked(&reason));
+        assert!(reason.contains("ssh -o BatchMode=no -o StrictHostKeyChecking=ask -- prod"));
+    }
+
+    #[test]
+    fn fingerprint_command_quotes_shell_metacharacters() {
+        assert_eq!(shell_quote("prod;echo exposed"), "'prod;echo exposed'");
+        assert_eq!(shell_quote("plain-host"), "plain-host");
+
+        let alias = "prod;echo exposed";
+        let transport = ssh(alias, "windows", "");
+        transport
+            .credentials
+            .set_profiles(std::collections::HashMap::from([(
+                alias.into(),
+                crate::transport::auth::SshProfile {
+                    strict_host_key_checking: Some("yes".into()),
+                    ..Default::default()
+                },
+            )]));
+        assert!(transport
+            .login_argv("true")
+            .unwrap()
+            .host_key_command()
+            .is_some_and(|command| command.ends_with("-- 'prod;echo exposed'")));
+    }
+
+    #[test]
+    fn a_machine_without_a_password_stays_non_interactive() {
+        let command = ssh("prod", "windows", "").exec_argv(false, &argv(&["tmux", "ls"]));
+        assert!(command.argv().join(" ").contains("BatchMode=yes"));
+        assert!(command.env().is_empty());
     }
 
     #[test]
     fn interactive_attach_remote_execs_over_ssh_tty() {
-        let (n, a) = ssh("prod", "linux", "")
+        let a = ssh("prod", "linux", "")
             .interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]));
-        assert_eq!(n, "ssh");
+        assert_eq!(a.program(), "ssh");
         assert!(a.iter().any(|s| s == "-t"), "{a:?}");
-        assert!(!a.join(" ").contains("BatchMode"), "{a:?}");
+        assert!(a.join(" ").contains("BatchMode=yes"), "{a:?}");
         assert_eq!(
             a.last().unwrap(),
             "sh -lc '{ exec tmux attach -t api\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
@@ -553,5 +879,12 @@ mod tests {
             .raw_shell_argv(super::super::vocab::SHELL_PROBE)
             .unwrap();
         assert_eq!(got.last().unwrap(), "echo $0");
+        let marked = ssh("prod", "linux", "")
+            .raw_shell_argv(super::super::vocab::MARKED_SHELL_PROBE)
+            .unwrap();
+        assert_eq!(
+            marked.last().unwrap(),
+            super::super::vocab::MARKED_SHELL_PROBE
+        );
     }
 }

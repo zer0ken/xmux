@@ -977,6 +977,45 @@ pub fn stanza_user(config_text: &str, alias: &str) -> Option<String> {
     })
 }
 
+/// The connection values the named ssh-config stanza supplies. OpenSSH keeps the first
+/// value obtained for each keyword, so later matching blocks fill only missing values.
+pub fn stanza_login(config_text: &str, alias: &str) -> crate::transport::Login {
+    let mut login = crate::transport::Login::default();
+    for line in host_stanza(config_text, alias).lines() {
+        let Some((key, value)) = ssh_directive(line) else {
+            continue;
+        };
+        if key.eq_ignore_ascii_case("HostName") && login.address.is_none() {
+            login.address = Some(value);
+        } else if key.eq_ignore_ascii_case("Port") && login.port.is_none() {
+            login.port = value.parse().ok();
+        } else if key.eq_ignore_ascii_case("User") && login.user.is_none() {
+            login.user = Some(value);
+        }
+    }
+    login
+}
+
+fn ssh_directive(line: &str) -> Option<(&str, String)> {
+    let line = line.trim();
+    let (key, value) = if let Some((key, value)) = line.split_once('=') {
+        (key.trim(), value.trim())
+    } else {
+        let mut fields = line.splitn(2, char::is_whitespace);
+        (fields.next()?, fields.next()?.trim())
+    };
+    let value = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        })
+        .unwrap_or(value);
+    (!key.is_empty() && !value.is_empty()).then(|| (key, value.to_string()))
+}
+
 pub fn host_stanza(config_text: &str, alias: &str) -> String {
     let is_header = |l: &str| {
         l.split_whitespace()
@@ -1083,6 +1122,32 @@ mod tests {
         assert_eq!(stanza_user(text, "other").as_deref(), Some("bob"));
         assert_eq!(stanza_user(text, "absent"), None);
         assert_eq!(stanza_user("Host prod\n    Port 22\n", "prod"), None);
+    }
+
+    #[test]
+    fn stanza_login_reads_the_effective_connection_fields() {
+        let text = "Host e2e-box\n    HostName 127.0.0.1\n    Port 2222\n    User dev\n";
+        assert_eq!(
+            stanza_login(text, "e2e-box"),
+            crate::transport::Login {
+                address: Some("127.0.0.1".into()),
+                port: Some(2222),
+                user: Some("dev".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn stanza_login_accepts_equals_and_quoted_values() {
+        let text = "Host box\n HostName = \"127.0.0.1\"\n Port=2222\n User 'dev'\n";
+        assert_eq!(
+            stanza_login(text, "box"),
+            crate::transport::Login {
+                address: Some("127.0.0.1".into()),
+                port: Some(2222),
+                user: Some("dev".into()),
+            }
+        );
     }
     use crate::ui::switcher::NavPosition;
     use std::io::Write;

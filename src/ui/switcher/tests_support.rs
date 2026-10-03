@@ -16,11 +16,13 @@ impl Ops for NoopOps {
     async fn new_session(&self, _source: &str, _name: &str) -> anyhow::Result<Session> {
         unreachable!("noop_ops is only constructed, never called")
     }
-    fn login_argv(&self, _source: &str, _login: &crate::transport::Login) -> Option<Vec<String>> {
+    async fn login_command(
+        &self,
+        _source: &str,
+        _login: &crate::transport::Login,
+        _password: String,
+    ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
         unreachable!("noop_ops is only constructed, never called")
-    }
-    fn login_remote(&self, _register_key: bool) -> String {
-        "true".to_string()
     }
     async fn login_follow_ups(
         &self,
@@ -28,7 +30,7 @@ impl Ops for NoopOps {
         _login: &crate::transport::Login,
         _write_config: bool,
         _register: Option<crate::ui::ops::KeyRegistration>,
-    ) -> Vec<String> {
+    ) -> (crate::ui::ops::RegistrationOutcome, Vec<String>) {
         unreachable!("noop_ops is only constructed, never called")
     }
 }

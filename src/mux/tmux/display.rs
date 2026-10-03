@@ -48,9 +48,7 @@ impl MuxDriver for TmuxDriver {
                 );
                 // Build the argv (immutable mux/transport reads) BEFORE taking &mut display.
                 let mux_argv = host.mux.attach_plan(&sel.session);
-                let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
-                let mut argv = vec![cmd];
-                argv.extend(args);
+                let command = host.transport.exec_argv(true, &mux_argv);
                 // A remote shared attach records its own tty before exec (for a later
                 // in-place switch); the record snippet is a remote-shell mechanism, so a
                 // local attach stays bare.
@@ -63,7 +61,7 @@ impl MuxDriver for TmuxDriver {
                     &key,
                     |id| {
                         let tty_key = super::display_tty_key(&key, ctx.instance_name, id);
-                        with_display_tty_record(argv, runs_through_shell, &tty_key)
+                        with_display_tty_record(command, runs_through_shell, &tty_key)
                     },
                     (cols, rows),
                 );
@@ -179,9 +177,7 @@ impl MuxDriver for TmuxDriver {
                     "display_show"
                 );
                 let mux_argv = host.mux.attach_plan(&sel.session);
-                let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
-                let mut argv = vec![cmd];
-                argv.extend(args);
+                let command = host.transport.exec_argv(true, &mux_argv);
                 let runs_through_shell = host.transport.runs_through_shell();
                 let id = request_attach_with_id(
                     ctx.registry,
@@ -191,7 +187,7 @@ impl MuxDriver for TmuxDriver {
                     &key,
                     |id| {
                         let tty_key = super::display_tty_key(&key, ctx.instance_name, id);
-                        with_display_tty_record(argv, runs_through_shell, &tty_key)
+                        with_display_tty_record(command, runs_through_shell, &tty_key)
                     },
                     (cols, rows),
                 );
@@ -240,9 +236,7 @@ impl MuxDriver for TmuxDriver {
                 // (for a later in-place switch); local attaches and non-recording muxes
                 // stay bare. (Immutable host reads before the &mut host.display below.)
                 let mux_argv = host.mux.attach_plan(&first.name);
-                let (cmd, args) = host.transport.interactive_attach_argv(&mux_argv);
-                let mut argv = vec![cmd];
-                argv.extend(args);
+                let command = host.transport.interactive_attach_argv(&mux_argv);
                 let runs_through_shell = host.transport.runs_through_shell();
                 request_attach_with_id(
                     ctx.registry,
@@ -252,7 +246,7 @@ impl MuxDriver for TmuxDriver {
                     source,
                     |id| {
                         let tty_key = super::display_tty_key(source, ctx.instance_name, id);
-                        with_display_tty_record(argv, runs_through_shell, &tty_key)
+                        with_display_tty_record(command, runs_through_shell, &tty_key)
                     },
                     (cols, rows),
                 );
@@ -273,17 +267,20 @@ impl MuxDriver for TmuxDriver {
 /// the user's own attached client. An attach that does not run through a host shell has
 /// nowhere to run the snippet, so it is returned unchanged.
 fn with_display_tty_record(
-    mut argv: Vec<String>,
+    command: crate::transport::CommandSpec,
     runs_through_shell: bool,
     host_key: &str,
-) -> Vec<String> {
-    if runs_through_shell {
+) -> crate::transport::CommandSpec {
+    command.map_argv(|mut argv| {
+        if !runs_through_shell {
+            return argv;
+        }
         let prefix = super::record_prefix(host_key);
         if let Some(last) = argv.last_mut() {
             *last = format!("{prefix}{last}");
         }
-    }
-    argv
+        argv
+    })
 }
 
 #[cfg(test)]
@@ -306,7 +303,11 @@ mod tests {
             "jup".to_string(),
             "tmux attach -t api".to_string(),
         ];
-        let out = with_display_tty_record(argv, host.transport.runs_through_shell(), "jup");
+        let out = with_display_tty_record(
+            crate::transport::CommandSpec::from_argv(argv),
+            host.transport.runs_through_shell(),
+            "jup",
+        );
         let last = out.last().unwrap();
         assert!(last.starts_with("tty >"), "records its tty first: {out:?}");
         assert!(
@@ -329,8 +330,11 @@ mod tests {
             "-t".to_string(),
             "api".to_string(),
         ];
-        let out =
-            with_display_tty_record(argv.clone(), host.transport.runs_through_shell(), "local");
+        let out = with_display_tty_record(
+            crate::transport::CommandSpec::from_argv(argv.clone()),
+            host.transport.runs_through_shell(),
+            "local",
+        );
         assert_eq!(out, argv, "local attach is untouched");
     }
 

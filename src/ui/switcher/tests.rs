@@ -37,14 +37,18 @@ impl Ops for RecordOps {
             ..Default::default()
         })
     }
-    fn login_argv(&self, source: &str, _login: &crate::transport::Login) -> Option<Vec<String>> {
+    async fn login_command(
+        &self,
+        source: &str,
+        _login: &crate::transport::Login,
+        _password: String,
+    ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
         self.logged_in.lock().unwrap().push(source.to_string());
         // A child that exits 0 at once: the conversation this stands in for is one that
         // needed nothing typed.
-        Some(vec!["true".to_string()])
-    }
-    fn login_remote(&self, _register_key: bool) -> String {
-        "true".to_string()
+        Ok(Some(crate::transport::CommandSpec::from_argv(vec![
+            "true".to_string()
+        ])))
     }
     async fn login_follow_ups(
         &self,
@@ -52,8 +56,11 @@ impl Ops for RecordOps {
         _login: &crate::transport::Login,
         _write_config: bool,
         _register: Option<crate::ui::ops::KeyRegistration>,
-    ) -> Vec<String> {
-        Vec::new()
+    ) -> (crate::ui::ops::RegistrationOutcome, Vec<String>) {
+        (
+            crate::ui::ops::RegistrationOutcome::NotRequested,
+            Vec::new(),
+        )
     }
 }
 
@@ -1112,7 +1119,7 @@ async fn login_pane_marks_required_fields_and_hints_the_optional_one() {
     h.sw.apply_source_result(
         "pwbox".into(),
         vec![],
-        Some("Permission denied (publickey,password).".into()),
+        Some("alice@pwbox: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
     h.draw();
@@ -1136,7 +1143,7 @@ async fn login_pane_offers_the_remember_choice_only_after_a_value_changes() {
     h.sw.apply_source_result(
         "pwbox".into(),
         vec![],
-        Some("Permission denied (publickey,password).".into()),
+        Some("alice@pwbox: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
     h.draw();
@@ -1156,6 +1163,67 @@ async fn login_pane_offers_the_remember_choice_only_after_a_value_changes() {
 }
 
 #[tokio::test]
+async fn login_pane_prefills_all_values_from_ssh_config() {
+    let mut h = Harness::from_sources(&["e2e-box"]);
+    h.state
+        .chrome
+        .set_ssh_config_text("Host e2e-box\n    HostName stale.example\n".into());
+    h.state.chrome.set_login_defaults(
+        Default::default(),
+        std::collections::HashMap::from([(
+            "e2e-box".into(),
+            crate::transport::Login {
+                address: Some("127.0.0.1".into()),
+                port: Some(2222),
+                user: Some("dev".into()),
+            },
+        )]),
+        "local-user".into(),
+    );
+    h.sw.apply_source_result(
+        "e2e-box".into(),
+        vec![],
+        Some("dev@127.0.0.1: Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.state.feed_login("e2e-box", b"");
+    let draft = h.state.login.as_ref().unwrap();
+    assert_eq!(draft.address, "127.0.0.1");
+    assert_eq!(draft.port, "2222");
+    assert_eq!(draft.username, "dev");
+    assert_eq!(draft.address, draft.default_address);
+    assert_eq!(draft.port, draft.default_port);
+    assert_eq!(draft.username, draft.default_username);
+    h.draw();
+    assert!(!h.text().contains("write address, port, username"));
+}
+
+#[tokio::test]
+async fn key_registration_result_is_flashed_and_kept_for_the_host() {
+    use crate::link::unlock::UnlockOutcome;
+    use crate::ui::ops::{LoginOutcome, OpResult, RegistrationOutcome};
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_op_result(
+        OpResult::Login {
+            source: "pwbox".into(),
+            login: crate::transport::Login::default(),
+            outcome: LoginOutcome {
+                connect: UnlockOutcome::Ok,
+                registration: RegistrationOutcome::Registered,
+                notes: Vec::new(),
+            },
+        },
+        &mut h.state,
+    );
+    h.draw();
+    assert!(h.hint_bar_text().contains("public key registered on pwbox"));
+    assert_eq!(
+        h.state.registration_reports.get("pwbox"),
+        Some(&RegistrationOutcome::Registered)
+    );
+}
+
+#[tokio::test]
 async fn a_running_login_says_so_in_place_of_the_submit_button() {
     // Submitting the pane hands the values to ssh and waits. The form stays on screen
     // with what it collected, and the row the user would press says the login is running
@@ -1164,7 +1232,7 @@ async fn a_running_login_says_so_in_place_of_the_submit_button() {
     h.sw.apply_source_result(
         "pwbox".into(),
         vec![],
-        Some("Permission denied (publickey,password).".into()),
+        Some("alice@pwbox: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
     h.state.login = Some(crate::state::LoginDraft {
@@ -1217,7 +1285,7 @@ async fn the_verdict_takes_the_login_screen_down() {
     h.sw.apply_source_result(
         "pwbox".into(),
         vec![],
-        Some("Permission denied (publickey,password).".into()),
+        Some("alice@pwbox: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
     h.state.login = Some(crate::state::LoginDraft {
@@ -1231,10 +1299,20 @@ async fn the_verdict_takes_the_login_screen_down() {
             source: "pwbox".into(),
             login: crate::transport::Login::default(),
             outcome: crate::ui::ops::LoginOutcome {
-                connect: UnlockOutcome::AuthFailed,
+                connect: UnlockOutcome::Failed {
+                    kind: crate::link::unlock::FailureKind::WrongPassword,
+                    reason: "the password was refused\nalice@pwbox: Permission denied (publickey,password).".into(),
+                },
+                registration: crate::ui::ops::RegistrationOutcome::NotRequested,
                 notes: Vec::new(),
             },
         },
+        &mut h.state,
+    );
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("ssh: connect to host pwbox: Connection refused".into()),
         &mut h.state,
     );
     assert!(
@@ -1247,6 +1325,11 @@ async fn the_verdict_takes_the_login_screen_down() {
         "the pane comes back holding what was typed:\n{}",
         h.text()
     );
+    assert!(
+        h.text().contains("the password was refused"),
+        "a later probe does not replace the login's own reason:\n{}",
+        h.text()
+    );
 }
 
 #[tokio::test]
@@ -1257,7 +1340,7 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
     h.sw.apply_source_result(
         "pwbox".into(),
         vec![],
-        Some("Permission denied (publickey,password).".into()),
+        Some("alice@pwbox: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
     h.draw();
@@ -1276,6 +1359,7 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
             },
             outcome: crate::ui::ops::LoginOutcome {
                 connect: UnlockOutcome::Ok,
+                registration: crate::ui::ops::RegistrationOutcome::NotRequested,
                 notes: Vec::new(),
             },
         },
@@ -1303,7 +1387,7 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
     h.sw.apply_source_result(
         "pwbox".into(),
         vec![],
-        Some("Permission denied (publickey,password).".into()),
+        Some("alice@pwbox: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
     let reprobe = h.sw.apply_op_result(
@@ -1311,7 +1395,11 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
             source: "pwbox".into(),
             login: crate::transport::Login::default(),
             outcome: crate::ui::ops::LoginOutcome {
-                connect: UnlockOutcome::AuthFailed,
+                connect: UnlockOutcome::Failed {
+                    kind: crate::link::unlock::FailureKind::WrongPassword,
+                    reason: "the password was refused\nalice@pwbox: Permission denied (publickey,password).".into(),
+                },
+                registration: crate::ui::ops::RegistrationOutcome::NotRequested,
                 notes: Vec::new(),
             },
         },

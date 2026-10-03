@@ -34,6 +34,10 @@ without one, so a broken config never blocks it.
 
 ## Invariants
 
+- Askpass mode is detected before logging setup and command-line parsing. It performs
+  only the private broker exchange and exits, so no normal command can observe or print
+  credential context.
+
 - This directory exposes exactly ONE public entry, which the binary shim calls; the
   layers below it are crate-internal.
 - A running instance is addressed by NAME (a control socket), never by pid.

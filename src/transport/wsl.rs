@@ -82,8 +82,8 @@ impl Transport for Wsl {
 
     /// `tty` is ignored: a WSL child inherits the Windows console it was spawned on, and
     /// the distribution allocates its pty from that. There is no option to ask for one.
-    fn exec_argv(&self, _tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
-        (
+    fn exec_argv(&self, _tty: bool, mux_argv: &[String]) -> super::CommandSpec {
+        super::CommandSpec::new(
             WSL_BIN.to_string(),
             self.shell_argv(&remote_command(mux_argv)),
         )
@@ -91,10 +91,10 @@ impl Transport for Wsl {
 
     /// Runs `exec <attach>` in the distribution, exactly as the ssh implementation
     /// does: `exec` replaces the shell so the attach owns the pty for its whole life.
-    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> (String, Vec<String>) {
+    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> super::CommandSpec {
         let attach = remote_command(mux_attach_argv);
         let command = format!("exec {attach}");
-        (WSL_BIN.to_string(), self.shell_argv(&command))
+        super::CommandSpec::new(WSL_BIN, self.shell_argv(&command))
     }
 
     /// Wraps the control child in `script`, the distribution-side stand-in for `ssh -tt`.
@@ -106,7 +106,7 @@ impl Transport for Wsl {
     /// reads plain pipes. `-q` drops the banner, `-f` flushes every line so the stream
     /// stays live, and the typescript is written to `/dev/null` because only the stream
     /// is wanted.
-    fn control_argv(&self, mux_control_argv: &[String]) -> Vec<String> {
+    fn control_argv(&self, mux_control_argv: &[String]) -> super::CommandSpec {
         let inner = remote_command(mux_control_argv);
         let script = remote_command(&[
             "script".to_string(),
@@ -116,13 +116,13 @@ impl Transport for Wsl {
             inner,
             "/dev/null".to_string(),
         ]);
-        self.full_argv(&format!("exec {script}"))
+        super::CommandSpec::from_argv(self.full_argv(&format!("exec {script}")))
     }
 
     /// Joins a raw shell command behind the WSL wrapper. The caller must quote any
     /// untrusted value inside `shell_cmd` (see [`super::vocab::quote`]).
-    fn raw_shell_argv(&self, shell_cmd: &str) -> Option<Vec<String>> {
-        Some(self.full_argv(shell_cmd))
+    fn raw_shell_argv(&self, shell_cmd: &str) -> Option<super::CommandSpec> {
+        Some(super::CommandSpec::from_argv(self.full_argv(shell_cmd)))
     }
 
     fn clone_box(&self) -> Box<dyn Transport> {
@@ -220,12 +220,12 @@ mod tests {
         // puts the user's own mux on PATH. Both must hold for every call shape, so a
         // later edit cannot quietly drop one of them on one path.
         let t = wsl("Ubuntu-24.04");
-        let (_n, exec) = t.exec_argv(false, &argv(&["tmux", "list-sessions"]));
-        let (_n, attach) = t.interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]));
+        let exec = t.exec_argv(false, &argv(&["tmux", "list-sessions"]));
+        let attach = t.interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]));
         let control = t.control_argv(&argv(&["tmux", "-CC", "attach"]));
         let raw = t.raw_shell_argv("c=$(tty); echo $c").unwrap();
         let want = argv(&["-d", "Ubuntu-24.04", "--exec", "sh", "-lc"]);
-        for shape in [&exec, &attach, &control[1..].to_vec(), &raw[1..].to_vec()] {
+        for shape in [&exec[1..], &attach[1..], &control[1..], &raw[1..]] {
             assert_eq!(
                 shape[..5],
                 want[..],
@@ -236,9 +236,8 @@ mod tests {
 
     #[test]
     fn exec_argv_runs_the_mux_command_in_the_distro() {
-        let (n, a) =
-            wsl("Ubuntu-24.04").exec_argv(false, &argv(&["tmux", "kill-session", "-t", "x"]));
-        assert_eq!(n, "wsl.exe");
+        let a = wsl("Ubuntu-24.04").exec_argv(false, &argv(&["tmux", "kill-session", "-t", "x"]));
+        assert_eq!(a.program(), "wsl.exe");
         assert_eq!(a.last().unwrap(), "tmux kill-session -t x");
     }
 
@@ -247,7 +246,7 @@ mod tests {
         // The command reaches a POSIX shell inside the distro, so a session name holding
         // shell syntax must arrive as one word. `--exec` keeps the WINDOWS layer from
         // re-reading it first, and `remote_command` neutralizes it for the shell.
-        let (_n, a) = wsl("Ubuntu-24.04").exec_argv(
+        let a = wsl("Ubuntu-24.04").exec_argv(
             false,
             &argv(&["tmux", "rename-session", "-t", "old", "evil; rm -rf /"]),
         );
@@ -260,7 +259,7 @@ mod tests {
     #[test]
     fn interactive_attach_execs_in_the_distro() {
         let t = wsl("Ubuntu-24.04");
-        let (_n, a) = t.interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]));
+        let a = t.interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]));
         assert_eq!(a.last().unwrap(), "exec tmux attach -t api");
     }
 

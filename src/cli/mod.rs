@@ -81,6 +81,9 @@ enum Command {
 }
 
 pub async fn run() -> i32 {
+    if let Some(code) = crate::transport::auth::run_helper_from_env().await {
+        return code;
+    }
     // Initialise the file-based tracing subscriber before any terminal or mux
     // setup so log records from every subsequent code path are captured. The
     // guard must outlive `run` (i.e. live until the process exits); binding it
@@ -308,7 +311,7 @@ async fn run_direct_attach(env: &Env, source: &str, session: &str) -> i32 {
             return 1;
         }
     };
-    if let Err(e) = attach::run_attach(&OsExecer, &host.interactive_attach_command(session)) {
+    if let Err(e) = attach::run_attach(&OsExecer, &host.cli_attach_command(session)) {
         eprintln!("xmux: attach failed: {e}");
         return 1;
     }

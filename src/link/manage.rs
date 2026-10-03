@@ -16,8 +16,8 @@ async fn run_plan(
     runner: &dyn Runner,
     mux_argv: &[String],
 ) -> Result<Vec<u8>, RunError> {
-    let (name, args) = host.transport.exec_argv(false, mux_argv);
-    runner.run(&name, &args).await
+    let command = host.transport.exec_argv(false, mux_argv);
+    runner.run_spec(&command).await
 }
 
 /// Creates a DETACHED session on the host and returns its name. A mux that names its
@@ -107,6 +107,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for RecordingRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             *self.recorded.lock().unwrap() = Some((name.to_string(), args.to_vec()));
             if self.fail {
@@ -194,6 +195,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for SeqRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             self.recorded
                 .lock()

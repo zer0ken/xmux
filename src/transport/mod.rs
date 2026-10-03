@@ -7,6 +7,8 @@
 //! `mux/vocab.rs`. A new implementation is a new file implementing `Transport` plus a
 //! factory here; the trait and its callers name no concrete implementation.
 
+pub mod auth;
+pub mod diagnostic;
 pub mod local;
 pub mod ssh;
 pub mod vocab;
@@ -15,6 +17,210 @@ pub mod wsl;
 pub use local::Local;
 pub use ssh::{Login, Ssh};
 pub use wsl::Wsl;
+
+#[derive(Clone)]
+pub struct CommandSpec {
+    argv: Vec<String>,
+    env: Vec<(String, String)>,
+    auth: Option<auth::CommandAuth>,
+    detach_tty: bool,
+    host_key_command: Option<String>,
+    credential_generation: u64,
+    auth_unavailable: Option<String>,
+}
+
+impl CommandSpec {
+    pub fn new(program: impl Into<String>, args: Vec<String>) -> Self {
+        let mut argv = vec![program.into()];
+        argv.extend(args);
+        Self {
+            argv,
+            env: Vec::new(),
+            auth: None,
+            detach_tty: false,
+            host_key_command: None,
+            credential_generation: 0,
+            auth_unavailable: None,
+        }
+    }
+
+    pub fn from_argv(argv: Vec<String>) -> Self {
+        Self {
+            argv,
+            env: Vec::new(),
+            auth: None,
+            detach_tty: false,
+            host_key_command: None,
+            credential_generation: 0,
+            auth_unavailable: None,
+        }
+    }
+
+    pub fn argv(&self) -> &[String] {
+        &self.argv
+    }
+
+    pub fn program(&self) -> &str {
+        self.argv.first().map(String::as_str).unwrap_or("")
+    }
+
+    pub fn args(&self) -> &[String] {
+        self.argv.get(1..).unwrap_or_default()
+    }
+
+    pub fn env(&self) -> &[(String, String)] {
+        &self.env
+    }
+
+    pub fn map_argv(mut self, f: impl FnOnce(Vec<String>) -> Vec<String>) -> Self {
+        self.argv = f(self.argv);
+        self
+    }
+
+    pub fn with_auth(mut self, access: auth::AskpassAccess, set_display: bool) -> Self {
+        self.credential_generation = access.generation();
+        let auth = auth::command_auth(access, set_display);
+        self.env = auth.environment().to_vec();
+        self.auth = Some(auth);
+        self
+    }
+
+    pub fn with_credential_generation(mut self, generation: u64) -> Self {
+        self.credential_generation = generation;
+        self
+    }
+
+    pub fn credential_generation(&self) -> u64 {
+        self.credential_generation
+    }
+
+    pub fn with_auth_unavailable(mut self, reason: Option<String>) -> Self {
+        self.auth_unavailable = reason;
+        self
+    }
+
+    pub fn auth_unavailable(&self) -> Option<&str> {
+        self.auth_unavailable.as_deref()
+    }
+
+    pub fn detach_tty(mut self) -> Self {
+        self.detach_tty = true;
+        self
+    }
+
+    pub(crate) fn with_host_key_command(mut self, command: String) -> Self {
+        self.host_key_command = Some(command);
+        self
+    }
+
+    pub(crate) fn host_key_command(&self) -> Option<&str> {
+        self.host_key_command.as_deref()
+    }
+
+    pub fn should_detach_tty(&self) -> bool {
+        self.detach_tty
+    }
+
+    pub fn password_was_supplied(&self) -> bool {
+        self.auth.as_ref().is_some_and(auth::CommandAuth::supplied)
+    }
+
+    pub fn credential_rejection_generation(&self) -> Option<u64> {
+        self.auth
+            .as_ref()
+            .and_then(auth::CommandAuth::rejection_generation)
+    }
+
+    pub fn refused_auth_prompt(&self) -> Option<String> {
+        self.auth
+            .as_ref()
+            .and_then(auth::CommandAuth::refused_prompt)
+    }
+
+    /// Keeps this command's one-shot askpass token valid for a spawned child.
+    pub(crate) fn auth_guard(&self) -> Option<auth::CommandAuth> {
+        self.auth.clone()
+    }
+
+    pub fn has_credential(&self) -> bool {
+        self.auth.is_some()
+    }
+
+    pub fn forget_refused_password(&self, exit_code: i32, diagnostic: &str) -> bool {
+        if exit_code == 255
+            && crate::transport::diagnostic::contains_auth_refusal(diagnostic)
+            && self.password_was_supplied()
+        {
+            if let Some(auth) = &self.auth {
+                auth.forget_active();
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn promote_credential(&self) -> bool {
+        self.auth.as_ref().is_some_and(auth::CommandAuth::promote)
+    }
+
+    pub fn finish_successful_login(&self) -> bool {
+        let Some(auth) = &self.auth else {
+            return true;
+        };
+        if auth.supplied() {
+            auth.promote()
+        } else {
+            auth.discard();
+            true
+        }
+    }
+
+    pub fn discard_credential(&self) {
+        if let Some(auth) = &self.auth {
+            auth.discard();
+        }
+    }
+}
+
+impl std::fmt::Debug for CommandSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommandSpec")
+            .field("argv", &self.argv)
+            .field(
+                "env_keys",
+                &self.env.iter().map(|(key, _)| key).collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+impl PartialEq for CommandSpec {
+    fn eq(&self, other: &Self) -> bool {
+        self.argv == other.argv && self.env == other.env
+    }
+}
+
+impl Eq for CommandSpec {}
+
+impl<T: AsRef<str>> PartialEq<Vec<T>> for CommandSpec {
+    fn eq(&self, other: &Vec<T>) -> bool {
+        self.argv.len() == other.len()
+            && self
+                .argv
+                .iter()
+                .zip(other)
+                .all(|(left, right)| left == right.as_ref())
+    }
+}
+
+impl std::ops::Deref for CommandSpec {
+    type Target = [String];
+
+    fn deref(&self) -> &Self::Target {
+        &self.argv
+    }
+}
 
 /// The machine boundary: turns a full mux argv (`argv[0]` = the mux binary) into a
 /// runnable `(command, args)`, and wraps interactive/control/raw execution for the
@@ -80,16 +286,36 @@ pub trait Transport: Send + Sync {
     /// which is a different account and a refusal.
     fn set_login(&mut self, _login: ssh::Login) {}
 
+    fn set_credentials(&mut self, _credentials: auth::Credentials) {}
+
+    fn has_credential(&self) -> bool {
+        false
+    }
+
+    fn credential_generation(&self) -> u64 {
+        0
+    }
+
+    fn probe_diagnostic(&self, diagnostic: String) -> String {
+        diagnostic
+    }
+
     /// Turns a full mux argv (`argv[0]` = the mux binary) into the (command, args)
     /// to spawn.
-    fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>);
+    fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> CommandSpec;
 
     /// Lowers a mux attach argv into the interactive terminal-handover (cmd, args).
     /// This is the SOLE owner of the `exec`/ssh-tty machinery.
-    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> (String, Vec<String>);
+    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> CommandSpec;
+
+    /// The standalone CLI handover. Its terminal may be used by ssh for interactive
+    /// authentication because no TUI or background channel owns it.
+    fn cli_attach_argv(&self, mux_attach_argv: &[String]) -> CommandSpec {
+        self.interactive_attach_argv(mux_attach_argv)
+    }
 
     /// The argv for a `-CC` control-mode child given the mux's control argv.
-    fn control_argv(&self, mux_control_argv: &[String]) -> Vec<String>;
+    fn control_argv(&self, mux_control_argv: &[String]) -> CommandSpec;
 
     /// True when the machine's `-CC` control child must run on a pty the spawner
     /// allocates for it. The remote path already forces one (`ssh -tt`) and WSL
@@ -102,16 +328,14 @@ pub trait Transport: Send + Sync {
 
     /// Joins a raw remote shell command behind the machine's execution wrapper.
     /// `None` when the machine issues no remote shell command (a local machine).
-    fn raw_shell_argv(&self, _remote_cmd: &str) -> Option<Vec<String>> {
+    fn raw_shell_argv(&self, _remote_cmd: &str) -> Option<CommandSpec> {
         None
     }
 
-    /// The argv that opens an INTERACTIVE connection which leaves an authenticated
-    /// ControlMaster behind (the login), or `None` when the machine has no reusable
-    /// master (a local/WSL machine with nothing to authenticate, or Windows ssh without
-    /// ControlMaster). `login` carries the values the user is submitting.
-    fn login_argv(&self, _login: &Login) -> Option<Vec<String>> {
-        None
+    /// The explicit login validation. Only this path may use a pending credential and
+    /// accept a previously unseen host key.
+    fn login_argv(&self, remote_cmd: &str) -> Option<CommandSpec> {
+        self.raw_shell_argv(remote_cmd)
     }
 
     /// Clones into a fresh box — a spawned poll task needs an owned transport, and a
@@ -159,23 +383,38 @@ impl Transport for Box<dyn Transport> {
     fn set_login(&mut self, login: ssh::Login) {
         (**self).set_login(login)
     }
-    fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> (String, Vec<String>) {
+    fn set_credentials(&mut self, credentials: auth::Credentials) {
+        (**self).set_credentials(credentials)
+    }
+    fn has_credential(&self) -> bool {
+        (**self).has_credential()
+    }
+    fn credential_generation(&self) -> u64 {
+        (**self).credential_generation()
+    }
+    fn probe_diagnostic(&self, diagnostic: String) -> String {
+        (**self).probe_diagnostic(diagnostic)
+    }
+    fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> CommandSpec {
         (**self).exec_argv(tty, mux_argv)
     }
-    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> (String, Vec<String>) {
+    fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> CommandSpec {
         (**self).interactive_attach_argv(mux_attach_argv)
     }
-    fn control_argv(&self, mux_control_argv: &[String]) -> Vec<String> {
+    fn cli_attach_argv(&self, mux_attach_argv: &[String]) -> CommandSpec {
+        (**self).cli_attach_argv(mux_attach_argv)
+    }
+    fn control_argv(&self, mux_control_argv: &[String]) -> CommandSpec {
         (**self).control_argv(mux_control_argv)
     }
     fn control_needs_pty(&self) -> bool {
         (**self).control_needs_pty()
     }
-    fn raw_shell_argv(&self, remote_cmd: &str) -> Option<Vec<String>> {
+    fn raw_shell_argv(&self, remote_cmd: &str) -> Option<CommandSpec> {
         (**self).raw_shell_argv(remote_cmd)
     }
-    fn login_argv(&self, login: &Login) -> Option<Vec<String>> {
-        (**self).login_argv(login)
+    fn login_argv(&self, remote_cmd: &str) -> Option<CommandSpec> {
+        (**self).login_argv(remote_cmd)
     }
     fn clone_box(&self) -> Box<dyn Transport> {
         (**self).clone_box()
@@ -191,10 +430,10 @@ impl Transport for Box<dyn Transport> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoweredSwitch {
     /// A local mux argv (`argv[0]` = binary) — run non-interactively.
-    Local(Vec<String>),
+    Local(CommandSpec),
     /// A full ssh argv carrying a guarded raw remote `switch-client` snippet, run via
     /// the same path `run_raw` uses.
-    RawSsh(Vec<String>),
+    RawSsh(CommandSpec),
 }
 
 /// Which machine kind a host reaches its mux over, carrying that kind's own
@@ -354,6 +593,7 @@ pub fn ssh(alias: String, control_path: String, os: String) -> Box<dyn Transport
         control_path,
         os,
         login: Login::default(),
+        credentials: auth::Credentials::default(),
         shell: vocab::RemoteShell::default(),
     })
 }
@@ -367,6 +607,7 @@ pub fn ssh_as(id: String, alias: String, control_path: String, os: String) -> Bo
         control_path,
         os,
         login: Login::default(),
+        credentials: auth::Credentials::default(),
         shell: vocab::RemoteShell::default(),
     })
 }
@@ -403,9 +644,9 @@ mod tests {
         );
         assert_eq!(one.host_id(), "prod");
         assert_eq!(two.host_id(), "prod:zellij");
-        let (n1, a1) = one.exec_argv(false, &["tmux".to_string(), "ls".to_string()]);
-        let (n2, a2) = two.exec_argv(false, &["tmux".to_string(), "ls".to_string()]);
-        assert_eq!((n1, a1), (n2, a2), "same destination, same argv");
+        let one = one.exec_argv(false, &["tmux".to_string(), "ls".to_string()]);
+        let two = two.exec_argv(false, &["tmux".to_string(), "ls".to_string()]);
+        assert_eq!(one, two, "same destination, same argv");
     }
 
     #[test]
@@ -453,7 +694,7 @@ mod tests {
         .transport();
         assert_eq!(local.host_id(), "local");
         assert!(!local.is_remote());
-        let (_n, args) = local.exec_argv(false, &["tmux".to_string(), "ls".to_string()]);
+        let args = local.exec_argv(false, &["tmux".to_string(), "ls".to_string()]);
         assert!(
             args.windows(2)
                 .any(|w| w == ["-S".to_string(), "/tmp/s".to_string()]),
@@ -512,8 +753,8 @@ mod tests {
         let t = kind.transport();
         assert_eq!(t.host_id(), "wsl.Ubuntu-24.04");
         assert!(!t.is_remote());
-        let (name, args) = t.exec_argv(false, &["tmux".to_string(), "ls".to_string()]);
-        assert_eq!(name, "wsl.exe");
+        let args = t.exec_argv(false, &["tmux".to_string(), "ls".to_string()]);
+        assert_eq!(args.program(), "wsl.exe");
         assert!(
             args.windows(2)
                 .any(|w| w == ["-d".to_string(), "Ubuntu-24.04".to_string()]),

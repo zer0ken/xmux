@@ -26,6 +26,12 @@ pub struct State {
     /// vanish - the login stops being blocked, so nothing keeps it any more. Keyed by
     /// machine because a login authenticates the machine, not the one mux that carried it.
     pub logged_in: HashSet<String>,
+    /// The last login attempt for each machine. It is separate from probe failures so a
+    /// follow-up probe cannot replace the authentication diagnosis the user needs.
+    pub login_reports: HashMap<String, crate::ui::ops::LoginOutcome>,
+    /// The last requested public-key registration result for each machine. It outlives
+    /// the login pane so a later host screen can still state what happened.
+    pub registration_reports: HashMap<String, crate::ui::ops::RegistrationOutcome>,
     /// How many times in a row each source has failed to enumerate, reset to zero the
     /// moment it answers. Written at the single result-apply site and read only to be
     /// SHOWN: the unreachable screen states it, because one failed sweep and a host that
@@ -73,12 +79,12 @@ pub struct State {
     /// element the keys drive. It is NOT a modal - it never routes through the nav input
     /// path - it is a feature of the login pane, driven only while the terminal view
     /// holds a blocked host. `source` pins it to that host so moving to another card
-    /// starts a fresh draft. The password lives here and in the transient login command
-    /// only; it is drawn masked and never logged or serialized.
+    /// starts a fresh draft. The password moves from here into the process-memory
+    /// credential store; it is drawn masked and never logged or serialized.
     pub login: Option<LoginDraft>,
-    /// The login that is RUNNING: once the pane is submitted, ssh has the conversation on
-    /// its own thread with the values the draft collected, and this is the handle that
-    /// ends it. Present only while that conversation runs, so its presence is what tells
+    /// The login that is RUNNING: once the pane is submitted, ssh validates the held
+    /// credential on its own thread, and this is the handle that ends it. Present only
+    /// while that validation runs, so its presence is what tells
     /// the pane to say a login is under way instead of offering one.
     pub login_run: Option<crate::link::unlock::RunningLogin>,
 }
@@ -115,20 +121,126 @@ pub enum LoginFocus {
 /// The three connection values start at what ssh WOULD use, and those starting values
 /// are kept beside them: the remember choice is only worth offering once the user has
 /// changed something, since a stanza repeating what ssh already resolves says nothing.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct LoginDraft {
     /// The blocked source this draft belongs to; a different current source resets it.
     pub source: String,
     pub address: String,
     pub port: String,
     pub username: String,
-    pub password: String,
+    pub password: SecretInput,
     pub remember: Remember,
     pub pubkey: bool,
     pub focus: LoginFocus,
     pub default_address: String,
     pub default_port: String,
     pub default_username: String,
+}
+
+impl std::fmt::Debug for LoginDraft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginDraft")
+            .field("source", &self.source)
+            .field("address", &self.address)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &"[redacted]")
+            .field("remember", &self.remember)
+            .field("pubkey", &self.pubkey)
+            .field("focus", &self.focus)
+            .field("default_address", &self.default_address)
+            .field("default_port", &self.default_port)
+            .field("default_username", &self.default_username)
+            .finish()
+    }
+}
+
+const SECRET_INPUT_CAPACITY: usize = 16 * 1024;
+
+#[derive(PartialEq, Eq)]
+pub struct SecretInput(String);
+
+impl Default for SecretInput {
+    fn default() -> Self {
+        Self(String::with_capacity(SECRET_INPUT_CAPACITY))
+    }
+}
+
+impl Clone for SecretInput {
+    fn clone(&self) -> Self {
+        let mut value = String::with_capacity(SECRET_INPUT_CAPACITY);
+        value.push_str(&self.0);
+        Self(value)
+    }
+}
+
+impl SecretInput {
+    fn take(&mut self) -> Self {
+        std::mem::take(self)
+    }
+
+    pub(crate) fn take_plain(&mut self) -> String {
+        std::mem::take(&mut self.0)
+    }
+}
+
+impl From<String> for SecretInput {
+    fn from(mut value: String) -> Self {
+        let mut secret = Self::default();
+        for ch in value.chars() {
+            if secret.0.len() + ch.len_utf8() > SECRET_INPUT_CAPACITY {
+                break;
+            }
+            secret.0.push(ch);
+        }
+        crate::transport::auth::zero_string(&mut value);
+        secret
+    }
+}
+
+impl From<&str> for SecretInput {
+    fn from(value: &str) -> Self {
+        let mut secret = Self::default();
+        for ch in value.chars() {
+            if secret.0.len() + ch.len_utf8() > SECRET_INPUT_CAPACITY {
+                break;
+            }
+            secret.0.push(ch);
+        }
+        secret
+    }
+}
+
+impl PartialEq<&str> for SecretInput {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl std::ops::Deref for SecretInput {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SecretInput {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl std::fmt::Debug for SecretInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
+impl Drop for SecretInput {
+    fn drop(&mut self) {
+        crate::transport::auth::zero_string(&mut self.0);
+    }
 }
 
 impl LoginDraft {
@@ -300,8 +412,8 @@ impl State {
     ///
     /// A draft for a different source is reset first, and a fresh draft starts at the
     /// values ssh would have used, so the pane opens showing what just failed. On submit
-    /// the password is taken out of the draft (it rides only the transient command), so
-    /// nothing keeps it.
+    /// the password leaves the rendered draft and enters the process-only credential
+    /// broker. A failed or replaced login removes that exact credential.
     pub fn feed_login(&mut self, source: &str, bytes: &[u8]) -> Option<crate::model::Command> {
         let (address, port, username) = self.chrome.login_defaults(source);
         let draft = match &mut self.login {
@@ -333,8 +445,11 @@ impl State {
                 // Space picks a choice; in a text field it is a character like any other.
                 Key::Char(' ') if draft.field_mut().is_none() => draft.pick(),
                 Key::Char(c) => {
+                    let password = draft.focus == LoginFocus::Password;
                     if let Some(f) = draft.field_mut() {
-                        f.push(c);
+                        if !password || f.len() + c.len_utf8() <= SECRET_INPUT_CAPACITY {
+                            f.push(c);
+                        }
                     }
                 }
             }
@@ -350,7 +465,7 @@ impl State {
                 port,
                 user: (!draft.username.trim().is_empty()).then(|| draft.username.trim().into()),
             },
-            password: std::mem::take(&mut draft.password),
+            password: draft.password.take(),
             remember: draft.remember,
             pubkey: draft.pubkey,
         })
@@ -646,37 +761,60 @@ impl State {
                 machine,
                 err,
                 shell,
+                password_supplied,
+                credential_rejection_generation,
+                credential_held,
+                credential_generation,
+                current_credential_generation,
                 rescan,
-            } => match err {
-                Some(reason) => {
-                    // The machine did not connect: every source it serves carries the
-                    // same failure line, so each card classifies locked (ssh's
-                    // auth-failure signature) or unreachable. No channel is opened - the
-                    // loop's connected path is gated on this probe succeeding.
-                    let sources: Vec<String> = self
-                        .groups
-                        .iter()
-                        .map(|g| g.source.clone())
-                        .filter(|s| crate::session::machine_of(s) == machine)
-                        .collect();
-                    for source in sources {
-                        switcher.apply_source_result(
-                            source,
-                            Vec::new(),
-                            Some(reason.clone()),
-                            self,
-                        );
-                    }
-                    Vec::new()
+            } => {
+                let result_generation =
+                    credential_rejection_generation.unwrap_or(credential_generation);
+                if result_generation != current_credential_generation {
+                    return Vec::new();
                 }
-                // Connected: which sources to resolve and how lives in the host
-                // registry, so the whole decision is the loop's.
-                None => vec![EventEffect::MachineConnected {
-                    machine,
-                    shell,
-                    rescan,
-                }],
-            },
+                match err {
+                    Some(reason) => {
+                        if credential_held
+                            && password_supplied
+                            && crate::transport::diagnostic::contains_auth_refusal(&reason)
+                        {
+                            self.scanning
+                                .retain(|source| crate::session::machine_of(source) != machine);
+                            return Vec::new();
+                        }
+                        // The machine did not connect: every source it serves carries the
+                        // same failure line, so each card classifies locked (ssh's
+                        // auth-failure signature) or unreachable. No channel is opened - the
+                        // loop's connected path is gated on this probe succeeding.
+                        let sources: Vec<String> = self
+                            .groups
+                            .iter()
+                            .map(|g| g.source.clone())
+                            .filter(|s| crate::session::machine_of(s) == machine)
+                            .collect();
+                        for source in sources {
+                            switcher.apply_source_result(
+                                source,
+                                Vec::new(),
+                                Some(reason.clone()),
+                                self,
+                            );
+                        }
+                        Vec::new()
+                    }
+                    // Connected: which sources to resolve and how lives in the host
+                    // registry, so the whole decision is the loop's.
+                    None => {
+                        self.login_reports.remove(&machine);
+                        vec![EventEffect::MachineConnected {
+                            machine,
+                            shell,
+                            rescan,
+                        }]
+                    }
+                }
+            }
             HostEvent::Sessions {
                 source,
                 sessions,
@@ -760,7 +898,7 @@ impl State {
                 login,
                 outcome,
             } => {
-                // The conversation is over however it ended, so the handle that would
+                // The validation is over however it ended, so the handle that would
                 // have ended it goes with it and the pane offers a login again.
                 self.login_run = None;
                 OpFollow::LoginResult {
@@ -1665,7 +1803,7 @@ mod tests {
     fn feed_login_fills_the_pane_and_submits_from_the_button() {
         // Enter passes the focus on from a text field, so filling the pane top to bottom
         // with Enter alone ends on the button, where Enter submits. The password is taken
-        // out of the draft on submit so nothing keeps it.
+        // out of the draft on submit so the draft keeps no second copy.
         let mut s = State::default();
         // address, port, username come prefilled; Enter walks past them.
         for _ in 0..3 {
@@ -1707,6 +1845,18 @@ mod tests {
             "",
             "the submitted password is taken out of the draft"
         );
+    }
+
+    #[test]
+    fn login_draft_debug_redacts_the_password() {
+        let draft = LoginDraft {
+            password: "do-not-print-this".into(),
+            ..LoginDraft::default()
+        };
+
+        let shown = format!("{draft:?}");
+        assert!(!shown.contains("do-not-print-this"));
+        assert!(shown.contains("[redacted]"));
     }
 
     #[test]
@@ -1766,6 +1916,13 @@ mod tests {
     }
 
     #[test]
+    fn password_field_uses_one_bounded_allocation() {
+        let secret = SecretInput::from("x".repeat(SECRET_INPUT_CAPACITY + 1));
+        assert_eq!(secret.len(), SECRET_INPUT_CAPACITY);
+        assert_eq!(secret.0.capacity(), SECRET_INPUT_CAPACITY);
+    }
+
+    #[test]
     fn machine_probe_connected_forwards_the_connect_to_the_loop() {
         // A machine that answered `true` carries no reason; which of its sources to
         // resolve, and how, lives in the host registry, so the whole decision is the
@@ -1778,6 +1935,11 @@ mod tests {
                 shell: None,
                 machine: "prod".into(),
                 err: None,
+                password_supplied: false,
+                credential_rejection_generation: None,
+                credential_held: false,
+                credential_generation: 0,
+                current_credential_generation: 0,
                 rescan: false,
             },
             &mut sw,
@@ -1812,6 +1974,11 @@ mod tests {
                     "command failed (exit 255): user@prod: Permission denied (publickey,password)."
                         .into(),
                 ),
+                password_supplied: false,
+                credential_rejection_generation: None,
+                credential_held: false,
+                credential_generation: 0,
+                current_credential_generation: 0,
                 rescan: false,
             },
             &mut sw,
@@ -1838,6 +2005,160 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_that_did_not_use_the_held_password_is_visible() {
+        let mut state = State::from_sources(vec!["prod".into()]);
+        state.logged_in.insert("prod".into());
+        let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let _ = state.apply_event(
+            HostEvent::MachineProbed {
+                shell: None,
+                machine: "prod".into(),
+                err: Some("dev@prod: Permission denied (publickey,password).".into()),
+                password_supplied: false,
+                credential_rejection_generation: None,
+                credential_held: true,
+                credential_generation: 1,
+                current_credential_generation: 1,
+                rescan: false,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(state.groups[0]
+            .err
+            .as_deref()
+            .is_some_and(crate::mux::is_blocked));
+    }
+
+    #[test]
+    fn an_auth_refusal_from_an_older_credential_generation_is_ignored() {
+        let mut state = State::from_sources(vec!["prod".into()]);
+        state.groups[0].err = None;
+        let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let _ = state.apply_event(
+            HostEvent::MachineProbed {
+                shell: None,
+                machine: "prod".into(),
+                err: Some("dev@prod: Permission denied (publickey,password).".into()),
+                password_supplied: false,
+                credential_rejection_generation: None,
+                credential_held: true,
+                credential_generation: 3,
+                current_credential_generation: 4,
+                rescan: false,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(state.groups[0].err.is_none());
+    }
+
+    #[test]
+    fn any_probe_result_from_an_older_credential_generation_is_ignored() {
+        let mut state = State::from_sources(vec!["prod".into()]);
+        state.groups[0].err = None;
+        state.scanning.insert("prod".into());
+        let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let effects = state.apply_event(
+            HostEvent::MachineProbed {
+                shell: None,
+                machine: "prod".into(),
+                err: Some("ssh: connect to host prod port 22: Connection refused".into()),
+                password_supplied: false,
+                credential_rejection_generation: None,
+                credential_held: true,
+                credential_generation: 3,
+                current_credential_generation: 4,
+                rescan: false,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(effects.is_empty());
+        assert!(state.groups[0].err.is_none());
+        assert!(state.scanning.contains("prod"));
+    }
+
+    #[test]
+    fn successful_probe_from_an_older_credential_generation_is_ignored() {
+        let mut state = State::from_sources(vec!["prod".into()]);
+        let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let effects = state.apply_event(
+            HostEvent::MachineProbed {
+                shell: None,
+                machine: "prod".into(),
+                err: None,
+                password_supplied: false,
+                credential_rejection_generation: None,
+                credential_held: true,
+                credential_generation: 3,
+                current_credential_generation: 4,
+                rescan: false,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn probe_that_rejected_its_own_credential_is_not_discarded_as_stale() {
+        let mut state = State::from_sources(vec!["prod".into()]);
+        let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let _ = state.apply_event(
+            HostEvent::MachineProbed {
+                shell: None,
+                machine: "prod".into(),
+                err: Some("dev@prod: Permission denied (publickey,password).".into()),
+                password_supplied: true,
+                credential_rejection_generation: Some(4),
+                credential_held: false,
+                credential_generation: 3,
+                current_credential_generation: 4,
+                rescan: false,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(crate::mux::is_blocked(
+            state.groups[0]
+                .err
+                .as_deref()
+                .expect("refusal remains visible")
+        ));
+    }
+
+    #[test]
+    fn rejected_probe_from_before_a_newer_key_login_is_ignored() {
+        let mut state = State::from_sources(vec!["prod".into()]);
+        state.groups[0].err = None;
+        let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut connected = HashSet::new();
+        let effects = state.apply_event(
+            HostEvent::MachineProbed {
+                shell: None,
+                machine: "prod".into(),
+                err: Some("dev@prod: Permission denied (publickey,password).".into()),
+                password_supplied: true,
+                credential_rejection_generation: Some(4),
+                credential_held: false,
+                credential_generation: 3,
+                current_credential_generation: 5,
+                rescan: false,
+            },
+            &mut sw,
+            &mut connected,
+        );
+        assert!(effects.is_empty());
+        assert!(state.groups[0].err.is_none());
+    }
+
+    #[test]
     fn machine_probe_unreachable_marks_the_machine_unreachable_not_locked() {
         // A reach failure (refused/timeout/no route) is unreachable, never locked: only
         // ssh's auth-failure signature earns locked, so a host that merely died stays a
@@ -1850,6 +2171,11 @@ mod tests {
                 shell: None,
                 machine: "prod".into(),
                 err: Some("ssh: connect to host prod port 22: Connection refused".into()),
+                password_supplied: false,
+                credential_rejection_generation: None,
+                credential_held: true,
+                credential_generation: 1,
+                current_credential_generation: 1,
                 rescan: false,
             },
             &mut sw,
@@ -1954,6 +2280,11 @@ mod tests {
                 shell: None,
                 machine: "jup".into(),
                 err: Some("hrlee@jup: Permission denied (publickey,password).".into()),
+                password_supplied: false,
+                credential_rejection_generation: None,
+                credential_held: false,
+                credential_generation: 0,
+                current_credential_generation: 0,
                 rescan: false,
             },
             &mut sw,

@@ -92,7 +92,7 @@ pub enum Action {
 /// A side effect for the run loop to carry out. `apply` returns these; the loop is
 /// the sole dispatcher. Keeping effects out of `apply` is what makes `State::apply`
 /// the single domain-mutation site.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Command {
     /// Move the switcher selection to this session's row.
     SelectAddress(Address),
@@ -115,15 +115,45 @@ pub enum Command {
     /// freezes rendering.
     RunOp(MuxOp),
     /// Run the off-loop ssh login for a blocked host with the pane's submitted values.
-    /// `password` is empty when the user left the field alone, and then a server that
-    /// asks for one ends the login on that word.
+    /// An empty `password` keeps the command non-interactive.
     RunLogin {
         source: String,
         login: crate::transport::Login,
-        password: String,
+        password: crate::state::SecretInput,
         remember: crate::state::Remember,
         pubkey: bool,
     },
+}
+
+impl std::fmt::Debug for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SelectAddress(address) => f.debug_tuple("SelectAddress").field(address).finish(),
+            Self::Rescan => f.write_str("Rescan"),
+            Self::AdjustNavWidth(delta) => f.debug_tuple("AdjustNavWidth").field(delta).finish(),
+            Self::ToggleAutoHide => f.write_str("ToggleAutoHide"),
+            Self::PersistLastSession(address) => {
+                f.debug_tuple("PersistLastSession").field(address).finish()
+            }
+            Self::Attach(selection) => f.debug_tuple("Attach").field(selection).finish(),
+            Self::Quit => f.write_str("Quit"),
+            Self::RunOp(op) => f.debug_tuple("RunOp").field(op).finish(),
+            Self::RunLogin {
+                source,
+                login,
+                remember,
+                pubkey,
+                ..
+            } => f
+                .debug_struct("RunLogin")
+                .field("source", source)
+                .field("login", login)
+                .field("password", &"[redacted]")
+                .field("remember", remember)
+                .field("pubkey", pubkey)
+                .finish(),
+        }
+    }
 }
 
 /// A slow (network) mux action - the descriptor [`Command::RunOp`] carries and
@@ -360,5 +390,24 @@ mod tests {
             "trims"
         );
         assert_eq!(FocusTarget::from_str("sideways"), None);
+    }
+
+    #[test]
+    fn login_command_debug_redacts_the_password() {
+        let command = Command::RunLogin {
+            source: "pwbox/tmux".into(),
+            login: crate::transport::Login {
+                address: Some("pwbox".into()),
+                port: Some(22),
+                user: Some("dev".into()),
+            },
+            password: "do-not-print-this".into(),
+            remember: crate::state::Remember::Nothing,
+            pubkey: false,
+        };
+
+        let shown = format!("{command:?}");
+        assert!(!shown.contains("do-not-print-this"));
+        assert!(shown.contains("[redacted]"));
     }
 }
