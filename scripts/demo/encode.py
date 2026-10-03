@@ -7,8 +7,11 @@ identical to the one before it lengthens that frame instead, so the file stays
 small. The written GIF is decoded again and every frame compared with what was
 rendered.
 
+A job that names a still also saves its last rendered frame as a PNG, in full
+colour with the same transparent background, for places that take a still image.
+
 usage: python3 encode.py <manifest.json>
-  manifest: [{"frames": dir, "gif": path, "fps": n, "hold": seconds}, ...]
+  manifest: [{"frames": dir, "gif": path, "fps": n, "hold": seconds, "still": path?}, ...]
 """
 import json, os, sys
 
@@ -34,9 +37,13 @@ def indices(img):
     return Image.frombytes("L", img.size, img.tobytes())
 
 
-def encode(frames_dir, gif, fps, hold):
+def encode(frames_dir, gif, fps, hold, still=None):
     names = sorted(n for n in os.listdir(frames_dir) if n.endswith(".png"))
     frames = [Image.open(os.path.join(frames_dir, n)).convert("RGBA") for n in names]
+    if still:
+        frames[-1].save(still)
+        print(f"{os.path.basename(still)}: {frames[-1].width} x {frames[-1].height}, "
+              f"{os.path.getsize(still) // 1024} KB")
     pal = palette(frames)
     step = round(1000 / fps)
 
@@ -97,7 +104,8 @@ def main():
         jobs = json.load(f)
     base = os.path.dirname(os.path.abspath(sys.argv[1]))
     for job in jobs:
-        encode(os.path.join(base, job["frames"]), os.path.join(base, job["gif"]), job["fps"], job["hold"])
+        still = os.path.join(base, job["still"]) if "still" in job else None
+        encode(os.path.join(base, job["frames"]), os.path.join(base, job["gif"]), job["fps"], job["hold"], still)
 
 
 if __name__ == "__main__":

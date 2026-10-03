@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Regenerates the README demo GIFs in docs/assets from a released xmux.
+# Regenerates the README demo GIFs, and a PNG still of the comparison, in
+# docs/assets from a released xmux.
 #
 # usage: scripts/demo/make-gifs.sh [version]
 #   version defaults to the one in Cargo.toml; it must be a published release.
@@ -46,4 +47,4 @@ npm install --silent --no-audit --no-fund
 npx --no-install playwright install chromium >/dev/null
 node render.mjs "$out"
 docker run --rm -v "$out:/work" "$image" python3 /opt/demo/encode.py /work/manifest.json
-cp "$out"/gifs/*.gif "$root/docs/assets/"
+cp "$out"/gifs/*.gif "$out"/gifs/*.png "$root/docs/assets/"
