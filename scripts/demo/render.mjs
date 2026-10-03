@@ -3,7 +3,8 @@
 // The stage page replays each recording in a terminal emulator; this script steps
 // its clock frame by frame and screenshots it with a transparent background, so the
 // video timing never depends on how fast the machine renders. It writes
-// <dir>/manifest.json, which encode.py turns into the GIFs under <dir>/gifs.
+// <dir>/manifest.json, which encode.py turns into the GIFs and the PNG still under
+// <dir>/gifs.
 //
 // usage: node render.mjs <dir>
 import fs from "node:fs";
@@ -58,8 +59,9 @@ async function capture(browser, spec, from, to, dir, label = null) {
 }
 
 const jobs = [];
-function addGif(dir, gif, holdEnd) {
-  jobs.push({ frames: path.relative(inDir, dir), gif: path.join("gifs", gif), fps: FPS, hold: holdEnd });
+function addGif(dir, gif, holdEnd, still = null) {
+  jobs.push({ frames: path.relative(inDir, dir), gif: path.join("gifs", gif), fps: FPS, hold: holdEnd,
+              ...(still && { still: path.join("gifs", still) }) });
 }
 
 const browser = await chromium.launch();
@@ -71,7 +73,7 @@ await capture(browser, [
   { title: "ssh + tmux", timer: true, pulse: "243,139,168", rec: manual },
   { title: "xmux", timer: true, pulse: "166,227,161", rec: viaXmux },
 ], null, null, path.join(work, "compare"));
-addGif(path.join(work, "compare"), "xmux-demo.gif", 0);
+addGif(path.join(work, "compare"), "xmux-demo.gif", 0, "xmux-demo.png");
 console.log(`  ssh + tmux ${(manual.done - manual.keys[0][0]).toFixed(1)}s, xmux ${(viaXmux.done - viaXmux.keys[0][0]).toFixed(1)}s`);
 
 // One GIF per captioned feature, cut from a single recording.
@@ -90,4 +92,5 @@ for (const [name, label] of Object.entries(FEATURES)) {
 await browser.close();
 fs.mkdirSync(path.join(inDir, "gifs"), { recursive: true });
 fs.writeFileSync(path.join(inDir, "manifest.json"), JSON.stringify(jobs.map(j => ({ ...j,
-  frames: j.frames.split(path.sep).join("/"), gif: j.gif.split(path.sep).join("/") })), null, 1));
+  frames: j.frames.split(path.sep).join("/"), gif: j.gif.split(path.sep).join("/"),
+  ...(j.still && { still: j.still.split(path.sep).join("/") }) })), null, 1));
