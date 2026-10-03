@@ -637,12 +637,6 @@ only the frame. Its required data direction is application model, immutable
 `RenderPlan`, frame. Paint and input hit-testing must consume the same plan
 without either owning or mutating it.
 
-Known exceptions:
-
-- The switcher renderer takes mutable switcher state and records the frame area,
-  nav layout, scroll offset, hit-test cells, and popup rectangles during paint.
-- Paint changes whether the host band is hidden when selection enters a session.
-
 ### Single Update Owner
 
 The Single Update Owner rule permits only the update transition to mutate

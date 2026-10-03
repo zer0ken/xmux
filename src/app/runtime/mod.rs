@@ -1277,6 +1277,7 @@ struct Runtime {
     /// ([`DisplayWorker::take_events`]); this keeps only the send half (`ensure`).
     worker: DisplayWorker,
     switcher: crate::ui::switcher::Switcher,
+    render_plan: crate::ui::switcher::RenderPlan,
     state: crate::state::State,
     attach_seq: u64,
     /// A clone of the loop's `PtyEvent` sender handed to drivers for off-loop probes.

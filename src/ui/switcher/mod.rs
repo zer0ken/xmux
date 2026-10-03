@@ -13,7 +13,7 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, ListState};
+use ratatui::widgets::Clear;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -122,12 +122,25 @@ fn top_nav_height(body_h: u16) -> u16 {
 /// `nav_width == 0` is the tree-hidden sentinel: the terminal owns the whole area (and
 /// there is no nav to carry a hint bar). `nav_height == 0` means the band height is
 /// auto (~40% of the area).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Regions {
     pub layout: ViewLayout,
     pub tree: Rect,
     pub view_border: Rect,
     pub terminal: Rect,
     pub hint_bar: Rect,
+}
+
+impl Default for Regions {
+    fn default() -> Self {
+        Self {
+            layout: ViewLayout::Column,
+            tree: Rect::default(),
+            view_border: Rect::default(),
+            terminal: Rect::default(),
+            hint_bar: Rect::default(),
+        }
+    }
 }
 
 /// The band-layout tree height: a user-set `nav_height` (dragged border) clamped so both
@@ -330,31 +343,13 @@ pub struct Switcher {
     /// band returns to hidden when the prefix ends.
     prefix_active: bool,
 
-    list_state: ListState,
-    nav_inner: Rect,
-    /// The card rects of the last paint, in either layout: mouse hit-testing reads them
-    /// so a click lands on the card the user sees, whatever column it flowed into or
-    /// whichever band it sits in. The paint is the only thing that decides a card's rect,
-    /// so a click cannot land on a card the renderer put elsewhere.
-    nav_cells: Vec<(usize, Rect)>,
-    /// The leftmost drawn column of the band's column flow: the horizontal scroll
-    /// position, moved only as far as keeping the selected card visible requires.
-    nav_col_offset: usize,
-    /// The view stacking as of the last render (column vs band), cached so key handling can
-    /// route the arrows to match what is on screen without re-deriving the geometry. Set
-    /// each frame by `render` from the nav's position.
-    layout: ViewLayout,
-
     /// A pending re-scan reselect: the session the selection was on when `r`
     /// was pressed. A re-scan clears every session, so the row briefly vanishes; this
     /// returns the selection to it the instant its host re-streams. Cleared once matched,
     /// or when the user navigates off the parked parent host during the skeleton phase.
     rescan_reselect: Option<Address>,
-    /// The whole frame area, captured each render so the menu box can be clamped to
-    /// the screen at open time (mouse events arrive between renders).
-    screen_area: Rect,
-    /// The transient geometry of the active modal popup (drag offset / drawn rect /
-    /// in-flight border drag). The drag behavior lives on [`PopupGeometry`].
+    /// The transient offset and in-flight border drag of the active modal popup. Its
+    /// frame geometry belongs to the render plan shared with mouse input.
     popup_geo: PopupGeometry,
 }
 
@@ -363,6 +358,8 @@ mod input;
 mod mouse;
 mod render;
 mod side;
+
+pub use render::RenderPlan;
 
 pub use crate::model::{step_nav_position, NavPosition};
 
@@ -381,13 +378,7 @@ impl Switcher {
             terminal_view: false,
             host_band_hidden: false,
             prefix_active: false,
-            list_state: ListState::default(),
-            nav_inner: Rect::default(),
-            nav_cells: Vec::new(),
-            nav_col_offset: 0,
-            layout: ViewLayout::Column,
             rescan_reselect: None,
-            screen_area: Rect::default(),
             popup_geo: PopupGeometry::default(),
         }
     }
@@ -477,13 +468,6 @@ impl Switcher {
             Some(own) => !target.is_empty() && own.source == source && own.session == target,
             None => false,
         }
-    }
-
-    /// The view stacking as of the last render (column vs band). Lets the app route the
-    /// tree-resize keys to the dimension the current layout resizes: WIDTH in a column,
-    /// HEIGHT in a band.
-    pub fn layout(&self) -> ViewLayout {
-        self.layout
     }
 
     /// Takes the pending rescan-kick flag (true once after seeding or an `r`
@@ -637,11 +621,15 @@ impl Switcher {
 
     fn set_selected(&mut self, idx: usize, state: &crate::state::State) {
         if self.rows.is_empty() {
+            // No row is a session row, so the host band has nothing to stay hidden for.
+            self.host_band_hidden = false;
             return;
         }
         let idx = idx.min(self.rows.len() - 1);
         self.selected = idx;
-        self.list_state.select(Some(idx));
+        if !matches!(self.current_ref(), Some(RowRef::Session { .. })) {
+            self.host_band_hidden = false;
+        }
         self.on_focus_changed(state);
     }
 

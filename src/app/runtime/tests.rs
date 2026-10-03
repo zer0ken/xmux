@@ -509,7 +509,14 @@ async fn host_exited_before_connect_marks_unreachable() {
         ),
         "a never-connected host is marked unreachable on exit"
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("unreachable"),
         "host reads unreachable:\n{out}"
@@ -532,13 +539,27 @@ fn runtime_threads_hide_unreachable_into_its_switcher() {
         Some("no route to host".into()),
         &mut rt.state,
     );
-    let out = dump_screen(&mut rt.switcher, None, 80, 24, &rt.state);
+    let out = dump_screen(
+        &mut rt.switcher,
+        None,
+        80,
+        24,
+        &rt.state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         !out.contains("jup"),
         "the config default hides the unreachable host:\n{out}"
     );
     rt.switcher.set_hide_unreachable(false, &mut rt.state);
-    let out = dump_screen(&mut rt.switcher, None, 80, 24, &rt.state);
+    let out = dump_screen(
+        &mut rt.switcher,
+        None,
+        80,
+        24,
+        &rt.state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("jup"),
         "hide-unreachable = false shows the card:\n{out}"
@@ -560,7 +581,14 @@ fn a_blocked_host_shows_the_login_view_screen() {
         Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
         &mut state,
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("login required"),
         "the login view names its state:\n{out}"
@@ -593,7 +621,14 @@ fn a_host_whose_name_did_not_resolve_stays_unreachable() {
         ),
         &mut state,
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("unreachable"),
         "an unresolved name stays a connectivity failure:\n{out}"
@@ -635,7 +670,14 @@ fn hide_unreachable_mid_run_hides_the_card_and_the_selection_lands_on_a_remainin
         ),
         "the dead never-connected host is marked unreachable"
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         !out.contains("jupiter06"),
         "hidden the moment it fails:\n{out}"
@@ -657,7 +699,14 @@ fn hide_unreachable_mid_run_hides_the_card_and_the_selection_lands_on_a_remainin
         None,
         &mut state,
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("jupiter06"),
         "a successful scan revives the host:\n{out}"
@@ -682,7 +731,14 @@ async fn host_exited_with_no_sessions_marks_empty_not_unreachable() {
         ),
         "an empty mux is reachable, not unreachable"
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("no sessions"),
         "an empty host reads 'no sessions':\n{out}"
@@ -728,7 +784,15 @@ async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
     // User hits refresh → the host goes back to a scanning skeleton.
     switcher.request_rescan(&mut state);
     assert!(
-        dump_screen(&mut switcher, None, 80, 24, &state).contains("scanning"),
+        dump_screen(
+            &mut switcher,
+            None,
+            80,
+            24,
+            &state,
+            &crate::ui::switcher::RenderPlan::default()
+        )
+        .contains("scanning"),
         "scanning after refresh"
     );
     // The reconnect fails with "no sessions": it must resolve scanning → empty.
@@ -739,7 +803,14 @@ async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
         "jupiter06",
         Some("no sessions".into()),
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("no sessions"),
         "failed reconnect resolves to an empty host:\n{out}"
@@ -1583,7 +1654,7 @@ fn test_rt(env: Env) -> Runtime {
     let ops = env.ops();
     let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
     let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
-    Runtime {
+    let mut rt = Runtime {
         instance_name: "test".into(),
         env,
         ops,
@@ -1592,6 +1663,7 @@ fn test_rt(env: Env) -> Runtime {
         registry: AttachRegistry::new(),
         worker,
         switcher,
+        render_plan: crate::ui::switcher::RenderPlan::default(),
         state,
         scan_pool: std::sync::Arc::new(tokio::sync::Semaphore::new(
             crate::provision::config::SCAN_CONCURRENCY_MAX,
@@ -1625,7 +1697,15 @@ fn test_rt(env: Env) -> Runtime {
         config_last_mtime: None,
         width_dirty: false,
         width_flush_at: None,
-    }
+    };
+    sync_test_render_plan(&mut rt);
+    rt
+}
+
+fn sync_test_render_plan(rt: &mut Runtime) {
+    let area = ratatui::layout::Rect::new(0, 0, rt.cols, rt.body_rows.saturating_add(1));
+    let nav = rt.nav_size();
+    rt.render_plan = rt.switcher.layout(area, nav, &rt.state, &rt.render_plan);
 }
 
 #[test]
@@ -2903,9 +2983,6 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
         row: 3,
         pressed,
     };
-    let nav_width = crate::ui::switcher::NAV_WIDTH;
-    let (vw, vh) = terminal_view_size(80, 24, crate::ui::switcher::NavSize::visible(nav_width));
-    let term_area = ratatui::layout::Rect::new(nav_width + 1, 0, vw, vh);
     // cb 0 = left press, cb 64 = wheel up, cb 0 with pressed=false = release.
     for (cb, pressed, what) in [
         (0u16, true, "a click"),
@@ -2924,7 +3001,6 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
             &Selection::default(),
             &mut false,
             &mut false,
-            term_area,
         );
         assert!(!rt.prefix_active(), "{what} disarms the prefix");
         assert!(dirty, "{what} redraws, so the cheatsheet goes at once");
@@ -2937,13 +3013,7 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
     rt.state = state;
     rt.switcher = switcher;
     rt.mouse_state.nav_armed = true;
-    rt.handle_mouse_event(
-        &ev(35, true),
-        &Selection::default(),
-        &mut false,
-        &mut false,
-        term_area,
-    );
+    rt.handle_mouse_event(&ev(35, true), &Selection::default(), &mut false, &mut false);
     assert!(rt.prefix_active(), "a hover leaves the chord alone");
 }
 
@@ -2967,8 +3037,6 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
         pressed: true,
     };
     // Landscape enough to keep the side column, whose border this test grabs.
-    let (vw, vh) = terminal_view_size(200, 24, crate::ui::switcher::NavSize::visible(nav_width));
-    let term_area = ratatui::layout::Rect::new(nav_width + 1, 0, vw, vh);
     let mut focus_toggle = false;
     let mut wheel = false;
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
@@ -2978,7 +3046,8 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
     // landscape too or the border it looks for is a horizontal rule under the band.
     rt.cols = 200;
     rt.body_rows = 23;
-    rt.handle_mouse_event(&ev, &sel, &mut focus_toggle, &mut wheel, term_area);
+    sync_test_render_plan(&mut rt);
+    rt.handle_mouse_event(&ev, &sel, &mut focus_toggle, &mut wheel);
     assert!(
         rt.mouse_state.dragging_view_border,
         "left-press on the view border column grabs it"
@@ -2996,9 +3065,11 @@ fn collapse_button_click_toggles_without_focus_or_drag() {
     rt.switcher = switcher;
     rt.cols = 140;
     rt.body_rows = 29;
+    sync_test_render_plan(&mut rt);
     let area = ratatui::layout::Rect::new(0, 0, 140, 30);
     let regions = compute_regions(area, rt.nav_size(), 1);
     let button = collapse_button_rect(regions.hint_bar, rt.nav_position, false);
+    assert_eq!(rt.render_plan.collapse_button, button);
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
         col: button.x + button.width,
@@ -3008,13 +3079,7 @@ fn collapse_button_click_toggles_without_focus_or_drag() {
     let focus_before = rt.state.focus;
     let mut focus_toggle = false;
     let mut wheel = false;
-    assert!(rt.handle_mouse_event(
-        &press,
-        &Selection::default(),
-        &mut focus_toggle,
-        &mut wheel,
-        regions.terminal,
-    ));
+    assert!(rt.handle_mouse_event(&press, &Selection::default(), &mut focus_toggle, &mut wheel,));
     assert!(rt.nav_collapsed, "the button collapses the nav");
     assert_eq!(
         rt.state.focus, focus_before,
@@ -3024,22 +3089,19 @@ fn collapse_button_click_toggles_without_focus_or_drag() {
     assert!(!rt.mouse_state.dragging_view_border);
 
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+    // The draw is frame-gated; move the last draw out of the gate so this frame paints.
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
     rt.prepare_and_draw(&mut term);
     let regions = compute_regions(area, rt.nav_size(), 1);
     let button = collapse_button_rect(regions.hint_bar, rt.nav_position, true);
+    assert_eq!(rt.render_plan.collapse_button, button);
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
         col: button.x + button.width,
         row: button.y + 1,
         pressed: true,
     };
-    assert!(rt.handle_mouse_event(
-        &press,
-        &Selection::default(),
-        &mut focus_toggle,
-        &mut wheel,
-        regions.terminal,
-    ));
+    assert!(rt.handle_mouse_event(&press, &Selection::default(), &mut focus_toggle, &mut wheel,));
     assert!(!rt.nav_collapsed, "the button expands the nav");
     assert_eq!(rt.state.focus, focus_before);
     assert!(!focus_toggle);
@@ -3088,20 +3150,16 @@ fn a_collapsed_view_border_cannot_start_a_resize_drag() {
     rt.body_rows = 29;
     rt.nav_collapsed = true;
     rt.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
+    sync_test_render_plan(&mut rt);
     let regions = compute_regions(ratatui::layout::Rect::new(0, 0, 140, 30), rt.nav_size(), 1);
+    assert_eq!(rt.render_plan.regions.view_border, regions.view_border);
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
         col: regions.view_border.x + 1,
         row: regions.view_border.y + 1,
         pressed: true,
     };
-    rt.handle_mouse_event(
-        &press,
-        &Selection::default(),
-        &mut false,
-        &mut false,
-        regions.terminal,
-    );
+    rt.handle_mouse_event(&press, &Selection::default(), &mut false, &mut false);
     assert!(!rt.mouse_state.dragging_view_border);
 }
 
@@ -3122,6 +3180,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     rt.body_rows = 59;
     rt.nav_height = 0; // auto
     rt.nav_position = crate::ui::switcher::NavPosition::Top;
+    sync_test_render_plan(&mut rt);
 
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
@@ -3130,8 +3189,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
         pressed: true,
     };
     let (mut ft, mut wheel) = (false, false);
-    let area = ratatui::layout::Rect::default();
-    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, area);
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel);
     assert!(
         rt.mouse_state.dragging_view_border,
         "left-press on the horizontal Top border grabs it"
@@ -3144,7 +3202,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
         row: 30,
         pressed: true,
     };
-    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel, area);
+    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel);
     assert_eq!(
         rt.nav_height, 29,
         "dragging the horizontal border sets the nav HEIGHT to the dragged row"
@@ -3167,6 +3225,7 @@ fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
     rt.body_rows = 59;
     rt.nav_height = 0; // auto
     rt.nav_position = NavPosition::Bottom;
+    sync_test_render_plan(&mut rt);
 
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
@@ -3175,8 +3234,7 @@ fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
         pressed: true,
     };
     let (mut ft, mut wheel) = (false, false);
-    let area = ratatui::layout::Rect::default();
-    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, area);
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel);
     assert!(
         rt.mouse_state.dragging_view_border,
         "left-press on the horizontal bottom border grabs it"
@@ -3189,7 +3247,7 @@ fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
         row: 40,
         pressed: true,
     };
-    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel, area);
+    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel);
     assert_eq!(
         rt.nav_height, 20,
         "dragging the bottom border measures the height from the far edge"
@@ -3211,6 +3269,7 @@ fn handle_mouse_event_right_layout_border_drag_resizes_width() {
     rt.cols = 140;
     rt.body_rows = 29;
     rt.nav_position = NavPosition::Right;
+    sync_test_render_plan(&mut rt);
 
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
@@ -3219,8 +3278,7 @@ fn handle_mouse_event_right_layout_border_drag_resizes_width() {
         pressed: true,
     };
     let (mut ft, mut wheel) = (false, false);
-    let area = ratatui::layout::Rect::default();
-    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, area);
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel);
     assert!(
         rt.mouse_state.dragging_view_border,
         "left-press on the vertical right border grabs it"
@@ -3233,7 +3291,7 @@ fn handle_mouse_event_right_layout_border_drag_resizes_width() {
         row: 5,
         pressed: true,
     };
-    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel, area);
+    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel);
     assert_eq!(
         rt.nav_width_natural, 40,
         "dragging the right border measures the width from the far edge"
@@ -3243,8 +3301,6 @@ fn handle_mouse_event_right_layout_border_drag_resizes_width() {
 #[test]
 fn resize_keys_adjust_height_in_top_layout() {
     use crate::ui::switcher::{Scan, Switcher, ViewLayout, NAV_WIDTH};
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
     // In a band layout the nav-resize keys (prefix h/l · Ctrl+←/→) adjust the
     // HEIGHT, not the width - seeded from the auto height the first time.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
@@ -3256,24 +3312,15 @@ fn resize_keys_adjust_height_in_top_layout() {
     rt.body_rows = 59;
     rt.nav_height = 0; // auto
     rt.nav_position = crate::ui::switcher::NavPosition::Top;
-    // Render once into a portrait backend so the switcher caches layout = Band.
-    let mut term = Terminal::new(TestBackend::new(40, 60)).unwrap();
-    {
-        let sw = &mut rt.switcher;
-        let st = &rt.state;
-        term.draw(|f| {
-            sw.render(
-                f,
-                None,
-                false,
-                crate::ui::switcher::NavSize::visible(NAV_WIDTH)
-                    .with_position(crate::ui::switcher::NavPosition::Top),
-                st,
-            )
-        })
-        .unwrap();
-    }
-    assert_eq!(rt.switcher.layout(), ViewLayout::Band, "portrait → Band");
+    let nav = crate::ui::switcher::NavSize::visible(NAV_WIDTH)
+        .with_position(crate::ui::switcher::NavPosition::Top);
+    rt.render_plan = rt.switcher.layout(
+        ratatui::layout::Rect::new(0, 0, 40, 60),
+        nav,
+        &rt.state,
+        &rt.render_plan,
+    );
+    assert_eq!(rt.render_plan.layout, ViewLayout::Band, "portrait → Band");
 
     let auto = crate::ui::switcher::default_nav_height(59);
     // Vertical axis (Ctrl+↓ = grow) resizes HEIGHT in a band; horizontal (Ctrl+→) is a no-op here.
@@ -3294,8 +3341,6 @@ fn resize_keys_adjust_height_in_top_layout() {
 #[test]
 fn resize_keys_flip_direction_on_the_right_and_bottom() {
     use crate::ui::switcher::{NavPosition, Scan, Switcher, ViewLayout, NAV_WIDTH};
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
     // The resize key's direction is the border's movement, so with the nav on the
     // right or below the SAME key grows the nav the other way: in a right column the
     // →/l key (delta +1) shrinks the nav, and in a bottom band the ↓ key (delta +1)
@@ -3308,23 +3353,15 @@ fn resize_keys_flip_direction_on_the_right_and_bottom() {
     rt.cols = 140;
     rt.body_rows = 29;
     rt.nav_position = NavPosition::Right;
-    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
-    {
-        let sw = &mut rt.switcher;
-        let st = &rt.state;
-        term.draw(|f| {
-            sw.render(
-                f,
-                None,
-                false,
-                crate::ui::switcher::NavSize::visible(NAV_WIDTH).with_position(NavPosition::Right),
-                st,
-            )
-        })
-        .unwrap();
-    }
+    let nav = crate::ui::switcher::NavSize::visible(NAV_WIDTH).with_position(NavPosition::Right);
+    rt.render_plan = rt.switcher.layout(
+        ratatui::layout::Rect::new(0, 0, 140, 30),
+        nav,
+        &rt.state,
+        &rt.render_plan,
+    );
     assert_eq!(
-        rt.switcher.layout(),
+        rt.render_plan.layout,
         ViewLayout::Column,
         "landscape → Column"
     );
@@ -3353,22 +3390,14 @@ fn resize_keys_flip_direction_on_the_right_and_bottom() {
     rt.cols = 40;
     rt.body_rows = 59;
     rt.nav_height = 0; // auto
-    let mut term = Terminal::new(TestBackend::new(40, 60)).unwrap();
-    {
-        let sw = &mut rt.switcher;
-        let st = &rt.state;
-        term.draw(|f| {
-            sw.render(
-                f,
-                None,
-                false,
-                crate::ui::switcher::NavSize::visible(NAV_WIDTH).with_position(NavPosition::Bottom),
-                st,
-            )
-        })
-        .unwrap();
-    }
-    assert_eq!(rt.switcher.layout(), ViewLayout::Band, "portrait → Band");
+    let nav = crate::ui::switcher::NavSize::visible(NAV_WIDTH).with_position(NavPosition::Bottom);
+    rt.render_plan = rt.switcher.layout(
+        ratatui::layout::Rect::new(0, 0, 40, 60),
+        nav,
+        &rt.state,
+        &rt.render_plan,
+    );
+    assert_eq!(rt.render_plan.layout, ViewLayout::Band, "portrait → Band");
     let auto = crate::ui::switcher::default_nav_height(59);
     assert!(
         rt.resize_axis(false, 1),
@@ -3410,13 +3439,8 @@ fn loop_top_resolves_the_pinned_nav_position() {
         crate::ui::switcher::NavPosition::Right,
         "the loop top applied the pin"
     );
-    // The switcher's cached stacking (what key handling routes by) follows the same
-    // value once the frame is drawn from the runtime's nav size.
-    let nav = rt.nav_size();
-    let (sw, st) = (&mut rt.switcher, &rt.state);
-    term.draw(|f| sw.render(f, None, false, nav, st)).unwrap();
     assert_eq!(
-        rt.switcher.layout(),
+        rt.render_plan.layout,
         ViewLayout::Column,
         "right is a column"
     );
@@ -3443,10 +3467,11 @@ fn loop_top_resolves_the_default_position_when_unpinned() {
         crate::ui::switcher::NavPosition::Left,
         "the unpinned default wins whatever the aspect"
     );
-    let nav = rt.nav_size();
-    let (sw, st) = (&mut rt.switcher, &rt.state);
-    term.draw(|f| sw.render(f, None, false, nav, st)).unwrap();
-    assert_eq!(rt.switcher.layout(), ViewLayout::Column, "left is a column");
+    assert_eq!(
+        rt.render_plan.layout,
+        ViewLayout::Column,
+        "left is a column"
+    );
 }
 
 #[test]
@@ -3463,8 +3488,6 @@ fn forward_to_mux_reasserts_capture_and_encodes_the_sgr_press() {
         session: "work".into(),
     };
     let nav_width = crate::ui::switcher::NAV_WIDTH;
-    let (vw, vh) = terminal_view_size(80, 24, crate::ui::switcher::NavSize::visible(nav_width));
-    let term_area = ratatui::layout::Rect::new(nav_width + 1, 0, vw, vh);
     let (att, log) = crate::display::attachment::fake_attachment_with_input_log(42);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
     rt.state = state;
@@ -3472,6 +3495,7 @@ fn forward_to_mux_reasserts_capture_and_encodes_the_sgr_press() {
     rt.state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    sync_test_render_plan(&mut rt);
     rt.registry.insert(&display_key(&rt.hosts, &sel), att);
 
     // A left-button press inside the terminal view (SGR 1-based col/row, cb 0 = left).
@@ -3482,7 +3506,7 @@ fn forward_to_mux_reasserts_capture_and_encodes_the_sgr_press() {
         pressed: true,
     };
     let (mut ft, mut wheel) = (false, false);
-    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, term_area);
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel);
     // Re-encoded to grid-local (1-based): col nav_width+12 → gc 11, row 5 → gr 5.
     let logged = log.lock().unwrap().clone();
     assert_eq!(

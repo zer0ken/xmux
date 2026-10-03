@@ -13,19 +13,28 @@ pub fn dump_switcher(
     width: u16,
     height: u16,
 ) -> String {
-    dump_screen(switcher, None, width, height, state)
+    dump_screen(
+        switcher,
+        None,
+        width,
+        height,
+        state,
+        &crate::ui::switcher::RenderPlan::default(),
+    )
 }
 
 /// Renders the nav-focused view with the selected host's live grid, when one
 /// exists, to an off-screen backend and flattens it. A headless `dump` therefore
 /// reflects the same screen the main draw produces, including the live terminal
-/// grid, without a real terminal.
+/// grid, without a real terminal. `previous` is the plan of the last drawn frame, so
+/// the dump lays out from the same scroll offsets as the screen.
 pub fn dump_screen(
     switcher: &mut Switcher,
     grid: Option<&crate::display::grid::Grid>,
     width: u16,
     height: u16,
     state: &crate::state::State,
+    previous: &crate::ui::switcher::RenderPlan,
 ) -> String {
     let w = width.max(1);
     let h = height.max(1);
@@ -35,13 +44,9 @@ pub fn dump_screen(
     };
     if term
         .draw(|f| {
-            switcher.render(
-                f,
-                grid,
-                false,
-                crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
-                state,
-            )
+            let nav = crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH);
+            let plan = switcher.layout(f.area(), nav, state, previous);
+            switcher.render(f, grid, false, state, &plan)
         })
         .is_err()
     {
@@ -106,7 +111,14 @@ mod tests {
         grid.feed(b"LIVEGRID");
         // A dump with a live grid includes both the tree and the grid content (the
         // terminal view), so a headless `dump` reflects the live grid.
-        let out = dump_screen(&mut sw, Some(&grid), 100, 30, &state);
+        let out = dump_screen(
+            &mut sw,
+            Some(&grid),
+            100,
+            30,
+            &state,
+            &crate::ui::switcher::RenderPlan::default(),
+        );
         assert!(out.contains("editor"), "tree still rendered:\n{out}");
         assert!(
             out.contains("LIVEGRID"),

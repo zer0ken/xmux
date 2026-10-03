@@ -603,6 +603,7 @@ impl Runtime {
             registry,
             worker,
             switcher,
+            render_plan: crate::ui::switcher::RenderPlan::default(),
             state,
             // Off-loop attach sequence. The in-flight set / reaped-ids / which session
             // each display shows live on each `host.display` (HostDisplay).
@@ -817,7 +818,9 @@ impl Runtime {
             // The view border glyph reflects auto-hide-nav mode (║ on, │ off).
             self.state.chrome.set_auto_hide(self.auto_hide_nav);
             let t_draw = std::time::Instant::now();
-            if let Err(e) = match &grid_arc {
+            let previous_plan = self.render_plan.clone();
+            let mut next_plan = None;
+            let draw_result = match &grid_arc {
                 Some(g) => {
                     let t_lock = std::time::Instant::now();
                     let guard = g.lock().ok();
@@ -840,26 +843,36 @@ impl Runtime {
                     }
                     // Split-borrow so the draw closure captures only these fields, not all
                     // of `self` (the fingerprint block's borrows have ended above).
-                    let switcher = &mut self.switcher;
+                    let switcher = &self.switcher;
                     let state = &self.state;
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        switcher.render(f, guard.as_deref(), terminal_focused, nav, state);
+                        let plan = switcher.layout(f.area(), nav, state, &previous_plan);
+                        switcher.render(f, guard.as_deref(), terminal_focused, state, &plan);
+                        next_plan = Some(plan);
                         DrawObserver::slow_step("render", t_render);
                     })
                 }
                 None => {
                     let nav = self.nav_size();
-                    let switcher = &mut self.switcher;
+                    let switcher = &self.switcher;
                     let state = &self.state;
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        switcher.render(f, None, terminal_focused, nav, state);
+                        let plan = switcher.layout(f.area(), nav, state, &previous_plan);
+                        switcher.render(f, None, terminal_focused, state, &plan);
+                        next_plan = Some(plan);
                         DrawObserver::slow_step("render", t_render);
                     })
                 }
-            } {
+            };
+            if let Err(e) = draw_result {
                 tracing::warn!(error = %e, "term_draw_failed");
+            }
+            // The plan is kept even when the flush fails: its scroll offsets are where the
+            // next frame continues from.
+            if let Some(plan) = next_plan {
+                self.render_plan = plan;
             }
             DrawObserver::slow_step("draw", t_draw);
             // The grids are now on screen - clear every attachment's output-coalescing flag.
@@ -1257,9 +1270,17 @@ impl Runtime {
                             sz.width,
                             sz.height,
                             &self.state,
+                            &self.render_plan,
                         )
                     }
-                    None => dump_screen(&mut self.switcher, None, sz.width, sz.height, &self.state),
+                    None => dump_screen(
+                        &mut self.switcher,
+                        None,
+                        sz.width,
+                        sz.height,
+                        &self.state,
+                        &self.render_plan,
+                    ),
                 };
                 let _ = reply.send(dump);
             }

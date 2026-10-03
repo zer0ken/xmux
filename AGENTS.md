@@ -90,11 +90,6 @@ only the frame. Its required data direction is application model, immutable
 `RenderPlan`, frame. Rendering must not mutate application, layout, interaction,
 or hit-test state.
 
-Known exceptions:
-
-- The switcher renderer records layout and hit-test state and changes host-band
-  visibility while painting. `CONTEXT.md` names the current mutation surface.
-
 ### Single Update Owner
 
 The Single Update Owner rule permits only the update transition to mutate
