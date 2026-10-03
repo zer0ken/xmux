@@ -2,10 +2,6 @@
 //! first session and moved to another session with `switch-client`. `Tmux::driver`
 //! constructs it, so mux selection lives in the tmux implementation, not a central match.
 
-use std::sync::{Arc, Mutex};
-
-use crate::app::runtime::{host_selection_key, request_attach_with_id, terminal_view_size};
-use crate::display::grid::Grid;
 use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
@@ -22,11 +18,10 @@ impl MuxDriver for TmuxDriver {
         if sel.is_empty() {
             return false;
         }
-        let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav);
-        let Some(host) = ctx.hosts.get_mut(&sel.source) else {
+        let key = ctx.display_key(sel);
+        let Some(host) = ctx.hosts.get(&sel.source) else {
             return false;
         };
-        let key = host_selection_key(host);
         let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
         let already = ctx.registry.contains(&key);
 
@@ -53,20 +48,13 @@ impl MuxDriver for TmuxDriver {
                 // in-place switch); the record snippet is a remote-shell mechanism, so a
                 // local attach stays bare.
                 let runs_through_shell = host.transport.runs_through_shell();
-                let id = request_attach_with_id(
-                    ctx.registry,
-                    ctx.worker,
-                    &mut host.display,
-                    ctx.attach_seq,
-                    &key,
-                    |id| {
-                        let tty_key = super::display_tty_key(&key, ctx.instance_name, id);
+                let id = ctx
+                    .request_attach_with_id(sel, |id, key, instance_name| {
+                        let tty_key = super::display_tty_key(key, instance_name, id);
                         with_display_tty_record(command, runs_through_shell, &tty_key)
-                    },
-                    (cols, rows),
-                );
+                    })
+                    .expect("the selected source exists");
                 tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
-                host.display.set_shows(&key, &sel.session);
             }
         } else if host.display.shows(&key) != Some(sel.session.as_str()) {
             let attach_id = ctx
@@ -141,7 +129,7 @@ impl MuxDriver for TmuxDriver {
                 let switched = host
                     .mux
                     .switch_in_place(&tty_key, &sel.session, tty.as_deref())
-                    .map(|plan| crate::app::runtime::run_switch_plan(host, plan))
+                    .map(|plan| ctx.run_switch_plan(&sel.source, plan))
                     .unwrap_or(false);
                 (
                     switched,
@@ -161,7 +149,11 @@ impl MuxDriver for TmuxDriver {
                     session = %sel.session,
                     "display_show"
                 );
-                host.display.set_shows(&key, &sel.session);
+                ctx.hosts
+                    .get_mut(&sel.source)
+                    .expect("the selected source exists")
+                    .display
+                    .set_shows(&key, &sel.session);
             } else if !host.display.in_flight_contains(&key) {
                 // No in-place switch (a LOCAL shared host has no remote shell to record /
                 // read the tty, or the mux uses no recorded-tty strategy): reattach the
@@ -179,20 +171,13 @@ impl MuxDriver for TmuxDriver {
                 let mux_argv = host.mux.attach_plan(&sel.session);
                 let command = host.transport.exec_argv(true, &mux_argv);
                 let runs_through_shell = host.transport.runs_through_shell();
-                let id = request_attach_with_id(
-                    ctx.registry,
-                    ctx.worker,
-                    &mut host.display,
-                    ctx.attach_seq,
-                    &key,
-                    |id| {
-                        let tty_key = super::display_tty_key(&key, ctx.instance_name, id);
+                let id = ctx
+                    .request_attach_with_id(sel, |id, key, instance_name| {
+                        let tty_key = super::display_tty_key(key, instance_name, id);
                         with_display_tty_record(command, runs_through_shell, &tty_key)
-                    },
-                    (cols, rows),
-                );
+                    })
+                    .expect("the selected source exists");
                 tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
-                host.display.set_shows(&key, &sel.session);
             }
         } else {
             tracing::info!(
@@ -209,21 +194,10 @@ impl MuxDriver for TmuxDriver {
         true
     }
 
-    fn grid(&self, sel: &Selection, ctx: &DriverCtx) -> Option<Arc<Mutex<Grid>>> {
-        ctx.registry
-            .grid(&crate::app::runtime::display_key(ctx.hosts, sel))
-    }
-
-    fn input(&mut self, sel: &Selection, bytes: Vec<u8>, ctx: &DriverCtx) {
-        ctx.registry
-            .input(&crate::app::runtime::display_key(ctx.hosts, sel), bytes);
-    }
-
     fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
         // One PTY per host. Warm it on the first session if not yet attached; reap it
         // (and forget its session) when the host has no sessions.
-        let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav);
-        let Some(host) = ctx.hosts.get_mut(source) else {
+        let Some(host) = ctx.hosts.get(source) else {
             return;
         };
         match sessions.first() {
@@ -238,23 +212,22 @@ impl MuxDriver for TmuxDriver {
                 let mux_argv = host.mux.attach_plan(&first.name);
                 let command = host.transport.interactive_attach_argv(&mux_argv);
                 let runs_through_shell = host.transport.runs_through_shell();
-                request_attach_with_id(
-                    ctx.registry,
-                    ctx.worker,
-                    &mut host.display,
-                    ctx.attach_seq,
-                    source,
-                    |id| {
-                        let tty_key = super::display_tty_key(source, ctx.instance_name, id);
-                        with_display_tty_record(command, runs_through_shell, &tty_key)
-                    },
-                    (cols, rows),
-                );
-                host.display.set_shows(source, &first.name);
+                let selection = Selection {
+                    source: source.to_string(),
+                    session: first.name.clone(),
+                };
+                ctx.request_attach_with_id(&selection, |id, key, instance_name| {
+                    let tty_key = super::display_tty_key(key, instance_name, id);
+                    with_display_tty_record(command, runs_through_shell, &tty_key)
+                });
             }
             None => {
                 ctx.registry.remove(source);
-                host.display.clear(source);
+                ctx.hosts
+                    .get_mut(source)
+                    .expect("the source exists")
+                    .display
+                    .clear(source);
             }
             _ => {}
         }
@@ -382,9 +355,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             assert!(driver.show(&sel, &mut ctx));
         }
@@ -452,9 +423,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             assert!(driver.show(&sel, &mut ctx));
         }
@@ -540,9 +509,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             assert!(driver.show(&sel, &mut ctx));
         }
@@ -610,9 +577,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             driver.show(&sel, &mut ctx)
         };
@@ -665,9 +630,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             driver.sync("local", &sessions, &mut ctx);
         }
@@ -719,9 +682,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             driver.sync("local", &[], &mut ctx);
         }

@@ -37,9 +37,9 @@ and owns the concrete display decision. The transport dispatches the host execut
 
 - The implementation root holds the mux itself and the listing parser.
 - The driver sits beside it and owns the per-source display orchestration.
-- The driver pulls the mux-agnostic display seam from `src/driver.rs` and the
-  supervisor capabilities from the app runtime. The seam does NOT import the
-  driver; the dependency is one-way, so there is no cycle.
+- The driver pulls the mux-agnostic display seam and capability port from
+  `src/driver.rs`. The app fills that port with the supervisor-owned display
+  resources, so the mux never imports the app runtime.
 - Identity detection is this implementation's own `identity_probes` (one `-v` question;
   `-V` is rejected) and `classify_identity` (the name in the output), implemented
   beside the rest of the `Mux` surface - no central probe sequence answers for it.

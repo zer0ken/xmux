@@ -39,9 +39,9 @@ dispatches the host execution, and the tmux implementation never hardcodes ssh.
   tty record.
 - The control-mode wire module holds the pure, headlessly-testable line
   classification, the notification-to-event table, and the command-line builders.
-- The driver pulls the mux-agnostic display seam from `src/driver.rs` and the
-  supervisor capabilities from the app runtime. The seam does NOT import the
-  driver; the dependency is one-way, so there is no cycle.
+- The driver pulls the mux-agnostic display seam and capability port from
+  `src/driver.rs`. The app fills that port with the supervisor-owned display
+  resources, so the mux never imports the app runtime.
 
 ## Invariants
 

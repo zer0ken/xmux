@@ -5,9 +5,9 @@
 `model` holds runtime domain values shared across the mux and transport axes,
 connection management (`link`), provisioning, state, and app code: the source
 definition and source state, source collections, inventory groups, login input
-values, the operation port and its exchanged results, the action / command /
-event-effect unidirectional-flow set, transport dispatch results, server models,
-plans, and death-signal helpers.
+values, nav geometry, the operation port and its exchanged results, the action /
+command / event-effect unidirectional-flow set, transport dispatch results, server
+models, plans, and death-signal helpers.
 
 ## Mental Model
 
@@ -40,8 +40,7 @@ registry.
 - Source state and source collections store per-source domain state. A source
   carries no control client, no display-key derivation, and no attach or reap plan:
   the live control client belongs to the source manager, the live warm and reap to
-  the driver, and the display-key authority to the app, which uses the source id
-  for both server models.
+  the driver, and the display-key authority to the driver capability port.
 - The death signal, the plans, and the server model are value types used by app,
   mux, and connection management. The server model is just the shared-versus-
   per-session discriminant the supervisor reads to shape the attach fan-out.

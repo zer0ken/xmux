@@ -54,9 +54,9 @@ behaves as though there were none to read.
 - The parsing module holds the session-line grammar. Pure and total: anything that does not
   fit is skipped.
 - The driver sits beside them.
-- The driver pulls the mux-agnostic display seam from `src/driver.rs` and the
-  supervisor capabilities from the app runtime. The seam does NOT import the
-  driver; the dependency is one-way, so there is no cycle.
+- The driver pulls the mux-agnostic display seam and capability port from
+  `src/driver.rs`. The app fills that port with the supervisor-owned display
+  resources, so the mux never imports the app runtime.
 
 ## Invariants
 

@@ -74,19 +74,6 @@ const STATE_ALLOWED_TARGETS: &[&str] = &[
 ];
 
 const KNOWN_VIOLATIONS: &[(&str, &str)] = &[
-    ("src/display/input.rs", "ui"),
-    ("src/driver.rs", "app"),
-    ("src/driver.rs", "ui"),
-    ("src/mux/abduco/display.rs", "app"),
-    ("src/mux/herdr/display.rs", "app"),
-    ("src/mux/psmux/display.rs", "app"),
-    ("src/mux/psmux/display.rs", "ui"),
-    ("src/mux/screen/display.rs", "app"),
-    ("src/mux/tmux/display.rs", "app"),
-    ("src/mux/tmux/display.rs", "ui"),
-    ("src/mux/tuios/display.rs", "app"),
-    ("src/mux/zellij/display.rs", "app"),
-    ("src/mux/zellij/display.rs", "ui"),
     ("src/provision/config.rs", "ui"),
     ("src/state/mod.rs", "app"),
     ("src/state/mod.rs", "ui"),

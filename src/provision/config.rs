@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use crate::ui::switcher::NavPosition;
+use crate::model::NavPosition;
 use serde::Deserialize;
 
 /// The on-disk `config.toml` structure. All fields are optional.
@@ -1149,7 +1149,7 @@ mod tests {
             }
         );
     }
-    use crate::ui::switcher::NavPosition;
+    use crate::model::NavPosition;
     use std::io::Write;
 
     fn write_temp(content: &str, name: &str) -> std::path::PathBuf {

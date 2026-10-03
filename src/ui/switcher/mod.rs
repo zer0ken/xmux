@@ -66,75 +66,7 @@ fn color_decoration() -> Color {
 }
 pub use crate::ui::chrome::ViewBorderColors;
 
-/// Which way the two views stack. `Column` puts the tree in a left or right column of
-/// the terminal view; `Band` stacks the tree in a top or bottom band. The default
-/// placement (left column) is a `Column`, and a band takes over once a side column would
-/// leave the terminal no wider than it is tall, so a narrow phone-shaped terminal stays
-/// usable.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ViewLayout {
-    Column,
-    Band,
-}
-
-/// The nav's live size, as one value: what the user set, and what is on screen this
-/// frame. Both are settable while xmux runs (`prefix h`/`l` and a border drag set the
-/// width, `prefix Ctrl+arrow` and a drag the band height, auto-hide takes the width
-/// away entirely, and `prefix p` moves the attachment), so every consumer reads them
-/// from here rather than deriving any of the four.
-///
-/// `natural` and `width` differ while the nav is hidden or a side nav is collapsed.
-/// `natural` keeps the width the user set while `width` carries the effective on-screen
-/// width, so showing and expanding restore exactly what was set and every region is cut
-/// from the same visible answer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NavSize {
-    /// The width the user set: the saved pref, `prefix h`/`l`, or a border drag.
-    pub natural: u16,
-    /// The width on screen this frame: `natural`, or 0 while the nav is hidden.
-    pub width: u16,
-    /// The band's height the user set; 0 means auto (~40% of the body).
-    pub height: u16,
-    /// Which side of the terminal view the nav is attached to this frame.
-    pub position: NavPosition,
-    /// Whether the nav shows only its resting hint bar and collapse button.
-    pub collapsed: bool,
-}
-
-impl NavSize {
-    /// The nav on screen at the width the user set.
-    pub fn visible(natural: u16) -> Self {
-        NavSize {
-            natural,
-            width: natural,
-            height: 0,
-            position: NavPosition::Left,
-            collapsed: false,
-        }
-    }
-
-    /// The nav hidden (auto-hide plus terminal focus). The width the user set travels with
-    /// it, because the layout is measured from that width whether the nav is showing or not.
-    pub fn hidden(natural: u16) -> Self {
-        NavSize {
-            natural,
-            width: 0,
-            height: 0,
-            position: NavPosition::Left,
-            collapsed: false,
-        }
-    }
-
-    /// The same nav with the band height the user set (0 = auto).
-    pub fn with_height(self, height: u16) -> Self {
-        NavSize { height, ..self }
-    }
-
-    /// The same nav attached on another side.
-    pub fn with_position(self, position: NavPosition) -> Self {
-        NavSize { position, ..self }
-    }
-}
+pub use crate::model::{NavSize, ViewLayout};
 
 /// The token painted at the far end of the resting hint bar. In the expanded state it
 /// points toward the nav's edge; in the collapsed state it points back into the screen.
@@ -438,11 +370,10 @@ pub struct Switcher {
 mod columns;
 mod input;
 mod mouse;
-mod position;
 mod render;
 mod side;
 
-pub use position::{step_nav_position, NavPosition};
+pub use crate::model::{step_nav_position, NavPosition};
 
 impl Switcher {
     fn blank() -> Self {

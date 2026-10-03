@@ -1,7 +1,11 @@
-//! The nav's attachment position: which side of the terminal view the nav rides on,
-//! and the `prefix p` cycle that pins it.
+//! The nav's live geometry and attachment position shared across runtime layers.
 
-use super::ViewLayout;
+/// Which way the two views stack.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewLayout {
+    Column,
+    Band,
+}
 
 /// Which side of the terminal view the nav is attached to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -12,73 +16,116 @@ pub enum NavPosition {
     Bottom,
 }
 
-/// One step of the `prefix p` cycle: left → top → right → bottom → unpin. Unpinned,
-/// the first step goes to the clockwise neighbour of the CURRENT effective position, so
-/// no press is ever an invisible no-op; pinned, the pin's own neighbour decides.
+/// The nav's live size as one value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NavSize {
+    /// The width the user set.
+    pub natural: u16,
+    /// The width on screen this frame.
+    pub width: u16,
+    /// The band's height the user set; 0 means auto.
+    pub height: u16,
+    /// Which side of the terminal view the nav is attached to this frame.
+    pub position: NavPosition,
+    /// Whether the nav shows only its resting hint bar and collapse button.
+    pub collapsed: bool,
+}
+
+impl NavSize {
+    /// The nav on screen at the width the user set.
+    pub fn visible(natural: u16) -> Self {
+        Self {
+            natural,
+            width: natural,
+            height: 0,
+            position: NavPosition::Left,
+            collapsed: false,
+        }
+    }
+
+    /// The nav hidden while retaining the width the user set.
+    pub fn hidden(natural: u16) -> Self {
+        Self {
+            natural,
+            width: 0,
+            height: 0,
+            position: NavPosition::Left,
+            collapsed: false,
+        }
+    }
+
+    /// The same nav with the band height the user set.
+    pub fn with_height(self, height: u16) -> Self {
+        Self { height, ..self }
+    }
+
+    /// The same nav attached on another side.
+    pub fn with_position(self, position: NavPosition) -> Self {
+        Self { position, ..self }
+    }
+}
+
+/// One step of the attachment-position cycle.
 pub fn step_nav_position(
     pinned: Option<NavPosition>,
     effective: NavPosition,
 ) -> Option<NavPosition> {
     match pinned {
         Some(NavPosition::Bottom) => None,
-        Some(p) => Some(p.clockwise()),
+        Some(position) => Some(position.clockwise()),
         None => Some(effective.clockwise()),
     }
 }
 
 impl NavPosition {
-    /// The view stacking this placement produces: the two columns (left or right) or
-    /// the two bands (top or bottom).
+    /// The view stacking this placement produces.
     pub fn layout(self) -> ViewLayout {
         match self {
-            NavPosition::Left | NavPosition::Right => ViewLayout::Column,
-            NavPosition::Top | NavPosition::Bottom => ViewLayout::Band,
+            Self::Left | Self::Right => ViewLayout::Column,
+            Self::Top | Self::Bottom => ViewLayout::Band,
         }
     }
 
-    /// Whether the arrow pair facing the terminal's side is the forward pair (right and
-    /// down). With the nav on the left or above, forward names the terminal; with the
-    /// nav on the right or below, the pair flips and backward names it.
+    /// Whether the arrow pair facing the terminal is right and down.
     pub fn forward_arrows_face_terminal(self) -> bool {
-        matches!(self, NavPosition::Left | NavPosition::Top)
+        matches!(self, Self::Left | Self::Top)
     }
 
-    /// The one step clockwise: left, top, right, bottom, back to left.
-    pub fn clockwise(self) -> NavPosition {
+    /// The next position clockwise.
+    pub fn clockwise(self) -> Self {
         match self {
-            NavPosition::Left => NavPosition::Top,
-            NavPosition::Top => NavPosition::Right,
-            NavPosition::Right => NavPosition::Bottom,
-            NavPosition::Bottom => NavPosition::Left,
+            Self::Left => Self::Top,
+            Self::Top => Self::Right,
+            Self::Right => Self::Bottom,
+            Self::Bottom => Self::Left,
         }
     }
 
-    /// Parses a persisted or configured word: `left`, `top`, `right`, or `bottom`.
-    #[allow(clippy::should_implement_trait)] // intentionally not FromStr: returns Option, not Result
-    pub fn parse(s: &str) -> Option<NavPosition> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "left" => Some(NavPosition::Left),
-            "top" => Some(NavPosition::Top),
-            "right" => Some(NavPosition::Right),
-            "bottom" => Some(NavPosition::Bottom),
+    /// Parses a persisted or configured position.
+    #[allow(clippy::should_implement_trait)]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "left" => Some(Self::Left),
+            "top" => Some(Self::Top),
+            "right" => Some(Self::Right),
+            "bottom" => Some(Self::Bottom),
             _ => None,
         }
     }
 
-    /// The word this position writes to the pref file.
+    /// The word written to preferences and configuration.
     pub fn word(self) -> &'static str {
         match self {
-            NavPosition::Left => "left",
-            NavPosition::Top => "top",
-            NavPosition::Right => "right",
-            NavPosition::Bottom => "bottom",
+            Self::Left => "left",
+            Self::Top => "top",
+            Self::Right => "right",
+            Self::Bottom => "bottom",
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::NavSize;
     use super::*;
 
     #[test]
@@ -117,8 +164,6 @@ mod tests {
 
     #[test]
     fn step_nav_position_cycles_one_step_clockwise() {
-        // Unpinned: the first step goes to the clockwise neighbour of the CURRENT
-        // effective position, so no press is ever an invisible no-op.
         assert_eq!(
             step_nav_position(None, NavPosition::Left),
             Some(NavPosition::Top)
@@ -135,8 +180,6 @@ mod tests {
             step_nav_position(None, NavPosition::Bottom),
             Some(NavPosition::Left)
         );
-        // Pinned: the pin's own clockwise neighbour, whatever is on screen now; the
-        // bottom pin's step unpins, leaving the keyboard path back to auto.
         assert_eq!(
             step_nav_position(Some(NavPosition::Left), NavPosition::Bottom),
             Some(NavPosition::Top)
@@ -158,13 +201,13 @@ mod tests {
 
     #[test]
     fn word_round_trips_through_parse() {
-        for p in [
+        for position in [
             NavPosition::Left,
             NavPosition::Top,
             NavPosition::Right,
             NavPosition::Bottom,
         ] {
-            assert_eq!(NavPosition::parse(p.word()), Some(p));
+            assert_eq!(NavPosition::parse(position.word()), Some(position));
         }
     }
 

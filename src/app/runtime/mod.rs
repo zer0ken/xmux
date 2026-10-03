@@ -26,7 +26,8 @@ use crate::app::input::{
 use crate::display::attachment::PtyEvent;
 use crate::display::dispatch::Action;
 use crate::display::registry::AttachRegistry;
-use crate::display::{DisplayEnsure, DisplayEvent, DisplayWorker};
+use crate::display::{DisplayEvent, DisplayWorker};
+use crate::driver::{display_key, host_selection_key, DriverCtx};
 use crate::link::{HostEvent, HostManager};
 use crate::model::Selection;
 use crate::provision::env::Env;
@@ -483,23 +484,6 @@ pub(crate) fn terminal_view_size(
     (t.width.max(1), t.height.max(1))
 }
 
-/// The `AttachRegistry` key for a selection.
-pub(crate) fn display_key(hosts: &crate::model::Hosts, sel: &Selection) -> String {
-    hosts
-        .get(&sel.source)
-        .map(host_selection_key)
-        .unwrap_or_else(|| sel.source.clone())
-}
-
-/// The display key for a host's selection. Both server models key the live display by
-/// HOST id: tmux keeps one PTY per host (shared, moved by switch-client), and psmux -
-/// though one-server-per-session - is displayed through ONE per-host PTY that is
-/// reattached on every session change. This is the supervisor/driver authority for the
-/// live attach path - the sole keying authority for both models.
-pub(crate) fn host_selection_key(host: &crate::model::Host) -> String {
-    host.id().to_string()
-}
-
 /// The host id owning a display key: Shared keys ARE the host id; PerSession keys are
 /// `host/session`, so the host id is the part before the first '/'.
 fn host_of_key(key: &str) -> &str {
@@ -525,73 +509,6 @@ fn selection_attach_in_flight(hosts: &crate::model::Hosts, selection: &Selection
         .unwrap_or(false)
 }
 
-/// Issues an OFF-LOOP attach for `key`: allocates the attachment id, records the request's
-/// seq in the owning host's `display.in_flight` + the id→key in `display.pending`, and asks
-/// the worker to spawn. The worker's `Ready` reply (handled in the app loop) inserts the
-/// finished attachment into the registry. `display` MUST be the host that owns `key`. Returns
-/// the allocated attachment id so a caller can correlate a follow-up probe to it.
-pub(crate) fn request_attach(
-    registry: &mut AttachRegistry,
-    worker: &DisplayWorker,
-    display: &mut crate::model::HostDisplay,
-    attach_seq: &mut u64,
-    key: &str,
-    command: crate::transport::CommandSpec,
-    size: (u16, u16),
-) -> u64 {
-    request_attach_with_id(
-        registry,
-        worker,
-        display,
-        attach_seq,
-        key,
-        |_| command,
-        size,
-    )
-}
-
-/// Issues an attach whose argv depends on the allocated attachment id. The id is
-/// allocated before the argv is finalized so a mux can give external state one identity
-/// for exactly this attachment.
-pub(crate) fn request_attach_with_id(
-    registry: &mut AttachRegistry,
-    worker: &DisplayWorker,
-    display: &mut crate::model::HostDisplay,
-    attach_seq: &mut u64,
-    key: &str,
-    command: impl FnOnce(u64) -> crate::transport::CommandSpec,
-    size: (u16, u16),
-) -> u64 {
-    // A new request owns this key. Any fresh attachment still waiting to paint belongs
-    // to the superseded selection and must not receive input or survive as an orphan.
-    display.cancel_pending_paint(key);
-    registry.remove_pending(key);
-    let id = registry.alloc_id();
-    let command = command(id);
-    *attach_seq += 1;
-    // The command the display terminal IS. A pane that dies is diagnosed by comparing
-    // what xmux ran against what the same command does by hand, so the argv has to be on
-    // record: without it the comparison is a guess about what was even attempted.
-    tracing::info!(
-        key,
-        id,
-        seq = *attach_seq,
-        cmd = %crate::app::runtime::handlers::shell_line(&command),
-        "attach_spawn"
-    );
-    display.mark_in_flight(key, *attach_seq);
-    display.mark_pending(id, key);
-    worker.ensure(DisplayEnsure {
-        seq: *attach_seq,
-        key: key.to_string(),
-        command,
-        cols: size.0,
-        rows: size.1,
-        id,
-    });
-    id
-}
-
 /// Makes the SELECTED session live in its host's display terminal and lands it on
 /// the selected window. Returns `true` when the selection has a session to show.
 ///
@@ -604,7 +521,7 @@ pub(crate) fn request_attach_with_id(
 ///
 /// [`driver_for`]: crate::driver::driver_for
 /// [`DriverCtx`]: crate::driver::DriverCtx
-pub(crate) fn select_attach(sel: &Selection, ctx: &mut crate::driver::DriverCtx) -> bool {
+pub(crate) fn select_attach(sel: &Selection, ctx: &mut DriverCtx) -> bool {
     if sel.is_empty() {
         return false;
     }
@@ -631,63 +548,6 @@ pub(crate) fn current_grid(
         .get(&displayed.source)
         .map(crate::driver::driver_for);
     driver.and_then(|driver| driver.grid(displayed, ctx))
-}
-
-/// Spawns the dispatched switch command off the event loop. Local variants run as a
-/// plain subprocess; RawSsh variants run the full ssh argv non-interactively.
-pub(crate) fn run_lowered(lowered: crate::transport::LoweredSwitch) {
-    use crate::model::source::Runner;
-    use crate::transport::LoweredSwitch;
-    let command = match lowered {
-        LoweredSwitch::Local(v) | LoweredSwitch::RawSsh(v) => v,
-    };
-    if command.is_empty() {
-        return;
-    }
-    tokio::spawn(async move {
-        // Log the exact spawned command + its result: a silent switch is invisible, so a
-        // session-switch that does not land is diagnosed from the program's real output.
-        tracing::debug!(cmd = %command.program(), args = ?command.args(), "lowered_run");
-        match crate::model::source::ExecRunner.run_spec(&command).await {
-            Ok(out) => {
-                tracing::debug!(cmd = %command.program(), out_bytes = out.len(), "lowered_ok")
-            }
-            Err(e) => tracing::debug!(cmd = %command.program(), error = %e, "lowered_err"),
-        }
-    });
-}
-
-/// Runs a mux's opaque [`crate::mux::SwitchPlan`] BLIND: the driver hands the whole plan
-/// here and this dispatches each variant through the host's transport, never naming the mux
-/// type. `Exec` argv(s) run non-interactively in order; a `Shell` command runs over the
-/// host's raw shell (`raw_shell_argv`). Returns whether the switch was issued - `false` when
-/// a `Shell` plan has no host shell (a local machine), so the caller falls back to a
-/// reattach. The variant→lowering mapping is 1:1 with [`crate::transport::LoweredSwitch`].
-pub(crate) fn run_switch_plan(host: &crate::model::Host, plan: crate::mux::SwitchPlan) -> bool {
-    use crate::mux::SwitchPlan;
-    use crate::transport::LoweredSwitch;
-    match plan {
-        SwitchPlan::Exec(argvs) => {
-            for a in &argvs {
-                run_lowered(LoweredSwitch::Local(host.transport.exec_argv(false, a)));
-            }
-            true
-        }
-        // A `Shell` plan is POSIX shell text the mux wrote. A machine with no host shell
-        // to run it in, and one whose shell is not POSIX, both answer `false` here, and
-        // the caller reattaches instead of switching in place.
-        SwitchPlan::Shell(cmd) => match host
-            .transport
-            .raw_shell_argv(&cmd)
-            .filter(|_| host.transport.remote_shell().runs_posix_snippets())
-        {
-            Some(argv) => {
-                run_lowered(LoweredSwitch::RawSsh(argv));
-                true
-            }
-            None => false,
-        },
-    }
 }
 
 /// Keeps a source's display terminal in sync with its sessions by delegating to the

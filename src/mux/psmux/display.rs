@@ -3,10 +3,6 @@
 //! `Psmux::driver` constructs it, so mux selection lives in the psmux implementation, not a
 //! central match.
 
-use std::sync::{Arc, Mutex};
-
-use crate::app::runtime::{host_selection_key, request_attach, terminal_view_size};
-use crate::display::grid::Grid;
 use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
@@ -51,11 +47,10 @@ impl MuxDriver for PsmuxDriver {
         if sel.is_empty() {
             return false;
         }
-        let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav);
-        let Some(host) = ctx.hosts.get_mut(&sel.source) else {
+        let key = ctx.display_key(sel);
+        let Some(host) = ctx.hosts.get(&sel.source) else {
             return false;
         };
-        let key = host_selection_key(host);
         let live = ctx.registry.contains(&key);
         let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
         let reported = crate::driver::live_client_session(host, ctx.registry);
@@ -74,7 +69,11 @@ impl MuxDriver for PsmuxDriver {
             );
             // The client's own report is the truth, so record it: the bookkeeping and the
             // client now agree, and the next show reads a belief the client backs.
-            host.display.set_shows(&key, &sel.session);
+            ctx.hosts
+                .get_mut(&sel.source)
+                .expect("the selected source exists")
+                .display
+                .set_shows(&key, &sel.session);
         } else {
             // REATTACH: request a fresh attach for the selected session on its own
             // per-session server. This is the ONLY way psmux reaches another session,
@@ -95,33 +94,22 @@ impl MuxDriver for PsmuxDriver {
                 session = %sel.session,
                 "display_show"
             );
-            host.display.clear(&key);
-            let mux_argv = host.mux.attach_plan(&sel.session);
-            let command = host.transport.exec_argv(true, &mux_argv);
-            let id = request_attach(
-                ctx.registry,
-                ctx.worker,
-                &mut host.display,
-                ctx.attach_seq,
-                &key,
-                command,
-                (cols, rows),
-            );
+            let command = {
+                let host = ctx
+                    .hosts
+                    .get_mut(&sel.source)
+                    .expect("the selected source exists");
+                host.display.clear(&key);
+                let mux_argv = host.mux.attach_plan(&sel.session);
+                host.transport.exec_argv(true, &mux_argv)
+            };
+            let id = ctx
+                .request_attach(sel, command)
+                .expect("the selected source exists");
             tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
-            host.display.set_shows(&key, &sel.session);
         }
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
-    }
-
-    fn grid(&self, sel: &Selection, ctx: &DriverCtx) -> Option<Arc<Mutex<Grid>>> {
-        ctx.registry
-            .grid(&crate::app::runtime::display_key(ctx.hosts, sel))
-    }
-
-    fn input(&mut self, sel: &Selection, bytes: Vec<u8>, ctx: &DriverCtx) {
-        ctx.registry
-            .input(&crate::app::runtime::display_key(ctx.hosts, sel), bytes);
     }
 
     fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
@@ -243,9 +231,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             driver.show(&sel, &mut ctx)
         };
@@ -294,9 +280,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             driver.show(&sel, &mut ctx)
         };
@@ -366,9 +350,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             driver.show(&sel, &mut ctx)
         };
@@ -429,9 +411,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             driver.sync(
                 "local",
@@ -457,9 +437,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             driver.sync("local", &[], &mut ctx);
         }
@@ -513,9 +491,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             assert!(driver.show(&sel, &mut ctx));
         }
@@ -581,9 +557,7 @@ mod tests {
                 worker: &worker,
                 pty_tx: &cap_tx,
                 attach_seq: &mut attach_seq,
-                cols: 80,
-                body_rows: 24,
-                nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                viewport: (31, 25),
             };
             assert!(driver.show(&sel, &mut ctx));
         }

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::display::grid::Grid;
 use crate::display::registry::AttachRegistry;
-use crate::display::DisplayWorker;
+use crate::display::{DisplayEnsure, DisplayWorker};
 use crate::model::Selection;
 use crate::model::{Host, Hosts};
 
@@ -63,12 +63,146 @@ pub struct DriverCtx<'a> {
     /// driver captures its display client's tty with an off-loop `list-clients` probe.
     pub pty_tx: &'a tokio::sync::mpsc::UnboundedSender<crate::display::attachment::PtyEvent>,
     pub attach_seq: &'a mut u64,
-    pub cols: u16,
-    pub body_rows: u16,
-    /// The nav's live size (the width the user set, the width on screen, the band's
-    /// height, the attachment side, and the collapsed state), so the driver sizes the PTY
-    /// to the same terminal region the renderer draws.
-    pub nav: crate::ui::switcher::NavSize,
+    /// The display viewport computed from the nav's single live geometry value.
+    pub viewport: (u16, u16),
+}
+
+impl DriverCtx<'_> {
+    /// The attachment key for the selection.
+    pub fn display_key(&self, selection: &Selection) -> String {
+        display_key(self.hosts, selection)
+    }
+
+    /// Request an attachment whose command is already known.
+    pub fn request_attach(
+        &mut self,
+        selection: &Selection,
+        command: crate::transport::CommandSpec,
+    ) -> Option<u64> {
+        self.request_attach_with_id(selection, |_, _, _| command)
+    }
+
+    /// Request an attachment whose command depends on its allocated id.
+    pub fn request_attach_with_id(
+        &mut self,
+        selection: &Selection,
+        command: impl FnOnce(u64, &str, &str) -> crate::transport::CommandSpec,
+    ) -> Option<u64> {
+        let key = self.display_key(selection);
+        let display = &mut self.hosts.get_mut(&selection.source)?.display;
+        display.cancel_pending_paint(&key);
+        self.registry.remove_pending(&key);
+        let id = self.registry.alloc_id();
+        let command = command(id, &key, self.instance_name);
+        *self.attach_seq += 1;
+        tracing::info!(
+            key,
+            id,
+            seq = *self.attach_seq,
+            cmd = %shell_line(&command),
+            "attach_spawn"
+        );
+        display.mark_in_flight(&key, *self.attach_seq);
+        display.mark_pending(id, &key);
+        self.worker.ensure(DisplayEnsure {
+            seq: *self.attach_seq,
+            key: key.to_string(),
+            command,
+            cols: self.viewport.0,
+            rows: self.viewport.1,
+            id,
+        });
+        display.set_shows(&key, &selection.session);
+        Some(id)
+    }
+
+    /// Run an opaque mux switch plan through the selected source's transport.
+    pub fn run_switch_plan(&self, source: &str, plan: crate::mux::SwitchPlan) -> bool {
+        use crate::mux::SwitchPlan;
+        use crate::transport::LoweredSwitch;
+
+        let Some(host) = self.hosts.get(source) else {
+            return false;
+        };
+        match plan {
+            SwitchPlan::Exec(argvs) => {
+                for argv in &argvs {
+                    run_lowered(LoweredSwitch::Local(host.transport.exec_argv(false, argv)));
+                }
+                true
+            }
+            SwitchPlan::Shell(command) => match host
+                .transport
+                .raw_shell_argv(&command)
+                .filter(|_| host.transport.remote_shell().runs_posix_snippets())
+            {
+                Some(argv) => {
+                    run_lowered(LoweredSwitch::RawSsh(argv));
+                    true
+                }
+                None => false,
+            },
+        }
+    }
+}
+
+/// The display key for a host. Every supported server model uses one display PTY per
+/// source, either switching it in place or reattaching it.
+pub fn host_selection_key(host: &Host) -> String {
+    host.id().to_string()
+}
+
+/// The attachment key for a selection.
+pub fn display_key(hosts: &Hosts, selection: &Selection) -> String {
+    hosts
+        .get(&selection.source)
+        .map(host_selection_key)
+        .unwrap_or_else(|| selection.source.clone())
+}
+
+fn run_lowered(lowered: crate::transport::LoweredSwitch) {
+    use crate::model::source::Runner;
+    use crate::transport::LoweredSwitch;
+
+    let command = match lowered {
+        LoweredSwitch::Local(command) | LoweredSwitch::RawSsh(command) => command,
+    };
+    if command.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        tracing::debug!(cmd = %command.program(), args = ?command.args(), "lowered_run");
+        match crate::model::source::ExecRunner.run_spec(&command).await {
+            Ok(output) => {
+                tracing::debug!(cmd = %command.program(), out_bytes = output.len(), "lowered_ok")
+            }
+            Err(error) => {
+                tracing::debug!(cmd = %command.program(), error = %error, "lowered_err")
+            }
+        }
+    });
+}
+
+/// Renders an argv as one readable shell line for display diagnostics.
+fn shell_line(argv: &[String]) -> String {
+    argv.iter()
+        .map(|argument| crate::transport::vocab::quote(&escape_controls(argument)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Replaces control characters with their visible debug escapes.
+fn escape_controls(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|character| {
+            if character.is_control() {
+                character.escape_debug().collect::<Vec<_>>()
+            } else {
+                vec![character]
+            }
+        })
+        .collect()
 }
 
 /// One mux driver per host: intent in, screen out.
@@ -79,9 +213,13 @@ pub trait MuxDriver {
     /// to show (so the caller can confirm the display truth).
     fn show(&mut self, sel: &Selection, ctx: &mut DriverCtx) -> bool;
     /// The grid the supervisor renders for the selection, if a live attach exists.
-    fn grid(&self, sel: &Selection, ctx: &DriverCtx) -> Option<Arc<Mutex<Grid>>>;
+    fn grid(&self, sel: &Selection, ctx: &DriverCtx) -> Option<Arc<Mutex<Grid>>> {
+        ctx.registry.grid(&ctx.display_key(sel))
+    }
     /// Forward input bytes to the selected session's attachment.
-    fn input(&mut self, sel: &Selection, bytes: Vec<u8>, ctx: &DriverCtx);
+    fn input(&mut self, sel: &Selection, bytes: Vec<u8>, ctx: &DriverCtx) {
+        ctx.registry.input(&ctx.display_key(sel), bytes);
+    }
     /// Reconcile the host's display terminal with its current `sessions` (an inventory
     /// update — a remote `%`-event refresh or a local poll). Shared keeps ONE PTY per
     /// host: warm it on the first session, reap it when the host has no sessions.
@@ -175,7 +313,7 @@ pub(crate) fn session_truth_source(host: &Host) -> Option<(String, &str)> {
         return None;
     }
     let var = host.mux.display_session_env()?;
-    Some((crate::app::runtime::host_selection_key(host), var))
+    Some((host_selection_key(host), var))
 }
 
 #[cfg(test)]
@@ -347,9 +485,11 @@ pub(crate) mod tests {
                 .set_shows("local", "old");
 
             let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+            let (viewport_tx, viewport_rx) = std::sync::mpsc::channel();
             let worker = crate::display::DisplayWorker::with_spawner(
                 ptx,
-                Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
+                Box::new(move |_argv, cols, rows, id, _events, _env_clear| {
+                    viewport_tx.send((cols, rows)).unwrap();
                     Ok(crate::display::attachment::fake_attachment(id))
                 }),
             );
@@ -375,14 +515,19 @@ pub(crate) mod tests {
                     worker: &worker,
                     pty_tx: &cap_tx,
                     attach_seq: &mut attach_seq,
-                    cols: 80,
-                    body_rows: 24,
-                    nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                    viewport: (31, 25),
                 };
                 driver.show(&sel, &mut ctx)
             };
 
             assert!(shown, "{bin}: a session selection has something to show");
+            assert_eq!(
+                viewport_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("the display worker receives the attach request"),
+                (31, 25),
+                "{bin}: the capability forwards the display viewport unchanged"
+            );
             let h = hosts.get("local").unwrap();
             assert_eq!(
                 h.display.shows("local"),
