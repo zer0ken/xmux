@@ -427,7 +427,9 @@ mod tests {
             if remove_before_prompt {
                 credentials.remove("pwbox");
             }
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            // The deadline only catches a hang: under a parallel test load on a CI
+            // runner, powershell.exe alone can take several seconds to start.
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 while !output.exists() {
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
