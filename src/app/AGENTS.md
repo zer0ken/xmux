@@ -89,6 +89,9 @@ the card numbers it needs.
 - The entry point is thin: the runtime struct owns the loop's world state, and
   every select arm and stateful helper is a method on it, so each takes a small
   argument list rather than a large loose-parameter bundle.
+- One runtime-owned command executor handles every command from domain actions,
+  switcher input, login input, and ticks. Source-event effects use their own
+  exhaustive executor.
 - The app loop is not a second writer of the runtime state. The display truth,
   the attach debounce, and the focus all change only inside the state's apply,
   routed there as actions. The loop makes the decision (a live grid exists, a

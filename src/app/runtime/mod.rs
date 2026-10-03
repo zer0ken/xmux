@@ -139,108 +139,111 @@ fn cycle_nav_position(
     crate::app::prefs::save_nav_position(xmux_dir, next);
 }
 
-/// Folds ONE domain [`Action`] in at the single mutation site ([`State::apply`]) and
-/// runs the [`Command`]s it returns - the site both a keypress (via
-/// `display::dispatch::Action::as_action`) and a ctl command resolve through, so the two
-/// surfaces can never take divergent effect. Returns `(quit, width_changed)`: `quit`
-/// signals the loop to exit; `width_changed` signals the loop to schedule the debounced
-/// nav-width persist. `Switch` only moves the selection (a `SelectAddress` command); the
-/// loop-top `Tick`/`select_attach` commits the attach on a later pass.
-///
-/// Only the synchronous, registry-free commands arise here - `Attach`/
-/// `PersistLastSession` come exclusively from `Action::Tick`, which the run loop drives
-/// with full registry access. `Action::Quit` is the only quit path through this dispatcher.
-///
-/// [`Action`]: crate::model::Action
-/// [`Command`]: crate::model::Command
-/// [`State::apply`]: crate::state::State::apply
-/// The mutate-op sink the dispatchers hand to [`spawn_op`]: the `Ops` interface plus
-/// the channel its off-loop `OpResult` folds back through. Bundled as one argument so
-/// the two dispatchers stay under the argument-count lint.
+/// The mutate-op sink handed to [`start_login`]: the `Ops` interface plus the channel
+/// used by the off-loop work. Bundled as one argument to stay under the argument-count
+/// lint.
 type OpSink<'a> = (
     &'a Arc<dyn crate::ui::switcher::Ops>,
     &'a tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
-    &'a tokio::sync::mpsc::UnboundedSender<crate::display::attachment::PtyEvent>,
 );
 
-fn dispatch_action(
-    action: crate::model::Action,
-    switcher: &mut crate::ui::switcher::Switcher,
-    state: &mut crate::state::State,
-    nav_width_natural: &mut u16,
-    auto_hide_nav: &mut bool,
-    xmux_dir: &std::path::Path,
-    op_sink: OpSink<'_>,
-) -> (bool, bool) {
-    dispatch_commands(
-        state.apply(action),
-        switcher,
-        state,
-        nav_width_natural,
-        auto_hide_nav,
-        xmux_dir,
-        op_sink,
-    )
-}
-
-/// Runs the [`Command`]s an [`Action`] produced - the sole dispatcher of the
-/// synchronous, registry-free effects. `SelectAddress`/`Rescan`/`AdjustNavWidth`/
-/// `ToggleAutoHide`/`Quit` act on the switcher/width/loop here; `RunOp` is spawned
-/// off-loop against the live mux (its `OpResult` folds back through `op_tx`, the
-/// existing channel). `Attach`/`PersistLastSession` arise only from `Action::Tick`,
-/// dispatched by the run loop with full registry access - never here.
-///
-/// [`Action`]: crate::model::Action
-/// [`Command`]: crate::model::Command
-fn dispatch_commands(
-    cmds: Vec<crate::model::Command>,
-    switcher: &mut crate::ui::switcher::Switcher,
-    state: &mut crate::state::State,
-    nav_width_natural: &mut u16,
-    auto_hide_nav: &mut bool,
-    xmux_dir: &std::path::Path,
-    op_sink: OpSink<'_>,
-) -> (bool, bool) {
-    use crate::model::Command;
-    let mut quit = false;
-    let mut width_changed = false;
-    for cmd in cmds {
-        match cmd {
-            Command::SelectAddress(address) => {
-                switcher.select_address(&address, state);
-            }
-            Command::Rescan => {
-                switcher.request_rescan(state);
-            }
-            Command::AdjustNavWidth(d) => {
-                if apply_width_delta(d, nav_width_natural, &state.chrome.ui_prefix) {
-                    width_changed = true;
-                }
-            }
-            Command::ToggleAutoHide => toggle_auto_hide(auto_hide_nav, xmux_dir),
-            Command::Quit => quit = true,
-            Command::RunOp(op) => spawn_op(op, op_sink.0, op_sink.1),
-            Command::RunLogin {
-                source,
-                login,
-                password,
-                remember,
-                pubkey,
-            } => start_login(
-                source,
-                login,
-                password,
-                remember == crate::state::Remember::SshConfig,
-                pubkey,
-                state,
-                op_sink,
-            ),
-            // Settled-selection effects come only from Action::Tick, dispatched by the
-            // run loop with registry/host access - never from a key/ctl action here.
-            Command::PersistLastSession(_) | Command::Attach(_) => {}
-        }
+impl Runtime {
+    /// Folds one domain [`Action`](crate::model::Action) through
+    /// [`State::apply`](crate::state::State::apply) and executes every command it
+    /// returns.
+    fn dispatch_action(&mut self, action: crate::model::Action) -> (bool, bool) {
+        let commands = self.state.apply(action);
+        self.execute_commands(commands)
     }
-    (quit, width_changed)
+
+    /// Executes every [`Command`](crate::model::Command) produced by the runtime state.
+    /// Returns `(quit, width_changed)` for the loop bookkeeping owned by the caller.
+    fn execute_commands(&mut self, commands: Vec<crate::model::Command>) -> (bool, bool) {
+        use crate::model::Command;
+
+        let mut quit = false;
+        let mut width_changed = false;
+        for command in commands {
+            match command {
+                Command::SelectAddress(address) => {
+                    self.switcher.select_address(&address, &self.state);
+                }
+                Command::Rescan => {
+                    self.switcher.request_rescan(&mut self.state);
+                }
+                Command::AdjustNavWidth(delta) => {
+                    if apply_width_delta(
+                        delta,
+                        &mut self.nav_width_natural,
+                        &self.state.chrome.ui_prefix,
+                    ) {
+                        width_changed = true;
+                    }
+                }
+                Command::ToggleAutoHide => {
+                    toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
+                }
+                Command::PersistLastSession(address) => {
+                    crate::app::prefs::save_last_session(&self.env.xmux_dir, &address);
+                }
+                Command::Attach(selection) => {
+                    let started = std::time::Instant::now();
+                    let nav = self.nav_size();
+                    // select_attach picks the host's driver and hands it the intent.
+                    let shown = select_attach(
+                        &selection,
+                        &mut crate::driver::DriverCtx {
+                            registry: &mut self.registry,
+                            hosts: &mut self.hosts,
+                            instance_name: &self.instance_name,
+                            mgr: &self.mgr,
+                            worker: &self.worker,
+                            pty_tx: &self.driver_pty_tx,
+                            attach_seq: &mut self.attach_seq,
+                            viewport: terminal_view_size(self.cols, self.body_rows, nav),
+                        },
+                    );
+                    let key = display_key(&self.hosts, &selection);
+                    if shown {
+                        // Advance the display truth synchronously ONLY for a confirmed
+                        // in-place path: a live grid for the key exists AND no reattach
+                        // is in flight. A pending reattach KEEPS the prior session's grid
+                        // (stale-while-revalidate) until the paint gate swaps it in.
+                        let reattach_pending = self.hosts.get(&selection.source).is_some_and(|h| {
+                            h.display.in_flight_contains(&key)
+                                || h.display.pending_paint_contains(&key)
+                        });
+                        if self.registry.contains(&key) && !reattach_pending {
+                            self.state
+                                .apply(crate::model::Action::ConfirmDisplay(selection.clone()));
+                        }
+                    }
+                    DrawObserver::slow_step("select_attach", started);
+                    self.dirty = true;
+                    let session = &selection.session;
+                    tracing::debug!(key, session, "selection");
+                }
+                Command::Quit => quit = true,
+                Command::RunOp(op) => spawn_op(op, &self.ops, &self.op_tx),
+                Command::RunLogin {
+                    source,
+                    login,
+                    password,
+                    remember,
+                    pubkey,
+                } => start_login(
+                    source,
+                    login,
+                    password,
+                    remember == crate::state::Remember::SshConfig,
+                    pubkey,
+                    &mut self.state,
+                    (&self.ops, &self.op_tx),
+                ),
+            }
+        }
+        (quit, width_changed)
+    }
 }
 
 /// The `status` verb reply: this instance's name and pid, the focus side, the

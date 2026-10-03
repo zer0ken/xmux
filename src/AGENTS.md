@@ -122,8 +122,8 @@ the debounced attach, and renders the live split view.
 - **Single Update Owner:** the rule permits only the update transition to mutate
   application state. Key, mouse, and semantic ctl inputs are messages for it;
   raw terminal bytes are the sole direct path. Known exceptions: key, mouse, and
-  source-event paths mutate state directly, and effect execution is split across
-  command, tick, and source-event paths. `CONTEXT.md` names each current path.
+  source-event paths mutate state directly, and source-event effects use their own
+  executor. `CONTEXT.md` names each current path.
 
 - The nav's live size travels as one value (the width the user set, the width on screen,
   the portrait band's height, the attachment side, and the collapsed state), never as

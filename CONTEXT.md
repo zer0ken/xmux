@@ -657,9 +657,7 @@ Known exceptions:
   switcher and connection state.
 - The runtime owns switcher, nav geometry, mouse state, connected sources, and
   detecting sources beside the state value.
-- The general command executor skips attach and selected-session persistence
-  effects. Tick handling executes those effects, and source-event effects use a
-  separate executor.
+- Source-event effects use a separate exhaustive executor from commands.
 
 ## Asked-for requests
 
