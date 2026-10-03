@@ -537,12 +537,10 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model
                 .switcher
                 .mouse_select(&model.render_plan, col, row, &model.state);
-            sync_selection(model);
             Vec::new()
         }
         Msg::MouseScroll { down } => {
             model.switcher.mouse_scroll(down, &model.state);
-            sync_selection(model);
             Vec::new()
         }
         Msg::ToggleHelp => {
@@ -600,7 +598,6 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 None,
                 &mut model.state,
             );
-            sync_selection(model);
             renamed
                 .map(|(from, to)| Effect::Event(EventEffect::RenameDisplayed { source, from, to }))
                 .into_iter()
@@ -614,7 +611,6 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model
                 .switcher
                 .apply_source_result(source, sessions, err, &mut model.state);
-            sync_selection(model);
             Vec::new()
         }
         Msg::AddSource { source, scanning } => {
@@ -625,10 +621,7 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::RemoveSource { source } => {
-            model.connected.remove(&source);
-            model.detecting.remove(&source);
             model.switcher.remove_source(&source, &mut model.state);
-            sync_selection(model);
             Vec::new()
         }
         Msg::DetectionFinished { source } => {
@@ -676,7 +669,6 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                         model
                             .switcher
                             .apply_source_result(source, sessions, err, &mut model.state);
-                        sync_selection(model);
                         None
                     }
                     EventEffect::ApplyPollResult {
@@ -691,7 +683,6 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                             err,
                             &mut model.state,
                         );
-                        sync_selection(model);
                         if failed {
                             None
                         } else {
@@ -715,7 +706,6 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                             &host,
                             reason,
                         );
-                        sync_selection(model);
                         None
                     }
                     effect => Some(Effect::Event(effect)),
@@ -807,9 +797,14 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                     let ceil = body_rows
                         .saturating_sub(2)
                         .clamp(NAV_HEIGHT_MIN, NAV_HEIGHT_MAX);
-                    model.nav_height =
+                    let next =
                         (base as i32 + delta).clamp(NAV_HEIGHT_MIN as i32, ceil as i32) as u16;
-                    vec![Effect::PersistNavHeight(model.nav_height)]
+                    if next == model.nav_height {
+                        Vec::new()
+                    } else {
+                        model.nav_height = next;
+                        vec![Effect::PersistNavHeight(model.nav_height)]
+                    }
                 }
                 _ => Vec::new(),
             }
@@ -999,7 +994,47 @@ mod tests {
         let effects = update(&mut model, Msg::MouseSelect { col, row });
 
         assert!(effects.is_empty());
+        assert!(model.state.selection.session.is_empty());
+        update(&mut model, Msg::SyncSelection);
         assert_eq!(model.state.selection.session, "work");
+    }
+
+    #[test]
+    fn remove_source_leaves_connection_and_detection_tracking_unchanged() {
+        let mut model = model();
+        model.connected.insert("local".into());
+        model.detecting.insert("local".into());
+
+        let effects = update(
+            &mut model,
+            Msg::RemoveSource {
+                source: "local".into(),
+            },
+        );
+
+        assert!(effects.is_empty());
+        assert!(model.connected.contains("local"));
+        assert!(model.detecting.contains("local"));
+    }
+
+    #[test]
+    fn clamped_band_resize_does_not_persist_an_unchanged_height() {
+        let mut model = model();
+        model.render_plan.layout = crate::ui::switcher::ViewLayout::Band;
+        model.nav_height = super::NAV_HEIGHT_MIN;
+
+        let effects = update(
+            &mut model,
+            Msg::ResizeNav {
+                horizontal: false,
+                delta: -1,
+                body_rows: 24,
+                ui_prefix: "C-g".into(),
+            },
+        );
+
+        assert!(effects.is_empty());
+        assert_eq!(model.nav_height, super::NAV_HEIGHT_MIN);
     }
 
     #[test]

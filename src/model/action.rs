@@ -251,6 +251,12 @@ pub enum EventEffect {
         from: String,
         to: String,
     },
+    /// `Connected`/`Inventory` after the navigation model and any display rename have
+    /// been applied: sync `source`'s display terminal(s).
+    SyncInventorySessions {
+        source: String,
+        sessions: Vec<Session>,
+    },
     /// `Sessions` (poll host, no enumeration error): drop any stale attach whose
     /// registry `.port` vanished, then sync `source`'s display terminal(s).
     /// Emitted by the app after [`Self::ApplyPollResult`] has applied the enumerated
@@ -361,6 +367,11 @@ impl std::fmt::Debug for EventEffect {
                 .field("source", source)
                 .field("from", from)
                 .field("to", to)
+                .finish(),
+            EventEffect::SyncInventorySessions { source, sessions } => f
+                .debug_struct("SyncInventorySessions")
+                .field("source", source)
+                .field("sessions", sessions)
                 .finish(),
             EventEffect::SyncPollSessions { source, sessions } => f
                 .debug_struct("SyncPollSessions")

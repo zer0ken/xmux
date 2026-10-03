@@ -91,18 +91,13 @@ impl Runtime {
                     let n = sessions.len();
                     let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
                     tracing::info!(host, n, ?names, "sessions_applied");
-                    // Sync this host's display terminal(s) (per-host for remote tmux).
-                    let mut ctx = crate::driver::DriverCtx {
-                        registry: &mut *registry,
-                        hosts: &mut *hosts,
-                        instance_name: &self.instance_name,
-                        mgr,
-                        worker,
-                        pty_tx,
-                        attach_seq: &mut *attach_seq,
-                        viewport: terminal_view_size(cols, rows, nav),
-                    };
-                    sync_source_terminals(&host, &sessions, &mut ctx);
+                    // Keep the display rename ahead of terminal reconciliation. The update
+                    // result already contains that rename, so append sync behind it on the
+                    // unified executor's ordered follow-up queue.
+                    followups.push(Effect::Event(EventEffect::SyncInventorySessions {
+                        source: host,
+                        sessions,
+                    }));
                 }
             }
             EventEffect::Refetch { host } => {
@@ -433,6 +428,20 @@ impl Runtime {
                     h.display.rename_session(&from, &to);
                 }
             }
+            EventEffect::SyncInventorySessions { source, sessions } => {
+                // Sync this host's display terminal(s) (per-host for remote tmux).
+                let mut ctx = crate::driver::DriverCtx {
+                    registry: &mut *registry,
+                    hosts: &mut *hosts,
+                    instance_name: &self.instance_name,
+                    mgr,
+                    worker,
+                    pty_tx,
+                    attach_seq: &mut *attach_seq,
+                    viewport: terminal_view_size(cols, rows, nav),
+                };
+                sync_source_terminals(&source, &sessions, &mut ctx);
+            }
             EventEffect::SyncPollSessions { source, sessions } => {
                 // A poll host's SUCCESSFUL enumeration (the nav group is already applied).
                 // The enumeration is logged at the producer (`run_poll`), where `err` is in
@@ -673,6 +682,8 @@ impl Runtime {
             spinner_start: std::time::Instant::now(),
             dirty: true,
             last_draw: std::time::Instant::now() - std::time::Duration::from_millis(FRAME_MS),
+            #[cfg(test)]
+            discovery_runs: 0,
             // The live config watch records a baseline on its first frame tick, so the
             // startup settings are not re-applied. `None` means no baseline yet.
         };

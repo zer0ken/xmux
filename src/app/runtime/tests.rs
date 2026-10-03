@@ -908,14 +908,53 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
     assert_eq!(group.sessions[0].name, "api");
 }
 
-// A re-scan starts the roster re-resolution off the loop, so the harness needs the
-// runtime the real loop always runs inside.
+#[test]
+fn inventory_rename_precedes_display_session_sync() {
+    let (state, switcher) = with_switcher(one_session_scan());
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.mgr.insert_fake("jup");
+    rt.hosts.insert(crate::model::Host::new(
+        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
+        crate::mux::for_binary("tmux").unwrap(),
+    ));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    let renamed = vec![crate::session::Session {
+        source: "jup".into(),
+        name: "renamed".into(),
+        mux: "tmux".into(),
+        windows: 2,
+        attached: false,
+    }];
+
+    let (_, followups) = rt.perform_source_effect(crate::model::EventEffect::ApplyInventory {
+        host: "jup".into(),
+        sessions: renamed,
+    });
+
+    assert!(matches!(
+        followups.as_slice(),
+        [
+            Effect::Event(crate::model::EventEffect::RenameDisplayed {
+                source: renamed_source,
+                from,
+                to,
+            }),
+            Effect::Event(crate::model::EventEffect::SyncInventorySessions {
+                source: synced_source,
+                ..
+            }),
+        ] if renamed_source == "jup"
+            && synced_source == "jup"
+            && from == "api"
+            && to == "renamed"
+    ));
+}
+
 #[tokio::test]
 async fn r_rescan_rebuilds_nav_and_kicks_discovery() {
-    // The client-initiated `r` re-scan resets the nav to its scanning skeleton
-    // (clears every group's sessions) and raises the rescan kick; the loop consumes
-    // the kick in kick_rescan, which re-lists each host. No session survives into
-    // the skeleton, so the subtree must stream back exactly as on first launch.
+    // The client-initiated `r` re-scan resets the nav to its scanning skeleton and
+    // re-lists each host. Repeated `r` keys in one stdin read still form one pass.
     use crate::session::Session;
     use crate::ui::switcher::{Scan, Switcher};
     use crate::ui::tree::Group;
@@ -951,29 +990,93 @@ async fn r_rescan_rebuilds_nav_and_kicks_discovery() {
     rt.model.state = state;
     rt.model.switcher = switcher;
 
-    // The `r` re-scan resets the nav to its scanning skeleton and clears sessions.
-    rt.model.switcher.request_rescan(&mut rt.model.state);
+    let mut width_changed = false;
+    let _ = rt.handle_nav_bytes(b"\x07r", &mut width_changed);
+
     assert!(
         rt.model.state.groups.iter().all(|g| g.sessions.is_empty()),
-        "request_rescan cleared the loaded sessions"
+        "the production nav input path cleared the loaded sessions"
     );
     assert!(
-        rt.model.switcher.take_rescan_kick(),
-        "request_rescan raised the rescan kick"
+        rt.model.state.scanning.contains("jup"),
+        "the production nav input path marked the source scanning"
     );
+    assert_eq!(rt.discovery_runs, 1, "one read starts one discovery pass");
 
-    // The loop consumes the kick and re-probes each machine.
-    kick_rescan(
-        &mut rt.model.switcher,
-        &rt.env,
-        &rt.hosts,
-        &rt.mgr,
-        &rt.scan_pool,
+    rt.discovery_runs = 0;
+    let _ = rt.handle_nav_bytes(b"\x07r\x07r", &mut width_changed);
+    assert_eq!(
+        rt.discovery_runs, 1,
+        "repeated rescan keys in one read share one discovery pass"
     );
-    assert!(
-        !rt.model.switcher.take_rescan_kick(),
-        "kick_rescan consumed the rescan kick"
-    );
+}
+
+struct CreateRecordingOps {
+    created: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+#[async_trait::async_trait]
+impl crate::ui::switcher::Ops for CreateRecordingOps {
+    fn sources(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    async fn list_sessions(&self, _source: &str) -> anyhow::Result<Vec<crate::session::Session>> {
+        Ok(Vec::new())
+    }
+
+    async fn new_session(
+        &self,
+        source: &str,
+        name: &str,
+    ) -> anyhow::Result<crate::session::Session> {
+        let _ = self.created.send(format!("{source}/{name}"));
+        Ok(crate::session::Session {
+            source: source.into(),
+            name: name.into(),
+            ..Default::default()
+        })
+    }
+
+    async fn login_command(
+        &self,
+        _source: &str,
+        _login: &crate::transport::Login,
+        _password: String,
+    ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
+        Ok(None)
+    }
+
+    async fn login_follow_ups(
+        &self,
+        _source: &str,
+        _login: &crate::transport::Login,
+        _write_config: bool,
+        _register: Option<crate::ui::ops::KeyRegistration>,
+    ) -> (crate::ui::ops::RegistrationOutcome, Vec<String>) {
+        (
+            crate::ui::ops::RegistrationOutcome::NotRequested,
+            Vec::new(),
+        )
+    }
+}
+
+#[tokio::test]
+async fn new_session_nav_input_spawns_the_create_op() {
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let (created_tx, mut created_rx) = tokio::sync::mpsc::unbounded_channel();
+    rt.ops = Arc::new(CreateRecordingOps {
+        created: created_tx,
+    });
+    let mut width_changed = false;
+
+    let _ = rt.handle_nav_bytes(b"\x07nwork\r", &mut width_changed);
+
+    let created = tokio::time::timeout(std::time::Duration::from_secs(1), created_rx.recv())
+        .await
+        .expect("create op should be spawned")
+        .expect("recording channel stays open");
+    assert_eq!(created, "local/work");
 }
 
 #[test]
@@ -1751,6 +1854,7 @@ fn test_rt(env: Env) -> Runtime {
         spinner_start: std::time::Instant::now(),
         dirty: true,
         last_draw: std::time::Instant::now(),
+        discovery_runs: 0,
     };
     sync_test_render_plan(&mut rt);
     rt

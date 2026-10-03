@@ -62,8 +62,20 @@ impl Runtime {
                 Some(Action::Forward(_)) | Some(Action::FocusNav(_)) | None => {}
             }
         }
-        let effects = update(&mut self.model, Msg::SetMouseNavArmed(nav_armed));
-        debug_assert!(effects.is_empty());
+        // One stdin read owns at most one discovery pass, even when it contains several
+        // complete prefix+r pairs. The nav state still applies every key in order.
+        let mut rescan_seen = false;
+        effects.retain(|effect| {
+            if matches!(effect, Effect::Command(crate::model::Command::Rescan)) {
+                let keep = !rescan_seen;
+                rescan_seen = true;
+                keep
+            } else {
+                true
+            }
+        });
+        let armed_effects = update(&mut self.model, Msg::SetMouseNavArmed(nav_armed));
+        debug_assert!(armed_effects.is_empty());
         // Route the full command batch through the runtime executor so every command a
         // switcher key produces is acted on. Merge its loop signals into this input read.
         let (cmd_quit, cmd_width_changed, _) = self.execute_effects(effects);

@@ -223,6 +223,10 @@ impl Runtime {
                         unreachable!("selection commands are applied inside update: {address:?}")
                     }
                     Command::Rescan => {
+                        #[cfg(test)]
+                        {
+                            self.discovery_runs += 1;
+                        }
                         run_discovery(&self.env, &self.hosts, &self.mgr, &self.scan_pool, true);
                     }
                     Command::AdjustNavWidth(_) => {
@@ -912,24 +916,6 @@ fn apply_scan_result(
     }
 }
 
-/// Consumes a pending re-scan kick (set by `r` or a menu "reconnect"): runs the shared
-/// discovery pass with the rescan flag, so a re-scan refreshes WHICH MACHINES exist
-/// (re-resolves the roster) and re-probes every machine's reachability, exactly the work
-/// a fresh launch runs. A no-op when no kick is pending. Shared by the key and menu paths.
-#[cfg(test)]
-fn kick_rescan(
-    switcher: &mut crate::ui::switcher::Switcher,
-    env: &Env,
-    hosts: &crate::model::Hosts,
-    mgr: &HostManager,
-    gate: &std::sync::Arc<tokio::sync::Semaphore>,
-) {
-    if !switcher.take_rescan_kick() {
-        return;
-    }
-    run_discovery(env, hosts, mgr, gate, true);
-}
-
 /// The shared discovery pass a fresh launch and a re-scan both run: probe every
 /// machine's reachability, and on a re-scan re-resolve the roster too. A machine's
 /// answer (`HostEvent::MachineProbed`) drives the rest - a connected machine detects and
@@ -1300,6 +1286,8 @@ struct Runtime {
     spinner_start: std::time::Instant,
     dirty: bool,
     last_draw: std::time::Instant,
+    #[cfg(test)]
+    discovery_runs: usize,
 }
 
 /// The loop's receiver halves, whose send halves `Runtime::new` wired into the world
