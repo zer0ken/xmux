@@ -86,22 +86,298 @@ fn reserve_bar(area: Rect, needed: bool, horizontal: bool) -> (Rect, Rect) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ScrollbarPlan {
+    area: Rect,
+    content_len: usize,
+    position: usize,
+    viewport_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavRule {
+    Horizontal(Rect),
+    Vertical(Rect),
+}
+
+/// Immutable geometry for one rendered frame. The app retains the latest plan so paint
+/// and mouse input consume the same card, popup, and split-view rectangles.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenderPlan {
+    pub screen_area: Rect,
+    pub layout: ViewLayout,
+    pub nav_position: NavPosition,
+    pub regions: Regions,
+    pub nav_inner: Rect,
+    pub nav_cells: Vec<(usize, Rect)>,
+    pub nav_row_offset: usize,
+    pub nav_col_offset: usize,
+    pub popup_rect: Rect,
+    hint_bar_rect: Rect,
+    pub collapse_button: Rect,
+    hidden_counts: Option<(usize, usize)>,
+    hidden_counts_rect: Rect,
+    connectors: Vec<Rect>,
+    nav_rule: Option<NavRule>,
+    scrollbar: ScrollbarPlan,
+    floating_hint_bar: bool,
+    fill_hint_bar_row: bool,
+    pub nav_hidden: bool,
+    pub nav_collapsed: bool,
+}
+
+impl Default for RenderPlan {
+    fn default() -> Self {
+        Self {
+            screen_area: Rect::default(),
+            layout: ViewLayout::Column,
+            nav_position: NavPosition::Left,
+            regions: Regions::default(),
+            nav_inner: Rect::default(),
+            nav_cells: Vec::new(),
+            nav_row_offset: 0,
+            nav_col_offset: 0,
+            popup_rect: Rect::default(),
+            hint_bar_rect: Rect::default(),
+            collapse_button: Rect::default(),
+            hidden_counts: None,
+            hidden_counts_rect: Rect::default(),
+            connectors: Vec::new(),
+            nav_rule: None,
+            scrollbar: ScrollbarPlan::default(),
+            floating_hint_bar: false,
+            fill_hint_bar_row: false,
+            nav_hidden: true,
+            nav_collapsed: false,
+        }
+    }
+}
+
 impl Switcher {
+    /// Computes the immutable geometry for one frame from the prior frame's scroll
+    /// positions. No switcher state is changed.
+    pub fn layout(
+        &self,
+        area: Rect,
+        nav: NavSize,
+        state: &crate::state::State,
+        previous: &RenderPlan,
+    ) -> RenderPlan {
+        let floating = hint_bar_floats(state);
+        let bar_w = if floating { area.width } else { nav.width };
+        let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
+        let regions = compute_regions(area, nav, hint_bar_h);
+        let fill_hint_bar_row = floating || !state.chrome.flash.is_empty();
+        let collapse_button = if floating || nav.width == 0 {
+            Rect::default()
+        } else {
+            collapse_button_rect(regions.hint_bar, nav.position, nav.collapsed)
+        };
+        let paint_button = if nav.collapsed {
+            Rect::default()
+        } else {
+            collapse_button
+        };
+        let resting_bar = if paint_button.is_empty() {
+            regions.hint_bar
+        } else {
+            Rect {
+                width: paint_button.x.saturating_sub(regions.hint_bar.x),
+                ..regions.hint_bar
+            }
+        };
+        let hint_bar_rect = hint_bar_rect(resting_bar, area, hint_bar_h, floating);
+        let mut plan = RenderPlan {
+            screen_area: area,
+            layout: regions.layout,
+            nav_position: nav.position,
+            regions,
+            nav_inner: if nav.width == 0 || nav.collapsed {
+                Rect::default()
+            } else {
+                regions.tree
+            },
+            nav_row_offset: previous.nav_row_offset,
+            nav_col_offset: previous.nav_col_offset,
+            popup_rect: self.modal_popup_rect(area, state),
+            hint_bar_rect,
+            collapse_button,
+            floating_hint_bar: floating,
+            fill_hint_bar_row,
+            nav_hidden: nav.width == 0,
+            nav_collapsed: nav.collapsed,
+            ..RenderPlan::default()
+        };
+        if !plan.nav_inner.is_empty() {
+            self.layout_nav(&mut plan, state);
+        }
+        if plan.hidden_counts.is_some() {
+            let chip = state
+                .chrome
+                .hint_bar_chip_width(resting_bar.width, state)
+                .min(resting_bar.width);
+            plan.hidden_counts_rect = Rect {
+                x: resting_bar.x + chip,
+                width: resting_bar.width - chip,
+                height: 1,
+                ..resting_bar
+            };
+        }
+        plan
+    }
+
+    fn layout_nav(&self, plan: &mut RenderPlan, state: &crate::state::State) {
+        let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
+        let num_w = self.number_width();
+        match plan.layout {
+            ViewLayout::Column => self.layout_nav_list(plan),
+            ViewLayout::Band => self.layout_nav_columns(plan, num_w, spinner_glyph),
+        }
+    }
+
+    fn layout_nav_list(&self, plan: &mut RenderPlan) {
+        let heights = vec![1u16; self.painted_rows()];
+        let flow = side::place(
+            &heights,
+            self.painted_boundary(),
+            plan.nav_inner.height,
+            plan.nav_row_offset,
+            self.selected,
+            self.selected_section_title(),
+        );
+        let (cards, bar) = reserve_bar(plan.nav_inner, flow.scrolls, false);
+        plan.nav_row_offset = flow.offset;
+        plan.nav_cells = flow
+            .slots
+            .iter()
+            .map(|slot| {
+                (
+                    slot.idx,
+                    Rect {
+                        x: cards.x,
+                        y: cards.y + slot.y,
+                        width: cards.width,
+                        height: slot.h,
+                    },
+                )
+            })
+            .collect();
+        plan.nav_rule = flow.rule_y.map(|y| {
+            NavRule::Horizontal(Rect {
+                x: cards.x,
+                y: cards.y + y,
+                width: cards.width,
+                height: 1,
+            })
+        });
+        if !bar.is_empty() {
+            plan.scrollbar = ScrollbarPlan {
+                area: bar,
+                content_len: self.painted_rows().saturating_sub(flow.visible),
+                position: flow.offset,
+                viewport_len: flow.visible,
+            };
+        }
+    }
+
+    fn layout_nav_columns(&self, plan: &mut RenderPlan, num_w: usize, spinner_glyph: char) {
+        let palette = self.palette;
+        let cards: Vec<columns::Card> = (0..self.painted_rows())
+            .map(|i| self.flow_card(i, num_w, spinner_glyph, &palette))
+            .collect();
+        let band = plan.nav_inner;
+        let boundary = self.painted_boundary().unwrap_or(cards.len());
+        let placed = columns::place(&cards, band.height, boundary);
+        let mut home_col = vec![false; cards.len()];
+        let mut head_col = None;
+        for (i, flag) in home_col.iter_mut().enumerate() {
+            if self.starts_run(i) {
+                head_col = placed.get(i).map(|p| p.col);
+            }
+            *flag = matches!((head_col, placed.get(i)), (Some(c), Some(p)) if c == p.col);
+        }
+        let widths = columns::widths(&cards, &placed, band.width);
+        let bcol = columns::boundary_col(&placed, boundary);
+        let parting = columns::parting(&widths, bcol, band.width, COL_GUTTER);
+        let sel_col = placed.get(self.selected).map_or(0, |p| p.col);
+        plan.nav_col_offset = match parting {
+            Some(columns::Parting::Gap) => 0,
+            Some(columns::Parting::Rule) => {
+                let dw = columns::display_widths(&widths, bcol, columns::Parting::Rule);
+                let sel = columns::display_col(sel_col, bcol, parting);
+                columns::scroll_to(&dw, band.width, COL_GUTTER, plan.nav_col_offset, sel)
+            }
+            None => columns::scroll_to(
+                &widths,
+                band.width,
+                COL_GUTTER,
+                plan.nav_col_offset,
+                sel_col,
+            ),
+        };
+        let (cells, rule) = columns::cells(
+            &placed,
+            &widths,
+            bcol,
+            parting,
+            band,
+            plan.nav_col_offset,
+            COL_GUTTER,
+        );
+        for cell in cells {
+            let indent = if self.starts_run(cell.idx) {
+                0
+            } else {
+                CONNECTOR_W
+            };
+            if indent > 0 && home_col[cell.idx] {
+                plan.connectors.push(cell.rect);
+            }
+            plan.nav_cells.push((
+                cell.idx,
+                Rect {
+                    x: cell.rect.x + indent,
+                    width: cell.rect.width.saturating_sub(indent),
+                    ..cell.rect
+                },
+            ));
+        }
+        plan.nav_rule = rule.map(NavRule::Vertical);
+        let (shown, n) = match parting {
+            Some(columns::Parting::Gap) => (widths.len(), widths.len()),
+            Some(columns::Parting::Rule) => {
+                let dw = columns::display_widths(&widths, bcol, columns::Parting::Rule);
+                (
+                    columns::visible_cols(&dw, band.width, plan.nav_col_offset, COL_GUTTER),
+                    dw.len(),
+                )
+            }
+            None => (
+                columns::visible_cols(&widths, band.width, plan.nav_col_offset, COL_GUTTER),
+                widths.len(),
+            ),
+        };
+        if shown < n {
+            plan.hidden_counts = Some(columns::hidden_counts(
+                &placed,
+                bcol,
+                parting,
+                plan.nav_col_offset,
+                shown,
+            ));
+        }
+    }
+
     pub fn render(
-        &mut self,
+        &self,
         frame: &mut Frame,
         grid: Option<&crate::display::grid::Grid>,
         terminal_focused: bool,
-        nav: NavSize,
         state: &crate::state::State,
+        plan: &RenderPlan,
     ) {
-        let area = frame.area();
+        let area = plan.screen_area;
         let palette = self.palette;
-        self.screen_area = area;
-        let nav_width = nav.width;
-        // Cache the stacking so key handling routes the arrows to match what is on screen.
-        // It follows the attachment position, which the hidden nav carries unchanged.
-        self.layout = nav.position.layout();
         // Reset the buffer before painting. The widgets below do not all fill every cell
         // they own - the mux grid only paints its top-left clip (cells past the grid size
         // are skipped), the view border rule sets fg only, and the nav list leaves blank
@@ -113,8 +389,7 @@ impl Switcher {
         // nav_width == 0 is the "nav hidden" sentinel (terminal view focused + auto-hide):
         // the terminal view owns the whole area - no nav list, no view border, and no
         // status line of its own, since the user asked for the whole screen to be the mux.
-        if nav_width == 0 {
-            self.nav_inner = Rect::default();
+        if plan.nav_hidden {
             self.render_terminal_view(frame, area, grid);
             if let Some(g) = grid {
                 if !g.hide_cursor() {
@@ -124,19 +399,17 @@ impl Switcher {
             // The bar still floats for the states that must be seen even here: an armed
             // prefix, open input, or refusal flash. Hiding the nav hides the status line,
             // not xmux's ability to answer a keypress.
-            if hint_bar_floats(state) {
-                let h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
-                let rect = hint_bar_rect(Rect::default(), area, h, true);
+            if plan.floating_hint_bar {
                 state.chrome.render_hint_bar(
                     frame,
-                    rect,
+                    plan.hint_bar_rect,
                     state,
                     crate::ui::chrome::BarFill::Row,
                     &palette,
                 );
             }
             // The modal stacks above the bar: a popup is a stronger claim on the screen.
-            self.render_modal_popup(frame, area, state, &palette);
+            self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
             return;
         }
         // One geometry source for the whole frame (compute_regions), shared with the PTY
@@ -146,22 +419,12 @@ impl Switcher {
         // row; a long flash wraps, so size it to the wrapped line count (never clipped).
         // Measured at the width it will RENDER at: the nav column normally, the whole
         // window whenever the bar floats (see `hint_bar_floats` / `hint_bar_rect`).
-        let floating = hint_bar_floats(state);
-        let bar_w = if floating { area.width } else { nav_width };
-        let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
-        let r = compute_regions(area, nav, hint_bar_h);
-        let hidden = if nav.collapsed {
-            self.nav_inner = Rect::default();
-            self.nav_cells.clear();
-            None
-        } else {
-            self.render_nav(frame, r.tree, state, &palette)
-        };
+        self.render_nav(frame, state, plan, &palette);
         // The view border marks focus between the two views (vertical in a column, horizontal in a band).
         state
             .chrome
-            .render_view_border(frame, r.view_border, terminal_focused);
-        let term_area = r.terminal;
+            .render_view_border(frame, plan.regions.view_border, terminal_focused);
+        let term_area = plan.regions.terminal;
         // A selected host with no session to show has no live grid to mirror: its host
         // screen fills the region instead, so neither state is ever a blank view with no
         // next step. One call for both, because they are one screen in two states.
@@ -191,51 +454,30 @@ impl Switcher {
         // only the cells it needs, and the counts sit at the ends of what is left). An
         // ARMED or flashing bar takes the whole row back, because a cheatsheet has to be
         // readable over whatever it covers.
-        let fill = if floating || !state.chrome.flash.is_empty() {
+        let fill = if plan.fill_hint_bar_row {
             crate::ui::chrome::BarFill::Row
         } else {
             crate::ui::chrome::BarFill::Content
         };
-        let button = if floating || nav.collapsed {
-            Rect::default()
-        } else {
-            collapse_button_rect(r.hint_bar, nav.position, false)
-        };
-        let resting_bar = if button.is_empty() {
-            r.hint_bar
-        } else {
-            Rect {
-                width: button.x.saturating_sub(r.hint_bar.x),
-                ..r.hint_bar
-            }
-        };
-        if let (Some(counts), crate::ui::chrome::BarFill::Content) = (hidden, fill) {
-            let chip = state
-                .chrome
-                .hint_bar_chip_width(resting_bar.width, state)
-                .min(resting_bar.width);
-            let track = Rect {
-                x: resting_bar.x + chip,
-                width: resting_bar.width - chip,
-                height: 1,
-                ..resting_bar
-            };
-            Self::render_hidden_counts(frame, track, counts, &palette);
+        if let (Some(counts), crate::ui::chrome::BarFill::Content) = (plan.hidden_counts, fill) {
+            Self::render_hidden_counts(frame, plan.hidden_counts_rect, counts, &palette);
         }
-        let bar_rect = hint_bar_rect(resting_bar, area, hint_bar_h, floating);
-        if nav.collapsed && !floating {
-            state
-                .chrome
-                .render_collapsed_hint_bar(frame, bar_rect, nav.position, &palette);
+        if plan.nav_collapsed && !plan.floating_hint_bar {
+            state.chrome.render_collapsed_hint_bar(
+                frame,
+                plan.hint_bar_rect,
+                plan.nav_position,
+                &palette,
+            );
         } else {
             state
                 .chrome
-                .render_hint_bar(frame, bar_rect, state, fill, &palette);
-            if !button.is_empty() {
+                .render_hint_bar(frame, plan.hint_bar_rect, state, fill, &palette);
+            if !plan.collapse_button.is_empty() {
                 state.chrome.render_collapse_button(
                     frame,
-                    r.hint_bar,
-                    nav.position,
+                    plan.regions.hint_bar,
+                    plan.nav_position,
                     false,
                     &palette,
                 );
@@ -250,7 +492,20 @@ impl Switcher {
                 }
             }
         }
-        self.render_modal_popup(frame, area, state, &palette);
+        self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn render_test(
+        &self,
+        frame: &mut Frame,
+        grid: Option<&crate::display::grid::Grid>,
+        terminal_focused: bool,
+        nav: NavSize,
+        state: &crate::state::State,
+    ) {
+        let plan = self.layout(frame.area(), nav, state, &RenderPlan::default());
+        self.render(frame, grid, terminal_focused, state, &plan);
     }
 
     /// The navigation cards. A column stacks them in one vertically-scrolling list; a
@@ -261,98 +516,34 @@ impl Switcher {
     /// region rather than sitting over the cards: the selected card is painted by
     /// inverting its whole rect, and a thumb inside that rect inverts with it into a
     /// hole in the bar.
-    /// Returns how many cards are off screen either side of the portrait flow's window,
-    /// as `(left, right)`: the caller writes those counts on the hint bar's row, at the
-    /// ends the hidden columns are behind. `None` when the whole flow fits, and always in
-    /// the side layout, whose own scrollbar is a column it reserves itself.
     fn render_nav(
-        &mut self,
+        &self,
         frame: &mut Frame,
-        area: Rect,
         state: &crate::state::State,
-        palette: &palette::Palette,
-    ) -> Option<(usize, usize)> {
-        // No border box: the cards fill their region outright and a single rule
-        // (render_view_border) separates it from the terminal view.
-        self.nav_inner = area;
-        self.nav_cells.clear();
-        // The selection can reach a host card while the band is hidden (a jump by number,
-        // the selected session going away): the band shows again rather than leave the
-        // selection on a card nobody can see.
-        if self.host_band_hidden && !matches!(self.current_ref(), Some(RowRef::Session { .. })) {
-            self.host_band_hidden = false;
-        }
-        let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
-        let num_w = self.number_width();
-        match self.layout {
-            ViewLayout::Column => {
-                self.render_nav_list(frame, area, num_w, spinner_glyph, palette);
-                None
-            }
-            ViewLayout::Band => self.render_nav_columns(frame, area, num_w, spinner_glyph, palette),
-        }
-    }
-
-    /// The column layout's nav: two BANDS of cards in one vertically-scrolling region,
-    /// the section titles + session cards over the host-state cards, laid out by
-    /// [`side::place`] - the one geometry the paint, the mouse hit-test and the
-    /// scrollbar all read.
-    /// Card heights are uniform - every navigation row, section title, session card, and
-    /// host-state card alike, is one screen row - so a card's rect is recorded as it
-    /// paints rather than derived a second time from a row pitch.
-    /// `list_state` carries the settled scroll position for the next frame to resume
-    /// from, and the selected card is painted in the terminal theme's own selected look
-    /// by inverting its rect, so the card spans bake in no background of their own.
-    fn render_nav_list(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        num_w: usize,
-        spinner_glyph: char,
+        plan: &RenderPlan,
         palette: &palette::Palette,
     ) {
-        let heights = vec![1u16; self.painted_rows()];
-        // The placement decides whether the list scrolls, and the strip is a COLUMN, so
-        // reserving it after the fact takes nothing away from what was just laid out.
-        let flow = side::place(
-            &heights,
-            self.painted_boundary(),
-            area.height,
-            self.list_state.offset(),
-            self.selected,
-            self.selected_section_title(),
-        );
-        let (cards, bar) = reserve_bar(area, flow.scrolls, false);
-        *self.list_state.offset_mut() = flow.offset;
-        for slot in &flow.slots {
-            let rect = Rect {
-                x: cards.x,
-                y: cards.y + slot.y,
-                width: cards.width,
-                height: slot.h,
-            };
-            let lines = self.nav_row_lines(slot.idx, num_w, spinner_glyph, rect.width, palette);
+        let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
+        let num_w = self.number_width();
+        for rect in &plan.connectors {
+            Self::render_card_connector(frame, *rect, palette);
+        }
+        for &(idx, rect) in &plan.nav_cells {
+            let lines =
+                self.nav_row_lines(idx, num_w, spinner_glyph, rect.width, plan.layout, palette);
             frame.render_widget(Paragraph::new(lines), rect);
-            if self.list_state.selected() == Some(slot.idx) {
+            if self.selected == idx {
                 frame
                     .buffer_mut()
                     .set_style(rect, palette::selection_style(palette));
             }
-            self.nav_cells.push((slot.idx, rect));
         }
-        if let Some(y) = flow.rule_y {
-            Self::render_band_rule(
-                frame,
-                Rect {
-                    x: cards.x,
-                    y: cards.y + y,
-                    width: cards.width,
-                    height: 1,
-                },
-                palette,
-            );
+        match plan.nav_rule {
+            Some(NavRule::Horizontal(rect)) => Self::render_band_rule(frame, rect, palette),
+            Some(NavRule::Vertical(rect)) => Self::render_column_rule(frame, rect, palette),
+            None => {}
         }
-        self.render_nav_scrollbar(frame, bar, &flow, palette);
+        self.render_nav_scrollbar(frame, plan.scrollbar, palette);
     }
 
     /// The rule parting the side list's two bands once they scroll as one run. A single
@@ -366,138 +557,6 @@ impl Switcher {
             ))),
             rect,
         );
-    }
-
-    /// The band layout's nav: the same rows flowed into columns that fill
-    /// downward and continue to the right, each column holding whole sections (a
-    /// `{host}/{mux}` title over its session cards) or a host-state card.
-    ///
-    /// The band spends none of its rows on the scrollbar: the thumb goes on the hint bar's
-    /// row, beside the bar's own label, so every row of the band stays a card row and no
-    /// card rect can contain the thumb (a selected card inverts its whole rect, and a thumb
-    /// inside one inverts with it into a hole in the bar).
-    fn render_nav_columns(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        num_w: usize,
-        spinner_glyph: char,
-        palette: &palette::Palette,
-    ) -> Option<(usize, usize)> {
-        let cards: Vec<columns::Card> = (0..self.painted_rows())
-            .map(|i| self.flow_card(i, num_w, spinner_glyph, palette))
-            .collect();
-        let band = area;
-        let boundary = self.painted_boundary().unwrap_or(cards.len());
-        let placed = columns::place(&cards, band.height, boundary);
-        // Which cards stand in the column their own section title stands in. A section
-        // taller than a whole column is the one that splits, and its continuation opens
-        // the next column under a RE-STATED title; the connector marks the title that
-        // owns the group, so it stops at the break rather than running under a repeat.
-        let mut home_col = vec![false; cards.len()];
-        let mut head_col = None;
-        for (i, flag) in home_col.iter_mut().enumerate() {
-            if self.starts_run(i) {
-                head_col = placed.get(i).map(|p| p.col);
-            }
-            *flag = matches!((head_col, placed.get(i)), (Some(c), Some(p)) if c == p.col);
-        }
-        let widths = columns::widths(&cards, &placed, band.width);
-        let bcol = columns::boundary_col(&placed, boundary);
-        let parting = columns::parting(&widths, bcol, band.width, COL_GUTTER);
-        // Keep the selected card's column on screen, scrolling the least it takes. In the
-        // gap parting there is nothing off screen to scroll to, so the offset resets.
-        let sel_col = self
-            .list_state
-            .selected()
-            .and_then(|i| placed.get(i))
-            .map_or(0, |p| p.col);
-        match parting {
-            Some(columns::Parting::Gap) => self.nav_col_offset = 0,
-            Some(columns::Parting::Rule) => {
-                let dw = columns::display_widths(&widths, bcol, columns::Parting::Rule);
-                let sel = columns::display_col(sel_col, bcol, parting);
-                self.nav_col_offset =
-                    columns::scroll_to(&dw, band.width, COL_GUTTER, self.nav_col_offset, sel);
-            }
-            None => {
-                self.nav_col_offset = columns::scroll_to(
-                    &widths,
-                    band.width,
-                    COL_GUTTER,
-                    self.nav_col_offset,
-                    sel_col,
-                );
-            }
-        }
-        let (cells, rule) = columns::cells(
-            &placed,
-            &widths,
-            bcol,
-            parting,
-            band,
-            self.nav_col_offset,
-            COL_GUTTER,
-        );
-        for cell in &cells {
-            // The connector's strip is the column's left edge, and the CARD begins past
-            // it. Furniture belonging to the title, not part of the card: the selection
-            // inverts the card's rect, and a mark swallowed by that inversion would
-            // break the one line the eye follows down the group. A section title and a
-            // host-state card open no group and take no strip.
-            let indent = if self.starts_run(cell.idx) {
-                0
-            } else {
-                CONNECTOR_W
-            };
-            let card = Rect {
-                x: cell.rect.x + indent,
-                width: cell.rect.width.saturating_sub(indent),
-                ..cell.rect
-            };
-            if indent > 0 && home_col[cell.idx] {
-                Self::render_card_connector(frame, cell.rect, palette);
-            }
-            let lines = self.nav_row_lines(cell.idx, num_w, spinner_glyph, card.width, palette);
-            frame.render_widget(Paragraph::new(lines), card);
-            if self.list_state.selected() == Some(cell.idx) {
-                // The card's OWN rect, not the band's width: in a grid the selection marks
-                // one cell, and a full-width bar would claim the columns beside it.
-                frame
-                    .buffer_mut()
-                    .set_style(card, palette::selection_style(palette));
-            }
-            self.nav_cells.push((cell.idx, card));
-        }
-        if let Some(rule_rect) = rule {
-            Self::render_column_rule(frame, rule_rect, palette);
-        }
-        // What the caller needs for the offscreen cue: the cards behind the columns the
-        // window does not reach, counted on each side.
-        let (shown, n) = match parting {
-            Some(columns::Parting::Gap) => (widths.len(), widths.len()),
-            Some(columns::Parting::Rule) => {
-                let dw = columns::display_widths(&widths, bcol, columns::Parting::Rule);
-                (
-                    columns::visible_cols(&dw, band.width, self.nav_col_offset, COL_GUTTER),
-                    dw.len(),
-                )
-            }
-            None => (
-                columns::visible_cols(&widths, band.width, self.nav_col_offset, COL_GUTTER),
-                widths.len(),
-            ),
-        };
-        if shown >= n {
-            return None;
-        }
-        Some(columns::hidden_counts(
-            &placed,
-            bcol,
-            parting,
-            self.nav_col_offset,
-            shown,
-        ))
     }
 
     /// The vertical rule parting the two bands in the portrait flow once they cannot
@@ -601,19 +660,17 @@ impl Switcher {
     /// marker, not furniture. Counted in cards (not screen rows) over the variable card
     /// heights, from the placement the cards were painted with.
     fn render_nav_scrollbar(
-        &mut self,
+        &self,
         frame: &mut Frame,
-        bar: Rect,
-        flow: &side::Flow,
+        plan: ScrollbarPlan,
         palette: &palette::Palette,
     ) {
-        let total = self.painted_rows();
-        if bar.width == 0 || bar.height == 0 {
+        if plan.area.is_empty() {
             return;
         }
-        let mut sb = ScrollbarState::new(total.saturating_sub(flow.visible))
-            .position(flow.offset)
-            .viewport_content_length(flow.visible);
+        let mut sb = ScrollbarState::new(plan.content_len)
+            .position(plan.position)
+            .viewport_content_length(plan.viewport_len);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -621,7 +678,7 @@ impl Switcher {
                 .track_symbol(None)
                 .thumb_symbol("▐")
                 .thumb_style(Style::default().fg(palette.decoration)),
-            bar,
+            plan.area,
             &mut sb,
         );
     }
@@ -646,7 +703,7 @@ impl Switcher {
         spinner_glyph: char,
         palette: &palette::Palette,
     ) -> columns::Card {
-        let lines = self.nav_row_lines(i, num_w, spinner_glyph, 0, palette);
+        let lines = self.nav_row_lines(i, num_w, spinner_glyph, 0, ViewLayout::Band, palette);
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
         let starts_run = self.starts_run(i);
         // A session card is pushed right by the connector's strip, so the column has to
@@ -690,10 +747,11 @@ impl Switcher {
         num_w: usize,
         spinner_glyph: char,
         width: u16,
+        layout: ViewLayout,
         palette: &palette::Palette,
     ) -> Vec<Line<'static>> {
         let row = &self.rows[i];
-        let selected = self.list_state.selected() == Some(i);
+        let selected = self.selected == i;
         let accent = Style::default().fg(palette.accent);
         let number = Style::default().fg(palette.decoration);
         let separator = Style::default().fg(palette.decoration);
@@ -726,7 +784,7 @@ impl Switcher {
                 format!("{host}/{mux}")
             };
             let title_w = UnicodeWidthStr::width(title.as_str()) as u16;
-            let rule_w = match self.layout {
+            let rule_w = match layout {
                 ViewLayout::Column => width.saturating_sub(title_w.saturating_add(1)),
                 ViewLayout::Band => 0,
             };
@@ -837,30 +895,35 @@ impl Switcher {
         }
     }
 
-    /// Draws the active centered modal popup, shifted by `popup_offset`, through the
-    /// shared opaque `render_popup`, and caches its rect for drag hit-testing. Only the
-    /// keys help is a popup now: an input renders in the hint bar instead, so its
-    /// presence never draws a centered box here.
+    fn modal_popup_rect(&self, area: Rect, state: &crate::state::State) -> Rect {
+        let Some(Modal::Help) = &state.modal else {
+            return Rect::default();
+        };
+        let (_, lines) = modal::help_lines(
+            &state.chrome.ui_prefix,
+            state.chrome.nav_position,
+            &self.palette,
+        );
+        let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+        let w = (inner_w + 3).max(24).min(area.width.max(1));
+        let h = (lines.len() as u16 + 2).min(area.height.max(1));
+        modal::offset_centered(w, h, area, self.popup_geo.offset)
+    }
+
+    /// Draws the active modal at the rectangle supplied by the frame's plan.
     fn render_modal_popup(
-        &mut self,
+        &self,
         frame: &mut Frame,
         area: Rect,
         state: &crate::state::State,
+        rect: Rect,
         palette: &palette::Palette,
     ) {
         let Some(Modal::Help) = &state.modal else {
-            self.popup_geo.rect = Rect::default();
             return;
         };
         let (title, lines) =
             modal::help_lines(&state.chrome.ui_prefix, state.chrome.nav_position, palette);
-        let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
-        // borders + a cell of right padding, at least 24 wide, never past the screen.
-        // `.max(24).min(width)` (not `clamp`) so a sub-24-col terminal cannot panic.
-        let w = (inner_w + 3).max(24).min(area.width.max(1));
-        let h = (lines.len() as u16 + 2).min(area.height.max(1));
-        let rect = modal::offset_centered(w, h, area, self.popup_geo.offset);
-        self.popup_geo.rect = rect;
         modal::render_popup(frame, area, rect, &title, lines, palette);
     }
 }

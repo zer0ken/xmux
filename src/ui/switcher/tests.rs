@@ -68,6 +68,7 @@ impl Ops for RecordOps {
 
 struct Harness {
     sw: Switcher,
+    plan: RenderPlan,
     state: crate::state::State,
     term: Terminal<TestBackend>,
     ops: RecordOps,
@@ -89,6 +90,7 @@ impl Harness {
         let mut state = crate::state::State::from_scan(scan);
         let mut h = Harness {
             sw: Switcher::new(&mut state),
+            plan: RenderPlan::default(),
             state,
             term,
             ops: RecordOps::default(),
@@ -104,6 +106,7 @@ impl Harness {
         let mut state = crate::state::State::from_sources(aliases);
         let mut h = Harness {
             sw: Switcher::from_sources(&mut state),
+            plan: RenderPlan::default(),
             state,
             term,
             ops: RecordOps::default(),
@@ -178,11 +181,18 @@ impl Harness {
     }
 
     fn draw(&mut self) {
-        let sw = &mut self.sw;
+        let sw = &self.sw;
         let state = &self.state;
+        let previous = self.plan.clone();
+        let mut next = None;
         self.term
-            .draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), state))
+            .draw(|f| {
+                let plan = sw.layout(f.area(), auto_nav(NAV_WIDTH, f.area()), state, &previous);
+                sw.render(f, None, false, state, &plan);
+                next = Some(plan);
+            })
             .unwrap();
+        self.plan = next.expect("draw produced a render plan");
     }
 
     async fn key(&mut self, code: KeyCode) {
@@ -2025,12 +2035,12 @@ async fn armed_hint_bar_fits_a_narrow_nav() {
     // the nav column to fit in, so it must degrade to a shorter candidate, never clip.
     let mut state = crate::state::State::from_scan(sample());
     state.chrome.set_armed(true);
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     let nav_w = 24u16;
     // Landscape enough for the side column: a row counts as two columns, so the terminal
     // beside a 24-wide nav must beat twice the rows (90 - 25 = 65 against 60).
     let mut term = Terminal::new(TestBackend::new(90, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(nav_w), &state))
+    term.draw(|f| sw.render_test(f, None, false, NavSize::visible(nav_w), &state))
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1;
@@ -2055,9 +2065,9 @@ fn the_nav_renders_at_the_minimum_width() {
     // button. At that width the full control stays visible and the cards clip.
     let min = crate::app::runtime::nav_width_min("C-g");
     let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(min), &state))
+    term.draw(|f| sw.render_test(f, None, false, NavSize::visible(min), &state))
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1;
@@ -2065,7 +2075,7 @@ fn the_nav_renders_at_the_minimum_width() {
     assert_eq!(text, " C-g <<", "resting bar at min width");
 
     state.scanning.insert("local".into());
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(min), &state))
+    term.draw(|f| sw.render_test(f, None, false, NavSize::visible(min), &state))
         .unwrap();
     let buf = term.backend().buffer();
     let text: String = (0..min).map(|x| buf[(x, y)].symbol()).collect();
@@ -2087,11 +2097,11 @@ fn hint_bar_has_status_bar_background() {
     // prefix and collapse button sit on the nav's last row. The cells it owns carry the
     // dark bar background, while columns outside the controls remain with the view below.
     let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     // Wide enough that the terminal view stays landscape, so the layout is a column and the
     // nav column runs the full height (its last row IS the hint bar).
     let mut term = Terminal::new(TestBackend::new(140, 20)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer();
     let y = buf.area.height - 1; // the one-line hint bar sits on the nav's last row
@@ -2782,7 +2792,7 @@ async fn only_the_side_lists_section_title_trails_a_rule() {
     // standing side by side, where the rule would run into the gutter and read as a bar
     // parting the columns instead - so the band's title stands alone.
     let side = Harness::new(sample());
-    assert_eq!(side.sw.layout(), ViewLayout::Column, "landscape → Side");
+    assert_eq!(side.plan.layout, ViewLayout::Column, "landscape → Side");
     let y = side.nav_row_of("local").expect("the section title");
     let painted = nav_line(&side, y);
     assert!(
@@ -2791,7 +2801,7 @@ async fn only_the_side_lists_section_title_trails_a_rule() {
     );
 
     let top = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(top.sw.layout(), ViewLayout::Band, "portrait → Top");
+    assert_eq!(top.plan.layout, ViewLayout::Band, "portrait → Top");
     let y = row_of(top.buf(), "local", top.buf().area.width).expect("the section title");
     let painted = band_line(&top, y);
     assert!(
@@ -2806,7 +2816,7 @@ async fn the_band_connects_a_session_card_to_the_title_that_owns_it() {
     // does not say which title owns it - a connector down the card's left does. The
     // title itself carries none: it is what the connector points at.
     let h = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
+    assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
     let w = h.buf().area.width;
     let title = row_of(h.buf(), "local", w).expect("the section title");
     assert!(
@@ -2829,7 +2839,7 @@ async fn a_split_sections_continuation_columns_carry_no_connector() {
     // so it stays in that title's own column rather than running under a repeat of it.
     // Ten sessions in a three-row band: one section across five columns.
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
-    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
+    assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
     let w = h.buf().area.width;
     for name in ["s0", "s1"] {
         let painted = band_line(&h, row_of(h.buf(), name, w).expect(name));
@@ -2845,15 +2855,16 @@ async fn a_split_sections_continuation_columns_carry_no_connector() {
     }
     // The continuation still INDENTS by the connector's two columns, so every card of
     // the section reads at one offset INSIDE its column whichever one it landed in.
-    // Measured against the rect the paint recorded, since the columns start wherever the
+    // Measured against the rect the plan recorded, since the columns start wherever the
     // widths put them.
     let offset = |name: &str| -> u16 {
         let (x, y) = locate(h.buf(), name, w).expect(name);
-        let (_, rect) =
-            h.sw.nav_cells
-                .iter()
-                .find(|(_, r)| r.y == y && r.x <= x && x < r.x + r.width)
-                .expect("the card the paint recorded");
+        let (_, rect) = h
+            .plan
+            .nav_cells
+            .iter()
+            .find(|(_, r)| r.y == y && r.x <= x && x < r.x + r.width)
+            .expect("the card in the frame plan");
         x - rect.x
     };
     assert_eq!(
@@ -2870,13 +2881,14 @@ async fn the_selections_inversion_stops_at_the_card_and_spares_the_connector() {
     // invert with it and notch the line at exactly the row the eye is on. It sits in the
     // strip left of the rect instead, and the line runs past the selected card unbroken.
     let h = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
+    assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
     let sel = h.sw.selected;
-    let (_, rect) =
-        h.sw.nav_cells
-            .iter()
-            .find(|(i, _)| *i == sel)
-            .expect("the selected card's rect");
+    let (_, rect) = h
+        .plan
+        .nav_cells
+        .iter()
+        .find(|(i, _)| *i == sel)
+        .expect("the selected card's rect");
     assert!(
         rect.x >= CONNECTOR_W,
         "the selected card is a session card, which stands past a strip"
@@ -2906,8 +2918,8 @@ async fn a_split_sections_continuation_columns_name_nothing() {
     // says the continuation is the same section. A row spent naming it again is a row of
     // cards lost, which is the whole reason the band flows into columns at all.
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
-    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
-    let band = h.sw.nav_inner;
+    assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
+    let band = h.plan.nav_inner;
     let painted: String = (band.y..band.y + band.height)
         .map(|y| band_line(&h, y))
         .collect::<Vec<_>>()
@@ -2917,7 +2929,7 @@ async fn a_split_sections_continuation_columns_name_nothing() {
         1,
         "the section is named once across every column it spans:\n{painted}"
     );
-    let cells = cells_of(&h.sw);
+    let cells = cells_of(&h.plan);
     assert!(
         cells[&3].x > cells[&2].x,
         "the section really did split: s2 opened a column"
@@ -2962,8 +2974,8 @@ async fn a_column_is_never_narrower_than_the_title_naming_it() {
     );
     h.sw.rebuild(&mut h.state);
     h.draw();
-    assert_eq!(h.sw.layout(), ViewLayout::Band, "portrait → Top");
-    let band = h.sw.nav_inner;
+    assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
+    let band = h.plan.nav_inner;
     let painted: String = (band.y..band.y + band.height)
         .map(|y| band_line(&h, y))
         .collect::<Vec<_>>()
@@ -2975,7 +2987,7 @@ async fn a_column_is_never_narrower_than_the_title_naming_it() {
         );
     }
     // On its own row, whole: the title never carries onto a second one.
-    let cells = cells_of(&h.sw);
+    let cells = cells_of(&h.plan);
     assert_eq!(cells[&0].height, 1, "the title is one row");
     assert_eq!(
         cells[&1].y,
@@ -3049,7 +3061,8 @@ fn scan_with_bands(n: usize) -> Scan {
 
 /// The rect the paint gave card `idx`.
 fn card_rect(h: &Harness, idx: usize) -> Rect {
-    h.sw.nav_cells
+    h.plan
+        .nav_cells
         .iter()
         .find(|(i, _)| *i == idx)
         .map(|(_, r)| *r)
@@ -3087,7 +3100,7 @@ async fn the_bands_part_with_the_rows_left_over() {
     let boundary = h.sw.band_boundary().expect("the list has a host card");
     let host = card_rect(&h, boundary);
     let last_session = card_rect(&h, boundary - 1);
-    let region = h.sw.nav_inner;
+    let region = h.plan.nav_inner;
     assert_eq!(
         host.y + host.height,
         region.y + region.height,
@@ -3145,7 +3158,7 @@ async fn the_bands_never_touch_on_screen() {
     h.draw();
     let cards: u16 = h.sw.rows.len() as u16;
     assert_eq!(
-        cards, h.sw.nav_inner.height,
+        cards, h.plan.nav_inner.height,
         "the precondition: the cards alone fill the region exactly"
     );
     h.key(KeyCode::End).await; // scroll down to the boundary
@@ -3166,10 +3179,13 @@ async fn the_bands_never_touch_on_screen() {
     );
     // Scrolling is on a row before the cards themselves would need it, so the strip beside
     // them is reserved and the thumb is drawn.
-    let strip = h.sw.nav_inner.x + h.sw.nav_inner.width - 1;
+    let strip = h.plan.nav_inner.x + h.plan.nav_inner.width - 1;
     assert!(
-        (h.sw.nav_inner.y..h.sw.nav_inner.y + h.sw.nav_inner.height)
-            .any(|y| h.buf()[(strip, y)].symbol().trim() != ""),
+        (h.plan.nav_inner.y..h.plan.nav_inner.y + h.plan.nav_inner.height).any(|y| h.buf()
+            [(strip, y)]
+            .symbol()
+            .trim()
+            != ""),
         "the scrollbar strip is reserved and drawn"
     );
 }
@@ -3182,7 +3198,7 @@ async fn scanning_hosts_anchor_to_the_bottom_until_found() {
     let h = Harness::from_sources(&["local", "jupiter00"]);
     let txt = h.nav_cards_text();
     let rows: Vec<&str> = txt.lines().collect();
-    let region_bottom = (h.sw.nav_inner.y + h.sw.nav_inner.height) as usize;
+    let region_bottom = (h.plan.nav_inner.y + h.plan.nav_inner.height) as usize;
     let card_rows: Vec<usize> = rows
         .iter()
         .enumerate()
@@ -3232,7 +3248,7 @@ async fn a_click_on_the_parting_selects_nothing() {
     let before = h.sw.selected;
     let gap_y = card_rect(&h, boundary - 1);
     let gap_y = gap_y.y + gap_y.height;
-    h.sw.mouse_select(h.sw.nav_inner.x, gap_y, &h.state);
+    h.sw.mouse_select(&h.plan, h.plan.nav_inner.x, gap_y, &h.state);
     assert_eq!(
         h.sw.selected, before,
         "the blank parting is not a card, so a click on it moves nothing"
@@ -3476,7 +3492,7 @@ async fn double_click_selects_node() {
     let mut h = Harness::new(sample());
     // inference preselected; double-click inside the tree moves the selection.
     let before = h.sw.selected;
-    h.sw.mouse_attach(5, 4, &h.state);
+    h.sw.mouse_attach(&h.plan, 5, 4, &h.state);
     // selection moved (or stayed on the same selectable row - just check no panic
     // and current_attach_target is populated).
     assert!(
@@ -3497,21 +3513,44 @@ async fn single_click_moves_cursor() {
     );
     h.draw();
     let (x, y) = row_screen_pos(&h, target);
-    h.sw.mouse_select(x, y, &h.state);
+    h.sw.mouse_select(&h.plan, x, y, &h.state);
     assert_eq!(
         h.sw.selected, target,
         "a click lands on the card drawn at that row"
     );
 }
 
-/// The screen (col,row) of the card at `idx`: its FIRST screen row, read from the rect the
-/// paint recorded - the same geometry the renderer and mouse hit-testing use.
+#[tokio::test]
+async fn mouse_hit_testing_reads_the_plan_produced_for_the_frame() {
+    let mut h = Harness::new(sample());
+    let target = row_index(
+        &h,
+        |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
+    );
+    let frame_plan = h.plan.clone();
+    let (_, rect) = frame_plan
+        .nav_cells
+        .iter()
+        .find(|(idx, _)| *idx == target)
+        .expect("the target card is in the frame plan");
+    h.sw.set_selected(0, &h.state);
+
+    h.sw.mouse_select(&RenderPlan::default(), rect.x, rect.y, &h.state);
+    assert_ne!(h.sw.selected, target, "a different plan has no card there");
+
+    h.sw.mouse_select(&frame_plan, rect.x, rect.y, &h.state);
+    assert_eq!(h.sw.selected, target, "the frame plan resolves the click");
+}
+
+/// The screen (col,row) of the card at `idx`: its FIRST screen row, read from the frame
+/// plan - the same geometry the renderer and mouse hit-testing use.
 fn row_screen_pos(h: &Harness, idx: usize) -> (u16, u16) {
-    let (_, rect) =
-        h.sw.nav_cells
-            .iter()
-            .find(|(i, _)| *i == idx)
-            .expect("the card was drawn");
+    let (_, rect) = h
+        .plan
+        .nav_cells
+        .iter()
+        .find(|(i, _)| *i == idx)
+        .expect("the card was drawn");
     (rect.x, rect.y)
 }
 
@@ -3575,7 +3614,7 @@ async fn render_terminal_view_draws_live_grid() {
     // Render with the live grid supplied.
     let sw = &mut h.sw;
     h.term
-        .draw(|f| sw.render(f, Some(&g), false, NavSize::visible(NAV_WIDTH), &h.state))
+        .draw(|f| sw.render_test(f, Some(&g), false, NavSize::visible(NAV_WIDTH), &h.state))
         .unwrap();
     let out = buffer_text(h.term.backend().buffer());
     assert!(
@@ -3592,9 +3631,9 @@ fn render_terminal_view_none_grid_is_blank_not_attaching() {
     // the next is ready (stale-while-revalidate), so a transitional placeholder
     // has no purpose.
     let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
-    let mut sw = Switcher::from_sources(&mut state);
+    let sw = Switcher::from_sources(&mut state);
     let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
-    term.draw(|f| sw.render(f, None, true, NavSize::hidden(NAV_WIDTH), &state))
+    term.draw(|f| sw.render_test(f, None, true, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     let out = buffer_text(term.backend().buffer());
     assert!(
@@ -3689,7 +3728,7 @@ fn long_flash_wraps_in_narrow_hint_bar_instead_of_clipping() {
 fn a_collapsed_nav_renders_every_wrapped_flash_line() {
     let mut state = crate::state::State::from_scan(sample());
     state.chrome.flash = "host unreachable, cannot create here".into();
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(24, 8)).unwrap();
     let width = collapsed_nav_width("C-g");
     let nav = NavSize {
@@ -3699,7 +3738,7 @@ fn a_collapsed_nav_renders_every_wrapped_flash_line() {
         position: NavPosition::Left,
         collapsed: true,
     };
-    term.draw(|f| sw.render(f, None, false, nav, &state))
+    term.draw(|f| sw.render_test(f, None, false, nav, &state))
         .unwrap();
 
     let buf = term.backend().buffer();
@@ -4027,25 +4066,51 @@ async fn selecting_a_card_never_moves_its_session_name() {
 }
 
 #[test]
+fn paint_does_not_mutate_switcher_render_state() {
+    let mut state = crate::state::State::from_scan(sample());
+    let sw = Switcher::new(&mut state);
+    let area = Rect::new(0, 0, 140, 30);
+    let plan = sw.layout(
+        area,
+        NavSize::visible(NAV_WIDTH),
+        &state,
+        &RenderPlan::default(),
+    );
+    let before = plan.clone();
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+
+    term.draw(|f| sw.render(f, None, false, &state, &plan))
+        .unwrap();
+
+    assert_eq!(plan, before, "paint writes only the frame");
+}
+
+#[test]
 fn every_unselected_card_carries_its_1_based_number_beside_its_session() {
     let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    let plan = sw.layout(
+        Rect::new(0, 0, 140, 30),
+        NavSize::visible(NAV_WIDTH),
+        &state,
+        &RenderPlan::default(),
+    );
+    term.draw(|f| sw.render(f, None, false, &state, &plan))
         .unwrap();
     let buf = term.backend().buffer();
     // The address column starts at column 0, right-aligned in one width for the whole
     // frame, on the card's single row. The SELECTED card holds the mark there instead of
     // a number: it is the address you would type to get where you already are. A section
     // title carries no number at all - it is not a card, and it is never the selection.
-    let selected = sw.list_state.selected().unwrap();
+    let selected = sw.selected;
     let num_w = sw.selectable_count().to_string().len().max(1) as u16;
     let read =
         |x: u16, y: u16, w: u16| -> String { (x..x + w).map(|c| buf[(c, y)].symbol()).collect() };
-    // Read each card where the PAINT put it: the side list parts its two bands, so a card
+    // Read each card where the PLAN put it: the side list parts its two bands, so a card
     // is not always the sum of the heights above it.
-    assert_eq!(sw.nav_cells.len(), sw.rows.len(), "every row was drawn");
-    for (i, rect) in sw.nav_cells.iter().copied() {
+    assert_eq!(plan.nav_cells.len(), sw.rows.len(), "every row was drawn");
+    for (i, rect) in plan.nav_cells.iter().copied() {
         if matches!(sw.rows[i].reference, RowRef::Section { .. }) {
             assert_ne!(i, selected, "the selection never lands on a section title");
             // The section title is flush left - its host name occupies the address
@@ -4087,7 +4152,7 @@ fn the_armed_hint_bar_floats_across_the_whole_window() {
     let g = grid;
     let draw =
         |term: &mut Terminal<TestBackend>, sw: &mut Switcher, state: &crate::state::State| {
-            term.draw(|f| sw.render(f, Some(&g), false, NavSize::visible(NAV_WIDTH), state))
+            term.draw(|f| sw.render_test(f, Some(&g), false, NavSize::visible(NAV_WIDTH), state))
                 .unwrap();
         };
     draw(&mut term, &mut sw, &state);
@@ -4152,7 +4217,7 @@ async fn the_input_hint_bar_floats_across_the_whole_window() {
         fill.extend(std::iter::repeat_n(b'X', 140));
     }
     grid.feed(&fill);
-    term.draw(|f| sw.render(f, Some(&grid), true, NavSize::hidden(NAV_WIDTH), &state))
+    term.draw(|f| sw.render_test(f, Some(&grid), true, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     let y = term.backend().buffer().area.height - 1;
     let row: String = (0..140)
@@ -4374,11 +4439,12 @@ async fn the_two_digit_boundary_starts_at_exactly_ten_cards() {
     // The painted address is the width made visible: the first three columns of a
     // card's row (the number right-aligned in two, then the separating blank).
     let address_of = |h: &Harness, row: usize| -> String {
-        let (_, rect) =
-            h.sw.nav_cells
-                .iter()
-                .find(|(i, _)| *i == row)
-                .expect("every row was drawn");
+        let (_, rect) = h
+            .plan
+            .nav_cells
+            .iter()
+            .find(|(i, _)| *i == row)
+            .expect("every row was drawn");
         (rect.x..rect.x + 3)
             .map(|x| h.buf()[(x, rect.y)].symbol())
             .collect()
@@ -4455,7 +4521,7 @@ fn a_hidden_nav_keeps_no_status_line_until_it_has_something_to_say() {
     };
     let draw =
         |term: &mut Terminal<TestBackend>, sw: &mut Switcher, state: &crate::state::State| {
-            term.draw(|f| sw.render(f, Some(&grid), true, NavSize::hidden(NAV_WIDTH), state))
+            term.draw(|f| sw.render_test(f, Some(&grid), true, NavSize::hidden(NAV_WIDTH), state))
                 .unwrap();
         };
 
@@ -4547,7 +4613,7 @@ async fn view_border_uses_configured_colors() {
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     state.chrome.set_view_border_colors(ViewBorderColors {
         active: Color::Blue,
         inactive: Color::Gray,
@@ -4558,7 +4624,7 @@ async fn view_border_uses_configured_colors() {
     let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
     // Nav focused: the whole rule is active.
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -4573,7 +4639,7 @@ async fn view_border_uses_configured_colors() {
     );
 
     // Terminal focused: the whole rule is inactive.
-    term.draw(|f| sw.render(f, None, true, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render_test(f, None, true, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(fg(&buf, top), Color::Gray);
@@ -4581,7 +4647,7 @@ async fn view_border_uses_configured_colors() {
 
     // Hovering the rule overrides with the configured hover colour.
     state.chrome.set_view_border_hovered(true);
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -4597,13 +4663,13 @@ async fn view_border_uses_one_color_for_both_focus_states() {
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     let x = NAV_WIDTH;
     let (top, bottom) = (2u16, 27u16); // within the top / bottom halves of height 30
     let fg = |buf: &Buffer, y: u16| buf[(x, y)].fg;
 
     // Terminal focused: every cell uses the inactive colour.
-    term.draw(|f| sw.render(f, None, true, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render_test(f, None, true, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(buf[(x, top)].symbol(), "│", "view border still drawn");
@@ -4619,7 +4685,7 @@ async fn view_border_uses_one_color_for_both_focus_states() {
     );
 
     // Nav focused: every cell uses the active colour.
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(fg(&buf, top), pal.primary, "nav focus: whole rule active");
@@ -4755,13 +4821,13 @@ async fn view_border_color_is_independent_of_nav_position() {
     let right = NavSize::visible(NAV_WIDTH).with_position(NavPosition::Right);
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
     let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     state.chrome.set_nav_position(NavPosition::Right);
     let x = 91;
     let (top, bottom) = (2u16, 27u16);
 
     // Nav focused: both ends use the active colour.
-    term.draw(|f| sw.render(f, None, false, right, &state))
+    term.draw(|f| sw.render_test(f, None, false, right, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -4776,7 +4842,7 @@ async fn view_border_color_is_independent_of_nav_position() {
     );
 
     // Terminal focused: both ends use the inactive colour.
-    term.draw(|f| sw.render(f, None, true, right, &state))
+    term.draw(|f| sw.render_test(f, None, true, right, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -4794,12 +4860,12 @@ async fn view_border_color_is_independent_of_nav_position() {
     let bottom = NavSize::visible(NAV_WIDTH).with_position(NavPosition::Bottom);
     let mut term = Terminal::new(TestBackend::new(40, 100)).unwrap();
     let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     state.chrome.set_nav_position(NavPosition::Bottom);
     let (y, left, right_col) = (59u16, 0u16, 39u16);
 
     // Nav focused: both ends use the active colour.
-    term.draw(|f| sw.render(f, None, false, bottom, &state))
+    term.draw(|f| sw.render_test(f, None, false, bottom, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -4814,7 +4880,7 @@ async fn view_border_color_is_independent_of_nav_position() {
     );
 
     // Terminal focused: both ends use the inactive colour.
-    term.draw(|f| sw.render(f, None, true, bottom, &state))
+    term.draw(|f| sw.render_test(f, None, true, bottom, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -4835,10 +4901,10 @@ async fn view_border_highlights_on_hover() {
     // so the thicker glyph IS the weight cue - and recolours it brighter. No fill.
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
     let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     let x = NAV_WIDTH;
     state.chrome.set_view_border_hovered(true);
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     for y in [2u16, 27u16] {
@@ -4867,11 +4933,11 @@ async fn view_border_glyph_reflects_auto_hide_mode() {
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     let (x, y) = (NAV_WIDTH, 2u16);
 
     state.chrome.set_auto_hide(false);
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
@@ -4880,7 +4946,7 @@ async fn view_border_glyph_reflects_auto_hide_mode() {
     );
 
     state.chrome.set_auto_hide(true);
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
@@ -4941,7 +5007,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     let g = blue_grid();
     h.term
         .draw(|f| {
-            h.sw.render(f, Some(&g), true, NavSize::hidden(NAV_WIDTH), &h.state)
+            h.sw.render_test(f, Some(&g), true, NavSize::hidden(NAV_WIDTH), &h.state)
         })
         .unwrap();
     assert_eq!(
@@ -4961,7 +5027,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
     let g = blue_grid();
     h.term
         .draw(|f| {
-            h.sw.render(f, Some(&g), false, NavSize::visible(NAV_WIDTH), &h.state)
+            h.sw.render_test(f, Some(&g), false, NavSize::visible(NAV_WIDTH), &h.state)
         })
         .unwrap();
     assert_eq!(
@@ -4977,19 +5043,31 @@ fn popup_border_press_then_drag_moves_the_rect() {
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state); // the help popup, the one popup that remains
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
+    let before_plan = sw.layout(
+        Rect::new(0, 0, 140, 30),
+        NavSize::hidden(NAV_WIDTH),
+        &state,
+        &RenderPlan::default(),
+    );
+    term.draw(|f| sw.render(f, None, false, &state, &before_plan))
         .unwrap();
-    let before = sw.popup_geo.rect;
+    let before = before_plan.popup_rect;
     let (bx, by) = (before.x, before.y); // top-left corner is on the border
     assert!(
-        sw.begin_popup_drag(bx, by, &state),
+        sw.begin_popup_drag_in_plan(&before_plan, bx, by, &state),
         "press on the border grabs"
     );
     sw.drag_popup(bx + 5, by + 1);
-    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
+    let after_plan = sw.layout(
+        Rect::new(0, 0, 140, 30),
+        NavSize::hidden(NAV_WIDTH),
+        &state,
+        &before_plan,
+    );
+    term.draw(|f| sw.render(f, None, false, &state, &after_plan))
         .unwrap();
-    assert_eq!(sw.popup_geo.rect.x, before.x + 5, "moved right by 5");
-    assert_eq!(sw.popup_geo.rect.y, before.y + 1, "moved down by 1");
+    assert_eq!(after_plan.popup_rect.x, before.x + 5, "moved right by 5");
+    assert_eq!(after_plan.popup_rect.y, before.y + 1, "moved down by 1");
     sw.end_popup_drag();
     assert!(!sw.popup_drag_active());
 }
@@ -5021,13 +5099,16 @@ fn closed_popup_cannot_be_grabbed_even_with_a_stale_rect() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
-    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
-        .unwrap();
-    let r = sw.popup_geo.rect; // border rect is now cached
+    let plan = sw.layout(
+        Rect::new(0, 0, 140, 30),
+        NavSize::hidden(NAV_WIDTH),
+        &state,
+        &RenderPlan::default(),
+    );
+    let r = plan.popup_rect;
     state.modal = None; // close WITHOUT re-rendering → popup_rect is stale
     assert!(
-        !sw.begin_popup_drag(r.x, r.y, &state),
+        !sw.begin_popup_drag_in_plan(&plan, r.x, r.y, &state),
         "a stale rect must not grab a closed popup"
     );
 }
@@ -5040,12 +5121,15 @@ fn popup_renders_without_panicking_on_a_narrow_screen() {
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
     let mut term = Terminal::new(TestBackend::new(10, 10)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
-        .unwrap();
-    assert!(
-        sw.popup_geo.rect.width <= 10,
-        "popup fits the narrow screen"
+    let plan = sw.layout(
+        Rect::new(0, 0, 10, 10),
+        NavSize::hidden(NAV_WIDTH),
+        &state,
+        &RenderPlan::default(),
     );
+    term.draw(|f| sw.render(f, None, false, &state, &plan))
+        .unwrap();
+    assert!(plan.popup_rect.width <= 10, "popup fits the narrow screen");
 }
 
 #[test]
@@ -5053,12 +5137,15 @@ fn popup_interior_press_does_not_grab() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
-    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
-        .unwrap();
-    let r = sw.popup_geo.rect;
+    let plan = sw.layout(
+        Rect::new(0, 0, 140, 30),
+        NavSize::hidden(NAV_WIDTH),
+        &state,
+        &RenderPlan::default(),
+    );
+    let r = plan.popup_rect;
     assert!(
-        !sw.begin_popup_drag(r.x + 2, r.y + 2, &state),
+        !sw.begin_popup_drag_in_plan(&plan, r.x + 2, r.y + 2, &state),
         "interior press does not start a drag"
     );
 }
@@ -5069,14 +5156,24 @@ fn popup_drag_clamps_within_screen() {
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
-        .unwrap();
-    let r = sw.popup_geo.rect;
-    assert!(sw.begin_popup_drag(r.x, r.y, &state));
+    let plan = sw.layout(
+        Rect::new(0, 0, 140, 30),
+        NavSize::hidden(NAV_WIDTH),
+        &state,
+        &RenderPlan::default(),
+    );
+    let r = plan.popup_rect;
+    assert!(sw.begin_popup_drag_in_plan(&plan, r.x, r.y, &state));
     sw.drag_popup(r.x.saturating_sub(50), r.y); // yank far left, past the edge
-    term.draw(|f| sw.render(f, None, false, NavSize::hidden(NAV_WIDTH), &state))
+    let next = sw.layout(
+        Rect::new(0, 0, 140, 30),
+        NavSize::hidden(NAV_WIDTH),
+        &state,
+        &plan,
+    );
+    term.draw(|f| sw.render(f, None, false, &state, &next))
         .unwrap();
-    assert_eq!(sw.popup_geo.rect.x, 0, "clamped to the left screen edge");
+    assert_eq!(next.popup_rect.x, 0, "clamped to the left screen edge");
 }
 
 #[test]
@@ -5234,14 +5331,14 @@ fn render_nav_width_zero_gives_terminal_full_width() {
     // its view border are gone, so the terminal view owns the left edge (x=0): the
     // live grid's content begins at column 0.
     let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
-    let mut sw = Switcher::from_sources(&mut state);
+    let sw = Switcher::from_sources(&mut state);
     // 60 wide keeps the 20-wide nav in its column (39 against 20 rows counted double).
     let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
     let mut g = Grid::new(10, 60);
     g.feed(b"EDGE-CONTENT");
 
     // nav_width == 0 → no tree column, no view border: the terminal view starts at x=0.
-    term.draw(|f| sw.render(f, Some(&g), true, NavSize::hidden(NAV_WIDTH), &state))
+    term.draw(|f| sw.render_test(f, Some(&g), true, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     // Column 0 row 0 must NOT be the view border rule '│' (the view border is gone).
@@ -5258,7 +5355,7 @@ fn render_nav_width_zero_gives_terminal_full_width() {
     );
 
     // Sanity: with a normal width the view border rule IS present at the tree edge.
-    term.draw(|f| sw.render(f, Some(&g), true, NavSize::visible(20), &state))
+    term.draw(|f| sw.render_test(f, Some(&g), true, NavSize::visible(20), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
     assert_eq!(
@@ -5412,20 +5509,31 @@ fn column_flow_scan_sized(sources: &[(&str, usize)], name_len: usize) -> Scan {
 }
 
 /// Renders `scan` into a `w`x`h` portrait backend and returns the switcher, so a test
-/// can read the card rects the paint recorded.
-fn portrait(scan: Scan, w: u16, h: u16) -> (Switcher, Terminal<TestBackend>) {
+/// can read the card rects the frame plan recorded.
+fn portrait(scan: Scan, w: u16, h: u16) -> (Switcher, RenderPlan, Terminal<TestBackend>) {
     let mut state = crate::state::State::from_scan(scan);
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-    term.draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
+    let area = Rect::new(0, 0, w, h);
+    let plan = sw.layout(
+        area,
+        auto_nav(NAV_WIDTH, area),
+        &state,
+        &RenderPlan::default(),
+    );
+    term.draw(|f| sw.render(f, None, false, &state, &plan))
         .unwrap();
-    assert_eq!(sw.layout, ViewLayout::Band, "the backend must be portrait");
-    (sw, term)
+    assert_eq!(
+        plan.layout,
+        ViewLayout::Band,
+        "the backend must be portrait"
+    );
+    (sw, plan, term)
 }
 
-/// Card rects by card index, as the last paint placed them.
-fn cells_of(sw: &Switcher) -> std::collections::HashMap<usize, Rect> {
-    sw.nav_cells.iter().map(|(i, r)| (*i, *r)).collect()
+/// Card rects by card index in one frame's layout.
+fn cells_of(plan: &RenderPlan) -> std::collections::HashMap<usize, Rect> {
+    plan.nav_cells.iter().map(|(i, r)| (*i, *r)).collect()
 }
 
 #[test]
@@ -5433,8 +5541,8 @@ fn the_portrait_band_flows_cards_down_then_right() {
     // A three-row band: each source's section (a title over its two sessions) fills a
     // column exactly, so the next source opens the column to its right. Reading order is
     // the fill order - down a column, then right - which is what the numbers count in.
-    let (sw, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 12);
-    let cells = cells_of(&sw);
+    let (_sw, plan, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 12);
+    let cells = cells_of(&plan);
     assert_eq!(cells.len(), 9, "every row is placed: {cells:?}");
     for base in [0usize, 3, 6] {
         let (title, a, b) = (cells[&base], cells[&(base + 1)], cells[&(base + 2)]);
@@ -5460,8 +5568,8 @@ fn a_column_holds_whole_sections() {
     // the third section's title, but not for the section. It moves right ENTIRE rather
     // than leaving a card behind at the foot of the column: a source's rows stay
     // together, and the title naming them stays at the top of them.
-    let (sw, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 23);
-    let cells = cells_of(&sw);
+    let (_sw, plan, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 23);
+    let cells = cells_of(&plan);
     assert_eq!(cells.len(), 9);
     let x0 = cells[&0].x;
     assert_eq!(cells[&3].x, x0, "both titles hold the column's left edge");
@@ -5512,8 +5620,8 @@ fn the_portrait_band_parts_sessions_left_and_hosts_right() {
             },
         ],
     };
-    let (sw, term) = portrait(scan, 60, 12);
-    let cells = cells_of(&sw);
+    let (_sw, plan, term) = portrait(scan, 60, 12);
+    let cells = cells_of(&plan);
     // Two sections (6 rows) + one host card.
     assert_eq!(cells.len(), 7, "every row is placed: {cells:?}");
     let host = cells[&6];
@@ -5555,8 +5663,8 @@ fn portrait_scanning_hosts_anchor_to_the_right_until_found() {
             },
         ],
     };
-    let (sw, term) = portrait(scan, 60, 12);
-    let cells = cells_of(&sw);
+    let (_sw, plan, term) = portrait(scan, 60, 12);
+    let cells = cells_of(&plan);
     let band_w = term.backend().buffer().area.width;
     let x0 = cells[&0].x;
     assert!(
@@ -5581,7 +5689,7 @@ fn the_hidden_columns_are_counted_on_the_status_row() {
     //
     // The row is the band's own last row, never a card's: a selected card inverts its
     // whole rect, and anything sharing that rect inverts with it.
-    let (_sw, mut term) = portrait(
+    let (_sw, _plan, mut term) = portrait(
         column_flow_scan_sized(&[("aa", 2), ("bb", 3), ("cc", 2)], 26),
         60,
         20,
@@ -5628,7 +5736,7 @@ fn the_hidden_columns_are_counted_on_the_status_row() {
     ));
     let mut sw = Switcher::new(&mut state);
     sw.move_to(-1, &state);
-    term.draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
+    term.draw(|f| sw.render_test(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
     let at_right = row(&term);
     assert!(
@@ -5641,7 +5749,7 @@ fn the_portrait_status_line_is_a_label_until_the_prefix_is_armed() {
     // Nothing off screen, so the status row is the bar's alone. It still paints only what
     // it has to say plus a cell of padding: a full-width slab of bar colour across a wide
     // window is a lot of paint for one word.
-    let (_sw, mut term) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 20);
+    let (_sw, _plan, mut term) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 20);
     let bar_bg = crate::ui::palette::Palette::default().bar_bg;
     let bar_y = 7;
     {
@@ -5663,9 +5771,9 @@ fn the_portrait_status_line_is_a_label_until_the_prefix_is_armed() {
     // Arming the prefix takes the whole width: the cheatsheet has to be readable over
     // everything it now covers.
     let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     state.chrome.set_armed(true);
-    term.draw(|f| sw.render(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
+    term.draw(|f| sw.render_test(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
     let buf = term.backend().buffer();
     let armed_y = bar_y; // it widens in place: the band's own row, the window's full width
@@ -5682,11 +5790,17 @@ fn the_side_lists_scrollbar_column_is_outside_every_card() {
     // Same rule on the other axis: when the side list overflows, its thumb takes the
     // nav's last column and the cards give it up, so no inverted card runs under it.
     let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
-    let mut sw = Switcher::new(&mut state);
+    let sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(140, 8)).unwrap();
-    term.draw(|f| sw.render(f, None, false, NavSize::visible(NAV_WIDTH), &state))
+    let plan = sw.layout(
+        Rect::new(0, 0, 140, 8),
+        NavSize::visible(NAV_WIDTH),
+        &state,
+        &RenderPlan::default(),
+    );
+    term.draw(|f| sw.render(f, None, false, &state, &plan))
         .unwrap();
-    assert_eq!(sw.layout, ViewLayout::Column);
+    assert_eq!(plan.layout, ViewLayout::Column);
     let buf = term.backend().buffer();
     let bar_x = NAV_WIDTH - 1;
     let col: String = (0..buf.area.height - 1)
@@ -5701,8 +5815,8 @@ fn the_side_lists_scrollbar_column_is_outside_every_card() {
         "and no selected card reaches into it"
     );
     // The selected card itself is still inverted; the section title above it is not.
-    let selected = sw.list_state.selected().unwrap();
-    let sel_rect = sw
+    let selected = sw.selected;
+    let sel_rect = plan
         .nav_cells
         .iter()
         .find(|(i, _)| *i == selected)
@@ -6061,7 +6175,7 @@ async fn moving_into_the_terminal_view_from_a_session_card_hides_the_host_band()
     assert!(nav.contains("editor"), "the session cards stay:\n{nav}");
     let boundary = h.sw.band_boundary().expect("the list has a host card");
     assert!(
-        h.sw.nav_cells.iter().all(|(i, _)| *i < boundary),
+        h.plan.nav_cells.iter().all(|(i, _)| *i < boundary),
         "a hidden card takes no click"
     );
     h.sw.sync_view_focus(false);

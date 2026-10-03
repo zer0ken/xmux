@@ -33,15 +33,12 @@ pub fn dump_screen(
         Ok(t) => t,
         Err(_) => return String::new(),
     };
+    let previous = crate::ui::switcher::RenderPlan::default();
     if term
         .draw(|f| {
-            switcher.render(
-                f,
-                grid,
-                false,
-                crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
-                state,
-            )
+            let nav = crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH);
+            let plan = switcher.layout(f.area(), nav, state, &previous);
+            switcher.render(f, grid, false, state, &plan)
         })
         .is_err()
     {

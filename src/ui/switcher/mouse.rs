@@ -3,8 +3,20 @@ use super::*;
 impl Switcher {
     // --- mouse --------------------------------------------------------------
 
-    fn in_tree(&self, col: u16, row: u16) -> bool {
-        self.nav_inner.contains(Position { x: col, y: row })
+    /// Begins a popup drag against the rectangle painted for the latest frame.
+    pub fn begin_popup_drag_in_plan(
+        &mut self,
+        plan: &RenderPlan,
+        col: u16,
+        row: u16,
+        state: &crate::state::State,
+    ) -> bool {
+        self.popup_geo.rect = plan.popup_rect;
+        self.begin_popup_drag(col, row, state)
+    }
+
+    fn in_tree(plan: &RenderPlan, col: u16, row: u16) -> bool {
+        plan.nav_inner.contains(Position { x: col, y: row })
     }
 
     /// The card index under a 0-based screen `(col, row)`, or `None` if it is outside the
@@ -12,23 +24,29 @@ impl Switcher {
     /// scrollbar strip, the rows past the last card).
     ///
     /// Neither layout puts cards on a fixed row pitch - the side list parts its two bands
-    /// and its card heights vary, the portrait flow runs them into columns - so the paint
+    /// and its card heights vary, the portrait flow runs them into columns - so the plan
     /// records each card's rect and the hit-test reads those back. One geometry, so a
     /// click cannot land on a card the renderer put elsewhere.
-    fn row_at(&self, col: u16, row: u16) -> Option<usize> {
-        if !self.in_tree(col, row) {
+    fn row_at(plan: &RenderPlan, col: u16, row: u16) -> Option<usize> {
+        if !Self::in_tree(plan, col, row) {
             return None;
         }
         let at = Position { x: col, y: row };
-        self.nav_cells
+        plan.nav_cells
             .iter()
             .find(|(_, rect)| rect.contains(at))
             .map(|(i, _)| *i)
     }
 
     /// Single click: move the selection to the clicked row (select; never attach).
-    pub fn mouse_select(&mut self, col: u16, row: u16, state: &crate::state::State) {
-        let Some(idx) = self.row_at(col, row) else {
+    pub fn mouse_select(
+        &mut self,
+        plan: &RenderPlan,
+        col: u16,
+        row: u16,
+        state: &crate::state::State,
+    ) {
+        let Some(idx) = Self::row_at(plan, col, row) else {
             return;
         };
         if self.rows.get(idx).is_some_and(Row::selectable) {
@@ -39,8 +57,14 @@ impl Switcher {
 
     /// Double click: selects the clicked row (the preceding single click already
     /// moved the selection; with select=attach there is no separate attach action).
-    pub fn mouse_attach(&mut self, col: u16, row: u16, state: &crate::state::State) {
-        self.mouse_select(col, row, state);
+    pub fn mouse_attach(
+        &mut self,
+        plan: &RenderPlan,
+        col: u16,
+        row: u16,
+        state: &crate::state::State,
+    ) {
+        self.mouse_select(plan, col, row, state);
     }
 
     /// Scroll wheel: move the selection exactly as ↑/↓ do (`nav_vertical`) - one card up

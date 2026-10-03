@@ -116,9 +116,7 @@ the debounced attach, and renders the live split view.
   the complete allowed-edge table.
 - **View Purity:** rendering must read the application model and write only the
   frame. Layout and hit testing must pass through an immutable `RenderPlan`
-  rather than mutable view state. Known exceptions: the switcher renderer
-  records layout and hit-test state and changes host-band visibility during
-  paint.
+  rather than mutable view state.
 - **Single Update Owner:** the rule permits only the update transition to mutate
   application state. Key, mouse, and semantic ctl inputs are messages for it;
   raw terminal bytes are the sole direct path. Known exceptions: key, mouse, and

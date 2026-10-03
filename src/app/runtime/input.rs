@@ -113,13 +113,13 @@ impl Runtime {
         selection: &Selection,
         mouse_focus_toggle: &mut bool,
         wheel_scrolled: &mut bool,
-        term_area: ratatui::layout::Rect,
     ) -> bool {
         // Split-borrow the world state into the loose names the (verbatim) gesture body uses.
         let Self {
             mouse_state: st,
             term_input,
             switcher,
+            render_plan,
             state,
             registry,
             mgr,
@@ -128,7 +128,6 @@ impl Runtime {
             nav_width_natural,
             nav_collapsed,
             nav_height,
-            nav_position,
             cols,
             body_rows,
             nav_width,
@@ -148,7 +147,7 @@ impl Runtime {
             term_input.disarm();
             dirty = true;
         }
-        let in_mux = to_grid_local(term_area, ev.col, ev.row);
+        let in_mux = to_grid_local(render_plan.regions.terminal, ev.col, ev.row);
         // A LEFT-button press in the UNFOCUSED view switches focus to that
         // view: focus only, the click is not delivered. Within the focused
         // terminal view, the click forwards.
@@ -165,20 +164,10 @@ impl Runtime {
         // The view border rect from the one shared geometry, so the grab / hover works in
         // any placement: a vertical rule in a column, a horizontal rule in a band. The
         // drag then resizes the nav WIDTH (column, by column) or HEIGHT (band, by row).
-        let full = ratatui::layout::Rect::new(0, 0, cols, body_rows.saturating_add(1));
-        let regions = crate::ui::switcher::compute_regions(
-            full,
-            crate::ui::switcher::NavSize {
-                natural: *nav_width_natural,
-                width: nav_width,
-                height: *nav_height,
-                position: *nav_position,
-                collapsed: *nav_collapsed,
-            },
-            1,
-        );
-        let on_view_border = nav_width > 0
-            && !*nav_collapsed
+        let full = render_plan.screen_area;
+        let regions = render_plan.regions;
+        let on_view_border = !render_plan.nav_hidden
+            && !render_plan.nav_collapsed
             && regions
                 .view_border
                 .contains(ratatui::layout::Position { x: col0, y: row0 });
@@ -202,7 +191,7 @@ impl Runtime {
                     let target = view_border_drag_height(
                         ev.row,
                         full.height,
-                        *nav_position == crate::ui::switcher::NavPosition::Bottom,
+                        render_plan.nav_position == crate::ui::switcher::NavPosition::Bottom,
                     );
                     if target != *nav_height {
                         *nav_height = target;
@@ -213,7 +202,7 @@ impl Runtime {
                         ev.col,
                         &env.ui_prefix,
                         full.width,
-                        *nav_position == crate::ui::switcher::NavPosition::Right,
+                        render_plan.nav_position == crate::ui::switcher::NavPosition::Right,
                     );
                     if target != *nav_width_natural {
                         *nav_width_natural = target;
@@ -236,7 +225,9 @@ impl Runtime {
             dirty = true;
             return dirty;
         }
-        if is_left_press && switcher.begin_popup_drag(col0, ev.row.saturating_sub(1), state) {
+        if is_left_press
+            && switcher.begin_popup_drag_in_plan(render_plan, col0, ev.row.saturating_sub(1), state)
+        {
             dirty = true;
             return dirty;
         }
@@ -247,16 +238,8 @@ impl Runtime {
         if state.is_modal_popup_open() {
             return dirty;
         }
-        let button = crate::ui::switcher::collapse_button_rect(
-            regions.hint_bar,
-            *nav_position,
-            *nav_collapsed,
-        );
-        let transient_bar = crate::ui::switcher::hint_bar_floats(state);
-        if is_left_press
-            && !transient_bar
-            && button.contains(ratatui::layout::Position { x: col0, y: row0 })
-        {
+        let button = render_plan.collapse_button;
+        if is_left_press && button.contains(ratatui::layout::Position { x: col0, y: row0 }) {
             *nav_collapsed = !*nav_collapsed;
             crate::app::prefs::save_nav_collapsed(&env.xmux_dir, *nav_collapsed);
             st.hovered_view_border = false;
@@ -309,7 +292,7 @@ impl Runtime {
                 // Left-click a nav row → move the selection to it (select). The
                 // loop top commits the new selection (attach); ensure the
                 // clicked row's host connects so its subtree streams in.
-                switcher.mouse_select(col0, ev.row.saturating_sub(1), state);
+                switcher.mouse_select(render_plan, col0, ev.row.saturating_sub(1), state);
                 ensure_current_host(mgr, hosts, switcher, cols, body_rows, nav_width);
                 dirty = true;
             }
@@ -348,7 +331,7 @@ impl Runtime {
     /// the terminal keeps room, and persisted; width defers to `apply_width_delta` (the
     /// caller schedules the debounced persist). Returns whether the size changed.
     pub(super) fn resize_axis(&mut self, horizontal: bool, delta: i32) -> bool {
-        let top = self.switcher.layout() == crate::ui::switcher::ViewLayout::Band;
+        let top = self.render_plan.layout == crate::ui::switcher::ViewLayout::Band;
         // With the nav on the right or below the same screen direction resizes the nav the
         // other way, so flip the delta to keep the key's direction on the border's movement.
         let delta = if self.nav_position.forward_arrows_face_terminal() {
@@ -428,11 +411,6 @@ impl Runtime {
         // or TermInput's prefix logic. Split into: mouse events + non-mouse byte stream.
         // Edge case: a sequence split across reads parses as None and falls into
         // non_mouse - rare in practice; no cross-read buffering in v1.
-        // The terminal region from the one shared geometry, so a click lands on exactly
-        // what was drawn in either layout (in a band the terminal sits below the nav, not
-        // to the right of it).
-        let full = ratatui::layout::Rect::new(0, 0, self.cols, self.body_rows.saturating_add(1));
-        let term_area = crate::ui::switcher::compute_regions(full, self.nav_size(), 1).terminal;
         let mut non_mouse: Vec<u8> = Vec::with_capacity(bytes.len());
         let mut mouse_focus_toggle = false;
         let mut wheel_scrolled = false;
@@ -445,7 +423,6 @@ impl Runtime {
                         selection,
                         &mut mouse_focus_toggle,
                         &mut wheel_scrolled,
-                        term_area,
                     ) {
                         *dirty = true;
                     }
