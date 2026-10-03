@@ -509,7 +509,14 @@ async fn host_exited_before_connect_marks_unreachable() {
         ),
         "a never-connected host is marked unreachable on exit"
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("unreachable"),
         "host reads unreachable:\n{out}"
@@ -532,13 +539,27 @@ fn runtime_threads_hide_unreachable_into_its_switcher() {
         Some("no route to host".into()),
         &mut rt.state,
     );
-    let out = dump_screen(&mut rt.switcher, None, 80, 24, &rt.state);
+    let out = dump_screen(
+        &mut rt.switcher,
+        None,
+        80,
+        24,
+        &rt.state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         !out.contains("jup"),
         "the config default hides the unreachable host:\n{out}"
     );
     rt.switcher.set_hide_unreachable(false, &mut rt.state);
-    let out = dump_screen(&mut rt.switcher, None, 80, 24, &rt.state);
+    let out = dump_screen(
+        &mut rt.switcher,
+        None,
+        80,
+        24,
+        &rt.state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("jup"),
         "hide-unreachable = false shows the card:\n{out}"
@@ -560,7 +581,14 @@ fn a_blocked_host_shows_the_login_view_screen() {
         Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
         &mut state,
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("login required"),
         "the login view names its state:\n{out}"
@@ -593,7 +621,14 @@ fn a_host_whose_name_did_not_resolve_stays_unreachable() {
         ),
         &mut state,
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("unreachable"),
         "an unresolved name stays a connectivity failure:\n{out}"
@@ -635,7 +670,14 @@ fn hide_unreachable_mid_run_hides_the_card_and_the_selection_lands_on_a_remainin
         ),
         "the dead never-connected host is marked unreachable"
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         !out.contains("jupiter06"),
         "hidden the moment it fails:\n{out}"
@@ -657,7 +699,14 @@ fn hide_unreachable_mid_run_hides_the_card_and_the_selection_lands_on_a_remainin
         None,
         &mut state,
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("jupiter06"),
         "a successful scan revives the host:\n{out}"
@@ -682,7 +731,14 @@ async fn host_exited_with_no_sessions_marks_empty_not_unreachable() {
         ),
         "an empty mux is reachable, not unreachable"
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("no sessions"),
         "an empty host reads 'no sessions':\n{out}"
@@ -728,7 +784,15 @@ async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
     // User hits refresh → the host goes back to a scanning skeleton.
     switcher.request_rescan(&mut state);
     assert!(
-        dump_screen(&mut switcher, None, 80, 24, &state).contains("scanning"),
+        dump_screen(
+            &mut switcher,
+            None,
+            80,
+            24,
+            &state,
+            &crate::ui::switcher::RenderPlan::default()
+        )
+        .contains("scanning"),
         "scanning after refresh"
     );
     // The reconnect fails with "no sessions": it must resolve scanning → empty.
@@ -739,7 +803,14 @@ async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
         "jupiter06",
         Some("no sessions".into()),
     );
-    let out = dump_screen(&mut switcher, None, 80, 24, &state);
+    let out = dump_screen(
+        &mut switcher,
+        None,
+        80,
+        24,
+        &state,
+        &crate::ui::switcher::RenderPlan::default(),
+    );
     assert!(
         out.contains("no sessions"),
         "failed reconnect resolves to an empty host:\n{out}"
@@ -2985,7 +3056,7 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
 
 #[test]
 fn collapse_button_click_toggles_without_focus_or_drag() {
-    use crate::ui::switcher::{Scan, Switcher};
+    use crate::ui::switcher::{collapse_button_rect, compute_regions, Scan, Switcher};
 
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
@@ -2995,7 +3066,10 @@ fn collapse_button_click_toggles_without_focus_or_drag() {
     rt.cols = 140;
     rt.body_rows = 29;
     sync_test_render_plan(&mut rt);
-    let button = rt.render_plan.collapse_button;
+    let area = ratatui::layout::Rect::new(0, 0, 140, 30);
+    let regions = compute_regions(area, rt.nav_size(), 1);
+    let button = collapse_button_rect(regions.hint_bar, rt.nav_position, false);
+    assert_eq!(rt.render_plan.collapse_button, button);
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
         col: button.x + button.width,
@@ -3016,7 +3090,9 @@ fn collapse_button_click_toggles_without_focus_or_drag() {
 
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
     rt.prepare_and_draw(&mut term);
-    let button = rt.render_plan.collapse_button;
+    let regions = compute_regions(area, rt.nav_size(), 1);
+    let button = collapse_button_rect(regions.hint_bar, rt.nav_position, true);
+    assert_eq!(rt.render_plan.collapse_button, button);
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
         col: button.x + button.width,
@@ -3061,7 +3137,7 @@ fn focusing_the_nav_expands_a_collapsed_nav() {
 
 #[test]
 fn a_collapsed_view_border_cannot_start_a_resize_drag() {
-    use crate::ui::switcher::{Scan, Switcher};
+    use crate::ui::switcher::{compute_regions, Scan, Switcher};
 
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
@@ -3073,7 +3149,8 @@ fn a_collapsed_view_border_cannot_start_a_resize_drag() {
     rt.nav_collapsed = true;
     rt.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
     sync_test_render_plan(&mut rt);
-    let regions = rt.render_plan.regions;
+    let regions = compute_regions(ratatui::layout::Rect::new(0, 0, 140, 30), rt.nav_size(), 1);
+    assert_eq!(rt.render_plan.regions.view_border, regions.view_border);
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
         col: regions.view_border.x + 1,

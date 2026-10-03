@@ -29,9 +29,9 @@ pub(crate) struct PopupGeometry {
     /// Drag offset (cells) applied to a modal popup's centered position. Reset
     /// to (0,0) when a popup opens; updated while its border is dragged.
     pub(crate) offset: (i16, i16),
-    /// The drawn rect of the active modal popup (help/input/confirm), cached
-    /// each render so a mouse press can hit-test its border. `Rect::default()`
-    /// ⇒ no modal popup open.
+    /// The drawn rect of the active modal popup (help/input/confirm), copied from the
+    /// last frame's render plan when a press starts, so the press can hit-test its
+    /// border. `Rect::default()` means no modal popup is open.
     pub(crate) rect: Rect,
     /// Active border-drag of a modal popup. `None` ⇒ not dragging.
     drag: Option<PopupDrag>,

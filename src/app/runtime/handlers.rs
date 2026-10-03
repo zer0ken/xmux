@@ -868,7 +868,10 @@ impl Runtime {
             };
             if let Err(e) = draw_result {
                 tracing::warn!(error = %e, "term_draw_failed");
-            } else if let Some(plan) = next_plan {
+            }
+            // The plan is kept even when the flush fails: its scroll offsets are where the
+            // next frame continues from.
+            if let Some(plan) = next_plan {
                 self.render_plan = plan;
             }
             DrawObserver::slow_step("draw", t_draw);
@@ -1267,9 +1270,17 @@ impl Runtime {
                             sz.width,
                             sz.height,
                             &self.state,
+                            &self.render_plan,
                         )
                     }
-                    None => dump_screen(&mut self.switcher, None, sz.width, sz.height, &self.state),
+                    None => dump_screen(
+                        &mut self.switcher,
+                        None,
+                        sz.width,
+                        sz.height,
+                        &self.state,
+                        &self.render_plan,
+                    ),
                 };
                 let _ = reply.send(dump);
             }

@@ -6255,3 +6255,16 @@ async fn a_hidden_band_shows_again_once_the_selection_lands_in_it() {
         "a selected card is never hidden:\n{nav}"
     );
 }
+
+#[test]
+fn an_empty_row_list_shows_the_host_band_again() {
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let mut sw = Switcher::new(&mut state);
+    assert!(sw.rows.is_empty(), "no group yields no row");
+    sw.host_band_hidden = true;
+    sw.set_selected(0, &state);
+    assert!(
+        !sw.host_band_hidden,
+        "with no session row selected the host band shows again"
+    );
+}

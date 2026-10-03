@@ -621,6 +621,8 @@ impl Switcher {
 
     fn set_selected(&mut self, idx: usize, state: &crate::state::State) {
         if self.rows.is_empty() {
+            // No row is a session row, so the host band has nothing to stay hidden for.
+            self.host_band_hidden = false;
             return;
         }
         let idx = idx.min(self.rows.len() - 1);
