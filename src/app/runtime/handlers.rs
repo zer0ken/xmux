@@ -483,12 +483,12 @@ impl Runtime {
                                                                     // Restore the natural nav width the user last set; clamp a stale out-of-range
                                                                     // value, fall back to the default when none is saved.
         let nav_width_natural = adjust_nav_width(
-            crate::ui::prefs::load_nav_width(&env.xmux_dir)
+            crate::app::prefs::load_nav_width(&env.xmux_dir)
                 .unwrap_or(crate::ui::switcher::NAV_WIDTH),
             0,
             &env.ui_prefix,
         );
-        let nav_collapsed = crate::ui::prefs::load_nav_collapsed(&env.xmux_dir);
+        let nav_collapsed = crate::app::prefs::load_nav_collapsed(&env.xmux_dir);
         let nav_width = if nav_collapsed {
             crate::ui::switcher::collapsed_nav_width(&env.ui_prefix)
         } else {
@@ -496,7 +496,7 @@ impl Runtime {
         };
         // Restore the band-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
-        let nav_height = crate::ui::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
+        let nav_height = crate::app::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
         // One read of the roster for the whole construction, so every product below is
         // built from ONE answer about which machines exist.
         let roster = env.roster();
@@ -507,13 +507,13 @@ impl Runtime {
             .discovery
             .scan_concurrency
             .clamp(1, crate::provision::config::SCAN_CONCURRENCY_MAX);
-        let nav_position_pinned = crate::ui::prefs::load_nav_position(&env.xmux_dir);
+        let nav_position_pinned = crate::app::prefs::load_nav_position(&env.xmux_dir);
         // The initial position: a pinned side wins, else the [ui] default. Resolved once
         // here so the first frame and the first PTY sizing already split the screen the
         // way the pin and default say; the loop-top reconcile re-resolves it every frame
         // from the same inputs.
         let nav_position = nav_position_pinned.unwrap_or(nav_default);
-        let auto_hide_nav = crate::ui::prefs::load_auto_hide_nav(&env.xmux_dir)
+        let auto_hide_nav = crate::app::prefs::load_auto_hide_nav(&env.xmux_dir)
             .unwrap_or_else(|| roster.cfg.ui_auto_hide_nav());
 
         // The control-mode metadata clients: one per remote host.
@@ -726,7 +726,7 @@ impl Runtime {
         self.switcher.sync_view_focus(!nav_focused);
         if nav_focused && !self.nav_was_focused && self.nav_collapsed {
             self.nav_collapsed = false;
-            crate::ui::prefs::save_nav_collapsed(&self.env.xmux_dir, false);
+            crate::app::prefs::save_nav_collapsed(&self.env.xmux_dir, false);
             self.dirty = true;
         }
         self.nav_was_focused = nav_focused;
@@ -811,7 +811,7 @@ impl Runtime {
                 .width_flush_at
                 .is_some_and(|d| std::time::Instant::now() >= d)
         {
-            crate::ui::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
+            crate::app::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
             self.width_dirty = false;
             self.width_flush_at = None;
         }
@@ -1183,8 +1183,13 @@ impl Runtime {
     }
 
     /// The control-socket arm: headless op/status/dump/key/bytes. Returns whether to quit.
-    pub(super) fn on_ctl_command(&mut self, cmd: crate::ui::run::Cmd, term: &mut Term) -> bool {
-        use crate::ui::run::{dump_screen, Cmd};
+    pub(super) fn on_ctl_command(
+        &mut self,
+        cmd: crate::app::control::Cmd,
+        term: &mut Term,
+    ) -> bool {
+        use crate::app::control::Cmd;
+        use crate::ui::run::dump_screen;
         use std::time::Duration;
         match cmd {
             Cmd::Op(action, reply) => {
@@ -1469,7 +1474,7 @@ impl Runtime {
         for cmd in cmds {
             match cmd {
                 crate::model::Command::PersistLastSession(addr) => {
-                    crate::ui::prefs::save_last_session(&self.env.xmux_dir, &addr);
+                    crate::app::prefs::save_last_session(&self.env.xmux_dir, &addr);
                 }
                 crate::model::Command::Attach(sel) => {
                     let t = std::time::Instant::now();

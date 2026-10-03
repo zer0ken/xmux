@@ -196,9 +196,9 @@ impl Runtime {
                 // but does not write per cell). A band drags the height, a column the width.
                 st.dragging_view_border = false;
                 if top_layout {
-                    crate::ui::prefs::save_nav_height(&env.xmux_dir, *nav_height);
+                    crate::app::prefs::save_nav_height(&env.xmux_dir, *nav_height);
                 } else {
-                    crate::ui::prefs::save_nav_width(&env.xmux_dir, *nav_width_natural);
+                    crate::app::prefs::save_nav_width(&env.xmux_dir, *nav_width_natural);
                 }
             } else if !is_wheel {
                 // The DRAG measures from the near edge: a band drags the height (from the
@@ -265,7 +265,7 @@ impl Runtime {
             && button.contains(ratatui::layout::Position { x: col0, y: row0 })
         {
             *nav_collapsed = !*nav_collapsed;
-            crate::ui::prefs::save_nav_collapsed(&env.xmux_dir, *nav_collapsed);
+            crate::app::prefs::save_nav_collapsed(&env.xmux_dir, *nav_collapsed);
             st.hovered_view_border = false;
             return true;
         }
@@ -382,7 +382,7 @@ impl Runtime {
                     return false;
                 }
                 self.nav_height = next;
-                crate::ui::prefs::save_nav_height(&self.env.xmux_dir, self.nav_height);
+                crate::app::prefs::save_nav_height(&self.env.xmux_dir, self.nav_height);
                 true
             }
             _ => false, // perpendicular axis for this layout: nothing to resize
@@ -473,8 +473,8 @@ impl Runtime {
             self.mouse_state.dragging_view_border = false;
             // The recovery doesn't track which axis was dragging; persist both (a no-op file
             // write for the unchanged one) so the final size is never lost.
-            crate::ui::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
-            crate::ui::prefs::save_nav_height(&self.env.xmux_dir, self.nav_height);
+            crate::app::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
+            crate::app::prefs::save_nav_height(&self.env.xmux_dir, self.nav_height);
         }
         // Watchdog: same recovery for a popup border-drag - a lost button-up
         // must not strand `popup_drag` and eat all later mouse input.

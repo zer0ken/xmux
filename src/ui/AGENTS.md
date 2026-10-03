@@ -3,9 +3,7 @@
 ## Purpose
 
 `ui` owns the session switcher: pure row-model transforms, side-effecting UI
-operations, control socket serving helpers, interactive switcher state, rendering,
-and the lightweight preferences that persist UI hints (last-selected address, nav
-width and height, collapsed state, auto-hide-nav, nav position) across runs.
+operations, interactive switcher state, rendering, and off-screen render dumps.
 
 ## Mental Model
 
@@ -30,9 +28,6 @@ action resolves it through the state's apply into a deferred-operation command i
 RETURNS up; the run loop spawns the runner and folds the outcome back through the
 operation channel, so the switcher holds no pending-operation queue of its own.
 
-The control bridge turns control socket requests into app commands and can
-flatten renders for the dump verb.
-
 ## Module Seams
 
 - Pure row and group transforms belong in the row model.
@@ -53,7 +48,7 @@ flatten renders for the dump verb.
 - Slow (network) mux effects belong behind the operations module; a committing key
   emits a deferred-operation command for the run loop to spawn, and does not call
   the mux itself.
-- Control socket serving and dump rendering belong in the control bridge.
+- Off-screen dump rendering belongs beside the other rendering code.
 - Card LAYOUT geometry belongs in the column-flow module and stays pure: it takes card
   widths and run boundaries and returns rects, so the paint, the mouse hit-test and the
   tests all read one answer. Rendering reads that answer; it does not compute a second
@@ -234,8 +229,8 @@ flatten renders for the dump verb.
 
 ## Before Editing
 
-- Decide whether the change is pure row data, interactive state, rendering, a
-  side-effecting operation, or control and dump plumbing.
+- Decide whether the change is pure row data, interactive state, rendering, or
+  a side-effecting operation.
 - For `switcher/`, find the existing helper for the same surface before adding
   another state path.
 - Check focus and modal ownership before changing key handling.
@@ -244,5 +239,5 @@ flatten renders for the dump verb.
 
 - Exercise the pure row transforms directly, and drive keys, mouse, modals, and
   rendering through the switcher for interactive changes.
-- Re-check the dump output when the control bridge's rendering helpers change: it
-  and the main draw path must agree.
+- Re-check the dump output when its rendering helpers change: it and the main
+  draw path must agree.
