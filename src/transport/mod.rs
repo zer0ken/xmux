@@ -257,10 +257,9 @@ pub fn kind_for(
         MachineKind::Ssh {
             id,
             alias: machine.to_string(),
-            control_path: xmux_dir
-                .join(format!("cm-{machine}.sock"))
-                .to_string_lossy()
-                .into_owned(),
+            // OpenSSH expands %C to a fixed-width hash of the connection tuple. The
+            // short name leaves room for the random suffix on its temporary Unix socket.
+            control_path: xmux_dir.join("cm-%C").to_string_lossy().into_owned(),
             os: os.to_string(),
         }
     }
@@ -470,6 +469,27 @@ mod tests {
         .transport();
         assert_eq!(ssh.host_id(), "prod");
         assert!(ssh.is_remote());
+    }
+
+    #[test]
+    fn ssh_control_path_leaves_room_for_opensshs_temporary_socket() {
+        let machine = "m".repeat(48);
+        let kind = kind_for(
+            &machine,
+            machine.clone(),
+            "android",
+            std::path::Path::new("/data/data/com.termux/files/home/.xmux"),
+            None,
+        );
+        let MachineKind::Ssh { control_path, .. } = kind else {
+            panic!("a remote machine uses ssh");
+        };
+        let expanded = control_path.replace("%C", &"0".repeat(40));
+        let temporary = format!("{expanded}.{}", "0".repeat(16));
+        assert!(
+            temporary.len() < 108,
+            "OpenSSH must be able to bind its temporary Unix socket: {temporary}"
+        );
     }
 
     #[test]

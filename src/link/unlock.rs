@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 /// How often the conversation wakes while ssh is silent. It bounds how long a cancel
 /// waits, and nothing else: the idle budget is counted from its own deadline.
 const POLL: Duration = Duration::from_millis(100);
+const DIAGNOSTIC_LIMIT: usize = 64 * 1024;
 
 /// The verdict of one login.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,11 +177,11 @@ pub fn start_login(
     let cancel = Arc::new(AtomicBool::new(false));
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     let handle = RunningLogin {
-        source,
+        source: source.clone(),
         cancel: cancel.clone(),
     };
     std::thread::spawn(move || {
-        let _ = done_tx.send(converse(argv, remote, password, idle, cancel));
+        let _ = done_tx.send(converse(source, argv, remote, password, idle, cancel));
     });
     (handle, done_rx)
 }
@@ -189,6 +190,7 @@ pub fn start_login(
 /// answers at the prompts that want them, and report what the child's exit says - or, for
 /// a prompt the pane cannot answer, what ssh asked for.
 fn converse(
+    source: String,
     mut argv: Vec<String>,
     remote: Box<dyn FnOnce() -> String + Send>,
     password: String,
@@ -207,6 +209,10 @@ fn converse(
     };
 
     let mut answerer = Answerer::new(password);
+    // ssh writes its diagnostics to the PTY's merged output stream. Keep a bounded copy
+    // so a failed login leaves the reason in the device log without retaining the secret
+    // that xmux writes only to the PTY input.
+    let mut diagnostic = Vec::new();
     let mut deadline = Instant::now() + idle;
     // An ending that KILLS the child still waits for it, so a login the user walked away
     // from leaves no process behind for the rest of the run.
@@ -218,6 +224,8 @@ fn converse(
         match tap.recv_timeout(POLL) {
             Ok(chunk) => {
                 deadline = Instant::now() + idle;
+                let remaining = DIAGNOSTIC_LIMIT.saturating_sub(diagnostic.len());
+                diagnostic.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
                 let text = String::from_utf8_lossy(&chunk);
                 if let Some(reply) = answerer.feed(&text) {
                     console.input(reply);
@@ -236,6 +244,8 @@ fn converse(
                 // still read, so a refusal is still named as one.
                 if console.has_exited() {
                     while let Ok(chunk) = tap.recv_timeout(POLL) {
+                        let remaining = DIAGNOSTIC_LIMIT.saturating_sub(diagnostic.len());
+                        diagnostic.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
                         answerer.feed(&String::from_utf8_lossy(&chunk));
                     }
                     break None;
@@ -250,7 +260,12 @@ fn converse(
         }
     };
     let code = console.wait();
-    ended.unwrap_or_else(|| answerer.verdict(code))
+    let outcome = ended.unwrap_or_else(|| answerer.verdict(code));
+    if outcome != UnlockOutcome::Ok {
+        let stderr = String::from_utf8_lossy(&diagnostic);
+        tracing::warn!(source = %source, outcome = ?outcome, stderr = ?stderr.trim(), "login_failed");
+    }
+    outcome
 }
 
 #[cfg(test)]
