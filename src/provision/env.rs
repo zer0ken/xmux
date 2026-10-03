@@ -25,6 +25,8 @@ const SSH_PROFILE_CONCURRENCY: usize = 8;
 const SSH_PROFILE_TIMEOUT: Duration = Duration::from_secs(3);
 const SCAN_TIMEOUT: Duration = crate::mux::POLL_SWEEP_BUDGET;
 const DETAIL_TIMEOUT: Duration = crate::mux::POLL_SWEEP_BUDGET;
+
+pub type LoginDefaults = (String, String, String);
 /// Everything a config resolution decides about WHICH sources exist.
 ///
 /// One value because every field answers the same question from the same read of config
@@ -60,6 +62,8 @@ pub struct Roster {
     pub wsl_distros: Vec<String>,
     /// Effective OpenSSH values resolved locally for each ssh destination.
     pub ssh_profiles: HashMap<String, crate::transport::auth::SshProfile>,
+    pub login_defaults: HashMap<String, LoginDefaults>,
+    pub ssh_stanzas: HashMap<String, String>,
 }
 
 /// The resolved runtime: a [`Roster`] that a re-scan can replace, plus the values that
@@ -272,8 +276,9 @@ pub async fn resolve_roster(
     // run CONCURRENTLY over the async runner, so the roster build is not serialized on
     // however long each one takes, and none of them blocks the single-threaded runtime.
     // The `~/.ssh/config` read is local file I/O (fast), so it stays inline.
+    let (ssh_config_text, parsed_ssh_aliases) = config::read_ssh_config(&ssh_config_path());
     let ssh_aliases = if cfg.discovery.ssh_config {
-        config::ssh_host_aliases(&ssh_config_path())
+        parsed_ssh_aliases
     } else {
         Vec::new()
     };
@@ -332,6 +337,27 @@ pub async fn resolve_roster(
         local_socket.clone(),
     );
     let roster_providers = roster_providers(&cfg, &offered, &wsl_distros);
+    let local_user = crate::transport::auth::local_user().unwrap_or_default();
+    let login_defaults = roster_providers
+        .keys()
+        .map(|host| {
+            let effective = ssh_profiles.get(host).map(|profile| &profile.login);
+            (
+                host.clone(),
+                config::login_defaults(
+                    host,
+                    host_addresses.get(host).map(String::as_str),
+                    effective,
+                    &ssh_config_text,
+                    &local_user,
+                ),
+            )
+        })
+        .collect();
+    let ssh_stanzas = roster_providers
+        .keys()
+        .map(|host| (host.clone(), config::host_stanza(&ssh_config_text, host)))
+        .collect();
     (
         Roster {
             cfg,
@@ -343,6 +369,8 @@ pub async fn resolve_roster(
             roster_providers,
             host_addresses,
             ssh_profiles,
+            login_defaults,
+            ssh_stanzas,
         },
         cfg_err,
     )
@@ -577,6 +605,14 @@ impl Env {
             );
             if let Some(addr) = cur.host_addresses.get(&machine) {
                 fresh.host_addresses.insert(machine.clone(), addr.clone());
+            }
+            if let Some(defaults) = cur.login_defaults.get(&machine) {
+                fresh
+                    .login_defaults
+                    .insert(machine.clone(), defaults.clone());
+            }
+            if let Some(stanza) = cur.ssh_stanzas.get(&machine) {
+                fresh.ssh_stanzas.insert(machine.clone(), stanza.clone());
             }
             fresh
                 .roster_providers
@@ -1660,6 +1696,16 @@ mod tests {
                 ssh_aliases: vec!["prod".into()],
                 roster_providers: [("prod".to_string(), Provider::Neighbor)].into(),
                 host_addresses: [("prod".to_string(), "100.87.27.26".to_string())].into(),
+                login_defaults: [(
+                    "prod".to_string(),
+                    (
+                        "100.87.27.26".to_string(),
+                        "22".to_string(),
+                        "dev".to_string(),
+                    ),
+                )]
+                .into(),
+                ssh_stanzas: [("prod".to_string(), "Host prod\n    User dev\n".to_string())].into(),
                 ..Default::default()
             },
             "C-g".into(),
@@ -1694,6 +1740,20 @@ mod tests {
             fresh.host_addresses.get("prod").map(String::as_str),
             Some("100.87.27.26"),
             "the login pane still offers the address the probe had found"
+        );
+        assert_eq!(
+            fresh.login_defaults.get("prod"),
+            Some(&(
+                "100.87.27.26".to_string(),
+                "22".to_string(),
+                "dev".to_string(),
+            )),
+            "the login pane still offers the defaults resolved for the machine"
+        );
+        assert_eq!(
+            fresh.ssh_stanzas.get("prod").map(String::as_str),
+            Some("Host prod\n    User dev\n"),
+            "the unreachable screen still shows the ssh stanza resolved for the machine"
         );
     }
 

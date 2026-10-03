@@ -37,16 +37,17 @@ state; raw key and text injection is an unstable low-level surface.
 - `src/cli/` - the CLI surface: argument parsing and command dispatch, plus the
   `xmux update` subcommand. It exposes ONE public entry, which the binary shim calls.
 - `src/provision/` - resolution: the TOML config, the roster of ssh targets, the
-  concurrent source probe, and the resolved runtime view over them.
+  concurrent source probe, login defaults and host stanzas, and the resolved runtime
+  view over them.
 - `src/transport/` - the TRANSPORT axis: the `Transport` trait, the per-host
   implementations, and the shared shell helpers. A source builds one at construction.
 - `src/mux/` - the MUX axis: the `Mux` trait, the per-mux implementations (`tmux/`,
   `psmux/`, `zellij/`, `abduco/`, `screen/`, `tuios/`, `herdr/`) owning metadata,
   command plans, and a display driver, and
   the shared mux builders.
-- `src/model/` - runtime domain values: sources, inventory, login inputs, nav
-  geometry, the operation port and its exchanged values, and the action and
-  command sets.
+- `src/model/` - runtime domain values: sources, inventory and typed failures, view
+  screen policy, login inputs, nav geometry, the operation port and its exchanged
+  values, and the action and command sets.
 - `src/driver.rs` - the mux-agnostic `MuxDriver` trait and the thin wrapper that
   resolves a source's driver; it names no concrete mux type.
 - `src/display/` - PTY attachment, the grid, terminal input, and low-level input

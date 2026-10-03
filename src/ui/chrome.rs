@@ -260,31 +260,13 @@ pub(crate) enum BarFill {
     Content,
 }
 
-/// Which screen fills the terminal-view region in place of a mux: one variant per state
-/// that has no grid to mirror. Two are host states with no session to show; the third is
-/// the one session that has a grid and must not be shown anyway. There is no variant for
-/// a host still scanning - an in-flight state is the nav's to show, so the view keeps the
 /// The mark a BLOCKED host wears on its nav card, flush after the host name. A blocked
 /// host is a failure the user can act on (the login pane), so it keeps the warning
 /// colour like the unreachable `⚠`. One column wide: a card's columns are laid out in
 /// cells, and a wide glyph here would shift every column after it.
 pub(crate) const BLOCK_MARK: &str = "?";
 
-/// grid it already has.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ViewScreen {
-    /// The session xmux is ITSELF running in. Mirroring it would attach a second client
-    /// to the session holding xmux - moving the user's own client and painting xmux
-    /// inside itself - so the screen stands in place of that grid.
-    SelfSession,
-    /// The host could not be reached.
-    Unreachable,
-    /// The connection failed in a way the user can answer from xmux: a blocked host
-    /// is awaiting the login pane's values.
-    Login,
-    /// The host answered and is serving no session.
-    Empty,
-}
+use crate::model::ViewScreen;
 
 pub(crate) struct ViewScreenRender<'a> {
     pub(crate) address: &'a crate::session::Address,
@@ -338,7 +320,7 @@ fn siblings(
         .iter()
         .filter(|g| g.source != source && crate::session::machine_of(&g.source) == machine)
         .map(|g| {
-            let blocked = g.err.as_deref().is_some_and(crate::mux::is_blocked);
+            let blocked = g.failure() == Some(crate::model::FailureKind::Blocked);
             let word = if state.scanning.contains(&g.source) {
                 "still scanning".to_string()
             } else if g.err.is_some() {
@@ -439,23 +421,12 @@ pub struct Chrome {
     /// spinner glyph renders right of their name in the tree.
     pub(crate) spinner: HashSet<String>,
     pub(crate) spinner_frame: usize,
-    /// Raw `~/.ssh/config` text (set once by the app). The unreachable host screen shows
-    /// the matching Host/Match stanza for the selected host. Empty in tests.
-    pub(crate) ssh_config_text: String,
-    ssh_logins: HashMap<String, crate::transport::Login>,
+    login_defaults: HashMap<String, crate::provision::env::LoginDefaults>,
+    ssh_stanzas: HashMap<String, String>,
     /// What offered each host to the roster, keyed by HOST name and already reduced to
     /// the words to print (set once by the app). The unreachable host screen names it.
     /// Empty in tests, where the row is then absent rather than blank.
     pub(crate) roster_providers: HashMap<String, String>,
-    /// The address a provider reported for each host, keyed by HOST name (set once by
-    /// the app). It seeds the login pane's address, because a host offered under a name
-    /// this machine cannot resolve is reachable only by the address the provider knew.
-    /// A host absent from the map starts at its own name, which is what ssh would use.
-    pub(crate) host_addresses: HashMap<String, String>,
-    /// This machine's own account name (set once by the app). It seeds the login pane's
-    /// username wherever the ssh config names none, because that is the login ssh itself
-    /// would fall back to.
-    pub(crate) local_user: String,
     /// How xmux reaches each source, keyed by SOURCE id (set once by the app). The
     /// unreachable screen states it: a host that failed is worth little without what was
     /// asked of it and how. See [`SourceReach`].
@@ -496,10 +467,8 @@ impl Default for Chrome {
             view_border_hovered: false,
             spinner: HashSet::new(),
             spinner_frame: 0,
-            ssh_config_text: String::new(),
-            ssh_logins: HashMap::new(),
-            host_addresses: HashMap::new(),
-            local_user: String::new(),
+            login_defaults: HashMap::new(),
+            ssh_stanzas: HashMap::new(),
             roster_providers: HashMap::new(),
             source_reach: HashMap::new(),
             log_path: String::new(),
@@ -617,11 +586,6 @@ impl Chrome {
         self.nav_position = position;
     }
 
-    /// Sets the raw `~/.ssh/config` text the unreachable host screen reads.
-    pub(crate) fn set_ssh_config_text(&mut self, text: String) {
-        self.ssh_config_text = text;
-    }
-
     /// Sets what offered each host to the roster. The app calls this once at startup
     /// with the assembled roster; a host missing from the map simply shows no such row,
     /// which is the honest answer for one nothing recorded.
@@ -629,17 +593,14 @@ impl Chrome {
         self.roster_providers = providers;
     }
 
-    /// Sets the address each provider reported for a host, and this machine's own
-    /// account name. Both seed the login pane and nothing else reads them.
+    /// Sets the resolved login values and matching ssh stanzas the chrome renders.
     pub(crate) fn set_login_defaults(
         &mut self,
-        addresses: HashMap<String, String>,
-        ssh_logins: HashMap<String, crate::transport::Login>,
-        local_user: String,
+        defaults: HashMap<String, crate::provision::env::LoginDefaults>,
+        stanzas: HashMap<String, String>,
     ) {
-        self.host_addresses = addresses;
-        self.ssh_logins = ssh_logins;
-        self.local_user = local_user;
+        self.login_defaults = defaults;
+        self.ssh_stanzas = stanzas;
     }
 
     /// What ssh WOULD use to reach `source`, as the login pane's starting values: the
@@ -651,22 +612,10 @@ impl Chrome {
     /// values, and the user changes the part that was wrong.
     pub(crate) fn login_defaults(&self, source: &str) -> (String, String, String) {
         let host = crate::session::machine_of(source);
-        let configured =
-            self.ssh_logins.get(host).cloned().unwrap_or_else(|| {
-                crate::provision::config::stanza_login(&self.ssh_config_text, host)
-            });
-        let address = configured
-            .address
-            .filter(|address| address != host || !self.host_addresses.contains_key(host))
-            .unwrap_or_else(|| {
-                self.host_addresses
-                    .get(host)
-                    .cloned()
-                    .unwrap_or_else(|| host.to_string())
-            });
-        let port = configured.port.unwrap_or(22).to_string();
-        let user = configured.user.unwrap_or_else(|| self.local_user.clone());
-        (address, port, user)
+        self.login_defaults
+            .get(host)
+            .cloned()
+            .unwrap_or_else(|| (host.to_string(), "22".into(), String::new()))
     }
 
     /// Sets how xmux reaches each source, keyed by source id. The app calls this once at
@@ -932,7 +881,11 @@ impl Chrome {
             {
                 rows.push((ScreenCell::Label("provider"), provider.clone()));
             }
-            let stanza = crate::provision::config::host_stanza(&self.ssh_config_text, source);
+            let stanza = self
+                .ssh_stanzas
+                .get(crate::session::machine_of(source))
+                .map(String::as_str)
+                .unwrap_or_default();
             if stanza.is_empty() {
                 rows.push((
                     ScreenCell::Label("ssh config"),

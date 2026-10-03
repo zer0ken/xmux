@@ -826,7 +826,10 @@ mod tests {
                 },
             )]));
         let reason = transport.probe_diagnostic("Host key verification failed.".into());
-        assert!(!crate::mux::is_blocked(&reason));
+        assert_eq!(
+            crate::model::FailureKind::from_error(&reason),
+            crate::model::FailureKind::Unreachable
+        );
         assert!(reason.contains("ssh -o BatchMode=no -o StrictHostKeyChecking=ask -- prod"));
     }
 

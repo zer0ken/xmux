@@ -285,15 +285,9 @@ impl Runtime {
                         .map(|(host, p)| (host.clone(), p.label().to_string()))
                         .collect(),
                 );
-                state.chrome.set_login_defaults(
-                    roster.host_addresses.clone(),
-                    roster
-                        .ssh_profiles
-                        .iter()
-                        .map(|(host, profile)| (host.clone(), profile.login.clone()))
-                        .collect(),
-                    local_user(),
-                );
+                state
+                    .chrome
+                    .set_login_defaults(roster.login_defaults.clone(), roster.ssh_stanzas.clone());
                 env.replace_roster(*roster);
                 let held = env.credentials().machines();
                 state.logged_in.retain(|machine| held.contains(machine));
@@ -549,11 +543,6 @@ impl Runtime {
         // [ui] hide-unreachable: the nav drops the settled unreachable hosts' cards. The
         // filter naming one brings its card, and its unreachable screen, back.
         switcher.set_hide_unreachable(roster.cfg.ui_hide_unreachable(), &mut state);
-        // Feed the switcher the ssh config so an unreachable host's screen can show
-        // its Host/Match stanza. Read once; a missing file just yields no stanza.
-        state.chrome.set_ssh_config_text(
-            std::fs::read_to_string(crate::provision::env::ssh_config_path()).unwrap_or_default(),
-        );
         // And what offered each host, so an unreachable one can name the provider that
         // put it on the roster. Reduced to words here: the screen prints them and
         // nothing branches on which provider it was.
@@ -567,15 +556,9 @@ impl Runtime {
         // And what the login pane starts from: the address a provider knew for each host,
         // and this machine's own account name. Both are what ssh would have used, so a
         // pane that opens on a failure opens showing what just failed.
-        state.chrome.set_login_defaults(
-            roster.host_addresses.clone(),
-            roster
-                .ssh_profiles
-                .iter()
-                .map(|(host, profile)| (host.clone(), profile.login.clone()))
-                .collect(),
-            local_user(),
-        );
+        state
+            .chrome
+            .set_login_defaults(roster.login_defaults.clone(), roster.ssh_stanzas.clone());
         // And how each source is REACHED, so an unreachable one states what was asked of
         // it and over what, not only that it failed. Resolved to words here for the same
         // reason the providers are: the screen prints them and nothing branches on them.
@@ -1651,15 +1634,6 @@ fn last_pane_line(registry: &crate::display::registry::AttachRegistry, id: u64) 
     let line = grid.lock().ok().and_then(|g| g.last_line());
     line.map(|l| crate::driver::escape_controls(&l))
         .unwrap_or_else(|| "(blank)".to_string())
-}
-
-/// This machine's own account name, which is the login ssh falls back to when nothing
-/// names another. Empty when the environment says nothing, and then the login pane's
-/// username simply starts blank rather than carrying a guess.
-fn local_user() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_default()
 }
 
 /// How xmux reaches every card: each source, and each host that serves no source yet.

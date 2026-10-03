@@ -17,9 +17,8 @@ use ratatui::widgets::{Clear, ListState};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::model::{Action, Command};
+use crate::model::{Action, Command, ViewScreen};
 use crate::session::{Address, Session};
-use crate::ui::chrome::ViewScreen;
 use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
 
@@ -758,36 +757,21 @@ impl Switcher {
     /// gets neither, because an in-flight state is the nav's to show (its card spins) and
     /// the view keeps the grid it already has.
     fn current_view_screen(&self, state: &crate::state::State) -> Option<ViewScreen> {
-        // The session xmux runs in comes first: it is the one card with a grid the view
-        // still refuses, and the screen is what stands in place of it.
-        if let Some(addr) = self.current_screen_address(state) {
-            if self.own_session.as_ref() == Some(&addr) {
-                return Some(ViewScreen::SelfSession);
-            }
-        }
-        let Some(RowRef::Host {
-            source,
-            unreachable,
-            blocked,
-            ..
-        }) = self.current_ref()
-        else {
-            return None;
+        let selected_address = self.current_screen_address(state);
+        let selected_source = match self.current_ref() {
+            Some(RowRef::Host { source, .. }) => Some(source.as_str()),
+            _ => None,
         };
-        if *blocked {
-            return Some(ViewScreen::Login);
-        }
-        if *unreachable {
-            return Some(ViewScreen::Unreachable);
-        }
-        if state.scanning.contains(source) {
-            return None;
-        }
-        state
-            .groups
-            .iter()
-            .any(|g| &g.source == source && g.sessions.is_empty())
-            .then_some(ViewScreen::Empty)
+        let group = selected_source
+            .and_then(|source| state.groups.iter().find(|group| group.source == source));
+        crate::model::choose_view_screen(
+            selected_source,
+            selected_address.as_ref(),
+            group.and_then(crate::model::Group::failure),
+            selected_source.is_some_and(|source| state.scanning.contains(source)),
+            group.is_some_and(|group| group.sessions.is_empty()),
+            self.own_session.as_ref(),
+        )
     }
 
     /// The session the selected card would show, or `None` when it would show nothing.

@@ -1165,20 +1165,12 @@ async fn login_pane_offers_the_remember_choice_only_after_a_value_changes() {
 #[tokio::test]
 async fn login_pane_prefills_all_values_from_ssh_config() {
     let mut h = Harness::from_sources(&["e2e-box"]);
-    h.state
-        .chrome
-        .set_ssh_config_text("Host e2e-box\n    HostName stale.example\n".into());
     h.state.chrome.set_login_defaults(
-        Default::default(),
         std::collections::HashMap::from([(
             "e2e-box".into(),
-            crate::transport::Login {
-                address: Some("127.0.0.1".into()),
-                port: Some(2222),
-                user: Some("dev".into()),
-            },
+            ("127.0.0.1".into(), "2222".into(), "dev".into()),
         )]),
-        "local-user".into(),
+        Default::default(),
     );
     h.sw.apply_source_result(
         "e2e-box".into(),
@@ -1806,9 +1798,13 @@ async fn a_host_nothing_recorded_gets_no_provider_row() {
 #[tokio::test]
 async fn unreachable_host_screen_shows_ssh_config_stanza() {
     let mut h = Harness::from_sources(&["jupiter00"]);
-    h.state.chrome.set_ssh_config_text(
-            "Host jupiter00\n    HostName 143.248.140.120\n    User hrlee\n\nHost other\n    HostName 1.2.3.4\n".into(),
-        );
+    h.state.chrome.set_login_defaults(
+        Default::default(),
+        std::collections::HashMap::from([(
+            "jupiter00".into(),
+            "Host jupiter00\n    HostName 143.248.140.120\n    User hrlee\n".into(),
+        )]),
+    );
     h.sw.apply_source_result(
         "jupiter00".into(),
         vec![],
@@ -2509,9 +2505,13 @@ async fn both_host_screens_share_one_grammar() {
     // headline, the state word under it, one rule column for every row that carries a
     // cell, and the rescan key both offer. A state added later has this to answer to.
     let mut dead = Harness::from_sources(&["prod"]);
-    dead.state
-        .chrome
-        .set_ssh_config_text("Host prod\n    HostName 10.0.0.1\n".into());
+    dead.state.chrome.set_login_defaults(
+        Default::default(),
+        std::collections::HashMap::from([(
+            "prod".into(),
+            "Host prod\n    HostName 10.0.0.1\n".into(),
+        )]),
+    );
     dead.sw.apply_source_result(
         "prod".into(),
         vec![],

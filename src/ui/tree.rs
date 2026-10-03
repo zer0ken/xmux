@@ -260,7 +260,7 @@ pub(crate) fn drop_hidden_unreachable(
                 || scanning.contains(&g.source)
                 // A blocked host is actionable (its login pane is the one entry
                 // point), so hiding never drops it, whatever the filter says.
-                || crate::mux::is_blocked(g.err.as_deref().unwrap_or_default())
+                || g.failure() == Some(crate::model::FailureKind::Blocked)
                 // And a host the user LOGGED IN to stays for the same reason: it is the
                 // host they just acted on, so whatever it answers next is the answer they
                 // are waiting for. Otherwise succeeding at the login is what hides the
@@ -425,7 +425,7 @@ pub(crate) fn flatten(
     for g in groups {
         let is_scanning = scanning.contains(&g.source);
         let unreachable = g.err.is_some();
-        let blocked = g.err.as_deref().is_some_and(crate::mux::is_blocked);
+        let blocked = g.failure() == Some(crate::model::FailureKind::Blocked);
         if !unreachable && !g.sessions.is_empty() {
             continue;
         }

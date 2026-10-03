@@ -47,6 +47,8 @@ same role.
   rather than roster policy.
 - The shared shell helpers renders an argv injection-safe for the POSIX shell
   an implementation hands its command to. It is the peer of the mux axis's own builders.
+- The shared ssh diagnostic identifies authentication and host-key failures that a login
+  can answer. The domain model turns that diagnosis into a typed host failure.
 
 The dependency is one-way: the shell-based implementations import the shared helpers,
 and nothing in `transport/` imports a mux type or a source.

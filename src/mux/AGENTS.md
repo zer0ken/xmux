@@ -54,7 +54,7 @@ driver type.
 
 ## Mental Model
 
-A mux describes mux semantics and classification. A transport dispatches host
+A mux describes mux semantics and protocol classification. A transport dispatches host
 execution. The `MuxDriver` trait in `src/driver.rs` is the mux-agnostic display
 seam; each mux's concrete driver lives in its own implementation directory and is
 constructed by the mux, so a mux owns BOTH its argv, server model, and

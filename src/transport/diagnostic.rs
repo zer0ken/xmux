@@ -138,6 +138,22 @@ pub fn host_key_unknown(stderr: &str) -> bool {
         && !host_key_changed(stderr)
 }
 
+/// True when `stderr` is a failure the user can answer FROM xmux, which is the state
+/// apart from unreachable. What the login pane collects decides the set: it takes the
+/// address, the port, and the username, so every failure those three values can fix
+/// belongs here.
+///
+/// Two of ssh's own refusals qualify. The auth failure carries `Permission denied (`
+/// with the rejected-methods list; the `(` is ssh's own mark, which a generic mux
+/// permission error does not have. A first-seen host key is the other: a background
+/// probe cannot trust it, and the submitted login accepts a new key.
+///
+/// Connectivity, name resolution, remote command permissions, and changed host keys need
+/// action the pane cannot take, so they stay unreachable.
+pub fn requires_login(stderr: &str) -> bool {
+    contains_auth_refusal(stderr) || host_key_unknown(stderr)
+}
+
 pub fn explain(input: &str, password_supplied: bool) -> String {
     let detail = sanitize(input);
     let lower = detail.to_ascii_lowercase();
@@ -268,5 +284,46 @@ mod tests {
         let detail = "xmux credential broker unavailable: connection refused\n\
                       dev@box: Permission denied (publickey,password).";
         assert!(explain(detail, false).starts_with("xmux could not provide the held password\n"));
+    }
+
+    #[test]
+    fn requires_login_covers_the_failures_the_login_pane_can_answer() {
+        for text in [
+            "pwtest@127.0.0.1: Permission denied (publickey,password).",
+            "command failed (exit 255): pwtest@127.0.0.1: Permission denied (publickey).",
+            "Host key verification failed.",
+            "command failed (exit 255): Host key verification failed.",
+        ] {
+            assert!(requires_login(text), "the pane can answer this: {text}");
+        }
+    }
+
+    #[test]
+    fn requires_login_leaves_a_machine_that_is_down_unreachable() {
+        // No value the pane holds reaches a machine that is not answering, and a generic
+        // mux error is not an ssh barrier at all.
+        for text in [
+            "ssh: connect to host 192.0.2.1 port 22: Connection timed out",
+            "ssh: connect to host prod port 22: Connection refused",
+            "ssh: connect to host prod port 22: No route to host",
+            "tmux: open /tmp/tmux-0/default: Permission denied",
+            "Permission denied (publickey,password,keyboard-interactive).",
+            "ssh: Could not resolve hostname jupiter00: No address associated with hostname",
+            "no server running on /tmp/tmux-1000/default",
+        ] {
+            assert!(!requires_login(text), "not answerable here: {text}");
+        }
+    }
+
+    #[test]
+    fn requires_login_refuses_a_changed_host_key() {
+        // A key that changed under a host is not an answer the user gives in xmux: ssh's
+        // own warning accompanies the same verification-failed line, and that warning is
+        // what keeps the host unreachable.
+        assert!(!requires_login(
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
+             @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n\
+             Host key verification failed."
+        ));
     }
 }

@@ -22,8 +22,8 @@ the debounced attach, and renders the live split view.
   default interactive app, plus the self-update subcommand. It exposes ONE entry, which
   the binary shim calls.
 - `provision/` resolves what exists on this machine: the optional TOML config merged
-  with ssh-config discovery, the roster of ssh targets, the concurrent source
-  probe, and the resolved runtime view over them.
+  with ssh-config discovery, the roster of ssh targets, the concurrent source probe,
+  login display values, and the resolved runtime view over them.
 - The control socket (in `link/`) owns ctl wire parsing, framing, endpoint
   naming, and the ctl client. Semantic ctl verbs resolve to domain actions; the
   `raw:` namespace is low-level injection.
@@ -152,8 +152,9 @@ the debounced attach, and renders the live split view.
 - Do not block the app loop on process spawn, PTY close, pipe reads, writes, or
   resize operations.
 - Do not treat the source adapter as the preferred place for new execution
-  semantics. Host execution belongs to the transport, mux semantics and
-  classification (attach argv, server model, enumeration) to the mux, and
+  semantics. Host execution and ssh diagnostics belong to the transport, host failure
+  and screen policy to the model, mux semantics and protocol classification (attach
+  argv, server model, enumeration) to the mux, and
   per-source display orchestration with its concrete switch-or-reattach decision
   to the per-mux driver.
 - All structured log output goes to `<xmux_dir>/xmux.log`. Logging must never

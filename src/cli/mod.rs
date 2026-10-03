@@ -460,10 +460,14 @@ fn print_outcome(label: &str, outcome: Result<usize, String>) {
     // answered, or when the only thing missing was an address.
     match outcome {
         Ok(n) => println!("  {label}: ok, {n} session(s)"),
-        Err(e) if crate::mux::is_blocked(&e) => {
-            println!("  {label}: LOGIN REQUIRED — {e}")
-        }
-        Err(e) => println!("  {label}: UNREACHABLE — {e}"),
+        Err(e) => match crate::model::FailureKind::from_error(&e) {
+            crate::model::FailureKind::Blocked => {
+                println!("  {label}: LOGIN REQUIRED — {e}")
+            }
+            crate::model::FailureKind::Unreachable => {
+                println!("  {label}: UNREACHABLE — {e}")
+            }
+        },
     }
 }
 
