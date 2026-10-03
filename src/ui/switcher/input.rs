@@ -99,7 +99,7 @@ impl Switcher {
             KeyCode::Char(c) => match c {
                 '/' => self.open_input(InputMode::Filter, state),
                 'n' => self.open_new(state),
-                'r' => self.request_rescan(state),
+                'r' => return vec![Command::Rescan],
                 // Jump: the digit opens the jump popup already holding it, so the
                 // number can be extended (4 → 41) without a second keystroke.
                 '0'..='9' => self.open_jump(c, state),

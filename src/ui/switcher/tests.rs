@@ -580,7 +580,8 @@ async fn rescan_resets_to_scanning_skeleton() {
     // re-kick the probes - the tree returns to skeletons until results land.
     let mut h = Harness::new(sample());
     assert!(h.text().contains("inference"), "sessions before rescan");
-    h.ch('r').await;
+    h.sw.request_rescan(&mut h.state);
+    h.draw();
     assert!(
         h.sw.take_rescan_kick(),
         "rescan must signal the loop to re-probe"

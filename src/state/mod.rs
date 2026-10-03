@@ -584,7 +584,11 @@ impl State {
     ///
     /// [`HostEvent`]: crate::link::HostEvent
     /// [`EventEffect`]: crate::model::EventEffect
-    pub fn apply_event(&mut self, ev: crate::link::HostEvent) -> Vec<crate::model::EventEffect> {
+    #[cfg(test)]
+    pub(crate) fn apply_event_for_test(
+        &mut self,
+        ev: crate::link::HostEvent,
+    ) -> Vec<crate::model::EventEffect> {
         use crate::link::HostEvent;
         use crate::model::EventEffect;
         match ev {

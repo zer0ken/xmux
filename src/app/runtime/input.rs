@@ -18,16 +18,19 @@ impl Runtime {
         // Split-borrow the input and selection fields while commands are collected.
         let Self {
             nav_decoder,
-            switcher,
-            state,
-            nav_position,
+            model,
             cols,
             body_rows: rows,
-            nav_width,
-            mouse_state,
             prefix,
             ..
         } = self;
+        let AppModel {
+            state,
+            nav_position,
+            nav_width,
+            mouse_state,
+            ..
+        } = model;
         let nav_armed = &mut mouse_state.nav_armed;
         let (prefix, cols, rows, nav_width) = (*prefix, *cols, *rows, *nav_width);
         let mut focus_terminal = false;
@@ -36,7 +39,7 @@ impl Runtime {
         let mut height_delta = 0i32;
         let mut toggle_auto_hide = false;
         let mut cycle_position = false;
-        let mut key_cmds: Vec<crate::model::Command> = Vec::new();
+        let mut model_msgs = Vec::new();
         for key in nav_decoder.feed(bytes) {
             // Re-query per key: opening a modal popup (via a NavKey applied below) flips
             // this, which changes how the next key in this same read resolves. Gating on
@@ -47,7 +50,7 @@ impl Runtime {
             match resolve_nav_key(key, nav_armed, prefix, is_inputting, *nav_position) {
                 // A committed input/kill confirm folds through State::apply, which returns
                 // its Commands; collect them and dispatch the whole batch below.
-                Some(Action::NavKey(k)) => key_cmds.extend(switcher.handle_key(k, state)),
+                Some(Action::NavKey(k)) => model_msgs.push(Msg::Key(k)),
                 Some(Action::FocusTerminal) => {
                     // Enter focuses the terminal view. For a locked host that view holds
                     // the locked panel, whose own fields take the keys once focused; the
@@ -59,7 +62,7 @@ impl Runtime {
                 Some(Action::Height(d)) => height_delta = d,
                 Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
                 Some(Action::CycleNavPosition) => cycle_position = true,
-                Some(Action::ShowHelp) => switcher.toggle_help(state),
+                Some(Action::ShowHelp) => model_msgs.push(Msg::ToggleHelp),
                 // resolve_nav_key never emits the mux-only or terminal-only variants
                 // (Forward/FocusNav); None = armed/consumed.
                 Some(Action::Forward(_)) | Some(Action::FocusNav(_)) | None => {}
@@ -67,7 +70,11 @@ impl Runtime {
         }
         // Route the full command batch through the runtime executor so every command a
         // switcher key produces is acted on. Merge its loop signals into this input read.
-        let (cmd_quit, cmd_width_changed) = self.execute_commands(key_cmds);
+        let effects = model_msgs
+            .into_iter()
+            .flat_map(|msg| update(&mut self.model, msg))
+            .collect();
+        let (cmd_quit, cmd_width_changed, _) = self.execute_effects(effects);
         quit |= cmd_quit;
         if cmd_width_changed {
             *width_changed = true;
@@ -75,17 +82,10 @@ impl Runtime {
         ensure_current_host(
             &mut self.mgr,
             &self.hosts,
-            &self.switcher,
+            &self.model.switcher,
             cols,
             rows,
             nav_width,
-        );
-        kick_rescan(
-            &mut self.switcher,
-            &self.env,
-            &self.hosts,
-            &self.mgr,
-            &self.scan_pool,
         );
         (
             focus_terminal,
@@ -116,23 +116,27 @@ impl Runtime {
     ) -> bool {
         // Split-borrow the world state into the loose names the (verbatim) gesture body uses.
         let Self {
-            mouse_state: st,
             term_input,
-            switcher,
-            render_plan,
-            state,
+            model,
             registry,
             mgr,
             env,
             hosts,
+            cols,
+            body_rows,
+            ..
+        } = self;
+        let AppModel {
+            mouse_state: st,
+            switcher,
+            render_plan,
+            state,
             nav_width_natural,
             nav_collapsed,
             nav_height,
-            cols,
-            body_rows,
             nav_width,
             ..
-        } = self;
+        } = model;
         let (cols, body_rows, nav_width) = (*cols, *body_rows, *nav_width);
         let mut dirty = false;
         // A prefix is armed only until the next INPUT, and a mouse action is input. Mouse
@@ -266,6 +270,8 @@ impl Runtime {
             }
         }
         let down = (ev.cb & 0x01) != 0;
+        let mut model_msg = None;
+        let mut ensure_after_update = false;
         match resolve_mouse_chain(
             is_wheel,
             down,
@@ -278,22 +284,25 @@ impl Runtime {
                 // (move_selection), like any list. NOT sibling-cycle: arrows do
                 // that (move_sibling), but it wraps within a level, so a 2-sibling
                 // level just bounces - the "two notches per move" report.
-                switcher.mouse_scroll(down, state);
+                model_msg = Some(Msg::MouseScroll { down });
                 *wheel_scrolled = true;
                 dirty = true;
             }
             // The unfocused view was clicked → switch focus to it (no content
             // delivered); toggle flips Focus::Nav⇄Focus::Terminal either direction.
             ChainAction::FocusTerminal | ChainAction::FocusNav => {
-                state.apply(crate::model::Action::FocusToggle);
+                model_msg = Some(Msg::Action(crate::model::Action::FocusToggle));
                 *mouse_focus_toggle = true;
             }
             ChainAction::SelectRow => {
                 // Left-click a nav row → move the selection to it (select). The
                 // loop top commits the new selection (attach); ensure the
                 // clicked row's host connects so its subtree streams in.
-                switcher.mouse_select(render_plan, col0, ev.row.saturating_sub(1), state);
-                ensure_current_host(mgr, hosts, switcher, cols, body_rows, nav_width);
+                model_msg = Some(Msg::MouseSelect {
+                    col: col0,
+                    row: ev.row.saturating_sub(1),
+                });
+                ensure_after_update = true;
                 dirty = true;
             }
             ChainAction::ForwardToMux => {
@@ -313,6 +322,13 @@ impl Runtime {
             }
             ChainAction::Nothing => {}
         }
+        if let Some(msg) = model_msg {
+            let effects = update(model, msg);
+            debug_assert!(effects.is_empty());
+        }
+        if ensure_after_update {
+            ensure_current_host(mgr, hosts, &model.switcher, cols, body_rows, nav_width);
+        }
         dirty
     }
 }
@@ -331,34 +347,36 @@ impl Runtime {
     /// the terminal keeps room, and persisted; width defers to `apply_width_delta` (the
     /// caller schedules the debounced persist). Returns whether the size changed.
     pub(super) fn resize_axis(&mut self, horizontal: bool, delta: i32) -> bool {
-        let top = self.render_plan.layout == crate::ui::switcher::ViewLayout::Band;
+        let top = self.model.render_plan.layout == crate::ui::switcher::ViewLayout::Band;
         // With the nav on the right or below the same screen direction resizes the nav the
         // other way, so flip the delta to keep the key's direction on the border's movement.
-        let delta = if self.nav_position.forward_arrows_face_terminal() {
+        let delta = if self.model.nav_position.forward_arrows_face_terminal() {
             delta
         } else {
             -delta
         };
         match (horizontal, top) {
-            (true, false) => {
-                apply_width_delta(delta, &mut self.nav_width_natural, &self.env.ui_prefix)
-            }
+            (true, false) => apply_width_delta(
+                delta,
+                &mut self.model.nav_width_natural,
+                &self.env.ui_prefix,
+            ),
             (false, true) => {
-                let base = if self.nav_height == 0 {
+                let base = if self.model.nav_height == 0 {
                     crate::ui::switcher::default_nav_height(self.body_rows)
                 } else {
-                    self.nav_height
+                    self.model.nav_height
                 };
                 let ceil = self
                     .body_rows
                     .saturating_sub(2)
                     .clamp(NAV_HEIGHT_MIN, NAV_HEIGHT_MAX);
                 let next = (base as i32 + delta).clamp(NAV_HEIGHT_MIN as i32, ceil as i32) as u16;
-                if next == self.nav_height {
+                if next == self.model.nav_height {
                     return false;
                 }
-                self.nav_height = next;
-                crate::app::prefs::save_nav_height(&self.env.xmux_dir, self.nav_height);
+                self.model.nav_height = next;
+                crate::app::prefs::save_nav_height(&self.env.xmux_dir, self.model.nav_height);
                 true
             }
             _ => false, // perpendicular axis for this layout: nothing to resize
@@ -374,7 +392,7 @@ impl Runtime {
             return false;
         }
         let changed = self.resize_axis(horizontal, delta);
-        self.mouse_state.repeat_until =
+        self.model.mouse_state.repeat_until =
             Some(std::time::Instant::now() + std::time::Duration::from_millis(RESIZE_REPEAT_MS));
         changed
     }
@@ -383,7 +401,7 @@ impl Runtime {
     /// (routed via [`Runtime::handle_mouse_event`]) vs a non-mouse byte stream, runs the
     /// lost-release watchdogs, the resize-repeat window, and the help-modal / nav-focus /
     /// terminal-view focus routing - in the SAME order as the inline arm. The final focus
-    /// toggles (+ replay) run on `self.state.focus`, so the caller only acts on the returned
+    /// toggles (+ replay) run on `self.model.state.focus`, so the caller only acts on the returned
     /// `dirty`/`quit`. No behavior change.
     pub(super) fn handle_stdin_bytes(
         &mut self,
@@ -439,17 +457,17 @@ impl Runtime {
         // mouse input. Any non-mouse byte (a keystroke, or the split release's own
         // leftover bytes) ends the drag and persists the final width, so the user is
         // never trapped past the next input.
-        if self.mouse_state.dragging_view_border && !non_mouse.is_empty() {
-            self.mouse_state.dragging_view_border = false;
+        if self.model.mouse_state.dragging_view_border && !non_mouse.is_empty() {
+            self.model.mouse_state.dragging_view_border = false;
             // The recovery doesn't track which axis was dragging; persist both (a no-op file
             // write for the unchanged one) so the final size is never lost.
-            crate::app::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
-            crate::app::prefs::save_nav_height(&self.env.xmux_dir, self.nav_height);
+            crate::app::prefs::save_nav_width(&self.env.xmux_dir, self.model.nav_width_natural);
+            crate::app::prefs::save_nav_height(&self.env.xmux_dir, self.model.nav_height);
         }
         // Watchdog: same recovery for a popup border-drag - a lost button-up
         // must not strand `popup_drag` and eat all later mouse input.
-        if self.switcher.popup_drag_active() && !non_mouse.is_empty() {
-            self.switcher.end_popup_drag();
+        if self.model.switcher.popup_drag_active() && !non_mouse.is_empty() {
+            self.model.switcher.end_popup_drag();
             *dirty = true;
         }
         if mouse_focus_toggle {
@@ -461,10 +479,10 @@ impl Runtime {
             ensure_current_host(
                 &mut self.mgr,
                 &self.hosts,
-                &self.switcher,
+                &self.model.switcher,
                 self.cols,
                 self.body_rows,
-                self.nav_width,
+                self.model.nav_width,
             );
         }
         // Resize-repeat: while the window from a prefix-driven resize is open, a
@@ -477,10 +495,11 @@ impl Runtime {
         // and fall through to the normal nav/terminal routing below.
         let mut consumed_by_repeat = false;
         if self
+            .model
             .mouse_state
             .repeat_until
             .is_some_and(|d| std::time::Instant::now() < d)
-            && !self.mouse_state.nav_armed
+            && !self.model.mouse_state.nav_armed
             && !self.term_input.is_armed()
             && !non_mouse.is_empty()
         {
@@ -495,27 +514,29 @@ impl Runtime {
                 non_mouse.drain(0..n);
                 *dirty = true;
                 if non_mouse.is_empty() {
-                    self.mouse_state.repeat_until =
+                    self.model.mouse_state.repeat_until =
                         Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
                     consumed_by_repeat = true;
                 } else {
-                    self.mouse_state.repeat_until = None; // trailing non-arrow bytes end + route below
+                    self.model.mouse_state.repeat_until = None; // trailing non-arrow bytes end + route below
                 }
             } else {
-                self.mouse_state.repeat_until = None; // first key isn't a Ctrl-arrow → end the window
+                self.model.mouse_state.repeat_until = None; // first key isn't a Ctrl-arrow → end the window
             }
         }
         if !consumed_by_repeat
             && !non_mouse.is_empty()
-            && self.switcher.feed_help_key(&non_mouse, &mut self.state)
+            && matches!(self.model.state.modal, Some(crate::state::Modal::Help))
         {
+            let effects = update(&mut self.model, Msg::HelpBytes(non_mouse.clone()));
+            debug_assert!(effects.is_empty());
             // The help modal is modal (tmux view-mode style): while open it
             // captures every key in EITHER focus - q/Esc closes it, the rest are
             // swallowed - so nothing leaks to the nav or the terminal view. Above the
             // nav/terminal split so the behavior is identical regardless of focus.
             *dirty = true;
         } else if !consumed_by_repeat
-            && (self.state.focus.is_nav_focused() || self.state.focus.is_modal())
+            && (self.model.state.focus.is_nav_focused() || self.model.state.focus.is_modal())
         {
             // Nav view OR any modal: route to the switcher path. A modal popup opened
             // from EITHER view owns its keys here; the resolver gating in handle_nav_bytes
@@ -532,13 +553,13 @@ impl Runtime {
                 *width_changed = true;
             }
             if th {
-                toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
+                toggle_auto_hide(&mut self.model.auto_hide_nav, &self.env.xmux_dir);
                 *dirty = true;
             }
             if cp {
                 cycle_nav_position(
-                    &mut self.nav_position_pinned,
-                    self.nav_position,
+                    &mut self.model.nav_position_pinned,
+                    self.model.nav_position,
                     &self.env.xmux_dir,
                 );
                 *dirty = true;
@@ -546,7 +567,7 @@ impl Runtime {
         } else if !consumed_by_repeat {
             // TERMINAL focus: forward raw bytes to the selected session's PTY;
             // TermInput intercepts the prefix (→ nav / quit / help / resize / literal).
-            for action in self.term_input.feed(&non_mouse, self.nav_position) {
+            for action in self.term_input.feed(&non_mouse, self.model.nav_position) {
                 match action {
                     // A BLOCKED host has no PTY: its login pane in the terminal view owns the
                     // keys. Route them to that pane (edit a field, walk the stops, or submit
@@ -555,8 +576,8 @@ impl Runtime {
                     // is ready the prior one is on screen, so input must reach what the user
                     // actually sees (no blind typing).
                     Action::Forward(f) => {
-                        if let Some(login) = self.state.login_run.as_ref().filter(|l| {
-                            self.switcher.current_source().as_deref() == Some(&l.source)
+                        if let Some(login) = self.model.state.login_run.as_ref().filter(|l| {
+                            self.model.switcher.current_source().as_deref() == Some(&l.source)
                         }) {
                             // The login is xmux's own conversation, so nothing typed here
                             // reaches it. A lone Esc ends it, which is the one thing the
@@ -566,9 +587,9 @@ impl Runtime {
                                 login.cancel();
                             }
                             *dirty = true;
-                        } else if self.switcher.current_host_blocked() {
-                            if let Some(source) = self.switcher.current_source() {
-                                if let Some(cmd) = self.state.feed_login(&source, &f) {
+                        } else if self.model.switcher.current_host_blocked() {
+                            if let Some(source) = self.model.switcher.current_source() {
+                                if let Some(cmd) = self.model.state.feed_login(&source, &f) {
                                     let (cq, cwc) = self.execute_commands(vec![cmd]);
                                     *quit |= cq;
                                     if cwc {
@@ -579,7 +600,7 @@ impl Runtime {
                             }
                         } else {
                             self.registry
-                                .input(&display_key(&self.hosts, &self.state.displayed), f);
+                                .input(&display_key(&self.hosts, &self.model.state.displayed), f);
                         }
                     }
                     Action::FocusNav(rest) => {
@@ -588,7 +609,8 @@ impl Runtime {
                     }
                     Action::Quit => *quit = true,
                     Action::ShowHelp => {
-                        self.switcher.toggle_help(&mut self.state);
+                        let effects = update(&mut self.model, Msg::ToggleHelp);
+                        debug_assert!(effects.is_empty());
                         *dirty = true;
                     }
                     // Same resize + repeat-window as the nav path, so a resize started from
@@ -605,13 +627,13 @@ impl Runtime {
                         }
                     }
                     Action::ToggleAutoHide => {
-                        toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
+                        toggle_auto_hide(&mut self.model.auto_hide_nav, &self.env.xmux_dir);
                         *dirty = true;
                     }
                     Action::CycleNavPosition => {
                         cycle_nav_position(
-                            &mut self.nav_position_pinned,
-                            self.nav_position,
+                            &mut self.model.nav_position_pinned,
+                            self.model.nav_position,
                             &self.env.xmux_dir,
                         );
                         *dirty = true;
@@ -623,19 +645,12 @@ impl Runtime {
                     // kick_rescan must fire it: the nav path (handle_nav_bytes) runs the
                     // same tail after every read.
                     Action::NavKey(k) => {
-                        let cmds = self.switcher.handle_key(k, &mut self.state);
-                        let (cq, cwc) = self.execute_commands(cmds);
+                        let effects = update(&mut self.model, Msg::Key(k));
+                        let (cq, cwc, _) = self.execute_effects(effects);
                         *quit |= cq;
                         if cwc {
                             *width_changed = true;
                         }
-                        kick_rescan(
-                            &mut self.switcher,
-                            &self.env,
-                            &self.hosts,
-                            &self.mgr,
-                            &self.scan_pool,
-                        );
                         *dirty = true;
                     }
                     // TermInput never emits FocusTerminal (that is the nav-focus path).
@@ -647,8 +662,8 @@ impl Runtime {
             // Leaving the nav for the terminal: a nav-side pending prefix has no key-up
             // once the terminal owns stdin, so clear it here instead of waiting for a
             // release that is now delivered elsewhere.
-            self.mouse_state.nav_armed = false;
-            self.state.apply(crate::model::Action::Focus(
+            self.model.mouse_state.nav_armed = false;
+            self.model.state.apply(crate::model::Action::Focus(
                 crate::model::FocusTarget::Terminal,
             ));
             // No term.clear(): both states draw the SAME split layout (only the
@@ -661,7 +676,8 @@ impl Runtime {
             // prefix here instead of waiting for a release that will not arrive (a stale
             // prefix would keep the status bar up forever).
             self.term_input.disarm();
-            self.state
+            self.model
+                .state
                 .apply(crate::model::Action::Focus(crate::model::FocusTarget::Nav));
             if !nav_replay.is_empty() {
                 let (ft, q, wd, hd, th, cp) = self.handle_nav_bytes(nav_replay, width_changed);
@@ -669,8 +685,8 @@ impl Runtime {
                     // The replayed bytes switch focus back to the terminal: clear the
                     // nav-side latches the replay may have armed, same as the direct
                     // terminal-focus path above.
-                    self.mouse_state.nav_armed = false;
-                    self.state.apply(crate::model::Action::Focus(
+                    self.model.mouse_state.nav_armed = false;
+                    self.model.state.apply(crate::model::Action::Focus(
                         crate::model::FocusTarget::Terminal,
                     ));
                 }
@@ -682,13 +698,13 @@ impl Runtime {
                     *width_changed = true;
                 }
                 if th {
-                    toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
+                    toggle_auto_hide(&mut self.model.auto_hide_nav, &self.env.xmux_dir);
                     *dirty = true;
                 }
                 if cp {
                     cycle_nav_position(
-                        &mut self.nav_position_pinned,
-                        self.nav_position,
+                        &mut self.model.nav_position_pinned,
+                        self.model.nav_position,
                         &self.env.xmux_dir,
                     );
                     *dirty = true;

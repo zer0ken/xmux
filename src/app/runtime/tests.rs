@@ -302,11 +302,11 @@ async fn a_dropped_channel_is_reopened_by_a_user_action_and_by_nothing_else() {
     host.detected = true; // it connected once
     hosts.insert(host);
     rt.hosts = hosts;
-    rt.switcher.apply_source_result(
+    rt.model.switcher.apply_source_result(
         "jup".into(),
         vec![],
         Some("hrlee@jup: Permission denied (publickey,password).".into()),
-        &mut rt.state,
+        &mut rt.model.state,
     );
     assert!(rt.mgr.get("jup").is_none(), "precondition: no channel");
     // A LOCKED card is refused even on that user action: a `-CC` that dies on auth would
@@ -315,10 +315,10 @@ async fn a_dropped_channel_is_reopened_by_a_user_action_and_by_nothing_else() {
     ensure_current_host(
         &mut rt.mgr,
         &rt.hosts,
-        &rt.switcher,
+        &rt.model.switcher,
         rt.cols,
         rt.body_rows,
-        rt.nav_width,
+        rt.model.nav_width,
     );
     assert!(
         rt.mgr.get("jup").is_none(),
@@ -534,31 +534,33 @@ fn runtime_threads_hide_unreachable_into_its_switcher() {
     // The default roster config: hide-unreachable = true.
     let env = std::sync::Arc::new(fake_env_with_sources(&["jup"]));
     let (mut rt, _io) = Runtime::new(env);
-    rt.switcher.apply_source_result(
+    rt.model.switcher.apply_source_result(
         "jup".into(),
         Vec::new(),
         Some("no route to host".into()),
-        &mut rt.state,
+        &mut rt.model.state,
     );
     let out = dump_screen(
-        &mut rt.switcher,
+        &mut rt.model.switcher,
         None,
         80,
         24,
-        &rt.state,
+        &rt.model.state,
         &crate::ui::switcher::RenderPlan::default(),
     );
     assert!(
         !out.contains("jup"),
         "the config default hides the unreachable host:\n{out}"
     );
-    rt.switcher.set_hide_unreachable(false, &mut rt.state);
+    rt.model
+        .switcher
+        .set_hide_unreachable(false, &mut rt.model.state);
     let out = dump_screen(
-        &mut rt.switcher,
+        &mut rt.model.switcher,
         None,
         80,
         24,
-        &rt.state,
+        &rt.model.state,
         &crate::ui::switcher::RenderPlan::default(),
     );
     assert!(
@@ -865,8 +867,8 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
     let mut rt = test_rt(fake_env_with_sources(&[]));
     rt.mgr.insert_fake("jup"); // a control client so the display attach has a sink
     rt.hosts = hosts;
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
 
     let sessions = vec![crate::session::Session {
         mux: String::new(),
@@ -890,6 +892,7 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
     assert_eq!(owned[0].name, "api");
     // And the nav group reflects the same sessions.
     let group = rt
+        .model
         .state
         .groups
         .iter()
@@ -939,24 +942,30 @@ async fn r_rescan_rebuilds_nav_and_kicks_discovery() {
     let mut rt = test_rt(fake_env_with_sources(&[]));
     rt.mgr.insert_fake("jup");
     rt.hosts = hosts;
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
 
     // The `r` re-scan resets the nav to its scanning skeleton and clears sessions.
-    rt.switcher.request_rescan(&mut rt.state);
+    rt.model.switcher.request_rescan(&mut rt.model.state);
     assert!(
-        rt.state.groups.iter().all(|g| g.sessions.is_empty()),
+        rt.model.state.groups.iter().all(|g| g.sessions.is_empty()),
         "request_rescan cleared the loaded sessions"
     );
     assert!(
-        rt.switcher.take_rescan_kick(),
+        rt.model.switcher.take_rescan_kick(),
         "request_rescan raised the rescan kick"
     );
 
     // The loop consumes the kick and re-probes each machine.
-    kick_rescan(&mut rt.switcher, &rt.env, &rt.hosts, &rt.mgr, &rt.scan_pool);
+    kick_rescan(
+        &mut rt.model.switcher,
+        &rt.env,
+        &rt.hosts,
+        &rt.mgr,
+        &rt.scan_pool,
+    );
     assert!(
-        !rt.switcher.take_rescan_kick(),
+        !rt.model.switcher.take_rescan_kick(),
         "kick_rescan consumed the rescan kick"
     );
 }
@@ -1300,7 +1309,7 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
 
 /// A headless `Runtime` for exercising the `&mut self` arm/effect methods: a fake
 /// attach worker (no real PTYs), dropped receiver halves, hosts built from `env`.
-/// A test overrides the fields it cares about (`rt.hosts`, `rt.state`, ...).
+/// A test overrides the fields it cares about (`rt.hosts`, `rt.model.state`, ...).
 #[tokio::test]
 async fn a_re_scan_roster_adds_a_machine_it_now_names() {
     // The point of re-resolving on a re-scan: a machine that was not reachable at launch
@@ -1320,7 +1329,7 @@ async fn a_re_scan_roster_adds_a_machine_it_now_names() {
         "and so do the off-loop ops, which resolve a source through Env"
     );
     assert!(
-        rt.state.groups.iter().any(|g| g.source == "stage"),
+        rt.model.state.groups.iter().any(|g| g.source == "stage"),
         "and it has a card"
     );
     assert!(
@@ -1341,7 +1350,7 @@ async fn a_re_scan_roster_drops_a_machine_it_stopped_naming() {
     assert!(rt.hosts.get("stage").is_none(), "the registry let go");
     assert!(rt.env.source("stage").is_none(), "the off-loop ops let go");
     assert!(
-        !rt.state.groups.iter().any(|g| g.source == "stage"),
+        !rt.model.state.groups.iter().any(|g| g.source == "stage"),
         "and the card is gone"
     );
     assert!(rt.hosts.get("prod").is_some(), "prod is still named");
@@ -1389,25 +1398,30 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
         "over the same machine the loop's host uses"
     );
     assert!(
-        rt.state.groups.iter().any(|g| g.source == "prod:zellij"),
+        rt.model
+            .state
+            .groups
+            .iter()
+            .any(|g| g.source == "prod:zellij"),
         "and it has a card: {:?}",
-        rt.state
+        rt.model
+            .state
             .groups
             .iter()
             .map(|g| &g.source)
             .collect::<Vec<_>>()
     );
     assert!(
-        rt.state.scanning.contains("prod:zellij"),
+        rt.model.state.scanning.contains("prod:zellij"),
         "the card reads scanning until its first result"
     );
     // Idempotent: the same answer twice adds nothing.
-    let before = rt.state.groups.len();
+    let before = rt.model.state.groups.len();
     rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
         machine: "prod".into(),
         muxes: Ok(vec!["tmux".into(), "zellij".into()]),
     });
-    assert_eq!(rt.state.groups.len(), before, "no duplicate card");
+    assert_eq!(rt.model.state.groups.len(), before, "no duplicate card");
 }
 
 #[tokio::test]
@@ -1416,20 +1430,26 @@ async fn a_discovered_source_sorts_into_place_and_leaves_the_selection_put() {
     // the discovered card sorts into its name position, and the selection stays put.
     let mut rt = test_rt(fake_env_with_sources(&["prod", "db"]));
     let selected = {
-        let t = rt.switcher.terminal_view_target();
+        let t = rt.model.switcher.terminal_view_target();
         (t.source, t.target)
     };
     rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
         machine: "db".into(),
         muxes: Ok(vec!["zellij".into()]),
     });
-    let after: Vec<String> = rt.state.groups.iter().map(|g| g.source.clone()).collect();
+    let after: Vec<String> = rt
+        .model
+        .state
+        .groups
+        .iter()
+        .map(|g| g.source.clone())
+        .collect();
     assert_eq!(
         after,
         vec!["local", "db", "db:zellij", "prod"],
         "the discovered card sorts into name order"
     );
-    let now = rt.switcher.terminal_view_target();
+    let now = rt.model.switcher.terminal_view_target();
     assert_eq!(
         (now.source, now.target),
         selected,
@@ -1438,7 +1458,12 @@ async fn a_discovered_source_sorts_into_place_and_leaves_the_selection_put() {
 }
 
 fn cards(rt: &Runtime) -> Vec<String> {
-    rt.state.groups.iter().map(|g| g.source.clone()).collect()
+    rt.model
+        .state
+        .groups
+        .iter()
+        .map(|g| g.source.clone())
+        .collect()
 }
 
 #[tokio::test]
@@ -1447,7 +1472,7 @@ async fn a_host_that_writes_no_mux_is_one_card_with_no_source() {
     // reads the host alone and spins, and it has no source for any op to reach.
     let rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
     assert_eq!(cards(&rt), vec!["local", "win"]);
-    assert!(rt.state.scanning.contains("win"), "the card spins");
+    assert!(rt.model.state.scanning.contains("win"), "the card spins");
     assert!(rt.hosts.get("win").is_none(), "no mux is assumed for it");
     assert!(rt.env.source("win").is_none());
     assert_eq!(
@@ -1482,7 +1507,7 @@ async fn a_windows_host_serving_psmux_is_one_psmux_card() {
         "psmux"
     );
     assert!(
-        rt.state.scanning.contains("win"),
+        rt.model.state.scanning.contains("win"),
         "the card spins until its first listing"
     );
 }
@@ -1525,8 +1550,14 @@ async fn a_host_that_could_not_be_asked_keeps_its_card_with_the_reason() {
         muxes: Err("command failed (exit 255): Connection reset".into()),
     });
     assert_eq!(cards(&rt), vec!["local", "win"]);
-    assert!(!rt.state.scanning.contains("win"), "settled");
-    let g = rt.state.groups.iter().find(|g| g.source == "win").unwrap();
+    assert!(!rt.model.state.scanning.contains("win"), "settled");
+    let g = rt
+        .model
+        .state
+        .groups
+        .iter()
+        .find(|g| g.source == "win")
+        .unwrap();
     assert!(g.err.as_deref().unwrap().contains("Connection reset"));
     // Asked again (a re-scan or a login), it answers, and its source takes the card over
     // as in flight rather than inheriting the failure.
@@ -1534,9 +1565,15 @@ async fn a_host_that_could_not_be_asked_keeps_its_card_with_the_reason() {
         machine: "win".into(),
         muxes: Ok(vec!["psmux".into()]),
     });
-    let g = rt.state.groups.iter().find(|g| g.source == "win").unwrap();
+    let g = rt
+        .model
+        .state
+        .groups
+        .iter()
+        .find(|g| g.source == "win")
+        .unwrap();
     assert!(g.err.is_none());
-    assert!(rt.state.scanning.contains("win"));
+    assert!(rt.model.state.scanning.contains("win"));
 }
 
 #[tokio::test]
@@ -1546,9 +1583,15 @@ async fn a_failed_ask_leaves_a_host_that_serves_sources_alone() {
         machine: "prod".into(),
         muxes: Err("timed out".into()),
     });
-    let g = rt.state.groups.iter().find(|g| g.source == "prod").unwrap();
+    let g = rt
+        .model
+        .state
+        .groups
+        .iter()
+        .find(|g| g.source == "prod")
+        .unwrap();
     assert!(g.err.is_none(), "its own source reports for it");
-    assert!(rt.state.scanning.contains("prod"));
+    assert!(rt.model.state.scanning.contains("prod"));
 }
 
 #[tokio::test]
@@ -1558,6 +1601,7 @@ async fn the_card_of_a_host_with_no_source_says_how_the_host_is_reached() {
         roster: Box::new(auto_roster(&["prod"], &["win"])),
     });
     let reach = rt
+        .model
         .state
         .chrome
         .source_reach
@@ -1619,7 +1663,7 @@ async fn a_re_scan_adds_and_drops_the_card_of_a_host_that_writes_no_mux() {
         roster: Box::new(auto_roster(&["prod"], &["win"])),
     });
     assert_eq!(cards(&rt), vec!["local", "prod", "win"]);
-    assert!(rt.state.scanning.contains("win"));
+    assert!(rt.model.state.scanning.contains("win"));
     rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod"])),
     });
@@ -1655,25 +1699,10 @@ fn test_rt(env: Env) -> Runtime {
     let ops = env.ops();
     let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
     let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
-    let mut rt = Runtime {
-        instance_name: "test".into(),
-        env,
-        ops,
-        hosts,
-        mgr,
-        registry: AttachRegistry::new(),
-        worker,
+    let model = AppModel {
         switcher,
         render_plan: crate::ui::switcher::RenderPlan::default(),
         state,
-        scan_pool: std::sync::Arc::new(tokio::sync::Semaphore::new(
-            crate::provision::config::SCAN_CONCURRENCY_MAX,
-        )),
-        attach_seq: 0,
-        driver_pty_tx: pty_tx,
-        op_tx,
-        cols: 80,
-        body_rows: 24,
         nav_width: crate::ui::switcher::NAV_WIDTH,
         nav_width_natural: crate::ui::switcher::NAV_WIDTH,
         nav_collapsed: false,
@@ -1686,18 +1715,36 @@ fn test_rt(env: Env) -> Runtime {
         auto_hide_nav: false,
         nav_was_focused: true,
         mouse_state: MouseState::default(),
+        connected: HashSet::new(),
+        detecting: HashSet::new(),
+        config_last_mtime: None,
+        width_dirty: false,
+        width_flush_at: None,
+    };
+    let mut rt = Runtime {
+        instance_name: "test".into(),
+        env,
+        ops,
+        hosts,
+        mgr,
+        registry: AttachRegistry::new(),
+        worker,
+        model,
+        scan_pool: std::sync::Arc::new(tokio::sync::Semaphore::new(
+            crate::provision::config::SCAN_CONCURRENCY_MAX,
+        )),
+        attach_seq: 0,
+        driver_pty_tx: pty_tx,
+        op_tx,
+        cols: 80,
+        body_rows: 24,
         term_input: crate::display::input::TermInput::new(prefix),
         nav_decoder: crate::display::decode::KeyDecoder::new(),
         prefix,
-        connected: HashSet::new(),
-        detecting: HashSet::new(),
         draw_observer: DrawObserver::default(),
         spinner_start: std::time::Instant::now(),
         dirty: true,
         last_draw: std::time::Instant::now(),
-        config_last_mtime: None,
-        width_dirty: false,
-        width_flush_at: None,
     };
     sync_test_render_plan(&mut rt);
     rt
@@ -1706,7 +1753,10 @@ fn test_rt(env: Env) -> Runtime {
 fn sync_test_render_plan(rt: &mut Runtime) {
     let area = ratatui::layout::Rect::new(0, 0, rt.cols, rt.body_rows.saturating_add(1));
     let nav = rt.nav_size();
-    rt.render_plan = rt.switcher.layout(area, nav, &rt.state, &rt.render_plan);
+    rt.model.render_plan =
+        rt.model
+            .switcher
+            .layout(area, nav, &rt.model.state, &rt.model.render_plan);
 }
 
 #[test]
@@ -1794,8 +1844,8 @@ async fn client_detached_matching_our_tty_reaps_display_and_rearms() {
     let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&[]));
     rt.hosts = detach_test_hosts("jup");
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
 
     rt.hosts.get_mut("jup").unwrap().display_tty =
         crate::model::DisplayTty(Some("/dev/pts/3".into()));
@@ -1844,8 +1894,8 @@ async fn client_session_changed_matching_our_tty_syncs_display_belief() {
     let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&[]));
     rt.hosts = detach_test_hosts("jup");
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
 
     rt.hosts.get_mut("jup").unwrap().display_tty =
         crate::model::DisplayTty(Some("/dev/pts/3".into()));
@@ -1908,10 +1958,10 @@ fn two_session_scan() -> crate::ui::switcher::Scan {
 /// does nothing at all, which is what lets a test say that what happens next is the
 /// scenario and not the launch catching up.
 fn settled(rt: &mut Runtime) {
-    sync_selection_from_switcher(&mut rt.state, &rt.switcher);
-    rt.state.displayed = rt.state.selection.clone();
-    rt.state.attach_pending = false;
-    rt.state.attach_deadline = None;
+    sync_selection_from_switcher(&mut rt.model);
+    rt.model.state.displayed = rt.model.state.selection.clone();
+    rt.model.state.attach_pending = false;
+    rt.model.state.attach_deadline = None;
 }
 
 /// One pass of the loop top, minus the drawing a headless test has no terminal for:
@@ -1920,7 +1970,7 @@ fn settled(rt: &mut Runtime) {
 /// still, so the debounce cannot elapse between them.
 fn one_pass(rt: &mut Runtime, now: std::time::Instant) {
     rt.follow_selection_to_display();
-    sync_selection_from_switcher(&mut rt.state, &rt.switcher);
+    sync_selection_from_switcher(&mut rt.model);
     rt.drive_attach_beat(now);
 }
 
@@ -1942,15 +1992,16 @@ async fn a_mux_side_switch_in_terminal_focus_moves_the_nav_to_that_session() {
         .display
         .set_shows("jup", "api");
     rt.registry.insert_fake("jup", 7);
-    rt.state = state;
-    rt.switcher = switcher;
-    rt.state
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model
+        .state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     settled(&mut rt);
     let t0 = std::time::Instant::now();
     assert_eq!(
-        rt.switcher.terminal_view_target().target,
+        rt.model.switcher.terminal_view_target().target,
         "api",
         "selection starts on api"
     );
@@ -1962,7 +2013,7 @@ async fn a_mux_side_switch_in_terminal_focus_moves_the_nav_to_that_session() {
     });
     one_pass(&mut rt, t0);
     assert_eq!(
-        rt.switcher.terminal_view_target().target,
+        rt.model.switcher.terminal_view_target().target,
         "db",
         "the terminal-focused nav follows the mux switch to db's card"
     );
@@ -2007,9 +2058,10 @@ async fn a_switch_onto_a_session_with_no_card_yet_moves_the_nav_when_its_card_ap
         .display
         .set_shows("jup", "api");
     rt.registry.insert_fake("jup", 7);
-    rt.state = state;
-    rt.switcher = switcher;
-    rt.state
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model
+        .state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     settled(&mut rt);
@@ -2022,7 +2074,7 @@ async fn a_switch_onto_a_session_with_no_card_yet_moves_the_nav_when_its_card_ap
     });
     one_pass(&mut rt, t0);
     assert_eq!(
-        rt.switcher.terminal_view_target().target,
+        rt.model.switcher.terminal_view_target().target,
         "api",
         "there is no ops card to move to yet"
     );
@@ -2034,7 +2086,7 @@ async fn a_switch_onto_a_session_with_no_card_yet_moves_the_nav_when_its_card_ap
     });
     one_pass(&mut rt, t0);
     assert_eq!(
-        rt.switcher.terminal_view_target().target,
+        rt.model.switcher.terminal_view_target().target,
         "ops",
         "the card the enumeration brought in is where the nav goes"
     );
@@ -2058,9 +2110,10 @@ async fn a_card_appearing_for_a_session_the_client_has_left_moves_nothing() {
         .display
         .set_shows("jup", "api");
     rt.registry.insert_fake("jup", 7);
-    rt.state = state;
-    rt.switcher = switcher;
-    rt.state
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model
+        .state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     settled(&mut rt);
@@ -2075,7 +2128,7 @@ async fn a_card_appearing_for_a_session_the_client_has_left_moves_nothing() {
         one_pass(&mut rt, t0);
     }
     assert_eq!(
-        rt.switcher.terminal_view_target().target,
+        rt.model.switcher.terminal_view_target().target,
         "db",
         "the nav is on the session the client ended up on"
     );
@@ -2087,7 +2140,7 @@ async fn a_card_appearing_for_a_session_the_client_has_left_moves_nothing() {
     });
     one_pass(&mut rt, t0);
     assert_eq!(
-        rt.switcher.terminal_view_target().target,
+        rt.model.switcher.terminal_view_target().target,
         "db",
         "the ops card appearing moves nothing: the client left ops"
     );
@@ -2146,8 +2199,8 @@ fn a_settled_psmux_runtime() -> Runtime {
         crate::mux::for_binary("psmux").unwrap(),
     ));
     rt.hosts = hosts;
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     rt.hosts
         .get_mut("local")
         .unwrap()
@@ -2237,8 +2290,8 @@ fn a_settled_zellij_runtime() -> Runtime {
         crate::mux::for_binary("zellij").unwrap(),
     ));
     rt.hosts = hosts;
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     rt.hosts
         .get_mut("local")
         .unwrap()
@@ -2293,7 +2346,8 @@ async fn a_detached_zellij_display_serves_its_last_frame_and_reattaches_nothing(
     for terminal_focus in [false, true] {
         let mut rt = a_settled_zellij_runtime();
         if terminal_focus {
-            rt.state
+            rt.model
+                .state
                 .focus
                 .set_view_focus(crate::app::focus::ViewFocus::Terminal);
         }
@@ -2309,7 +2363,7 @@ async fn a_detached_zellij_display_serves_its_last_frame_and_reattaches_nothing(
             "its last frame still serves the view - the pane does not go blank"
         );
         assert!(
-            rt.state.attach_deadline.is_none(),
+            rt.model.state.attach_deadline.is_none(),
             "the EOF arms no attach beat"
         );
 
@@ -2343,9 +2397,11 @@ async fn selecting_the_card_again_is_what_reattaches_a_dead_display() {
         "precondition: the dead display reconnected nothing on its own"
     );
 
-    let selection = rt.state.selection.clone();
-    rt.state.apply(crate::model::Action::ClearDisplay);
-    rt.state.apply(crate::model::Action::Select(selection));
+    let selection = rt.model.state.selection.clone();
+    rt.model.state.apply(crate::model::Action::ClearDisplay);
+    rt.model
+        .state
+        .apply(crate::model::Action::Select(selection));
     one_pass(&mut rt, t0 + std::time::Duration::from_millis(200)); // arms the debounce
     one_pass(&mut rt, t0 + std::time::Duration::from_millis(400)); // fires it
     assert!(
@@ -2357,7 +2413,7 @@ async fn selecting_the_card_again_is_what_reattaches_a_dead_display() {
         "the user's own selection attaches the session again"
     );
     the_zellij_reattach_lands(&mut rt, "a");
-    assert_eq!(rt.state.displayed.session, "a");
+    assert_eq!(rt.model.state.displayed.session, "a");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2368,7 +2424,8 @@ async fn a_mux_side_switch_in_terminal_focus_keeps_the_client_the_user_moved() {
     // session by reattaching, which would kill the very client the user just moved. It is
     // held instead, on the client's own report that it is already there.
     let mut rt = a_settled_psmux_runtime();
-    rt.state
+    rt.model
+        .state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     let t0 = std::time::Instant::now();
@@ -2379,7 +2436,7 @@ async fn a_mux_side_switch_in_terminal_focus_keeps_the_client_the_user_moved() {
     one_pass(&mut rt, t0 + std::time::Duration::from_millis(200));
 
     assert_eq!(
-        rt.switcher.terminal_view_target().target,
+        rt.model.switcher.terminal_view_target().target,
         "b",
         "the nav follows the client the user moved"
     );
@@ -2401,7 +2458,10 @@ async fn a_mux_side_switch_in_nav_focus_ends_with_the_client_back_on_the_selecti
     // the beat that reads the client is what makes the difference visible. The nav stays
     // where the user left it and the client is carried back to it.
     let mut rt = a_settled_psmux_runtime();
-    assert!(!rt.state.focus.is_terminal_focused(), "starts in nav focus");
+    assert!(
+        !rt.model.state.focus.is_terminal_focused(),
+        "starts in nav focus"
+    );
 
     the_client_reports(&mut rt, OWN_CLIENT, "b");
     assert!(
@@ -2414,7 +2474,7 @@ async fn a_mux_side_switch_in_nav_focus_ends_with_the_client_back_on_the_selecti
     one_pass(&mut rt, t0 + std::time::Duration::from_millis(200));
 
     assert_eq!(
-        rt.switcher.terminal_view_target().target,
+        rt.model.switcher.terminal_view_target().target,
         "a",
         "the mux does not move a selection the user is driving"
     );
@@ -2436,7 +2496,7 @@ async fn a_mux_side_switch_in_nav_focus_ends_with_the_client_back_on_the_selecti
     one_pass(&mut rt, t0 + std::time::Duration::from_millis(400));
     assert_eq!(
         (
-            rt.switcher.terminal_view_target().target.as_str(),
+            rt.model.switcher.terminal_view_target().target.as_str(),
             rt.hosts.get("local").unwrap().display.shows("local")
         ),
         ("a", Some("a")),
@@ -2453,25 +2513,27 @@ async fn a_switch_asked_for_in_terminal_focus_is_not_dragged_back() {
     // terminal holds the focus is that case, and the attach owed for it is what tells the
     // two apart.
     let mut rt = a_settled_psmux_runtime();
-    rt.state
+    rt.model
+        .state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     let t0 = std::time::Instant::now();
 
     // What a ctl `switch local/b` dispatches to.
-    rt.switcher
-        .select_address(&crate::session::Address::new("local", "b"), &rt.state);
+    rt.model
+        .switcher
+        .select_address(&crate::session::Address::new("local", "b"), &rt.model.state);
     one_pass(&mut rt, t0);
     one_pass(&mut rt, t0 + std::time::Duration::from_millis(50));
     assert_eq!(
-        rt.switcher.terminal_view_target().target,
+        rt.model.switcher.terminal_view_target().target,
         "b",
         "the selection stays where the switch put it while its attach is owed"
     );
 
     one_pass(&mut rt, t0 + std::time::Duration::from_millis(200));
     assert_eq!(
-        rt.switcher.terminal_view_target().target,
+        rt.model.switcher.terminal_view_target().target,
         "b",
         "and after the attach runs"
     );
@@ -2491,14 +2553,16 @@ async fn a_pick_on_the_selected_card_leaves_the_nav_and_the_display_naming_one_s
     // compare where the client is against where the nav is, so the client is already back
     // on `a` before the pick.
     let mut rt = a_settled_psmux_runtime();
-    rt.state
+    rt.model
+        .state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     let t0 = std::time::Instant::now();
     one_pass(&mut rt, t0);
 
     // `focus nav`
-    rt.state
+    rt.model
+        .state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Nav);
     one_pass(&mut rt, t0);
@@ -2511,11 +2575,13 @@ async fn a_pick_on_the_selected_card_leaves_the_nav_and_the_display_naming_one_s
     the_reattach_lands(&mut rt, "a");
 
     // The user picks local/a, the card already selected.
-    rt.switcher
-        .select_address(&crate::session::Address::new("local", "a"), &rt.state);
+    rt.model
+        .switcher
+        .select_address(&crate::session::Address::new("local", "a"), &rt.model.state);
 
     // `focus terminal`
-    rt.state
+    rt.model
+        .state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     for ms in [400, 3_000, 11_000] {
@@ -2524,7 +2590,7 @@ async fn a_pick_on_the_selected_card_leaves_the_nav_and_the_display_naming_one_s
     }
 
     assert_eq!(
-        rt.switcher.terminal_view_target().target,
+        rt.model.switcher.terminal_view_target().target,
         "a",
         "the nav is on the card the user picked"
     );
@@ -2594,28 +2660,28 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
     let mut state = crate::state::State::from_scan(scan);
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&[]));
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     rt.ops = crate::ui::switcher::tests_support::noop_ops();
-    rt.nav_width_natural = 48;
-    rt.auto_hide_nav = false;
+    rt.model.nav_width_natural = 48;
+    rt.model.auto_hide_nav = false;
 
     // Switch addr → selection lands on db; returns (quit=false, width_changed=false).
     assert_eq!(
         rt.dispatch_action(Action::Switch(crate::session::Address::new("jup", "db"))),
         (false, false)
     );
-    assert_eq!(rt.switcher.terminal_view_target().target, "db");
+    assert_eq!(rt.model.switcher.terminal_view_target().target, "db");
     // Focus(Terminal) leaves nav focus → terminal focus.
-    assert!(rt.state.focus.is_nav_focused());
+    assert!(rt.model.state.focus.is_nav_focused());
     rt.dispatch_action(Action::Focus(FocusTarget::Terminal));
-    assert_eq!(rt.state.focus, Focus::Terminal);
+    assert_eq!(rt.model.state.focus, Focus::Terminal);
     // Focus(Tree) returns to nav focus.
     rt.dispatch_action(Action::Focus(FocusTarget::Nav));
-    assert_eq!(rt.state.focus, Focus::Nav);
+    assert_eq!(rt.model.state.focus, Focus::Nav);
     // NavWidth adjusts the natural width and signals width_changed; Quit signals quit.
     assert_eq!(rt.dispatch_action(Action::NavWidth(1)), (false, true));
-    assert_eq!(rt.nav_width_natural, 49);
+    assert_eq!(rt.model.nav_width_natural, 49);
     assert_eq!(
         rt.dispatch_action(Action::Quit),
         (true, false),
@@ -2690,10 +2756,10 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
     let mut state = crate::state::State::from_scan(scan);
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&[]));
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
 
-    sync_selection_from_switcher(&mut rt.state, &rt.switcher);
+    sync_selection_from_switcher(&mut rt.model);
     // api (name order) is the preselected top card, so switch to db to exercise a real
     // selection move.
     rt.dispatch_action(Action::Switch(crate::session::Address::new("jup", "db")));
@@ -2701,12 +2767,15 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
     // The switch moved the selection to db; the loop-top derive routes it through
     // apply(Select) - selection becomes jup/db and the attach is marked pending
     // (the deadline is armed by the next Tick, not here).
-    assert!(sync_selection_from_switcher(&mut rt.state, &rt.switcher));
-    assert_eq!(rt.state.selection.source, "jup");
-    assert_eq!(rt.state.selection.session, "db");
-    assert!(rt.state.attach_pending, "Select marks the attach pending");
+    assert!(sync_selection_from_switcher(&mut rt.model));
+    assert_eq!(rt.model.state.selection.source, "jup");
+    assert_eq!(rt.model.state.selection.session, "db");
     assert!(
-        rt.state.attach_deadline.is_none(),
+        rt.model.state.attach_pending,
+        "Select marks the attach pending"
+    );
+    assert!(
+        rt.model.state.attach_deadline.is_none(),
         "Select arms no deadline - the trailing Tick does"
     );
 }
@@ -2721,11 +2790,11 @@ fn prefix_p_cycles_the_nav_position_and_persists_it() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
-    rt.nav_position = NavPosition::Left; // effective = left (unpinned)
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position = NavPosition::Left; // effective = left (unpinned)
     let out = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
-    assert_eq!(rt.nav_position_pinned, Some(NavPosition::Top));
+    assert_eq!(rt.model.nav_position_pinned, Some(NavPosition::Top));
     assert!(
         std::fs::read_to_string(rt.env.xmux_dir.join("nav_position"))
             .unwrap()
@@ -2733,11 +2802,11 @@ fn prefix_p_cycles_the_nav_position_and_persists_it() {
         "the pin is saved the moment the key cycles"
     );
     let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
-    assert_eq!(rt.nav_position_pinned, Some(NavPosition::Right));
+    assert_eq!(rt.model.nav_position_pinned, Some(NavPosition::Right));
     let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
-    assert_eq!(rt.nav_position_pinned, Some(NavPosition::Bottom));
+    assert_eq!(rt.model.nav_position_pinned, Some(NavPosition::Bottom));
     let _ = rt.handle_stdin_bytes(b"\x07p", &Selection::default());
-    assert_eq!(rt.nav_position_pinned, None, "the fifth step unpins");
+    assert_eq!(rt.model.nav_position_pinned, None, "the fifth step unpins");
     assert!(
         std::fs::read_to_string(rt.env.xmux_dir.join("nav_position"))
             .unwrap()
@@ -2758,8 +2827,8 @@ fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
     // The default fake env's prefix is "C-g" (0x07), matching this test's `\x07q`.
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
     rt.hosts = crate::model::Hosts::default();
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     let out = rt.handle_stdin_bytes(b"\x07q", &Selection::default());
     assert!(out.quit, "prefix+q in nav focus quits");
 }
@@ -2776,8 +2845,8 @@ fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
     rt.hosts = crate::model::Hosts::default();
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     assert!(!rt.prefix_active(), "starts unarmed");
     let out = rt.handle_stdin_bytes(b"\x07", &Selection::default());
     assert!(rt.prefix_active(), "the bare prefix arms");
@@ -2816,15 +2885,15 @@ fn rt_terminal_focus_with_session() -> Runtime {
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["jup"]));
     rt.hosts = crate::model::Hosts::default();
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     // Descend to the api session so it is the selection, then focus the terminal view.
     rt.handle_stdin_bytes(b"l", &Selection::default());
-    rt.state.apply(crate::model::Action::Focus(
+    rt.model.state.apply(crate::model::Action::Focus(
         crate::model::FocusTarget::Terminal,
     ));
     assert!(
-        !rt.state.focus.is_nav_focused() && !rt.state.focus.is_modal(),
+        !rt.model.state.focus.is_nav_focused() && !rt.model.state.focus.is_modal(),
         "precondition: the terminal view holds focus (not tree, not modal)"
     );
     rt
@@ -2839,16 +2908,16 @@ async fn prefix_r_in_terminal_focus_kicks_rescan() {
     // run for it to fire, which the terminal arm now does.
     let mut rt = rt_terminal_focus_with_session();
     assert!(
-        !rt.state.groups[0].sessions.is_empty(),
+        !rt.model.state.groups[0].sessions.is_empty(),
         "precondition: a session exists before the re-scan"
     );
     rt.handle_stdin_bytes(b"\x07r", &Selection::default());
     assert!(
-        rt.state.groups[0].sessions.is_empty(),
+        rt.model.state.groups[0].sessions.is_empty(),
         "prefix r in terminal focus cleared sessions for a re-scan"
     );
     assert!(
-        rt.state.scanning.contains("jup"),
+        rt.model.state.scanning.contains("jup"),
         "and re-armed scanning for the source"
     );
 }
@@ -2862,8 +2931,8 @@ fn repeated_prefix_bytes_keep_the_nav_steady_in_nav_focus() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     assert!(!rt.prefix_active());
     rt.handle_stdin_bytes(b"\x07", &Selection::default());
     assert!(rt.prefix_active(), "the prefix arms");
@@ -2921,17 +2990,17 @@ fn an_open_input_row_keeps_the_prefix_live_until_it_closes() {
     let mut rt = rt_terminal_focus_with_session();
     rt.handle_stdin_bytes(b"\x07", &Selection::default());
     rt.handle_stdin_bytes(b"n", &Selection::default()); // new session: opens the input row
-    assert!(rt.state.is_inputting(), "the input row is open");
+    assert!(rt.model.state.is_inputting(), "the input row is open");
     assert!(
         rt.prefix_active(),
         "the function has not ended, so the prefix is still live"
     );
     // The loop top hands the modal its focus dimension before the next read; without
     // it the Esc would route to the pane instead of the row.
-    let kind = rt.state.modal_kind();
-    rt.state.focus.sync_modal(kind);
+    let kind = rt.model.state.modal_kind();
+    rt.model.state.focus.sync_modal(kind);
     rt.handle_stdin_bytes(b"\x1b", &Selection::default()); // Esc cancels
-    assert!(!rt.state.is_inputting(), "Esc closes the row");
+    assert!(!rt.model.state.is_inputting(), "Esc closes the row");
     assert!(!rt.prefix_active(), "the function ended with the row");
 }
 
@@ -2944,14 +3013,17 @@ fn a_focus_switch_drops_the_left_views_prefix_latches() {
     // view latched, in both directions.
     let mut rt = rt_terminal_focus_with_session();
     assert!(
-        !rt.state.focus.is_nav_focused(),
+        !rt.model.state.focus.is_nav_focused(),
         "precondition: terminal focus"
     );
     // Terminal → nav: a held prefix chord ends when prefix Left hands focus over.
     rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix down: +ready
     assert!(rt.prefix_active());
     rt.handle_stdin_bytes(b"\x1b[D", &Selection::default()); // prefix Left → nav
-    assert!(rt.state.focus.is_nav_focused(), "focus moved to the nav");
+    assert!(
+        rt.model.state.focus.is_nav_focused(),
+        "focus moved to the nav"
+    );
     assert!(
         !rt.prefix_active(),
         "the switch drops the terminal-side hold so the bar hides"
@@ -2962,7 +3034,7 @@ fn a_focus_switch_drops_the_left_views_prefix_latches() {
     assert!(rt.prefix_active());
     rt.handle_stdin_bytes(b"\x1b[C", &Selection::default()); // prefix Right → terminal
     assert!(
-        !rt.state.focus.is_nav_focused(),
+        !rt.model.state.focus.is_nav_focused(),
         "focus moved to the terminal"
     );
     assert!(
@@ -2994,9 +3066,9 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
         let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
         let switcher = Switcher::new(&mut state);
         let mut rt = test_rt(fake_env_with_sources(&["local"]));
-        rt.state = state;
-        rt.switcher = switcher;
-        rt.mouse_state.nav_armed = true;
+        rt.model.state = state;
+        rt.model.switcher = switcher;
+        rt.model.mouse_state.nav_armed = true;
         let dirty = rt.handle_mouse_event(
             &ev(cb, pressed),
             &Selection::default(),
@@ -3011,9 +3083,9 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
-    rt.mouse_state.nav_armed = true;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.mouse_state.nav_armed = true;
     rt.handle_mouse_event(&ev(35, true), &Selection::default(), &mut false, &mut false);
     assert!(rt.prefix_active(), "a hover leaves the chord alone");
 }
@@ -3041,8 +3113,8 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
     let mut focus_toggle = false;
     let mut wheel = false;
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     // The handler cuts its own regions from the runtime's size, so the runtime has to be
     // landscape too or the border it looks for is a horizontal rule under the band.
     rt.cols = 200;
@@ -3050,7 +3122,7 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
     sync_test_render_plan(&mut rt);
     rt.handle_mouse_event(&ev, &sel, &mut focus_toggle, &mut wheel);
     assert!(
-        rt.mouse_state.dragging_view_border,
+        rt.model.mouse_state.dragging_view_border,
         "left-press on the view border column grabs it"
     );
 }
@@ -3062,40 +3134,40 @@ fn collapse_button_click_toggles_without_focus_or_drag() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     rt.cols = 140;
     rt.body_rows = 29;
     sync_test_render_plan(&mut rt);
     let area = ratatui::layout::Rect::new(0, 0, 140, 30);
     let regions = compute_regions(area, rt.nav_size(), 1);
-    let button = collapse_button_rect(regions.hint_bar, rt.nav_position, false);
-    assert_eq!(rt.render_plan.collapse_button, button);
+    let button = collapse_button_rect(regions.hint_bar, rt.model.nav_position, false);
+    assert_eq!(rt.model.render_plan.collapse_button, button);
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
         col: button.x + button.width,
         row: button.y + 1,
         pressed: true,
     };
-    let focus_before = rt.state.focus;
+    let focus_before = rt.model.state.focus;
     let mut focus_toggle = false;
     let mut wheel = false;
     assert!(rt.handle_mouse_event(&press, &Selection::default(), &mut focus_toggle, &mut wheel,));
-    assert!(rt.nav_collapsed, "the button collapses the nav");
+    assert!(rt.model.nav_collapsed, "the button collapses the nav");
     assert_eq!(
-        rt.state.focus, focus_before,
+        rt.model.state.focus, focus_before,
         "the button does not move focus"
     );
     assert!(!focus_toggle);
-    assert!(!rt.mouse_state.dragging_view_border);
+    assert!(!rt.model.mouse_state.dragging_view_border);
 
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
     // The draw is frame-gated; move the last draw out of the gate so this frame paints.
     rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
     rt.prepare_and_draw(&mut term);
     let regions = compute_regions(area, rt.nav_size(), 1);
-    let button = collapse_button_rect(regions.hint_bar, rt.nav_position, true);
-    assert_eq!(rt.render_plan.collapse_button, button);
+    let button = collapse_button_rect(regions.hint_bar, rt.model.nav_position, true);
+    assert_eq!(rt.model.render_plan.collapse_button, button);
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
         col: button.x + button.width,
@@ -3103,12 +3175,12 @@ fn collapse_button_click_toggles_without_focus_or_drag() {
         pressed: true,
     };
     assert!(rt.handle_mouse_event(&press, &Selection::default(), &mut focus_toggle, &mut wheel,));
-    assert!(!rt.nav_collapsed, "the button expands the nav");
-    assert_eq!(rt.state.focus, focus_before);
+    assert!(!rt.model.nav_collapsed, "the button expands the nav");
+    assert_eq!(rt.model.state.focus, focus_before);
     assert!(!focus_toggle);
-    assert!(!rt.mouse_state.dragging_view_border);
+    assert!(!rt.model.mouse_state.dragging_view_border);
     rt.prepare_and_draw(&mut term);
-    assert_eq!(rt.nav_width, rt.nav_width_natural);
+    assert_eq!(rt.model.nav_width, rt.model.nav_width_natural);
 }
 
 #[test]
@@ -3123,19 +3195,19 @@ fn focusing_the_nav_expands_a_collapsed_nav() {
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
-    rt.nav_collapsed = true;
-    rt.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
-    rt.applied_nav_collapsed = true;
-    rt.nav_was_focused = false;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_collapsed = true;
+    rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
+    rt.model.applied_nav_collapsed = true;
+    rt.model.nav_was_focused = false;
 
     let out = rt.handle_stdin_bytes(b"\x07\x1b[D", &Selection::default());
     assert!(out.focus_nav, "the prefix-left path requests nav focus");
     let mut term = Terminal::new(TestBackend::new(80, 25)).unwrap();
     rt.prepare_and_draw(&mut term);
-    assert!(!rt.nav_collapsed, "entering nav focus expands it");
-    assert_eq!(rt.nav_width, rt.nav_width_natural);
+    assert!(!rt.model.nav_collapsed, "entering nav focus expands it");
+    assert_eq!(rt.model.nav_width, rt.model.nav_width_natural);
 }
 
 #[test]
@@ -3145,15 +3217,18 @@ fn a_collapsed_view_border_cannot_start_a_resize_drag() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     rt.cols = 140;
     rt.body_rows = 29;
-    rt.nav_collapsed = true;
-    rt.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
+    rt.model.nav_collapsed = true;
+    rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
     sync_test_render_plan(&mut rt);
     let regions = compute_regions(ratatui::layout::Rect::new(0, 0, 140, 30), rt.nav_size(), 1);
-    assert_eq!(rt.render_plan.regions.view_border, regions.view_border);
+    assert_eq!(
+        rt.model.render_plan.regions.view_border,
+        regions.view_border
+    );
     let press = crate::display::mouse::MouseEvent {
         cb: 0,
         col: regions.view_border.x + 1,
@@ -3161,7 +3236,7 @@ fn a_collapsed_view_border_cannot_start_a_resize_drag() {
         pressed: true,
     };
     rt.handle_mouse_event(&press, &Selection::default(), &mut false, &mut false);
-    assert!(!rt.mouse_state.dragging_view_border);
+    assert!(!rt.model.mouse_state.dragging_view_border);
 }
 
 #[test]
@@ -3175,12 +3250,12 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     let switcher = Switcher::new(&mut state);
     let sel = Selection::default();
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     rt.cols = 40;
     rt.body_rows = 59;
-    rt.nav_height = 0; // auto
-    rt.nav_position = crate::ui::switcher::NavPosition::Top;
+    rt.model.nav_height = 0; // auto
+    rt.model.nav_position = crate::ui::switcher::NavPosition::Top;
     sync_test_render_plan(&mut rt);
 
     let press = crate::display::mouse::MouseEvent {
@@ -3192,7 +3267,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     let (mut ft, mut wheel) = (false, false);
     rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel);
     assert!(
-        rt.mouse_state.dragging_view_border,
+        rt.model.mouse_state.dragging_view_border,
         "left-press on the horizontal Top border grabs it"
     );
 
@@ -3205,7 +3280,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     };
     rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel);
     assert_eq!(
-        rt.nav_height, 29,
+        rt.model.nav_height, 29,
         "dragging the horizontal border sets the nav HEIGHT to the dragged row"
     );
 }
@@ -3220,12 +3295,12 @@ fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
     let switcher = Switcher::new(&mut state);
     let sel = Selection::default();
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     rt.cols = 40;
     rt.body_rows = 59;
-    rt.nav_height = 0; // auto
-    rt.nav_position = NavPosition::Bottom;
+    rt.model.nav_height = 0; // auto
+    rt.model.nav_position = NavPosition::Bottom;
     sync_test_render_plan(&mut rt);
 
     let press = crate::display::mouse::MouseEvent {
@@ -3237,7 +3312,7 @@ fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
     let (mut ft, mut wheel) = (false, false);
     rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel);
     assert!(
-        rt.mouse_state.dragging_view_border,
+        rt.model.mouse_state.dragging_view_border,
         "left-press on the horizontal bottom border grabs it"
     );
 
@@ -3250,7 +3325,7 @@ fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
     };
     rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel);
     assert_eq!(
-        rt.nav_height, 20,
+        rt.model.nav_height, 20,
         "dragging the bottom border measures the height from the far edge"
     );
 }
@@ -3265,11 +3340,11 @@ fn handle_mouse_event_right_layout_border_drag_resizes_width() {
     let switcher = Switcher::new(&mut state);
     let sel = Selection::default();
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     rt.cols = 140;
     rt.body_rows = 29;
-    rt.nav_position = NavPosition::Right;
+    rt.model.nav_position = NavPosition::Right;
     sync_test_render_plan(&mut rt);
 
     let press = crate::display::mouse::MouseEvent {
@@ -3281,7 +3356,7 @@ fn handle_mouse_event_right_layout_border_drag_resizes_width() {
     let (mut ft, mut wheel) = (false, false);
     rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel);
     assert!(
-        rt.mouse_state.dragging_view_border,
+        rt.model.mouse_state.dragging_view_border,
         "left-press on the vertical right border grabs it"
     );
 
@@ -3294,7 +3369,7 @@ fn handle_mouse_event_right_layout_border_drag_resizes_width() {
     };
     rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel);
     assert_eq!(
-        rt.nav_width_natural, 40,
+        rt.model.nav_width_natural, 40,
         "dragging the right border measures the width from the far edge"
     );
 }
@@ -3307,21 +3382,25 @@ fn resize_keys_adjust_height_in_top_layout() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     rt.cols = 40;
     rt.body_rows = 59;
-    rt.nav_height = 0; // auto
-    rt.nav_position = crate::ui::switcher::NavPosition::Top;
+    rt.model.nav_height = 0; // auto
+    rt.model.nav_position = crate::ui::switcher::NavPosition::Top;
     let nav = crate::ui::switcher::NavSize::visible(NAV_WIDTH)
         .with_position(crate::ui::switcher::NavPosition::Top);
-    rt.render_plan = rt.switcher.layout(
+    rt.model.render_plan = rt.model.switcher.layout(
         ratatui::layout::Rect::new(0, 0, 40, 60),
         nav,
-        &rt.state,
-        &rt.render_plan,
+        &rt.model.state,
+        &rt.model.render_plan,
     );
-    assert_eq!(rt.render_plan.layout, ViewLayout::Band, "portrait → Band");
+    assert_eq!(
+        rt.model.render_plan.layout,
+        ViewLayout::Band,
+        "portrait → Band"
+    );
 
     let auto = crate::ui::switcher::default_nav_height(59);
     // Vertical axis (Ctrl+↓ = grow) resizes HEIGHT in a band; horizontal (Ctrl+→) is a no-op here.
@@ -3331,12 +3410,12 @@ fn resize_keys_adjust_height_in_top_layout() {
     );
     assert!(rt.resize_axis(false, 1), "grow changes the height");
     assert_eq!(
-        rt.nav_height,
+        rt.model.nav_height,
         auto + 1,
         "a resize key grows the band nav height from the auto seed"
     );
     assert!(rt.resize_axis(false, -1), "shrink changes the height");
-    assert_eq!(rt.nav_height, auto, "and shrinks it back");
+    assert_eq!(rt.model.nav_height, auto, "and shrinks it back");
 }
 
 #[test]
@@ -3349,30 +3428,30 @@ fn resize_keys_flip_direction_on_the_right_and_bottom() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     rt.cols = 140;
     rt.body_rows = 29;
-    rt.nav_position = NavPosition::Right;
+    rt.model.nav_position = NavPosition::Right;
     let nav = crate::ui::switcher::NavSize::visible(NAV_WIDTH).with_position(NavPosition::Right);
-    rt.render_plan = rt.switcher.layout(
+    rt.model.render_plan = rt.model.switcher.layout(
         ratatui::layout::Rect::new(0, 0, 140, 30),
         nav,
-        &rt.state,
-        &rt.render_plan,
+        &rt.model.state,
+        &rt.model.render_plan,
     );
     assert_eq!(
-        rt.render_plan.layout,
+        rt.model.render_plan.layout,
         ViewLayout::Column,
         "landscape → Column"
     );
-    let w0 = rt.nav_width_natural;
+    let w0 = rt.model.nav_width_natural;
     assert!(
         rt.resize_axis(true, 1),
         "→/l on the right changes the width"
     );
     assert_eq!(
-        rt.nav_width_natural,
+        rt.model.nav_width_natural,
         w0 - 1,
         "→/l on the right shrinks (the border moves right)"
     );
@@ -3381,31 +3460,35 @@ fn resize_keys_flip_direction_on_the_right_and_bottom() {
         "←/h on the right changes the width"
     );
     assert_eq!(
-        rt.nav_width_natural, w0,
+        rt.model.nav_width_natural, w0,
         "←/h on the right grows (the border moves left)"
     );
     assert!(!rt.resize_axis(false, 1), "height is a no-op in a column");
 
     // The same flip on the band: a bottom nav's ↓ key shrinks the height.
-    rt.nav_position = NavPosition::Bottom;
+    rt.model.nav_position = NavPosition::Bottom;
     rt.cols = 40;
     rt.body_rows = 59;
-    rt.nav_height = 0; // auto
+    rt.model.nav_height = 0; // auto
     let nav = crate::ui::switcher::NavSize::visible(NAV_WIDTH).with_position(NavPosition::Bottom);
-    rt.render_plan = rt.switcher.layout(
+    rt.model.render_plan = rt.model.switcher.layout(
         ratatui::layout::Rect::new(0, 0, 40, 60),
         nav,
-        &rt.state,
-        &rt.render_plan,
+        &rt.model.state,
+        &rt.model.render_plan,
     );
-    assert_eq!(rt.render_plan.layout, ViewLayout::Band, "portrait → Band");
+    assert_eq!(
+        rt.model.render_plan.layout,
+        ViewLayout::Band,
+        "portrait → Band"
+    );
     let auto = crate::ui::switcher::default_nav_height(59);
     assert!(
         rt.resize_axis(false, 1),
         "↓ on the bottom changes the height"
     );
     assert_eq!(
-        rt.nav_height,
+        rt.model.nav_height,
         auto - 1,
         "↓ on the bottom shrinks (the border moves down)"
     );
@@ -3414,7 +3497,7 @@ fn resize_keys_flip_direction_on_the_right_and_bottom() {
         "↑ on the bottom changes the height"
     );
     assert_eq!(
-        rt.nav_height, auto,
+        rt.model.nav_height, auto,
         "↑ on the bottom grows (the border moves up)"
     );
     assert!(!rt.resize_axis(true, 1), "width is a no-op in a band");
@@ -3430,18 +3513,18 @@ fn loop_top_resolves_the_pinned_nav_position() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
-    rt.nav_position_pinned = Some(crate::ui::switcher::NavPosition::Right);
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model.nav_position_pinned = Some(crate::ui::switcher::NavPosition::Right);
     let mut term = Terminal::new(TestBackend::new(80, 25)).unwrap();
     rt.prepare_and_draw(&mut term);
     assert_eq!(
-        rt.nav_position,
+        rt.model.nav_position,
         crate::ui::switcher::NavPosition::Right,
         "the loop top applied the pin"
     );
     assert_eq!(
-        rt.render_plan.layout,
+        rt.model.render_plan.layout,
         ViewLayout::Column,
         "right is a column"
     );
@@ -3457,19 +3540,19 @@ fn loop_top_resolves_the_default_position_when_unpinned() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
     rt.cols = 40;
     rt.body_rows = 59;
     let mut term = Terminal::new(TestBackend::new(40, 60)).unwrap();
     rt.prepare_and_draw(&mut term);
     assert_eq!(
-        rt.nav_position,
+        rt.model.nav_position,
         crate::ui::switcher::NavPosition::Left,
         "the unpinned default wins whatever the aspect"
     );
     assert_eq!(
-        rt.render_plan.layout,
+        rt.model.render_plan.layout,
         ViewLayout::Column,
         "left is a column"
     );
@@ -3491,9 +3574,10 @@ fn forward_to_mux_reasserts_capture_and_encodes_the_sgr_press() {
     let nav_width = crate::ui::switcher::NAV_WIDTH;
     let (att, log) = crate::display::attachment::fake_attachment_with_input_log(42);
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.state = state;
-    rt.switcher = switcher;
-    rt.state
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model
+        .state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     sync_test_render_plan(&mut rt);
@@ -3590,8 +3674,8 @@ async fn a_warm_attach_for_another_host_does_not_take_the_terminal_view() {
     });
     assert_eq!(
         (
-            rt.state.displayed.source.as_str(),
-            rt.state.displayed.session.as_str()
+            rt.model.state.displayed.source.as_str(),
+            rt.model.state.displayed.session.as_str()
         ),
         ("local", "a"),
         "the view stays on the selected session"
@@ -3605,7 +3689,7 @@ async fn a_warm_attach_for_another_host_does_not_take_the_terminal_view() {
 #[tokio::test(flavor = "current_thread")]
 async fn ready_holds_the_stale_frame_until_the_fresh_attachment_paints() {
     let mut rt = a_settled_psmux_runtime();
-    rt.state.selection.session = "b".into();
+    rt.model.state.selection.session = "b".into();
     rt.hosts
         .get_mut("local")
         .unwrap()
@@ -3622,7 +3706,7 @@ async fn ready_holds_the_stale_frame_until_the_fresh_attachment_paints() {
         Some("local")
     );
     assert_eq!(
-        rt.state.displayed.session, "a",
+        rt.model.state.displayed.session, "a",
         "Ready alone keeps the stale frame confirmed"
     );
 
@@ -3637,7 +3721,7 @@ async fn ready_holds_the_stale_frame_until_the_fresh_attachment_paints() {
         "the attach debounce treats a paint-pending client as work already underway"
     );
     assert_eq!(
-        rt.state.displayed.session, "a",
+        rt.model.state.displayed.session, "a",
         "the pending client cannot confirm before its paint gate opens"
     );
 
@@ -3649,7 +3733,7 @@ async fn ready_holds_the_stale_frame_until_the_fresh_attachment_paints() {
         !rt.promote_due_pending(unpainted_at + crate::model::host::PAINT_SETTLE),
         "bytes without a visible frame keep the stale frame up"
     );
-    assert_eq!(rt.state.displayed.session, "a");
+    assert_eq!(rt.model.state.displayed.session, "a");
 
     let output_at = std::time::Instant::now();
     rt.registry
@@ -3662,7 +3746,7 @@ async fn ready_holds_the_stale_frame_until_the_fresh_attachment_paints() {
         "the painted attachment replaces the stale one"
     );
     assert_eq!(
-        rt.state.displayed.session, "b",
+        rt.model.state.displayed.session, "b",
         "the painted selected attachment confirms the view"
     );
 }
@@ -3671,7 +3755,7 @@ async fn ready_holds_the_stale_frame_until_the_fresh_attachment_paints() {
 async fn first_display_installs_immediately_without_a_stale_attachment() {
     let mut rt = a_settled_psmux_runtime();
     rt.registry.remove("local");
-    rt.state.selection = Selection {
+    rt.model.state.selection = Selection {
         source: "local".into(),
         session: "b".into(),
     };
@@ -3688,13 +3772,13 @@ async fn first_display_installs_immediately_without_a_stale_attachment() {
         Some(OWN_CLIENT + 3)
     );
     assert!(rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_none());
-    assert_eq!(rt.state.displayed.session, "b");
+    assert_eq!(rt.model.state.displayed.session, "b");
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn pending_exit_retires_the_stale_attachment_and_applies_the_exit() {
     let mut rt = a_settled_psmux_runtime();
-    rt.state.selection = Selection {
+    rt.model.state.selection = Selection {
         source: "local".into(),
         session: "b".into(),
     };
@@ -3715,7 +3799,7 @@ async fn pending_exit_retires_the_stale_attachment_and_applies_the_exit() {
         rt.registry.grid("local").is_some(),
         "the exited fresh attachment leaves its own final grid"
     );
-    assert_eq!(rt.state.displayed.session, "b");
+    assert_eq!(rt.model.state.displayed.session, "b");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -3888,7 +3972,7 @@ fn apply_event_for_test(
     connected: &mut HashSet<String>,
 ) -> Vec<EventEffect> {
     state
-        .apply_event(event)
+        .apply_event_for_test(event)
         .into_iter()
         .flat_map(|effect| handlers::apply_state_event_effect(switcher, state, connected, effect))
         .collect()
@@ -3897,7 +3981,7 @@ fn apply_event_for_test(
 #[test]
 fn apply_event_preserves_state_actions_before_runtime_followups() {
     let mut state = State::default();
-    let connected = state.apply_event(HostEvent::Connected {
+    let connected = state.apply_event_for_test(HostEvent::Connected {
         host: "jup".into(),
         sessions: Vec::new(),
     });
@@ -3907,7 +3991,7 @@ fn apply_event_preserves_state_actions_before_runtime_followups() {
             if marked == "jup" && applied == "jup"
     ));
 
-    let exited = state.apply_event(HostEvent::Exited {
+    let exited = state.apply_event_for_test(HostEvent::Exited {
         host: "jup".into(),
         reason: Some("connection refused".into()),
     });
@@ -3918,7 +4002,7 @@ fn apply_event_preserves_state_actions_before_runtime_followups() {
     ));
 
     state.scanning.insert("jup".into());
-    let scanned = state.apply_event(HostEvent::Scanned {
+    let scanned = state.apply_event_for_test(HostEvent::Scanned {
         source: "jup".into(),
         detected: None,
         err: Some("mux not found".into()),

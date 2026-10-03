@@ -18,21 +18,14 @@ impl Runtime {
             *credential_held = self.env.credentials().contains(machine);
             *current_credential_generation = self.env.credentials().generation(machine);
         }
-        let held = self.env.credentials().machines();
-        self.state.logged_in = held;
-        let mut rearm = false;
-        for effect in self.state.apply_event(ev) {
-            for effect in apply_state_event_effect(
-                &mut self.switcher,
-                &mut self.state,
-                &mut self.connected,
-                effect,
-            ) {
-                if self.run_event_effect(effect) {
-                    rearm = true;
-                }
-            }
-        }
+        let effects = update(
+            &mut self.model,
+            Msg::HostEvent {
+                event: ev,
+                logged_in: self.env.credentials().machines(),
+            },
+        );
+        let (_, _, rearm) = self.execute_effects(effects);
         rearm
     }
 
@@ -50,22 +43,22 @@ impl Runtime {
             hosts,
             scan_pool,
             registry,
-            switcher,
-            state,
-            detecting,
-            connected,
+            model,
             worker,
             driver_pty_tx: pty_tx,
             attach_seq,
             cols,
             body_rows: rows,
+            ..
+        } = self;
+        let AppModel {
             nav_width,
             nav_width_natural,
             nav_collapsed,
             nav_height,
             nav_position,
             ..
-        } = self;
+        } = model;
         let (cols, rows) = (*cols, *rows);
         // The nav's live size as one value, read once for this effect: the width the user
         // set, the width on screen, the band height, the attachment side, and whether it
@@ -97,12 +90,32 @@ impl Runtime {
                 // broken ordering from reviving a reaped host in the nav
                 // (`apply_source_result`) or resyncing its dead terminals. (`ApplyInventory`
                 // is emitted only for control-mode hosts, so a poll host is never gated out.)
-                if mgr.get(&host).is_some() {
-                    let renamed =
-                        switcher.apply_source_result(host.clone(), sessions.clone(), None, state);
-                    if let (Some((from, to)), Some(h)) = (renamed, hosts.get_mut(&host)) {
-                        h.display.rename_session(&from, &to);
+                let live = mgr.get(&host).is_some();
+                let effects = update(
+                    model,
+                    Msg::ApplyInventory {
+                        source: host.clone(),
+                        sessions: sessions.clone(),
+                        live,
+                    },
+                );
+                for effect in effects {
+                    match effect {
+                        Effect::Event(EventEffect::RenameDisplayed { source, from, to }) => {
+                            if let Some(host) = hosts.get_mut(&source) {
+                                host.display.rename_session(&from, &to);
+                            }
+                        }
+                        Effect::Command(_)
+                        | Effect::Event(_)
+                        | Effect::EventBatch(_)
+                        | Effect::LoginApplied { .. }
+                        | Effect::StartLogin { .. } => {
+                            unreachable!("inventory update emitted an unrelated effect")
+                        }
                     }
+                }
+                if live {
                     let n = sessions.len();
                     let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
                     tracing::info!(host, n, ?names, "sessions_applied");
@@ -205,7 +218,15 @@ impl Runtime {
                     Err(reason) => {
                         tracing::warn!(machine = %machine, error = %reason, "mux discovery failed");
                         if first {
-                            switcher.apply_source_result(machine, Vec::new(), Some(reason), state);
+                            let effects = update(
+                                model,
+                                Msg::ApplySourceResult {
+                                    source: machine,
+                                    sessions: Vec::new(),
+                                    err: Some(reason),
+                                },
+                            );
+                            debug_assert!(effects.is_empty());
                         }
                         return false;
                     }
@@ -232,7 +253,13 @@ impl Runtime {
                 // nothing answered, so there is nothing to show, or several muxes did and
                 // each has a card of its own.
                 if first && !specs.iter().any(|(_, id)| *id == machine) {
-                    switcher.remove_source(&machine, state);
+                    let effects = update(
+                        model,
+                        Msg::RemoveSource {
+                            source: machine.clone(),
+                        },
+                    );
+                    debug_assert!(effects.is_empty());
                 }
                 for (bin, id) in specs {
                     if hosts.get(&id).is_some() {
@@ -255,12 +282,19 @@ impl Runtime {
                         &env.xmux_dir,
                         env.local_socket.clone(),
                     ));
-                    state.chrome.set_source_reach(reach_map(env));
+                    let effects = update(model, Msg::SetSourceReach(reach_map(env)));
+                    debug_assert!(effects.is_empty());
                     // A source that takes the card the machine stood as inherits that card,
                     // whatever it last showed; its own first listing is now in flight.
-                    switcher.add_source(id.clone(), state);
-                    switcher.mark_scanning(&id, state);
-                    scan_or_dispatch_host(mgr, hosts, detecting, &id, vc, vr, scan_pool);
+                    let effects = update(
+                        model,
+                        Msg::AddSource {
+                            source: id.clone(),
+                            scanning: true,
+                        },
+                    );
+                    debug_assert!(effects.is_empty());
+                    scan_or_dispatch_host(mgr, hosts, &mut model.detecting, &id, vc, vr, scan_pool);
                 }
             }
             EventEffect::ApplyRoster { roster } => {
@@ -286,20 +320,26 @@ impl Runtime {
                 // What offered each host, refreshed with the roster: a host added by this
                 // resolution has to be able to name the provider that offered it, exactly
                 // as one present since launch can.
-                state.chrome.set_roster_providers(
-                    roster
-                        .roster_providers
-                        .iter()
-                        .map(|(host, p)| (host.clone(), p.label().to_string()))
-                        .collect(),
-                );
-                state
-                    .chrome
-                    .set_login_defaults(roster.login_defaults.clone(), roster.ssh_stanzas.clone());
+                let providers = roster
+                    .roster_providers
+                    .iter()
+                    .map(|(host, provider)| (host.clone(), provider.label().to_owned()))
+                    .collect();
+                let login_defaults = roster.login_defaults.clone();
+                let ssh_stanzas = roster.ssh_stanzas.clone();
                 env.replace_roster(*roster);
                 let held = env.credentials().machines();
-                state.logged_in.retain(|machine| held.contains(machine));
-                state.chrome.set_source_reach(reach_map(env));
+                let effects = update(
+                    model,
+                    Msg::SetRosterFacts {
+                        providers,
+                        login_defaults,
+                        ssh_stanzas,
+                        held_credentials: held,
+                        source_reach: reach_map(env),
+                    },
+                );
+                debug_assert!(effects.is_empty());
                 let delta = hosts.reconcile(fresh);
                 for id in &delta.removed {
                     tracing::info!(source = %id, "roster dropped a source");
@@ -307,18 +347,24 @@ impl Runtime {
                     // attachments showing its sessions, and its card. A card left behind
                     // would paint a session nothing can reach any more.
                     mgr.reap(id);
-                    connected.remove(id);
-                    detecting.remove(id);
                     for address in registry.addresses() {
                         if address == *id {
                             registry.remove(&address);
                         }
                     }
-                    switcher.remove_source(id, state);
+                    let effects = update(model, Msg::RemoveSource { source: id.clone() });
+                    debug_assert!(effects.is_empty());
                 }
                 for id in &delta.added {
                     tracing::info!(source = %id, "roster offered a new source");
-                    switcher.add_source(id.clone(), state);
+                    let effects = update(
+                        model,
+                        Msg::AddSource {
+                            source: id.clone(),
+                            scanning: false,
+                        },
+                    );
+                    debug_assert!(effects.is_empty());
                 }
                 // Probe each ADDED machine's reachability (deduped by machine): a machine
                 // the roster just named turns into a connected card that streams its
@@ -343,7 +389,13 @@ impl Runtime {
                 // unreachable in apply_event (when it was still scanning), so opening a
                 // doomed control child would just die and overwrite that reason with a
                 // bare "connection closed". The reconnect sweep retries detection.
-                detecting.remove(&source);
+                let effects = update(
+                    model,
+                    Msg::DetectionFinished {
+                        source: source.clone(),
+                    },
+                );
+                debug_assert!(effects.is_empty());
                 apply_scan_result(hosts, &source, detected);
                 if hosts.get(&source).is_some_and(|h| h.detected) {
                     let (vc, vr) = terminal_view_size(cols, rows, nav);
@@ -385,7 +437,15 @@ impl Runtime {
                             dispatch_detected_host(mgr, hosts, source, vc, vr);
                         }
                     } else {
-                        scan_or_dispatch_host(mgr, hosts, detecting, source, vc, vr, scan_pool);
+                        scan_or_dispatch_host(
+                            mgr,
+                            hosts,
+                            &mut model.detecting,
+                            source,
+                            vc,
+                            vr,
+                            scan_pool,
+                        );
                     }
                 }
                 // Mux discovery is a machine-level question, asked once per connect and
@@ -452,6 +512,7 @@ impl Runtime {
     }
 }
 
+#[cfg(test)]
 pub(super) fn apply_state_event_effect(
     switcher: &mut crate::ui::switcher::Switcher,
     state: &mut crate::state::State,
@@ -650,27 +711,10 @@ impl Runtime {
         let nav_decoder = crate::display::decode::KeyDecoder::new();
         let (op_tx, op_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let rt = Runtime {
-            env,
-            // Replaced in `run_app` once the free name is resolved (that needs a dial,
-            // so it cannot happen in this synchronous constructor).
-            instance_name: String::new(),
-            ops,
-            hosts,
-            mgr,
-            scan_pool: Arc::new(tokio::sync::Semaphore::new(scan_concurrency)),
-            registry,
-            worker,
+        let model = AppModel {
             switcher,
             render_plan: crate::ui::switcher::RenderPlan::default(),
             state,
-            // Off-loop attach sequence. The in-flight set / reaped-ids / which session
-            // each display shows live on each `host.display` (HostDisplay).
-            attach_seq: 0,
-            driver_pty_tx,
-            op_tx,
-            cols,
-            body_rows,
             nav_width,
             nav_width_natural,
             nav_collapsed,
@@ -683,11 +727,34 @@ impl Runtime {
             auto_hide_nav,
             nav_was_focused: true,
             mouse_state: MouseState::default(),
+            connected: HashSet::new(),
+            detecting: HashSet::new(),
+            config_last_mtime: None,
+            width_dirty: false,
+            width_flush_at: None,
+        };
+        let rt = Runtime {
+            env,
+            // Replaced in `run_app` once the free name is resolved (that needs a dial,
+            // so it cannot happen in this synchronous constructor).
+            instance_name: String::new(),
+            ops,
+            hosts,
+            mgr,
+            scan_pool: Arc::new(tokio::sync::Semaphore::new(scan_concurrency)),
+            registry,
+            worker,
+            model,
+            // Off-loop attach sequence. The in-flight set / reaped-ids / which session
+            // each display shows live on each `host.display` (HostDisplay).
+            attach_seq: 0,
+            driver_pty_tx,
+            op_tx,
+            cols,
+            body_rows,
             term_input,
             nav_decoder,
             prefix,
-            connected: HashSet::new(),
-            detecting: HashSet::new(),
             // The draw hot path's observability (per-key grid fingerprints + slow-step
             // probe), owned off the draw block so it does nothing but lock → render.
             draw_observer: DrawObserver::default(),
@@ -696,9 +763,6 @@ impl Runtime {
             last_draw: std::time::Instant::now() - std::time::Duration::from_millis(FRAME_MS),
             // The live config watch records a baseline on its first frame tick, so the
             // startup settings are not re-applied. `None` means no baseline yet.
-            config_last_mtime: None,
-            width_dirty: false,
-            width_flush_at: None,
         };
         (
             rt,
@@ -722,11 +786,11 @@ impl Runtime {
     /// miss another.
     pub(super) fn nav_size(&self) -> crate::ui::switcher::NavSize {
         crate::ui::switcher::NavSize {
-            natural: self.nav_width_natural,
-            width: self.nav_width,
-            height: self.nav_height,
-            position: self.nav_position,
-            collapsed: self.nav_collapsed,
+            natural: self.model.nav_width_natural,
+            width: self.model.nav_width,
+            height: self.model.nav_height,
+            position: self.model.nav_position,
+            collapsed: self.model.nav_collapsed,
         }
     }
 
@@ -738,68 +802,73 @@ impl Runtime {
     ) {
         use std::time::Duration;
         // Advance the spinner from wall-clock so it animates regardless of which arm fired.
-        self.state
+        self.model
+            .state
             .chrome
             .set_spinner_frame(spinner_frame_at(self.spinner_start.elapsed()));
-        self.state
+        self.model
+            .state
             .chrome
-            .set_view_border_hovered(self.mouse_state.hovered_view_border);
+            .set_view_border_hovered(self.model.mouse_state.hovered_view_border);
         // The repeat window lapses on the clock, not on an event, so compare before
         // storing: a bar that just went idle must repaint even though nothing arrived.
         let prefix_active = self.prefix_active();
-        if self.state.chrome.armed != prefix_active {
+        if self.model.state.chrome.armed != prefix_active {
             self.dirty = true;
         }
-        self.state.chrome.set_armed(prefix_active);
-        self.switcher.sync_prefix(prefix_active);
+        self.model.state.chrome.set_armed(prefix_active);
+        self.model.switcher.sync_prefix(prefix_active);
         // Derive the modal dimension of focus from the open-modal kind (single owner of
         // the modal/view reconciliation).
-        let modal_kind = self.state.modal_kind();
-        self.state.focus.sync_modal(modal_kind);
-        let nav_focused = self.state.focus.view_is_nav();
+        let modal_kind = self.model.state.modal_kind();
+        self.model.state.focus.sync_modal(modal_kind);
+        let nav_focused = self.model.state.focus.view_is_nav();
         // The nav decides its host band on the move into the terminal view. The view
         // behind a modal counts as the focused one: a popup over the terminal view is not
         // a move back into the nav.
-        self.switcher.sync_view_focus(!nav_focused);
-        if nav_focused && !self.nav_was_focused && self.nav_collapsed {
-            self.nav_collapsed = false;
+        self.model.switcher.sync_view_focus(!nav_focused);
+        if nav_focused && !self.model.nav_was_focused && self.model.nav_collapsed {
+            self.model.nav_collapsed = false;
             crate::app::prefs::save_nav_collapsed(&self.env.xmux_dir, false);
             self.dirty = true;
         }
-        self.nav_was_focused = nav_focused;
+        self.model.nav_was_focused = nav_focused;
         // The single owner of the effective nav width: reconcile it to the focus + the
         // hide setting + any natural-width change. On a change, resize the PTYs so the
         // mux reflows, and mark dirty.
         let want_nav_width = reconciled_nav_width(
-            self.state.focus.is_terminal_focused(),
-            self.auto_hide_nav,
+            self.model.state.focus.is_terminal_focused(),
+            self.model.auto_hide_nav,
             prefix_active,
-            self.nav_width_natural,
-            self.nav_collapsed,
+            self.model.nav_width_natural,
+            self.model.nav_collapsed,
             &self.env.ui_prefix,
         );
         // The nav's attachment side is resolved here too, every frame: a pinned side
         // wins, else the [ui] default. The nav never moves on its own.
-        let want_position = self.nav_position_pinned.unwrap_or(self.nav_default);
+        let want_position = self
+            .model
+            .nav_position_pinned
+            .unwrap_or(self.model.nav_default);
         // Resize when ANY dimension of the split moved: the width (focus / hide / prefix
         // h·l in a column), the band height (border drag / resize keys), or the side the
         // nav is attached to. All change the mux terminal region, so all must resize the
         // PTYs or the grid mismatches the draw.
-        if want_nav_width != self.nav_width
-            || self.nav_height != self.applied_nav_height
-            || self.nav_collapsed != self.applied_nav_collapsed
-            || want_position != self.nav_position
+        if want_nav_width != self.model.nav_width
+            || self.model.nav_height != self.model.applied_nav_height
+            || self.model.nav_collapsed != self.model.applied_nav_collapsed
+            || want_position != self.model.nav_position
         {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY; a stale wide-char
             // cell at the new boundary can survive ratatui's diff, so force a full repaint.
             // A position change moves the border to the opposite side of the screen and
             // gets the same treatment.
-            let crossed_hidden = (want_nav_width == 0) != (self.nav_width == 0);
-            let crossed_position = want_position != self.nav_position;
-            self.nav_position = want_position;
-            self.nav_width = want_nav_width;
-            self.applied_nav_height = self.nav_height;
-            self.applied_nav_collapsed = self.nav_collapsed;
+            let crossed_hidden = (want_nav_width == 0) != (self.model.nav_width == 0);
+            let crossed_position = want_position != self.model.nav_position;
+            self.model.nav_position = want_position;
+            self.model.nav_width = want_nav_width;
+            self.model.applied_nav_height = self.model.nav_height;
+            self.model.applied_nav_collapsed = self.model.nav_collapsed;
             let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
             self.registry.resize_all(vc, vr);
             if crossed_hidden || crossed_position {
@@ -811,23 +880,28 @@ impl Runtime {
         }
         // The cheatsheet and the help modal name the arrow pair the CURRENT placement
         // makes active, so they read the resolved position every frame.
-        self.state.chrome.set_nav_position(self.nav_position);
+        self.model
+            .state
+            .chrome
+            .set_nav_position(self.model.nav_position);
         // A portable-pty child spawn clears ENABLE_MOUSE_INPUT on the parent CONIN,
         // killing mouse capture; re-assert it whenever it drifts off.
         crate::display::term::ensure_mouse_capture();
         // An `r` re-scan also re-attaches the CURRENT display: tear the (possibly dead)
         // attachment down and clear its latch so the attach below re-creates a fresh
         // client for the viewed session.
-        if self.switcher.take_reattach_kick() && !self.state.selection.is_empty() {
-            let key = display_key(&self.hosts, &self.state.selection);
+        if self.model.switcher.take_reattach_kick() && !self.model.state.selection.is_empty() {
+            let key = display_key(&self.hosts, &self.model.state.selection);
             self.registry.remove(&key);
-            if let Some(h) = self.hosts.get_mut(&self.state.selection.source) {
+            if let Some(h) = self.hosts.get_mut(&self.model.state.selection.source) {
                 h.display.clear(&key); // drop the prior latch so the re-attach is fresh
             }
-            self.state.apply(crate::model::Action::ClearDisplay); // nothing confirmed → blank view
-            self.state.apply(crate::model::Action::RearmAttachNow {
-                now: std::time::Instant::now(),
-            });
+            self.model.state.apply(crate::model::Action::ClearDisplay); // nothing confirmed → blank view
+            self.model
+                .state
+                .apply(crate::model::Action::RearmAttachNow {
+                    now: std::time::Instant::now(),
+                });
         }
         // The two regions must name ONE session. In terminal focus the user is driving
         // the mux, so the selection goes to the client; in nav focus the selection stands
@@ -835,7 +909,7 @@ impl Runtime {
         if self.follow_selection_to_display() {
             self.dirty = true;
         }
-        if sync_selection_from_switcher(&mut self.state, &self.switcher) {
+        if sync_selection_from_switcher(&mut self.model) {
             // The selection moved → the nav needs a redraw. The attach is NOT issued
             // here; the beat below arms the debounce, re-armed on every move.
             self.dirty = true;
@@ -843,14 +917,15 @@ impl Runtime {
         self.drive_attach_beat(std::time::Instant::now());
 
         // Flush the debounced nav-width persist once the resize burst settles.
-        if self.width_dirty
+        if self.model.width_dirty
             && self
+                .model
                 .width_flush_at
                 .is_some_and(|d| std::time::Instant::now() >= d)
         {
-            crate::app::prefs::save_nav_width(&self.env.xmux_dir, self.nav_width_natural);
-            self.width_dirty = false;
-            self.width_flush_at = None;
+            crate::app::prefs::save_nav_width(&self.env.xmux_dir, self.model.nav_width_natural);
+            self.model.width_dirty = false;
+            self.model.width_flush_at = None;
         }
 
         // Draw the split (nav + selected session's live grid). GATED - redraw only when
@@ -861,7 +936,7 @@ impl Runtime {
             // session stays on screen until the fresh one paints (stale-while-revalidate).
             let nav = self.nav_size();
             let grid_arc = current_grid(
-                &self.state.displayed,
+                &self.model.state.displayed,
                 &crate::driver::DriverCtx {
                     registry: &mut self.registry,
                     hosts: &mut self.hosts,
@@ -873,11 +948,14 @@ impl Runtime {
                     viewport: (0, 0),
                 },
             );
-            let terminal_focused = self.state.focus.is_terminal_focused();
+            let terminal_focused = self.model.state.focus.is_terminal_focused();
             // The view border glyph reflects auto-hide-nav mode (║ on, │ off).
-            self.state.chrome.set_auto_hide(self.auto_hide_nav);
+            self.model
+                .state
+                .chrome
+                .set_auto_hide(self.model.auto_hide_nav);
             let t_draw = std::time::Instant::now();
-            let previous_plan = self.render_plan.clone();
+            let previous_plan = self.model.render_plan.clone();
             let mut next_plan = None;
             let draw_result = match &grid_arc {
                 Some(g) => {
@@ -887,8 +965,8 @@ impl Runtime {
                     // Compute the grid fingerprint under the same lock used for rendering;
                     // the observer emits display_grid_changed only on a real content change.
                     if let Some(grid) = guard.as_deref() {
-                        let addr = display_key(&self.hosts, &self.state.displayed);
-                        let session = &self.state.displayed.session;
+                        let addr = display_key(&self.hosts, &self.model.state.displayed);
+                        let session = &self.model.state.displayed.session;
                         let fp = grid.fingerprint();
                         match self.draw_observer.observe(&addr, session, fp) {
                             FpOutcome::Unchanged => {}
@@ -902,8 +980,8 @@ impl Runtime {
                     }
                     // Split-borrow so the draw closure captures only these fields, not all
                     // of `self` (the fingerprint block's borrows have ended above).
-                    let switcher = &self.switcher;
-                    let state = &self.state;
+                    let switcher = &self.model.switcher;
+                    let state = &self.model.state;
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
                         let plan = switcher.layout(f.area(), nav, state, &previous_plan);
@@ -914,8 +992,8 @@ impl Runtime {
                 }
                 None => {
                     let nav = self.nav_size();
-                    let switcher = &self.switcher;
-                    let state = &self.state;
+                    let switcher = &self.model.switcher;
+                    let state = &self.model.state;
                     term.draw(|f| {
                         let t_render = std::time::Instant::now();
                         let plan = switcher.layout(f.area(), nav, state, &previous_plan);
@@ -931,7 +1009,7 @@ impl Runtime {
             // The plan is kept even when the flush fails: its scroll offsets are where the
             // next frame continues from.
             if let Some(plan) = next_plan {
-                self.render_plan = plan;
+                self.model.render_plan = plan;
             }
             DrawObserver::slow_step("draw", t_draw);
             // The grids are now on screen - clear every attachment's output-coalescing flag.
@@ -1017,11 +1095,11 @@ impl Runtime {
         }
         // Capture the viewed attach id after a pending exit is promoted but before reap
         // removes it. A background attachment dropping is just reaped.
-        let displayed_attach_id = (self.state.focus.is_terminal_focused()
-            && !self.state.selection.is_empty())
+        let displayed_attach_id = (self.model.state.focus.is_terminal_focused()
+            && !self.model.state.selection.is_empty())
         .then(|| {
             self.registry
-                .get(&display_key(&self.hosts, &self.state.selection))
+                .get(&display_key(&self.hosts, &self.model.state.selection))
                 .map(|a| a.id())
         })
         .flatten();
@@ -1120,7 +1198,7 @@ impl Runtime {
         attachment: crate::display::attachment::Attachment,
         shown: String,
     ) {
-        let selected_key = display_key(&self.hosts, &self.state.selection);
+        let selected_key = display_key(&self.hosts, &self.model.state.selection);
         let hid = host_of_key(&key).to_string();
         let attach_id = attachment.id();
         let child_tty = attachment.child_tty().map(str::to_string);
@@ -1141,7 +1219,8 @@ impl Runtime {
         }
 
         if key == selected_key {
-            self.state
+            self.model
+                .state
                 .apply(crate::model::Action::ConfirmDisplay(Selection {
                     source: hid,
                     session: shown,
@@ -1218,14 +1297,14 @@ impl Runtime {
         use std::time::Duration;
         // Clone the selection so &mut state can be threaded alongside it (the ForwardToMux
         // path reads the selection for display_key/registry input).
-        let selection = self.state.selection.clone();
+        let selection = self.model.state.selection.clone();
         let outcome = self.handle_stdin_bytes(bytes, &selection);
         if outcome.dirty {
             self.dirty = true;
         }
         if outcome.width_changed {
-            self.width_dirty = true;
-            self.width_flush_at =
+            self.model.width_dirty = true;
+            self.model.width_flush_at =
                 Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
         }
         outcome.quit
@@ -1250,7 +1329,7 @@ impl Runtime {
                 // task only awaits it.
                 let resp = match &action {
                     crate::model::Action::Switch(address) => {
-                        match self.state.resolve_switch_address(address) {
+                        match self.model.state.resolve_switch_address(address) {
                             Ok(()) => "ok".to_string(),
                             Err(problem) => format!("err: {problem}"),
                         }
@@ -1262,8 +1341,8 @@ impl Runtime {
                 let (quit_op, wc) = self.dispatch_action(action);
                 let _ = reply.send(resp);
                 if wc {
-                    self.width_dirty = true;
-                    self.width_flush_at =
+                    self.model.width_dirty = true;
+                    self.model.width_flush_at =
                         Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
                 }
                 if quit_op {
@@ -1273,31 +1352,20 @@ impl Runtime {
                 ensure_current_host(
                     &mut self.mgr,
                     &self.hosts,
-                    &self.switcher,
+                    &self.model.switcher,
                     self.cols,
                     self.body_rows,
-                    self.nav_width,
+                    self.model.nav_width,
                 );
-                // `rescan` only ARMS the kick; the same consumer the key paths run has to
-                // fire it here too. Without this a ctl re-scan clears every card to its
-                // scanning skeleton and then never re-enumerates, so the nav spins until
-                // the user happens to press a key.
-                kick_rescan(
-                    &mut self.switcher,
-                    &self.env,
-                    &self.hosts,
-                    &self.mgr,
-                    &self.scan_pool,
-                );
-                if sync_selection_from_switcher(&mut self.state, &self.switcher) {
+                if sync_selection_from_switcher(&mut self.model) {
                     self.dirty = true;
                 }
             }
             Cmd::Status(reply) => {
                 let _ = reply.send(status_line(
-                    &self.switcher,
+                    &self.model.switcher,
                     &self.instance_name,
-                    self.state.focus.view_is_nav(),
+                    self.model.state.focus.view_is_nav(),
                     &self_cwd(),
                     &self_tty(),
                 ));
@@ -1308,7 +1376,7 @@ impl Runtime {
                     height: 24,
                 });
                 let grid_arc = current_grid(
-                    &self.state.displayed,
+                    &self.model.state.displayed,
                     &crate::driver::DriverCtx {
                         registry: &mut self.registry,
                         hosts: &mut self.hosts,
@@ -1324,21 +1392,21 @@ impl Runtime {
                     Some(g) => {
                         let guard = g.lock().ok();
                         dump_screen(
-                            &mut self.switcher,
+                            &mut self.model.switcher,
                             guard.as_deref(),
                             sz.width,
                             sz.height,
-                            &self.state,
-                            &self.render_plan,
+                            &self.model.state,
+                            &self.model.render_plan,
                         )
                     }
                     None => dump_screen(
-                        &mut self.switcher,
+                        &mut self.model.switcher,
                         None,
                         sz.width,
                         sz.height,
-                        &self.state,
-                        &self.render_plan,
+                        &self.model.state,
+                        &self.model.render_plan,
                     ),
                 };
                 let _ = reply.send(dump);
@@ -1346,11 +1414,11 @@ impl Runtime {
             Cmd::RawKey(k) => {
                 // Route the FULL command batch through the single dispatcher (RunOp spawns
                 // off-loop, its OpResult folding back through op_tx).
-                let cmds = self.switcher.handle_key(k, &mut self.state);
-                let (quit_key, wc) = self.execute_commands(cmds);
+                let effects = update(&mut self.model, Msg::Key(k));
+                let (quit_key, wc, _) = self.execute_effects(effects);
                 if wc {
-                    self.width_dirty = true;
-                    self.width_flush_at =
+                    self.model.width_dirty = true;
+                    self.model.width_flush_at =
                         Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
                 }
                 if quit_key {
@@ -1359,12 +1427,12 @@ impl Runtime {
                 ensure_current_host(
                     &mut self.mgr,
                     &self.hosts,
-                    &self.switcher,
+                    &self.model.switcher,
                     self.cols,
                     self.body_rows,
-                    self.nav_width,
+                    self.model.nav_width,
                 );
-                if sync_selection_from_switcher(&mut self.state, &self.switcher) {
+                if sync_selection_from_switcher(&mut self.model) {
                     self.dirty = true;
                 }
             }
@@ -1374,24 +1442,22 @@ impl Runtime {
                     // interactive terminal-focus path routes them (see `input.rs`). So the
                     // ctl raw surface drives the pane the same way a keyboard does, down to
                     // a running login taking no input but the Esc that ends it.
-                    if let Some(login) =
-                        self.state.login_run.as_ref().filter(|l| {
-                            self.switcher.current_source().as_deref() == Some(&l.source)
-                        })
-                    {
+                    if let Some(login) = self.model.state.login_run.as_ref().filter(|l| {
+                        self.model.switcher.current_source().as_deref() == Some(&l.source)
+                    }) {
                         if bytes.as_slice() == b"\x1b" {
                             login.cancel();
                         }
                         self.dirty = true;
-                    } else if self.switcher.current_host_blocked() {
-                        if let Some(source) = self.switcher.current_source() {
-                            if let Some(cmd) = self.state.feed_login(&source, &bytes) {
+                    } else if self.model.switcher.current_host_blocked() {
+                        if let Some(source) = self.model.switcher.current_source() {
+                            if let Some(cmd) = self.model.state.feed_login(&source, &bytes) {
                                 let _ = self.execute_commands(vec![cmd]);
                             }
                             self.dirty = true;
                         }
                     } else {
-                        let Some(host) = self.hosts.get(&self.state.selection.source) else {
+                        let Some(host) = self.hosts.get(&self.model.state.selection.source) else {
                             return false;
                         };
                         // Follow the selected destination, matching the interactive
@@ -1408,7 +1474,7 @@ impl Runtime {
                             attach_seq: &mut self.attach_seq,
                             viewport: (0, 0),
                         };
-                        driver.input(&self.state.selection, bytes, &ctx);
+                        driver.input(&self.model.state.selection, bytes, &ctx);
                     }
                 }
             }
@@ -1430,10 +1496,11 @@ impl Runtime {
     ///
     /// Ready also clears on a focus switch or a mouse action (canceled).
     pub(super) fn prefix_active(&self) -> bool {
-        self.mouse_state.nav_armed
+        self.model.mouse_state.nav_armed
             || self.term_input.is_armed()
-            || self.state.is_inputting()
+            || self.model.state.is_inputting()
             || self
+                .model
                 .mouse_state
                 .repeat_until
                 .is_some_and(|d| std::time::Instant::now() < d)
@@ -1444,49 +1511,14 @@ impl Runtime {
     /// connected), so re-probe just it - over what the login left behind - instead of the
     /// whole roster. The re-probe is what turns the pane back into the host's sessions.
     pub(super) fn on_op_result(&mut self, result: crate::ui::switcher::OpResult) {
-        self.state.logged_in = self.env.credentials().machines();
-        if let Some((source, login)) = self.switcher.apply_op_result(result, &mut self.state) {
-            // The values that just authenticated become the machine's, before the
-            // re-probe is the first command to use them. The login's own connection is
-            // over, so a value left only in its argv would be gone: every later command
-            // would reach the machine as whoever runs xmux, which is a different account
-            // and a refusal.
-            self.hosts
-                .for_each_transport_of(crate::session::machine_of(&source), |t| {
-                    t.set_login(login.clone())
-                });
-            // Credential presence keeps the machine visible while the requested probe
-            // is pending. The mark is removed whenever the shared store no longer holds it.
-            let machine = crate::session::machine_of(&source);
-            if self.env.credentials().contains(machine) {
-                self.state.logged_in.insert(machine.to_string());
-            } else {
-                self.state.logged_in.remove(machine);
-            }
-            // A host that serves no source yet has one card, and the answer it now waits
-            // on (which muxes the host serves) is in flight.
-            let machine = crate::session::machine_of(&source);
-            if !self.hosts.serves_any(machine) {
-                self.switcher.mark_scanning(machine, &mut self.state);
-            }
-            probe_machine(
-                crate::session::machine_of(&source),
-                &self.hosts,
-                self.mgr.events(),
-                &self.scan_pool,
-                false,
-            );
-            // The login is done: clear the draft so the pane keeps no typed values.
-            if self
-                .state
-                .login
-                .as_ref()
-                .is_some_and(|d| d.source == source)
-            {
-                self.state.login = None;
-            }
-            self.dirty = true;
-        }
+        let effects = update(
+            &mut self.model,
+            Msg::OpResult {
+                result,
+                logged_in: self.env.credentials().machines(),
+            },
+        );
+        let _ = self.execute_effects(effects);
     }
 
     /// Drives one debounce beat: folds the clock and the runtime attach facts into
@@ -1498,11 +1530,11 @@ impl Runtime {
     /// `now` is injected rather than read here, the same way `apply` takes it, so a
     /// caller can drive the debounce across its whole span.
     pub(super) fn drive_attach_beat(&mut self, now: std::time::Instant) {
-        let in_flight = selection_attach_in_flight(&self.hosts, &self.state.selection);
+        let in_flight = selection_attach_in_flight(&self.hosts, &self.model.state.selection);
         let _ = self.dispatch_action(crate::model::Action::Tick {
             now,
             in_flight,
-            display_astray: display_astray(&self.state, &self.hosts),
+            display_astray: display_astray(&self.model.state, &self.hosts),
         });
     }
 
@@ -1531,21 +1563,24 @@ impl Runtime {
     /// showing as it acts, so the debt is settled in the same breath as the display, and
     /// a difference outliving the debt is the mux's own doing.
     pub(super) fn follow_selection_to_display(&mut self) -> bool {
-        if !self.state.focus.is_terminal_focused() || self.state.selection.is_empty() {
+        if !self.model.state.focus.is_terminal_focused() || self.model.state.selection.is_empty() {
             return false;
         }
-        let in_flight = selection_attach_in_flight(&self.hosts, &self.state.selection);
-        if self.state.attach_pending || self.state.attach_deadline.is_some() || in_flight {
+        let in_flight = selection_attach_in_flight(&self.hosts, &self.model.state.selection);
+        if self.model.state.attach_pending
+            || self.model.state.attach_deadline.is_some()
+            || in_flight
+        {
             return false;
         }
-        let Some(shown) = display_session(&self.hosts, &self.state.selection.source) else {
+        let Some(shown) = display_session(&self.hosts, &self.model.state.selection.source) else {
             return false;
         };
-        if shown == self.state.selection.session {
+        if shown == self.model.state.selection.session {
             return false;
         }
-        let addr = crate::session::Address::new(&self.state.selection.source, shown);
-        self.switcher.select_address(&addr, &self.state)
+        let addr = crate::session::Address::new(&self.model.state.selection.source, shown);
+        self.model.switcher.select_address(&addr, &self.model.state)
     }
 
     /// Reads xmux's own display client for the session it is on and records it, for a mux
@@ -1589,10 +1624,10 @@ impl Runtime {
     /// round trip per beat to save nothing. The test guards the conclusion rather than the
     /// figure: it fails only when a read costs a visible share of a beat.
     pub(super) fn observe_display_session(&mut self) -> bool {
-        if self.state.selection.is_empty() {
+        if self.model.state.selection.is_empty() {
             return false;
         }
-        let source = self.state.selection.source.clone();
+        let source = self.model.state.selection.source.clone();
         let Some(host) = self.hosts.get(&source) else {
             return false;
         };
@@ -1646,29 +1681,34 @@ impl Runtime {
         // A flash outlives the moment it was about, so it comes down on its own for a
         // user who pressed nothing. The tick is where that is noticed, because it is the
         // one wake that happens without the user doing anything.
-        if self.state.chrome.expire_flash(std::time::Instant::now()) {
+        if self
+            .model
+            .state
+            .chrome
+            .expire_flash(std::time::Instant::now())
+        {
             self.dirty = true;
         }
         // Spinner set = the selected session if its PTY is still connecting.
         let mut sp = HashSet::new();
-        if !self.state.selection.is_empty() {
-            let key = display_key(&self.hosts, &self.state.selection);
+        if !self.model.state.selection.is_empty() {
+            let key = display_key(&self.hosts, &self.model.state.selection);
             let in_flight_for_key = self
                 .hosts
-                .get(&self.state.selection.source)
+                .get(&self.model.state.selection.source)
                 .map(|h| h.display.in_flight_contains(&key))
                 .unwrap_or(false);
             if in_flight_for_key || self.registry.connecting(&key) {
                 sp.insert(
                     crate::session::Address::new(
-                        &self.state.selection.source,
-                        &self.state.selection.session,
+                        &self.model.state.selection.source,
+                        &self.model.state.selection.session,
                     )
                     .display(),
                 );
             }
         }
-        self.state.chrome.set_spinner(sp);
+        self.model.state.chrome.set_spinner(sp);
     }
 
     /// Live config reload, called on the redraw cadence. When [`poll_ui_config`] sees
@@ -1684,18 +1724,18 @@ impl Runtime {
     /// rebuild, which is not worth it on a setting that changes rarely).
     pub(super) fn on_config_check(&mut self) -> bool {
         let Some(ui) = poll_ui_config(
-            &mut self.config_last_mtime,
+            &mut self.model.config_last_mtime,
             &crate::provision::env::config_path(),
         ) else {
             return false;
         };
         let palette =
             crate::ui::palette::resolve(&ui.theme, crate::ui::chrome::palette_overrides(&ui));
-        self.state.chrome.apply_palette(&ui, &palette);
-        self.switcher.set_palette(palette);
+        self.model.state.chrome.apply_palette(&ui, &palette);
+        self.model.switcher.set_palette(palette);
         // The new nav-position default takes effect at the next loop top, where the
         // reconcile re-resolves the position from it.
-        self.nav_default = ui.nav_position();
+        self.model.nav_default = ui.nav_position();
         true
     }
 }
