@@ -56,8 +56,8 @@ impl Hosts {
     /// then each WSL distribution. Mirrors `source::build` but yields owning `Host`s.
     /// A host whose muxes are xmux's to decide is held by name and transport, with no
     /// source until it answers.
-    /// `xmux_dir` seeds each ssh transport's ControlMaster socket path
-    /// (`cm-<alias>.sock`), exactly as `source::build` does.
+    /// `xmux_dir` seeds each ssh transport's ControlMaster socket path, exactly as
+    /// `source::build` does. OpenSSH expands its `%C` component from the connection.
     pub fn build(
         cfg: &Config,
         ssh_aliases: &[String],
