@@ -361,14 +361,12 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn control_client_keeps_askpass_live_but_cannot_outlive_credential_removal() {
-        async fn run(remove_before_prompt: bool) -> String {
+        async fn run(remove_before_prompt: bool) -> Option<String> {
             let root = std::env::temp_dir().join(format!(
                 "xmux-control-auth-{}-{}",
                 std::process::id(),
                 crate::transport::auth::request_test_token()
             ));
-            std::fs::create_dir_all(&root).unwrap();
-            let output = root.join("answer.txt");
             let credentials = crate::transport::auth::Credentials::new(root.clone());
             let access = credentials
                 .begin(
@@ -382,68 +380,54 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert!(access.promote());
-            let seed =
-                crate::transport::CommandSpec::new("stub", Vec::new()).with_auth(access, false);
-            let endpoint = seed
-                .env()
-                .iter()
-                .find(|(key, _)| key == "XMUX_ASKPASS_ENDPOINT")
-                .map(|(_, value)| std::path::Path::new(value))
-                .unwrap();
-            let pipe = format!(
-                "xmux-{}",
-                endpoint.file_stem().and_then(|stem| stem.to_str()).unwrap()
-            );
-            let output_literal = output.to_string_lossy().replace('\'', "''");
-            let script = format!(
-                "$ErrorActionPreference='Stop'; Start-Sleep -Milliseconds 200; \
-                 $p=[IO.Pipes.NamedPipeClientStream]::new('.', '{pipe}', [IO.Pipes.PipeDirection]::InOut); \
-                 $p.Connect(2000); \
-                 $w=[IO.StreamWriter]::new($p, [Text.UTF8Encoding]::new($false), 1024, $true); $w.AutoFlush=$true; \
-                 $q=@{{token=$env:XMUX_ASKPASS_TOKEN;prompt=\"dev@pwbox's password: \";secret_prompt=$true}} | ConvertTo-Json -Compress; $w.WriteLine($q); \
-                 $r=[IO.StreamReader]::new($p, [Text.UTF8Encoding]::new($false), $false, 1024, $true); \
-                 $n=[int]$r.ReadLine(); $answer=''; if($n -gt 0){{$buf=New-Object char[] $n; [void]$r.ReadBlock($buf,0,$n); $answer=-join $buf}}; \
-                 [IO.File]::WriteAllText('{output_literal}', $answer)"
-            );
             let command = crate::transport::CommandSpec::new(
                 "powershell.exe",
                 vec![
                     "-NoProfile".into(),
                     "-NonInteractive".into(),
                     "-Command".into(),
-                    script,
+                    "Start-Sleep -Seconds 30".into(),
                 ],
             )
             .with_auth(
                 credentials.access("pwbox").expect("active credential"),
                 false,
             );
+            let endpoint = command
+                .env()
+                .iter()
+                .find(|(key, _)| key == "XMUX_ASKPASS_ENDPOINT")
+                .map(|(_, value)| std::path::PathBuf::from(value))
+                .unwrap();
+            let token = command
+                .env()
+                .iter()
+                .find(|(key, _)| key == "XMUX_ASKPASS_TOKEN")
+                .map(|(_, value)| value.clone())
+                .unwrap();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
             let client =
                 HostClient::spawn("pwbox", test_control_proto(), &command, 80, 24, tx, false)
-                    .expect("spawn delayed control stub");
+                    .expect("spawn control stub");
             drop(command);
-            drop(seed);
             if remove_before_prompt {
                 credentials.remove("pwbox");
             }
-            // The deadline only catches a hang: under a parallel test load on a CI
-            // runner, powershell.exe alone can take several seconds to start.
-            tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                while !output.exists() {
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                }
-            })
+            let answer = crate::transport::auth::request_password(
+                &endpoint,
+                &token,
+                "dev@pwbox's password:",
+            )
             .await
-            .expect("stub wrote its broker answer");
+            .unwrap();
+
             client.teardown();
-            let answer = std::fs::read_to_string(&output).unwrap();
             credentials.shutdown();
             let _ = std::fs::remove_dir_all(root);
             answer
         }
 
-        assert_eq!(run(false).await, "secret");
-        assert_eq!(run(true).await, "");
+        assert_eq!(run(false).await.as_deref(), Some("secret"));
+        assert!(run(true).await.is_none());
     }
 }
