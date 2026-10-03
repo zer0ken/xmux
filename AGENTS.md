@@ -44,8 +44,9 @@ state; raw key and text injection is an unstable low-level surface.
   `psmux/`, `zellij/`, `abduco/`, `screen/`, `tuios/`, `herdr/`) owning metadata,
   command plans, and a display driver, and
   the shared mux builders.
-- `src/model/` - runtime domain values: sources, inventory, login inputs, the
-  operation port and its exchanged values, and the action and command sets.
+- `src/model/` - runtime domain values: sources, inventory, login inputs, nav
+  geometry, the operation port and its exchanged values, and the action and
+  command sets.
 - `src/driver.rs` - the mux-agnostic `MuxDriver` trait and the thin wrapper that
   resolves a source's driver; it names no concrete mux type.
 - `src/display/` - PTY attachment, the grid, terminal input, and low-level input

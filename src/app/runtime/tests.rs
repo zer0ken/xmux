@@ -911,9 +911,7 @@ fn current_grid_returns_none_for_empty_displayed() {
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
-            cols: 80,
-            body_rows: 24,
-            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            viewport: (31, 25),
         },
     );
     assert!(grid.is_none(), "empty displayed yields no grid");
@@ -968,9 +966,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
-            cols: 80,
-            body_rows: 24,
-            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            viewport: (31, 25),
         }
     ));
     assert_eq!(hosts.get("jup").unwrap().display.shows("jup"), Some("a"));
@@ -991,9 +987,7 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
-            cols: 80,
-            body_rows: 24,
-            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            viewport: (31, 25),
         }
     ));
     assert_eq!(
@@ -1041,9 +1035,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
-            cols: 80,
-            body_rows: 24,
-            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            viewport: (31, 25),
         }
     ));
     let ready = tokio::time::timeout(std::time::Duration::from_millis(100), worker.recv())
@@ -1086,9 +1078,7 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
-            cols: 80,
-            body_rows: 24,
-            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            viewport: (31, 25),
         }
     ));
 
@@ -1142,9 +1132,7 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
-            cols: 80,
-            body_rows: 24,
-            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            viewport: (31, 25),
         }
     ));
 
@@ -1230,9 +1218,7 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
             worker: &worker,
             pty_tx: &pty_tx,
             attach_seq: &mut attach_seq,
-            cols: 80,
-            body_rows: 24,
-            nav: crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            viewport: (31, 25),
         }
     ));
 
@@ -3723,15 +3709,25 @@ async fn newer_request_tears_down_the_older_pending_attachment() {
     the_reattach_lands_for(&mut rt, 11, "b");
     assert!(rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_some());
 
-    let id = request_attach(
-        &mut rt.registry,
-        &rt.worker,
-        &mut rt.hosts.get_mut("local").unwrap().display,
-        &mut rt.attach_seq,
-        "local",
+    let selection = crate::model::Selection {
+        source: "local".into(),
+        session: "b".into(),
+    };
+    let id = crate::driver::DriverCtx {
+        registry: &mut rt.registry,
+        hosts: &mut rt.hosts,
+        instance_name: &rt.instance_name,
+        mgr: &rt.mgr,
+        worker: &rt.worker,
+        pty_tx: &rt.driver_pty_tx,
+        attach_seq: &mut rt.attach_seq,
+        viewport: (80, 24),
+    }
+    .request_attach(
+        &selection,
         crate::transport::CommandSpec::from_argv(vec!["fake".into()]),
-        (80, 24),
-    );
+    )
+    .expect("the local source exists");
 
     assert!(
         rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_none(),
@@ -3776,7 +3772,7 @@ fn a_probe_line_shows_every_word_it_runs() {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    let line = super::handlers::shell_line(&argv);
+    let line = crate::driver::shell_line(&argv);
     assert_eq!(line, r"tmux list-sessions -F 'a\tb' 'two words'");
 }
 

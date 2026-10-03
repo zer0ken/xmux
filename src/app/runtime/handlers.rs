@@ -107,9 +107,7 @@ impl Runtime {
                         worker,
                         pty_tx,
                         attach_seq: &mut *attach_seq,
-                        cols,
-                        body_rows: rows,
-                        nav,
+                        viewport: terminal_view_size(cols, rows, nav),
                     };
                     sync_source_terminals(&host, &sessions, &mut ctx);
                 }
@@ -432,9 +430,7 @@ impl Runtime {
                     worker,
                     pty_tx,
                     attach_seq: &mut *attach_seq,
-                    cols,
-                    body_rows: rows,
-                    nav,
+                    viewport: terminal_view_size(cols, rows, nav),
                 };
                 sync_source_terminals(&source, &sessions, &mut ctx);
             }
@@ -837,9 +833,7 @@ impl Runtime {
                     worker: &self.worker,
                     pty_tx: &self.driver_pty_tx,
                     attach_seq: &mut self.attach_seq,
-                    cols: self.cols,
-                    body_rows: self.body_rows,
-                    nav,
+                    viewport: (0, 0),
                 },
             );
             let terminal_focused = self.state.focus.is_terminal_focused();
@@ -1267,7 +1261,6 @@ impl Runtime {
                     width: 80,
                     height: 24,
                 });
-                let nav = self.nav_size();
                 let grid_arc = current_grid(
                     &self.state.displayed,
                     &crate::driver::DriverCtx {
@@ -1278,9 +1271,7 @@ impl Runtime {
                         worker: &self.worker,
                         pty_tx: &self.driver_pty_tx,
                         attach_seq: &mut self.attach_seq,
-                        cols: self.cols,
-                        body_rows: self.body_rows,
-                        nav,
+                        viewport: (0, 0),
                     },
                 );
                 let dump = match &grid_arc {
@@ -1362,7 +1353,6 @@ impl Runtime {
                             self.dirty = true;
                         }
                     } else {
-                        let nav = self.nav_size();
                         let Some(host) = self.hosts.get(&self.state.selection.source) else {
                             return false;
                         };
@@ -1378,9 +1368,7 @@ impl Runtime {
                             worker: &self.worker,
                             pty_tx: &self.driver_pty_tx,
                             attach_seq: &mut self.attach_seq,
-                            cols: self.cols,
-                            body_rows: self.body_rows,
-                            nav,
+                            viewport: (0, 0),
                         };
                         driver.input(&self.state.selection, bytes, &ctx);
                     }
@@ -1497,9 +1485,7 @@ impl Runtime {
                             worker: &self.worker,
                             pty_tx: &self.driver_pty_tx,
                             attach_seq: &mut self.attach_seq,
-                            cols: self.cols,
-                            body_rows: self.body_rows,
-                            nav,
+                            viewport: terminal_view_size(self.cols, self.body_rows, nav),
                         },
                     );
                     if shown {
@@ -1748,7 +1734,7 @@ fn last_pane_line(registry: &crate::display::registry::AttachRegistry, id: u64) 
         return "(no grid)".to_string();
     };
     let line = grid.lock().ok().and_then(|g| g.last_line());
-    line.map(|l| escape_controls(&l))
+    line.map(|l| crate::driver::escape_controls(&l))
         .unwrap_or_else(|| "(blank)".to_string())
 }
 
@@ -1793,7 +1779,7 @@ fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::ui::chrome::
         let probe = kind
             .transport()
             .raw_shell_argv(crate::transport::vocab::SHELL_PROBE)
-            .map(|argv| shell_line(&argv))
+            .map(|argv| crate::driver::shell_line(&argv))
             .unwrap_or_default();
         reach.insert(
             machine,
@@ -1817,7 +1803,7 @@ fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::ui::chrome::
 /// own listing command - rather than being re-derived from a source id.
 pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrome::SourceReach {
     crate::ui::chrome::SourceReach {
-        probe: shell_line(&s.host().list_sessions_command()),
+        probe: crate::driver::shell_line(&s.host().list_sessions_command()),
         machine: s.kind.addressed_as(),
         mux: s.binary.clone(),
         kind: crate::mux::for_binary(&s.binary)
@@ -1825,31 +1811,4 @@ pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrom
             .unwrap_or_else(|| s.binary.clone()),
         socket: s.kind.socket_path(),
     }
-}
-
-/// An argv as one line, every word that is not shell-safe quoted, so the line the screen
-/// shows is the command the screen says was run.
-///
-/// A control character is written as its escape first: a session format carries TABs, and
-/// a terminal prints a raw TAB as nothing at all - the datum would be on screen and
-/// unreadable, which is the one thing this screen exists not to do.
-pub(crate) fn shell_line(argv: &[String]) -> String {
-    argv.iter()
-        .map(|a| crate::transport::vocab::quote(&escape_controls(a)))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// `s` with every control character replaced by its two-character escape (TAB reads
-/// `\\t`), everything else untouched.
-fn escape_controls(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| {
-            if c.is_control() {
-                c.escape_debug().collect::<Vec<_>>()
-            } else {
-                vec![c]
-            }
-        })
-        .collect()
 }

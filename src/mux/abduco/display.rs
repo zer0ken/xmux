@@ -3,10 +3,6 @@
 //! `Abduco::driver` constructs it, so mux selection lives in the abduco implementation, not a
 //! central match.
 
-use std::sync::{Arc, Mutex};
-
-use crate::app::runtime::{host_selection_key, request_attach, terminal_view_size};
-use crate::display::grid::Grid;
 use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
@@ -25,13 +21,18 @@ impl MuxDriver for AbducoDriver {
         if sel.is_empty() {
             return false;
         }
-        let (cols, rows) = terminal_view_size(ctx.cols, ctx.body_rows, ctx.nav);
-        let Some(host) = ctx.hosts.get_mut(&sel.source) else {
-            return false;
-        };
-        let key = host_selection_key(host);
+        let key = ctx.display_key(sel);
         let live = ctx.registry.contains(&key);
-        let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
+        let (pre_mismatch, command) = {
+            let Some(host) = ctx.hosts.get_mut(&sel.source) else {
+                return false;
+            };
+            let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
+            host.display.clear(&key);
+            let mux_argv = host.mux.attach_plan(&sel.session);
+            let command = host.transport.exec_argv(true, &mux_argv);
+            (pre_mismatch, command)
+        };
 
         // REATTACH, always: the only way to move abduco's display. The stale attachment
         // is KEPT in the registry so its grid stays on screen until the fresh client
@@ -46,32 +47,12 @@ impl MuxDriver for AbducoDriver {
             session = %sel.session,
             "display_show"
         );
-        host.display.clear(&key);
-        let mux_argv = host.mux.attach_plan(&sel.session);
-        let command = host.transport.exec_argv(true, &mux_argv);
-        let id = request_attach(
-            ctx.registry,
-            ctx.worker,
-            &mut host.display,
-            ctx.attach_seq,
-            &key,
-            command,
-            (cols, rows),
-        );
+        let id = ctx
+            .request_attach(sel, command)
+            .expect("the selected source exists");
         tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
-        host.display.set_shows(&key, &sel.session);
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
-    }
-
-    fn grid(&self, sel: &Selection, ctx: &DriverCtx) -> Option<Arc<Mutex<Grid>>> {
-        ctx.registry
-            .grid(&crate::app::runtime::display_key(ctx.hosts, sel))
-    }
-
-    fn input(&mut self, sel: &Selection, bytes: Vec<u8>, ctx: &DriverCtx) {
-        ctx.registry
-            .input(&crate::app::runtime::display_key(ctx.hosts, sel), bytes);
     }
 
     fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {

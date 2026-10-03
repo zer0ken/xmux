@@ -15,7 +15,7 @@
 //! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
 //! bracketed paste is respected so a prefix pasted as data is never intercepted.
 use crate::display::dispatch::Action;
-use crate::ui::switcher::NavPosition;
+use crate::model::NavPosition;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub struct TermInput {

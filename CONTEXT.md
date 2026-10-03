@@ -141,7 +141,7 @@ UI elements a user perceives as distinct things:
 - nav size - the nav's live geometry as one value: the width the user SET, the width ON
   SCREEN this frame (0 while auto-hide has taken it and no prefix interaction is live),
   the band height the user set (0 = auto), the side the nav is attached to, and whether
-  the nav is collapsed. All five are settable while
+  the nav is collapsed. This shared domain value lives in `src/model/`. All five are settable while
   xmux runs, so every consumer takes the
   whole value rather than picking fields out of the runtime: the effective width
   has one owner, and a resize cannot reach the renderer and miss the PTY sizing. The set
@@ -602,8 +602,8 @@ The remaining layers each own one concern:
 - `src/provision/` - resolution: the TOML config, the roster of ssh targets, the
   concurrent source probe, and the resolved runtime view over them.
 - `src/cli/` - the CLI surface: argument parsing and command dispatch.
-- `src/model/` - domain types: sources, selection, actions, commands, event
-  effects, and the server model.
+- `src/model/` - domain types: sources, selection, nav geometry, actions,
+  commands, event effects, and the server model.
 - `src/driver.rs` - the mux-agnostic `MuxDriver` trait, the supervisor
   capabilities a driver borrows, and the thin wrapper that resolves a source's
   driver. It names no concrete mux type.

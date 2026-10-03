@@ -53,9 +53,9 @@ and owns the concrete display decision. The transport dispatches the host execut
 - The driver sits beside it and owns the per-source display orchestration.
 - The session registry backs local enumeration: an existence set merged with one
   detail row from a session listing.
-- The driver pulls the mux-agnostic display seam from `src/driver.rs` and the
-  supervisor capabilities from the app runtime. The seam does NOT import the
-  driver; the dependency is one-way, so there is no cycle.
+- The driver pulls the mux-agnostic display seam and capability port from
+  `src/driver.rs`. The app fills that port with the supervisor-owned display
+  resources, so the mux never imports the app runtime.
 - Identity detection is this implementation's own `identity_probes` (one `help`
   question; `-V` mimics tmux's version line so it is never asked) and
   `classify_identity`: psmux's help output names psmux and mentions tmux, so the
