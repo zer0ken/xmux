@@ -167,8 +167,9 @@ pub enum MuxOp {
 /// An ordered action emitted by [`State::apply_event`](crate::state::State::apply_event)
 /// for one [`HostEvent`](crate::link::HostEvent). The sequence preserves each event's
 /// state and runtime ordering without letting `state` import the application or UI
-/// layers. The app run loop applies state-facing actions first and executes I/O-facing
-/// actions with the host clients, attach registry, and display worker it owns.
+/// layers. The app run loop takes the actions in order: a state-facing action updates
+/// the application state and may yield I/O-facing actions, which run before the next
+/// action, with the host clients, attach registry, and display worker the loop owns.
 ///
 /// Events that mutate `State` directly, such as focus and pane metadata updates, emit
 /// no action. Events that need navigation behavior, runtime registries, or mux I/O emit

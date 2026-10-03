@@ -361,10 +361,6 @@ impl ScreenCell {
     }
 }
 
-/// How long a flash stays up with nothing pressed. A refusal is about something that
-/// already happened, so a bar holding one forever keeps the nav's own help text off
-/// screen over a message that has stopped being news. Ten seconds reads a wrapped line
-/// twice over.
 impl Default for Chrome {
     fn default() -> Self {
         let palette = crate::ui::palette::Palette::default();

@@ -27,20 +27,26 @@ pub struct Group {
     pub sessions: Vec<Session>,
 }
 
-/// Returns groups with `session` inserted into its source group.
+/// Returns groups with `session` placed in the group whose source matches its source,
+/// replacing any existing session of the same name in place (dedup by name) or, when
+/// new, appending it at the group's end. It does NOT sort here: a session created
+/// mid-session is placed by the next rebuild's deterministic order, not by this
+/// mutation. If no group has the source, a new group is appended. Inputs are not
+/// mutated.
 pub fn add_session(groups: &[Group], session: Session) -> Vec<Group> {
     let mut out = groups.to_vec();
     for group in &mut out {
         if group.source != session.source {
             continue;
         }
-        if let Some(existing) = group
-            .sessions
-            .iter_mut()
-            .find(|existing| existing.name == session.name)
-        {
-            *existing = session;
-        } else {
+        let mut replaced = false;
+        for existing in &mut group.sessions {
+            if existing.name == session.name {
+                *existing = session.clone();
+                replaced = true;
+            }
+        }
+        if !replaced {
             group.sessions.push(session);
         }
         return out;
