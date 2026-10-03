@@ -1,43 +1,12 @@
-//! The picker control socket: a per-instance local socket (`ctl-<name>.sock`) the
-//! headless driver dials to
-//! inject keys/text and dump the rendered switcher screen. Each request line is
-//! dispatched into the app's command channel; the app's `select!` loop
-//! folds the [`Cmd`]s in. The `dump_switcher` helper flattens a switcher render to
-//! text for the control channel's `dump` reply.
+//! Off-screen rendering helpers for control-channel screen dumps.
 
-use std::path::PathBuf;
-
-use interprocess::local_socket::tokio::{Listener, Stream};
-use interprocess::local_socket::traits::tokio::Listener as _;
-use interprocess::local_socket::ListenerOptions;
 use ratatui::backend::TestBackend;
-use ratatui::crossterm::event::KeyEvent;
 use ratatui::Terminal;
-use tokio::io::BufReader;
-use tokio::sync::{mpsc, oneshot};
 
-use crate::link::control;
 use crate::ui::switcher::Switcher;
 
-/// A unit of work the app loop processes, from the control socket.
-pub enum Cmd {
-    /// A resolved domain action — folded in at the app's single `State::apply` site.
-    /// Carries the channel the loop answers with the ctl reply: `switch` replies by
-    /// the address resolution against the current inventory; the other verbs have no
-    /// synchronous outcome and answer `ok`.
-    Op(crate::model::Action, oneshot::Sender<String>),
-    /// A control-channel `status` request: reply with the focus + selection line.
-    Status(oneshot::Sender<String>),
-    /// A control-channel `dump` request: reply with the rendered screen.
-    Dump(oneshot::Sender<String>),
-    /// Unstable/test-only: inject a raw key event into the switcher.
-    RawKey(KeyEvent),
-    /// Unstable/test-only: forward raw bytes to the focused pane.
-    RawBytes(Vec<u8>),
-}
-
-/// Renders the switcher to an off-screen buffer and flattens it — the payload the
-/// control channel's `dump` returns.
+/// Renders the switcher to an off-screen buffer and flattens it as the control
+/// channel's `dump` payload.
 pub fn dump_switcher(
     switcher: &mut Switcher,
     state: &crate::state::State,
@@ -47,10 +16,10 @@ pub fn dump_switcher(
     dump_screen(switcher, None, width, height, state)
 }
 
-/// Renders the tree-focus view — the switcher with the selection host's live `grid` (if
-/// any) in the terminal view — to an off-screen `TestBackend` and flattens
-/// it. So a headless `dump` reflects the same screen the main draw produces,
-/// including the live terminal Grid. Runs without a real terminal.
+/// Renders the nav-focused view with the selected host's live grid, when one
+/// exists, to an off-screen backend and flattens it. A headless `dump` therefore
+/// reflects the same screen the main draw produces, including the live terminal
+/// grid, without a real terminal.
 pub fn dump_screen(
     switcher: &mut Switcher,
     grid: Option<&crate::display::grid::Grid>,
@@ -95,113 +64,6 @@ fn flatten_buffer(buf: &ratatui::buffer::Buffer) -> String {
     out
 }
 
-/// A running control server: the accept-loop task plus the socket path to clean
-/// up on shutdown.
-pub struct ControlHandle {
-    task: tokio::task::JoinHandle<()>,
-    path: PathBuf,
-}
-
-impl Drop for ControlHandle {
-    fn drop(&mut self) {
-        self.task.abort();
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-/// Binds the instance control socket at `path` and serves it, forwarding injected
-/// keys/text into `cmd_tx` and answering `ping`/`dump`. A bind failure returns
-/// `None` (the UI runs without a control channel rather than failing).
-pub fn serve_control(path: PathBuf, cmd_tx: mpsc::Sender<Cmd>) -> Option<ControlHandle> {
-    let _ = std::fs::remove_file(&path); // remove a stale socket so the bind succeeds
-    let name = control::endpoint_name(&path).ok()?;
-    let listener = ListenerOptions::new().name(name).create_tokio().ok()?;
-    // The ctl socket injects keystrokes into the live app, so it must be
-    // owner-only. On unix the bind created a filesystem socket; tighten it to 0600.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
-    // On Windows the endpoint is a named pipe (no filesystem presence); drop a
-    // marker file so `discover` can still find this instance by name. On unix the
-    // bind already created the socket file at `path`.
-    #[cfg(windows)]
-    let _ = std::fs::write(&path, b"");
-    let task = tokio::spawn(accept_loop(listener, cmd_tx));
-    Some(ControlHandle { task, path })
-}
-
-async fn accept_loop(listener: Listener, cmd_tx: mpsc::Sender<Cmd>) {
-    while let Ok(conn) = listener.accept().await {
-        tokio::spawn(handle_conn(conn, cmd_tx.clone()));
-    }
-}
-
-async fn handle_conn(conn: Stream, cmd_tx: mpsc::Sender<Cmd>) {
-    let mut buf = BufReader::new(conn);
-    loop {
-        let line = match control::read_request_line(&mut buf).await {
-            Ok(Some(line)) => line,
-            Ok(None) | Err(_) => return,
-        };
-        let payload = dispatch(&line, &cmd_tx).await;
-        if control::write_frame(&mut buf, &payload).await.is_err() {
-            return;
-        }
-    }
-}
-
-/// Maps a fire-and-forget enqueue result to the control-channel reply, so a command
-/// dropped because the app channel is closed is reported as `err:` rather than a
-/// false `ok`. Shared by the `RawKey`/`RawBytes` arms (the `Op` arm round-trips
-/// through the loop instead, so its reply reflects the op's outcome).
-fn enqueue_reply(sent: Result<(), mpsc::error::SendError<Cmd>>) -> String {
-    match sent {
-        Ok(()) => "ok".into(),
-        Err(_) => "err: control channel closed".into(),
-    }
-}
-
-async fn dispatch(line: &str, cmd_tx: &mpsc::Sender<Cmd>) -> String {
-    match crate::link::control::parse_ctl_op(line) {
-        crate::link::control::CtlRequest::Ping => "pong".into(),
-        crate::link::control::CtlRequest::Dump => {
-            let (tx, rx) = oneshot::channel();
-            if cmd_tx.send(Cmd::Dump(tx)).await.is_err() {
-                return String::new();
-            }
-            rx.await.unwrap_or_default()
-        }
-        crate::link::control::CtlRequest::Status => {
-            let (tx, rx) = oneshot::channel();
-            if cmd_tx.send(Cmd::Status(tx)).await.is_err() {
-                return String::new();
-            }
-            rx.await.unwrap_or_default()
-        }
-        crate::link::control::CtlRequest::Op(op) => {
-            // The loop answers the reply channel with the op's outcome (a `switch` is
-            // resolved against the inventory there); this task awaits that answer, so
-            // the reply reflects what the loop actually did, not that it was enqueued.
-            let (tx, rx) = oneshot::channel();
-            if cmd_tx.send(Cmd::Op(op, tx)).await.is_err() {
-                "err: control channel closed".into()
-            } else {
-                rx.await
-                    .unwrap_or_else(|_| "err: control channel closed".into())
-            }
-        }
-        crate::link::control::CtlRequest::RawKey(ev) => {
-            enqueue_reply(cmd_tx.send(Cmd::RawKey(ev)).await)
-        }
-        crate::link::control::CtlRequest::RawBytes(b) => {
-            enqueue_reply(cmd_tx.send(Cmd::RawBytes(b)).await)
-        }
-        crate::link::control::CtlRequest::Unknown(_) => "err: unknown command".into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,216 +88,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_dump_and_key_still_work() {
-        let (tx, mut rx) = mpsc::channel::<Cmd>(8);
-        // raw:key down → a Cmd::RawKey flows
-        let r = dispatch("raw:key down", &tx).await;
-        assert_eq!(r, "ok");
-        assert!(matches!(rx.recv().await, Some(Cmd::RawKey(_))));
-        // dump → a Cmd::Dump flows (answered by a parallel responder)
-        let tx2 = tx.clone();
-        tokio::spawn(async move {
-            if let Some(Cmd::Dump(reply)) = rx.recv().await {
-                let _ = reply.send("SCREEN".into());
-            }
-        });
-        assert_eq!(dispatch("dump", &tx2).await, "SCREEN");
-    }
-
-    #[tokio::test]
-    async fn dispatch_resolves_semantic_verbs_to_op_cmds() {
-        use crate::model::{Action, FocusTarget};
-        let (tx, mut rx) = mpsc::channel::<Cmd>(8);
-        // A responder stands in for the app loop: it asserts the action each `Op`
-        // carries and answers the ctl reply.
-        let responder = tokio::spawn(async move {
-            while let Some(cmd) = rx.recv().await {
-                match cmd {
-                    Cmd::Op(Action::Switch(address), reply) => {
-                        assert_eq!(address, crate::session::Address::new("jup", "api"));
-                        let _ = reply.send("ok".into());
-                    }
-                    Cmd::Op(Action::Focus(t), reply) => {
-                        assert_eq!(t, FocusTarget::Nav);
-                        let _ = reply.send("ok".into());
-                    }
-                    Cmd::Op(Action::Rescan, reply) => {
-                        let _ = reply.send("ok".into());
-                    }
-                    Cmd::RawBytes(b) => {
-                        assert_eq!(b, vec![0x1b, 0x5b, 0x41]);
-                    }
-                    Cmd::Op(_, _) | Cmd::RawKey(_) | Cmd::Dump(_) | Cmd::Status(_) => {
-                        panic!("unexpected command reached the responder")
-                    }
-                }
-            }
-        });
-        assert_eq!(dispatch("switch jup api", &tx).await, "ok");
-        assert_eq!(dispatch("focus nav", &tx).await, "ok");
-        assert_eq!(dispatch("rescan", &tx).await, "ok");
-        assert_eq!(dispatch("raw:keys 1b5b41", &tx).await, "ok");
-        // the demoted bare verb is rejected
-        assert!(dispatch("key down", &tx).await.starts_with("err:"));
-        // Close the channel so the responder exits.
-        drop(tx);
-        responder.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn dispatch_reports_error_when_channel_closed() {
-        // The three fire-and-forget arms (Op/RawKey/RawBytes) must not falsely report
-        // "ok" when the command was dropped because the app channel is closed.
-        let (tx, rx) = mpsc::channel::<Cmd>(8);
-        drop(rx);
-        assert!(dispatch("rescan", &tx).await.starts_with("err:")); // Op
-        assert!(dispatch("raw:key down", &tx).await.starts_with("err:")); // RawKey
-        assert!(dispatch("raw:text hi", &tx).await.starts_with("err:")); // RawBytes
-    }
-
-    #[tokio::test]
     async fn dump_switcher_flattens_buffer() {
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
         let out = dump_switcher(&mut sw, &state, 100, 30);
-        assert!(out.contains("editor"));
-        // The dump renders the full screen (tree + hint bar); at rest the bar shows the
+        // The dump renders the full screen (tree and hint bar); at rest the bar shows the
         // prefix and collapse button.
+        assert!(out.contains("editor"));
         assert!(out.contains("C-g"), "hint bar prefix present:\n{out}");
     }
 
     #[tokio::test]
     async fn dump_screen_renders_the_live_grid() {
-        // A dump with a live grid must include both the tree AND the grid content
-        // (the terminal view), so a headless `dump` reflects the live grid.
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
         let mut grid = crate::display::grid::Grid::new(30, 100);
         grid.feed(b"LIVEGRID");
+        // A dump with a live grid includes both the tree and the grid content (the
+        // terminal view), so a headless `dump` reflects the live grid.
         let out = dump_screen(&mut sw, Some(&grid), 100, 30, &state);
         assert!(out.contains("editor"), "tree still rendered:\n{out}");
         assert!(
             out.contains("LIVEGRID"),
             "live grid content rendered:\n{out}"
         );
-    }
-
-    #[tokio::test]
-    async fn control_handle_drop_removes_socket() {
-        let dir = std::env::temp_dir().join(format!("xmux-ctl-drop-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        // A distinct name so the Windows pipe endpoint (xmux-ctl-<name>) does not
-        // collide with the concurrently-running control_end_to_end test.
-        let sock = control::socket_path(&dir, &format!("drop-{}", std::process::id()));
-        let (tx, _rx) = mpsc::channel::<Cmd>(8);
-        let handle = serve_control(sock.clone(), tx).expect("bind control socket");
-        assert!(sock.exists(), "socket/marker present while serving");
-        drop(handle);
-        assert!(
-            !sock.exists(),
-            "socket/marker removed when the handle drops"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
-    async fn control_end_to_end() {
-        let dir = std::env::temp_dir().join(format!("xmux-ctl-e2e-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let sock = control::socket_path(&dir, &format!("e2e-{}", std::process::id()));
-
-        let (tx, mut rx) = mpsc::channel::<Cmd>(64);
-        let handle = serve_control(sock.clone(), tx.clone()).expect("bind control socket");
-
-        // A minimal in-test consumer drives the switcher directly off the channel,
-        // standing in for the app loop: it answers `dump` and applies keys. It
-        // exits when the channel closes (all senders dropped).
-        let mut state = crate::state::State::from_scan(sample());
-        let mut sw = Switcher::new(&mut state);
-        let consumer = tokio::spawn(async move {
-            while let Some(cmd) = rx.recv().await {
-                match cmd {
-                    Cmd::RawKey(k) => {
-                        // This minimal consumer does not run off-loop ops; drop the
-                        // commands handle_key returns.
-                        let _ = sw.handle_key(k, &mut state);
-                    }
-                    Cmd::Dump(reply) => {
-                        let _ = reply.send(dump_switcher(&mut sw, &state, 100, 30));
-                    }
-                    Cmd::Status(reply) => {
-                        let _ = reply.send("focus=nav target=editor".into());
-                    }
-                    Cmd::Op(action, reply) => {
-                        // Mirror the app loop: `switch` answers by the address
-                        // resolution against the inventory, everything else answers ok.
-                        let resp = match &action {
-                            crate::model::Action::Switch(address) => {
-                                match state.resolve_switch_address(address) {
-                                    Ok(()) => "ok".into(),
-                                    Err(problem) => format!("err: {problem}"),
-                                }
-                            }
-                            _ => "ok".into(),
-                        };
-                        let _ = reply.send(resp);
-                    }
-                    Cmd::RawBytes(_) => {}
-                }
-            }
-        });
-
-        let mut client = control::Client::dial(&sock).await.unwrap();
-        assert_eq!(client.do_cmd("ping").await.unwrap(), "pong");
-        let dump = client.do_cmd("dump").await.unwrap();
-        assert!(
-            dump.contains("editor"),
-            "dump should render the tree:\n{dump}"
-        );
-        assert_eq!(
-            client.do_cmd("raw:key fnord").await.unwrap(),
-            "err: unknown command"
-        );
-        assert_eq!(
-            client.do_cmd("bogus").await.unwrap(),
-            "err: unknown command"
-        );
-
-        // A `switch` reply reflects the address resolution: the session the nav
-        // lists answers ok; an unresolved source answers err naming what is missing.
-        assert_eq!(
-            client.do_cmd("switch local editor").await.unwrap(),
-            "ok",
-            "a session the inventory lists resolves"
-        );
-        let err = client
-            .do_cmd("switch nosuchhost nosuchsession")
-            .await
-            .unwrap();
-        assert!(err.starts_with("err: no such source"), "{err}");
-        let err = client.do_cmd("switch local nope").await.unwrap();
-        assert!(err.starts_with("err: no such session"), "{err}");
-
-        // Close the channel (drop every sender) so the consumer exits.
-        drop(client);
-        drop(handle);
-        drop(tx);
-        consumer.await.unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn control_socket_is_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("xmux-ctl-perm-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let sock = control::socket_path(&dir, &format!("perm-{}", std::process::id()));
-        let (tx, _rx) = mpsc::channel::<Cmd>(8);
-        let handle = serve_control(sock.clone(), tx).expect("bind control socket");
-        let mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "ctl socket must be owner-only (rw-------)");
-        drop(handle);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -584,11 +584,11 @@ Attach argv is composed from a source's own mux + transport (the two axes
 together), so the two implementations are combined without either knowing the other.
 
 The supervisor branches on NOTHING mux-specific. `src/app/` (runtime loop,
-focus, input routing), `src/ui/` (switcher / rows / chrome / modal / ops
-rendering), and `src/state/` (the runtime state and its mutation sites) select
-display through the source's own driver and read the grid back from it; per-mux
-behavior lives behind that seam. These layers carry no PTY, grid, or
-terminal-protocol logic.
+focus, input routing, ctl serving, preference persistence), `src/ui/` (switcher /
+rows / chrome / modal / ops rendering), and `src/state/` (the runtime state and
+its mutation sites) select display through the source's own driver and read the
+grid back from it; per-mux behavior lives behind that seam. These layers carry
+no PTY, grid, or terminal-protocol logic.
 
 The remaining layers each own one concern:
 

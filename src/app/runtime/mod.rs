@@ -123,7 +123,7 @@ fn apply_width_delta(wd: i32, natural: &mut u16, ui_prefix: &str) -> bool {
 /// reconciled at the next loop top (`reconciled_nav_width`); the caller marks dirty.
 fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
     *mode = !*mode;
-    crate::ui::prefs::save_auto_hide_nav(xmux_dir, *mode);
+    crate::app::prefs::save_auto_hide_nav(xmux_dir, *mode);
 }
 
 /// Applies one step of the `prefix p` cycle to the pin and saves it at once (the same
@@ -136,7 +136,7 @@ fn cycle_nav_position(
 ) {
     let next = crate::ui::switcher::step_nav_position(*pinned, effective);
     *pinned = next;
-    crate::ui::prefs::save_nav_position(xmux_dir, next);
+    crate::app::prefs::save_nav_position(xmux_dir, next);
 }
 
 /// Folds ONE domain [`Action`] in at the single mutation site ([`State::apply`]) and
@@ -995,8 +995,8 @@ pub(crate) fn note_host_exited(
 /// client per remote host for inventory/events/window-switch. It serves a picker
 /// control socket so a headless driver can inject keys/text and dump the screen.
 pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
+    use crate::app::control::{serve_control, Cmd};
     use crate::display::term::TermGuard;
-    use crate::ui::run::{serve_control, Cmd};
     use std::io::Read;
     use std::time::Duration;
 
@@ -1247,7 +1247,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // unreached, so the final width is still pending - persist it on the way out so the
     // nav width the user left with survives the next launch.
     if rt.width_dirty {
-        crate::ui::prefs::save_nav_width(&rt.env.xmux_dir, rt.nav_width_natural);
+        crate::app::prefs::save_nav_width(&rt.env.xmux_dir, rt.nav_width_natural);
     }
     // A login still on screen at quit is a child nobody will watch again: end it here so
     // the ssh it started goes with the app rather than outliving it.

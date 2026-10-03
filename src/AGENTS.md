@@ -33,8 +33,9 @@ the debounced attach, and renders the live split view.
   owning the registry, the registry itself, the grid, and the terminal input
   mechanics.
 - `app/` holds the application orchestration layer: the persistent supervisor
-  and main event loop (which also owns the selection) and the focus/modal
-  routing state machine. Focus is UI state, not display mechanics.
+  and main event loop (which also owns the selection), the focus/modal routing
+  state machine, the ctl socket server, and preference persistence. Focus is UI
+  state, not display mechanics.
 - `driver.rs` holds ONLY the mux-agnostic display seam: the `MuxDriver` trait,
   the supervisor capabilities a driver borrows, the display target, the shared
   window-selection helper, the composition that reads a host's live display client
@@ -90,7 +91,7 @@ the debounced attach, and renders the live split view.
   yields an empty list rather than an error. Distinct from the transport axis
   (how a command REACHES a host) and from discovery (scanning a source for
   sessions).
-- Preferences (`ui/prefs`) persist the lightweight UI hints across runs
+- Preferences (`app/prefs`) persist the lightweight UI hints across runs
   (last-selected session address, nav width and height, collapsed state, auto-hide-nav), one small
   file each under the xmux dir. Every value is best-effort: a stale, missing, or
   unparsable file falls back to the built-in default, so xmux stays stateless

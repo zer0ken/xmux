@@ -5,7 +5,7 @@
 //! This module holds the wire protocol (length-framed messages, request parsing,
 //! key parsing), socket discovery, and the `xmux ctl` [`Client`]. Keys parse to
 //! crossterm [`KeyEvent`]s so the switcher handles injected and real keys through
-//! one path. The socket server (accept loop + dispatch) lives in `ui::run`, where
+//! one path. The socket server (accept loop + dispatch) lives in `app::control`, where
 //! it forwards into the event loop's command channel.
 
 use std::path::{Path, PathBuf};

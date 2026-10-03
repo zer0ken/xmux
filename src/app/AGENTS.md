@@ -3,9 +3,9 @@
 ## Purpose
 
 `app` is the application orchestration layer: the app runtime that owns the
-terminal for the whole session, plus the application UI-state machine it folds
-through. The app is the coordinator; focus is the focus/modal routing state it
-reads and mutates.
+terminal for the whole session, the application UI-state machine it folds
+through, the ctl socket server, and preference persistence. The app is the
+coordinator; focus is the focus/modal routing state it reads and mutates.
 
 ## Mental Model
 
@@ -19,6 +19,10 @@ resize, and an animation tick. It folds domain actions and inbound source events
 through the runtime state, dispatches the returned commands and effects, keeps
 the state in sync with the switcher selection, drives the debounced attach, and
 draws the split view.
+
+The ctl server owns each instance endpoint and translates wire requests into app
+commands. Preference persistence stores lightweight UI hints as best-effort files
+under the xmux directory.
 
 Focus tracks which view holds focus (nav or terminal) and which modal is open,
 and exposes the transitions the app and the state fold through. It is UI state,
@@ -71,6 +75,11 @@ the card numbers it needs.
   of the function it started, or a focus switch / mouse action (a cancel), clears it.
 - Focus holds the focus and modal state plus the transition helpers. The runtime
   state embeds it; the app reads and mutates it through those helpers.
+- The ctl server owns binding, endpoint permissions, stale endpoint replacement,
+  request dispatch, and connection lifetime. Wire parsing and client discovery
+  remain in `src/link`.
+- Preference persistence owns the small files that restore UI hints across runs.
+  Missing, stale, unreadable, or unparsable values fall back to runtime defaults.
 - The display mechanics (PTY, grid, input) live in `src/display`; per-source connection
   management lives in `src/link`; the domain types live in `src/model`; the
   durable runtime state bag lives in `src/state`.
