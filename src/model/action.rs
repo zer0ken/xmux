@@ -164,22 +164,38 @@ pub enum MuxOp {
     Create { source: String, name: String },
 }
 
-/// A mux follow-up a [`HostEvent`](crate::link::HostEvent) requires after
-/// [`State::apply_event`](crate::state::State::apply_event) has folded the event's
-/// self-contained state mutation. `apply_event` owns the domain-state changes (tree
-/// rebuild, marker move, unreachable mark); these effects carry the mux I/O the
-/// state layer must not perform itself (the AGENTS rule: no IO/registry mutation in
-/// `state`). The app run loop is the sole executor - it holds the host clients,
-/// the attach registry, and the display worker the effects act on.
+/// An ordered action emitted by [`State::apply_event`](crate::state::State::apply_event)
+/// for one [`HostEvent`](crate::link::HostEvent). The sequence preserves each event's
+/// state and runtime ordering without letting `state` import the application or UI
+/// layers. The app run loop applies state-facing actions first and executes I/O-facing
+/// actions with the host clients, attach registry, and display worker it owns.
 ///
-/// The events whose payload is self-contained (`Focus`/`Panes`) produce NO effect -
-/// `apply_event` mutates the nav directly and returns an empty `Vec`. The events
-/// that need a mux handle (the single-owner inventory fold into `model::Host`, a
-/// control-mode probe, the registry, the detection box) return the matching effect
-/// for the loop to run.
+/// Events that mutate `State` directly, such as focus and pane metadata updates, emit
+/// no action. Events that need navigation behavior, runtime registries, or mux I/O emit
+/// the corresponding actions in the order the run loop must apply them.
 /// Not `Clone`/`Eq` - `DispatchScanned` carries a `Box<dyn Mux>`; tests match
 /// structurally.
 pub enum EventEffect {
+    /// Record that a metadata source has connected before applying its inventory.
+    MarkConnected { host: String },
+    /// Apply one source result to the navigation model and runtime state.
+    ApplySourceResult {
+        source: String,
+        sessions: Vec<Session>,
+        err: Option<String>,
+    },
+    /// Apply a poll result, then reconcile any rename and live display sessions when
+    /// the enumeration succeeded.
+    ApplyPollResult {
+        source: String,
+        sessions: Vec<Session>,
+        err: Option<String>,
+    },
+    /// Fold a metadata client exit into connection tracking and the navigation model.
+    NoteHostExited {
+        host: String,
+        reason: Option<String>,
+    },
     /// `Connected`/`Inventory`: fold the carried `sessions` into `host`'s
     /// `model::Host.inventory` (the single owner), apply them to the nav,
     /// and sync the host's display terminal(s). The reader
@@ -208,8 +224,8 @@ pub enum EventEffect {
     ApplyRoster {
         roster: Box<crate::provision::env::Roster>,
     },
-    /// `Exited`: reap `host`'s metadata client. (`apply_event` has already folded the
-    /// tree/connected-set state change; this is the mux teardown.)
+    /// `Exited`: reap `host`'s metadata client after [`Self::NoteHostExited`] has folded
+    /// the tree and connected-set state change.
     ReapHost { host: String },
     /// `ClientDetached`: reap xmux's own display attach on `host` IFF the detaching
     /// `client` tty matches the host's recorded display tty. The loop owns the
@@ -243,7 +259,8 @@ pub enum EventEffect {
     },
     /// `Sessions` (poll host, no enumeration error): drop any stale attach whose
     /// registry `.port` vanished, then sync `source`'s display terminal(s).
-    /// (`apply_event` has already applied the enumerated sessions to the nav.)
+    /// Emitted by the app after [`Self::ApplyPollResult`] has applied the enumerated
+    /// sessions to the navigation model.
     SyncPollSessions {
         source: String,
         sessions: Vec<Session>,
@@ -274,6 +291,34 @@ pub enum EventEffect {
 impl std::fmt::Debug for EventEffect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            EventEffect::MarkConnected { host } => {
+                f.debug_struct("MarkConnected").field("host", host).finish()
+            }
+            EventEffect::ApplySourceResult {
+                source,
+                sessions,
+                err,
+            } => f
+                .debug_struct("ApplySourceResult")
+                .field("source", source)
+                .field("sessions", sessions)
+                .field("err", err)
+                .finish(),
+            EventEffect::ApplyPollResult {
+                source,
+                sessions,
+                err,
+            } => f
+                .debug_struct("ApplyPollResult")
+                .field("source", source)
+                .field("sessions", sessions)
+                .field("err", err)
+                .finish(),
+            EventEffect::NoteHostExited { host, reason } => f
+                .debug_struct("NoteHostExited")
+                .field("host", host)
+                .field("reason", reason)
+                .finish(),
             EventEffect::ApplyInventory { host, sessions } => f
                 .debug_struct("ApplyInventory")
                 .field("host", host)

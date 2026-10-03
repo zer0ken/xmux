@@ -1,0 +1,342 @@
+//! The app's focus state machine. Every state draws the SAME split (the nav on
+//! the left, the selection session's live grid on the right); focus only chooses
+//! where keys go and which view border rule is highlighted. There are four states
+//! along two dimensions: the VIEW dimension (`Nav` ⇄ `Terminal`, driven by prefix-key
+//! focus moves and a click on the unfocused view) and a MODAL dimension layered on top
+//! (`Popup` for help / inline
+//! input / kill-confirm, `Menu` for the right-click context menu). A modal is a
+//! first-class focus state that CARRIES the view it was opened from, so closing it
+//! restores that view structurally, with no external "saved focus" variable. "Is a
+//! modal open?" is therefore a `match` on `Focus`, and the modal/view state cannot
+//! desync from the switcher because the loop derives it each pass via `sync_modal`.
+
+/// The two real views, the only targets a modal can restore to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewFocus {
+    Nav,
+    Terminal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Focus {
+    /// Nav view focused: keys navigate the flat session-card list.
+    #[default]
+    Nav,
+    /// Terminal view focused: keys forward to the selected session's active pane.
+    Terminal,
+    /// A modal (the help popup or the inline input) owns keys;
+    /// `prior` is the view to restore when it closes.
+    Popup { prior: ViewFocus },
+    /// The right-click context menu owns input; `prior` is the view to restore.
+    Menu { prior: ViewFocus },
+}
+
+/// Which kind of modal the switcher currently has open: the loop-top hand-off the
+/// reconciler reads to derive `Focus`. Popups and the menu are mutually exclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModalKind {
+    Popup,
+    Menu,
+}
+
+impl Focus {
+    /// True only in the bare `Nav` view state; false during any modal, even one
+    /// opened from the nav. Gates set-view / mux-active decisions; key-routing
+    /// sites add `|| is_modal()` so a modal still receives keys.
+    pub fn is_nav_focused(&self) -> bool {
+        matches!(self, Focus::Nav)
+    }
+
+    /// True only in the bare `Terminal` view state; false during any modal.
+    pub fn is_terminal_focused(&self) -> bool {
+        matches!(self, Focus::Terminal)
+    }
+
+    /// True while a modal (popup or menu) is the focus state.
+    pub fn is_modal(&self) -> bool {
+        matches!(self, Focus::Popup { .. } | Focus::Menu { .. })
+    }
+
+    /// The EFFECTIVE view focus: the active view, or during a modal, the view it
+    /// was opened from. Lets `status` report the view behind a modal as the focus.
+    pub fn view_is_nav(&self) -> bool {
+        matches!(
+            self,
+            Focus::Nav
+                | Focus::Popup {
+                    prior: ViewFocus::Nav
+                }
+                | Focus::Menu {
+                    prior: ViewFocus::Nav
+                }
+        )
+    }
+
+    /// Flips the VIEW dimension (Nav ⇄ Terminal), the mutation behind the
+    /// `FocusToggle` a click on the unfocused view produces (its sole trigger; the
+    /// prefix-key focus moves use `set_view_focus`). During a modal it flips the
+    /// carried `prior` so the modal stays open and restores onto the flipped view.
+    pub fn toggle(&mut self) {
+        let flip = |p: ViewFocus| match p {
+            ViewFocus::Nav => ViewFocus::Terminal,
+            ViewFocus::Terminal => ViewFocus::Nav,
+        };
+        *self = match *self {
+            Focus::Nav => Focus::Terminal,
+            Focus::Terminal => Focus::Nav,
+            Focus::Popup { prior } => Focus::Popup { prior: flip(prior) },
+            Focus::Menu { prior } => Focus::Menu { prior: flip(prior) },
+        };
+    }
+
+    /// Sets the VIEW dimension to `p`. Not modal → becomes that view. Modal → sets the
+    /// carried `prior`, so a focus request during/closing a modal lands on `p` after
+    /// restore (the context-menu "focus terminal" path).
+    pub fn set_view_focus(&mut self, p: ViewFocus) {
+        *self = match *self {
+            Focus::Nav | Focus::Terminal => match p {
+                ViewFocus::Nav => Focus::Nav,
+                ViewFocus::Terminal => Focus::Terminal,
+            },
+            Focus::Popup { .. } => Focus::Popup { prior: p },
+            Focus::Menu { .. } => Focus::Menu { prior: p },
+        };
+    }
+
+    /// The loop-top reconciler: derives the modal dimension of `Focus` from the
+    /// switcher's authoritative open-modal `kind`. Opening a modal captures the
+    /// current view as `prior`; closing restores it; a kind-switch keeps `prior`; a
+    /// re-sync of the already-open kind is a no-op (it must not re-capture over a
+    /// mid-modal `toggle`).
+    pub fn sync_modal(&mut self, kind: Option<ModalKind>) {
+        let current_view = || {
+            if self.view_is_nav() {
+                ViewFocus::Nav
+            } else {
+                ViewFocus::Terminal
+            }
+        };
+        *self = match (kind, *self) {
+            // No modal: collapse any open modal back onto its prior view.
+            (None, Focus::Popup { prior }) | (None, Focus::Menu { prior }) => match prior {
+                ViewFocus::Nav => Focus::Nav,
+                ViewFocus::Terminal => Focus::Terminal,
+            },
+            (None, s @ (Focus::Nav | Focus::Terminal)) => s,
+            // Already the requested kind: no-op (preserve a mid-modal toggle of prior).
+            (Some(ModalKind::Popup), s @ Focus::Popup { .. }) => s,
+            (Some(ModalKind::Menu), s @ Focus::Menu { .. }) => s,
+            // Kind switch between modals: keep prior, swap the variant.
+            (Some(ModalKind::Popup), Focus::Menu { prior }) => Focus::Popup { prior },
+            (Some(ModalKind::Menu), Focus::Popup { prior }) => Focus::Menu { prior },
+            // Opening from a view: capture the current view as prior.
+            (Some(ModalKind::Popup), Focus::Nav | Focus::Terminal) => Focus::Popup {
+                prior: current_view(),
+            },
+            (Some(ModalKind::Menu), Focus::Nav | Focus::Terminal) => Focus::Menu {
+                prior: current_view(),
+            },
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_starts_nav_focused_and_toggles() {
+        let mut focus = Focus::default();
+        assert!(
+            focus.is_nav_focused(),
+            "starts on the nav (selection preselected)"
+        );
+        focus.toggle();
+        assert_eq!(focus, Focus::Terminal);
+        focus.toggle();
+        assert_eq!(focus, Focus::Nav);
+    }
+
+    #[test]
+    fn popup_carries_and_restores_prior_from_terminal() {
+        let mut focus = Focus::Terminal;
+        focus.sync_modal(Some(ModalKind::Popup));
+        assert_eq!(
+            focus,
+            Focus::Popup {
+                prior: ViewFocus::Terminal
+            }
+        );
+        focus.sync_modal(None);
+        assert_eq!(
+            focus,
+            Focus::Terminal,
+            "restored to the view it opened from"
+        );
+    }
+
+    #[test]
+    fn popup_carries_and_restores_prior_from_nav() {
+        let mut focus = Focus::default(); // Nav
+        focus.sync_modal(Some(ModalKind::Popup));
+        assert_eq!(
+            focus,
+            Focus::Popup {
+                prior: ViewFocus::Nav
+            }
+        );
+        focus.sync_modal(None);
+        assert_eq!(focus, Focus::Nav);
+    }
+
+    #[test]
+    fn menu_carries_and_restores_prior_from_nav() {
+        let mut focus = Focus::default(); // Nav
+        focus.sync_modal(Some(ModalKind::Menu));
+        assert_eq!(
+            focus,
+            Focus::Menu {
+                prior: ViewFocus::Nav
+            }
+        );
+        focus.sync_modal(None);
+        assert_eq!(focus, Focus::Nav);
+    }
+
+    #[test]
+    fn toggle_during_a_modal_flips_prior_and_keeps_the_modal() {
+        let mut focus = Focus::default(); // Nav
+        focus.sync_modal(Some(ModalKind::Popup));
+        focus.toggle();
+        assert_eq!(
+            focus,
+            Focus::Popup {
+                prior: ViewFocus::Terminal
+            },
+            "toggle flips the carried prior, the modal stays open",
+        );
+        focus.sync_modal(None);
+        assert_eq!(focus, Focus::Terminal, "restored to the flipped view");
+    }
+
+    #[test]
+    fn sync_modal_is_idempotent_while_held_and_does_not_recapture() {
+        let mut focus = Focus::default(); // Nav
+        focus.sync_modal(Some(ModalKind::Popup));
+        focus.toggle(); // prior -> Terminal
+        focus.sync_modal(Some(ModalKind::Popup)); // same kind, still held
+        assert_eq!(
+            focus,
+            Focus::Popup {
+                prior: ViewFocus::Terminal
+            },
+            "re-sync of the same kind must not re-capture prior over a mid-modal toggle",
+        );
+    }
+
+    #[test]
+    fn kind_switch_keeps_prior() {
+        let mut focus = Focus::Menu {
+            prior: ViewFocus::Terminal,
+        };
+        focus.sync_modal(Some(ModalKind::Popup));
+        assert_eq!(
+            focus,
+            Focus::Popup {
+                prior: ViewFocus::Terminal
+            },
+            "switching menu->popup keeps prior, does not re-capture",
+        );
+    }
+
+    #[test]
+    fn set_view_focus_during_a_menu_targets_the_restore_view() {
+        // The menu "focus terminal" path: state is Menu{prior:Nav}, focus-terminal requested.
+        let mut focus = Focus::Menu {
+            prior: ViewFocus::Nav,
+        };
+        focus.set_view_focus(ViewFocus::Terminal);
+        assert_eq!(
+            focus,
+            Focus::Menu {
+                prior: ViewFocus::Terminal
+            }
+        );
+        focus.sync_modal(None);
+        assert_eq!(focus, Focus::Terminal, "menu closed onto the terminal view");
+    }
+
+    #[test]
+    fn set_view_focus_when_not_modal_sets_the_state() {
+        let mut focus = Focus::default(); // Nav
+        focus.set_view_focus(ViewFocus::Terminal);
+        assert_eq!(focus, Focus::Terminal);
+        focus.set_view_focus(ViewFocus::Nav);
+        assert_eq!(focus, Focus::Nav);
+    }
+
+    #[test]
+    fn focus_predicates_are_mutually_exclusive_and_exhaustive() {
+        for state in [
+            Focus::Nav,
+            Focus::Terminal,
+            Focus::Popup {
+                prior: ViewFocus::Nav,
+            },
+            Focus::Popup {
+                prior: ViewFocus::Terminal,
+            },
+            Focus::Menu {
+                prior: ViewFocus::Nav,
+            },
+            Focus::Menu {
+                prior: ViewFocus::Terminal,
+            },
+        ] {
+            let n = [
+                state.is_nav_focused(),
+                state.is_terminal_focused(),
+                state.is_modal(),
+            ]
+            .into_iter()
+            .filter(|&b| b)
+            .count();
+            assert_eq!(
+                n, 1,
+                "exactly one of nav/terminal/modal holds for {state:?}"
+            );
+        }
+        assert!(Focus::Nav.is_nav_focused());
+        assert!(Focus::Terminal.is_terminal_focused());
+        assert!(Focus::Popup {
+            prior: ViewFocus::Nav
+        }
+        .is_modal());
+        assert!(Focus::Menu {
+            prior: ViewFocus::Terminal
+        }
+        .is_modal());
+    }
+
+    #[test]
+    fn view_is_nav_reports_the_effective_view() {
+        assert!(Focus::Nav.view_is_nav());
+        assert!(Focus::Popup {
+            prior: ViewFocus::Nav
+        }
+        .view_is_nav());
+        assert!(Focus::Menu {
+            prior: ViewFocus::Nav
+        }
+        .view_is_nav());
+        assert!(!Focus::Terminal.view_is_nav());
+        assert!(!Focus::Popup {
+            prior: ViewFocus::Terminal
+        }
+        .view_is_nav());
+        assert!(!Focus::Menu {
+            prior: ViewFocus::Terminal
+        }
+        .view_is_nav());
+    }
+}

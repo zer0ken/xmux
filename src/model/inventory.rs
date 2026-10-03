@@ -27,6 +27,32 @@ pub struct Group {
     pub sessions: Vec<Session>,
 }
 
+/// Returns groups with `session` inserted into its source group.
+pub fn add_session(groups: &[Group], session: Session) -> Vec<Group> {
+    let mut out = groups.to_vec();
+    for group in &mut out {
+        if group.source != session.source {
+            continue;
+        }
+        if let Some(existing) = group
+            .sessions
+            .iter_mut()
+            .find(|existing| existing.name == session.name)
+        {
+            *existing = session;
+        } else {
+            group.sessions.push(session);
+        }
+        return out;
+    }
+    out.push(Group {
+        source: session.source.clone(),
+        err: None,
+        sessions: vec![session],
+    });
+    out
+}
+
 impl Group {
     pub fn failure(&self) -> Option<FailureKind> {
         self.err.as_deref().map(FailureKind::from_error)

@@ -33,9 +33,8 @@ the debounced attach, and renders the live split view.
   owning the registry, the registry itself, the grid, and the terminal input
   mechanics.
 - `app/` holds the application orchestration layer: the persistent supervisor
-  and main event loop (which also owns the selection), the focus/modal routing
-  state machine, the ctl socket server, and preference persistence. Focus is UI
-  state, not display mechanics.
+  and main event loop (which also owns the selection), the ctl socket server, and
+  preference persistence.
 - `driver.rs` holds ONLY the mux-agnostic display seam: the `MuxDriver` trait,
   the supervisor capabilities a driver borrows, the display target, the shared
   window-selection helper, the composition that reads a host's live display client
@@ -61,9 +60,9 @@ the debounced attach, and renders the live split view.
 - `mux/` is the MUX axis: the `Mux` trait, the per-mux implementations owning metadata,
   command plans, and a display driver, and the shared mux builders.
 - The runtime coordinates these modules and owns the main event loop. Inbound
-  source events route through the event-driven mutation site on the state; the
-  handler is then a thin executor running the returned effects against the source
-  clients, the registry, and the display worker.
+  source events route through the event-driven transition on the state; the
+  handler applies the returned switcher and connection actions in order, then
+  runs backend effects against the source clients, registry, and display worker.
 - A source definition (`model/source`) is a thin config adapter: an alias, a mux
   binary, a host kind, an injectable runner, and the assembly of a runtime source
   for the off-loop and CLI paths that cannot borrow the event loop's live one.
@@ -112,8 +111,8 @@ the debounced attach, and renders the live split view.
   `provision`, `session`, and `transport` import only backend peers. `state`
   imports backend peers and itself. Neither layer imports upward into `app` or
   `ui`, and backend modules do not import `state`. The architecture check includes
-  `#[cfg(test)]` modules and holds the exact known exceptions. `CONTEXT.md` owns
-  the complete allowed-edge table.
+  `#[cfg(test)]` modules and has no known exceptions. `CONTEXT.md` owns the
+  complete allowed-edge table.
 - **View Purity:** rendering must read the application model and write only the
   frame. Layout and hit testing must pass through an immutable `RenderPlan`
   rather than mutable view state.

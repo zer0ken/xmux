@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::source::Source;
+use crate::state::{LoginDraft, LoginFocus, State};
 
 fn fake_source(alias: &str) -> Source {
     Source {
@@ -3868,6 +3869,927 @@ fn config_poll_ignores_a_missing_file() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// --- apply_event(HostEvent) -----------------------------------------------
+// State owns the event transition: apply_event folds state-only updates and returns
+// ordered actions for navigation, runtime registries, and mux I/O. These tests apply
+// the navigation actions through the same helper the runtime uses, then inspect the
+// resulting state and runtime follow-ups.
+use crate::link::HostEvent;
+use crate::model::EventEffect;
+use crate::model::Group;
+use crate::session::Session;
+use crate::ui::switcher::{Scan, Switcher};
+use std::collections::HashSet;
+
+fn apply_event_for_test(
+    state: &mut State,
+    event: HostEvent,
+    switcher: &mut Switcher,
+    connected: &mut HashSet<String>,
+) -> Vec<EventEffect> {
+    state
+        .apply_event(event)
+        .into_iter()
+        .flat_map(|effect| handlers::apply_state_event_effect(switcher, state, connected, effect))
+        .collect()
+}
+
+#[test]
+fn apply_event_preserves_state_actions_before_runtime_followups() {
+    let mut state = State::default();
+    let connected = state.apply_event(HostEvent::Connected {
+        host: "jup".into(),
+        sessions: Vec::new(),
+    });
+    assert!(matches!(
+        connected.as_slice(),
+        [EventEffect::MarkConnected { host: marked }, EventEffect::ApplyInventory { host: applied, .. }]
+            if marked == "jup" && applied == "jup"
+    ));
+
+    let exited = state.apply_event(HostEvent::Exited {
+        host: "jup".into(),
+        reason: Some("connection refused".into()),
+    });
+    assert!(matches!(
+        exited.as_slice(),
+        [EventEffect::NoteHostExited { host: noted, .. }, EventEffect::ReapHost { host: reaped }]
+            if noted == "jup" && reaped == "jup"
+    ));
+
+    state.scanning.insert("jup".into());
+    let scanned = state.apply_event(HostEvent::Scanned {
+        source: "jup".into(),
+        detected: None,
+        err: Some("mux not found".into()),
+    });
+    assert!(matches!(
+        scanned.as_slice(),
+        [EventEffect::ApplySourceResult { source: applied, .. }, EventEffect::DispatchScanned { source: dispatched, .. }]
+            if applied == "jup" && dispatched == "jup"
+    ));
+}
+
+#[test]
+fn poll_rename_precedes_display_session_sync() {
+    let (mut state, mut switcher) = with_switcher(one_session_scan());
+    let mut connected = HashSet::new();
+    let effects = handlers::apply_state_event_effect(
+        &mut switcher,
+        &mut state,
+        &mut connected,
+        EventEffect::ApplyPollResult {
+            source: "jup".into(),
+            sessions: vec![Session {
+                source: "jup".into(),
+                name: "renamed".into(),
+                mux: "tmux".into(),
+                windows: 2,
+                attached: false,
+            }],
+            err: None,
+        },
+    );
+    assert!(matches!(
+        effects.as_slice(),
+        [
+            EventEffect::RenameDisplayed { source: renamed_source, from, to },
+            EventEffect::SyncPollSessions { source: synced_source, .. }
+        ] if renamed_source == "jup"
+            && synced_source == "jup"
+            && from == "api"
+            && to == "renamed"
+    ));
+}
+
+fn one_session_scan() -> Scan {
+    Scan {
+        groups: vec![Group {
+            source: "jup".into(),
+            err: None,
+            sessions: vec![Session {
+                source: "jup".into(),
+                name: "api".into(),
+                mux: "tmux".into(),
+                windows: 2,
+                attached: false,
+            }],
+        }],
+    }
+}
+
+fn with_switcher(scan: Scan) -> (State, Switcher) {
+    let mut state = State::from_scan(scan);
+    let sw = Switcher::new(&mut state);
+    (state, sw)
+}
+
+#[test]
+fn apply_event_connected_marks_connected_and_emits_apply_inventory() {
+    // The reader carries the parsed sessions on Connected/Inventory; apply_event
+    // records the connected mark and hands the sessions to the loop as an effect
+    // (which folds them into `model::Host.inventory` - the single owner).
+    let (mut state, mut sw) = with_switcher(one_session_scan());
+    let mut connected = HashSet::new();
+    let sessions = vec![crate::session::Session {
+        source: "jup".into(),
+        name: "api".into(),
+        ..Default::default()
+    }];
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::Connected {
+            host: "jup".into(),
+            sessions: sessions.clone(),
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(connected.contains("jup"), "Connected records the host");
+    assert!(
+        matches!(effects.as_slice(), [EventEffect::ApplyInventory { host, sessions }] if host == "jup" && sessions.len() == 1),
+        "Connected carries its sessions into one ApplyInventory effect: {effects:?}"
+    );
+    // Inventory behaves identically (the arm is shared).
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::Inventory {
+            host: "jup".into(),
+            sessions,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(
+        matches!(effects.as_slice(), [EventEffect::ApplyInventory { host, sessions }] if host == "jup" && sessions.len() == 1),
+    );
+}
+
+#[test]
+fn apply_event_changed_emits_refetch() {
+    let (mut state, mut sw) = with_switcher(one_session_scan());
+    let mut connected = HashSet::new();
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::Changed { host: "jup".into() },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(
+        matches!(effects.as_slice(), [EventEffect::Refetch { host }] if host == "jup"),
+        "Changed returns one Refetch effect: {effects:?}"
+    );
+}
+
+#[test]
+fn apply_event_client_detached_emits_reap_display_attach_with_no_state_change() {
+    // The tty match + reap need the host registry (loop-owned); apply_event only
+    // forwards the descriptor and touches no State.
+    let (mut state, mut sw) = with_switcher(one_session_scan());
+    let mut connected = HashSet::new();
+    let before_groups = state.groups.len();
+    let before_sessions = state.groups[0].sessions.len();
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::ClientDetached {
+            host: "jup".into(),
+            client: "/dev/pts/3".into(),
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [EventEffect::ReapDisplayAttach { host, client }]
+                if host == "jup" && client == "/dev/pts/3"
+        ),
+        "ClientDetached forwards a ReapDisplayAttach effect: {effects:?}"
+    );
+    // ClientDetached mutates no State (the tree group set is untouched).
+    assert_eq!(state.groups.len(), before_groups);
+    assert_eq!(state.groups[0].sessions.len(), before_sessions);
+    assert!(state.modal.is_none());
+}
+
+#[test]
+fn apply_event_client_session_changed_forwards_follow_effect_with_no_state_change() {
+    // The tty match against Host.display_tty, the display-belief sync, and the nav
+    // follow all need loop-owned state; apply_event only forwards the descriptor and
+    // touches no State (the selection follow happens in the loop, gated on the match).
+    let (mut state, mut sw) = with_switcher(one_session_scan());
+    let mut connected = HashSet::new();
+    let before_groups = state.groups.len();
+    let before_sessions = state.groups[0].sessions.len();
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::ClientSessionChanged {
+            host: "jup".into(),
+            client: "/dev/pts/3".into(),
+            session: "db".into(),
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [EventEffect::FollowDisplaySession { host, client, session }]
+                if host == "jup" && client == "/dev/pts/3" && session == "db"
+        ),
+        "ClientSessionChanged forwards a FollowDisplaySession effect: {effects:?}"
+    );
+    // apply_event mutates no State (the tree group set is untouched); the tty match +
+    // selection follow are loop-owned.
+    assert_eq!(state.groups.len(), before_groups);
+    assert_eq!(state.groups[0].sessions.len(), before_sessions);
+}
+
+#[test]
+fn apply_event_exited_marks_unreachable_and_emits_reap() {
+    // A never-connected host exiting with a real failure marks the tree
+    // unreachable (a State mutation) AND asks the loop to reap the client.
+    let (mut state, mut sw) = with_switcher(one_session_scan());
+    let mut connected = HashSet::new(); // not connected → not a transient drop
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::Exited {
+            host: "jup".into(),
+            reason: Some("connection refused".into()),
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(
+        matches!(effects.as_slice(), [EventEffect::ReapHost { host }] if host == "jup"),
+        "Exited returns one ReapHost effect: {effects:?}"
+    );
+    let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+    assert!(
+        g.err.is_some(),
+        "the host is marked unreachable in the tree"
+    );
+}
+
+#[test]
+fn apply_event_exited_of_connected_host_keeps_tree_and_still_reaps() {
+    // A transient drop of a once-connected host keeps its last-known tree (no
+    // unreachable flash) but still reaps the dead client.
+    let (mut state, mut sw) = with_switcher(one_session_scan());
+    let mut connected = HashSet::new();
+    connected.insert("jup".to_string());
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::Exited {
+            host: "jup".into(),
+            reason: None,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(matches!(effects.as_slice(), [EventEffect::ReapHost { host }] if host == "jup"),);
+    assert!(
+        !connected.contains("jup"),
+        "the connected mark is cleared so a later failed reconnect resolves"
+    );
+    let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+    assert!(
+        g.err.is_none(),
+        "a transient drop keeps the last-known tree"
+    );
+}
+
+#[test]
+fn apply_event_sessions_applies_tree_and_emits_sync_on_success() {
+    // A poll host's enumeration is self-contained: apply_event applies the
+    // sessions to the tree and hands the sessions back for the stale-attach /
+    // sync follow-up the loop owns.
+    let mut state = State::from_sources(vec!["local".into()]);
+    let mut sw = Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let sessions = vec![Session {
+        source: "local".into(),
+        name: "work".into(),
+        mux: "tmux".into(),
+        windows: 1,
+        attached: false,
+    }];
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::Sessions {
+            source: "local".into(),
+            sessions: sessions.clone(),
+            err: None,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(
+        !state.scanning.contains("local"),
+        "the enumerated source is no longer scanning"
+    );
+    let g = state.groups.iter().find(|g| g.source == "local").unwrap();
+    assert_eq!(g.sessions.len(), 1, "the session is in the tree");
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [EventEffect::SyncPollSessions { source, sessions: s }]
+                if source == "local" && s.len() == 1
+        ),
+        "a successful enumeration syncs terminals: {effects:?}"
+    );
+}
+
+#[test]
+fn apply_event_sessions_with_error_applies_tree_but_emits_no_sync() {
+    // A transient enumeration failure shows the error in the tree but keeps
+    // attachments (the keep-alive guarantee) - no sync effect.
+    let mut state = State::from_sources(vec!["local".into()]);
+    let mut sw = Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::Sessions {
+            source: "local".into(),
+            sessions: Vec::new(),
+            err: Some("poll failed".into()),
+        },
+        &mut sw,
+        &mut connected,
+    );
+    let g = state.groups.iter().find(|g| g.source == "local").unwrap();
+    assert_eq!(g.err.as_deref(), Some("poll failed"));
+    assert!(
+        effects.is_empty(),
+        "a failed enumeration keeps attachments - no sync effect: {effects:?}"
+    );
+}
+
+#[test]
+fn feed_login_fills_the_pane_and_submits_from_the_button() {
+    // Enter passes the focus on from a text field, so filling the pane top to bottom
+    // with Enter alone ends on the button, where Enter submits. The password is taken
+    // out of the draft on submit so the draft keeps no second copy.
+    let mut s = State::default();
+    // address, port, username come prefilled; Enter walks past them.
+    for _ in 0..3 {
+        assert!(
+            s.feed_login("prod", b"\r").is_none(),
+            "a field passes focus on"
+        );
+    }
+    assert!(s.feed_login("prod", b"hunter2").is_none(), "typing waits");
+    assert!(
+        s.feed_login("prod", b"\r").is_none(),
+        "the password field passes focus on too"
+    );
+    // The focus is on the pubkey checkbox: Space picks it, Enter walks past.
+    assert!(
+        s.feed_login("prod", b" ").is_none(),
+        "Space picks, never submits"
+    );
+    assert!(
+        s.feed_login("prod", b"\r").is_none(),
+        "Enter walks past the choice"
+    );
+    let cmd = s.feed_login("prod", b"\r").expect("the button submits");
+    match cmd {
+        crate::model::Command::RunLogin {
+            source,
+            password,
+            pubkey,
+            ..
+        } => {
+            assert_eq!(source, "prod");
+            assert_eq!(password, "hunter2");
+            assert!(pubkey, "the checkbox the user toggled rides along");
+        }
+        other => panic!("expected RunLogin, got {other:?}"),
+    }
+    assert_eq!(
+        s.login.as_ref().unwrap().password,
+        "",
+        "the submitted password is taken out of the draft"
+    );
+}
+
+#[test]
+fn login_draft_debug_redacts_the_password() {
+    let draft = LoginDraft {
+        password: "do-not-print-this".into(),
+        ..LoginDraft::default()
+    };
+
+    let shown = format!("{draft:?}");
+    assert!(!shown.contains("do-not-print-this"));
+    assert!(shown.contains("[redacted]"));
+}
+
+#[test]
+fn feed_login_walks_its_stops_with_tab_and_the_vertical_arrows() {
+    let mut s = State::default();
+    s.feed_login("prod", b"\t");
+    assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::Port);
+    s.feed_login("prod", b"\x1b[B");
+    assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::Username);
+    s.feed_login("prod", b"\x1b[A");
+    assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::Port);
+    s.feed_login("prod", b"\x1b[Z");
+    assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::Address);
+}
+
+#[test]
+fn feed_login_offers_the_remember_choice_only_after_a_value_changes() {
+    // A stanza repeating what ssh already resolves records nothing, so the choice is
+    // absent until the user changes a connection value, and the stops skip it.
+    let mut s = State::default();
+    s.feed_login("prod", b"x");
+    let d = s.login.as_ref().unwrap();
+    assert!(d.changed(), "the address was edited");
+    assert!(d.stops().contains(&LoginFocus::RememberSshConfig));
+    // Undoing the edit takes the choice away again.
+    s.feed_login("prod", b"\x7f");
+    let d = s.login.as_ref().unwrap();
+    assert!(!d.changed());
+    assert!(!d.stops().contains(&LoginFocus::RememberSshConfig));
+}
+
+#[test]
+fn feed_login_backspace_edits_and_a_new_source_resets_the_draft() {
+    let mut s = State::default();
+    s.feed_login("prod", b"X");
+    s.feed_login("prod", b"\x7f");
+    assert_eq!(s.login.as_ref().unwrap().address, "prod");
+    // Moving to another blocked host starts a fresh draft (no stale value carried).
+    s.feed_login("stage", b"");
+    let d = s.login.as_ref().unwrap();
+    assert_eq!(d.source, "stage");
+    assert_eq!(
+        d.address, "stage",
+        "the fresh draft starts at its own defaults"
+    );
+}
+
+#[test]
+fn feed_login_never_lets_an_escape_sequence_land_in_a_field() {
+    // A function key xmux does not act on is still a key, not text: none of its bytes
+    // reach a field.
+    let mut s = State::default();
+    s.feed_login("prod", b"\x7f\x7f\x7f\x7fab");
+    s.feed_login("prod", b"\x1b[1;5C");
+    s.feed_login("prod", b"\x1bOP");
+    assert_eq!(s.login.as_ref().unwrap().address, "ab");
+}
+
+#[test]
+fn machine_probe_connected_forwards_the_connect_to_the_loop() {
+    // A machine that answered `true` carries no reason; which of its sources to
+    // resolve, and how, lives in the host registry, so the whole decision is the
+    // loop's.
+    let mut state = State::from_sources(vec!["prod".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::MachineProbed {
+            shell: None,
+            machine: "prod".into(),
+            err: None,
+            password_supplied: false,
+            credential_rejection_generation: None,
+            credential_held: false,
+            credential_generation: 0,
+            current_credential_generation: 0,
+            rescan: false,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(
+        matches!(
+            &effects[..],
+            [EventEffect::MachineConnected {
+                machine,
+                rescan: false,
+                ..
+            }] if machine == "prod"
+        ),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn machine_probe_auth_failure_marks_every_source_of_the_machine_locked() {
+    // The reachability probe is the single classification site: an auth failure
+    // (ssh's `Permission denied (` signature) marks EVERY source the machine serves
+    // locked, and folds nothing itself for the loop to run - no channel is opened.
+    let mut state = State::from_sources(vec!["prod".into(), "prod:zellij".into(), "db".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::MachineProbed {
+            shell: None,
+            machine: "prod".into(),
+            err: Some(
+                "command failed (exit 255): user@prod: Permission denied (publickey,password)."
+                    .into(),
+            ),
+            password_supplied: false,
+            credential_rejection_generation: None,
+            credential_held: false,
+            credential_generation: 0,
+            current_credential_generation: 0,
+            rescan: false,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(
+        effects.is_empty(),
+        "a failed probe opens no channel: {effects:?}"
+    );
+    for source in ["prod", "prod:zellij"] {
+        let g = state
+            .groups
+            .iter()
+            .find(|g| g.source == source)
+            .unwrap_or_else(|| panic!("{source} group"));
+        assert_eq!(
+            g.failure(),
+            Some(crate::model::FailureKind::Blocked),
+            "{source} classifies locked: {:?}",
+            g.err
+        );
+    }
+    let other = state.groups.iter().find(|g| g.source == "db").unwrap();
+    assert!(other.err.is_none(), "another machine is untouched");
+}
+
+#[test]
+fn a_refusal_that_did_not_use_the_held_password_is_visible() {
+    let mut state = State::from_sources(vec!["prod".into()]);
+    state.logged_in.insert("prod".into());
+    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let _ = apply_event_for_test(
+        &mut state,
+        HostEvent::MachineProbed {
+            shell: None,
+            machine: "prod".into(),
+            err: Some("dev@prod: Permission denied (publickey,password).".into()),
+            password_supplied: false,
+            credential_rejection_generation: None,
+            credential_held: true,
+            credential_generation: 1,
+            current_credential_generation: 1,
+            rescan: false,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert_eq!(
+        state.groups[0].failure(),
+        Some(crate::model::FailureKind::Blocked)
+    );
+}
+
+#[test]
+fn an_auth_refusal_from_an_older_credential_generation_is_ignored() {
+    let mut state = State::from_sources(vec!["prod".into()]);
+    state.groups[0].err = None;
+    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let _ = apply_event_for_test(
+        &mut state,
+        HostEvent::MachineProbed {
+            shell: None,
+            machine: "prod".into(),
+            err: Some("dev@prod: Permission denied (publickey,password).".into()),
+            password_supplied: false,
+            credential_rejection_generation: None,
+            credential_held: true,
+            credential_generation: 3,
+            current_credential_generation: 4,
+            rescan: false,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(state.groups[0].err.is_none());
+}
+
+#[test]
+fn any_probe_result_from_an_older_credential_generation_is_ignored() {
+    let mut state = State::from_sources(vec!["prod".into()]);
+    state.groups[0].err = None;
+    state.scanning.insert("prod".into());
+    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::MachineProbed {
+            shell: None,
+            machine: "prod".into(),
+            err: Some("ssh: connect to host prod port 22: Connection refused".into()),
+            password_supplied: false,
+            credential_rejection_generation: None,
+            credential_held: true,
+            credential_generation: 3,
+            current_credential_generation: 4,
+            rescan: false,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(effects.is_empty());
+    assert!(state.groups[0].err.is_none());
+    assert!(state.scanning.contains("prod"));
+}
+
+#[test]
+fn successful_probe_from_an_older_credential_generation_is_ignored() {
+    let mut state = State::from_sources(vec!["prod".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::MachineProbed {
+            shell: None,
+            machine: "prod".into(),
+            err: None,
+            password_supplied: false,
+            credential_rejection_generation: None,
+            credential_held: true,
+            credential_generation: 3,
+            current_credential_generation: 4,
+            rescan: false,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn probe_that_rejected_its_own_credential_is_not_discarded_as_stale() {
+    let mut state = State::from_sources(vec!["prod".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let _ = apply_event_for_test(
+        &mut state,
+        HostEvent::MachineProbed {
+            shell: None,
+            machine: "prod".into(),
+            err: Some("dev@prod: Permission denied (publickey,password).".into()),
+            password_supplied: true,
+            credential_rejection_generation: Some(4),
+            credential_held: false,
+            credential_generation: 3,
+            current_credential_generation: 4,
+            rescan: false,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert_eq!(
+        state.groups[0].failure(),
+        Some(crate::model::FailureKind::Blocked)
+    );
+}
+
+#[test]
+fn rejected_probe_from_before_a_newer_key_login_is_ignored() {
+    let mut state = State::from_sources(vec!["prod".into()]);
+    state.groups[0].err = None;
+    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::MachineProbed {
+            shell: None,
+            machine: "prod".into(),
+            err: Some("dev@prod: Permission denied (publickey,password).".into()),
+            password_supplied: true,
+            credential_rejection_generation: Some(4),
+            credential_held: false,
+            credential_generation: 3,
+            current_credential_generation: 5,
+            rescan: false,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(effects.is_empty());
+    assert!(state.groups[0].err.is_none());
+}
+
+#[test]
+fn machine_probe_unreachable_marks_the_machine_unreachable_not_locked() {
+    // A reach failure (refused/timeout/no route) is unreachable, never locked: only
+    // ssh's auth-failure signature earns locked, so a host that merely died stays a
+    // plain unreachable card.
+    let mut state = State::from_sources(vec!["prod".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let _ = apply_event_for_test(
+        &mut state,
+        HostEvent::MachineProbed {
+            shell: None,
+            machine: "prod".into(),
+            err: Some("ssh: connect to host prod port 22: Connection refused".into()),
+            password_supplied: false,
+            credential_rejection_generation: None,
+            credential_held: true,
+            credential_generation: 1,
+            current_credential_generation: 1,
+            rescan: false,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    let g = state.groups.iter().find(|g| g.source == "prod").unwrap();
+    assert!(g.err.is_some(), "the card is unreachable");
+    assert_eq!(
+        g.failure(),
+        Some(crate::model::FailureKind::Unreachable),
+        "a reach failure is not locked: {:?}",
+        g.err
+    );
+}
+
+#[test]
+fn apply_event_scanned_emits_dispatch_carrying_the_detection() {
+    // The detection box + the host-channel dispatch are loop-owned; apply_event
+    // forwards the descriptor. The host already has sessions (not scanning), so a
+    // failed detection does not settle it - only a still-scanning card settles.
+    let (mut state, mut sw) = with_switcher(one_session_scan());
+    let mut connected = HashSet::new();
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::Scanned {
+            source: "jup".into(),
+            detected: None,
+            err: Some("command failed (exit 127): sh: tmux: not found".into()),
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [EventEffect::DispatchScanned {
+                source,
+                detected: None,
+                ..
+            }] if source == "jup"
+        ),
+        "Scanned forwards a DispatchScanned effect: {effects:?}"
+    );
+    let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+    assert!(
+        g.err.is_none(),
+        "a settled host keeps its state; a stray detection failure does not touch it"
+    );
+}
+
+#[test]
+fn a_connected_machines_failed_detection_settles_the_scanning_card() {
+    // A host that reached the connection stage (a local/WSL machine connected
+    // inline, or a remote whose machine probe succeeded) but whose mux detection
+    // failed must leave the scanning state: it settles as unreachable with the
+    // probe's error instead of spinning forever (issue 226).
+    let mut state = State::from_sources(vec!["jup".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    assert!(state.scanning.contains("jup"), "precondition: scanning");
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::Scanned {
+            source: "jup".into(),
+            detected: None,
+            err: Some("command failed (exit 127): sh: tmux: not found".into()),
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(
+        !state.scanning.contains("jup"),
+        "the failed detection settles the card out of scanning"
+    );
+    let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+    assert_eq!(
+        g.err.as_deref(),
+        Some("command failed (exit 127): sh: tmux: not found"),
+        "the card carries the detection error"
+    );
+    assert!(g.sessions.is_empty());
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [EventEffect::DispatchScanned {
+                source,
+                detected: None,
+                ..
+            }] if source == "jup"
+        ),
+        "the detection box still forwards to the loop: {effects:?}"
+    );
+}
+
+#[test]
+fn a_stray_detection_failure_does_not_overwrite_a_settled_card() {
+    // The reconnect sweep retries detection for undetected hosts even after they
+    // settled unreachable/locked. That later failure must NOT overwrite the card's
+    // existing reason - only a still-scanning card settles on detection failure.
+    let mut state = State::from_sources(vec!["jup".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let _ = apply_event_for_test(
+        &mut state,
+        HostEvent::MachineProbed {
+            shell: None,
+            machine: "jup".into(),
+            err: Some("hrlee@jup: Permission denied (publickey,password).".into()),
+            password_supplied: false,
+            credential_rejection_generation: None,
+            credential_held: false,
+            credential_generation: 0,
+            current_credential_generation: 0,
+            rescan: false,
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(
+        !state.scanning.contains("jup"),
+        "the machine probe settled the card first"
+    );
+    let _ = apply_event_for_test(
+        &mut state,
+        HostEvent::Scanned {
+            source: "jup".into(),
+            detected: None,
+            err: Some("command failed (exit 255)".into()),
+        },
+        &mut sw,
+        &mut connected,
+    );
+    let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+    assert_eq!(
+        g.err.as_deref(),
+        Some("hrlee@jup: Permission denied (publickey,password)."),
+        "a settled reason is not overwritten by a stray detection failure"
+    );
+}
+
+#[test]
+fn muxes_found_forwards_the_add_to_the_loop() {
+    // Which muxes a machine ALREADY serves lives in the host registry, which this
+    // layer does not hold, so the whole decision is forwarded rather than folded.
+    let mut state = State::from_sources(vec!["prod".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut connected = HashSet::new();
+    let before = state.groups.len();
+    let effects = apply_event_for_test(
+        &mut state,
+        HostEvent::MuxesFound {
+            machine: "prod".into(),
+            muxes: Ok(vec!["tmux".into(), "zellij".into()]),
+        },
+        &mut sw,
+        &mut connected,
+    );
+    assert!(
+        matches!(
+            &effects[..],
+            [EventEffect::AddDiscoveredSources { machine, muxes }]
+                if machine == "prod"
+                    && muxes == &Ok(vec!["tmux".to_string(), "zellij".to_string()])
+        ),
+        "{effects:?}"
+    );
+    assert_eq!(state.groups.len(), before, "and folds nothing itself");
+}
+
+// --- chrome ownership: State owns the chrome view-state -------------------
+
+#[test]
+fn flash_sets_message_and_key_clears_it() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let (mut state, mut sw) = with_switcher(one_session_scan());
+    state.flash("boom");
+    assert_eq!(
+        state.chrome.flash, "boom",
+        "State::flash sets the chrome flash"
+    );
+    // A navigation key clears the flash (the switcher's handle_key clear path).
+    sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state);
+    assert!(
+        state.chrome.flash.is_empty(),
+        "a key clears the flash so the normal hint bar returns"
+    );
+}
 #[test]
 fn clear_screen_wipes_the_screen_and_repaints_every_cell() {
     use ratatui::widgets::Paragraph;

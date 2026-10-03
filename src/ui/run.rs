@@ -73,7 +73,7 @@ fn flatten_buffer(buf: &ratatui::buffer::Buffer) -> String {
 mod tests {
     use super::*;
     use crate::session::Session;
-    use crate::ui::switcher::Scan;
+    use crate::state::Scan;
     use crate::ui::tree::Group;
 
     fn sample() -> Scan {

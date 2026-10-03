@@ -1,12 +1,12 @@
 use super::*;
 
 impl Runtime {
-    /// Applies one [`HostEvent`]: [`State::apply_event`] folds the self-contained arms
-    /// (Focus marker, Panes subtree, Sessions enumeration, Exited unreachable mark) into
-    /// `State` and returns the mux follow-ups it cannot perform; this executes them (it
-    /// holds the host clients, the registry, and the display worker the state layer must
-    /// not reach). Drained in a burst by `on_host_event`. Returns `true` when the caller
-    /// should rearm `attach_deadline` + mark dirty (the matched-client detach-reap path).
+    /// Applies one [`HostEvent`]. [`State::apply_event`] folds changes that use only
+    /// state-owned data and returns ordered actions for navigation, runtime registries,
+    /// and mux I/O. This method applies those actions in sequence with the switcher,
+    /// host clients, registry, and display worker that own the required capabilities.
+    /// Drained in a burst by `on_host_event`. Returns `true` when the caller should
+    /// rearm `attach_deadline` and mark dirty for a matched-client detach reap.
     pub(super) fn handle_host_event(&mut self, mut ev: HostEvent) -> bool {
         if let HostEvent::MachineProbed {
             machine,
@@ -21,23 +21,25 @@ impl Runtime {
         let held = self.env.credentials().machines();
         self.state.logged_in = held;
         let mut rearm = false;
-        for effect in self
-            .state
-            .apply_event(ev, &mut self.switcher, &mut self.connected)
-        {
-            if self.run_event_effect(effect) {
-                rearm = true;
+        for effect in self.state.apply_event(ev) {
+            for effect in apply_state_event_effect(
+                &mut self.switcher,
+                &mut self.state,
+                &mut self.connected,
+                effect,
+            ) {
+                if self.run_event_effect(effect) {
+                    rearm = true;
+                }
             }
         }
         rearm
     }
 
-    /// Carries out one [`EventEffect`](crate::model::EventEffect) `State::apply_event`
-    /// returned - the mux I/O the state layer cannot perform (the single-owner inventory
-    /// fold into `model::Host`, a control-mode probe, the attach registry, the detection
-    /// dispatch). Returns `true` only for the matched-client display-attach reap, which
-    /// asks the caller to rearm `attach_deadline` + mark `dirty` (the recover-from-detach
-    /// path).
+    /// Carries out one runtime-facing [`EventEffect`](crate::model::EventEffect) after
+    /// state-facing actions have been applied. Returns `true` only for the matched-client
+    /// display-attach reap, which asks the caller to rearm `attach_deadline` and mark
+    /// `dirty` for recovery from detach.
     pub(super) fn run_event_effect(&mut self, effect: crate::model::EventEffect) -> bool {
         use crate::model::EventEffect;
         // Split-borrow the world state into the loose names the arms below use, so this
@@ -76,6 +78,12 @@ impl Runtime {
             collapsed: *nav_collapsed,
         };
         match effect {
+            EventEffect::MarkConnected { .. }
+            | EventEffect::ApplySourceResult { .. }
+            | EventEffect::ApplyPollResult { .. }
+            | EventEffect::NoteHostExited { .. } => {
+                unreachable!("state event effects are applied before runtime effects")
+            }
             EventEffect::ApplyInventory { host, sessions } => {
                 // The reader carried the parsed sessions on the event. Fold them into the
                 // single owner (`model::Host.inventory`), apply them to the nav, and sync
@@ -441,6 +449,57 @@ impl Runtime {
             }
         }
         false
+    }
+}
+
+pub(super) fn apply_state_event_effect(
+    switcher: &mut crate::ui::switcher::Switcher,
+    state: &mut crate::state::State,
+    connected: &mut HashSet<String>,
+    effect: crate::model::EventEffect,
+) -> Vec<crate::model::EventEffect> {
+    use crate::model::EventEffect;
+
+    match effect {
+        EventEffect::MarkConnected { host } => {
+            connected.insert(host);
+            Vec::new()
+        }
+        EventEffect::ApplySourceResult {
+            source,
+            sessions,
+            err,
+        } => {
+            switcher.apply_source_result(source, sessions, err, state);
+            Vec::new()
+        }
+        EventEffect::ApplyPollResult {
+            source,
+            sessions,
+            err,
+        } => {
+            let failed = err.is_some();
+            let renamed =
+                switcher.apply_source_result(source.clone(), sessions.clone(), err, state);
+            if failed {
+                return Vec::new();
+            }
+            let mut effects: Vec<EventEffect> = renamed
+                .map(|(from, to)| EventEffect::RenameDisplayed {
+                    source: source.clone(),
+                    from,
+                    to,
+                })
+                .into_iter()
+                .collect();
+            effects.push(EventEffect::SyncPollSessions { source, sessions });
+            effects
+        }
+        EventEffect::NoteHostExited { host, reason } => {
+            note_host_exited(switcher, state, connected, &host, reason);
+            Vec::new()
+        }
+        effect => vec![effect],
     }
 }
 
@@ -1660,9 +1719,9 @@ fn last_pane_line(registry: &crate::display::registry::AttachRegistry, id: u64) 
 /// How xmux reaches every card: each source, and each host that serves no source yet.
 /// A host's entry names the machine and its reachability probe, and no mux, because
 /// none has answered for it.
-fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::ui::chrome::SourceReach> {
+fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::state::SourceReach> {
     let sources = env.source_list();
-    let mut reach: std::collections::HashMap<String, crate::ui::chrome::SourceReach> = sources
+    let mut reach: std::collections::HashMap<String, crate::state::SourceReach> = sources
         .iter()
         .map(|s| (s.alias.clone(), source_reach(s)))
         .collect();
@@ -1693,7 +1752,7 @@ fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::ui::chrome::
             .unwrap_or_default();
         reach.insert(
             machine,
-            crate::ui::chrome::SourceReach {
+            crate::state::SourceReach {
                 probe,
                 machine: addressed,
                 socket,
@@ -1711,8 +1770,8 @@ fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::ui::chrome::
 /// never learns what a machine kind or a mux binary is. Each field comes from the one
 /// place that owns it - the machine describes its own addressing, the host composes its
 /// own listing command - rather than being re-derived from a source id.
-pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrome::SourceReach {
-    crate::ui::chrome::SourceReach {
+pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::state::SourceReach {
+    crate::state::SourceReach {
         probe: crate::driver::shell_line(&s.host().list_sessions_command()),
         machine: s.kind.addressed_as(),
         mux: s.binary.clone(),

@@ -22,7 +22,7 @@ use crate::session::{Address, Session};
 use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
 
-use crate::ui::ops::OpFollow;
+use crate::state::OpFollow;
 pub use crate::ui::ops::{run_login_follow_ups, run_op, OpResult, Ops};
 
 /// Tree pane width: border + 1-cell inner padding each side + content.
@@ -281,11 +281,7 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
     }
 }
 
-/// A fully-populated snapshot of the reachable environment.
-#[derive(Clone, Default)]
-pub struct Scan {
-    pub groups: Vec<Group>,
-}
+pub use crate::state::Scan;
 
 /// Snapshot of the selection taken before a rebuild so `restore_focus` can
 /// recover or gracefully redirect it afterward.
