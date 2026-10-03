@@ -26,14 +26,15 @@ There are two mux-facing paths:
   switch in place or reattach) and keeps input and resize work off the async
   runtime.
 
-The app ties those paths together and branches on nothing mux-specific. Domain
-intent converges on a single action set applied at one site in the runtime
-state; raw key and text injection is an unstable low-level surface.
+The app ties those paths together and branches on nothing mux-specific. Every
+application input converges on one message-driven update transition; raw key and
+text injection is an unstable low-level surface.
 
 ## Module Seams
 
-- `src/app/` - the app: the runtime loop that owns the terminal, the ctl socket
-  server, and preference persistence.
+- `src/app/` - the app: the application model and its single update transition,
+  the runtime loop and unified effect executor, the ctl socket server, and
+  preference persistence.
 - `src/cli/` - the CLI surface: argument parsing and command dispatch, plus the
   `xmux update` subcommand. It exposes ONE public entry, which the binary shim calls.
 - `src/provision/` - resolution: the TOML config, the roster of ssh targets, the
@@ -57,8 +58,8 @@ state; raw key and text injection is an unstable low-level surface.
   operations xmux issues, and the control-socket protocol.
 - `src/ui/` - nav row transforms, off-loop operation execution, interaction
   behavior, and rendering.
-- `src/state/` - the explicit app runtime state, including focus, modal, and
-  chrome data, and its two mutation sites.
+- `src/state/` - domain state values and the action reducer used by the app's
+  update transition, including focus, modal, and chrome data.
 - `src/session.rs` - the foundational cross-environment data types (a `Session`,
   its windows-and-panes detail, and the `<source>/<name>` address) that the axes
   and the model build on.
@@ -91,15 +92,14 @@ or hit-test state.
 
 ### Single Update Owner
 
-The Single Update Owner rule permits only the update transition to mutate
-application state. Key, mouse, and semantic ctl input become messages for that
-transition. Raw terminal bytes are the only direct input path and go to the
-selected terminal display.
-
-Known exceptions:
-
-- Key, mouse, and source-event paths mutate state outside one update transition.
-  Source-event effects use their own executor. `CONTEXT.md` names each current path.
+The Single Update Owner rule permits only the application update transition to
+mutate application state. The application model owns domain state, switcher
+interaction state, navigation geometry and preferences, mouse state, source
+connection tracking, detection tracking, and the last render plan. Key, mouse,
+semantic ctl, source event, operation result, tick, resize, and configuration
+inputs are messages to that transition. It emits one effect type, and the runtime
+handles every effect through one exhaustive executor. Raw terminal bytes are the
+only direct input path and go to the selected terminal display.
 
 - ASKED-FOR REQUESTS ONLY. xmux reaches a machine only when something asked it to.
   Every request traces to one of three things: the launch scan, a user action (a

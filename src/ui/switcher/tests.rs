@@ -2064,7 +2064,7 @@ async fn armed_hint_bar_fits_a_narrow_nav() {
 fn the_nav_renders_at_the_minimum_width() {
     // The side nav may be shrunk to its resting prefix, separating cell, and collapse
     // button. At that width the full control stays visible and the cards clip.
-    let min = crate::app::runtime::nav_width_min("C-g");
+    let min = crate::app::model::nav_width_min("C-g");
     let mut state = crate::state::State::from_scan(sample());
     let sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();

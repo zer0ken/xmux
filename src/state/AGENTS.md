@@ -2,11 +2,11 @@
 
 ## Purpose
 
-`state` is the app's single source of truth: the reachable inventory plus the
-selection and display runtime fields that need stable ownership outside the main
-loop's local variables, and the two domain-mutation sites (intent-driven and
-event-driven). UI components read the state instead of reaching into the row
-model.
+`state` defines the domain state held by the application model: the reachable
+inventory plus the selection and display fields, focus, modal, and chrome data.
+UI components read it instead of reaching into the row model. The app update
+transition owns all mutation and uses this layer's action reducer for domain
+intents.
 
 ## Mental Model
 
@@ -20,10 +20,11 @@ preferences. It is seeded from either a scan or the configured source list.
 Login results are per-machine state separate from reachability and enumeration errors.
 A later probe cannot replace the login's own reason or its key-registration outcome.
 
-Applying an ACTION is the single domain-mutation site: it folds one intent into
-the state and returns the effects for the run loop to dispatch. It touches only
-the state, never reading the clock or any registry or source state directly. The
-clock and the runtime attach facts enter as DATA on the tick action. A selection
+Applying an ACTION is the domain reducer used by the app update transition. It
+folds one intent into state and returns effects for the application to unify with
+the effects of every other message. It touches only state, never reading the clock
+or any registry or source state directly. The clock and runtime attach facts enter
+as data on the tick action. A selection
 action records a moved selection and marks the attach pending; the trailing tick
 re-arms the attach deadline, on every pending selection, so rapid navigation
 coalesces into one trailing attach. Once the deadline elapses and the pure attach
@@ -38,13 +39,11 @@ run off-loop, with the inventory change arriving later as that operation's
 result. There is no rename, kill, or window intent; the mux owns editing a
 session.
 
-Applying an EVENT is the inbound mirror: the single event-driven transition. It
-updates state-owned data and returns an ordered effect list for switcher changes,
-connection tracking, and backend follow-ups. The runtime applies that list because
-it owns the switcher, the once-connected set, source registry, and live clients.
-An exit from a once-connected source is a transient drop that keeps the last-known
-inventory. Connection and inventory events carry parsed sessions for the runtime
-to fold into the source's own inventory, the single owner.
+Inbound source events enter the app update transition as messages. That transition
+updates domain state, switcher state, and connection tracking together, and emits
+ordered backend effects. An exit from a once-connected source is a transient drop
+that keeps the last-known inventory. Connection and inventory events carry parsed
+sessions for update to fold into the source's own inventory, the single owner.
 
 The modal is ONE optional value: at most one of help or inline input. A single
 option, rather than independent fields, makes the modals' mutual exclusion
@@ -56,10 +55,11 @@ classifiers, input editing, and help feed. The UI owns popup geometry and render
 - The state depends on backend layers for inventory groups, login inputs,
   operation results, selection, action, command, effect, and inbound event data.
   It owns the focus state machine and the modal and chrome data consumed by UI.
-- It stores state facts plus the two mutation sites. The run loop owns effect
-  dispatch, including switcher and connection actions, inventory application,
-  refetch, probe, reap, sync, scan dispatch, and source addition. No IO, spawning,
-  channel sends, presentation behavior, or application orchestration happen here.
+- It stores domain facts and supplies the action reducer. The app owns message
+  handling and unified effect dispatch, including switcher and connection actions,
+  inventory application, refetch, probe, reap, sync, scan dispatch, and source
+  addition. No IO, spawning, channel sends, presentation behavior, or application
+  orchestration happen here.
 
 ## Invariants
 
@@ -90,10 +90,9 @@ classifiers, input editing, and help feed. The UI owns popup geometry and render
   by selecting the card again or re-scanning.
 - The last saved session address prevents rewriting preferences on every step
   within the same session.
-- This layer branches on nothing mux-specific: both apply sites fold intents and
-  events over the state without a match on mux kind. Per-mux behavior lives behind
-  the mux and driver seam the run loop reaches; the mux enters here only as domain
-  data (sessions, windows, events).
+- This layer branches on nothing mux-specific: the action reducer folds intents
+  without a match on mux kind. Per-mux behavior lives behind the mux and driver
+  seam the run loop reaches; the mux enters here only as domain data.
 - This layer imports backend peers and itself. It has no application or UI
   dependency and no known Layer Direction exception.
 

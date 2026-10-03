@@ -117,23 +117,20 @@ the debounced attach, and renders the live split view.
   frame. Layout and hit testing must pass through an immutable `RenderPlan`
   rather than mutable view state.
 - **Single Update Owner:** the rule permits only the update transition to mutate
-  application state. Key, mouse, and semantic ctl inputs are messages for it;
-  raw terminal bytes are the sole direct path. Known exceptions: key, mouse, and
-  source-event paths mutate state directly, and source-event effects use their own
-  executor. `CONTEXT.md` names each current path.
+  the application model. Key, mouse, semantic ctl, source event, operation
+  result, tick, resize, and configuration inputs are messages for it. The runtime
+  handles the resulting unified effects through one exhaustive executor. Raw
+  terminal bytes are the sole direct path.
 
 - The nav's live size travels as one value (the width the user set, the width on screen,
   the portrait band's height, the attachment side, and the collapsed state), never as
   loose values: the effective width has a single
   owner, and every geometry - the draw, the PTY sizing, mouse hit-testing - is cut from the
   same value, so a resize while xmux runs cannot reach one consumer and miss another.
-- Applying a domain action to the runtime state is the single intent-driven
-  mutation site, and applying a source event is the matching event-driven one.
-  Semantic ctl actions use the intent-driven site; switcher keys and mouse input
-  can mutate switcher state directly instead.
-- Every batch of commands a switcher key produces routes through the single
-  command dispatcher, never a filter that keeps only one command kind, so no
-  future command from a key is silently dropped.
+- The app update transition is the only application-state writer. It may invoke
+  the domain action reducer and switcher interaction helpers while processing a
+  message. It applies state-only commands, suppresses no-op commands, and returns
+  the ordered runtime-facing effects.
 - The selection is the canonical selected source / session value
   consumed by display selection and rendering.
 - The per-mux display decision lives in the driver implementation. The runtime

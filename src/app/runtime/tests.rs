@@ -241,7 +241,7 @@ async fn dispatch_scanned_without_a_resolved_mux_opens_no_channel() {
         crate::mux::for_binary("tmux").unwrap(),
     )); // undetected
     rt.hosts = hosts;
-    rt.run_event_effect(crate::model::EventEffect::DispatchScanned {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::DispatchScanned {
         source: "jup".into(),
         detected: None,
         err: None,
@@ -266,7 +266,7 @@ async fn machine_connected_dispatches_a_detected_control_host() {
     host.detected = true;
     hosts.insert(host);
     rt.hosts = hosts;
-    rt.run_event_effect(crate::model::EventEffect::MachineConnected {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::MachineConnected {
         shell: None,
         machine: "jup".into(),
         rescan: false,
@@ -876,11 +876,17 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
         name: "api".into(),
         ..Default::default()
     }];
-    let rearm = rt.run_event_effect(crate::model::EventEffect::ApplyInventory {
-        host: "jup".into(),
-        sessions: sessions.clone(),
-    });
-    assert!(!rearm, "ApplyInventory does not rearm detach recovery");
+    let outcome = rt.execute_effects(vec![Effect::Event(
+        crate::model::EventEffect::ApplyInventory {
+            host: "jup".into(),
+            sessions: sessions.clone(),
+        },
+    )]);
+    assert_eq!(
+        outcome,
+        (false, false, false),
+        "ApplyInventory does not change loop signals"
+    );
     // The single owner now holds the carried sessions - folded by the loop.
     let owned = &rt
         .hosts
@@ -1317,7 +1323,7 @@ async fn a_re_scan_roster_adds_a_machine_it_now_names() {
     // config) turns into a card without a restart.
     let mut rt = test_rt(fake_env_with_sources(&["prod"]));
     assert!(rt.hosts.get("stage").is_none(), "nothing knows stage yet");
-    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod", "stage"])),
     });
     assert!(
@@ -1344,7 +1350,7 @@ async fn a_re_scan_roster_drops_a_machine_it_stopped_naming() {
     // three registries have to let go, or the nav paints a card nothing can reach.
     let mut rt = test_rt(fake_env_with_sources(&["prod", "stage"]));
     assert!(rt.hosts.get("stage").is_some(), "precondition");
-    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod"])),
     });
     assert!(rt.hosts.get("stage").is_none(), "the registry let go");
@@ -1365,7 +1371,7 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
         rt.hosts.get("prod:zellij").is_none(),
         "nothing knows about zellij yet"
     );
-    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
         machine: "prod".into(),
         muxes: Ok(vec!["tmux".into(), "zellij".into()]),
     });
@@ -1417,7 +1423,7 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
     );
     // Idempotent: the same answer twice adds nothing.
     let before = rt.model.state.groups.len();
-    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
         machine: "prod".into(),
         muxes: Ok(vec!["tmux".into(), "zellij".into()]),
     });
@@ -1433,7 +1439,7 @@ async fn a_discovered_source_sorts_into_place_and_leaves_the_selection_put() {
         let t = rt.model.switcher.terminal_view_target();
         (t.source, t.target)
     };
-    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
         machine: "db".into(),
         muxes: Ok(vec!["zellij".into()]),
     });
@@ -1487,7 +1493,7 @@ async fn a_windows_host_serving_psmux_is_one_psmux_card() {
     // psmux installs a `tmux` alias of itself. Only the host's own answer decides what it
     // serves, and it answers psmux alone, so it is one card, on psmux's own binary.
     let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
-    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
         machine: "win".into(),
         muxes: Ok(vec!["psmux".into()]),
     });
@@ -1515,7 +1521,7 @@ async fn a_windows_host_serving_psmux_is_one_psmux_card() {
 #[tokio::test]
 async fn a_host_answering_several_muxes_has_a_card_for_each() {
     let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
-    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
         machine: "win".into(),
         muxes: Ok(vec!["psmux".into(), "zellij".into()]),
     });
@@ -1531,7 +1537,7 @@ async fn a_host_where_no_mux_answers_has_no_card() {
     // The host connected and answered nothing, so there is nothing to show: it has no
     // card, exactly as this box has no local card when nothing is installed here.
     let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
-    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
         machine: "win".into(),
         muxes: Ok(Vec::new()),
     });
@@ -1545,7 +1551,7 @@ async fn a_host_that_could_not_be_asked_keeps_its_card_with_the_reason() {
     // serves, so the card stays, settled, and says why; it is not taken for a host with
     // nothing installed.
     let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
-    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
         machine: "win".into(),
         muxes: Err("command failed (exit 255): Connection reset".into()),
     });
@@ -1561,7 +1567,7 @@ async fn a_host_that_could_not_be_asked_keeps_its_card_with_the_reason() {
     assert!(g.err.as_deref().unwrap().contains("Connection reset"));
     // Asked again (a re-scan or a login), it answers, and its source takes the card over
     // as in flight rather than inheriting the failure.
-    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
         machine: "win".into(),
         muxes: Ok(vec!["psmux".into()]),
     });
@@ -1579,7 +1585,7 @@ async fn a_host_that_could_not_be_asked_keeps_its_card_with_the_reason() {
 #[tokio::test]
 async fn a_failed_ask_leaves_a_host_that_serves_sources_alone() {
     let mut rt = test_rt(fake_env_with_sources(&["prod"]));
-    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
         machine: "prod".into(),
         muxes: Err("timed out".into()),
     });
@@ -1597,7 +1603,7 @@ async fn a_failed_ask_leaves_a_host_that_serves_sources_alone() {
 #[tokio::test]
 async fn the_card_of_a_host_with_no_source_says_how_the_host_is_reached() {
     let mut rt = test_rt(fake_env_with_sources(&["prod"]));
-    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(auto_roster(&["prod"], &["win"])),
     });
     let reach = rt
@@ -1623,7 +1629,7 @@ async fn a_source_found_on_a_host_is_reached_as_the_host_is() {
     rt.hosts.for_each_transport_of("win", |t| {
         t.set_remote_shell(crate::transport::vocab::RemoteShell::Other)
     });
-    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
         machine: "win".into(),
         muxes: Ok(vec!["psmux".into()]),
     });
@@ -1644,11 +1650,11 @@ async fn a_re_scan_keeps_what_a_host_that_writes_no_mux_answered() {
     // The fresh roster names the host and none of its sources, since those came from its
     // own answer. Every registry keeps them, so a re-scan tears no card down.
     let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
-    rt.run_event_effect(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
         machine: "win".into(),
         muxes: Ok(vec!["psmux".into()]),
     });
-    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(auto_roster(&[], &["win"])),
     });
     assert!(rt.hosts.get("win").is_some(), "the registry keeps it");
@@ -1659,12 +1665,12 @@ async fn a_re_scan_keeps_what_a_host_that_writes_no_mux_answered() {
 #[tokio::test]
 async fn a_re_scan_adds_and_drops_the_card_of_a_host_that_writes_no_mux() {
     let mut rt = test_rt(fake_env_with_sources(&["prod"]));
-    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(auto_roster(&["prod"], &["win"])),
     });
     assert_eq!(cards(&rt), vec!["local", "prod", "win"]);
     assert!(rt.model.state.scanning.contains("win"));
-    rt.run_event_effect(crate::model::EventEffect::ApplyRoster {
+    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod"])),
     });
     assert_eq!(cards(&rt), vec!["local", "prod"]);
@@ -1776,6 +1782,47 @@ fn execute_commands_runs_quit_and_attach_in_one_batch() {
     assert_eq!(outcome, (true, false));
     assert_eq!(rt.attach_seq, 1, "the attach reaches the display driver");
     assert!(rt.dirty, "the attach marks the frame dirty");
+}
+
+#[test]
+fn host_event_and_command_run_through_the_same_executor() {
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut effects = update(
+        &mut rt.model,
+        Msg::HostEvent {
+            event: HostEvent::DisplayTty {
+                host: "local".to_owned(),
+                tty: Some("/dev/pts/41".to_owned()),
+            },
+            logged_in: HashSet::new(),
+        },
+    );
+    effects.extend(update(
+        &mut rt.model,
+        Msg::Action(crate::model::Action::Quit),
+    ));
+
+    let outcome = rt.execute_effects(effects);
+
+    assert_eq!(outcome, (true, false, false));
+    assert_eq!(
+        rt.hosts.get("local").unwrap().display_tty.0.as_deref(),
+        Some("/dev/pts/41")
+    );
+}
+
+#[test]
+fn coalesced_nav_keys_observe_each_preceding_model_transition() {
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut width_changed = false;
+
+    let (_, quit, _, _, _, _) = rt.handle_nav_bytes(b"\x07?q", &mut width_changed);
+
+    assert!(!quit, "the help modal owns the following q");
+    assert!(matches!(
+        rt.model.state.modal,
+        Some(crate::state::Modal::Help)
+    ));
 }
 
 #[test]
@@ -3953,11 +4000,9 @@ fn config_poll_ignores_a_missing_file() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// --- apply_event(HostEvent) -----------------------------------------------
-// State owns the event transition: apply_event folds state-only updates and returns
-// ordered actions for navigation, runtime registries, and mux I/O. These tests apply
-// the navigation actions through the same helper the runtime uses, then inspect the
-// resulting state and runtime follow-ups.
+// --- source event update --------------------------------------------------
+// Source events enter the application update transition. These tests inspect the
+// resulting application state and ordered runtime effects.
 use crate::link::HostEvent;
 use crate::model::EventEffect;
 use crate::model::Group;
@@ -3965,84 +4010,73 @@ use crate::session::Session;
 use crate::ui::switcher::{Scan, Switcher};
 use std::collections::HashSet;
 
-fn apply_event_for_test(
+fn host_event_effects_for_test(
     state: &mut State,
     event: HostEvent,
     switcher: &mut Switcher,
     connected: &mut HashSet<String>,
 ) -> Vec<EventEffect> {
-    state
-        .apply_event_for_test(event)
+    let mut placeholder_state = State::default();
+    let placeholder_switcher = Switcher::from_sources(&mut placeholder_state);
+    let mut model = AppModel::from_sources(Vec::new());
+    model.state = std::mem::take(state);
+    model.switcher = std::mem::replace(switcher, placeholder_switcher);
+    model.connected = std::mem::take(connected);
+    let effects = update(
+        &mut model,
+        Msg::HostEvent {
+            event,
+            logged_in: HashSet::new(),
+        },
+    );
+    *state = model.state;
+    *switcher = model.switcher;
+    *connected = model.connected;
+    effects
         .into_iter()
-        .flat_map(|effect| handlers::apply_state_event_effect(switcher, state, connected, effect))
+        .flat_map(|effect| match effect {
+            Effect::Event(effect) => vec![effect],
+            Effect::EventBatch(effects) => effects,
+            effect => panic!("source event emitted unrelated effect: {effect:?}"),
+        })
         .collect()
 }
 
 #[test]
-fn apply_event_preserves_state_actions_before_runtime_followups() {
-    let mut state = State::default();
-    let connected = state.apply_event_for_test(HostEvent::Connected {
-        host: "jup".into(),
-        sessions: Vec::new(),
-    });
-    assert!(matches!(
-        connected.as_slice(),
-        [EventEffect::MarkConnected { host: marked }, EventEffect::ApplyInventory { host: applied, .. }]
-            if marked == "jup" && applied == "jup"
-    ));
-
-    let exited = state.apply_event_for_test(HostEvent::Exited {
-        host: "jup".into(),
-        reason: Some("connection refused".into()),
-    });
-    assert!(matches!(
-        exited.as_slice(),
-        [EventEffect::NoteHostExited { host: noted, .. }, EventEffect::ReapHost { host: reaped }]
-            if noted == "jup" && reaped == "jup"
-    ));
-
-    state.scanning.insert("jup".into());
-    let scanned = state.apply_event_for_test(HostEvent::Scanned {
-        source: "jup".into(),
-        detected: None,
-        err: Some("mux not found".into()),
-    });
-    assert!(matches!(
-        scanned.as_slice(),
-        [EventEffect::ApplySourceResult { source: applied, .. }, EventEffect::DispatchScanned { source: dispatched, .. }]
-            if applied == "jup" && dispatched == "jup"
-    ));
-}
-
-#[test]
 fn poll_rename_precedes_display_session_sync() {
-    let (mut state, mut switcher) = with_switcher(one_session_scan());
-    let mut connected = HashSet::new();
-    let effects = handlers::apply_state_event_effect(
-        &mut switcher,
-        &mut state,
-        &mut connected,
-        EventEffect::ApplyPollResult {
-            source: "jup".into(),
-            sessions: vec![Session {
+    let (state, switcher) = with_switcher(one_session_scan());
+    let mut model = AppModel::from_sources(Vec::new());
+    model.state = state;
+    model.switcher = switcher;
+    let effects = update(
+        &mut model,
+        Msg::HostEvent {
+            event: HostEvent::Sessions {
                 source: "jup".into(),
-                name: "renamed".into(),
-                mux: "tmux".into(),
-                windows: 2,
-                attached: false,
-            }],
-            err: None,
+                sessions: vec![Session {
+                    source: "jup".into(),
+                    name: "renamed".into(),
+                    mux: "tmux".into(),
+                    windows: 2,
+                    attached: false,
+                }],
+                err: None,
+            },
+            logged_in: HashSet::new(),
         },
     );
     assert!(matches!(
         effects.as_slice(),
-        [
-            EventEffect::RenameDisplayed { source: renamed_source, from, to },
-            EventEffect::SyncPollSessions { source: synced_source, .. }
-        ] if renamed_source == "jup"
-            && synced_source == "jup"
-            && from == "api"
-            && to == "renamed"
+        [Effect::EventBatch(effects)] if matches!(
+            effects.as_slice(),
+            [
+                EventEffect::RenameDisplayed { source: renamed_source, from, to },
+                EventEffect::SyncPollSessions { source: synced_source, .. }
+            ] if renamed_source == "jup"
+                && synced_source == "jup"
+                && from == "api"
+                && to == "renamed"
+        )
     ));
 }
 
@@ -4069,8 +4103,8 @@ fn with_switcher(scan: Scan) -> (State, Switcher) {
 }
 
 #[test]
-fn apply_event_connected_marks_connected_and_emits_apply_inventory() {
-    // The reader carries the parsed sessions on Connected/Inventory; apply_event
+fn host_event_connected_marks_connected_and_emits_apply_inventory() {
+    // The reader carries the parsed sessions on Connected/Inventory; update
     // records the connected mark and hands the sessions to the loop as an effect
     // (which folds them into `model::Host.inventory` - the single owner).
     let (mut state, mut sw) = with_switcher(one_session_scan());
@@ -4080,7 +4114,7 @@ fn apply_event_connected_marks_connected_and_emits_apply_inventory() {
         name: "api".into(),
         ..Default::default()
     }];
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Connected {
             host: "jup".into(),
@@ -4095,7 +4129,7 @@ fn apply_event_connected_marks_connected_and_emits_apply_inventory() {
         "Connected carries its sessions into one ApplyInventory effect: {effects:?}"
     );
     // Inventory behaves identically (the arm is shared).
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Inventory {
             host: "jup".into(),
@@ -4110,10 +4144,10 @@ fn apply_event_connected_marks_connected_and_emits_apply_inventory() {
 }
 
 #[test]
-fn apply_event_changed_emits_refetch() {
+fn host_event_changed_emits_refetch() {
     let (mut state, mut sw) = with_switcher(one_session_scan());
     let mut connected = HashSet::new();
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Changed { host: "jup".into() },
         &mut sw,
@@ -4126,14 +4160,14 @@ fn apply_event_changed_emits_refetch() {
 }
 
 #[test]
-fn apply_event_client_detached_emits_reap_display_attach_with_no_state_change() {
-    // The tty match + reap need the host registry (loop-owned); apply_event only
+fn host_event_client_detached_emits_reap_display_attach_with_no_state_change() {
+    // The tty match + reap need the host registry (loop-owned); update only
     // forwards the descriptor and touches no State.
     let (mut state, mut sw) = with_switcher(one_session_scan());
     let mut connected = HashSet::new();
     let before_groups = state.groups.len();
     let before_sessions = state.groups[0].sessions.len();
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::ClientDetached {
             host: "jup".into(),
@@ -4157,15 +4191,15 @@ fn apply_event_client_detached_emits_reap_display_attach_with_no_state_change() 
 }
 
 #[test]
-fn apply_event_client_session_changed_forwards_follow_effect_with_no_state_change() {
+fn host_event_client_session_changed_forwards_follow_effect_with_no_state_change() {
     // The tty match against Host.display_tty, the display-belief sync, and the nav
-    // follow all need loop-owned state; apply_event only forwards the descriptor and
+    // follow all need loop-owned state; update only forwards the descriptor and
     // touches no State (the selection follow happens in the loop, gated on the match).
     let (mut state, mut sw) = with_switcher(one_session_scan());
     let mut connected = HashSet::new();
     let before_groups = state.groups.len();
     let before_sessions = state.groups[0].sessions.len();
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::ClientSessionChanged {
             host: "jup".into(),
@@ -4183,19 +4217,19 @@ fn apply_event_client_session_changed_forwards_follow_effect_with_no_state_chang
         ),
         "ClientSessionChanged forwards a FollowDisplaySession effect: {effects:?}"
     );
-    // apply_event mutates no State (the tree group set is untouched); the tty match +
+    // update mutates no State here (the tree group set is untouched); the tty match +
     // selection follow are loop-owned.
     assert_eq!(state.groups.len(), before_groups);
     assert_eq!(state.groups[0].sessions.len(), before_sessions);
 }
 
 #[test]
-fn apply_event_exited_marks_unreachable_and_emits_reap() {
+fn host_event_exited_marks_unreachable_and_emits_reap() {
     // A never-connected host exiting with a real failure marks the tree
     // unreachable (a State mutation) AND asks the loop to reap the client.
     let (mut state, mut sw) = with_switcher(one_session_scan());
     let mut connected = HashSet::new(); // not connected → not a transient drop
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Exited {
             host: "jup".into(),
@@ -4216,13 +4250,13 @@ fn apply_event_exited_marks_unreachable_and_emits_reap() {
 }
 
 #[test]
-fn apply_event_exited_of_connected_host_keeps_tree_and_still_reaps() {
+fn host_event_exited_of_connected_host_keeps_tree_and_still_reaps() {
     // A transient drop of a once-connected host keeps its last-known tree (no
     // unreachable flash) but still reaps the dead client.
     let (mut state, mut sw) = with_switcher(one_session_scan());
     let mut connected = HashSet::new();
     connected.insert("jup".to_string());
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Exited {
             host: "jup".into(),
@@ -4244,8 +4278,8 @@ fn apply_event_exited_of_connected_host_keeps_tree_and_still_reaps() {
 }
 
 #[test]
-fn apply_event_sessions_applies_tree_and_emits_sync_on_success() {
-    // A poll host's enumeration is self-contained: apply_event applies the
+fn host_event_sessions_applies_tree_and_emits_sync_on_success() {
+    // A poll host's enumeration is self-contained: update applies the
     // sessions to the tree and hands the sessions back for the stale-attach /
     // sync follow-up the loop owns.
     let mut state = State::from_sources(vec!["local".into()]);
@@ -4258,7 +4292,7 @@ fn apply_event_sessions_applies_tree_and_emits_sync_on_success() {
         windows: 1,
         attached: false,
     }];
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Sessions {
             source: "local".into(),
@@ -4285,13 +4319,13 @@ fn apply_event_sessions_applies_tree_and_emits_sync_on_success() {
 }
 
 #[test]
-fn apply_event_sessions_with_error_applies_tree_but_emits_no_sync() {
+fn host_event_sessions_with_error_applies_tree_but_emits_no_sync() {
     // A transient enumeration failure shows the error in the tree but keeps
     // attachments (the keep-alive guarantee) - no sync effect.
     let mut state = State::from_sources(vec!["local".into()]);
     let mut sw = Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Sessions {
             source: "local".into(),
@@ -4433,7 +4467,7 @@ fn machine_probe_connected_forwards_the_connect_to_the_loop() {
     let mut state = State::from_sources(vec!["prod".into()]);
     let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::MachineProbed {
             shell: None,
@@ -4470,7 +4504,7 @@ fn machine_probe_auth_failure_marks_every_source_of_the_machine_locked() {
     let mut state = State::from_sources(vec!["prod".into(), "prod:zellij".into(), "db".into()]);
     let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::MachineProbed {
             shell: None,
@@ -4516,7 +4550,7 @@ fn a_refusal_that_did_not_use_the_held_password_is_visible() {
     state.logged_in.insert("prod".into());
     let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
-    let _ = apply_event_for_test(
+    let _ = host_event_effects_for_test(
         &mut state,
         HostEvent::MachineProbed {
             shell: None,
@@ -4544,7 +4578,7 @@ fn an_auth_refusal_from_an_older_credential_generation_is_ignored() {
     state.groups[0].err = None;
     let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
-    let _ = apply_event_for_test(
+    let _ = host_event_effects_for_test(
         &mut state,
         HostEvent::MachineProbed {
             shell: None,
@@ -4570,7 +4604,7 @@ fn any_probe_result_from_an_older_credential_generation_is_ignored() {
     state.scanning.insert("prod".into());
     let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::MachineProbed {
             shell: None,
@@ -4596,7 +4630,7 @@ fn successful_probe_from_an_older_credential_generation_is_ignored() {
     let mut state = State::from_sources(vec!["prod".into()]);
     let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::MachineProbed {
             shell: None,
@@ -4620,7 +4654,7 @@ fn probe_that_rejected_its_own_credential_is_not_discarded_as_stale() {
     let mut state = State::from_sources(vec!["prod".into()]);
     let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
-    let _ = apply_event_for_test(
+    let _ = host_event_effects_for_test(
         &mut state,
         HostEvent::MachineProbed {
             shell: None,
@@ -4648,7 +4682,7 @@ fn rejected_probe_from_before_a_newer_key_login_is_ignored() {
     state.groups[0].err = None;
     let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::MachineProbed {
             shell: None,
@@ -4676,7 +4710,7 @@ fn machine_probe_unreachable_marks_the_machine_unreachable_not_locked() {
     let mut state = State::from_sources(vec!["prod".into()]);
     let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
-    let _ = apply_event_for_test(
+    let _ = host_event_effects_for_test(
         &mut state,
         HostEvent::MachineProbed {
             shell: None,
@@ -4703,13 +4737,13 @@ fn machine_probe_unreachable_marks_the_machine_unreachable_not_locked() {
 }
 
 #[test]
-fn apply_event_scanned_emits_dispatch_carrying_the_detection() {
-    // The detection box + the host-channel dispatch are loop-owned; apply_event
+fn host_event_scanned_emits_dispatch_carrying_the_detection() {
+    // The detection box + the host-channel dispatch are loop-owned; update
     // forwards the descriptor. The host already has sessions (not scanning), so a
     // failed detection does not settle it - only a still-scanning card settles.
     let (mut state, mut sw) = with_switcher(one_session_scan());
     let mut connected = HashSet::new();
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Scanned {
             source: "jup".into(),
@@ -4747,7 +4781,7 @@ fn a_connected_machines_failed_detection_settles_the_scanning_card() {
     let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
     assert!(state.scanning.contains("jup"), "precondition: scanning");
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Scanned {
             source: "jup".into(),
@@ -4789,7 +4823,7 @@ fn a_stray_detection_failure_does_not_overwrite_a_settled_card() {
     let mut state = State::from_sources(vec!["jup".into()]);
     let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
-    let _ = apply_event_for_test(
+    let _ = host_event_effects_for_test(
         &mut state,
         HostEvent::MachineProbed {
             shell: None,
@@ -4809,7 +4843,7 @@ fn a_stray_detection_failure_does_not_overwrite_a_settled_card() {
         !state.scanning.contains("jup"),
         "the machine probe settled the card first"
     );
-    let _ = apply_event_for_test(
+    let _ = host_event_effects_for_test(
         &mut state,
         HostEvent::Scanned {
             source: "jup".into(),
@@ -4835,7 +4869,7 @@ fn muxes_found_forwards_the_add_to_the_loop() {
     let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
     let mut connected = HashSet::new();
     let before = state.groups.len();
-    let effects = apply_event_for_test(
+    let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::MuxesFound {
             machine: "prod".into(),

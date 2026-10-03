@@ -15,7 +15,7 @@ use crate::link::control;
 
 /// A unit of work the app loop processes, from the control socket.
 pub enum Cmd {
-    /// A resolved domain action, folded in at the app's single `State::apply` site.
+    /// A resolved domain action, folded by the app's single update transition.
     /// Carries the channel the loop answers with the ctl reply: `switch` replies by
     /// the address resolution against the current inventory; the other verbs have no
     /// synchronous outcome and answer `ok`.

@@ -23,7 +23,9 @@ use crate::app::input::{
     leading_ctrl_arrow, resolve_mouse_chain, resolve_nav_key, to_grid_local,
     view_border_drag_height, view_border_drag_width, ChainAction, MouseState, StdinOutcome,
 };
-use crate::app::model::{update, AppModel, Effect, Msg};
+use crate::app::model::{adjust_nav_width, update, AppModel, Effect, Msg};
+#[cfg(test)]
+use crate::app::model::{nav_width_min, note_host_exited, NAV_WIDTH_MAX};
 use crate::display::attachment::PtyEvent;
 use crate::display::dispatch::Action;
 use crate::display::registry::AttachRegistry;
@@ -32,6 +34,7 @@ use crate::driver::{display_key, host_selection_key, DriverCtx};
 use crate::link::{HostEvent, HostManager};
 use crate::model::Selection;
 use crate::provision::env::Env;
+#[cfg(test)]
 use crate::ui::switcher::TerminalViewTarget;
 
 /// Milliseconds per braille-spinner frame. The frame index is derived from
@@ -51,19 +54,6 @@ const EVENT_DRAIN_BUDGET: usize = 512;
 /// terminal with full-screen repaints and stall the single-threaded loop. A frame
 /// timer at this cadence flushes a pending dirty draw promptly even with no input.
 const FRAME_MS: u64 = 33;
-
-pub(crate) const NAV_WIDTH_MAX: u16 = 100;
-
-/// The nav's floor width: its resting prefix, a separating cell, and the collapse
-/// button. A wider configured prefix raises the floor.
-pub(crate) fn nav_width_min(ui_prefix: &str) -> u16 {
-    crate::ui::switcher::collapsed_nav_width(ui_prefix)
-}
-
-/// The band-layout nav height drag range. The min keeps a few nav rows; compute_regions
-/// clamps the max down to the body so the terminal always keeps room.
-pub(crate) const NAV_HEIGHT_MIN: u16 = 3;
-pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
 
 /// The ratatui terminal the app draws into. Loop-local in [`run_app`] (owns stdout);
 /// passed to the `Runtime` methods that draw / resize / dump.
@@ -98,10 +88,6 @@ const RESIZE_REPEAT_MS: u64 = 400;
 /// Longer than `RESIZE_REPEAT_MS` so a held Ctrl-arrow autorepeat burst persists once
 /// at the end, not per tick.
 const WIDTH_FLUSH_MS: u64 = 400;
-
-pub(super) fn adjust_nav_width(w: u16, delta: i32, ui_prefix: &str) -> u16 {
-    (w as i32 + delta).clamp(nav_width_min(ui_prefix) as i32, NAV_WIDTH_MAX as i32) as u16
-}
 
 /// Adjusts the natural nav width by `wd`, clamped to the allowed range. Returns
 /// true if the width actually changed (so the loop can schedule a debounced
@@ -147,20 +133,30 @@ impl Runtime {
         (quit, width_changed)
     }
 
+    #[cfg(test)]
+    fn execute_source_effect_for_test(&mut self, effect: crate::model::EventEffect) -> bool {
+        self.execute_effects(vec![Effect::Event(effect)]).2
+    }
+
     fn execute_effects(&mut self, effects: Vec<Effect>) -> (bool, bool, bool) {
         use crate::model::Command;
 
         let mut quit = false;
         let mut width_changed = false;
         let mut rearm = false;
-        for effect in effects {
+        let mut pending: std::collections::VecDeque<_> = effects.into();
+        while let Some(effect) = pending.pop_front() {
             match effect {
                 Effect::Event(effect) => {
-                    rearm |= self.run_event_effect(effect);
+                    let (event_rearm, followups) = self.perform_source_effect(effect);
+                    rearm |= event_rearm;
+                    for followup in followups.into_iter().rev() {
+                        pending.push_front(followup);
+                    }
                 }
                 Effect::EventBatch(effects) => {
-                    for effect in effects {
-                        rearm |= self.run_event_effect(effect);
+                    for effect in effects.into_iter().rev() {
+                        pending.push_front(Effect::Event(effect));
                     }
                 }
                 Effect::LoginApplied { source, login } => {
@@ -211,9 +207,6 @@ impl Runtime {
                 Effect::PersistNavCollapsed(collapsed) => {
                     crate::app::prefs::save_nav_collapsed(&self.env.xmux_dir, collapsed);
                 }
-                Effect::PersistAutoHide(auto_hide) => {
-                    crate::app::prefs::save_auto_hide_nav(&self.env.xmux_dir, auto_hide);
-                }
                 Effect::PersistNavPosition(position) => {
                     crate::app::prefs::save_nav_position(&self.env.xmux_dir, position);
                 }
@@ -227,15 +220,7 @@ impl Runtime {
                 Effect::CancelLogin(login) => login.cancel(),
                 Effect::Command(command) => match command {
                     Command::SelectAddress(address) => {
-                        let effects = update(
-                            &mut self.model,
-                            Msg::Commands(vec![Command::SelectAddress(address)]),
-                        );
-                        let (effect_quit, effect_width_changed, effect_rearm) =
-                            self.execute_effects(effects);
-                        quit |= effect_quit;
-                        width_changed |= effect_width_changed;
-                        rearm |= effect_rearm;
+                        unreachable!("selection commands are applied inside update: {address:?}")
                     }
                     Command::Rescan => {
                         run_discovery(&self.env, &self.hosts, &self.mgr, &self.scan_pool, true);
@@ -443,6 +428,7 @@ impl DrawObserver {
 /// whole target is the session name the card carries, which keys the PTY attachment.
 /// Stays in `app` because it depends on the ui [`TerminalViewTarget`] - the
 /// [`Selection`] value itself is a pure `model` type.
+#[cfg(test)]
 fn selection_from_target(t: &TerminalViewTarget) -> Selection {
     // The target is the session name as the card carries it, whole - no window suffix
     // to part off, so a session name holding a colon survives as it is.
@@ -466,13 +452,9 @@ fn selection_from_target(t: &TerminalViewTarget) -> Selection {
 /// [`Action::Tick`]: crate::model::Action::Tick
 fn sync_selection_from_switcher(model: &mut AppModel) -> bool {
     let previous = model.state.selection.clone();
-    let new_sel = selection_from_target(&model.switcher.terminal_view_target());
-    if new_sel == previous {
-        return false;
-    }
     let effects = update(model, Msg::SyncSelection);
     debug_assert!(effects.is_empty());
-    true
+    model.state.selection != previous
 }
 
 /// The session a source's display client is ON: the one fact the nav selection is held
@@ -1021,39 +1003,6 @@ fn clear_display_tty_for_attach(
             h.display_tty = crate::model::DisplayTty(None);
         }
     }
-}
-
-/// Handles a remote host's control client dying. A host that had connected keeps its
-/// last-known rows. A never-connected host that died with "no sessions" / "no server
-/// running" is REACHABLE but has no mux server - it renders "(empty)" (and a session
-/// can be created there), NOT "⚠". Any other never-connected death is a real
-/// transport failure and renders "⚠". Returns `true` only when it marked the host
-/// unreachable.
-pub(crate) fn note_host_exited(
-    switcher: &mut crate::ui::switcher::Switcher,
-    state: &mut crate::state::State,
-    connected: &mut HashSet<String>,
-    host: &str,
-    reason: Option<String>,
-) -> bool {
-    // Clear the connected mark so this host is no longer pinned to "keep last-known
-    // rows". A transient drop of a once-connected host keeps its rows (no unreachable
-    // flash) on THIS exit; but a later reconnect that fails (no sessions / unreachable)
-    // must then resolve its real state - otherwise a refresh that set it scanning would
-    // spin on "loading…" forever, since a sticky `connected` made every exit a no-op.
-    if connected.remove(host) {
-        return false;
-    }
-    if reason
-        .as_deref()
-        .is_some_and(crate::model::source::reason_is_no_sessions)
-    {
-        switcher.apply_source_result(host.to_string(), Vec::new(), None, state);
-        return false;
-    }
-    let msg = reason.unwrap_or_else(|| "connection closed".into());
-    switcher.apply_source_result(host.to_string(), Vec::new(), Some(msg), state);
-    true
 }
 
 /// The `xmux` (no subcommand) entry: the persistent app. Keeps one real attached

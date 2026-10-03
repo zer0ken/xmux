@@ -181,8 +181,8 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 - Modal input owns keys while open; those keys must not leak to the terminal view
   or global shortcuts. At most one modal is open, because the state holds one
   optional modal, so opening any modal drops whatever was open.
-- UI actions that become domain intents should resolve to a domain action, applied
-  at the state's single apply site.
+- UI actions resolve to domain intents or application messages. The app update
+  transition applies them; runtime and rendering code do not mutate UI state.
 - This layer branches on nothing mux-specific: the switcher renders rows and emits
   domain intents, never a match on mux kind. Per-mux behavior lives behind the mux
   and driver seam, reached through the operations trait, not decided here.
@@ -200,11 +200,8 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   card, the nav following the session the mux moved its own display client onto -
   names the card and moves to it through one entry point. Nothing downstream tells
   those callers apart, so the switcher does not either.
-- The selection and drag mutators return a boolean, "did it actually move or
-  grab", by accepted convention: the app gates its follow-up (attach, event
-  consumption) on that signal. This mutate-and-return-bool shape is deliberate; it
-  is not split into a pure command and query pair, because the churn would exceed
-  the value.
+- Selection and drag helpers are invoked only inside the app update transition.
+  The runtime observes the updated application model and executes emitted effects.
 - A surface that exists to be READ never shortens what it states. A value too wide for
   its column hangs under the same rule, a multi-line value keeps its lines, and a
   control character is written as its escape rather than printed as nothing: where a

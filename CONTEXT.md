@@ -590,7 +590,7 @@ together), so the two implementations are combined without either knowing the ot
 The supervisor branches on NOTHING mux-specific. `src/app/` (runtime loop,
 input routing, ctl serving, preference persistence), `src/ui/` (switcher / rows /
 chrome and modal rendering), and `src/state/` (the runtime state, focus, modal and
-chrome data, and its mutation sites) select display through the source's own driver and read the
+chrome data, and its domain reducers) select display through the source's own driver and read the
 grid back from it; per-mux behavior lives behind that seam. These layers carry
 no PTY, grid, or terminal-protocol logic.
 
@@ -639,22 +639,15 @@ without either owning or mutating it.
 ### Single Update Owner
 
 The Single Update Owner rule permits only the update transition to mutate
-application state. Key, mouse, and semantic ctl input are messages for that
-transition. Raw terminal bytes are the sole direct path because they are payload
-for the selected terminal display rather than an application-state transition.
-
-Known exceptions:
-
-- Switcher key handling mutates switcher and state directly. The rescan key
-  changes switcher state and asks the runtime to scan, while semantic ctl rescan
-  applies a domain action.
-- Mouse row selection mutates the switcher directly before the runtime reconciles
-  the selected display.
-- Source events use a separate state transition that returns ordered switcher,
-  connection, and backend effects for the runtime to apply.
-- The runtime owns switcher, nav geometry, mouse state, connected sources, and
-  detecting sources beside the state value.
-- Source-event effects use a separate exhaustive executor from commands.
+application state. One application model owns domain state, switcher interaction
+state, navigation geometry and preferences, mouse state, connected and detecting
+source sets, and the last immutable render plan. Key, mouse, semantic ctl, source
+event, operation result, tick, resize, and configuration inputs are messages to
+the transition. The transition applies domain actions as one part of the same
+flow and emits a single effect type. One exhaustive runtime executor handles
+command, source, persistence, attachment, and login effects in their emitted
+order. Raw terminal bytes are the sole direct path because they are payload for
+the selected terminal display rather than an application-state transition.
 
 ## Asked-for requests
 

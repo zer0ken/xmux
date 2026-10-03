@@ -1,10 +1,9 @@
 use super::*;
 
 impl Runtime {
-    /// Applies one [`HostEvent`]. [`State::apply_event`] folds changes that use only
-    /// state-owned data and returns ordered actions for navigation, runtime registries,
-    /// and mux I/O. This method applies those actions in sequence with the switcher,
-    /// host clients, registry, and display worker that own the required capabilities.
+    /// Applies one [`HostEvent`] through the application update transition, then runs
+    /// its ordered effects through the unified executor with the host clients,
+    /// registry, and display worker that own the required capabilities.
     /// Drained in a burst by `on_host_event`. Returns `true` when the caller should
     /// rearm `attach_deadline` and mark dirty for a matched-client detach reap.
     pub(super) fn handle_host_event(&mut self, mut ev: HostEvent) -> bool {
@@ -29,14 +28,17 @@ impl Runtime {
         rearm
     }
 
-    /// Carries out one runtime-facing [`EventEffect`](crate::model::EventEffect) after
-    /// state-facing actions have been applied. Returns `true` only for the matched-client
-    /// display-attach reap, which asks the caller to rearm `attach_deadline` and mark
-    /// `dirty` for recovery from detach.
-    pub(super) fn run_event_effect(&mut self, effect: crate::model::EventEffect) -> bool {
+    /// Performs the source-specific I/O carried by one nested event effect. The unified
+    /// effect executor delegates this capability work and places any returned follow-up
+    /// effects back on its ordered work queue.
+    pub(super) fn perform_source_effect(
+        &mut self,
+        effect: crate::model::EventEffect,
+    ) -> (bool, Vec<Effect>) {
         use crate::model::EventEffect;
+        let nav = self.model.nav_size();
         // Split-borrow the world state into the loose names the arms below use, so this
-        // body stays the loop's imperative effect executor without a per-line `self.`.
+        // body stays readable without a per-line `self.`.
         let Self {
             env,
             mgr,
@@ -51,25 +53,11 @@ impl Runtime {
             body_rows: rows,
             ..
         } = self;
-        let AppModel {
-            nav_width,
-            nav_width_natural,
-            nav_collapsed,
-            nav_height,
-            nav_position,
-            ..
-        } = model;
         let (cols, rows) = (*cols, *rows);
         // The nav's live size as one value, read once for this effect: the width the user
         // set, the width on screen, the band height, the attachment side, and whether it
         // is collapsed. Every geometry below is cut from it, so none re-derives a part.
-        let nav = crate::ui::switcher::NavSize {
-            natural: *nav_width_natural,
-            width: *nav_width,
-            height: *nav_height,
-            position: *nav_position,
-            collapsed: *nav_collapsed,
-        };
+        let mut followups = Vec::new();
         match effect {
             EventEffect::MarkConnected { .. }
             | EventEffect::ApplySourceResult { .. }
@@ -91,7 +79,7 @@ impl Runtime {
                 // (`apply_source_result`) or resyncing its dead terminals. (`ApplyInventory`
                 // is emitted only for control-mode hosts, so a poll host is never gated out.)
                 let live = mgr.get(&host).is_some();
-                let effects = update(
+                followups = update(
                     model,
                     Msg::ApplyInventory {
                         source: host.clone(),
@@ -99,29 +87,6 @@ impl Runtime {
                         live,
                     },
                 );
-                for effect in effects {
-                    match effect {
-                        Effect::Event(EventEffect::RenameDisplayed { source, from, to }) => {
-                            if let Some(host) = hosts.get_mut(&source) {
-                                host.display.rename_session(&from, &to);
-                            }
-                        }
-                        Effect::Command(_)
-                        | Effect::Event(_)
-                        | Effect::EventBatch(_)
-                        | Effect::LoginApplied { .. }
-                        | Effect::StartLogin { .. }
-                        | Effect::PersistNavWidth(_)
-                        | Effect::PersistNavHeight(_)
-                        | Effect::PersistNavCollapsed(_)
-                        | Effect::PersistAutoHide(_)
-                        | Effect::PersistNavPosition(_)
-                        | Effect::ReattachDisplay(_)
-                        | Effect::CancelLogin(_) => {
-                            unreachable!("inventory update emitted an unrelated effect")
-                        }
-                    }
-                }
                 if live {
                     let n = sessions.len();
                     let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
@@ -153,10 +118,10 @@ impl Runtime {
                 // (matched against the in-memory Host.display_tty). An unrelated client's detach
                 // can never match, so it is structurally inert - no blanket reap.
                 let Some(h) = hosts.get(&host) else {
-                    return false;
+                    return (false, Vec::new());
                 };
                 if !h.matches_display_tty(&client) {
-                    return false;
+                    return (false, Vec::new());
                 }
                 let key = host_selection_key(h); // Shared ⇒ key == host id
                 registry.remove(&key);
@@ -164,7 +129,7 @@ impl Runtime {
                     h.display.clear(&key); // forget the shown session + any in-flight spawn
                     h.display_tty = crate::model::DisplayTty(None); // the dead client's tty is gone
                 }
-                return true; // rearm recovery
+                return (true, Vec::new()); // rearm recovery
             }
             EventEffect::FollowDisplaySession {
                 host,
@@ -179,10 +144,10 @@ impl Runtime {
                 // user can drive the client), so a real prefix+s always matches; only a switch
                 // in the sub-capture window would be missed, and the next nav move self-heals it.
                 let Some(h) = hosts.get(&host) else {
-                    return false;
+                    return (false, Vec::new());
                 };
                 if !h.matches_display_tty(&client) {
-                    return false;
+                    return (false, Vec::new());
                 }
                 // xmux's own display PTY was moved to `session` by the mux itself (e.g.
                 // the user's prefix+s). RECORD IT AND NOTHING ELSE: this is where a mux
@@ -235,7 +200,7 @@ impl Runtime {
                             );
                             debug_assert!(effects.is_empty());
                         }
-                        return false;
+                        return (false, Vec::new());
                     }
                 };
                 let found: Vec<String> = muxes
@@ -393,7 +358,7 @@ impl Runtime {
                 // A detection probe resolved: (re)identify the mux, then dispatch the
                 // now-detected host onto its metadata channel (control client or poll task).
                 // A probe that could not identify one has ALREADY settled the card as
-                // unreachable in apply_event (when it was still scanning), so opening a
+                // unreachable in update (when it was still scanning), so opening a
                 // doomed control child would just die and overwrite that reason with a
                 // bare "connection closed". The reconnect sweep retries detection.
                 let effects = update(
@@ -471,7 +436,7 @@ impl Runtime {
             EventEffect::SyncPollSessions { source, sessions } => {
                 // A poll host's SUCCESSFUL enumeration (the nav group is already applied).
                 // The enumeration is logged at the producer (`run_poll`), where `err` is in
-                // hand - `apply_event` drops the error path before reaching here, so logging
+                // hand - update drops the error path before reaching here, so logging
                 // here would only ever see successes.
                 // PerSession psmux: a session whose registry .port disappeared is dead even
                 // if its PTY has not EOF'd. Drop the stale attach so it cannot show a dead grid.
@@ -507,59 +472,7 @@ impl Runtime {
                 }
             }
         }
-        false
-    }
-}
-
-#[cfg(test)]
-pub(super) fn apply_state_event_effect(
-    switcher: &mut crate::ui::switcher::Switcher,
-    state: &mut crate::state::State,
-    connected: &mut HashSet<String>,
-    effect: crate::model::EventEffect,
-) -> Vec<crate::model::EventEffect> {
-    use crate::model::EventEffect;
-
-    match effect {
-        EventEffect::MarkConnected { host } => {
-            connected.insert(host);
-            Vec::new()
-        }
-        EventEffect::ApplySourceResult {
-            source,
-            sessions,
-            err,
-        } => {
-            switcher.apply_source_result(source, sessions, err, state);
-            Vec::new()
-        }
-        EventEffect::ApplyPollResult {
-            source,
-            sessions,
-            err,
-        } => {
-            let failed = err.is_some();
-            let renamed =
-                switcher.apply_source_result(source.clone(), sessions.clone(), err, state);
-            if failed {
-                return Vec::new();
-            }
-            let mut effects: Vec<EventEffect> = renamed
-                .map(|(from, to)| EventEffect::RenameDisplayed {
-                    source: source.clone(),
-                    from,
-                    to,
-                })
-                .into_iter()
-                .collect();
-            effects.push(EventEffect::SyncPollSessions { source, sessions });
-            effects
-        }
-        EventEffect::NoteHostExited { host, reason } => {
-            note_host_exited(switcher, state, connected, &host, reason);
-            Vec::new()
-        }
-        effect => vec![effect],
+        (false, followups)
     }
 }
 
@@ -784,13 +697,7 @@ impl Runtime {
     /// fields out of `self`, so a resize while xmux runs cannot reach one consumer and
     /// miss another.
     pub(super) fn nav_size(&self) -> crate::ui::switcher::NavSize {
-        crate::ui::switcher::NavSize {
-            natural: self.model.nav_width_natural,
-            width: self.model.nav_width,
-            height: self.model.nav_height,
-            position: self.model.nav_position,
-            collapsed: self.model.nav_collapsed,
-        }
+        self.model.nav_size()
     }
 
     /// Generic over the backend so the headless tests drive the same loop-top reconcile
@@ -1197,12 +1104,14 @@ impl Runtime {
         }
 
         if key == selected_key {
-            self.model
-                .state
-                .apply(crate::model::Action::ConfirmDisplay(Selection {
+            let effects = update(
+                &mut self.model,
+                Msg::Action(crate::model::Action::ConfirmDisplay(Selection {
                     source: hid,
                     session: shown,
-                }));
+                })),
+            );
+            debug_assert!(effects.is_empty());
         }
     }
 
@@ -1434,22 +1343,18 @@ impl Runtime {
                     // interactive terminal-focus path routes them (see `input.rs`). So the
                     // ctl raw surface drives the pane the same way a keyboard does, down to
                     // a running login taking no input but the Esc that ends it.
-                    if let Some(login) = self.model.state.login_run.as_ref().filter(|l| {
+                    let login_running = self.model.state.login_run.as_ref().is_some_and(|l| {
                         self.model.switcher.current_source().as_deref() == Some(&l.source)
-                    }) {
+                    });
+                    if login_running {
                         if bytes.as_slice() == b"\x1b" {
-                            login.cancel();
+                            let effects = update(&mut self.model, Msg::CancelRunningLogin);
+                            let _ = self.execute_effects(effects);
                         }
                         self.dirty = true;
                     } else if self.model.switcher.current_host_blocked() {
                         if let Some(source) = self.model.switcher.current_source() {
-                            let effects = update(
-                                &mut self.model,
-                                Msg::FeedLogin {
-                                    source,
-                                    bytes: bytes.clone(),
-                                },
-                            );
+                            let effects = update(&mut self.model, Msg::FeedLogin { source, bytes });
                             let _ = self.execute_effects(effects);
                             self.dirty = true;
                         }
@@ -1577,10 +1482,10 @@ impl Runtime {
             return false;
         }
         let addr = crate::session::Address::new(&self.model.state.selection.source, shown);
-        let before = self.model.state.selection.clone();
+        let before = self.model.switcher.terminal_view_target();
         let effects = update(&mut self.model, Msg::FollowDisplay(addr));
         debug_assert!(effects.is_empty());
-        before != self.model.state.selection
+        before != self.model.switcher.terminal_view_target()
     }
 
     /// Reads xmux's own display client for the session it is on and records it, for a mux
@@ -1729,13 +1634,7 @@ impl Runtime {
         let mut mtime = self.model.config_last_mtime;
         let ui = poll_ui_config(&mut mtime, &crate::provision::env::config_path());
         let Some(ui) = ui else {
-            let effects = update(
-                &mut self.model,
-                Msg::ConfigObserved {
-                    mtime,
-                    ui: Box::new(None),
-                },
-            );
+            let effects = update(&mut self.model, Msg::ConfigObserved { mtime, ui: None });
             debug_assert!(effects.is_empty());
             return false;
         };
@@ -1745,7 +1644,7 @@ impl Runtime {
             &mut self.model,
             Msg::ConfigObserved {
                 mtime,
-                ui: Box::new(Some((ui, palette))),
+                ui: Some(Box::new((ui, palette))),
             },
         );
         debug_assert!(effects.is_empty());

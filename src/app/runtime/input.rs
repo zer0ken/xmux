@@ -15,41 +15,34 @@ impl Runtime {
         bytes: &[u8],
         width_changed: &mut bool,
     ) -> (bool, bool, i32, i32, bool, bool) {
-        // Split-borrow the input and selection fields while commands are collected.
-        let Self {
-            nav_decoder,
-            model,
-            cols,
-            body_rows: rows,
-            prefix,
-            ..
-        } = self;
-        let AppModel {
-            state,
-            nav_position,
-            nav_width,
-            ..
-        } = model;
-        let mut nav_armed = model.mouse_state.nav_armed;
-        let (prefix, cols, rows, nav_width) = (*prefix, *cols, *rows, *nav_width);
+        let keys = self.nav_decoder.feed(bytes);
+        let mut nav_armed = self.model.mouse_state.nav_armed;
+        let (prefix, cols, rows, nav_width) =
+            (self.prefix, self.cols, self.body_rows, self.model.nav_width);
         let mut focus_terminal = false;
         let mut quit = false;
         let mut width_delta = 0i32;
         let mut height_delta = 0i32;
         let mut toggle_auto_hide = false;
         let mut cycle_position = false;
-        let mut model_msgs = Vec::new();
-        for key in nav_decoder.feed(bytes) {
+        let mut effects = Vec::new();
+        for key in keys {
             // Re-query per key: opening a modal popup (via a NavKey applied below) flips
             // this, which changes how the next key in this same read resolves. Gating on
             // ANY modal popup (not just the inline input) makes a modal OWN its keys: the
             // help modal and the inline input both swallow prefix/Enter, so `prefix q`
             // can't quit and Enter can't focus the terminal while one is on screen.
-            let is_inputting = state.is_modal_popup_open();
-            match resolve_nav_key(key, &mut nav_armed, prefix, is_inputting, *nav_position) {
+            let is_inputting = self.model.state.is_modal_popup_open();
+            match resolve_nav_key(
+                key,
+                &mut nav_armed,
+                prefix,
+                is_inputting,
+                self.model.nav_position,
+            ) {
                 // A committed input/kill confirm folds through State::apply, which returns
                 // its Commands; collect them and dispatch the whole batch below.
-                Some(Action::NavKey(k)) => model_msgs.push(Msg::Key(k)),
+                Some(Action::NavKey(k)) => effects.extend(update(&mut self.model, Msg::Key(k))),
                 Some(Action::FocusTerminal) => {
                     // Enter focuses the terminal view. For a locked host that view holds
                     // the locked panel, whose own fields take the keys once focused; the
@@ -61,7 +54,9 @@ impl Runtime {
                 Some(Action::Height(d)) => height_delta = d,
                 Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
                 Some(Action::CycleNavPosition) => cycle_position = true,
-                Some(Action::ShowHelp) => model_msgs.push(Msg::ToggleHelp),
+                Some(Action::ShowHelp) => {
+                    effects.extend(update(&mut self.model, Msg::ToggleHelp));
+                }
                 // resolve_nav_key never emits the mux-only or terminal-only variants
                 // (Forward/FocusNav); None = armed/consumed.
                 Some(Action::Forward(_)) | Some(Action::FocusNav(_)) | None => {}
@@ -71,10 +66,6 @@ impl Runtime {
         debug_assert!(effects.is_empty());
         // Route the full command batch through the runtime executor so every command a
         // switcher key produces is acted on. Merge its loop signals into this input read.
-        let effects = model_msgs
-            .into_iter()
-            .flat_map(|msg| update(&mut self.model, msg))
-            .collect();
         let (cmd_quit, cmd_width_changed, _) = self.execute_effects(effects);
         quit |= cmd_quit;
         if cmd_width_changed {
@@ -159,15 +150,8 @@ impl Runtime {
             if !ev.pressed {
                 // Button up ends the drag; persist the final size once (motion resizes live
                 // but does not write per cell). A band drags the height, a column the width.
-                let effects = update(&mut self.model, Msg::SetMouseDragging(false));
-                debug_assert!(effects.is_empty());
-                if top_layout {
-                    let effects = vec![Effect::PersistNavHeight(self.model.nav_height)];
-                    let _ = self.execute_effects(effects);
-                } else {
-                    let effects = vec![Effect::PersistNavWidth(self.model.nav_width_natural)];
-                    let _ = self.execute_effects(effects);
-                }
+                let effects = update(&mut self.model, Msg::EndNavDrag { band: top_layout });
+                let _ = self.execute_effects(effects);
             } else if !is_wheel {
                 // The DRAG measures from the near edge: a band drags the height (from the
                 // top edge, or the bottom edge when pinned there), a column the width (from
@@ -455,8 +439,8 @@ impl Runtime {
             debug_assert!(effects.is_empty());
             // The recovery doesn't track which axis was dragging; persist both (a no-op file
             // write for the unchanged one) so the final size is never lost.
-            crate::app::prefs::save_nav_width(&self.env.xmux_dir, self.model.nav_width_natural);
-            crate::app::prefs::save_nav_height(&self.env.xmux_dir, self.model.nav_height);
+            let effects = update(&mut self.model, Msg::PersistNavSize);
+            let _ = self.execute_effects(effects);
         }
         // Watchdog: same recovery for a popup border-drag - a lost button-up
         // must not strand `popup_drag` and eat all later mouse input.
@@ -530,7 +514,7 @@ impl Runtime {
             && !non_mouse.is_empty()
             && matches!(self.model.state.modal, Some(crate::state::Modal::Help))
         {
-            let effects = update(&mut self.model, Msg::HelpBytes(non_mouse.clone()));
+            let effects = update(&mut self.model, Msg::HelpBytes(non_mouse));
             debug_assert!(effects.is_empty());
             // The help modal is modal (tmux view-mode style): while open it
             // captures every key in EITHER focus - q/Esc closes it, the rest are
@@ -555,7 +539,10 @@ impl Runtime {
                 *width_changed = true;
             }
             if th {
-                let effects = update(&mut self.model, Msg::ToggleAutoHide);
+                let effects = update(
+                    &mut self.model,
+                    Msg::Action(crate::model::Action::ToggleAutoHide),
+                );
                 let _ = self.execute_effects(effects);
                 *dirty = true;
             }
@@ -576,15 +563,17 @@ impl Runtime {
                     // is ready the prior one is on screen, so input must reach what the user
                     // actually sees (no blind typing).
                     Action::Forward(f) => {
-                        if let Some(login) = self.model.state.login_run.as_ref().filter(|l| {
+                        let login_running = self.model.state.login_run.as_ref().is_some_and(|l| {
                             self.model.switcher.current_source().as_deref() == Some(&l.source)
-                        }) {
+                        });
+                        if login_running {
                             // The login is xmux's own conversation, so nothing typed here
                             // reaches it. A lone Esc ends it, which is the one thing the
                             // user can still say about a login that is going nowhere;
                             // every other key waits for the pane to come back.
                             if f.as_slice() == b"\x1b" {
-                                login.cancel();
+                                let effects = update(&mut self.model, Msg::CancelRunningLogin);
+                                let _ = self.execute_effects(effects);
                             }
                             *dirty = true;
                         } else if self.model.switcher.current_host_blocked() {
@@ -627,7 +616,10 @@ impl Runtime {
                         }
                     }
                     Action::ToggleAutoHide => {
-                        let effects = update(&mut self.model, Msg::ToggleAutoHide);
+                        let effects = update(
+                            &mut self.model,
+                            Msg::Action(crate::model::Action::ToggleAutoHide),
+                        );
                         let _ = self.execute_effects(effects);
                         *dirty = true;
                     }
@@ -701,7 +693,10 @@ impl Runtime {
                     *width_changed = true;
                 }
                 if th {
-                    let effects = update(&mut self.model, Msg::ToggleAutoHide);
+                    let effects = update(
+                        &mut self.model,
+                        Msg::Action(crate::model::Action::ToggleAutoHide),
+                    );
                     let _ = self.execute_effects(effects);
                     *dirty = true;
                 }

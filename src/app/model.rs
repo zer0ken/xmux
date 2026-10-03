@@ -4,9 +4,24 @@ use ratatui::crossterm::event::KeyEvent;
 
 use crate::app::input::MouseState;
 use crate::model::{Action, Command, EventEffect, Selection};
-#[cfg(test)]
-use crate::ui::switcher::NavSize;
-use crate::ui::switcher::{NavPosition, RenderPlan, Switcher};
+use crate::ui::switcher::{NavPosition, NavSize, RenderPlan, Switcher};
+
+pub(crate) const NAV_WIDTH_MAX: u16 = 100;
+
+/// The nav's floor width: its resting prefix, a separating cell, and the collapse
+/// button. A wider configured prefix raises the floor.
+pub(crate) fn nav_width_min(ui_prefix: &str) -> u16 {
+    crate::ui::switcher::collapsed_nav_width(ui_prefix)
+}
+
+/// The band-layout nav height drag range. The min keeps a few nav rows; compute_regions
+/// clamps the max down to the body so the terminal always keeps room.
+pub(crate) const NAV_HEIGHT_MIN: u16 = 3;
+pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
+
+pub(crate) fn adjust_nav_width(w: u16, delta: i32, ui_prefix: &str) -> u16 {
+    (w as i32 + delta).clamp(nav_width_min(ui_prefix) as i32, NAV_WIDTH_MAX as i32) as u16
+}
 
 pub(crate) struct AppModel {
     pub(crate) state: crate::state::State,
@@ -60,12 +75,6 @@ impl AppModel {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn state(&self) -> &crate::state::State {
-        &self.state
-    }
-
-    #[cfg(test)]
     pub(crate) fn nav_size(&self) -> NavSize {
         NavSize {
             natural: self.nav_width_natural,
@@ -85,6 +94,7 @@ impl AppModel {
 
 pub(crate) enum Msg {
     Action(Action),
+    #[cfg(test)]
     Commands(Vec<Command>),
     SyncSelection,
     Key(KeyEvent),
@@ -145,6 +155,9 @@ pub(crate) enum Msg {
     },
     SetMouseNavArmed(bool),
     SetMouseDragging(bool),
+    EndNavDrag {
+        band: bool,
+    },
     SetMouseHovered(bool),
     SetResizeRepeat(Option<std::time::Instant>),
     EndPopupDrag,
@@ -165,8 +178,9 @@ pub(crate) enum Msg {
         body_rows: u16,
         ui_prefix: String,
     },
-    ToggleAutoHide,
     CycleNavPosition,
+    CancelRunningLogin,
+    PersistNavSize,
     SyncFrame {
         spinner_frame: usize,
         view_border_hovered: bool,
@@ -194,8 +208,8 @@ pub(crate) enum Msg {
     },
     ConfigObserved {
         mtime: Option<std::time::SystemTime>,
-        ui: Box<
-            Option<(
+        ui: Option<
+            Box<(
                 crate::provision::config::UiConfig,
                 crate::ui::palette::Palette,
             )>,
@@ -225,7 +239,6 @@ pub(crate) enum Effect {
     PersistNavWidth(u16),
     PersistNavHeight(u16),
     PersistNavCollapsed(bool),
-    PersistAutoHide(bool),
     PersistNavPosition(Option<NavPosition>),
     ReattachDisplay(Selection),
     CancelLogin(crate::link::unlock::RunningLogin),
@@ -264,9 +277,6 @@ impl std::fmt::Debug for Effect {
                 .debug_tuple("PersistNavCollapsed")
                 .field(collapsed)
                 .finish(),
-            Self::PersistAutoHide(auto_hide) => {
-                f.debug_tuple("PersistAutoHide").field(auto_hide).finish()
-            }
             Self::PersistNavPosition(position) => {
                 f.debug_tuple("PersistNavPosition").field(position).finish()
             }
@@ -274,26 +284,6 @@ impl std::fmt::Debug for Effect {
                 f.debug_tuple("ReattachDisplay").field(selection).finish()
             }
             Self::CancelLogin(_) => f.write_str("CancelLogin"),
-        }
-    }
-}
-
-impl PartialEq for Effect {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Command(left), Self::Command(right)) => left == right,
-            (Self::Event(_), Self::Event(_)) => false,
-            (Self::EventBatch(_), Self::EventBatch(_)) => false,
-            (Self::LoginApplied { .. }, Self::LoginApplied { .. }) => false,
-            (Self::StartLogin { .. }, Self::StartLogin { .. }) => false,
-            (Self::PersistNavWidth(left), Self::PersistNavWidth(right)) => left == right,
-            (Self::PersistNavHeight(left), Self::PersistNavHeight(right)) => left == right,
-            (Self::PersistNavCollapsed(left), Self::PersistNavCollapsed(right)) => left == right,
-            (Self::PersistAutoHide(left), Self::PersistAutoHide(right)) => left == right,
-            (Self::PersistNavPosition(left), Self::PersistNavPosition(right)) => left == right,
-            (Self::ReattachDisplay(left), Self::ReattachDisplay(right)) => left == right,
-            (Self::CancelLogin(_), Self::CancelLogin(_)) => false,
-            _ => false,
         }
     }
 }
@@ -311,9 +301,9 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             Some(Effect::Command(Command::Rescan))
         }
         Command::AdjustNavWidth(delta) => {
-            let min = super::runtime::nav_width_min(&model.state.chrome.ui_prefix) as i32;
-            let next = (model.nav_width_natural as i32 + delta)
-                .clamp(min, super::runtime::NAV_WIDTH_MAX as i32) as u16;
+            let min = nav_width_min(&model.state.chrome.ui_prefix) as i32;
+            let next =
+                (model.nav_width_natural as i32 + delta).clamp(min, NAV_WIDTH_MAX as i32) as u16;
             if next == model.nav_width_natural {
                 None
             } else {
@@ -485,6 +475,39 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
     }
 }
 
+/// Handles a remote host's control client dying. A host that had connected keeps its
+/// last-known rows. A never-connected host that died with "no sessions" / "no server
+/// running" is REACHABLE but has no mux server - it renders "(empty)" (and a session
+/// can be created there), NOT "⚠". Any other never-connected death is a real
+/// transport failure and renders "⚠". Returns `true` only when it marked the host
+/// unreachable.
+pub(crate) fn note_host_exited(
+    switcher: &mut Switcher,
+    state: &mut crate::state::State,
+    connected: &mut HashSet<String>,
+    host: &str,
+    reason: Option<String>,
+) -> bool {
+    // Clear the connected mark so this host is no longer pinned to "keep last-known
+    // rows". A transient drop of a once-connected host keeps its rows (no unreachable
+    // flash) on THIS exit; but a later reconnect that fails (no sessions / unreachable)
+    // must then resolve its real state - otherwise a refresh that set it scanning would
+    // spin on "loading…" forever, since a sticky `connected` made every exit a no-op.
+    if connected.remove(host) {
+        return false;
+    }
+    if reason
+        .as_deref()
+        .is_some_and(crate::model::source::reason_is_no_sessions)
+    {
+        switcher.apply_source_result(host.to_string(), Vec::new(), None, state);
+        return false;
+    }
+    let msg = reason.unwrap_or_else(|| "connection closed".into());
+    switcher.apply_source_result(host.to_string(), Vec::new(), Some(msg), state);
+    true
+}
+
 pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
     match msg {
         Msg::Action(action) => {
@@ -494,6 +517,7 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .filter_map(|command| command_effect(model, command))
                 .collect()
         }
+        #[cfg(test)]
         Msg::Commands(commands) => commands
             .into_iter()
             .filter_map(|command| command_effect(model, command))
@@ -684,7 +708,7 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                         }
                     }
                     EventEffect::NoteHostExited { host, reason } => {
-                        super::runtime::note_host_exited(
+                        note_host_exited(
                             &mut model.switcher,
                             &mut model.state,
                             &mut model.connected,
@@ -694,7 +718,6 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                         sync_selection(model);
                         None
                     }
-                    effect @ EventEffect::Refetch { .. } => Some(Effect::Event(effect)),
                     effect => Some(Effect::Event(effect)),
                 })
                 .collect()
@@ -713,6 +736,14 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         Msg::SetMouseDragging(dragging) => {
             model.mouse_state.dragging_view_border = dragging;
             Vec::new()
+        }
+        Msg::EndNavDrag { band } => {
+            model.mouse_state.dragging_view_border = false;
+            if band {
+                vec![Effect::PersistNavHeight(model.nav_height)]
+            } else {
+                vec![Effect::PersistNavWidth(model.nav_width_natural)]
+            }
         }
         Msg::SetMouseHovered(hovered) => {
             model.mouse_state.hovered_view_border = hovered;
@@ -763,11 +794,8 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             };
             match (horizontal, top) {
                 (true, false) => {
-                    model.nav_width_natural = super::runtime::adjust_nav_width(
-                        model.nav_width_natural,
-                        delta,
-                        &ui_prefix,
-                    );
+                    model.nav_width_natural =
+                        adjust_nav_width(model.nav_width_natural, delta, &ui_prefix);
                     Vec::new()
                 }
                 (false, true) => {
@@ -776,21 +804,15 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                     } else {
                         model.nav_height
                     };
-                    let ceil = body_rows.saturating_sub(2).clamp(
-                        super::runtime::NAV_HEIGHT_MIN,
-                        super::runtime::NAV_HEIGHT_MAX,
-                    );
-                    model.nav_height = (base as i32 + delta)
-                        .clamp(super::runtime::NAV_HEIGHT_MIN as i32, ceil as i32)
-                        as u16;
+                    let ceil = body_rows
+                        .saturating_sub(2)
+                        .clamp(NAV_HEIGHT_MIN, NAV_HEIGHT_MAX);
+                    model.nav_height =
+                        (base as i32 + delta).clamp(NAV_HEIGHT_MIN as i32, ceil as i32) as u16;
                     vec![Effect::PersistNavHeight(model.nav_height)]
                 }
                 _ => Vec::new(),
             }
-        }
-        Msg::ToggleAutoHide => {
-            model.auto_hide_nav = !model.auto_hide_nav;
-            vec![Effect::PersistAutoHide(model.auto_hide_nav)]
         }
         Msg::CycleNavPosition => {
             model.nav_position_pinned = crate::ui::switcher::step_nav_position(
@@ -799,6 +821,18 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             );
             vec![Effect::PersistNavPosition(model.nav_position_pinned)]
         }
+        Msg::CancelRunningLogin => model
+            .state
+            .login_run
+            .as_ref()
+            .cloned()
+            .map(Effect::CancelLogin)
+            .into_iter()
+            .collect(),
+        Msg::PersistNavSize => vec![
+            Effect::PersistNavWidth(model.nav_width_natural),
+            Effect::PersistNavHeight(model.nav_height),
+        ],
         Msg::SyncFrame {
             spinner_frame,
             view_border_hovered,
@@ -873,7 +907,8 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         }
         Msg::ConfigObserved { mtime, ui } => {
             model.config_last_mtime = mtime;
-            if let Some((ui, palette)) = *ui {
+            if let Some(ui) = ui {
+                let (ui, palette) = *ui;
                 model.state.chrome.apply_palette(&ui, &palette);
                 model.switcher.set_palette(palette);
                 model.nav_default = ui.nav_position();
@@ -924,8 +959,14 @@ mod tests {
         );
         let ctl = update(&mut model(), Msg::Action(crate::model::Action::Rescan));
 
-        assert_eq!(key, ctl);
-        assert_eq!(key, vec![Effect::Command(crate::model::Command::Rescan)]);
+        assert!(matches!(
+            key.as_slice(),
+            [Effect::Command(crate::model::Command::Rescan)]
+        ));
+        assert!(matches!(
+            ctl.as_slice(),
+            [Effect::Command(crate::model::Command::Rescan)]
+        ));
     }
 
     #[test]
@@ -958,7 +999,7 @@ mod tests {
         let effects = update(&mut model, Msg::MouseSelect { col, row });
 
         assert!(effects.is_empty());
-        assert_eq!(model.state().selection.session, "work");
+        assert_eq!(model.state.selection.session, "work");
     }
 
     #[test]
@@ -979,6 +1020,77 @@ mod tests {
             host.as_slice(),
             [Effect::Event(crate::model::EventEffect::Refetch { host })] if host == "local"
         ));
-        assert_eq!(command, vec![Effect::Command(crate::model::Command::Quit)]);
+        assert!(matches!(
+            command.as_slice(),
+            [Effect::Command(crate::model::Command::Quit)]
+        ));
+    }
+
+    #[test]
+    fn host_event_preserves_state_actions_before_runtime_followups() {
+        let mut model = AppModel::from_sources(Vec::new());
+        let connected = super::host_event_effects(
+            &mut model,
+            crate::link::HostEvent::Connected {
+                host: "jup".into(),
+                sessions: Vec::new(),
+            },
+        );
+        assert!(matches!(
+            connected.as_slice(),
+            [
+                crate::model::EventEffect::MarkConnected { host: marked },
+                crate::model::EventEffect::ApplyInventory { host: applied, .. }
+            ] if marked == "jup" && applied == "jup"
+        ));
+
+        let exited = super::host_event_effects(
+            &mut model,
+            crate::link::HostEvent::Exited {
+                host: "jup".into(),
+                reason: Some("connection refused".into()),
+            },
+        );
+        assert!(matches!(
+            exited.as_slice(),
+            [
+                crate::model::EventEffect::NoteHostExited { host: noted, .. },
+                crate::model::EventEffect::ReapHost { host: reaped }
+            ] if noted == "jup" && reaped == "jup"
+        ));
+
+        model.state.scanning.insert("jup".into());
+        let scanned = super::host_event_effects(
+            &mut model,
+            crate::link::HostEvent::Scanned {
+                source: "jup".into(),
+                detected: None,
+                err: Some("mux not found".into()),
+            },
+        );
+        assert!(matches!(
+            scanned.as_slice(),
+            [
+                crate::model::EventEffect::ApplySourceResult {
+                    source: applied,
+                    ..
+                },
+                crate::model::EventEffect::DispatchScanned {
+                    source: dispatched,
+                    ..
+                }
+            ] if applied == "jup" && dispatched == "jup"
+        ));
+    }
+
+    #[test]
+    fn cancelling_login_keeps_the_running_marker_until_the_result_arrives() {
+        let mut model = model();
+        model.state.login_run = Some(crate::link::unlock::RunningLogin::parked("local"));
+
+        let effects = update(&mut model, Msg::CancelRunningLogin);
+
+        assert!(model.state.login_run.is_some());
+        assert!(matches!(effects.as_slice(), [Effect::CancelLogin(_)]));
     }
 }
