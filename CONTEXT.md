@@ -608,6 +608,59 @@ The remaining layers each own one concern:
   capabilities a driver borrows, and the thin wrapper that resolves a source's
   driver. It names no concrete mux type.
 
+### Layer Direction
+
+Backend code depends sideways or downward and never reaches into application,
+presentation, or application-state ownership. State depends on backend code and
+itself, never on application or presentation code. A source file belongs to the
+directory directly below `src/`, or to the root module named by its `.rs` file.
+
+| Importing module | Allowed target modules |
+| --- | --- |
+| `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `transport` | `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `transport` |
+| `state` | `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `state`, `transport` |
+| `app`, `cli`, `lib`, `main`, `ui` | `app`, `cli`, `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `state`, `transport`, `ui` |
+
+The repository architecture check scans production source and `#[cfg(test)]`
+modules. It names each known exception by source file and target module. That
+list is exact and may only shrink: an unlisted edge and an obsolete exception
+both fail the check.
+
+### View Purity
+
+The View Purity rule requires rendering to read the application model and write
+only the frame. Its required data direction is application model, immutable
+`RenderPlan`, frame. Paint and input hit-testing must consume the same plan
+without either owning or mutating it.
+
+Known exceptions:
+
+- The switcher renderer takes mutable switcher state and records the frame area,
+  nav layout, scroll offset, hit-test cells, and popup rectangles during paint.
+- Paint changes whether the host band is hidden when selection enters a session.
+
+### Single Update Owner
+
+The Single Update Owner rule permits only the update transition to mutate
+application state. Key, mouse, and semantic ctl input are messages for that
+transition. Raw terminal bytes are the sole direct path because they are payload
+for the selected terminal display rather than an application-state transition.
+
+Known exceptions:
+
+- Switcher key handling mutates switcher and state directly. The rescan key
+  changes switcher state and asks the runtime to scan, while semantic ctl rescan
+  applies a domain action.
+- Mouse row selection mutates the switcher directly before the runtime reconciles
+  the selected display.
+- Source events use a separate state mutation site that also receives mutable
+  switcher and connection state.
+- The runtime owns switcher, nav geometry, mouse state, connected sources, and
+  detecting sources beside the state value.
+- The general command executor skips attach and selected-session persistence
+  effects. Tick handling executes those effects, and source-event effects use a
+  separate executor.
+
 ## Asked-for requests
 
 **xmux reaches a machine only when something asked it to.** Every request traces to one

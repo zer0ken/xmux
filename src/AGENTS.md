@@ -107,6 +107,23 @@ the debounced attach, and renders the live split view.
 
 ## Invariants
 
+- **Layer Direction:** `display`, `driver`, `link`, `logging`, `model`, `mux`,
+  `provision`, `session`, and `transport` import only backend peers. `state`
+  imports backend peers and itself. Neither layer imports upward into `app` or
+  `ui`, and backend modules do not import `state`. The architecture check includes
+  `#[cfg(test)]` modules and holds the exact known exceptions. `CONTEXT.md` owns
+  the complete allowed-edge table.
+- **View Purity:** rendering must read the application model and write only the
+  frame. Layout and hit testing must pass through an immutable `RenderPlan`
+  rather than mutable view state. Known exceptions: the switcher renderer
+  records layout and hit-test state and changes host-band visibility during
+  paint.
+- **Single Update Owner:** the rule permits only the update transition to mutate
+  application state. Key, mouse, and semantic ctl inputs are messages for it;
+  raw terminal bytes are the sole direct path. Known exceptions: key, mouse, and
+  source-event paths mutate state directly, and effect execution is split across
+  command, tick, and source-event paths. `CONTEXT.md` names each current path.
+
 - The nav's live size travels as one value (the width the user set, the width on screen,
   the portrait band's height, the attachment side, and the collapsed state), never as
   loose values: the effective width has a single
@@ -114,7 +131,8 @@ the debounced attach, and renders the live split view.
   same value, so a resize while xmux runs cannot reach one consumer and miss another.
 - Applying a domain action to the runtime state is the single intent-driven
   mutation site, and applying a source event is the matching event-driven one.
-  Keys and ctl can never diverge, because both flow through the same apply.
+  Semantic ctl actions use the intent-driven site; switcher keys and mouse input
+  can mutate switcher state directly instead.
 - Every batch of commands a switcher key produces routes through the single
   command dispatcher, never a filter that keeps only one command kind, so no
   future command from a key is silently dropped.

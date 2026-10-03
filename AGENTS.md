@@ -61,6 +61,50 @@ state; raw key and text injection is an unstable low-level surface.
 
 ## Invariants
 
+### Layer Direction
+
+Backend modules never import the application, presentation, or application-state
+layers. State imports backend modules and itself, never the application or
+presentation layers. Every `crate::<top>` edge follows this table. A file belongs
+to the directory directly below `src/`, or to the root module named by its `.rs`
+file.
+
+| Importing module | Allowed target modules |
+| --- | --- |
+| `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `transport` | `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `transport` |
+| `state` | `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `state`, `transport` |
+| `app`, `cli`, `lib`, `main`, `ui` | `app`, `cli`, `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `state`, `transport`, `ui` |
+
+The architecture check includes `#[cfg(test)]` modules and lists every known
+exception by source file and target module. The exception list is exact: a new
+edge fails the check, and removing an edge without removing its exception also
+fails the check.
+
+### View Purity
+
+The View Purity rule requires rendering to read the application model and write
+only the frame. Its required data direction is application model, immutable
+`RenderPlan`, frame. Rendering must not mutate application, layout, interaction,
+or hit-test state.
+
+Known exceptions:
+
+- The switcher renderer records layout and hit-test state and changes host-band
+  visibility while painting. `CONTEXT.md` names the current mutation surface.
+
+### Single Update Owner
+
+The Single Update Owner rule permits only the update transition to mutate
+application state. Key, mouse, and semantic ctl input become messages for that
+transition. Raw terminal bytes are the only direct input path and go to the
+selected terminal display.
+
+Known exceptions:
+
+- Key, mouse, and source-event paths mutate state outside one update transition,
+  and effect execution is split across command, tick, and source-event paths.
+  `CONTEXT.md` names each current path.
+
 - ASKED-FOR REQUESTS ONLY. xmux reaches a machine only when something asked it to.
   Every request traces to one of three things: the launch scan, a user action (a
   re-scan, a login, selecting a card, an operation on a session), or a push stream
