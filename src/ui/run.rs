@@ -8,7 +8,7 @@ use crate::ui::switcher::Switcher;
 /// Renders the switcher to an off-screen buffer and flattens it as the control
 /// channel's `dump` payload.
 pub fn dump_switcher(
-    switcher: &mut Switcher,
+    switcher: &Switcher,
     state: &crate::state::State,
     width: u16,
     height: u16,
@@ -29,7 +29,7 @@ pub fn dump_switcher(
 /// grid, without a real terminal. `previous` is the plan of the last drawn frame, so
 /// the dump lays out from the same scroll offsets as the screen.
 pub fn dump_screen(
-    switcher: &mut Switcher,
+    switcher: &Switcher,
     grid: Option<&crate::display::grid::Grid>,
     width: u16,
     height: u16,
@@ -95,8 +95,8 @@ mod tests {
     #[tokio::test]
     async fn dump_switcher_flattens_buffer() {
         let mut state = crate::state::State::from_scan(sample());
-        let mut sw = Switcher::new(&mut state);
-        let out = dump_switcher(&mut sw, &state, 100, 30);
+        let sw = Switcher::new(&mut state);
+        let out = dump_switcher(&sw, &state, 100, 30);
         // The dump renders the full screen (tree and hint bar); at rest the bar shows the
         // prefix and collapse button.
         assert!(out.contains("editor"));
@@ -106,13 +106,13 @@ mod tests {
     #[tokio::test]
     async fn dump_screen_renders_the_live_grid() {
         let mut state = crate::state::State::from_scan(sample());
-        let mut sw = Switcher::new(&mut state);
+        let sw = Switcher::new(&mut state);
         let mut grid = crate::display::grid::Grid::new(30, 100);
         grid.feed(b"LIVEGRID");
         // A dump with a live grid includes both the tree and the grid content (the
         // terminal view), so a headless `dump` reflects the live grid.
         let out = dump_screen(
-            &mut sw,
+            &sw,
             Some(&grid),
             100,
             30,

@@ -270,7 +270,7 @@ mod tests {
                         let _ = sw.handle_key(k, &mut state);
                     }
                     Cmd::Dump(reply) => {
-                        let _ = reply.send(dump_switcher(&mut sw, &state, 100, 30));
+                        let _ = reply.send(dump_switcher(&sw, &state, 100, 30));
                     }
                     Cmd::Status(reply) => {
                         let _ = reply.send("focus=nav target=editor".into());

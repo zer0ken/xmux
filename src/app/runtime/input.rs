@@ -28,10 +28,9 @@ impl Runtime {
             state,
             nav_position,
             nav_width,
-            mouse_state,
             ..
         } = model;
-        let nav_armed = &mut mouse_state.nav_armed;
+        let mut nav_armed = model.mouse_state.nav_armed;
         let (prefix, cols, rows, nav_width) = (*prefix, *cols, *rows, *nav_width);
         let mut focus_terminal = false;
         let mut quit = false;
@@ -47,7 +46,7 @@ impl Runtime {
             // help modal and the inline input both swallow prefix/Enter, so `prefix q`
             // can't quit and Enter can't focus the terminal while one is on screen.
             let is_inputting = state.is_modal_popup_open();
-            match resolve_nav_key(key, nav_armed, prefix, is_inputting, *nav_position) {
+            match resolve_nav_key(key, &mut nav_armed, prefix, is_inputting, *nav_position) {
                 // A committed input/kill confirm folds through State::apply, which returns
                 // its Commands; collect them and dispatch the whole batch below.
                 Some(Action::NavKey(k)) => model_msgs.push(Msg::Key(k)),
@@ -68,6 +67,8 @@ impl Runtime {
                 Some(Action::Forward(_)) | Some(Action::FocusNav(_)) | None => {}
             }
         }
+        let effects = update(&mut self.model, Msg::SetMouseNavArmed(nav_armed));
+        debug_assert!(effects.is_empty());
         // Route the full command batch through the runtime executor so every command a
         // switcher key produces is acted on. Merge its loop signals into this input read.
         let effects = model_msgs
@@ -114,30 +115,7 @@ impl Runtime {
         mouse_focus_toggle: &mut bool,
         wheel_scrolled: &mut bool,
     ) -> bool {
-        // Split-borrow the world state into the loose names the (verbatim) gesture body uses.
-        let Self {
-            term_input,
-            model,
-            registry,
-            mgr,
-            env,
-            hosts,
-            cols,
-            body_rows,
-            ..
-        } = self;
-        let AppModel {
-            mouse_state: st,
-            switcher,
-            render_plan,
-            state,
-            nav_width_natural,
-            nav_collapsed,
-            nav_height,
-            nav_width,
-            ..
-        } = model;
-        let (cols, body_rows, nav_width) = (*cols, *body_rows, *nav_width);
+        let (cols, body_rows, nav_width) = (self.cols, self.body_rows, self.model.nav_width);
         let mut dirty = false;
         // A prefix is armed only until the next INPUT, and a mouse action is input. Mouse
         // bytes are scanned out of the stream before either focus path's key handling sees
@@ -146,12 +124,13 @@ impl Runtime {
         // user meant for the pane. Bare hover is not an action: the pointer drifting across
         // the screen must not break a chord that is still being typed.
         let idle_motion = ev.pressed && (ev.cb & 0x23) == 0x23;
-        if !idle_motion && (st.nav_armed || term_input.is_armed()) {
-            st.nav_armed = false;
-            term_input.disarm();
+        if !idle_motion && (self.model.mouse_state.nav_armed || self.term_input.is_armed()) {
+            let effects = update(&mut self.model, Msg::SetMouseNavArmed(false));
+            debug_assert!(effects.is_empty());
+            self.term_input.disarm();
             dirty = true;
         }
-        let in_mux = to_grid_local(render_plan.regions.terminal, ev.col, ev.row);
+        let in_mux = to_grid_local(self.model.render_plan.regions.terminal, ev.col, ev.row);
         // A LEFT-button press in the UNFOCUSED view switches focus to that
         // view: focus only, the click is not delivered. Within the focused
         // terminal view, the click forwards.
@@ -168,23 +147,26 @@ impl Runtime {
         // The view border rect from the one shared geometry, so the grab / hover works in
         // any placement: a vertical rule in a column, a horizontal rule in a band. The
         // drag then resizes the nav WIDTH (column, by column) or HEIGHT (band, by row).
-        let full = render_plan.screen_area;
-        let regions = render_plan.regions;
-        let on_view_border = !render_plan.nav_hidden
-            && !render_plan.nav_collapsed
+        let full = self.model.render_plan.screen_area;
+        let regions = self.model.render_plan.regions;
+        let on_view_border = !self.model.render_plan.nav_hidden
+            && !self.model.render_plan.nav_collapsed
             && regions
                 .view_border
                 .contains(ratatui::layout::Position { x: col0, y: row0 });
         let top_layout = regions.layout == crate::ui::switcher::ViewLayout::Band;
-        if st.dragging_view_border {
+        if self.model.mouse_state.dragging_view_border {
             if !ev.pressed {
                 // Button up ends the drag; persist the final size once (motion resizes live
                 // but does not write per cell). A band drags the height, a column the width.
-                st.dragging_view_border = false;
+                let effects = update(&mut self.model, Msg::SetMouseDragging(false));
+                debug_assert!(effects.is_empty());
                 if top_layout {
-                    crate::app::prefs::save_nav_height(&env.xmux_dir, *nav_height);
+                    let effects = vec![Effect::PersistNavHeight(self.model.nav_height)];
+                    let _ = self.execute_effects(effects);
                 } else {
-                    crate::app::prefs::save_nav_width(&env.xmux_dir, *nav_width_natural);
+                    let effects = vec![Effect::PersistNavWidth(self.model.nav_width_natural)];
+                    let _ = self.execute_effects(effects);
                 }
             } else if !is_wheel {
                 // The DRAG measures from the near edge: a band drags the height (from the
@@ -195,21 +177,25 @@ impl Runtime {
                     let target = view_border_drag_height(
                         ev.row,
                         full.height,
-                        render_plan.nav_position == crate::ui::switcher::NavPosition::Bottom,
+                        self.model.render_plan.nav_position
+                            == crate::ui::switcher::NavPosition::Bottom,
                     );
-                    if target != *nav_height {
-                        *nav_height = target;
+                    if target != self.model.nav_height {
+                        let effects = update(&mut self.model, Msg::SetNavHeight(target));
+                        debug_assert!(effects.is_empty());
                         dirty = true;
                     }
                 } else {
                     let target = view_border_drag_width(
                         ev.col,
-                        &env.ui_prefix,
+                        &self.env.ui_prefix,
                         full.width,
-                        render_plan.nav_position == crate::ui::switcher::NavPosition::Right,
+                        self.model.render_plan.nav_position
+                            == crate::ui::switcher::NavPosition::Right,
                     );
-                    if target != *nav_width_natural {
-                        *nav_width_natural = target;
+                    if target != self.model.nav_width_natural {
+                        let effects = update(&mut self.model, Msg::SetNavNaturalWidth(target));
+                        debug_assert!(effects.is_empty());
                         dirty = true;
                     }
                 }
@@ -220,37 +206,53 @@ impl Runtime {
         // A modal popup (help/input/confirm) moves when its border is
         // dragged. Once grabbed it owns every mouse event until release,
         // like the view border drag above.
-        if switcher.popup_drag_active() {
+        if self.model.switcher.popup_drag_active() {
             if !ev.pressed {
-                switcher.end_popup_drag();
+                let effects = update(&mut self.model, Msg::EndPopupDrag);
+                debug_assert!(effects.is_empty());
             } else if !is_wheel {
-                switcher.drag_popup(col0, ev.row.saturating_sub(1));
+                let effects = update(
+                    &mut self.model,
+                    Msg::DragPopup {
+                        col: col0,
+                        row: ev.row.saturating_sub(1),
+                    },
+                );
+                debug_assert!(effects.is_empty());
             }
             dirty = true;
             return dirty;
         }
-        if is_left_press
-            && switcher.begin_popup_drag_in_plan(render_plan, col0, ev.row.saturating_sub(1), state)
-        {
-            dirty = true;
-            return dirty;
+        if is_left_press {
+            let effects = update(
+                &mut self.model,
+                Msg::BeginPopupDrag {
+                    col: col0,
+                    row: ev.row.saturating_sub(1),
+                },
+            );
+            debug_assert!(effects.is_empty());
+            if self.model.switcher.popup_drag_active() {
+                dirty = true;
+                return dirty;
+            }
         }
         // A modal popup is mouse-modal: while one is open, every mouse
         // event that is not its border-drag (handled above) is swallowed,
         // so clicks, wheels, view border grabs, and hovers never reach the
         // nav/terminal/view border behind it.
-        if state.is_modal_popup_open() {
+        if self.model.state.is_modal_popup_open() {
             return dirty;
         }
-        let button = render_plan.collapse_button;
+        let button = self.model.render_plan.collapse_button;
         if is_left_press && button.contains(ratatui::layout::Position { x: col0, y: row0 }) {
-            *nav_collapsed = !*nav_collapsed;
-            crate::app::prefs::save_nav_collapsed(&env.xmux_dir, *nav_collapsed);
-            st.hovered_view_border = false;
+            let effects = update(&mut self.model, Msg::ToggleNavCollapsed);
+            let _ = self.execute_effects(effects);
             return true;
         }
         if is_left_press && on_view_border {
-            st.dragging_view_border = true; // grabbed the view border
+            let effects = update(&mut self.model, Msg::SetMouseDragging(true));
+            debug_assert!(effects.is_empty()); // grabbed the view border
             return dirty;
         }
         // Idle motion (motion bit set, no button held) - reported only
@@ -261,8 +263,9 @@ impl Runtime {
         // the nav it is harmlessly dropped.
         if idle_motion {
             let over_view_border = on_view_border;
-            if over_view_border != st.hovered_view_border {
-                st.hovered_view_border = over_view_border;
+            if over_view_border != self.model.mouse_state.hovered_view_border {
+                let effects = update(&mut self.model, Msg::SetMouseHovered(over_view_border));
+                debug_assert!(effects.is_empty());
                 dirty = true;
             }
             if over_view_border {
@@ -276,7 +279,7 @@ impl Runtime {
             is_wheel,
             down,
             is_left_press,
-            state.focus.is_nav_focused(),
+            self.model.state.focus.is_nav_focused(),
             in_mux.is_some(),
         ) {
             ChainAction::ScrollNav(down) => {
@@ -314,8 +317,8 @@ impl Runtime {
                 // the whole interaction, not just at the next poll. No-op off Windows.
                 crate::display::term::ensure_mouse_capture();
                 if let Some((gc, gr)) = in_mux {
-                    registry.input(
-                        &display_key(hosts, selection),
+                    self.registry.input(
+                        &display_key(&self.hosts, selection),
                         crate::display::mouse::encode_sgr_mouse(ev, gc, gr),
                     );
                 }
@@ -323,11 +326,18 @@ impl Runtime {
             ChainAction::Nothing => {}
         }
         if let Some(msg) = model_msg {
-            let effects = update(model, msg);
-            debug_assert!(effects.is_empty());
+            let effects = update(&mut self.model, msg);
+            let _ = self.execute_effects(effects);
         }
         if ensure_after_update {
-            ensure_current_host(mgr, hosts, &model.switcher, cols, body_rows, nav_width);
+            ensure_current_host(
+                &mut self.mgr,
+                &self.hosts,
+                &self.model.switcher,
+                cols,
+                body_rows,
+                nav_width,
+            );
         }
         dirty
     }
@@ -347,40 +357,18 @@ impl Runtime {
     /// the terminal keeps room, and persisted; width defers to `apply_width_delta` (the
     /// caller schedules the debounced persist). Returns whether the size changed.
     pub(super) fn resize_axis(&mut self, horizontal: bool, delta: i32) -> bool {
-        let top = self.model.render_plan.layout == crate::ui::switcher::ViewLayout::Band;
-        // With the nav on the right or below the same screen direction resizes the nav the
-        // other way, so flip the delta to keep the key's direction on the border's movement.
-        let delta = if self.model.nav_position.forward_arrows_face_terminal() {
-            delta
-        } else {
-            -delta
-        };
-        match (horizontal, top) {
-            (true, false) => apply_width_delta(
+        let before = (self.model.nav_width_natural, self.model.nav_height);
+        let effects = update(
+            &mut self.model,
+            Msg::ResizeNav {
+                horizontal,
                 delta,
-                &mut self.model.nav_width_natural,
-                &self.env.ui_prefix,
-            ),
-            (false, true) => {
-                let base = if self.model.nav_height == 0 {
-                    crate::ui::switcher::default_nav_height(self.body_rows)
-                } else {
-                    self.model.nav_height
-                };
-                let ceil = self
-                    .body_rows
-                    .saturating_sub(2)
-                    .clamp(NAV_HEIGHT_MIN, NAV_HEIGHT_MAX);
-                let next = (base as i32 + delta).clamp(NAV_HEIGHT_MIN as i32, ceil as i32) as u16;
-                if next == self.model.nav_height {
-                    return false;
-                }
-                self.model.nav_height = next;
-                crate::app::prefs::save_nav_height(&self.env.xmux_dir, self.model.nav_height);
-                true
-            }
-            _ => false, // perpendicular axis for this layout: nothing to resize
-        }
+                body_rows: self.body_rows,
+                ui_prefix: self.env.ui_prefix.clone(),
+            },
+        );
+        let _ = self.execute_effects(effects);
+        before != (self.model.nav_width_natural, self.model.nav_height)
     }
 
     /// A keyboard resize step: apply the delta on its axis (no-op for zero, or for the
@@ -392,8 +380,13 @@ impl Runtime {
             return false;
         }
         let changed = self.resize_axis(horizontal, delta);
-        self.model.mouse_state.repeat_until =
-            Some(std::time::Instant::now() + std::time::Duration::from_millis(RESIZE_REPEAT_MS));
+        let effects = update(
+            &mut self.model,
+            Msg::SetResizeRepeat(Some(
+                std::time::Instant::now() + std::time::Duration::from_millis(RESIZE_REPEAT_MS),
+            )),
+        );
+        debug_assert!(effects.is_empty());
         changed
     }
 
@@ -458,7 +451,8 @@ impl Runtime {
         // leftover bytes) ends the drag and persists the final width, so the user is
         // never trapped past the next input.
         if self.model.mouse_state.dragging_view_border && !non_mouse.is_empty() {
-            self.model.mouse_state.dragging_view_border = false;
+            let effects = update(&mut self.model, Msg::SetMouseDragging(false));
+            debug_assert!(effects.is_empty());
             // The recovery doesn't track which axis was dragging; persist both (a no-op file
             // write for the unchanged one) so the final size is never lost.
             crate::app::prefs::save_nav_width(&self.env.xmux_dir, self.model.nav_width_natural);
@@ -467,7 +461,8 @@ impl Runtime {
         // Watchdog: same recovery for a popup border-drag - a lost button-up
         // must not strand `popup_drag` and eat all later mouse input.
         if self.model.switcher.popup_drag_active() && !non_mouse.is_empty() {
-            self.model.switcher.end_popup_drag();
+            let effects = update(&mut self.model, Msg::EndPopupDrag);
+            debug_assert!(effects.is_empty());
             *dirty = true;
         }
         if mouse_focus_toggle {
@@ -514,14 +509,21 @@ impl Runtime {
                 non_mouse.drain(0..n);
                 *dirty = true;
                 if non_mouse.is_empty() {
-                    self.model.mouse_state.repeat_until =
-                        Some(std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS));
+                    let effects = update(
+                        &mut self.model,
+                        Msg::SetResizeRepeat(Some(
+                            std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
+                        )),
+                    );
+                    debug_assert!(effects.is_empty());
                     consumed_by_repeat = true;
                 } else {
-                    self.model.mouse_state.repeat_until = None; // trailing non-arrow bytes end + route below
+                    let effects = update(&mut self.model, Msg::SetResizeRepeat(None));
+                    debug_assert!(effects.is_empty()); // trailing non-arrow bytes end + route below
                 }
             } else {
-                self.model.mouse_state.repeat_until = None; // first key isn't a Ctrl-arrow → end the window
+                let effects = update(&mut self.model, Msg::SetResizeRepeat(None));
+                debug_assert!(effects.is_empty()); // first key isn't a Ctrl-arrow → end the window
             }
         }
         if !consumed_by_repeat
@@ -553,15 +555,13 @@ impl Runtime {
                 *width_changed = true;
             }
             if th {
-                toggle_auto_hide(&mut self.model.auto_hide_nav, &self.env.xmux_dir);
+                let effects = update(&mut self.model, Msg::ToggleAutoHide);
+                let _ = self.execute_effects(effects);
                 *dirty = true;
             }
             if cp {
-                cycle_nav_position(
-                    &mut self.model.nav_position_pinned,
-                    self.model.nav_position,
-                    &self.env.xmux_dir,
-                );
+                let effects = update(&mut self.model, Msg::CycleNavPosition);
+                let _ = self.execute_effects(effects);
                 *dirty = true;
             }
         } else if !consumed_by_repeat {
@@ -589,12 +589,12 @@ impl Runtime {
                             *dirty = true;
                         } else if self.model.switcher.current_host_blocked() {
                             if let Some(source) = self.model.switcher.current_source() {
-                                if let Some(cmd) = self.model.state.feed_login(&source, &f) {
-                                    let (cq, cwc) = self.execute_commands(vec![cmd]);
-                                    *quit |= cq;
-                                    if cwc {
-                                        *width_changed = true;
-                                    }
+                                let effects =
+                                    update(&mut self.model, Msg::FeedLogin { source, bytes: f });
+                                let (cq, cwc, _) = self.execute_effects(effects);
+                                *quit |= cq;
+                                if cwc {
+                                    *width_changed = true;
                                 }
                                 *dirty = true;
                             }
@@ -627,15 +627,13 @@ impl Runtime {
                         }
                     }
                     Action::ToggleAutoHide => {
-                        toggle_auto_hide(&mut self.model.auto_hide_nav, &self.env.xmux_dir);
+                        let effects = update(&mut self.model, Msg::ToggleAutoHide);
+                        let _ = self.execute_effects(effects);
                         *dirty = true;
                     }
                     Action::CycleNavPosition => {
-                        cycle_nav_position(
-                            &mut self.model.nav_position_pinned,
-                            self.model.nav_position,
-                            &self.env.xmux_dir,
-                        );
+                        let effects = update(&mut self.model, Msg::CycleNavPosition);
+                        let _ = self.execute_effects(effects);
                         *dirty = true;
                     }
                     // prefix n/r reach here from terminal focus: run them through the
@@ -662,10 +660,13 @@ impl Runtime {
             // Leaving the nav for the terminal: a nav-side pending prefix has no key-up
             // once the terminal owns stdin, so clear it here instead of waiting for a
             // release that is now delivered elsewhere.
-            self.model.mouse_state.nav_armed = false;
-            self.model.state.apply(crate::model::Action::Focus(
-                crate::model::FocusTarget::Terminal,
-            ));
+            let effects = update(&mut self.model, Msg::SetMouseNavArmed(false));
+            debug_assert!(effects.is_empty());
+            let effects = update(
+                &mut self.model,
+                Msg::Focus(crate::model::FocusTarget::Terminal),
+            );
+            let _ = self.execute_effects(effects);
             // No term.clear(): both states draw the SAME split layout (only the
             // view border colour changes), so clearing would blank the screen and
             // force a full repaint for nothing.
@@ -676,19 +677,21 @@ impl Runtime {
             // prefix here instead of waiting for a release that will not arrive (a stale
             // prefix would keep the status bar up forever).
             self.term_input.disarm();
-            self.model
-                .state
-                .apply(crate::model::Action::Focus(crate::model::FocusTarget::Nav));
+            let effects = update(&mut self.model, Msg::Focus(crate::model::FocusTarget::Nav));
+            let _ = self.execute_effects(effects);
             if !nav_replay.is_empty() {
                 let (ft, q, wd, hd, th, cp) = self.handle_nav_bytes(nav_replay, width_changed);
                 if ft {
                     // The replayed bytes switch focus back to the terminal: clear the
                     // nav-side latches the replay may have armed, same as the direct
                     // terminal-focus path above.
-                    self.model.mouse_state.nav_armed = false;
-                    self.model.state.apply(crate::model::Action::Focus(
-                        crate::model::FocusTarget::Terminal,
-                    ));
+                    let effects = update(&mut self.model, Msg::SetMouseNavArmed(false));
+                    debug_assert!(effects.is_empty());
+                    let effects = update(
+                        &mut self.model,
+                        Msg::Focus(crate::model::FocusTarget::Terminal),
+                    );
+                    let _ = self.execute_effects(effects);
                 }
                 *quit = *quit || q;
                 // A prefix-driven resize on the replayed bytes: same as the direct path above.
@@ -698,15 +701,13 @@ impl Runtime {
                     *width_changed = true;
                 }
                 if th {
-                    toggle_auto_hide(&mut self.model.auto_hide_nav, &self.env.xmux_dir);
+                    let effects = update(&mut self.model, Msg::ToggleAutoHide);
+                    let _ = self.execute_effects(effects);
                     *dirty = true;
                 }
                 if cp {
-                    cycle_nav_position(
-                        &mut self.model.nav_position_pinned,
-                        self.model.nav_position,
-                        &self.env.xmux_dir,
-                    );
+                    let effects = update(&mut self.model, Msg::CycleNavPosition);
+                    let _ = self.execute_effects(effects);
                     *dirty = true;
                 }
             }

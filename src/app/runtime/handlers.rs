@@ -110,7 +110,14 @@ impl Runtime {
                         | Effect::Event(_)
                         | Effect::EventBatch(_)
                         | Effect::LoginApplied { .. }
-                        | Effect::StartLogin { .. } => {
+                        | Effect::StartLogin { .. }
+                        | Effect::PersistNavWidth(_)
+                        | Effect::PersistNavHeight(_)
+                        | Effect::PersistNavCollapsed(_)
+                        | Effect::PersistAutoHide(_)
+                        | Effect::PersistNavPosition(_)
+                        | Effect::ReattachDisplay(_)
+                        | Effect::CancelLogin(_) => {
                             unreachable!("inventory update emitted an unrelated effect")
                         }
                     }
@@ -294,7 +301,7 @@ impl Runtime {
                         },
                     );
                     debug_assert!(effects.is_empty());
-                    scan_or_dispatch_host(mgr, hosts, &mut model.detecting, &id, vc, vr, scan_pool);
+                    scan_or_dispatch_host(mgr, hosts, model, &id, vc, vr, scan_pool);
                 }
             }
             EventEffect::ApplyRoster { roster } => {
@@ -437,15 +444,7 @@ impl Runtime {
                             dispatch_detected_host(mgr, hosts, source, vc, vr);
                         }
                     } else {
-                        scan_or_dispatch_host(
-                            mgr,
-                            hosts,
-                            &mut model.detecting,
-                            source,
-                            vc,
-                            vr,
-                            scan_pool,
-                        );
+                        scan_or_dispatch_host(mgr, hosts, model, source, vc, vr, scan_pool);
                     }
                 }
                 // Mux discovery is a machine-level question, asked once per connect and
@@ -802,37 +801,27 @@ impl Runtime {
     ) {
         use std::time::Duration;
         // Advance the spinner from wall-clock so it animates regardless of which arm fired.
-        self.model
-            .state
-            .chrome
-            .set_spinner_frame(spinner_frame_at(self.spinner_start.elapsed()));
-        self.model
-            .state
-            .chrome
-            .set_view_border_hovered(self.model.mouse_state.hovered_view_border);
+        let spinner_frame = spinner_frame_at(self.spinner_start.elapsed());
+        let view_border_hovered = self.model.mouse_state.hovered_view_border;
         // The repeat window lapses on the clock, not on an event, so compare before
         // storing: a bar that just went idle must repaint even though nothing arrived.
         let prefix_active = self.prefix_active();
         if self.model.state.chrome.armed != prefix_active {
             self.dirty = true;
         }
-        self.model.state.chrome.set_armed(prefix_active);
-        self.model.switcher.sync_prefix(prefix_active);
-        // Derive the modal dimension of focus from the open-modal kind (single owner of
-        // the modal/view reconciliation).
-        let modal_kind = self.model.state.modal_kind();
-        self.model.state.focus.sync_modal(modal_kind);
-        let nav_focused = self.model.state.focus.view_is_nav();
-        // The nav decides its host band on the move into the terminal view. The view
-        // behind a modal counts as the focused one: a popup over the terminal view is not
-        // a move back into the nav.
-        self.model.switcher.sync_view_focus(!nav_focused);
-        if nav_focused && !self.model.nav_was_focused && self.model.nav_collapsed {
-            self.model.nav_collapsed = false;
-            crate::app::prefs::save_nav_collapsed(&self.env.xmux_dir, false);
+        let collapsed_before = self.model.nav_collapsed;
+        let effects = update(
+            &mut self.model,
+            Msg::SyncFrame {
+                spinner_frame,
+                view_border_hovered,
+                prefix_active,
+            },
+        );
+        let _ = self.execute_effects(effects);
+        if collapsed_before != self.model.nav_collapsed {
             self.dirty = true;
         }
-        self.model.nav_was_focused = nav_focused;
         // The single owner of the effective nav width: reconcile it to the focus + the
         // hide setting + any natural-width change. On a change, resize the PTYs so the
         // mux reflows, and mark dirty.
@@ -865,10 +854,14 @@ impl Runtime {
             // gets the same treatment.
             let crossed_hidden = (want_nav_width == 0) != (self.model.nav_width == 0);
             let crossed_position = want_position != self.model.nav_position;
-            self.model.nav_position = want_position;
-            self.model.nav_width = want_nav_width;
-            self.model.applied_nav_height = self.model.nav_height;
-            self.model.applied_nav_collapsed = self.model.nav_collapsed;
+            let effects = update(
+                &mut self.model,
+                Msg::ReconcileNav {
+                    width: want_nav_width,
+                    position: want_position,
+                },
+            );
+            debug_assert!(effects.is_empty());
             let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
             self.registry.resize_all(vc, vr);
             if crossed_hidden || crossed_position {
@@ -880,29 +873,19 @@ impl Runtime {
         }
         // The cheatsheet and the help modal name the arrow pair the CURRENT placement
         // makes active, so they read the resolved position every frame.
-        self.model
-            .state
-            .chrome
-            .set_nav_position(self.model.nav_position);
         // A portable-pty child spawn clears ENABLE_MOUSE_INPUT on the parent CONIN,
         // killing mouse capture; re-assert it whenever it drifts off.
         crate::display::term::ensure_mouse_capture();
         // An `r` re-scan also re-attaches the CURRENT display: tear the (possibly dead)
         // attachment down and clear its latch so the attach below re-creates a fresh
         // client for the viewed session.
-        if self.model.switcher.take_reattach_kick() && !self.model.state.selection.is_empty() {
-            let key = display_key(&self.hosts, &self.model.state.selection);
-            self.registry.remove(&key);
-            if let Some(h) = self.hosts.get_mut(&self.model.state.selection.source) {
-                h.display.clear(&key); // drop the prior latch so the re-attach is fresh
-            }
-            self.model.state.apply(crate::model::Action::ClearDisplay); // nothing confirmed → blank view
-            self.model
-                .state
-                .apply(crate::model::Action::RearmAttachNow {
-                    now: std::time::Instant::now(),
-                });
-        }
+        let effects = update(
+            &mut self.model,
+            Msg::ConsumeReattach {
+                now: std::time::Instant::now(),
+            },
+        );
+        let _ = self.execute_effects(effects);
         // The two regions must name ONE session. In terminal focus the user is driving
         // the mux, so the selection goes to the client; in nav focus the selection stands
         // and the beat below carries the client back to it.
@@ -917,16 +900,14 @@ impl Runtime {
         self.drive_attach_beat(std::time::Instant::now());
 
         // Flush the debounced nav-width persist once the resize burst settles.
-        if self.model.width_dirty
-            && self
-                .model
-                .width_flush_at
-                .is_some_and(|d| std::time::Instant::now() >= d)
-        {
-            crate::app::prefs::save_nav_width(&self.env.xmux_dir, self.model.nav_width_natural);
-            self.model.width_dirty = false;
-            self.model.width_flush_at = None;
-        }
+        let effects = update(
+            &mut self.model,
+            Msg::FlushWidth {
+                now: std::time::Instant::now(),
+                force: false,
+            },
+        );
+        let _ = self.execute_effects(effects);
 
         // Draw the split (nav + selected session's live grid). GATED - redraw only when
         // something changed AND at most once per frame, so rapid navigation / a busy PTY
@@ -950,10 +931,6 @@ impl Runtime {
             );
             let terminal_focused = self.model.state.focus.is_terminal_focused();
             // The view border glyph reflects auto-hide-nav mode (║ on, │ off).
-            self.model
-                .state
-                .chrome
-                .set_auto_hide(self.model.auto_hide_nav);
             let t_draw = std::time::Instant::now();
             let previous_plan = self.model.render_plan.clone();
             let mut next_plan = None;
@@ -1009,7 +986,8 @@ impl Runtime {
             // The plan is kept even when the flush fails: its scroll offsets are where the
             // next frame continues from.
             if let Some(plan) = next_plan {
-                self.model.render_plan = plan;
+                let effects = update(&mut self.model, Msg::SetRenderPlan(plan));
+                debug_assert!(effects.is_empty());
             }
             DrawObserver::slow_step("draw", t_draw);
             // The grids are now on screen - clear every attachment's output-coalescing flag.
@@ -1303,9 +1281,13 @@ impl Runtime {
             self.dirty = true;
         }
         if outcome.width_changed {
-            self.model.width_dirty = true;
-            self.model.width_flush_at =
-                Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
+            let effects = update(
+                &mut self.model,
+                Msg::MarkWidthDirty {
+                    flush_at: std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS),
+                },
+            );
+            debug_assert!(effects.is_empty());
         }
         outcome.quit
     }
@@ -1341,9 +1323,14 @@ impl Runtime {
                 let (quit_op, wc) = self.dispatch_action(action);
                 let _ = reply.send(resp);
                 if wc {
-                    self.model.width_dirty = true;
-                    self.model.width_flush_at =
-                        Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
+                    let effects = update(
+                        &mut self.model,
+                        Msg::MarkWidthDirty {
+                            flush_at: std::time::Instant::now()
+                                + Duration::from_millis(WIDTH_FLUSH_MS),
+                        },
+                    );
+                    debug_assert!(effects.is_empty());
                 }
                 if quit_op {
                     return true;
@@ -1392,7 +1379,7 @@ impl Runtime {
                     Some(g) => {
                         let guard = g.lock().ok();
                         dump_screen(
-                            &mut self.model.switcher,
+                            &self.model.switcher,
                             guard.as_deref(),
                             sz.width,
                             sz.height,
@@ -1401,7 +1388,7 @@ impl Runtime {
                         )
                     }
                     None => dump_screen(
-                        &mut self.model.switcher,
+                        &self.model.switcher,
                         None,
                         sz.width,
                         sz.height,
@@ -1417,9 +1404,14 @@ impl Runtime {
                 let effects = update(&mut self.model, Msg::Key(k));
                 let (quit_key, wc, _) = self.execute_effects(effects);
                 if wc {
-                    self.model.width_dirty = true;
-                    self.model.width_flush_at =
-                        Some(std::time::Instant::now() + Duration::from_millis(WIDTH_FLUSH_MS));
+                    let effects = update(
+                        &mut self.model,
+                        Msg::MarkWidthDirty {
+                            flush_at: std::time::Instant::now()
+                                + Duration::from_millis(WIDTH_FLUSH_MS),
+                        },
+                    );
+                    debug_assert!(effects.is_empty());
                 }
                 if quit_key {
                     return true;
@@ -1451,9 +1443,14 @@ impl Runtime {
                         self.dirty = true;
                     } else if self.model.switcher.current_host_blocked() {
                         if let Some(source) = self.model.switcher.current_source() {
-                            if let Some(cmd) = self.model.state.feed_login(&source, &bytes) {
-                                let _ = self.execute_commands(vec![cmd]);
-                            }
+                            let effects = update(
+                                &mut self.model,
+                                Msg::FeedLogin {
+                                    source,
+                                    bytes: bytes.clone(),
+                                },
+                            );
+                            let _ = self.execute_effects(effects);
                             self.dirty = true;
                         }
                     } else {
@@ -1580,7 +1577,10 @@ impl Runtime {
             return false;
         }
         let addr = crate::session::Address::new(&self.model.state.selection.source, shown);
-        self.model.switcher.select_address(&addr, &self.model.state)
+        let before = self.model.state.selection.clone();
+        let effects = update(&mut self.model, Msg::FollowDisplay(addr));
+        debug_assert!(effects.is_empty());
+        before != self.model.state.selection
     }
 
     /// Reads xmux's own display client for the session it is on and records it, for a mux
@@ -1681,14 +1681,7 @@ impl Runtime {
         // A flash outlives the moment it was about, so it comes down on its own for a
         // user who pressed nothing. The tick is where that is noticed, because it is the
         // one wake that happens without the user doing anything.
-        if self
-            .model
-            .state
-            .chrome
-            .expire_flash(std::time::Instant::now())
-        {
-            self.dirty = true;
-        }
+        let had_flash = !self.model.state.chrome.flash.is_empty();
         // Spinner set = the selected session if its PTY is still connecting.
         let mut sp = HashSet::new();
         if !self.model.state.selection.is_empty() {
@@ -1708,7 +1701,17 @@ impl Runtime {
                 );
             }
         }
-        self.model.state.chrome.set_spinner(sp);
+        let effects = update(
+            &mut self.model,
+            Msg::Tick {
+                now: std::time::Instant::now(),
+                spinner: sp,
+            },
+        );
+        debug_assert!(effects.is_empty());
+        if had_flash && self.model.state.chrome.flash.is_empty() {
+            self.dirty = true;
+        }
     }
 
     /// Live config reload, called on the redraw cadence. When [`poll_ui_config`] sees
@@ -1723,19 +1726,29 @@ impl Runtime {
     /// prefix is input-side and deliberately not re-applied (it needs the key-decoder
     /// rebuild, which is not worth it on a setting that changes rarely).
     pub(super) fn on_config_check(&mut self) -> bool {
-        let Some(ui) = poll_ui_config(
-            &mut self.model.config_last_mtime,
-            &crate::provision::env::config_path(),
-        ) else {
+        let mut mtime = self.model.config_last_mtime;
+        let ui = poll_ui_config(&mut mtime, &crate::provision::env::config_path());
+        let Some(ui) = ui else {
+            let effects = update(
+                &mut self.model,
+                Msg::ConfigObserved {
+                    mtime,
+                    ui: Box::new(None),
+                },
+            );
+            debug_assert!(effects.is_empty());
             return false;
         };
         let palette =
             crate::ui::palette::resolve(&ui.theme, crate::ui::chrome::palette_overrides(&ui));
-        self.model.state.chrome.apply_palette(&ui, &palette);
-        self.model.switcher.set_palette(palette);
-        // The new nav-position default takes effect at the next loop top, where the
-        // reconcile re-resolves the position from it.
-        self.model.nav_default = ui.nav_position();
+        let effects = update(
+            &mut self.model,
+            Msg::ConfigObserved {
+                mtime,
+                ui: Box::new(Some((ui, palette))),
+            },
+        );
+        debug_assert!(effects.is_empty());
         true
     }
 }

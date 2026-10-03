@@ -217,13 +217,13 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
         crate::transport::local(None),
         crate::mux::for_kind("psmux", "psmux-no-such-binary").unwrap(),
     )); // Host::new leaves it undetected
-    let mut detecting = HashSet::new();
+    let mut model = AppModel::from_sources(vec!["local".to_owned()]);
     let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(
         crate::provision::config::SCAN_CONCURRENCY_MAX,
     ));
-    scan_or_dispatch_host(&mut mgr, &hosts, &mut detecting, "local", 80, 24, &gate);
+    scan_or_dispatch_host(&mut mgr, &hosts, &mut model, "local", 80, 24, &gate);
     assert!(
-        detecting.contains("local"),
+        model.detecting.contains("local"),
         "an undetected host is queued for detection straight from the registry"
     );
 }
@@ -511,7 +511,7 @@ async fn host_exited_before_connect_marks_unreachable() {
         "a never-connected host is marked unreachable on exit"
     );
     let out = dump_screen(
-        &mut switcher,
+        &switcher,
         None,
         80,
         24,
@@ -541,7 +541,7 @@ fn runtime_threads_hide_unreachable_into_its_switcher() {
         &mut rt.model.state,
     );
     let out = dump_screen(
-        &mut rt.model.switcher,
+        &rt.model.switcher,
         None,
         80,
         24,
@@ -556,7 +556,7 @@ fn runtime_threads_hide_unreachable_into_its_switcher() {
         .switcher
         .set_hide_unreachable(false, &mut rt.model.state);
     let out = dump_screen(
-        &mut rt.model.switcher,
+        &rt.model.switcher,
         None,
         80,
         24,
@@ -585,7 +585,7 @@ fn a_blocked_host_shows_the_login_view_screen() {
         &mut state,
     );
     let out = dump_screen(
-        &mut switcher,
+        &switcher,
         None,
         80,
         24,
@@ -625,7 +625,7 @@ fn a_host_whose_name_did_not_resolve_stays_unreachable() {
         &mut state,
     );
     let out = dump_screen(
-        &mut switcher,
+        &switcher,
         None,
         80,
         24,
@@ -674,7 +674,7 @@ fn hide_unreachable_mid_run_hides_the_card_and_the_selection_lands_on_a_remainin
         "the dead never-connected host is marked unreachable"
     );
     let out = dump_screen(
-        &mut switcher,
+        &switcher,
         None,
         80,
         24,
@@ -703,7 +703,7 @@ fn hide_unreachable_mid_run_hides_the_card_and_the_selection_lands_on_a_remainin
         &mut state,
     );
     let out = dump_screen(
-        &mut switcher,
+        &switcher,
         None,
         80,
         24,
@@ -735,7 +735,7 @@ async fn host_exited_with_no_sessions_marks_empty_not_unreachable() {
         "an empty mux is reachable, not unreachable"
     );
     let out = dump_screen(
-        &mut switcher,
+        &switcher,
         None,
         80,
         24,
@@ -788,7 +788,7 @@ async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
     switcher.request_rescan(&mut state);
     assert!(
         dump_screen(
-            &mut switcher,
+            &switcher,
             None,
             80,
             24,
@@ -807,7 +807,7 @@ async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
         Some("no sessions".into()),
     );
     let out = dump_screen(
-        &mut switcher,
+        &switcher,
         None,
         80,
         24,

@@ -138,6 +138,72 @@ pub(crate) enum Msg {
         event: crate::link::HostEvent,
         logged_in: HashSet<String>,
     },
+    Focus(crate::model::FocusTarget),
+    FeedLogin {
+        source: String,
+        bytes: Vec<u8>,
+    },
+    SetMouseNavArmed(bool),
+    SetMouseDragging(bool),
+    SetMouseHovered(bool),
+    SetResizeRepeat(Option<std::time::Instant>),
+    EndPopupDrag,
+    DragPopup {
+        col: u16,
+        row: u16,
+    },
+    BeginPopupDrag {
+        col: u16,
+        row: u16,
+    },
+    ToggleNavCollapsed,
+    SetNavNaturalWidth(u16),
+    SetNavHeight(u16),
+    ResizeNav {
+        horizontal: bool,
+        delta: i32,
+        body_rows: u16,
+        ui_prefix: String,
+    },
+    ToggleAutoHide,
+    CycleNavPosition,
+    SyncFrame {
+        spinner_frame: usize,
+        view_border_hovered: bool,
+        prefix_active: bool,
+    },
+    ReconcileNav {
+        width: u16,
+        position: NavPosition,
+    },
+    ConsumeReattach {
+        now: std::time::Instant,
+    },
+    MarkWidthDirty {
+        flush_at: std::time::Instant,
+    },
+    FlushWidth {
+        now: std::time::Instant,
+        force: bool,
+    },
+    SetRenderPlan(RenderPlan),
+    FollowDisplay(crate::session::Address),
+    Tick {
+        now: std::time::Instant,
+        spinner: HashSet<String>,
+    },
+    ConfigObserved {
+        mtime: Option<std::time::SystemTime>,
+        ui: Box<
+            Option<(
+                crate::provision::config::UiConfig,
+                crate::ui::palette::Palette,
+            )>,
+        >,
+    },
+    Notice(String),
+    DetectionStarted(String),
+    Shutdown,
 }
 
 pub(crate) enum Effect {
@@ -156,6 +222,13 @@ pub(crate) enum Effect {
         pubkey: bool,
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     },
+    PersistNavWidth(u16),
+    PersistNavHeight(u16),
+    PersistNavCollapsed(bool),
+    PersistAutoHide(bool),
+    PersistNavPosition(Option<NavPosition>),
+    ReattachDisplay(Selection),
+    CancelLogin(crate::link::unlock::RunningLogin),
 }
 
 impl std::fmt::Debug for Effect {
@@ -183,6 +256,24 @@ impl std::fmt::Debug for Effect {
                 .field("remember", remember)
                 .field("pubkey", pubkey)
                 .finish(),
+            Self::PersistNavWidth(width) => f.debug_tuple("PersistNavWidth").field(width).finish(),
+            Self::PersistNavHeight(height) => {
+                f.debug_tuple("PersistNavHeight").field(height).finish()
+            }
+            Self::PersistNavCollapsed(collapsed) => f
+                .debug_tuple("PersistNavCollapsed")
+                .field(collapsed)
+                .finish(),
+            Self::PersistAutoHide(auto_hide) => {
+                f.debug_tuple("PersistAutoHide").field(auto_hide).finish()
+            }
+            Self::PersistNavPosition(position) => {
+                f.debug_tuple("PersistNavPosition").field(position).finish()
+            }
+            Self::ReattachDisplay(selection) => {
+                f.debug_tuple("ReattachDisplay").field(selection).finish()
+            }
+            Self::CancelLogin(_) => f.write_str("CancelLogin"),
         }
     }
 }
@@ -195,6 +286,13 @@ impl PartialEq for Effect {
             (Self::EventBatch(_), Self::EventBatch(_)) => false,
             (Self::LoginApplied { .. }, Self::LoginApplied { .. }) => false,
             (Self::StartLogin { .. }, Self::StartLogin { .. }) => false,
+            (Self::PersistNavWidth(left), Self::PersistNavWidth(right)) => left == right,
+            (Self::PersistNavHeight(left), Self::PersistNavHeight(right)) => left == right,
+            (Self::PersistNavCollapsed(left), Self::PersistNavCollapsed(right)) => left == right,
+            (Self::PersistAutoHide(left), Self::PersistAutoHide(right)) => left == right,
+            (Self::PersistNavPosition(left), Self::PersistNavPosition(right)) => left == right,
+            (Self::ReattachDisplay(left), Self::ReattachDisplay(right)) => left == right,
+            (Self::CancelLogin(_), Self::CancelLogin(_)) => false,
             _ => false,
         }
     }
@@ -600,6 +698,208 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                     effect => Some(Effect::Event(effect)),
                 })
                 .collect()
+        }
+        Msg::Focus(target) => update(model, Msg::Action(Action::Focus(target))),
+        Msg::FeedLogin { source, bytes } => model
+            .state
+            .feed_login(&source, &bytes)
+            .and_then(|command| command_effect(model, command))
+            .into_iter()
+            .collect(),
+        Msg::SetMouseNavArmed(armed) => {
+            model.mouse_state.nav_armed = armed;
+            Vec::new()
+        }
+        Msg::SetMouseDragging(dragging) => {
+            model.mouse_state.dragging_view_border = dragging;
+            Vec::new()
+        }
+        Msg::SetMouseHovered(hovered) => {
+            model.mouse_state.hovered_view_border = hovered;
+            Vec::new()
+        }
+        Msg::SetResizeRepeat(repeat_until) => {
+            model.mouse_state.repeat_until = repeat_until;
+            Vec::new()
+        }
+        Msg::EndPopupDrag => {
+            model.switcher.end_popup_drag();
+            Vec::new()
+        }
+        Msg::DragPopup { col, row } => {
+            model.switcher.drag_popup(col, row);
+            Vec::new()
+        }
+        Msg::BeginPopupDrag { col, row } => {
+            model
+                .switcher
+                .begin_popup_drag_in_plan(&model.render_plan, col, row, &model.state);
+            Vec::new()
+        }
+        Msg::ToggleNavCollapsed => {
+            model.nav_collapsed = !model.nav_collapsed;
+            model.mouse_state.hovered_view_border = false;
+            vec![Effect::PersistNavCollapsed(model.nav_collapsed)]
+        }
+        Msg::SetNavNaturalWidth(width) => {
+            model.nav_width_natural = width;
+            Vec::new()
+        }
+        Msg::SetNavHeight(height) => {
+            model.nav_height = height;
+            Vec::new()
+        }
+        Msg::ResizeNav {
+            horizontal,
+            delta,
+            body_rows,
+            ui_prefix,
+        } => {
+            let top = model.render_plan.layout == crate::ui::switcher::ViewLayout::Band;
+            let delta = if model.nav_position.forward_arrows_face_terminal() {
+                delta
+            } else {
+                -delta
+            };
+            match (horizontal, top) {
+                (true, false) => {
+                    model.nav_width_natural = super::runtime::adjust_nav_width(
+                        model.nav_width_natural,
+                        delta,
+                        &ui_prefix,
+                    );
+                    Vec::new()
+                }
+                (false, true) => {
+                    let base = if model.nav_height == 0 {
+                        crate::ui::switcher::default_nav_height(body_rows)
+                    } else {
+                        model.nav_height
+                    };
+                    let ceil = body_rows.saturating_sub(2).clamp(
+                        super::runtime::NAV_HEIGHT_MIN,
+                        super::runtime::NAV_HEIGHT_MAX,
+                    );
+                    model.nav_height = (base as i32 + delta)
+                        .clamp(super::runtime::NAV_HEIGHT_MIN as i32, ceil as i32)
+                        as u16;
+                    vec![Effect::PersistNavHeight(model.nav_height)]
+                }
+                _ => Vec::new(),
+            }
+        }
+        Msg::ToggleAutoHide => {
+            model.auto_hide_nav = !model.auto_hide_nav;
+            vec![Effect::PersistAutoHide(model.auto_hide_nav)]
+        }
+        Msg::CycleNavPosition => {
+            model.nav_position_pinned = crate::ui::switcher::step_nav_position(
+                model.nav_position_pinned,
+                model.nav_position,
+            );
+            vec![Effect::PersistNavPosition(model.nav_position_pinned)]
+        }
+        Msg::SyncFrame {
+            spinner_frame,
+            view_border_hovered,
+            prefix_active,
+        } => {
+            model.state.chrome.set_spinner_frame(spinner_frame);
+            model
+                .state
+                .chrome
+                .set_view_border_hovered(view_border_hovered);
+            model.state.chrome.set_armed(prefix_active);
+            model.switcher.sync_prefix(prefix_active);
+            let modal_kind = model.state.modal_kind();
+            model.state.focus.sync_modal(modal_kind);
+            let nav_focused = model.state.focus.view_is_nav();
+            model.switcher.sync_view_focus(!nav_focused);
+            let mut effects = Vec::new();
+            if nav_focused && !model.nav_was_focused && model.nav_collapsed {
+                model.nav_collapsed = false;
+                effects.push(Effect::PersistNavCollapsed(false));
+            }
+            model.nav_was_focused = nav_focused;
+            model.state.chrome.set_auto_hide(model.auto_hide_nav);
+            effects
+        }
+        Msg::ReconcileNav { width, position } => {
+            model.nav_position = position;
+            model.nav_width = width;
+            model.applied_nav_height = model.nav_height;
+            model.applied_nav_collapsed = model.nav_collapsed;
+            model.state.chrome.set_nav_position(position);
+            Vec::new()
+        }
+        Msg::ConsumeReattach { now } => {
+            if model.switcher.take_reattach_kick() && !model.state.selection.is_empty() {
+                let selection = model.state.selection.clone();
+                model.state.apply(Action::ClearDisplay);
+                model.state.apply(Action::RearmAttachNow { now });
+                vec![Effect::ReattachDisplay(selection)]
+            } else {
+                Vec::new()
+            }
+        }
+        Msg::MarkWidthDirty { flush_at } => {
+            model.width_dirty = true;
+            model.width_flush_at = Some(flush_at);
+            Vec::new()
+        }
+        Msg::FlushWidth { now, force } => {
+            if model.width_dirty
+                && (force || model.width_flush_at.is_some_and(|deadline| now >= deadline))
+            {
+                model.width_dirty = false;
+                model.width_flush_at = None;
+                vec![Effect::PersistNavWidth(model.nav_width_natural)]
+            } else {
+                Vec::new()
+            }
+        }
+        Msg::SetRenderPlan(plan) => {
+            model.render_plan = plan;
+            Vec::new()
+        }
+        Msg::FollowDisplay(address) => {
+            model.switcher.select_address(&address, &model.state);
+            Vec::new()
+        }
+        Msg::Tick { now, spinner } => {
+            model.state.chrome.expire_flash(now);
+            model.state.chrome.set_spinner(spinner);
+            Vec::new()
+        }
+        Msg::ConfigObserved { mtime, ui } => {
+            model.config_last_mtime = mtime;
+            if let Some((ui, palette)) = *ui {
+                model.state.chrome.apply_palette(&ui, &palette);
+                model.switcher.set_palette(palette);
+                model.nav_default = ui.nav_position();
+            }
+            Vec::new()
+        }
+        Msg::Notice(line) => {
+            model.state.notice(line);
+            Vec::new()
+        }
+        Msg::DetectionStarted(source) => {
+            model.detecting.insert(source);
+            Vec::new()
+        }
+        Msg::Shutdown => {
+            let mut effects = update(
+                model,
+                Msg::FlushWidth {
+                    now: std::time::Instant::now(),
+                    force: true,
+                },
+            );
+            if let Some(login) = model.state.login_run.take() {
+                effects.push(Effect::CancelLogin(login));
+            }
+            effects
         }
     }
 }

@@ -99,7 +99,7 @@ const RESIZE_REPEAT_MS: u64 = 400;
 /// at the end, not per tick.
 const WIDTH_FLUSH_MS: u64 = 400;
 
-fn adjust_nav_width(w: u16, delta: i32, ui_prefix: &str) -> u16 {
+pub(super) fn adjust_nav_width(w: u16, delta: i32, ui_prefix: &str) -> u16 {
     (w as i32 + delta).clamp(nav_width_min(ui_prefix) as i32, NAV_WIDTH_MAX as i32) as u16
 }
 
@@ -107,6 +107,7 @@ fn adjust_nav_width(w: u16, delta: i32, ui_prefix: &str) -> u16 {
 /// true if the width actually changed (so the loop can schedule a debounced
 /// persist). A zero delta or a clamp-noop returns false. Write-free: the loop
 /// owns the single persist.
+#[cfg(test)]
 fn apply_width_delta(wd: i32, natural: &mut u16, ui_prefix: &str) -> bool {
     if wd == 0 {
         return false;
@@ -117,27 +118,6 @@ fn apply_width_delta(wd: i32, natural: &mut u16, ui_prefix: &str) -> bool {
     }
     *natural = next;
     true
-}
-
-/// Flips the auto-hide-nav mode and persists it, so the next launch restores it.
-/// Shared by the nav- and terminal-view focus `prefix t` paths. The effective nav width is
-/// reconciled at the next loop top (`reconciled_nav_width`); the caller marks dirty.
-fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
-    *mode = !*mode;
-    crate::app::prefs::save_auto_hide_nav(xmux_dir, *mode);
-}
-
-/// Applies one step of the `prefix p` cycle to the pin and saves it at once (the same
-/// moment `toggle_auto_hide` saves its toggle). `None` (the fifth step) stores "auto",
-/// which returns the nav to following the `[ui] nav-position` default.
-fn cycle_nav_position(
-    pinned: &mut Option<crate::ui::switcher::NavPosition>,
-    effective: crate::ui::switcher::NavPosition,
-    xmux_dir: &std::path::Path,
-) {
-    let next = crate::ui::switcher::step_nav_position(*pinned, effective);
-    *pinned = next;
-    crate::app::prefs::save_nav_position(xmux_dir, next);
 }
 
 /// The mutate-op sink handed to [`start_login`]: the `Ops` interface plus the channel
@@ -160,6 +140,7 @@ impl Runtime {
 
     /// Executes every [`Command`](crate::model::Command) produced by the runtime state.
     /// Returns `(quit, width_changed)` for the loop bookkeeping owned by the caller.
+    #[cfg(test)]
     fn execute_commands(&mut self, commands: Vec<crate::model::Command>) -> (bool, bool) {
         let effects = update(&mut self.model, Msg::Commands(commands));
         let (quit, width_changed, _) = self.execute_effects(effects);
@@ -221,6 +202,29 @@ impl Runtime {
                     cancel,
                     (&self.ops, &self.op_tx),
                 ),
+                Effect::PersistNavWidth(width) => {
+                    crate::app::prefs::save_nav_width(&self.env.xmux_dir, width);
+                }
+                Effect::PersistNavHeight(height) => {
+                    crate::app::prefs::save_nav_height(&self.env.xmux_dir, height);
+                }
+                Effect::PersistNavCollapsed(collapsed) => {
+                    crate::app::prefs::save_nav_collapsed(&self.env.xmux_dir, collapsed);
+                }
+                Effect::PersistAutoHide(auto_hide) => {
+                    crate::app::prefs::save_auto_hide_nav(&self.env.xmux_dir, auto_hide);
+                }
+                Effect::PersistNavPosition(position) => {
+                    crate::app::prefs::save_nav_position(&self.env.xmux_dir, position);
+                }
+                Effect::ReattachDisplay(selection) => {
+                    let key = display_key(&self.hosts, &selection);
+                    self.registry.remove(&key);
+                    if let Some(host) = self.hosts.get_mut(&selection.source) {
+                        host.display.clear(&key);
+                    }
+                }
+                Effect::CancelLogin(login) => login.cancel(),
                 Effect::Command(command) => match command {
                     Command::SelectAddress(address) => {
                         let effects = update(
@@ -277,9 +281,13 @@ impl Runtime {
                                         || h.display.pending_paint_contains(&key)
                                 });
                             if self.registry.contains(&key) && !reattach_pending {
-                                self.model
-                                    .state
-                                    .apply(crate::model::Action::ConfirmDisplay(selection.clone()));
+                                let effects = update(
+                                    &mut self.model,
+                                    Msg::Action(crate::model::Action::ConfirmDisplay(
+                                        selection.clone(),
+                                    )),
+                                );
+                                debug_assert!(effects.is_empty());
                             }
                         }
                         DrawObserver::slow_step("select_attach", started);
@@ -880,7 +888,7 @@ fn dispatch_detected_host(
 fn scan_or_dispatch_host(
     mgr: &mut HostManager,
     hosts: &crate::model::Hosts,
-    detecting: &mut HashSet<String>,
+    model: &mut AppModel,
     source: &str,
     cols: u16,
     rows: u16,
@@ -890,7 +898,9 @@ fn scan_or_dispatch_host(
         return;
     };
     if !host.detected {
-        if detecting.insert(source.to_string()) {
+        if !model.detecting.contains(source) {
+            let effects = update(model, Msg::DetectionStarted(source.to_string()));
+            debug_assert!(effects.is_empty());
             spawn_host_detection(
                 source.to_string(),
                 host.transport.clone(),
@@ -1225,7 +1235,8 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
             crate::cli::update::notify::read(&rt.env.xmux_dir).as_ref(),
             current,
         ) {
-            rt.model.state.notice(line);
+            let effects = update(&mut rt.model, Msg::Notice(line));
+            debug_assert!(effects.is_empty());
         }
         crate::cli::update::notify::refresh_in_background(&rt.env.xmux_dir, check_enabled);
     }
@@ -1293,14 +1304,11 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // A resize within the last WIDTH_FLUSH_MS before quit leaves the debounce deadline
     // unreached, so the final width is still pending - persist it on the way out so the
     // nav width the user left with survives the next launch.
-    if rt.model.width_dirty {
-        crate::app::prefs::save_nav_width(&rt.env.xmux_dir, rt.model.nav_width_natural);
-    }
     // A login still on screen at quit is a child nobody will watch again: end it here so
-    // the ssh it started goes with the app rather than outliving it.
-    if let Some(login) = rt.model.state.login_run.take() {
-        login.cancel();
-    }
+    // the ssh it started goes with the app rather than outliving it. A pending nav width
+    // is persisted through the same effect stream before the runtime tears I/O down.
+    let effects = update(&mut rt.model, Msg::Shutdown);
+    let _ = rt.execute_effects(effects);
     rt.registry.teardown_all();
     rt.mgr.teardown_all();
     0
