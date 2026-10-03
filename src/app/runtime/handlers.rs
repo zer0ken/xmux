@@ -1734,7 +1734,7 @@ fn last_pane_line(registry: &crate::display::registry::AttachRegistry, id: u64) 
         return "(no grid)".to_string();
     };
     let line = grid.lock().ok().and_then(|g| g.last_line());
-    line.map(|l| escape_controls(&l))
+    line.map(|l| crate::driver::escape_controls(&l))
         .unwrap_or_else(|| "(blank)".to_string())
 }
 
@@ -1779,7 +1779,7 @@ fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::ui::chrome::
         let probe = kind
             .transport()
             .raw_shell_argv(crate::transport::vocab::SHELL_PROBE)
-            .map(|argv| shell_line(&argv))
+            .map(|argv| crate::driver::shell_line(&argv))
             .unwrap_or_default();
         reach.insert(
             machine,
@@ -1803,7 +1803,7 @@ fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::ui::chrome::
 /// own listing command - rather than being re-derived from a source id.
 pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrome::SourceReach {
     crate::ui::chrome::SourceReach {
-        probe: shell_line(&s.host().list_sessions_command()),
+        probe: crate::driver::shell_line(&s.host().list_sessions_command()),
         machine: s.kind.addressed_as(),
         mux: s.binary.clone(),
         kind: crate::mux::for_binary(&s.binary)
@@ -1811,26 +1811,4 @@ pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::ui::chrom
             .unwrap_or_else(|| s.binary.clone()),
         socket: s.kind.socket_path(),
     }
-}
-
-/// Renders an argv as one readable shell line for screen diagnostics.
-pub(crate) fn shell_line(argv: &[String]) -> String {
-    argv.iter()
-        .map(|argument| crate::transport::vocab::quote(&escape_controls(argument)))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Replaces control characters with their visible debug escapes.
-fn escape_controls(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(|character| {
-            if character.is_control() {
-                character.escape_debug().collect::<Vec<_>>()
-            } else {
-                vec![character]
-            }
-        })
-        .collect()
 }

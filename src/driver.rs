@@ -90,11 +90,16 @@ impl DriverCtx<'_> {
     ) -> Option<u64> {
         let key = self.display_key(selection);
         let display = &mut self.hosts.get_mut(&selection.source)?.display;
+        // A new request owns this key. Any fresh attachment still waiting to paint belongs
+        // to the superseded selection and must not receive input or survive as an orphan.
         display.cancel_pending_paint(&key);
         self.registry.remove_pending(&key);
         let id = self.registry.alloc_id();
         let command = command(id, &key, self.instance_name);
         *self.attach_seq += 1;
+        // The command the display terminal IS. A pane that dies is diagnosed by comparing
+        // what xmux ran against what the same command does by hand, so the argv has to be on
+        // record: without it the comparison is a guess about what was even attempted.
         tracing::info!(
             key,
             id,
@@ -183,8 +188,8 @@ fn run_lowered(lowered: crate::transport::LoweredSwitch) {
     });
 }
 
-/// Renders an argv as one readable shell line for display diagnostics.
-fn shell_line(argv: &[String]) -> String {
+/// Renders an argv as one readable shell line for diagnostics.
+pub(crate) fn shell_line(argv: &[String]) -> String {
     argv.iter()
         .map(|argument| crate::transport::vocab::quote(&escape_controls(argument)))
         .collect::<Vec<_>>()
@@ -192,7 +197,7 @@ fn shell_line(argv: &[String]) -> String {
 }
 
 /// Replaces control characters with their visible debug escapes.
-fn escape_controls(value: &str) -> String {
+pub(crate) fn escape_controls(value: &str) -> String {
     value
         .chars()
         .flat_map(|character| {

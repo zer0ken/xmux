@@ -3772,7 +3772,7 @@ fn a_probe_line_shows_every_word_it_runs() {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    let line = super::handlers::shell_line(&argv);
+    let line = crate::driver::shell_line(&argv);
     assert_eq!(line, r"tmux list-sessions -F 'a\tb' 'two words'");
 }
 
