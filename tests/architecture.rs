@@ -77,7 +77,6 @@ const KNOWN_VIOLATIONS: &[(&str, &str)] = &[
     ("src/display/input.rs", "ui"),
     ("src/driver.rs", "app"),
     ("src/driver.rs", "ui"),
-    ("src/model/action.rs", "state"),
     ("src/mux/abduco/display.rs", "app"),
     ("src/mux/herdr/display.rs", "app"),
     ("src/mux/psmux/display.rs", "app"),
@@ -89,7 +88,6 @@ const KNOWN_VIOLATIONS: &[(&str, &str)] = &[
     ("src/mux/zellij/display.rs", "app"),
     ("src/mux/zellij/display.rs", "ui"),
     ("src/provision/config.rs", "ui"),
-    ("src/provision/env.rs", "ui"),
     ("src/state/mod.rs", "app"),
     ("src/state/mod.rs", "ui"),
 ];

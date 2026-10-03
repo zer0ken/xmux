@@ -23,13 +23,12 @@ and collapse button until a prefix interaction is live (the prefix ready), when 
 lists the keys that interaction unlocks. The chrome instance
 itself lives in the runtime state, fed by the app each frame and rendered from it.
 
-The operations module holds the off-loop mux-action boundary: the trait over the
-live mux (one mutating method, starting a session; the rest read), the outcome
-values, and the runner that executes one deferred operation against that trait in
-a detached task. A switcher key that COMMITS a slow action resolves it through
-the state's apply into a deferred-operation command it RETURNS up; the run loop
-spawns the runner and folds the outcome back through the operation channel, so
-the switcher holds no pending-operation queue of its own.
+The operations module holds the off-loop mux-action runners and the UI decisions
+that turn domain operation results into completion messages. The operation port
+and its exchanged values live in the model. A switcher key that COMMITS a slow
+action resolves it through the state's apply into a deferred-operation command it
+RETURNS up; the run loop spawns the runner and folds the outcome back through the
+operation channel, so the switcher holds no pending-operation queue of its own.
 
 The control bridge turns control socket requests into app commands and can
 flatten renders for the dump verb.

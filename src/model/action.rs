@@ -119,8 +119,8 @@ pub enum Command {
     RunLogin {
         source: String,
         login: crate::transport::Login,
-        password: crate::state::SecretInput,
-        remember: crate::state::Remember,
+        password: crate::model::SecretInput,
+        remember: crate::model::Remember,
         pubkey: bool,
     },
 }
@@ -402,7 +402,7 @@ mod tests {
                 user: Some("dev".into()),
             },
             password: "do-not-print-this".into(),
-            remember: crate::state::Remember::Nothing,
+            remember: crate::model::Remember::Nothing,
             pubkey: false,
         };
 

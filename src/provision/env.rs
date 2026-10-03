@@ -12,12 +12,11 @@ use std::time::Duration;
 
 use crate::link::manage;
 use crate::model::source::{self, Runner, Source};
+use crate::model::{Group, KeyRegistration, Ops, RegistrationOutcome};
 use crate::provision::config::{self, Config};
 use crate::provision::discovery;
 use crate::session::Session;
 use crate::transport::Transport;
-use crate::ui::switcher::Ops;
-use crate::ui::tree::{self, Group};
 
 use tokio::sync::mpsc;
 
@@ -450,7 +449,7 @@ fn to_groups(results: Vec<discovery::ScanResult>) -> Vec<Group> {
         .into_iter()
         .map(|r| {
             let mut sessions = r.sessions;
-            tree::sort_by_name(&mut sessions);
+            crate::model::sort_by_name(&mut sessions);
             Group {
                 source: r.source,
                 err: r.err,
@@ -721,7 +720,7 @@ impl Env {
         tokio::spawn(async move {
             while let Some(r) = rx.recv().await {
                 let mut sessions = r.sessions;
-                tree::sort_by_name(&mut sessions);
+                crate::model::sort_by_name(&mut sessions);
                 let _ = tx
                     .send(Group {
                         source: r.source,
@@ -946,8 +945,8 @@ impl Ops for EnvOps {
         source: &str,
         login: &crate::transport::Login,
         write_config: bool,
-        register: Option<crate::ui::ops::KeyRegistration>,
-    ) -> (crate::ui::ops::RegistrationOutcome, Vec<String>) {
+        register: Option<KeyRegistration>,
+    ) -> (RegistrationOutcome, Vec<String>) {
         let mut notes = Vec::new();
         if write_config {
             if let Err(e) = write_ssh_config_stanza(crate::session::machine_of(source), login) {
@@ -955,28 +954,26 @@ impl Ops for EnvOps {
             }
         }
         let registration = match register {
-            None => crate::ui::ops::RegistrationOutcome::NotRequested,
+            None => RegistrationOutcome::NotRequested,
             Some(register) => match self.register_key(source, login, register).await {
-                Ok(()) => crate::ui::ops::RegistrationOutcome::Registered,
+                Ok(()) => RegistrationOutcome::Registered,
                 Err(error) if error.starts_with("skipped: ") => {
-                    crate::ui::ops::RegistrationOutcome::Skipped(
-                        error.trim_start_matches("skipped: ").to_string(),
-                    )
+                    RegistrationOutcome::Skipped(error.trim_start_matches("skipped: ").to_string())
                 }
-                Err(error) => crate::ui::ops::RegistrationOutcome::Failed(error),
+                Err(error) => RegistrationOutcome::Failed(error),
             },
         };
         match &registration {
-            crate::ui::ops::RegistrationOutcome::Registered => {
+            RegistrationOutcome::Registered => {
                 tracing::info!(host = %crate::session::machine_of(source), "public key registered");
             }
-            crate::ui::ops::RegistrationOutcome::Skipped(reason) => {
+            RegistrationOutcome::Skipped(reason) => {
                 tracing::warn!(host = %crate::session::machine_of(source), reason = %reason, "public key registration skipped");
             }
-            crate::ui::ops::RegistrationOutcome::Failed(reason) => {
+            RegistrationOutcome::Failed(reason) => {
                 tracing::warn!(host = %crate::session::machine_of(source), reason = %reason, "public key registration failed");
             }
-            crate::ui::ops::RegistrationOutcome::NotRequested => {}
+            RegistrationOutcome::NotRequested => {}
         }
         (registration, notes)
     }
@@ -990,7 +987,7 @@ impl EnvOps {
         &self,
         source: &str,
         login: &crate::transport::Login,
-        register: crate::ui::ops::KeyRegistration,
+        register: KeyRegistration,
     ) -> Result<(), String> {
         let shell = register
             .shell

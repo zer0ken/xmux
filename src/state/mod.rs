@@ -1,8 +1,9 @@
 //! Runtime domain state: the single source of truth the new architecture's
 //! components read from. Carries the app loop's inventory, selection,
 //! display-truth, focus, and the open modal popup.
-use crate::model::Selection;
-use crate::ui::tree::Group;
+use crate::model::SECRET_INPUT_CAPACITY;
+use crate::model::{Group, LoginOutcome, OpResult, RegistrationOutcome, Selection};
+pub use crate::model::{Remember, SecretInput};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -28,10 +29,10 @@ pub struct State {
     pub logged_in: HashSet<String>,
     /// The last login attempt for each machine. It is separate from probe failures so a
     /// follow-up probe cannot replace the authentication diagnosis the user needs.
-    pub login_reports: HashMap<String, crate::ui::ops::LoginOutcome>,
+    pub login_reports: HashMap<String, LoginOutcome>,
     /// The last requested public-key registration result for each machine. It outlives
     /// the login pane so a later host screen can still state what happened.
-    pub registration_reports: HashMap<String, crate::ui::ops::RegistrationOutcome>,
+    pub registration_reports: HashMap<String, RegistrationOutcome>,
     /// How many times in a row each source has failed to enumerate, reset to zero the
     /// moment it answers. Written at the single result-apply site and read only to be
     /// SHOWN: the unreachable screen states it, because one failed sweep and a host that
@@ -89,15 +90,6 @@ pub struct State {
     pub login_run: Option<crate::link::unlock::RunningLogin>,
 }
 
-/// What the login pane does with the values once the connection works. The two are one
-/// choice, not two switches: a draft either leaves nothing behind or writes a stanza.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Remember {
-    #[default]
-    Nothing,
-    SshConfig,
-}
-
 /// Which element of the login pane the keys drive. Every interactive element is one
 /// stop, so Tab and the vertical arrows walk the pane the same way whatever is on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -152,94 +144,6 @@ impl std::fmt::Debug for LoginDraft {
             .field("default_port", &self.default_port)
             .field("default_username", &self.default_username)
             .finish()
-    }
-}
-
-const SECRET_INPUT_CAPACITY: usize = 16 * 1024;
-
-#[derive(PartialEq, Eq)]
-pub struct SecretInput(String);
-
-impl Default for SecretInput {
-    fn default() -> Self {
-        Self(String::with_capacity(SECRET_INPUT_CAPACITY))
-    }
-}
-
-impl Clone for SecretInput {
-    fn clone(&self) -> Self {
-        let mut value = String::with_capacity(SECRET_INPUT_CAPACITY);
-        value.push_str(&self.0);
-        Self(value)
-    }
-}
-
-impl SecretInput {
-    fn take(&mut self) -> Self {
-        std::mem::take(self)
-    }
-
-    pub(crate) fn take_plain(&mut self) -> String {
-        std::mem::take(&mut self.0)
-    }
-}
-
-impl From<String> for SecretInput {
-    fn from(mut value: String) -> Self {
-        let mut secret = Self::default();
-        for ch in value.chars() {
-            if secret.0.len() + ch.len_utf8() > SECRET_INPUT_CAPACITY {
-                break;
-            }
-            secret.0.push(ch);
-        }
-        crate::transport::auth::zero_string(&mut value);
-        secret
-    }
-}
-
-impl From<&str> for SecretInput {
-    fn from(value: &str) -> Self {
-        let mut secret = Self::default();
-        for ch in value.chars() {
-            if secret.0.len() + ch.len_utf8() > SECRET_INPUT_CAPACITY {
-                break;
-            }
-            secret.0.push(ch);
-        }
-        secret
-    }
-}
-
-impl PartialEq<&str> for SecretInput {
-    fn eq(&self, other: &&str) -> bool {
-        self.0 == *other
-    }
-}
-
-impl std::ops::Deref for SecretInput {
-    type Target = String;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for SecretInput {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl std::fmt::Debug for SecretInput {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[redacted]")
-    }
-}
-
-impl Drop for SecretInput {
-    fn drop(&mut self) {
-        crate::transport::auth::zero_string(&mut self.0);
     }
 }
 
@@ -465,7 +369,7 @@ impl State {
                 port,
                 user: (!draft.username.trim().is_empty()).then(|| draft.username.trim().into()),
             },
-            password: draft.password.take(),
+            password: std::mem::take(&mut draft.password),
             remember: draft.remember,
             pubkey: draft.pubkey,
         })
@@ -876,13 +780,10 @@ impl State {
     /// event-driven ones; the row rebuild + cursor restore stay in the switcher. A
     /// `Failed` op mutates no inventory - its message is returned to flash.
     ///
-    /// [`OpResult`]: crate::ui::ops::OpResult
+    /// [`OpResult`]: crate::model::OpResult
     /// [`OpFollow`]: crate::ui::ops::OpFollow
-    pub(crate) fn fold_op_result(
-        &mut self,
-        result: crate::ui::ops::OpResult,
-    ) -> crate::ui::ops::OpFollow {
-        use crate::ui::ops::{OpFollow, OpResult};
+    pub(crate) fn fold_op_result(&mut self, result: OpResult) -> crate::ui::ops::OpFollow {
+        use crate::ui::ops::OpFollow;
         use crate::ui::tree;
         match result {
             OpResult::Created { session, .. } => {
@@ -1540,9 +1441,9 @@ mod tests {
     // probe / reap / sync / scan-dispatch) as EventEffects for the run loop to run.
     use crate::link::HostEvent;
     use crate::model::EventEffect;
+    use crate::model::Group;
     use crate::session::Session;
     use crate::ui::switcher::{Scan, Switcher};
-    use crate::ui::tree::Group;
     use std::collections::HashSet;
 
     fn one_session_scan() -> Scan {
@@ -1913,13 +1814,6 @@ mod tests {
         s.feed_login("prod", b"\x1b[1;5C");
         s.feed_login("prod", b"\x1bOP");
         assert_eq!(s.login.as_ref().unwrap().address, "ab");
-    }
-
-    #[test]
-    fn password_field_uses_one_bounded_allocation() {
-        let secret = SecretInput::from("x".repeat(SECRET_INPUT_CAPACITY + 1));
-        assert_eq!(secret.len(), SECRET_INPUT_CAPACITY);
-        assert_eq!(secret.0.capacity(), SECRET_INPUT_CAPACITY);
     }
 
     #[test]
@@ -2346,7 +2240,8 @@ mod tests {
 
     #[test]
     fn fold_op_result_failed_flashes_and_leaves_inventory_untouched() {
-        use crate::ui::ops::{OpFollow, OpResult};
+        use crate::model::OpResult;
+        use crate::ui::ops::OpFollow;
         let mut s = State::default();
         s.fold_op_result(OpResult::Created {
             session: a_sess("api"),
