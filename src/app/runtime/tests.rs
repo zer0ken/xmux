@@ -3089,6 +3089,8 @@ fn collapse_button_click_toggles_without_focus_or_drag() {
     assert!(!rt.mouse_state.dragging_view_border);
 
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+    // The draw is frame-gated; move the last draw out of the gate so this frame paints.
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
     rt.prepare_and_draw(&mut term);
     let regions = compute_regions(area, rt.nav_size(), 1);
     let button = collapse_button_rect(regions.hint_bar, rt.nav_position, true);
