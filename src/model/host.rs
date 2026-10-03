@@ -424,11 +424,9 @@ impl Host {
     /// it for the detail) and the machine wraps it, so it is what a failed scan ran. It
     /// exists to be SHOWN: the unreachable screen states it, which is what lets a user
     /// reproduce the failure outside xmux instead of taking the app's word for it.
-    pub fn list_sessions_command(&self) -> Vec<String> {
-        let (name, args) = self
-            .transport
-            .exec_argv(false, &self.mux.list_sessions_plan());
-        std::iter::once(name).chain(args).collect()
+    pub fn list_sessions_command(&self) -> crate::transport::CommandSpec {
+        self.transport
+            .exec_argv(false, &self.mux.list_sessions_plan())
     }
 
     /// The argv that hands the terminal over to attach this host's named session
@@ -439,12 +437,14 @@ impl Host {
     /// server, not a warm clone from a bare `attach -t`), and the MACHINE wraps it via
     /// `Transport::interactive_attach_argv` (local `-S` injection, or `ssh -t` with
     /// `exec <attach>`).
-    pub fn interactive_attach_command(&self, name: &str) -> Vec<String> {
+    pub fn interactive_attach_command(&self, name: &str) -> crate::transport::CommandSpec {
         let attach = self.mux.attach_plan(name);
-        let (n, a) = self.transport.interactive_attach_argv(&attach);
-        let mut v = vec![n];
-        v.extend(a);
-        v
+        self.transport.interactive_attach_argv(&attach)
+    }
+
+    pub fn cli_attach_command(&self, name: &str) -> crate::transport::CommandSpec {
+        let attach = self.mux.attach_plan(name);
+        self.transport.cli_attach_argv(&attach)
     }
 
     /// Record xmux's display-client tty for this host, captured in memory from the
@@ -1069,6 +1069,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Runner for CannedRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             self.0
                 .lock()
@@ -1308,6 +1309,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Runner for DetectRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             match &*self.result.lock().unwrap() {

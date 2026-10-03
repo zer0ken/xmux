@@ -88,8 +88,8 @@ impl Mux for Psmux {
         // existence set; one list-sessions supplies display detail (empty on a
         // default-route miss).
         let names = registry::read_psmux_registry_dir(&registry::psmux_registry_dir());
-        let (name, args) = transport.exec_argv(false, &mux::list_sessions(&self.bin));
-        let detail = match runner.run(&name, &args).await {
+        let command = transport.exec_argv(false, &mux::list_sessions(&self.bin));
+        let detail = match runner.run_spec(&command).await {
             Ok(out) => mux::parse_sessions(
                 transport.host_id(),
                 self.kind(),
@@ -175,6 +175,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for CannedRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             self.0
                 .lock()

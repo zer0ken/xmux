@@ -405,6 +405,8 @@ pub struct Attachment {
     /// draws, so the event channel cannot grow unbounded under an output flood.
     pending: Arc<AtomicBool>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// Keeps the askpass token valid until this child is torn down and reaped.
+    _auth: Option<Box<crate::transport::auth::CommandAuth>>,
     id: u64,
     /// The OS name this attachment's own PTY carries, read when the PTY was opened.
     /// `None` where the platform's PTY has no name (a Windows ConPTY has none).
@@ -481,10 +483,12 @@ impl Attachment {
     /// bounded because the child was just killed. The pump exits on master EOF.
     pub fn teardown(self) {
         let mut child = self.child;
+        let auth = self._auth;
         let _ = child.kill();
         drop(self.control_tx);
         std::thread::spawn(move || {
             let _ = child.wait();
+            drop(auth);
         });
     }
 }
@@ -496,14 +500,17 @@ impl Attachment {
 /// [`PtyEvent::Output`] per chunk (the app coalesces), clears `connecting` on the
 /// first read, and emits [`PtyEvent::Exited`] at master EOF so the registry can reap it.
 pub fn spawn_attachment(
-    argv: &[String],
+    command: &crate::transport::CommandSpec,
     cols: u16,
     rows: u16,
     id: u64,
     events: tokio::sync::mpsc::UnboundedSender<PtyEvent>,
     env_clear: &[String],
 ) -> anyhow::Result<Attachment> {
-    anyhow::ensure!(!argv.is_empty(), "spawn_attachment: argv must not be empty");
+    anyhow::ensure!(
+        !command.is_empty(),
+        "spawn_attachment: argv must not be empty"
+    );
     let pty = native_pty_system();
     let pair = pty.openpty(PtySize {
         rows,
@@ -521,8 +528,8 @@ pub fn spawn_attachment(
         .map(|p| p.to_string_lossy().into_owned());
     #[cfg(not(unix))]
     let child_tty: Option<String> = None;
-    let mut cmd = CommandBuilder::new(&argv[0]);
-    for arg in &argv[1..] {
+    let mut cmd = CommandBuilder::new(command.program());
+    for arg in command.args() {
         cmd.arg(arg);
     }
     // Clear the env keys the caller resolved (the mux session vars) so the attach
@@ -530,6 +537,9 @@ pub fn spawn_attachment(
     // Which keys are mux vars is decided by the caller, not here.
     for k in env_clear {
         cmd.env_remove(k);
+    }
+    for (key, value) in command.env() {
+        cmd.env(key, value);
     }
     let child = pair.slave.spawn_command(cmd)?;
     // A ConPTY child spawn silently mutates the parent CONIN (clears ENABLE_MOUSE_INPUT /
@@ -545,13 +555,7 @@ pub fn spawn_attachment(
 
     let (control_tx, control_rx) = std::sync::mpsc::channel::<PtyCmd>();
     std::thread::spawn(move || {
-        pty_control_loop(
-            control_rx,
-            MasterSink {
-                writer: pty_writer,
-                master: pair.master,
-            },
-        )
+        pty_control_loop(control_rx, MasterSink::new(pty_writer, pair.master))
     });
 
     let grid = Arc::new(Mutex::new(Grid::new(rows, cols)));
@@ -665,6 +669,7 @@ pub fn spawn_attachment(
         output_times,
         pending,
         child,
+        _auth: command.auth_guard().map(Box::new),
         id,
         child_tty,
         #[cfg(test)]
@@ -735,6 +740,7 @@ fn fake_attachment_with_child(id: u64, child: DummyChild) -> Attachment {
         output_times: Arc::new(Mutex::new(None)),
         pending: Arc::new(AtomicBool::new(false)),
         child: Box::new(child),
+        _auth: None,
         id,
         child_tty: None,
         input_log: None,
@@ -1100,7 +1106,8 @@ mod tests {
             format!("echo {MARKER}& ping -n 5 127.0.0.1 >nul"),
         ];
         let env_clear = crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
-        let att = spawn_attachment(&argv, 80, 24, 1, ev_tx, &env_clear).expect("spawn");
+        let command = crate::transport::CommandSpec::from_argv(argv);
+        let att = spawn_attachment(&command, 80, 24, 1, ev_tx, &env_clear).expect("spawn");
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut seen = false;
@@ -1160,7 +1167,8 @@ mod tests {
                 .into(),
         ];
         let env_clear = crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
-        let att = spawn_attachment(&argv, 80, 24, 1, ev_tx, &env_clear).expect("spawn");
+        let command = crate::transport::CommandSpec::from_argv(argv);
+        let att = spawn_attachment(&command, 80, 24, 1, ev_tx, &env_clear).expect("spawn");
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut forwarded = None;

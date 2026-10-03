@@ -70,8 +70,8 @@ pub(crate) async fn enumerate_via_list_sessions(
     transport: &dyn Transport,
     runner: &dyn Runner,
 ) -> Result<Vec<Session>, RunError> {
-    let (name, args) = transport.exec_argv(false, &mux::list_sessions(bin));
-    match runner.run(&name, &args).await {
+    let command = transport.exec_argv(false, &mux::list_sessions(bin));
+    match runner.run_spec(&command).await {
         Ok(out) => Ok(mux::parse_sessions(
             transport.host_id(),
             kind,
@@ -102,26 +102,16 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
 /// address, the port, and the username, so every failure those three values can fix
 /// belongs here.
 ///
-/// Three of ssh's own canonical lines qualify. The auth failure carries `Permission
-/// denied (` with the rejected-methods list; the `(` is ssh's own mark, which a generic
-/// mux permission error does not have. The host-key failure says verification failed. A
-/// name that does not resolve is the third, because an address is exactly what the pane
-/// supplies.
+/// Two of ssh's own refusals qualify. The auth failure carries `Permission denied (`
+/// with the rejected-methods list; the `(` is ssh's own mark, which a generic mux
+/// permission error does not have. A first-seen host key is the other: a background
+/// probe cannot trust it, and the submitted login accepts a new key.
 ///
-/// Two failures deliberately stay unreachable. A machine that refused the connection,
-/// timed out, or had no route is down, and no value the pane holds reaches it. And
-/// output carrying ssh's changed-identification warning is not an answer the user gives
-/// here: a key that changed under a host is decided outside xmux.
-///
-/// Conservative on purpose. A false positive here invites the user to answer a prompt on
-/// a host that is merely down.
+/// Connectivity, name resolution, remote command permissions, and changed host keys need
+/// action the pane cannot take, so they stay unreachable.
 pub(crate) fn is_blocked(text: &str) -> bool {
-    if text.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
-        return false;
-    }
-    text.contains("Permission denied (")
-        || text.contains("Host key verification failed.")
-        || text.contains("Could not resolve hostname")
+    crate::transport::diagnostic::contains_auth_refusal(text)
+        || crate::transport::diagnostic::host_key_unknown(text)
 }
 
 /// The per-command budget [`ExecRunner`] applies to itself, so a command that never
@@ -576,8 +566,8 @@ async fn probe_identity(
     let mut first_err: Option<String> = None;
     let mut reached = false;
     for argv in mux.identity_probes() {
-        let (name, args) = transport.exec_argv(false, &argv);
-        match runner.run(&name, &args).await {
+        let command = transport.exec_argv(false, &argv);
+        match runner.run_spec(&command).await {
             Ok(out) => {
                 reached = true;
                 outs.push(Some(String::from_utf8_lossy(&out).to_lowercase()));
@@ -889,6 +879,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for ProbeRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             // The `-V` probe's arg is `-V` (local) or `<bin> -V` (ssh-wrapped); `-v` is
             // abduco's lower-case version flag; anything else is the `help` probe.
@@ -923,6 +914,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for MachineWith {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             if !self.present.contains(&name) {
                 return Err(RunError::Other("no such binary".into()));
@@ -1002,6 +994,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for ExitsWith {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             Err(RunError::Exit {
                 stderr: format!("exit {}", self.0),
@@ -1064,6 +1057,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for HangingRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             std::future::pending::<()>().await;
             unreachable!()
@@ -1399,10 +1393,8 @@ Usage: zellij [OPTIONS]",
         for text in [
             "pwtest@127.0.0.1: Permission denied (publickey,password).",
             "command failed (exit 255): pwtest@127.0.0.1: Permission denied (publickey).",
-            "Permission denied (publickey,password,keyboard-interactive).",
             "Host key verification failed.",
             "command failed (exit 255): Host key verification failed.",
-            "ssh: Could not resolve hostname jupiter00: No address associated with hostname",
         ] {
             assert!(is_blocked(text), "the pane can answer this: {text}");
         }
@@ -1417,6 +1409,8 @@ Usage: zellij [OPTIONS]",
             "ssh: connect to host prod port 22: Connection refused",
             "ssh: connect to host prod port 22: No route to host",
             "tmux: open /tmp/tmux-0/default: Permission denied",
+            "Permission denied (publickey,password,keyboard-interactive).",
+            "ssh: Could not resolve hostname jupiter00: No address associated with hostname",
             "no server running on /tmp/tmux-1000/default",
         ] {
             assert!(!is_blocked(text), "not answerable here: {text}");
@@ -1485,6 +1479,7 @@ Usage: zellij [OPTIONS]",
 
     #[async_trait]
     impl Runner for FailRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             Err(RunError::Other("ssh: connect to host down".into()))
         }
@@ -1540,6 +1535,7 @@ Usage: zellij [OPTIONS]",
         struct OkRunner;
         #[async_trait]
         impl Runner for OkRunner {
+            crate::model::source::runner_spec_via_argv!();
             async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
                 // session row parsed by mux::parse_sessions.
                 Ok(b"1:1:work\n".to_vec())

@@ -17,6 +17,9 @@ open modal, the debounced attach deadline with its pending flag and its
 dead-display recovery budget, and the last session address persisted to
 preferences. It is seeded from either a scan or the configured source list.
 
+Login results are per-machine state separate from reachability and enumeration errors.
+A later probe cannot replace the login's own reason or its key-registration outcome.
+
 Applying an ACTION is the single domain-mutation site: it folds one intent into
 the state and returns the effects for the run loop to dispatch. It touches only
 the state, never reading the clock or any registry or source state directly. The

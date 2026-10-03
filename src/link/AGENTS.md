@@ -78,44 +78,44 @@ and the composed control argv.
   reader. The reader's exit reason carries only a protocol `%error` (a "no sessions" /
   "no server" empty mux), so a reachable-but-empty host is told from one that answered;
   a control channel opens only for a machine already known to connect.
-- The login is a single PTY ssh carrying the submitted connection values as `-o`
-  overrides. Where this side multiplexes, it establishes the ONE authenticated master
-  (`ControlMaster=yes` over the shared control socket) that every later `BatchMode`
-  channel reuses. The secret rides only the transient command and the PTY writer - never
-  stored, logged, or rendered.
-- Registering a key is a second conversation, not a remote command on the login. The
-  login's own command can only report the authentication and read the host's shell
-  family, because a locked host's family is unknown until then and the key command is
-  written for one family. The registration is answered with the login's password, so it
-  works on a side that cannot multiplex, where the key is the whole point: it ends the
-  password the next probe could not supply. Composing it may make this machine a key
-  pair, so it is composed off the runtime's tasks.
-- A side that cannot multiplex still runs the login. ssh asks about the host key BEFORE it
-  authenticates and writes the answer to `known_hosts`, so accepting a key is a login
-  whose whole result outlives the connection; recording the values is another. Only the
-  reuse is lost, so only the reuse is refused: a host that then needs a password is asked
-  again on the next probe, which is the truth about that machine on that platform rather
-  than a reason to have refused the login.
-- The login is an exchange xmux has on the user's behalf, not a screen. The PTY exists
-  because ssh reads a password from a terminal and from nowhere else; nothing renders it
-  and nothing typed reaches it. What the pane collected is what answers: the host-key
-  question once, the password once and only if the pane carried one.
-- The verdict is the child's exit code. A wrong password only means ssh asks again, so
-  recognised auth-failure text only names a failure the exit already established.
-- Because the verdict is that exit code, the remote command the login carries MUST end by
-  reporting the AUTHENTICATION and nothing else, in a word every shell family has. What it
-  carries rides along without a vote. A locked host's shell family is unknown by
-  construction: the probe that would have read it never got past the refusal that locked
-  the card, so a word only one family has (`true`) turns an accepted password into a
-  refused one on a remote from another family. A carried step that failed is reported by
-  the next probe telling the truth about the host, not by a login that looks refused.
-- A prompt the pane's values cannot answer ENDS the login, because nobody is there to
-  answer it: a second password prompt is an auth failure, and a password prompt with no
-  password in the pane is a server asking for what the pane is missing. A prompt that is
-  neither is left to ssh and ends the login on the idle budget.
-- The conversation runs on its own thread, because every part of it - opening the PTY,
-  spawning ssh, reading it - waits on something the single runtime thread must not wait
-  on. The runtime holds only the handle that cancels it.
+- A login starts with one pending process-memory credential for the machine and runs an
+  ordinary ssh command through the same execution shape every later command uses. Only a
+  successful login promotes that exact credential only when askpass served it; a
+  key-authenticated login discards the unused password. Every ssh command carries argv
+  and child environment together. No spawn site may separate them.
+- A child with a held password forces askpass and permits one password answer. Its
+  environment carries an opaque token for a private local broker, never the password.
+  The helper answers password and keyboard-interactive password prompts only for an exact
+  account-and-host match against the target alias, resolved host name, or host-key alias.
+  A destination configured with `ProxyJump` or `ProxyCommand` does not enter the password
+  path because the proxy would inherit askpass. It refuses other prompts without consuming the token, along with host-key questions,
+  passphrases, passcodes, and one-time codes. Its token remains valid until the child is reaped. A child
+  without a held password uses batch mode. A tty attach forces askpass where supported,
+  so no password can enter the terminal view. Older Unix clients are detached from the
+  controlling terminal; older Windows clients do not enter the password path.
+- Only a submitted login whose effective policy is `ask` accepts a new host key. An
+  explicit `yes` is never weakened; an unknown key under that policy is unreachable and
+  names the fingerprint command. Other commands preserve the user's ssh
+  policy, and no command accepts a changed key. Connection sharing remains enabled where
+  supported, as an optimization only.
+- The login worker runs off the runtime thread, captures ssh's own stdout and stderr,
+  removes terminal control sequences and prompts, bounds the result, and categorizes a
+  refused password, unreachable host, host-key mismatch, server close after
+  authentication, timeout, cancellation, or other failure. That result is separate from
+  later probe failures. A refusal that did not receive a held password remains visible.
+- A command removes a credential only when that command received its token's password,
+  exited with ssh's connection-failure status, and emitted ssh's own authentication
+  refusal line. Removal is token-scoped, so a late result cannot remove a newer login.
+  Cancellation and replacement remove only the matching pending credential. Removal
+  immediately invalidates outstanding tokens and releases the held plaintext. The secret
+  is never placed in an argument, environment, log, rendered frame, status, or file. The
+  held credential allocation and current password-field allocation are overwritten in
+  full when released; transient terminal and IPC buffers remain process memory.
+- Registering a key is an ordinary ssh command using the same machine credential. The
+  login command reads the remote shell family without assuming POSIX syntax, then the
+  family-specific registration runs off the runtime thread. Its outcome is registered,
+  skipped with a reason, or failed with ssh's reason, and appears in the completion
+  message, log, and host information.
 
 ## Common Pitfalls
 

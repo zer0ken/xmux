@@ -30,6 +30,8 @@ pub struct HostClient {
     cmd_tx: std::sync::mpsc::Sender<HostCmd>,
     /// The control child, boxed so a piped child and a PTY child share one field.
     child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// Keeps the askpass token valid until this control child is reaped.
+    _auth: Option<Box<crate::transport::auth::CommandAuth>>,
     reader: Option<JoinHandle<()>>,
     writer: Option<JoinHandle<()>>,
     /// Drains the child's stderr to EOF so a child that writes more than the pipe
@@ -58,15 +60,14 @@ impl HostClient {
     pub fn spawn(
         host: impl Into<String>,
         proto: &'static dyn ControlProtocol,
-        argv: &[String],
+        command: &crate::transport::CommandSpec,
         cols: u16,
         rows: u16,
         events: tokio::sync::mpsc::UnboundedSender<HostEvent>,
-        extra_env: &[(&str, &str)],
         pty: bool,
     ) -> anyhow::Result<HostClient> {
         anyhow::ensure!(
-            !argv.is_empty(),
+            !command.is_empty(),
             "HostClient::spawn: argv must not be empty"
         );
         let host = host.into();
@@ -82,7 +83,7 @@ impl HostClient {
         } = if pty {
             #[cfg(unix)]
             {
-                spawn_pty_child(argv, extra_env, cols, rows)?
+                spawn_pty_child(command, cols, rows)?
             }
             #[cfg(not(unix))]
             {
@@ -90,7 +91,7 @@ impl HostClient {
                 unreachable!("a pty control spawn is Unix-only; no native local -CC on Windows")
             }
         } else {
-            spawn_piped_child(argv, extra_env)?
+            spawn_piped_child(command)?
         };
 
         let connecting = Arc::new(AtomicBool::new(true));
@@ -135,6 +136,7 @@ impl HostClient {
             proto,
             cmd_tx,
             child,
+            _auth: command.auth_guard().map(Box::new),
             reader: Some(reader),
             writer: Some(writer),
             stderr_drain,
@@ -236,9 +238,9 @@ impl HostClient {
 /// thread so a child that writes more than the pipe buffer to stderr (ssh
 /// banners/warnings) cannot block and wedge the connection. EOF arrives when the
 /// child dies, so the drain's join is bounded.
-fn spawn_piped_child(argv: &[String], extra_env: &[(&str, &str)]) -> anyhow::Result<Spawned> {
-    let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..])
+fn spawn_piped_child(command: &crate::transport::CommandSpec) -> anyhow::Result<Spawned> {
+    let mut cmd = Command::new(command.program());
+    cmd.args(command.args())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -252,8 +254,20 @@ fn spawn_piped_child(argv: &[String], extra_env: &[(&str, &str)]) -> anyhow::Res
             cmd.env_remove(&k);
         }
     }
-    for (k, v) in extra_env {
+    for (k, v) in command.env() {
         cmd.env(k, v);
+    }
+    #[cfg(unix)]
+    if command.should_detach_tty() {
+        use std::os::unix::process::CommandExt as _;
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
     let mut child = cmd.spawn()?;
     let stdout = child
@@ -288,8 +302,7 @@ fn spawn_piped_child(argv: &[String], extra_env: &[(&str, &str)]) -> anyhow::Res
 /// no drain handle to return.
 #[cfg(unix)]
 pub(super) fn spawn_pty_child(
-    argv: &[String],
-    extra_env: &[(&str, &str)],
+    command: &crate::transport::CommandSpec,
     cols: u16,
     rows: u16,
 ) -> anyhow::Result<Spawned> {
@@ -301,8 +314,8 @@ pub(super) fn spawn_pty_child(
         pixel_width: 0,
         pixel_height: 0,
     })?;
-    let mut cmd = CommandBuilder::new(&argv[0]);
-    cmd.args(&argv[1..]);
+    let mut cmd = CommandBuilder::new(command.program());
+    cmd.args(command.args());
     // The same mux-session-var strip and `extra_env` the piped spawn applies, so
     // the two spawn shapes give the child the same environment.
     for (k, _) in std::env::vars() {
@@ -310,7 +323,7 @@ pub(super) fn spawn_pty_child(
             cmd.env_remove(&k);
         }
     }
-    for (k, v) in extra_env {
+    for (k, v) in command.env() {
         cmd.env(k, v);
     }
     let child = pair.slave.spawn_command(cmd)?;
@@ -338,10 +351,97 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let client =
-            HostClient::spawn("local", test_control_proto(), &argv, 80, 24, tx, &[], false)
-                .expect("spawn");
+        let command = crate::transport::CommandSpec::from_argv(argv);
+        let client = HostClient::spawn("local", test_control_proto(), &command, 80, 24, tx, false)
+            .expect("spawn");
         // echo exits immediately, closing pipes → teardown's joins return promptly.
         client.teardown();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn control_client_keeps_askpass_live_but_cannot_outlive_credential_removal() {
+        async fn run(remove_before_prompt: bool) -> String {
+            let root = std::env::temp_dir().join(format!(
+                "xmux-control-auth-{}-{}",
+                std::process::id(),
+                crate::transport::auth::request_test_token()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let output = root.join("answer.txt");
+            let credentials = crate::transport::auth::Credentials::new(root.clone());
+            let access = credentials
+                .begin(
+                    "pwbox",
+                    crate::transport::Login {
+                        user: Some("dev".into()),
+                        ..Default::default()
+                    },
+                    "secret".into(),
+                )
+                .unwrap()
+                .unwrap();
+            assert!(access.promote());
+            let seed =
+                crate::transport::CommandSpec::new("stub", Vec::new()).with_auth(access, false);
+            let endpoint = seed
+                .env()
+                .iter()
+                .find(|(key, _)| key == "XMUX_ASKPASS_ENDPOINT")
+                .map(|(_, value)| std::path::Path::new(value))
+                .unwrap();
+            let pipe = format!(
+                "xmux-{}",
+                endpoint.file_stem().and_then(|stem| stem.to_str()).unwrap()
+            );
+            let output_literal = output.to_string_lossy().replace('\'', "''");
+            let script = format!(
+                "$ErrorActionPreference='Stop'; Start-Sleep -Milliseconds 200; \
+                 $p=[IO.Pipes.NamedPipeClientStream]::new('.', '{pipe}', [IO.Pipes.PipeDirection]::InOut); \
+                 $p.Connect(2000); \
+                 $w=[IO.StreamWriter]::new($p, [Text.UTF8Encoding]::new($false), 1024, $true); $w.AutoFlush=$true; \
+                 $q=@{{token=$env:XMUX_ASKPASS_TOKEN;prompt=\"dev@pwbox's password: \";secret_prompt=$true}} | ConvertTo-Json -Compress; $w.WriteLine($q); \
+                 $r=[IO.StreamReader]::new($p, [Text.UTF8Encoding]::new($false), $false, 1024, $true); \
+                 $n=[int]$r.ReadLine(); $answer=''; if($n -gt 0){{$buf=New-Object char[] $n; [void]$r.ReadBlock($buf,0,$n); $answer=-join $buf}}; \
+                 [IO.File]::WriteAllText('{output_literal}', $answer)"
+            );
+            let command = crate::transport::CommandSpec::new(
+                "powershell.exe",
+                vec![
+                    "-NoProfile".into(),
+                    "-NonInteractive".into(),
+                    "-Command".into(),
+                    script,
+                ],
+            )
+            .with_auth(
+                credentials.access("pwbox").expect("active credential"),
+                false,
+            );
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+            let client =
+                HostClient::spawn("pwbox", test_control_proto(), &command, 80, 24, tx, false)
+                    .expect("spawn delayed control stub");
+            drop(command);
+            drop(seed);
+            if remove_before_prompt {
+                credentials.remove("pwbox");
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !output.exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("stub wrote its broker answer");
+            client.teardown();
+            let answer = std::fs::read_to_string(&output).unwrap();
+            credentials.shutdown();
+            let _ = std::fs::remove_dir_all(root);
+            answer
+        }
+
+        assert_eq!(run(false).await, "secret");
+        assert_eq!(run(true).await, "");
     }
 }

@@ -97,16 +97,14 @@ impl MuxDriver for PsmuxDriver {
             );
             host.display.clear(&key);
             let mux_argv = host.mux.attach_plan(&sel.session);
-            let (cmd, args) = host.transport.exec_argv(true, &mux_argv);
-            let mut argv = vec![cmd];
-            argv.extend(args);
+            let command = host.transport.exec_argv(true, &mux_argv);
             let id = request_attach(
                 ctx.registry,
                 ctx.worker,
                 &mut host.display,
                 ctx.attach_seq,
                 &key,
-                argv,
+                command,
                 (cols, rows),
             );
             tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");

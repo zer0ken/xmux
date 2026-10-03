@@ -11,6 +11,7 @@ fn fake_source(alias: &str) -> Source {
         },
         runner: None,
         remote_shells: Default::default(),
+        credentials: Default::default(),
     }
 }
 
@@ -575,10 +576,10 @@ fn a_blocked_host_shows_the_login_view_screen() {
 }
 
 #[test]
-fn a_host_whose_name_did_not_resolve_shows_the_login_view_screen() {
+fn a_host_whose_name_did_not_resolve_stays_unreachable() {
     use crate::ui::run::dump_screen;
-    // The address is exactly what the login pane supplies, so a name that did not
-    // resolve is answerable here rather than a machine that is simply gone.
+    // Name resolution is not an authentication refusal, so it does not invite the
+    // user to submit credentials that cannot reach the machine.
     use crate::ui::switcher::Switcher;
     let mut state = crate::state::State::from_sources(vec!["jupiter00".into()]);
     let mut switcher = Switcher::from_sources(&mut state);
@@ -594,12 +595,12 @@ fn a_host_whose_name_did_not_resolve_shows_the_login_view_screen() {
     );
     let out = dump_screen(&mut switcher, None, 80, 24, &state);
     assert!(
-        out.contains("login required"),
-        "an unresolved name is answerable:\n{out}"
+        out.contains("unreachable"),
+        "an unresolved name stays a connectivity failure:\n{out}"
     );
     assert!(
-        !out.contains("unreachable"),
-        "it is not the unreachable state:\n{out}"
+        !out.contains("login required"),
+        "it does not open the login pane:\n{out}"
     );
 }
 
@@ -3728,7 +3729,7 @@ async fn newer_request_tears_down_the_older_pending_attachment() {
         &mut rt.hosts.get_mut("local").unwrap().display,
         &mut rt.attach_seq,
         "local",
-        vec!["fake".into()],
+        crate::transport::CommandSpec::from_argv(vec!["fake".into()]),
         (80, 24),
     );
 
@@ -3795,6 +3796,7 @@ fn a_sources_reach_names_its_mux_and_the_machine_it_is_asked_over() {
         },
         runner: None,
         remote_shells: Default::default(),
+        credentials: Default::default(),
     };
     let reach = super::handlers::source_reach(&s);
     assert_eq!(reach.mux, "tmux");

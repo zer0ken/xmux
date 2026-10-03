@@ -144,6 +144,11 @@ pub enum HostEvent {
         machine: String,
         err: Option<String>,
         shell: Option<crate::transport::vocab::RemoteShell>,
+        password_supplied: bool,
+        credential_rejection_generation: Option<u64>,
+        credential_held: bool,
+        credential_generation: u64,
+        current_credential_generation: u64,
         rescan: bool,
     },
 }

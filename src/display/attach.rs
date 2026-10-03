@@ -171,7 +171,7 @@ fn screen_session_name(sty: Option<String>) -> Option<String> {
 
 /// Hands the controlling terminal to a child process and waits.
 pub trait Execer {
-    fn exec(&self, argv: &[String]) -> Result<()>;
+    fn exec(&self, command: &crate::transport::CommandSpec) -> Result<()>;
 }
 
 /// Runs `argv[0]` with `argv[1..]`, wiring the standard streams (inherited), and
@@ -179,11 +179,12 @@ pub trait Execer {
 pub struct OsExecer;
 
 impl Execer for OsExecer {
-    fn exec(&self, argv: &[String]) -> Result<()> {
+    fn exec(&self, command: &crate::transport::CommandSpec) -> Result<()> {
         // std::process inherits stdin/stdout/stderr by default, handing over the
         // terminal and blocking until the child exits.
-        let status = std::process::Command::new(&argv[0])
-            .args(&argv[1..])
+        let status = std::process::Command::new(command.program())
+            .args(command.args())
+            .envs(command.env().iter().cloned())
             .status()?;
         if status.success() {
             Ok(())
@@ -195,11 +196,11 @@ impl Execer for OsExecer {
 
 /// Runs the given argv through the [`Execer`]. Returns an error for empty argv
 /// without calling the Execer.
-pub fn run_attach(e: &dyn Execer, argv: &[String]) -> Result<()> {
-    if argv.is_empty() {
+pub fn run_attach(e: &dyn Execer, command: &crate::transport::CommandSpec) -> Result<()> {
+    if command.is_empty() {
         return Err(anyhow!("attach: empty argv"));
     }
-    e.exec(argv)
+    e.exec(command)
 }
 
 #[cfg(test)]
@@ -221,8 +222,8 @@ mod tests {
     }
 
     impl Execer for FakeExecer {
-        fn exec(&self, argv: &[String]) -> Result<()> {
-            *self.got.borrow_mut() = Some(argv.to_vec());
+        fn exec(&self, command: &crate::transport::CommandSpec) -> Result<()> {
+            *self.got.borrow_mut() = Some(command.to_vec());
             if self.fail {
                 Err(anyhow!("boom"))
             } else {
@@ -426,7 +427,8 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let err = run_attach(&f, &argv).unwrap_err();
+        let command = crate::transport::CommandSpec::from_argv(argv.clone());
+        let err = run_attach(&f, &command).unwrap_err();
         assert!(err.to_string().contains("boom"));
         assert_eq!(f.got.borrow().as_ref().unwrap(), &argv);
     }
@@ -437,7 +439,8 @@ mod tests {
             got: RefCell::new(None),
             fail: false,
         };
-        assert!(run_attach(&f, &[]).is_err());
+        let command = crate::transport::CommandSpec::from_argv(Vec::new());
+        assert!(run_attach(&f, &command).is_err());
         assert!(f.got.borrow().is_none(), "execer must not be called");
     }
 
@@ -448,6 +451,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert!(OsExecer.exec(&argv).is_ok());
+        let command = crate::transport::CommandSpec::from_argv(argv);
+        assert!(OsExecer.exec(&command).is_ok());
     }
 }

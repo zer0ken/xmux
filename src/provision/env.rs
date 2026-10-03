@@ -2,7 +2,7 @@
 //! resolved from config + the roster providers at launch and again on every re-scan.
 //! Owns the scan (concurrent
 //! reachability probe, used by `ls`) and the switcher's side-effecting [`Ops`]
-//! over the live mux — including the per-source/per-session probes the event
+//! over the live mux - including the per-source/per-session probes the event
 //! loop streams in.
 
 use std::collections::{HashMap, HashSet};
@@ -11,16 +11,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::link::manage;
-use crate::model::source::{self, Source};
+use crate::model::source::{self, Runner, Source};
 use crate::provision::config::{self, Config};
 use crate::provision::discovery;
 use crate::session::Session;
+use crate::transport::Transport;
 use crate::ui::switcher::Ops;
 use crate::ui::tree::{self, Group};
 
 use tokio::sync::mpsc;
 
 const SCAN_CONCURRENCY: usize = 8;
+const SSH_PROFILE_CONCURRENCY: usize = 8;
+const SSH_PROFILE_TIMEOUT: Duration = Duration::from_secs(3);
 const SCAN_TIMEOUT: Duration = crate::mux::POLL_SWEEP_BUDGET;
 const DETAIL_TIMEOUT: Duration = crate::mux::POLL_SWEEP_BUDGET;
 /// Everything a config resolution decides about WHICH sources exist.
@@ -56,6 +59,8 @@ pub struct Roster {
     /// reason as `ssh_aliases`: `Hosts::build` reruns `Config::wsl_specs` over them, so
     /// the host registry and the source list are built from one answer rather than two.
     pub wsl_distros: Vec<String>,
+    /// Effective OpenSSH values resolved locally for each ssh destination.
+    pub ssh_profiles: HashMap<String, crate::transport::auth::SshProfile>,
 }
 
 /// The resolved runtime: a [`Roster`] that a re-scan can replace, plus the values that
@@ -65,6 +70,7 @@ pub struct Env {
     /// accessors over it; never hold the guard across an await.
     roster: std::sync::RwLock<Roster>,
     remote_shells: source::RemoteShells,
+    credentials: crate::transport::auth::Credentials,
     pub ui_prefix: String,
     pub xmux_dir: PathBuf,
     /// The [`crate::session::Address`] of the session xmux is ITSELF running in
@@ -76,6 +82,12 @@ pub struct Env {
     /// The local mux server socket parsed from `$TMUX` (`-S` target), threaded into
     /// the local host's transport by `Hosts::build`. `None` on the default socket.
     pub local_socket: Option<String>,
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        self.credentials.shutdown();
+    }
 }
 
 /// Pure fallback decision: a resolved home is returned unflagged; an unresolved
@@ -124,9 +136,109 @@ fn current_os() -> &'static str {
     std::env::consts::OS
 }
 
+async fn resolve_ssh_profiles(
+    aliases: &[String],
+) -> HashMap<String, crate::transport::auth::SshProfile> {
+    bounded_map(
+        aliases.iter().cloned(),
+        SSH_PROFILE_CONCURRENCY,
+        |alias| async move {
+            resolve_ssh_profile(&alias, &crate::transport::Login::default())
+                .await
+                .map(|profile| (alias, profile))
+        },
+    )
+    .await
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+async fn resolve_ssh_profile(
+    alias: &str,
+    login: &crate::transport::Login,
+) -> Option<crate::transport::auth::SshProfile> {
+    let mut command = tokio::process::Command::new("ssh");
+    command.args(ssh_profile_args(alias, login));
+    let output = command_output_with_timeout(command, SSH_PROFILE_TIMEOUT).await?;
+    output
+        .status
+        .success()
+        .then(|| parse_ssh_profile(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn ssh_profile_args(alias: &str, login: &crate::transport::Login) -> Vec<String> {
+    let mut args = vec!["-G".to_string()];
+    for option in login.options() {
+        args.extend(["-o".to_string(), option]);
+    }
+    args.extend(["--".to_string(), alias.to_string()]);
+    args
+}
+
+async fn command_output_with_timeout(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> Option<std::process::Output> {
+    command.kill_on_drop(true);
+    tokio::time::timeout(timeout, command.output())
+        .await
+        .ok()
+        .and_then(Result::ok)
+}
+
+async fn bounded_map<I, F, Fut, T>(items: I, limit: usize, f: F) -> Vec<T>
+where
+    I: IntoIterator<Item = String>,
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    use futures::StreamExt as _;
+    futures::stream::iter(items)
+        .map(f)
+        .buffer_unordered(limit)
+        .collect()
+        .await
+}
+
+fn parse_ssh_profile(output: &str) -> crate::transport::auth::SshProfile {
+    let mut profile = crate::transport::auth::SshProfile::default();
+    for line in output.lines() {
+        let mut fields = line.splitn(2, char::is_whitespace);
+        let key = fields.next().unwrap_or_default();
+        let value = fields.next().unwrap_or_default().trim();
+        match key.to_ascii_lowercase().as_str() {
+            "host" => profile.host_names.push(value.to_string()),
+            "hostname" => {
+                profile.login.address = Some(value.to_string());
+                profile.host_names.push(value.to_string());
+            }
+            "hostkeyalias" => profile.host_names.push(value.to_string()),
+            "port" => profile.login.port = value.parse().ok(),
+            "user" => profile.login.user = Some(value.to_string()),
+            "stricthostkeychecking" => {
+                profile.strict_host_key_checking = Some(match value.to_ascii_lowercase().as_str() {
+                    "true" | "yes" => "yes".to_string(),
+                    "false" | "no" | "off" => "no".to_string(),
+                    "ask" => "ask".to_string(),
+                    "accept-new" => "accept-new".to_string(),
+                    other => other.to_string(),
+                })
+            }
+            "proxyjump" | "proxycommand" if !value.eq_ignore_ascii_case("none") => {
+                profile.proxied = true;
+            }
+            _ => {}
+        }
+    }
+    profile.host_names.sort();
+    profile.host_names.dedup();
+    profile
+}
+
 /// The local mux server socket parsed from `$TMUX` (`<socket>,<pid>,<session>`),
 /// so xmux running inside a non-default mux (e.g. `tmux -L work`) targets that
-/// server rather than the default socket. `None` when not inside a mux — then
+/// server rather than the default socket. `None` when not inside a mux - then
 /// the default socket is used.
 fn local_socket(tmux: Option<&str>) -> Option<String> {
     let path = tmux?.split(',').next()?;
@@ -209,6 +321,7 @@ pub async fn resolve_roster(
         (crate::provision::roster::Provider::Neighbor, neighbors),
     ]);
     let aliases: Vec<String> = offered.iter().map(|(name, _)| name.clone()).collect();
+    let ssh_profiles = resolve_ssh_profiles(&aliases).await;
     let local_muxes = cfg.local_muxes(os, &installed);
     let srcs = source::build(
         &cfg,
@@ -230,6 +343,7 @@ pub async fn resolve_roster(
             wsl_distros,
             roster_providers,
             host_addresses,
+            ssh_profiles,
         },
         cfg_err,
     )
@@ -248,10 +362,10 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
     let (roster, cfg_err) = resolve_roster(&xmux_dir, local_socket.clone()).await;
     let ui_prefix = roster.cfg.ui_prefix().to_string();
     let own_session = own_session_address(&roster.sources);
-    (
-        Env::new(roster, ui_prefix, xmux_dir, own_session, local_socket),
-        cfg_err,
-    )
+    let env = Env::new(roster, ui_prefix, xmux_dir, own_session, local_socket);
+    env.credentials
+        .set_force_askpass(crate::transport::auth::detect_force_askpass().await);
+    (env, cfg_err)
 }
 
 /// The [`crate::session::Address`] of the session xmux is running in, resolved against
@@ -357,12 +471,16 @@ impl Env {
         local_socket: Option<String>,
     ) -> Self {
         let remote_shells = source::RemoteShells::default();
+        let credentials = crate::transport::auth::Credentials::new(xmux_dir.clone());
+        credentials.set_profiles(roster.ssh_profiles.clone());
         for source in &mut roster.sources {
             source.remote_shells = remote_shells.clone();
+            source.credentials = credentials.clone();
         }
         Env {
             roster: std::sync::RwLock::new(roster),
             remote_shells,
+            credentials,
             ui_prefix,
             xmux_dir,
             own_session,
@@ -414,8 +532,13 @@ impl Env {
             return false;
         }
         src.remote_shells = self.remote_shells.clone();
+        src.credentials = self.credentials.clone();
         r.sources.push(src);
         true
+    }
+
+    pub(crate) fn credentials(&self) -> crate::transport::auth::Credentials {
+        self.credentials.clone()
     }
 
     /// Carries the machines a PROBE offered into a freshly resolved roster that lost them.
@@ -474,11 +597,11 @@ impl Env {
     pub fn replace_roster(&self, mut fresh: Roster) {
         let mut cur = self.roster.write().expect("roster lock");
         let auto = fresh.cfg.auto_hosts(&fresh.ssh_aliases, &fresh.wsl_distros);
-        let machines: HashSet<&str> = fresh
+        let machines: HashSet<String> = fresh
             .sources
             .iter()
-            .map(|s| crate::session::machine_of(&s.alias))
-            .chain(auto.iter().map(String::as_str))
+            .map(|s| crate::session::machine_of(&s.alias).to_string())
+            .chain(auto.iter().cloned())
             .collect();
         let named: HashSet<&str> = fresh.sources.iter().map(|s| s.alias.as_str()).collect();
         let carried: Vec<Source> = cur
@@ -490,11 +613,14 @@ impl Env {
             })
             .cloned()
             .collect();
+        self.credentials.retain_machines(&machines);
+        self.credentials.set_profiles(fresh.ssh_profiles.clone());
         drop(machines);
         drop(named);
         fresh.sources.extend(carried);
         for source in &mut fresh.sources {
             source.remote_shells = self.remote_shells.clone();
+            source.credentials = self.credentials.clone();
         }
         *cur = fresh;
     }
@@ -527,7 +653,7 @@ impl Env {
         for (i, machine) in machines.iter().cloned().enumerate() {
             let sem = sem.clone();
             let remote_shells = self.remote_shells.clone();
-            let transport = crate::transport::kind_for(
+            let mut transport = crate::transport::kind_for(
                 &machine,
                 machine.clone(),
                 current_os(),
@@ -535,6 +661,7 @@ impl Env {
                 None,
             )
             .transport();
+            transport.set_credentials(self.credentials.clone());
             set.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore not closed");
                 (i, ask_host(&machine, transport, remote_shells).await)
@@ -683,11 +810,10 @@ async fn ask_host(
     mut transport: Box<dyn crate::transport::Transport>,
     remote_shells: source::RemoteShells,
 ) -> Result<Vec<String>, String> {
-    use crate::model::source::Runner;
     if transport.is_remote() {
         if let Some(argv) = transport.raw_shell_argv(crate::transport::vocab::SHELL_PROBE) {
             let out = source::ExecRunner
-                .run(&argv[0], &argv[1..])
+                .run_spec(&argv)
                 .await
                 .map_err(|e| e.to_string())?;
             let shell = crate::transport::vocab::RemoteShell::from_probe(&out);
@@ -760,29 +886,59 @@ impl Ops for EnvOps {
         })
     }
 
-    fn login_argv(&self, source: &str, login: &crate::transport::Login) -> Option<Vec<String>> {
+    async fn login_command(
+        &self,
+        source: &str,
+        login: &crate::transport::Login,
+        mut password: String,
+    ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
         // A login authenticates the MACHINE, which may serve no source yet: a host whose
         // muxes xmux asks for has none until it answers, and it cannot answer until the
         // login lets xmux in.
         let machine = crate::session::machine_of(source);
-        crate::transport::kind_for(
+        let mut transport = crate::transport::kind_for(
             machine,
             machine.to_string(),
             current_os(),
             &self.env.xmux_dir,
             None,
         )
-        .transport()
-        .login_argv(login)
-    }
-
-    fn login_remote(&self, register_key: bool) -> String {
-        if register_key {
-            crate::transport::vocab::MARKED_SHELL_PROBE.to_string()
-        } else {
-            // The connection itself is the work; the command only has to exit.
-            EXIT_OK.to_string()
+        .transport();
+        if !transport.is_remote() {
+            crate::transport::auth::zero_string(&mut password);
+            return Ok(None);
         }
+        if !password.is_empty()
+            && current_os() == "windows"
+            && !self.env.credentials.force_askpass_supported()
+        {
+            crate::transport::auth::zero_string(&mut password);
+            return Err(anyhow::anyhow!(
+                "this OpenSSH version cannot take a password from xmux; update OpenSSH or register a key from a terminal"
+            ));
+        }
+        // The effective configuration binds a typed password to its exact target, so only
+        // a password login depends on it; a key login runs with the user's own policy.
+        match resolve_ssh_profile(machine, login).await {
+            Some(profile) => self.env.credentials.set_profile(machine, profile),
+            None => {
+                self.env.credentials.forget_profile(machine);
+                if !password.is_empty() {
+                    crate::transport::auth::zero_string(&mut password);
+                    return Err(anyhow::anyhow!(
+                        "password login is unavailable because effective ssh configuration could not be resolved"
+                    ));
+                }
+                // An empty field can still hold erased characters in its allocation.
+                crate::transport::auth::zero_string(&mut password);
+            }
+        }
+        self.env
+            .credentials
+            .begin(machine, login.clone(), password)?;
+        transport.set_login(login.clone());
+        transport.set_credentials(self.env.credentials.clone());
+        Ok(transport.login_argv(crate::transport::vocab::MARKED_SHELL_PROBE))
     }
 
     async fn login_follow_ups(
@@ -791,19 +947,38 @@ impl Ops for EnvOps {
         login: &crate::transport::Login,
         write_config: bool,
         register: Option<crate::ui::ops::KeyRegistration>,
-    ) -> Vec<String> {
+    ) -> (crate::ui::ops::RegistrationOutcome, Vec<String>) {
         let mut notes = Vec::new();
         if write_config {
             if let Err(e) = write_ssh_config_stanza(crate::session::machine_of(source), login) {
                 notes.push(format!("ssh config not written: {e}"));
             }
         }
-        if let Some(register) = register {
-            if let Err(e) = self.register_key(source, login, register).await {
-                notes.push(format!("key not registered: {e}"));
+        let registration = match register {
+            None => crate::ui::ops::RegistrationOutcome::NotRequested,
+            Some(register) => match self.register_key(source, login, register).await {
+                Ok(()) => crate::ui::ops::RegistrationOutcome::Registered,
+                Err(error) if error.starts_with("skipped: ") => {
+                    crate::ui::ops::RegistrationOutcome::Skipped(
+                        error.trim_start_matches("skipped: ").to_string(),
+                    )
+                }
+                Err(error) => crate::ui::ops::RegistrationOutcome::Failed(error),
+            },
+        };
+        match &registration {
+            crate::ui::ops::RegistrationOutcome::Registered => {
+                tracing::info!(host = %crate::session::machine_of(source), "public key registered");
             }
+            crate::ui::ops::RegistrationOutcome::Skipped(reason) => {
+                tracing::warn!(host = %crate::session::machine_of(source), reason = %reason, "public key registration skipped");
+            }
+            crate::ui::ops::RegistrationOutcome::Failed(reason) => {
+                tracing::warn!(host = %crate::session::machine_of(source), reason = %reason, "public key registration failed");
+            }
+            crate::ui::ops::RegistrationOutcome::NotRequested => {}
         }
-        notes
+        (registration, notes)
     }
 }
 
@@ -819,28 +994,34 @@ impl EnvOps {
     ) -> Result<(), String> {
         let shell = register
             .shell
-            .ok_or("the login did not say which shell the host runs")?;
-        let argv = self
-            .login_argv(source, login)
-            .ok_or("the host has no login to run")?;
+            .ok_or("skipped: the login did not identify the remote shell")?;
         // Reading the key may have to make this machine a key pair, and a spawn is the
         // one thing an async task must never wait on.
         let command = tokio::task::spawn_blocking(move || key_command(shell))
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
-        let (_running, done) = crate::link::unlock::start_login(
-            source.to_string(),
-            argv,
-            Box::new(move || command),
-            register.password,
-            crate::link::unlock::LOGIN_IDLE,
-        );
-        match done.await {
-            Ok(c) if c.outcome == crate::link::unlock::UnlockOutcome::Ok => Ok(()),
-            Ok(c) => Err(format!("{:?}", c.outcome)),
-            Err(_) => Err("the registration ended without a verdict".into()),
-        }
+        let machine = crate::session::machine_of(source);
+        self.env.record_remote_shell(machine, shell);
+        let mut transport = crate::transport::kind_for(
+            machine,
+            machine.to_string(),
+            current_os(),
+            &self.env.xmux_dir,
+            None,
+        )
+        .transport();
+        transport.set_login(login.clone());
+        transport.set_remote_shell(shell);
+        transport.set_credentials(self.env.credentials.clone());
+        let command = transport
+            .raw_shell_argv(&command)
+            .ok_or("skipped: this machine has no remote shell")?;
+        source::ExecRunner
+            .run_spec(&command)
+            .await
+            .map(|_| ())
+            .map_err(|error| crate::link::unlock::sanitize_output(&error.to_string()))
     }
 }
 
@@ -862,16 +1043,6 @@ fn write_ssh_config_stanza(
     std::fs::write(&path, next)
 }
 
-/// The remote command that reports a login worked, and nothing else.
-///
-/// The login's verdict IS this command's exit code, so what it runs must answer one
-/// question: did the authentication succeed. `exit 0` is that answer in every shell
-/// family, which is what this position needs - the family of a LOCKED host is unknown by
-/// construction, because the probe that would have read it never got past the refusal
-/// that locked the card. A POSIX-only word here (`true`) is a command a PowerShell remote
-/// does not have, so it exits nonzero and an accepted password reads as a refused one.
-const EXIT_OK: &str = "exit 0";
-
 /// The remote command that puts this machine's public key where the host's sshd reads it,
 /// written for the shell family the login read. Both forms are idempotent: the key is
 /// added only when that exact line is absent, so a second login changes nothing.
@@ -884,7 +1055,7 @@ fn key_command(shell: crate::transport::vocab::RemoteShell) -> Result<String, st
 }
 
 /// The POSIX form: the key appended to `~/.ssh/authorized_keys`.
-fn authorized_keys_command(key: &str) -> Result<String, std::io::Error> {
+pub fn authorized_keys_command(key: &str) -> Result<String, std::io::Error> {
     // Single-quoted for the remote shell, with the key's own quotes made impossible by
     // the reject below, so nothing in it can end the quoting.
     if key.contains('\'') || key.contains('\n') {
@@ -1015,21 +1186,6 @@ mod tests {
     /// host's family is unknown, because the probe that reads it never got past the
     /// refusal that locked the card. A login that registers a key reads the family with a
     /// probe that every family answers and exits 0 on.
-    #[test]
-    fn every_login_command_reports_only_the_authentication() {
-        let ops = Arc::new(env_with(&["prod"])).ops();
-        assert_eq!(
-            ops.login_remote(false),
-            "exit 0",
-            "a login with nothing to carry reports the authentication and stops"
-        );
-        assert_eq!(
-            ops.login_remote(true),
-            crate::transport::vocab::MARKED_SHELL_PROBE,
-            "a login that registers a key reads the shell family the registration is for"
-        );
-    }
-
     /// A second login runs the registration again, so it must change nothing then.
     #[test]
     fn the_posix_key_command_adds_the_line_only_when_it_is_absent() {
@@ -1120,6 +1276,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Runner for StaticRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             Ok(self.0.clone())
         }
@@ -1154,6 +1311,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Runner for RecordingRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             self.commands
                 .lock()
@@ -1179,6 +1337,7 @@ mod tests {
             },
             runner: Some(runner),
             remote_shells: Default::default(),
+            credentials: Default::default(),
         }
     }
 
@@ -1188,6 +1347,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Runner for SlowProbeRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             if args.last().map(String::as_str) == Some(crate::transport::vocab::SHELL_PROBE) {
                 self.probes
@@ -1220,6 +1380,7 @@ mod tests {
             kind,
             runner: Some(runner(line)),
             remote_shells: Default::default(),
+            credentials: Default::default(),
         }
     }
 
@@ -1238,6 +1399,144 @@ mod tests {
 
     fn aliases_of(env: &Env) -> Vec<String> {
         env.source_list().iter().map(|s| s.alias.clone()).collect()
+    }
+
+    #[test]
+    fn ssh_g_profile_supplies_prefill_prompt_hosts_and_host_key_policy() {
+        let profile = parse_ssh_profile(
+            "host e2e-box\nhostname 127.0.0.1\nport 2222\nuser dev\n\
+             hostkeyalias stable-box\nstricthostkeychecking true\n",
+        );
+        assert_eq!(
+            profile.login,
+            crate::transport::Login {
+                address: Some("127.0.0.1".into()),
+                port: Some(2222),
+                user: Some("dev".into()),
+            }
+        );
+        assert!(profile.host_names.contains(&"127.0.0.1".into()));
+        assert!(profile.host_names.contains(&"stable-box".into()));
+        assert!(profile.host_names.contains(&"e2e-box".into()));
+        assert_eq!(profile.strict_host_key_checking.as_deref(), Some("yes"));
+    }
+
+    #[test]
+    fn ssh_g_host_key_policy_spellings_are_normalized() {
+        for (raw, expected) in [
+            ("true", "yes"),
+            ("yes", "yes"),
+            ("false", "no"),
+            ("no", "no"),
+            ("off", "no"),
+            ("ask", "ask"),
+            ("accept-new", "accept-new"),
+        ] {
+            let profile = parse_ssh_profile(&format!("stricthostkeychecking {raw}\n"));
+            assert_eq!(profile.strict_host_key_checking.as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn ssh_g_marks_proxy_routes_as_unsafe_for_shared_askpass() {
+        assert!(parse_ssh_profile("proxyjump dev@bastion\n").proxied);
+        assert!(parse_ssh_profile("proxycommand ssh -W %h:%p bastion\n").proxied);
+        assert!(!parse_ssh_profile("proxyjump none\nproxycommand none\n").proxied);
+    }
+
+    #[test]
+    fn submitted_login_values_are_part_of_the_effective_ssh_query() {
+        assert_eq!(
+            ssh_profile_args(
+                "box",
+                &crate::transport::Login {
+                    address: Some("10.0.0.1".into()),
+                    port: Some(2222),
+                    user: Some("dev".into()),
+                },
+            ),
+            [
+                "-G",
+                "-o",
+                "HostName=10.0.0.1",
+                "-o",
+                "Port=2222",
+                "-o",
+                "User=dev",
+                "--",
+                "box",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn ssh_g_resolution_never_exceeds_its_concurrency_bound() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let aliases = (0..(SSH_PROFILE_CONCURRENCY * 3))
+            .map(|index| format!("host-{index}"))
+            .collect::<Vec<_>>();
+        let _ = bounded_map(aliases, SSH_PROFILE_CONCURRENCY, {
+            let active = active.clone();
+            let peak = peak.clone();
+            move |alias| {
+                let active = active.clone();
+                let peak = peak.clone();
+                async move {
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    alias
+                }
+            }
+        })
+        .await;
+        assert!(peak.load(Ordering::SeqCst) <= SSH_PROFILE_CONCURRENCY);
+    }
+
+    #[tokio::test]
+    async fn timed_out_ssh_g_process_is_terminated() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-ssh-g-timeout-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let marker = root.join("survived.txt");
+        #[cfg(windows)]
+        let command = {
+            let marker = marker.to_string_lossy().replace('\'', "''");
+            let mut command = tokio::process::Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!(
+                    "Start-Sleep -Milliseconds 400; [IO.File]::WriteAllText('{marker}', 'alive')"
+                ),
+            ]);
+            command
+        };
+        #[cfg(unix)]
+        let command = {
+            let mut command = tokio::process::Command::new("sh");
+            command.args([
+                "-c",
+                &format!("sleep 0.4; printf alive > '{}'", marker.display()),
+            ]);
+            command
+        };
+        assert!(
+            command_output_with_timeout(command, Duration::from_millis(100))
+                .await
+                .is_none()
+        );
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(!marker.exists(), "timed-out resolver child survived");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1277,8 +1576,8 @@ mod tests {
         assert_eq!(aliases_of(&env), vec!["win".to_string()]);
     }
 
-    #[test]
-    fn a_host_with_no_source_yet_can_be_logged_into() {
+    #[tokio::test]
+    async fn a_host_with_no_source_yet_can_be_logged_into() {
         // A login authenticates the machine, and a host whose muxes xmux asks for has no
         // source until it answers, which a locked host cannot do before the login.
         let env = Arc::new(Env::new(
@@ -1292,11 +1591,47 @@ mod tests {
             None,
         ));
         assert!(env.source("win").is_none(), "precondition");
-        let argv = env
+        let command = env
             .ops()
-            .login_argv("win", &crate::transport::Login::default())
+            .login_command(
+                "win",
+                &crate::transport::Login {
+                    user: Some("dev".into()),
+                    ..Default::default()
+                },
+                "secret".into(),
+            )
+            .await
+            .expect("credential accepted")
             .expect("an ssh host has a login");
-        assert!(argv.iter().any(|a| a == "win"), "{argv:?}");
+        assert!(command.iter().any(|a| a == "win"), "{command:?}");
+        assert_eq!(
+            command.last().unwrap(),
+            crate::transport::vocab::MARKED_SHELL_PROBE
+        );
+        assert!(env.credentials.pending_access("win").is_some());
+        assert!(!env.credentials.contains("win"));
+        command.discard_credential();
+        assert!(env.credentials.pending_access("win").is_none());
+    }
+
+    #[tokio::test]
+    async fn local_and_wsl_targets_never_store_a_typed_password() {
+        let env = Arc::new(env_with(&["local", "wsl.Ubuntu"]));
+        for machine in ["local", "wsl.Ubuntu"] {
+            assert!(env
+                .ops()
+                .login_command(
+                    machine,
+                    &crate::transport::Login::default(),
+                    "must-not-be-held".into(),
+                )
+                .await
+                .unwrap()
+                .is_none());
+            assert!(!env.credentials.contains(machine));
+            assert!(env.credentials.pending_access(machine).is_none());
+        }
     }
 
     #[test]

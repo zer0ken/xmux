@@ -164,6 +164,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for StaticRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             match &self.err_msg {
                 Some(m) => Err(RunError::Other(m.clone())),
@@ -193,6 +194,7 @@ mod tests {
             },
             runner: Some(r),
             remote_shells: Default::default(),
+            credentials: Default::default(),
         }
     }
 
@@ -286,6 +288,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for ConcurrencyRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             let n = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max.fetch_max(n, Ordering::SeqCst);
@@ -332,6 +335,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for BlockingRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             tokio::time::sleep(Duration::from_secs(10)).await;
             Ok(b"1:0:s\n".to_vec())
@@ -342,6 +346,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for SlowFirstUseRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             tokio::time::sleep(Duration::from_millis(30)).await;
             if args.last().map(String::as_str) == Some(crate::transport::vocab::SHELL_PROBE) {

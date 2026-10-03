@@ -6,7 +6,7 @@ use crate::display::attachment::{spawn_attachment, Attachment, PtyEvent};
 pub struct DisplayEnsure {
     pub seq: u64,
     pub key: String,
-    pub argv: Vec<String>,
+    pub command: crate::transport::CommandSpec,
     pub cols: u16,
     pub rows: u16,
     pub id: u64,
@@ -31,7 +31,7 @@ pub enum DisplayEvent {
 /// injects a fake to exercise off-loop responsiveness without a real PTY.
 type AttachmentSpawner = Box<
     dyn Fn(
-            &[String],
+            &crate::transport::CommandSpec,
             u16,
             u16,
             u64,
@@ -74,7 +74,7 @@ impl DisplayWorker {
                 let env_clear =
                     crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
                 let event = match spawner(
-                    &req.argv,
+                    &req.command,
                     req.cols,
                     req.rows,
                     req.id,
@@ -147,7 +147,11 @@ mod tests {
         worker.ensure(DisplayEnsure {
             seq: 7,
             key: "local/slow".to_string(),
-            argv: vec!["cmd.exe".to_string(), "/c".to_string(), "rem".to_string()],
+            command: crate::transport::CommandSpec::from_argv(vec![
+                "cmd.exe".to_string(),
+                "/c".to_string(),
+                "rem".to_string(),
+            ]),
             cols: 80,
             rows: 24,
             id: 42,

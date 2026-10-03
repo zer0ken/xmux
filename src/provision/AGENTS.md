@@ -18,6 +18,13 @@ the rest; the resolved environment threads a single source-list answer into both
 the source list and the runtime registry so the two cannot disagree on which
 sources exist.
 
+The resolved environment owns the process-memory credential store for the run. Every
+configured, discovered, and freshly reconciled source receives that same store, keyed by
+machine, so off-loop operations cannot miss a login or copy its password.
+OpenSSH's effective local configuration supplies each ssh host's login defaults, prompt
+identity, and host-key policy; stanza parsing is only the display fallback when OpenSSH
+cannot report them.
+
 ## Module Seams
 
 - Config loads the optional TOML and merges it with ssh-config discovery to

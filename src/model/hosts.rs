@@ -51,6 +51,15 @@ impl Hosts {
         self.map.insert(id, host);
     }
 
+    pub(crate) fn set_credentials(&mut self, credentials: crate::transport::auth::Credentials) {
+        for host in self.map.values_mut() {
+            host.transport.set_credentials(credentials.clone());
+        }
+        for (_, transport) in &mut self.auto {
+            transport.set_credentials(credentials.clone());
+        }
+    }
+
     /// Assembles the hosts for a config: this machine's hosts first (one per entry of the
     /// RESOLVED `local_muxes`, its socket from `$TMUX`), then each ssh host in order,
     /// then each WSL distribution. Mirrors `source::build` but yields owning `Host`s.
@@ -706,15 +715,16 @@ mod tests {
             Some("/tmp/tmux-1000/work".into()),
         );
         // The socket is observable as the `-S <socket>` the transport injects.
-        let (_n, args) = hosts
+        let command = hosts
             .get("local")
             .unwrap()
             .transport
             .exec_argv(false, &["tmux".to_string(), "list-sessions".to_string()]);
         assert!(
-            args.windows(2)
+            command
+                .windows(2)
                 .any(|w| w == ["-S".to_string(), "/tmp/tmux-1000/work".to_string()]),
-            "socket threads into the transport as -S: {args:?}"
+            "socket threads into the transport as -S: {command:?}"
         );
     }
 
@@ -850,10 +860,10 @@ mod tests {
             "a distro on this box is not remote"
         );
         assert!(wsl.transport.runs_through_shell());
-        let (name, _args) = wsl
+        let command = wsl
             .transport
             .exec_argv(false, &["tmux".to_string(), "list-sessions".to_string()]);
-        assert_eq!(name, "wsl.exe");
+        assert_eq!(command.program(), "wsl.exe");
     }
 
     #[test]

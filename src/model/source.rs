@@ -15,6 +15,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::provision::config::Config;
 use crate::session;
+use crate::transport::CommandSpec;
 use crate::transport::MachineKind;
 
 /// The shell family each remote machine answered its probe with, keyed by machine and
@@ -67,7 +68,7 @@ impl RemoteShells {
 pub enum RunError {
     /// A real process exit: carries stderr and the exit code. `126/127/255` are
     /// never a healthy-but-empty mux.
-    #[error("command failed (exit {code}): {stderr}")]
+    #[error("{stderr}\ncommand exited with status {code}")]
     Exit { stderr: String, code: i32 },
     /// A spawn/transport failure (missing binary, connect failure) - never benign.
     #[error("{0}")]
@@ -79,7 +80,31 @@ pub enum RunError {
 #[async_trait]
 pub trait Runner: Send + Sync {
     async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError>;
+    fn run_spec<'a>(
+        &'a self,
+        command: &'a CommandSpec,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, RunError>> + Send + 'a>>;
 }
+
+#[cfg(test)]
+macro_rules! runner_spec_via_argv {
+    () => {
+        fn run_spec<'a>(
+            &'a self,
+            command: &'a $crate::transport::CommandSpec,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Vec<u8>, $crate::model::source::RunError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move { self.run(command.program(), command.args()).await })
+        }
+    };
+}
+#[cfg(test)]
+pub(crate) use runner_spec_via_argv;
 
 /// The real runner: spawns the command via tokio, stripping mux env so a local
 /// command run from inside a mux is not refused as nesting.
@@ -88,75 +113,111 @@ pub struct ExecRunner;
 #[async_trait]
 impl Runner for ExecRunner {
     async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
-        let mut cmd = tokio::process::Command::new(name);
-        cmd.args(args);
-        // Isolate stdin: these are non-interactive mux/ssh commands (list-sessions,
-        // switch-client, …) that read no input. Without this, ssh inherits the parent
-        // console tty and resets its mode (raw → canonical) for its own escape handling,
-        // wrecking the app's raw mode until ssh exits - the terminal then echoes keys
-        // and only flushes input on Enter.
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-        cmd.kill_on_drop(true); // a cancelled (timed-out) scan kills the child
-        cmd.env_clear();
-        for (k, v) in std::env::vars() {
-            if !crate::mux::vocab::is_mux_var(&k) {
-                cmd.env(k, v);
-            }
-        }
-        let mut child = cmd.spawn().map_err(|e| RunError::Other(e.to_string()))?;
-        let mut stdout = child.stdout.take().expect("spawn with piped stdout");
-        let mut stderr = child.stderr.take().expect("spawn with piped stderr");
+        self.run_spec(&CommandSpec::new(name, args.to_vec())).await
+    }
 
-        // Both pipes are drained WHILE the child runs, not after its exit: a command
-        // whose output exceeds the OS pipe capacity (65,536 bytes on Linux) blocks on
-        // its next write and never exits, so a wait-then-read order would hold every
-        // such command until the budget kills it and lose its output. join! polls both
-        // drains and the exit wait together, so completion does not depend on the
-        // output size.
-        //
-        // The command applies its OWN budget here so a timeout can tear the child down
-        // cleanly: kill, reap, then drain both pipes to EOF. Draining to EOF means no
-        // read is pending when the handles drop; on Windows an in-flight read at
-        // handle-close crashes as "IO is still pending on closed socket" (0xC0000005,
-        // the enumeration_failed in issue #116). The sweep-level budget
-        // (within_poll_budget) is one second longer so this teardown always wins.
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let outcome = tokio::time::timeout(crate::mux::POLL_CMD_TIMEOUT, async {
-            let (_, _, status) = tokio::join!(
-                stdout.read_to_end(&mut out),
-                stderr.read_to_end(&mut err),
-                child.wait(),
-            );
-            status
-        })
-        .await;
-        let status = match outcome {
-            Err(_) => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                // Drain to EOF so the pipes close with no pending read.
-                let _ = stdout.read_to_end(&mut out).await;
-                let _ = stderr.read_to_end(&mut err).await;
-                return Err(RunError::Other(format!(
-                    "{name} did not answer within {}s",
-                    crate::mux::POLL_CMD_TIMEOUT.as_secs()
-                )));
+    fn run_spec<'a>(
+        &'a self,
+        command: &'a CommandSpec,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, RunError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let name = command.program();
+            let args = command.args();
+            let mut cmd = tokio::process::Command::new(name);
+            cmd.args(args);
+            // Isolate stdin: these are non-interactive mux/ssh commands (list-sessions,
+            // switch-client, …) that read no input. Without this, ssh inherits the parent
+            // console tty and resets its mode (raw → canonical) for its own escape handling,
+            // wrecking the app's raw mode until ssh exits - the terminal then echoes keys
+            // and only flushes input on Enter.
+            cmd.stdin(std::process::Stdio::null());
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            cmd.kill_on_drop(true); // a cancelled (timed-out) scan kills the child
+            cmd.env_clear();
+            for (k, v) in std::env::vars() {
+                if !crate::mux::vocab::is_mux_var(&k) {
+                    cmd.env(k, v);
+                }
             }
-            Ok(status) => status.map_err(|e| RunError::Other(e.to_string()))?,
-        };
-        if status.success() {
-            Ok(out)
-        } else {
-            Err(RunError::Exit {
-                // Trim the trailing newline the command's stderr carries, so the
-                // error reads as one line wherever it is rendered.
-                stderr: String::from_utf8_lossy(&err).trim_end().to_string(),
-                code: status.code().unwrap_or(-1),
+            cmd.envs(command.env().iter().cloned());
+            #[cfg(unix)]
+            if command.should_detach_tty() {
+                use std::os::unix::process::CommandExt as _;
+                unsafe {
+                    cmd.as_std_mut().pre_exec(|| {
+                        if libc::setsid() == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+            }
+            let mut child = cmd.spawn().map_err(|e| RunError::Other(e.to_string()))?;
+            let mut stdout = child.stdout.take().expect("spawn with piped stdout");
+            let mut stderr = child.stderr.take().expect("spawn with piped stderr");
+
+            // Both pipes are drained WHILE the child runs, not after its exit: a command
+            // whose output exceeds the OS pipe capacity (65,536 bytes on Linux) blocks on
+            // its next write and never exits, so a wait-then-read order would hold every
+            // such command until the budget kills it and lose its output. join! polls both
+            // drains and the exit wait together, so completion does not depend on the
+            // output size.
+            //
+            // The command applies its OWN budget here so a timeout can tear the child down
+            // cleanly: kill, reap, then drain both pipes to EOF. Draining to EOF means no
+            // read is pending when the handles drop; on Windows an in-flight read at
+            // handle-close crashes as "IO is still pending on closed socket" (0xC0000005,
+            // the enumeration_failed in issue #116). The sweep-level budget
+            // (within_poll_budget) is one second longer so this teardown always wins.
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let outcome = tokio::time::timeout(crate::mux::POLL_CMD_TIMEOUT, async {
+                let (_, _, status) = tokio::join!(
+                    stdout.read_to_end(&mut out),
+                    stderr.read_to_end(&mut err),
+                    child.wait(),
+                );
+                status
             })
-        }
+            .await;
+            let status = match outcome {
+                Err(_) => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    // Drain to EOF so the pipes close with no pending read.
+                    let _ = stdout.read_to_end(&mut out).await;
+                    let _ = stderr.read_to_end(&mut err).await;
+                    return Err(RunError::Other(format!(
+                        "timed out\n{name} did not answer within {}s",
+                        crate::mux::POLL_CMD_TIMEOUT.as_secs()
+                    )));
+                }
+                Ok(status) => status.map_err(|e| RunError::Other(e.to_string()))?,
+            };
+            if status.success() {
+                Ok(out)
+            } else {
+                let code = status.code().unwrap_or(-1);
+                let raw = String::from_utf8_lossy(&err).into_owned();
+                let raw = match command.auth_unavailable() {
+                    Some(reason) => {
+                        format!("xmux credential broker unavailable: {reason}\n{raw}")
+                    }
+                    None => raw,
+                };
+                let stderr =
+                    crate::transport::diagnostic::explain(&raw, command.password_was_supplied());
+                command.forget_refused_password(code, &stderr);
+                Err(RunError::Exit {
+                    // Trim the trailing newline the command's stderr carries, so the
+                    // error reads as one line wherever it is rendered.
+                    stderr,
+                    code,
+                })
+            }
+        })
     }
 }
 
@@ -174,6 +235,7 @@ pub struct Source {
     /// injectable; `None` ⇒ the real exec runner.
     pub runner: Option<Arc<dyn Runner>>,
     pub(crate) remote_shells: RemoteShells,
+    pub(crate) credentials: crate::transport::auth::Credentials,
 }
 
 impl Source {
@@ -197,6 +259,7 @@ impl Source {
         {
             transport.set_remote_shell(shell);
         }
+        transport.set_credentials(self.credentials.clone());
         crate::model::Host::new(
             transport,
             crate::mux::for_binary(&self.binary).expect("a source's binary is a registry name"),
@@ -220,7 +283,7 @@ impl Source {
                         .transport
                         .raw_shell_argv(crate::transport::vocab::SHELL_PROBE)
                     {
-                        let out = self.run_with().run(&argv[0], &argv[1..]).await?;
+                        let out = self.run_with().run_spec(&argv).await?;
                         let shell = crate::transport::vocab::RemoteShell::from_probe(&out);
                         self.remote_shells.record(machine, shell);
                         host.transport.set_remote_shell(shell);
@@ -312,6 +375,7 @@ pub fn for_machine_mux(
         kind: crate::transport::kind_for(machine, id, os, xmux_dir, local_socket),
         runner: None,
         remote_shells: RemoteShells::default(),
+        credentials: crate::transport::auth::Credentials::default(),
     }
 }
 
@@ -424,6 +488,36 @@ mod tests {
         assert_eq!(stderr, "boom", "trailing newline trimmed, got {stderr:?}");
     }
 
+    #[tokio::test]
+    async fn exec_runner_reports_when_the_password_broker_is_unavailable() {
+        #[cfg(windows)]
+        let command = CommandSpec::new(
+            "cmd",
+            vec![
+                "/C".into(),
+                "echo dev@host: Permission denied (publickey,password). 1>&2 & exit 255".into(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let command = CommandSpec::new(
+            "sh",
+            vec![
+                "-c".into(),
+                "echo 'dev@host: Permission denied (publickey,password).' >&2; exit 255".into(),
+            ],
+        );
+        let command = command.with_auth_unavailable(Some("broken pipe".into()));
+        let err = ExecRunner
+            .run_spec(&command)
+            .await
+            .expect_err("must fail without the broker");
+        assert!(
+            err.to_string()
+                .starts_with("xmux could not provide the held password"),
+            "{err}"
+        );
+    }
+
     /// A command whose stdout exceeds the OS pipe capacity (65,536 bytes on
     /// Linux). The child blocks on its next write once the pipe fills and never
     /// exits, so a runner that waits for the exit before reading holds the call
@@ -442,7 +536,7 @@ mod tests {
 
     /// The same overflow on the stderr pipe: a command whose stderr exceeds the
     /// pipe capacity must still surface as a real exit error carrying the whole
-    /// stderr, not as a budget timeout.
+    /// stderr, not as a budget timeout. Diagnostics are bounded before display.
     #[tokio::test]
     async fn exec_runner_returns_stderr_larger_than_the_pipe_capacity() {
         let big = BigOutput::new("stderr");
@@ -452,7 +546,7 @@ mod tests {
             panic!("expected an exit error, got {err:?}");
         };
         assert_eq!(*code, 1);
-        assert_eq!(stderr.len(), BigOutput::BYTES);
+        assert_eq!(stderr.len(), crate::transport::diagnostic::MAX_DIAGNOSTIC);
     }
 
     /// A file of known size, and the command that copies it to one of the two pipes.

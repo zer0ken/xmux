@@ -536,10 +536,18 @@ pub(crate) fn request_attach(
     display: &mut crate::model::HostDisplay,
     attach_seq: &mut u64,
     key: &str,
-    argv: Vec<String>,
+    command: crate::transport::CommandSpec,
     size: (u16, u16),
 ) -> u64 {
-    request_attach_with_id(registry, worker, display, attach_seq, key, |_| argv, size)
+    request_attach_with_id(
+        registry,
+        worker,
+        display,
+        attach_seq,
+        key,
+        |_| command,
+        size,
+    )
 }
 
 /// Issues an attach whose argv depends on the allocated attachment id. The id is
@@ -551,7 +559,7 @@ pub(crate) fn request_attach_with_id(
     display: &mut crate::model::HostDisplay,
     attach_seq: &mut u64,
     key: &str,
-    argv: impl FnOnce(u64) -> Vec<String>,
+    command: impl FnOnce(u64) -> crate::transport::CommandSpec,
     size: (u16, u16),
 ) -> u64 {
     // A new request owns this key. Any fresh attachment still waiting to paint belongs
@@ -559,7 +567,7 @@ pub(crate) fn request_attach_with_id(
     display.cancel_pending_paint(key);
     registry.remove_pending(key);
     let id = registry.alloc_id();
-    let argv = argv(id);
+    let command = command(id);
     *attach_seq += 1;
     // The command the display terminal IS. A pane that dies is diagnosed by comparing
     // what xmux ran against what the same command does by hand, so the argv has to be on
@@ -568,7 +576,7 @@ pub(crate) fn request_attach_with_id(
         key,
         id,
         seq = *attach_seq,
-        cmd = %crate::app::runtime::handlers::shell_line(&argv),
+        cmd = %crate::app::runtime::handlers::shell_line(&command),
         "attach_spawn"
     );
     display.mark_in_flight(key, *attach_seq);
@@ -576,7 +584,7 @@ pub(crate) fn request_attach_with_id(
     worker.ensure(DisplayEnsure {
         seq: *attach_seq,
         key: key.to_string(),
-        argv,
+        command,
         cols: size.0,
         rows: size.1,
         id,
@@ -630,20 +638,21 @@ pub(crate) fn current_grid(
 pub(crate) fn run_lowered(lowered: crate::transport::LoweredSwitch) {
     use crate::model::source::Runner;
     use crate::transport::LoweredSwitch;
-    let argv = match lowered {
+    let command = match lowered {
         LoweredSwitch::Local(v) | LoweredSwitch::RawSsh(v) => v,
     };
-    if argv.is_empty() {
+    if command.is_empty() {
         return;
     }
-    let (name, args) = (argv[0].clone(), argv[1..].to_vec());
     tokio::spawn(async move {
         // Log the exact spawned command + its result: a silent switch is invisible, so a
         // session-switch that does not land is diagnosed from the program's real output.
-        tracing::debug!(cmd = %name, ?args, "lowered_run");
-        match crate::model::source::ExecRunner.run(&name, &args).await {
-            Ok(out) => tracing::debug!(cmd = %name, out_bytes = out.len(), "lowered_ok"),
-            Err(e) => tracing::debug!(cmd = %name, error = %e, "lowered_err"),
+        tracing::debug!(cmd = %command.program(), args = ?command.args(), "lowered_run");
+        match crate::model::source::ExecRunner.run_spec(&command).await {
+            Ok(out) => {
+                tracing::debug!(cmd = %command.program(), out_bytes = out.len(), "lowered_ok")
+            }
+            Err(e) => tracing::debug!(cmd = %command.program(), error = %e, "lowered_err"),
         }
     });
 }
@@ -660,10 +669,7 @@ pub(crate) fn run_switch_plan(host: &crate::model::Host, plan: crate::mux::Switc
     match plan {
         SwitchPlan::Exec(argvs) => {
             for a in &argvs {
-                let (cmd, args) = host.transport.exec_argv(false, a);
-                let mut v = vec![cmd];
-                v.extend(args);
-                run_lowered(LoweredSwitch::Local(v));
+                run_lowered(LoweredSwitch::Local(host.transport.exec_argv(false, a)));
             }
             true
         }
@@ -859,13 +865,13 @@ fn spawn_machine_probe(
         let Some(argv) = transport.raw_shell_argv(crate::transport::vocab::SHELL_PROBE) else {
             return;
         };
-        let (name, args) = (argv[0].clone(), argv[1..].to_vec());
-        let (err, shell) = match crate::model::source::ExecRunner.run(&name, &args).await {
+        let credential_generation = argv.credential_generation();
+        let (err, shell) = match crate::model::source::ExecRunner.run_spec(&argv).await {
             Ok(out) => (
                 None,
                 Some(crate::transport::vocab::RemoteShell::from_probe(&out)),
             ),
-            Err(e) => (Some(e.to_string()), None),
+            Err(e) => (Some(transport.probe_diagnostic(e.to_string())), None),
         };
         // This verdict decides whether the machine has cards at all: a failure makes every
         // source it serves unreachable, and hiding then takes them off the list. So it is
@@ -882,6 +888,11 @@ fn spawn_machine_probe(
             machine,
             err,
             shell,
+            password_supplied: argv.password_was_supplied(),
+            credential_rejection_generation: argv.credential_rejection_generation(),
+            credential_held: transport.has_credential(),
+            credential_generation,
+            current_credential_generation: transport.credential_generation(),
             rescan,
         });
     });
@@ -908,6 +919,11 @@ fn probe_machine(
             // This box and a WSL distribution are POSIX by construction, so there is
             // nothing to read back: `None` leaves the transport's default standing.
             shell: None,
+            password_supplied: false,
+            credential_rejection_generation: None,
+            credential_held: false,
+            credential_generation: 0,
+            current_credential_generation: 0,
             rescan,
         });
         return;
@@ -1490,7 +1506,7 @@ fn spawn_op(
     });
 }
 
-/// Starts the login the pane submitted and hands the app the conversation.
+/// Starts the login validation the pane submitted and hands the app its verdict.
 ///
 /// The connection is not an op: it waits on a child, on a network, and on a server's
 /// pace, so it runs on its own thread and only the handle that says it is running is
@@ -1506,58 +1522,74 @@ fn spawn_op(
 fn start_login(
     source: String,
     login: crate::transport::Login,
-    password: String,
+    mut password: crate::state::SecretInput,
     write_config: bool,
     register_key: bool,
     state: &mut crate::state::State,
     op_sink: OpSink<'_>,
 ) {
-    let Some(argv) = op_sink.0.login_argv(&source, &login) else {
-        let _ = op_sink.1.send(crate::ui::switcher::OpResult::Login {
-            source,
-            login,
-            outcome: crate::ui::ops::LoginOutcome {
-                connect: crate::link::unlock::UnlockOutcome::Unavailable,
-                notes: Vec::new(),
-            },
-        });
-        return;
-    };
-    let remote = op_sink.0.login_remote(register_key);
-    // The registration authenticates with the same answer, so it keeps one copy for as
-    // long as the login and its follow-ups run, and no longer.
-    let key_password = register_key.then(|| password.clone());
-    // The login is the one thing the user starts that shows no output of its own, so the
-    // log is where a run that went nowhere is read back. The values ride ssh's argv and
-    // the password rides neither, so only the host is named.
-    tracing::info!(source = %source, "login started");
-    let (running, done) = crate::link::unlock::start_login(
-        source.clone(),
-        argv,
-        Box::new(move || remote),
-        password,
-        crate::link::unlock::LOGIN_IDLE,
-    );
+    let machine = crate::session::machine_of(&source).to_string();
+    state.logged_in.remove(&machine);
+    state.login_reports.remove(&machine);
+    let (running, cancel) = crate::link::unlock::RunningLogin::pending(source.clone());
     state.login_run = Some(running);
 
     let ops = op_sink.0.clone();
     let tx = op_sink.1.clone();
+    let password = password.take_plain();
     tokio::spawn(async move {
+        let command = match ops.login_command(&source, &login, password).await {
+            Ok(Some(command)) => command,
+            Ok(None) => {
+                let _ = tx.send(crate::ui::switcher::OpResult::Login {
+                    source,
+                    login,
+                    outcome: crate::ui::ops::LoginOutcome {
+                        connect: crate::link::unlock::UnlockOutcome::Unavailable,
+                        registration: crate::ui::ops::RegistrationOutcome::NotRequested,
+                        notes: Vec::new(),
+                    },
+                });
+                return;
+            }
+            Err(error) => {
+                let _ = tx.send(crate::ui::switcher::OpResult::Login {
+                    source,
+                    login,
+                    outcome: crate::ui::ops::LoginOutcome {
+                        connect: crate::link::unlock::UnlockOutcome::Failed {
+                            kind: crate::link::unlock::FailureKind::Other,
+                            reason: error.to_string(),
+                        },
+                        registration: crate::ui::ops::RegistrationOutcome::NotRequested,
+                        notes: Vec::new(),
+                    },
+                });
+                return;
+            }
+        };
+        tracing::info!(source = %source, "login started");
+        let done = crate::link::unlock::start_login_with_cancel(
+            source.clone(),
+            command,
+            crate::link::unlock::LOGIN_IDLE,
+            cancel,
+        );
         let conversation = done
             .await
             .unwrap_or_else(|_| crate::link::unlock::Conversation {
-                outcome: crate::link::unlock::UnlockOutcome::Failed(
-                    "the login ended without a verdict".into(),
-                ),
+                outcome: crate::link::unlock::UnlockOutcome::Failed {
+                    kind: crate::link::unlock::FailureKind::Other,
+                    reason: "the login ended without a verdict".into(),
+                },
                 output: String::new(),
+                shell: None,
+                password_supplied: false,
             });
         let connect = conversation.outcome;
         tracing::info!(source = %source, outcome = ?connect, "login finished");
-        // The login's own command read the host's shell family, which is what the
-        // registration has to be written for.
-        let register = key_password.map(|password| crate::ui::ops::KeyRegistration {
-            shell: crate::transport::vocab::RemoteShell::from_marked_probe(&conversation.output),
-            password,
+        let register = register_key.then_some(crate::ui::ops::KeyRegistration {
+            shell: conversation.shell,
         });
         let result = crate::ui::switcher::run_login_follow_ups(
             &source,

@@ -435,41 +435,57 @@ impl Switcher {
                 state.flash(message);
                 None
             }
-            // A successful unlock established the authenticated ControlMaster: only THIS
-            // machine's reach changed, so the app re-probes just it (never the roster).
+            // A successful unlock promoted this machine's credential. Only this
+            // machine's reach changed, so the app re-probes just it.
             // Any failure stays locked and flashes why; the user retypes the password.
             OpFollow::LoginResult {
                 source,
                 login,
                 outcome,
             } => {
-                // What the checkboxes could not do is said even when the connection
-                // worked: a step that failed silently would leave the user believing it
-                // ran.
-                if !outcome.notes.is_empty() {
-                    state.flash(outcome.notes.join("; "));
+                let machine = crate::session::machine_of(&source).to_string();
+                state.login_reports.insert(machine.clone(), outcome.clone());
+                if !matches!(
+                    outcome.registration,
+                    crate::ui::ops::RegistrationOutcome::NotRequested
+                ) {
+                    state
+                        .registration_reports
+                        .insert(machine.clone(), outcome.registration.clone());
+                }
+                let notes = if outcome.notes.is_empty() {
+                    String::new()
+                } else {
+                    format!("; {}", outcome.notes.join("; "))
+                };
+                match &outcome.registration {
+                    crate::ui::ops::RegistrationOutcome::Registered => {
+                        state.notice(format!("public key registered on {machine}{notes}"))
+                    }
+                    crate::ui::ops::RegistrationOutcome::Skipped(reason)
+                    | crate::ui::ops::RegistrationOutcome::Failed(reason) => state.flash(format!(
+                        "public key not registered on {machine}: {reason}{notes}"
+                    )),
+                    crate::ui::ops::RegistrationOutcome::NotRequested
+                        if !outcome.notes.is_empty() =>
+                    {
+                        state.flash(outcome.notes.join("; "))
+                    }
+                    crate::ui::ops::RegistrationOutcome::NotRequested => {}
                 }
                 match outcome.connect {
                     crate::link::unlock::UnlockOutcome::Ok => Some((source, login)),
-                    crate::link::unlock::UnlockOutcome::AuthFailed => {
-                        state.flash("authentication failed");
-                        None
-                    }
-                    crate::link::unlock::UnlockOutcome::Timeout => {
-                        state.flash("login timed out");
-                        None
-                    }
-                    // The user ended it themselves, so they know why it is over and the
-                    // pane they are looking at is the answer.
-                    crate::link::unlock::UnlockOutcome::Cancelled => None,
                     // Reached only for a machine there is nothing to log in TO: this box
                     // and its WSL distributions are not behind ssh at all.
                     crate::link::unlock::UnlockOutcome::Unavailable => {
                         state.flash("this machine is reached without a login");
                         None
                     }
-                    crate::link::unlock::UnlockOutcome::Failed(msg) => {
-                        state.flash(format!("login failed: {msg}"));
+                    crate::link::unlock::UnlockOutcome::Failed { kind, reason } => {
+                        state.logged_in.remove(&machine);
+                        if kind != crate::link::unlock::FailureKind::Cancelled {
+                            state.flash(format!("login failed: {reason}"));
+                        }
                         None
                     }
                 }

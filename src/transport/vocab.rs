@@ -19,8 +19,8 @@
 /// stand in: a Windows box with Git installed answers it.
 pub const SHELL_PROBE: &str = "echo $0";
 
-/// [`SHELL_PROBE`] for a stream that carries more than its answer. A login's PTY also
-/// carries ssh's prompts and the host's banner, and PowerShell's answer is an empty line,
+/// [`SHELL_PROBE`] for a stream that carries more than its answer. Login output can also
+/// carry ssh's prompts and the host's banner, and PowerShell's answer is an empty line,
 /// so the answer is found by the marker in front of it rather than by being the last
 /// line. Every family runs `echo` and exits 0, so the command still reports the
 /// authentication and nothing else.
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn the_marked_probe_is_read_past_the_prompts_around_it() {
-        // What a login's PTY carries: the password prompt, then the probe's answer.
+        // Captured client output can carry the password prompt before the probe's answer.
         let cases: &[(&str, Option<RemoteShell>)] = &[
             (
                 "me@box's password: \r\nxmux-shell:bash\r\n",

@@ -74,8 +74,8 @@ impl Mux for Abduco {
         runner: &dyn Runner,
     ) -> Result<Vec<Session>, RunError> {
         let argv = self.list_sessions_plan();
-        let (name, args) = transport.exec_argv(false, &argv);
-        match runner.run(&name, &args).await {
+        let command = transport.exec_argv(false, &argv);
+        match runner.run_spec(&command).await {
             Ok(out) => Ok(parse_sessions(
                 transport.host_id(),
                 self.kind(),
@@ -161,6 +161,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for CannedRunner {
+        crate::model::source::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             self.0
                 .lock()
