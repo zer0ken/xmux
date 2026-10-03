@@ -311,13 +311,16 @@ UI elements a user perceives as distinct things:
   tells a reader which lines are xmux's. Nothing the user wrote is touched. A password is
   never recorded, because ssh config has nowhere to put one; the public-key choice is
   what stops the host asking again.
-- registering a key - what the pane's key choice does, as the login's OWN remote command
-  rather than a connection opened after it. It runs inside the session the user just
-  authenticated, which is the only authenticated session a platform without connection
-  sharing will ever have, and it is exactly what such a platform needs: the key it leaves
-  ends the password, so every later probe needs nothing. It adds the line only when that
-  line is absent, so a second login changes nothing, and it makes this machine an ed25519
-  pair first when it has none.
+- registering a key - what the pane's key choice does once the connection works. The
+  login's own remote command reads the host's shell family, because the registration is a
+  command for one family and a locked host's family is unknown until someone gets in. The
+  registration is then its own ssh, answered with the same values and password, because a
+  platform without connection sharing keeps no authenticated session to carry it; the key
+  it leaves ends the password, so every later probe needs nothing. A POSIX host gets the
+  line in `~/.ssh/authorized_keys`; a Windows host gets it there too, and in
+  `administrators_authorized_keys` when its sshd reads an Administrators member's keys
+  from that file. It adds the line only when that line is absent, so a second login
+  changes nothing, and it makes this machine an ed25519 pair first when it has none.
 - address column - the leftmost column set of every card, holding the one thing that
   answers "where is this": the dim 1-based number `prefix <digit>` jumps to, or, on the
   SELECTED card, the selection mark - the number there would be the address of where you

@@ -777,20 +777,11 @@ impl Ops for EnvOps {
     }
 
     fn login_remote(&self, register_key: bool) -> String {
-        if !register_key {
+        if register_key {
+            crate::transport::vocab::MARKED_SHELL_PROBE.to_string()
+        } else {
             // The connection itself is the work; the command only has to exit.
-            return EXIT_OK.to_string();
-        }
-        match authorized_keys_command() {
-            // Registering ends in the same report an empty login gives, so the verdict
-            // stays a verdict on the AUTHENTICATION. A key that did not land leaves the
-            // host asking for a password on the next probe, which is the truth about it -
-            // and which the user reads on the card, rather than as a login that looks
-            // like the password was wrong.
-            Ok(cmd) => format!("{cmd}; {EXIT_OK}"),
-            // A key that cannot be read or made registers nothing, and the login is still
-            // worth having: it accepts the host key and carries the values.
-            Err(_) => EXIT_OK.to_string(),
+            EXIT_OK.to_string()
         }
     }
 
@@ -799,6 +790,7 @@ impl Ops for EnvOps {
         source: &str,
         login: &crate::transport::Login,
         write_config: bool,
+        register: Option<crate::ui::ops::KeyRegistration>,
     ) -> Vec<String> {
         let mut notes = Vec::new();
         if write_config {
@@ -806,7 +798,49 @@ impl Ops for EnvOps {
                 notes.push(format!("ssh config not written: {e}"));
             }
         }
+        if let Some(register) = register {
+            if let Err(e) = self.register_key(source, login, register).await {
+                notes.push(format!("key not registered: {e}"));
+            }
+        }
         notes
+    }
+}
+
+impl EnvOps {
+    /// Puts this machine's public key on the host the login just reached, with an ssh of
+    /// its own answered the way the login was. Its verdict is the registration's exit
+    /// code, so a key that did not land says why.
+    async fn register_key(
+        &self,
+        source: &str,
+        login: &crate::transport::Login,
+        register: crate::ui::ops::KeyRegistration,
+    ) -> Result<(), String> {
+        let shell = register
+            .shell
+            .ok_or("the login did not say which shell the host runs")?;
+        let argv = self
+            .login_argv(source, login)
+            .ok_or("the host has no login to run")?;
+        // Reading the key may have to make this machine a key pair, and a spawn is the
+        // one thing an async task must never wait on.
+        let command = tokio::task::spawn_blocking(move || key_command(shell))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let (_running, done) = crate::link::unlock::start_login(
+            source.to_string(),
+            argv,
+            Box::new(move || command),
+            register.password,
+            crate::link::unlock::LOGIN_IDLE,
+        );
+        match done.await {
+            Ok(c) if c.outcome == crate::link::unlock::UnlockOutcome::Ok => Ok(()),
+            Ok(c) => Err(format!("{:?}", c.outcome)),
+            Err(_) => Err("the registration ended without a verdict".into()),
+        }
     }
 }
 
@@ -838,16 +872,19 @@ fn write_ssh_config_stanza(
 /// does not have, so it exits nonzero and an accepted password reads as a refused one.
 const EXIT_OK: &str = "exit 0";
 
-/// The remote command that puts this machine's public key in the host's
-/// `authorized_keys`, for the login to carry.
-///
-/// It runs inside the session the user authenticates, which is what makes it work on a
-/// platform that keeps no connection afterwards - and what makes it the thing worth doing
-/// there, since the key it leaves turns a host that wanted a password into one that wants
-/// nothing. Idempotent: the key is added only when that exact line is absent, so a second
-/// login changes nothing.
-fn authorized_keys_command() -> Result<String, std::io::Error> {
+/// The remote command that puts this machine's public key where the host's sshd reads it,
+/// written for the shell family the login read. Both forms are idempotent: the key is
+/// added only when that exact line is absent, so a second login changes nothing.
+fn key_command(shell: crate::transport::vocab::RemoteShell) -> Result<String, std::io::Error> {
     let key = public_key_line()?;
+    match shell {
+        crate::transport::vocab::RemoteShell::Posix => authorized_keys_command(&key),
+        crate::transport::vocab::RemoteShell::Other => windows_key_command(&key),
+    }
+}
+
+/// The POSIX form: the key appended to `~/.ssh/authorized_keys`.
+fn authorized_keys_command(key: &str) -> Result<String, std::io::Error> {
     // Single-quoted for the remote shell, with the key's own quotes made impossible by
     // the reject below, so nothing in it can end the quoting.
     if key.contains('\'') || key.contains('\n') {
@@ -857,6 +894,77 @@ fn authorized_keys_command() -> Result<String, std::io::Error> {
         "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; \
          grep -qxF '{key}' ~/.ssh/authorized_keys || printf '%s\\n' '{key}' >> ~/.ssh/authorized_keys"
     ))
+}
+
+/// The Windows form, for a host whose ssh shell is `cmd.exe` or PowerShell.
+///
+/// The script goes to `powershell -EncodedCommand`, which both shells run the same way
+/// and which leaves nothing in it for either shell to parse. Windows PowerShell ships with
+/// every Windows that runs OpenSSH, so the script is written for 5.1.
+///
+/// The key goes to `~/.ssh/authorized_keys`. Windows OpenSSH's stock `sshd_config` reads
+/// an Administrators member's keys from `administrators_authorized_keys` instead, so when
+/// that `Match` is in force and the account is a member, the key goes there too. sshd
+/// refuses that file unless only Administrators and SYSTEM can write it, so a file the
+/// script creates is given exactly that access. An error stops the script with a nonzero
+/// exit, so a key that did not land is a failed registration.
+fn windows_key_command(key: &str) -> Result<String, std::io::Error> {
+    if key.contains('\'') || key.contains('\n') {
+        return Err(std::io::Error::other("the public key is not a plain line"));
+    }
+    let script = WINDOWS_KEY_SCRIPT.replace("{key}", key);
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    Ok(format!(
+        "powershell -NoProfile -NonInteractive -EncodedCommand {}",
+        base64(&utf16)
+    ))
+}
+
+/// The script [`windows_key_command`] encodes. `{key}` is the public key line, inside a
+/// single-quoted string the key cannot end.
+const WINDOWS_KEY_SCRIPT: &str = r#"$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+$k='{key}'
+function Add-Key($f){
+$d=Split-Path $f
+if(-not(Test-Path $d)){New-Item -ItemType Directory $d|Out-Null}
+$a="$k`r`n"
+if(Test-Path $f){
+if(@(Get-Content $f) -contains $k){return}
+$t=[IO.File]::ReadAllText($f)
+if($t.Length -gt 0 -and -not $t.EndsWith("`n")){$a="`r`n$a"}
+}
+[IO.File]::AppendAllText($f,$a)
+}
+Add-Key (Join-Path $HOME '.ssh\authorized_keys')
+$c=Join-Path $env:ProgramData 'ssh\sshd_config'
+if((Test-Path $c) -and (Select-String -Path $c -Pattern '^\s*Match\s+Group\s+administrators\b' -Quiet) -and ((& "$env:SystemRoot\System32\whoami.exe" /groups) -match 'S-1-5-32-544')){
+$f=Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
+$n=-not(Test-Path $f)
+Add-Key $f
+if($n){icacls $f /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F'|Out-Null
+if($LASTEXITCODE){throw 'icacls failed'}}
+}
+"#;
+
+/// Standard base64 with padding, for [`windows_key_command`]'s `-EncodedCommand`.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// This machine's public key line, generating an ed25519 pair when it has none.
@@ -897,56 +1005,35 @@ mod tests {
     /// other's scratch path.
     static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// A public key line a scratch HOME holds for the login tests. It never
-    /// authenticates anything; it only has to look like a key for the login command
-    /// builder.
+    /// A public key line for the key command tests. It never authenticates anything; it
+    /// only has to look like a key.
     const KNOWN_PUBLIC_KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMwVQxmuxTestKeyNeverUsed xmux@test";
 
-    /// The login's verdict is its remote command's exit code, so whatever the command
-    /// does it must end by saying the AUTHENTICATION worked. `exit 0` is that word in
-    /// every shell family, which is the requirement here: a locked host's family is
-    /// unknown, because the probe that reads it never got past the refusal that locked
-    /// the card. A POSIX-only word makes an accepted password read as a refused one on a
-    /// PowerShell remote.
+    /// The login's verdict is its remote command's exit code, so the command must report
+    /// the AUTHENTICATION and nothing else, in a word every shell family has: a locked
+    /// host's family is unknown, because the probe that reads it never got past the
+    /// refusal that locked the card. A login that registers a key reads the family with a
+    /// probe that every family answers and exits 0 on.
     #[test]
-    fn every_login_command_ends_by_reporting_the_authentication() {
+    fn every_login_command_reports_only_the_authentication() {
         let ops = Arc::new(env_with(&["prod"])).ops();
         assert_eq!(
             ops.login_remote(false),
             "exit 0",
             "a login with nothing to carry reports the authentication and stops"
         );
-        // A HOME that already holds a key makes the key registration deterministic:
-        // the login reads that key instead of asking the machine's ssh-keygen, so the
-        // check never depends on the runner's own key state.
-        let _guard = HOME_LOCK.lock().unwrap();
-        let home = std::env::temp_dir().join(format!("xmux-env-login-key-{}", std::process::id()));
-        let ssh = home.join(".ssh");
-        std::fs::create_dir_all(&ssh).unwrap();
-        std::fs::write(ssh.join("id_ed25519.pub"), KNOWN_PUBLIC_KEY).unwrap();
-        let saved = std::env::var_os("HOME");
-        std::env::set_var("HOME", &home);
-        let with_key = ops.login_remote(true);
-        match saved {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        std::fs::remove_dir_all(&home).ok();
-        assert!(
-            with_key.ends_with("; exit 0") && with_key.contains(KNOWN_PUBLIC_KEY),
-            "registering a key does not get to fail the login: {with_key}"
+        assert_eq!(
+            ops.login_remote(true),
+            crate::transport::vocab::MARKED_SHELL_PROBE,
+            "a login that registers a key reads the shell family the registration is for"
         );
     }
 
-    /// The key registration is a REMOTE COMMAND the login carries, not a connection
-    /// opened afterwards. That is what makes it work where there is no afterwards, and it
-    /// must be idempotent, because a second login runs it again.
+    /// A second login runs the registration again, so it must change nothing then.
     #[test]
-    fn the_key_command_adds_the_line_only_when_it_is_absent() {
-        let Ok(cmd) = authorized_keys_command() else {
-            return; // this machine has no key and cannot make one; nothing to check
-        };
+    fn the_posix_key_command_adds_the_line_only_when_it_is_absent() {
+        let cmd = authorized_keys_command(KNOWN_PUBLIC_KEY).unwrap();
         assert!(
             cmd.contains("grep -qxF") && cmd.contains(">> ~/.ssh/authorized_keys"),
             "it appends only what is not already there: {cmd}"
@@ -954,6 +1041,59 @@ mod tests {
         assert!(
             cmd.starts_with("umask 077"),
             "the file it may create is not readable by others: {cmd}"
+        );
+    }
+
+    #[test]
+    fn base64_matches_the_standard_vectors() {
+        for (raw, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(raw.as_bytes()), encoded, "base64({raw:?})");
+        }
+    }
+
+    /// The Windows key command, run the way Windows OpenSSH runs it under its default
+    /// shell, adds the key once however often it runs, and keeps a line that was there
+    /// without a trailing newline intact. `ProgramData` points at a directory with no
+    /// `sshd_config`, so the run never reaches the machine's own sshd files.
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_key_command_adds_the_line_once_under_cmd() {
+        let root = std::env::temp_dir().join(format!("xmux-env-win-key-{}", std::process::id()));
+        let profile = root.join("profile");
+        let program_data = root.join("programdata");
+        std::fs::create_dir_all(profile.join(".ssh")).unwrap();
+        std::fs::create_dir_all(&program_data).unwrap();
+        let keys = profile.join(".ssh").join("authorized_keys");
+        std::fs::write(&keys, "ssh-ed25519 AAAAexisting other@host").unwrap();
+        let cmd = windows_key_command(KNOWN_PUBLIC_KEY).unwrap();
+        for _ in 0..2 {
+            let status = std::process::Command::new("cmd.exe")
+                .arg("/c")
+                .arg(&cmd)
+                .env("USERPROFILE", &profile)
+                .env("ProgramData", &program_data)
+                .stdin(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "the registration reports success: {status}"
+            );
+        }
+        let text = std::fs::read_to_string(&keys).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            vec!["ssh-ed25519 AAAAexisting other@host", KNOWN_PUBLIC_KEY],
+            "{text:?}"
         );
     }
 

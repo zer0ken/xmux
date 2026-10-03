@@ -27,6 +27,7 @@ impl Ops for NoopOps {
         _source: &str,
         _login: &crate::transport::Login,
         _write_config: bool,
+        _register: Option<crate::ui::ops::KeyRegistration>,
     ) -> Vec<String> {
         unreachable!("noop_ops is only constructed, never called")
     }

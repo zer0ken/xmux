@@ -35,35 +35,43 @@ pub trait Ops: Send + Sync {
     /// ask for it on the loop and start the conversation itself.
     fn login_argv(&self, source: &str, login: &crate::transport::Login) -> Option<Vec<String>>;
 
-    /// The command this login is FOR, appended to its argv and run inside the session the
-    /// user authenticates. Registering a key goes HERE rather than over a connection
-    /// opened afterwards, because a platform without connection sharing has no afterwards:
-    /// the login's own session is the only authenticated one it will ever have. It is also
-    /// what makes registering worth offering there at all - the key turns a host that
-    /// wanted a password into one that wants nothing.
+    /// The command appended to the login's argv and run inside the session the user
+    /// authenticates.
     ///
-    /// Its exit code is the login's whole verdict, so it MUST end by reporting the
-    /// authentication and nothing else, in a word every shell family has. Anything the
-    /// command carries rides along without a vote: a locked host's shell family is unknown
-    /// by construction (the probe that reads it never got past the refusal that locked the
-    /// card), so a word only one family has turns an accepted password into a refused one.
-    ///
-    /// May generate this machine's key pair when it has none, so it is called off the
-    /// runtime thread.
+    /// Its exit code is the login's whole verdict, so it MUST report the authentication
+    /// and nothing else, in a word every shell family has: a locked host's shell family is
+    /// unknown by construction (the probe that reads it never got past the refusal that
+    /// locked the card), so a word only one family has turns an accepted password into a
+    /// refused one. A login that registers a key also has to READ that family, because
+    /// the registration is a command for one family; its command is a probe whose answer
+    /// every family writes and exits 0 on.
     fn login_remote(&self, register_key: bool) -> String;
 
-    /// The pane's remaining choice, applied once a login has worked. Each
+    /// The pane's remaining choices, applied once a login has worked. Each
     /// returns a note only when it could NOT do what it said, so a step that failed says
     /// so instead of passing silently.
     ///
     /// It is called only after a connection that worked: neither is worth doing over one
-    /// that did not, and registering a key needs the authenticated master to carry it.
+    /// that did not. Registering a key is its own ssh, answered the way the login was,
+    /// because a side that cannot multiplex keeps no authenticated connection to carry it.
     async fn login_follow_ups(
         &self,
         source: &str,
         login: &crate::transport::Login,
         write_config: bool,
+        register: Option<KeyRegistration>,
     ) -> Vec<String>;
+}
+
+/// The key registration a login asked for. It is handed over only once the login worked,
+/// because it authenticates the same way the login did. No `Debug`: it holds the password.
+pub struct KeyRegistration {
+    /// The shell family the login's own command read, or `None` when its answer was not in
+    /// what ssh wrote. The registration is a command for one family, so without it there
+    /// is nothing to send.
+    pub shell: Option<crate::transport::vocab::RemoteShell>,
+    /// The answer the login gave, for the registration's own ssh.
+    pub password: String,
 }
 
 /// What one login run did. The connection is the verdict the app branches on; the
@@ -146,10 +154,12 @@ pub async fn run_login_follow_ups(
     login: &crate::transport::Login,
     connect: crate::link::unlock::UnlockOutcome,
     write_config: bool,
+    register: Option<KeyRegistration>,
     ops: &dyn Ops,
 ) -> OpResult {
     let notes = if connect == crate::link::unlock::UnlockOutcome::Ok {
-        ops.login_follow_ups(source, login, write_config).await
+        ops.login_follow_ups(source, login, write_config, register)
+            .await
     } else {
         Vec::new()
     };

@@ -464,15 +464,18 @@ no function, and no test, so renaming code is never a documentation change.
   and nothing the user wrote is touched. The choice is offered only once a value differs
   from what ssh would have used. A password is never recorded, because ssh config has
   nowhere to put one.
-- **FR-B30** - REGISTERING is the login's own remote command, run INSIDE the session the
-  user authenticates rather than over a connection opened afterwards, because a platform
-  without connection sharing (FR-G) has no afterwards. It appends this machine's public
-  key to the host's `authorized_keys`, only when that exact line is absent, generating an
-  ed25519 pair first when the machine has no key to send. What it leaves is what makes a
-  password host usable on such a platform at all: the key ends the password. It rides the
-  login without a vote on its verdict (FR-B28): a key that did not land leaves the host
-  asking for a password on the next probe, which is the truth about that host, rather than
-  a login that reads as refused.
+- **FR-B30** - REGISTERING runs after a connection that worked and says so when it could
+  not. The login's own remote command reads the host's shell family, since a locked host's
+  family is unknown before it; the registration is then a second ssh answered the way the
+  login was, because a platform without connection sharing (FR-G) keeps no authenticated
+  connection to carry it. On a POSIX host it appends this machine's public key to
+  `~/.ssh/authorized_keys`; on a Windows host it runs Windows PowerShell, which both
+  `cmd.exe` and PowerShell start the same way, and also adds the key to
+  `administrators_authorized_keys` when the host's sshd reads an Administrators member's
+  keys from there and the account is one. Either form adds the line only when it is
+  absent, and an ed25519 pair is generated first when the machine has no key to send.
+  What it leaves is what makes a password host usable on such a platform at all: the key
+  ends the password.
 
 ## C. Switching (the keystone)
 

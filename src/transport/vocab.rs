@@ -19,6 +19,16 @@
 /// stand in: a Windows box with Git installed answers it.
 pub const SHELL_PROBE: &str = "echo $0";
 
+/// [`SHELL_PROBE`] for a stream that carries more than its answer. A login's PTY also
+/// carries ssh's prompts and the host's banner, and PowerShell's answer is an empty line,
+/// so the answer is found by the marker in front of it rather than by being the last
+/// line. Every family runs `echo` and exits 0, so the command still reports the
+/// authentication and nothing else.
+pub const MARKED_SHELL_PROBE: &str = "echo \"xmux-shell:$0\"";
+
+/// The marker [`MARKED_SHELL_PROBE`] writes in front of its answer.
+const SHELL_MARK: &str = "xmux-shell:";
+
 /// Which shell family a remote answers with, as [`SHELL_PROBE`]'s output reads.
 ///
 /// The distinction earns its keep twice: a POSIX snippet (`exec`, `c=$(tty)`) runs only
@@ -59,6 +69,25 @@ impl RemoteShell {
         } else {
             RemoteShell::Posix
         }
+    }
+
+    /// Reads [`MARKED_SHELL_PROBE`]'s answer out of everything a stream carried, or
+    /// `None` when the stream holds no answer. A POSIX shell writes its name after the
+    /// marker; PowerShell writes nothing there, and `cmd.exe` echoes the line back with
+    /// `$0` and its quotes intact.
+    pub fn from_marked_probe(output: &str) -> Option<RemoteShell> {
+        let at = output.rfind(SHELL_MARK)?;
+        let answer = output[at + SHELL_MARK.len()..]
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_end_matches('"');
+        Some(if answer.is_empty() || answer.contains('$') {
+            RemoteShell::Other
+        } else {
+            RemoteShell::Posix
+        })
     }
 
     /// Whether a POSIX shell snippet may be sent to this remote: the `exec` an attach
@@ -130,6 +159,37 @@ mod tests {
                 RemoteShell::from_probe(out.as_bytes()),
                 want,
                 "from_probe({out:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn the_marked_probe_is_read_past_the_prompts_around_it() {
+        // What a login's PTY carries: the password prompt, then the probe's answer.
+        let cases: &[(&str, Option<RemoteShell>)] = &[
+            (
+                "me@box's password: \r\nxmux-shell:bash\r\n",
+                Some(RemoteShell::Posix),
+            ),
+            (
+                "me@box's password: \r\nxmux-shell:sh\n",
+                Some(RemoteShell::Posix),
+            ),
+            (
+                "me@box's password: \r\nxmux-shell:\r\n",
+                Some(RemoteShell::Other),
+            ),
+            (
+                "me@box's password: \r\n\"xmux-shell:$0\"\r\n",
+                Some(RemoteShell::Other),
+            ),
+            ("me@box's password: \r\n", None),
+        ];
+        for &(out, want) in cases {
+            assert_eq!(
+                RemoteShell::from_marked_probe(out),
+                want,
+                "from_marked_probe({out:?})"
             );
         }
     }

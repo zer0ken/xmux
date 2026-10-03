@@ -51,6 +51,7 @@ impl Ops for RecordOps {
         _source: &str,
         _login: &crate::transport::Login,
         _write_config: bool,
+        _register: Option<crate::ui::ops::KeyRegistration>,
     ) -> Vec<String> {
         Vec::new()
     }
