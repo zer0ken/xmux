@@ -587,24 +587,14 @@ impl Runtime {
                 .display()
                 .to_string(),
         );
-        // View border colours: xmux's own pair with the `[ui] view-*-border-style`
-        // overrides applied. Set once here and never again - the border marks which VIEW
-        // holds focus, which no host or mux has a say in.
-        state
-            .chrome
-            .set_view_border_colors(crate::ui::switcher::ViewBorderColors::resolve(
-                &roster.cfg.ui.view_active_border_style,
-                &roster.cfg.ui.view_border_style,
-                &roster.cfg.ui.view_border_hover_style,
-            ));
+        let palette = crate::ui::palette::resolve(
+            &roster.cfg.ui.theme,
+            crate::ui::chrome::palette_overrides(&roster.cfg.ui),
+        );
+        state.chrome.apply_palette(&roster.cfg.ui, &palette);
+        switcher.set_palette(palette);
         // The help modal must show the prefix the user configured, not a literal.
         state.chrome.set_ui_prefix(env.ui_prefix.clone());
-        // The hint bar colour: the `[ui] hint-bar-style` override, else the tmux default.
-        state
-            .chrome
-            .set_hint_bar_style(crate::ui::chrome::parse_hint_bar_style(
-                &roster.cfg.ui.hint_bar_style,
-            ));
         drop(roster);
 
         // The live mutate ops (create/rename/kill) - NOT nav probing.
@@ -658,7 +648,7 @@ impl Runtime {
             dirty: true,
             last_draw: std::time::Instant::now() - std::time::Duration::from_millis(FRAME_MS),
             // The live config watch records a baseline on its first frame tick, so the
-            // startup `palette::apply` is not duplicated. `None` = no baseline yet.
+            // startup settings are not re-applied. `None` means no baseline yet.
             config_last_mtime: None,
             width_dirty: false,
             width_flush_at: None,
@@ -1709,17 +1699,10 @@ impl Runtime {
         ) else {
             return false;
         };
-        crate::ui::palette::apply(&ui.theme, crate::ui::chrome::palette_overrides(&ui));
-        self.state
-            .chrome
-            .set_view_border_colors(crate::ui::switcher::ViewBorderColors::resolve(
-                &ui.view_active_border_style,
-                &ui.view_border_style,
-                &ui.view_border_hover_style,
-            ));
-        self.state
-            .chrome
-            .set_hint_bar_style(crate::ui::chrome::parse_hint_bar_style(&ui.hint_bar_style));
+        let palette =
+            crate::ui::palette::resolve(&ui.theme, crate::ui::chrome::palette_overrides(&ui));
+        self.state.chrome.apply_palette(&ui, &palette);
+        self.switcher.set_palette(palette);
         // The new nav-position default takes effect at the next loop top, where the
         // reconcile re-resolves the position from it.
         self.nav_default = ui.nav_position();

@@ -169,11 +169,11 @@ impl MuxSpec {
 /// The optional `[ui]` table: xmux's own prefix.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UiConfig {
-    /// The built-in colour theme, named by [`crate::ui::palette`]: `auto-dark` (the
-    /// default) or `auto-light`, each painting only ANSI slots so the TERMINAL theme
-    /// resolves the actual hues. An unknown name falls back to `auto-dark` and the
-    /// doctor reports the resolution. Selecting a theme does not pick colours - the
-    /// theme IS the ANSI-slot mapping; see `Colour ownership` in `CONTEXT.md`.
+    /// The built-in colour theme: `auto-dark` (the default) or `auto-light`, each
+    /// painting only ANSI slots so the terminal theme resolves the actual hues. An
+    /// unknown name falls back to `auto-dark` and the doctor reports the resolution.
+    /// Selecting a theme names the ANSI-slot mapping; see `Colour ownership` in
+    /// `CONTEXT.md`.
     #[serde(rename = "theme", default = "default_theme")]
     pub theme: String,
     /// xmux's prefix spec (e.g. `C-g`, `C-Space`), config-only like tmux's
@@ -203,9 +203,8 @@ pub struct UiConfig {
     /// The tree|terminal view border colour OVERRIDES, named after tmux's pane-border
     /// options: the focused side is `view-active-border-style`, the unfocused side
     /// `view-border-style`, the drag-hover cue `view-border-hover-style`. Values use
-    /// tmux's colour syntax (parsed by [`crate::ui::chrome::map_color`]). Each
-    /// defaults to EMPTY (unset), leaving that side at xmux's own colour
-    /// — see [`crate::ui::chrome::ViewBorderColors::resolve`].
+    /// tmux's colour syntax. Each defaults to empty (unset), leaving that side at
+    /// xmux's own colour.
     #[serde(rename = "view-active-border-style", default)]
     pub view_active_border_style: String,
     #[serde(rename = "view-border-style", default)]
@@ -213,25 +212,21 @@ pub struct UiConfig {
     #[serde(rename = "view-border-hover-style", default)]
     pub view_border_hover_style: String,
     /// The hint bar's colour as a tmux `status-style` string (`bg=…,fg=…`, tmux colour
-    /// colour syntax parsed by [`crate::ui::chrome::parse_hint_bar_style`]). Empty (default)
-    /// = the built-in tmux default (themegreen/themeblack → yellowgreen / gray5).
+    /// colour syntax). Empty means the built-in default.
     #[serde(rename = "hint-bar-style", default)]
     pub hint_bar_style: String,
     /// The selected card's background, in the same colour slots as the view border
     /// (`bg=<colour>`, or a bare colour token). Empty (default) means the surface comes
     /// from the terminal's reported background, and NOTHING is painted when the terminal
-    /// does not report one - see [`crate::ui::palette`]. This is how a user on a
-    /// terminal that answers no colour query (Windows Terminal answers none) gets a
-    /// selection surface at all.
+    /// does not report one. This is how a user on a terminal that answers no colour
+    /// query gets a selection surface at all.
     #[serde(rename = "selection-style", default)]
     pub selection_style: String,
-    /// Per-role colour OVERRIDES for the chosen theme, named after the palette roles
-    /// (see [`crate::ui::palette`]): `primary`, `secondary`, `accent`, `decoration`,
-    /// `warning`, `error`, `disabled`, and the hint bar's `bar-bg`, `bar-fg`,
-    /// `bar-accent`. Values use the same colour vocabulary as the view border
-    /// (parsed by [`crate::ui::chrome::map_color`]): a named ANSI colour, `bright*`,
-    /// `colourN`, `#RRGGBB`, or `default`. Each defaults to EMPTY (unset), leaving that
-    /// role at the theme's own slot.
+    /// Per-role colour overrides for the chosen theme: `primary`, `secondary`,
+    /// `accent`, `decoration`, `warning`, `error`, `disabled`, and the hint bar's
+    /// `bar-bg`, `bar-fg`, `bar-accent`. Values use the same colour vocabulary as the
+    /// view border: a named ANSI colour, `bright*`, `colourN`, `#RRGGBB`, or `default`.
+    /// Each defaults to empty, leaving that role at the theme's own slot.
     #[serde(rename = "primary", default)]
     pub primary: String,
     #[serde(rename = "secondary", default)]
@@ -274,8 +269,10 @@ impl UiConfig {
     }
 }
 
+pub(crate) const DEFAULT_THEME: &str = "auto-dark";
+
 fn default_theme() -> String {
-    crate::ui::palette::AUTO_DARK.to_string()
+    DEFAULT_THEME.to_string()
 }
 
 impl Default for UiConfig {
@@ -286,18 +283,15 @@ impl Default for UiConfig {
             auto_hide_nav: false,
             hide_unreachable: default_hide_unreachable(),
             nav_position: default_nav_position(),
-            // Empty = unset: the effective colour is ViewBorderColors::default().
+            // Empty leaves the view border at its theme role.
             view_active_border_style: String::new(),
             view_border_style: String::new(),
             view_border_hover_style: String::new(),
-            // Empty = the built-in tmux default hint bar style (see
-            // crate::ui::chrome::hint_bar_default_style).
+            // Empty leaves the hint bar at its built-in style.
             hint_bar_style: String::new(),
-            // Empty = no selection surface of xmux's own choosing (see
-            // crate::ui::palette).
+            // Empty selects reverse video instead of a named surface colour.
             selection_style: String::new(),
-            // Empty = unset: that role keeps the theme's own slot (see
-            // crate::ui::palette::Overrides).
+            // Empty leaves each role at the theme's own slot.
             primary: String::new(),
             secondary: String::new(),
             accent: String::new(),
@@ -1797,7 +1791,7 @@ prefix = "C-Space"
         // trip.
         let missing = std::env::temp_dir().join("xmux-theme-absent-xyz.toml");
         let cfg = load(&missing).unwrap();
-        assert_eq!(cfg.ui.theme, crate::ui::palette::AUTO_DARK);
+        assert_eq!(cfg.ui.theme, DEFAULT_THEME);
         let path = write_temp("[ui]\ntheme = \"auto-light\"\n", "ui-theme.toml");
         let (cfg, warnings) = load_verbose(&path).unwrap();
         assert_eq!(cfg.ui.theme, "auto-light");

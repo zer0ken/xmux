@@ -73,11 +73,8 @@ const STATE_ALLOWED_TARGETS: &[&str] = &[
     "transport",
 ];
 
-const KNOWN_VIOLATIONS: &[(&str, &str)] = &[
-    ("src/provision/config.rs", "ui"),
-    ("src/state/mod.rs", "app"),
-    ("src/state/mod.rs", "ui"),
-];
+const KNOWN_VIOLATIONS: &[(&str, &str)] =
+    &[("src/state/mod.rs", "app"), ("src/state/mod.rs", "ui")];
 
 #[test]
 fn layer_direction_matches_the_allowed_edges() {

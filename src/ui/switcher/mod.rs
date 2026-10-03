@@ -9,7 +9,9 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Color, Style};
+#[cfg(test)]
+use ratatui::style::Color;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, ListState};
 use ratatui::Frame;
@@ -53,17 +55,6 @@ pub(super) const CARD_CONNECTOR: &str = "\u{2502}";
 /// offset inside its column wherever the flow put it.
 pub(super) const CONNECTOR_W: u16 = 2;
 
-// The host/mux text on a host-state card, and the section title's pair: the group
-// identity reads in the `secondary` role. A function, not a const: the active palette
-// (dark / light) is picked at runtime from the terminal background.
-fn color_secondary() -> Color {
-    crate::ui::palette::get().secondary
-}
-/// The card's number in the address column, and the `/` separator: both are quiet
-/// furniture, so both read in the `decoration` role.
-fn color_decoration() -> Color {
-    crate::ui::palette::get().decoration
-}
 pub use crate::ui::chrome::ViewBorderColors;
 
 pub use crate::model::{NavSize, ViewLayout};
@@ -300,6 +291,7 @@ pub struct TerminalViewTarget {
 
 /// The switcher state machine.
 pub struct Switcher {
+    palette: crate::ui::palette::Palette,
     /// Set once the selection has been moved deliberately: a key, a click, or an
     /// address the app was told to select. [`Switcher::restore_focus`] reads it to
     /// decide whether a vanished card falls back to its neighbour or to the rebuild's
@@ -378,6 +370,7 @@ pub use crate::model::{step_nav_position, NavPosition};
 impl Switcher {
     fn blank() -> Self {
         Switcher {
+            palette: crate::ui::palette::Palette::default(),
             user_moved: false,
             rescan_kick: false,
             reattach_kick: false,
@@ -419,6 +412,15 @@ impl Switcher {
         s.rescan_kick = true; // the event loop kicks the probes on the first frame
         s.rebuild(state);
         s
+    }
+
+    #[cfg(test)]
+    pub(crate) fn palette(&self) -> &crate::ui::palette::Palette {
+        &self.palette
+    }
+
+    pub(crate) fn set_palette(&mut self, palette: crate::ui::palette::Palette) {
+        self.palette = palette;
     }
 
     pub fn terminal_view_target(&self) -> TerminalViewTarget {

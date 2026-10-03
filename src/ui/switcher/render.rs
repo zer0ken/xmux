@@ -96,6 +96,7 @@ impl Switcher {
         state: &crate::state::State,
     ) {
         let area = frame.area();
+        let palette = self.palette;
         self.screen_area = area;
         let nav_width = nav.width;
         // Cache the stacking so key handling routes the arrows to match what is on screen.
@@ -126,12 +127,16 @@ impl Switcher {
             if hint_bar_floats(state) {
                 let h = state.chrome.hint_bar_lines(area.width, state).len().max(1) as u16;
                 let rect = hint_bar_rect(Rect::default(), area, h, true);
-                state
-                    .chrome
-                    .render_hint_bar(frame, rect, state, crate::ui::chrome::BarFill::Row);
+                state.chrome.render_hint_bar(
+                    frame,
+                    rect,
+                    state,
+                    crate::ui::chrome::BarFill::Row,
+                    &palette,
+                );
             }
             // The modal stacks above the bar: a popup is a stronger claim on the screen.
-            self.render_modal_popup(frame, area, state);
+            self.render_modal_popup(frame, area, state, &palette);
             return;
         }
         // One geometry source for the whole frame (compute_regions), shared with the PTY
@@ -150,7 +155,7 @@ impl Switcher {
             self.nav_cells.clear();
             None
         } else {
-            self.render_nav(frame, r.tree, state)
+            self.render_nav(frame, r.tree, state, &palette)
         };
         // The view border marks focus between the two views (vertical in a column, horizontal in a band).
         state
@@ -166,9 +171,12 @@ impl Switcher {
                 frame,
                 term_area,
                 state,
-                &address,
-                kind,
-                terminal_focused,
+                crate::ui::chrome::ViewScreenRender {
+                    address: &address,
+                    kind,
+                    focused: terminal_focused,
+                },
+                &palette,
             );
         } else {
             self.render_terminal_view(frame, term_area, grid);
@@ -212,19 +220,25 @@ impl Switcher {
                 height: 1,
                 ..resting_bar
             };
-            Self::render_hidden_counts(frame, track, counts);
+            Self::render_hidden_counts(frame, track, counts, &palette);
         }
         let bar_rect = hint_bar_rect(resting_bar, area, hint_bar_h, floating);
         if nav.collapsed && !floating {
             state
                 .chrome
-                .render_collapsed_hint_bar(frame, bar_rect, nav.position);
+                .render_collapsed_hint_bar(frame, bar_rect, nav.position, &palette);
         } else {
-            state.chrome.render_hint_bar(frame, bar_rect, state, fill);
+            state
+                .chrome
+                .render_hint_bar(frame, bar_rect, state, fill, &palette);
             if !button.is_empty() {
-                state
-                    .chrome
-                    .render_collapse_button(frame, r.hint_bar, nav.position, false);
+                state.chrome.render_collapse_button(
+                    frame,
+                    r.hint_bar,
+                    nav.position,
+                    false,
+                    &palette,
+                );
             }
         }
         // In the terminal view, place the real cursor at the grid's cursor so typing in the
@@ -236,7 +250,7 @@ impl Switcher {
                 }
             }
         }
-        self.render_modal_popup(frame, area, state);
+        self.render_modal_popup(frame, area, state, &palette);
     }
 
     /// The navigation cards. A column stacks them in one vertically-scrolling list; a
@@ -256,6 +270,7 @@ impl Switcher {
         frame: &mut Frame,
         area: Rect,
         state: &crate::state::State,
+        palette: &palette::Palette,
     ) -> Option<(usize, usize)> {
         // No border box: the cards fill their region outright and a single rule
         // (render_view_border) separates it from the terminal view.
@@ -271,10 +286,10 @@ impl Switcher {
         let num_w = self.number_width();
         match self.layout {
             ViewLayout::Column => {
-                self.render_nav_list(frame, area, num_w, spinner_glyph);
+                self.render_nav_list(frame, area, num_w, spinner_glyph, palette);
                 None
             }
-            ViewLayout::Band => self.render_nav_columns(frame, area, num_w, spinner_glyph),
+            ViewLayout::Band => self.render_nav_columns(frame, area, num_w, spinner_glyph, palette),
         }
     }
 
@@ -294,6 +309,7 @@ impl Switcher {
         area: Rect,
         num_w: usize,
         spinner_glyph: char,
+        palette: &palette::Palette,
     ) {
         let heights = vec![1u16; self.painted_rows()];
         // The placement decides whether the list scrolls, and the strip is a COLUMN, so
@@ -315,12 +331,12 @@ impl Switcher {
                 width: cards.width,
                 height: slot.h,
             };
-            let lines = self.nav_row_lines(slot.idx, num_w, spinner_glyph, rect.width);
+            let lines = self.nav_row_lines(slot.idx, num_w, spinner_glyph, rect.width, palette);
             frame.render_widget(Paragraph::new(lines), rect);
             if self.list_state.selected() == Some(slot.idx) {
                 frame
                     .buffer_mut()
-                    .set_style(rect, palette::selection_style());
+                    .set_style(rect, palette::selection_style(palette));
             }
             self.nav_cells.push((slot.idx, rect));
         }
@@ -333,19 +349,20 @@ impl Switcher {
                     width: cards.width,
                     height: 1,
                 },
+                palette,
             );
         }
-        self.render_nav_scrollbar(frame, bar, &flow);
+        self.render_nav_scrollbar(frame, bar, &flow, palette);
     }
 
     /// The rule parting the side list's two bands once they scroll as one run. A single
     /// light horizontal line across the nav: it says the cards below it are a different
     /// kind of thing, which is all the blank gap says while both bands fit on screen.
-    fn render_band_rule(frame: &mut Frame, rect: Rect) {
+    fn render_band_rule(frame: &mut Frame, rect: Rect, palette: &palette::Palette) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 BAND_RULE.repeat(rect.width as usize),
-                Style::default().fg(palette::get().decoration),
+                Style::default().fg(palette.decoration),
             ))),
             rect,
         );
@@ -365,9 +382,10 @@ impl Switcher {
         area: Rect,
         num_w: usize,
         spinner_glyph: char,
+        palette: &palette::Palette,
     ) -> Option<(usize, usize)> {
         let cards: Vec<columns::Card> = (0..self.painted_rows())
-            .map(|i| self.flow_card(i, num_w, spinner_glyph))
+            .map(|i| self.flow_card(i, num_w, spinner_glyph, palette))
             .collect();
         let band = area;
         let boundary = self.painted_boundary().unwrap_or(cards.len());
@@ -438,21 +456,21 @@ impl Switcher {
                 ..cell.rect
             };
             if indent > 0 && home_col[cell.idx] {
-                Self::render_card_connector(frame, cell.rect);
+                Self::render_card_connector(frame, cell.rect, palette);
             }
-            let lines = self.nav_row_lines(cell.idx, num_w, spinner_glyph, card.width);
+            let lines = self.nav_row_lines(cell.idx, num_w, spinner_glyph, card.width, palette);
             frame.render_widget(Paragraph::new(lines), card);
             if self.list_state.selected() == Some(cell.idx) {
                 // The card's OWN rect, not the band's width: in a grid the selection marks
                 // one cell, and a full-width bar would claim the columns beside it.
                 frame
                     .buffer_mut()
-                    .set_style(card, palette::selection_style());
+                    .set_style(card, palette::selection_style(palette));
             }
             self.nav_cells.push((cell.idx, card));
         }
         if let Some(rule_rect) = rule {
-            Self::render_column_rule(frame, rule_rect);
+            Self::render_column_rule(frame, rule_rect, palette);
         }
         // What the caller needs for the offscreen cue: the cards behind the columns the
         // window does not reach, counted on each side.
@@ -485,8 +503,8 @@ impl Switcher {
     /// The vertical rule parting the two bands in the portrait flow once they cannot
     /// stay apart by a gap. A single light vertical line across the band, the same
     /// statement the side list's horizontal rule makes.
-    fn render_column_rule(frame: &mut Frame, rect: Rect) {
-        let style = Style::default().fg(palette::get().decoration);
+    fn render_column_rule(frame: &mut Frame, rect: Rect, palette: &palette::Palette) {
+        let style = Style::default().fg(palette.decoration);
         let buf = frame.buffer_mut();
         for y in rect.y..rect.y + rect.height {
             let cell = &mut buf[(rect.x, y)];
@@ -498,10 +516,10 @@ impl Switcher {
     /// The connector down the left of one session card, marking the title that owns it.
     /// Painted OUTSIDE the card, in the strip the column reserves for it, so the
     /// selection's inversion of the card rect cannot reach it.
-    fn render_card_connector(frame: &mut Frame, rect: Rect) {
+    fn render_card_connector(frame: &mut Frame, rect: Rect, palette: &palette::Palette) {
         let cell = &mut frame.buffer_mut()[(rect.x, rect.y)];
         cell.set_symbol(CARD_CONNECTOR);
-        cell.set_style(Style::default().fg(palette::get().decoration));
+        cell.set_style(Style::default().fg(palette.decoration));
     }
 
     /// Writes the offscreen-card counts in `track` - the hint bar's row minus the cells the
@@ -509,7 +527,12 @@ impl Switcher {
     /// left, `7 more >>` on the right. The arrows point the way the cards went, and the
     /// count says how many, which a scrollbar thumb cannot. Dropped, not clipped, when the
     /// row is too narrow to hold them.
-    fn render_hidden_counts(frame: &mut Frame, track: Rect, (left, right): (usize, usize)) {
+    fn render_hidden_counts(
+        frame: &mut Frame,
+        track: Rect,
+        (left, right): (usize, usize),
+        palette: &palette::Palette,
+    ) {
         // Neither count sits flush against what it is beside: the left one clears the
         // status label, the right one the window's edge, so each reads as a note in the
         // margin rather than text jammed into a corner.
@@ -521,7 +544,7 @@ impl Switcher {
         };
         // The overflow cue's OWN role, with the count BOLD so the number - the thing a
         // user reaches for - stands off the `<< … more >>` furniture around it.
-        let more_style = Style::default().fg(palette::get().decoration);
+        let more_style = Style::default().fg(palette.decoration);
         let bold = more_style.add_modifier(Modifier::BOLD);
         // `<< n more` / `n more >>`, the count the one bold cell in the run.
         let make_label = |n: usize, left_arrow: bool| -> (Vec<Span<'static>>, u16) {
@@ -577,7 +600,13 @@ impl Switcher {
     /// list otherwise lacks. Thumb only (no track / arrows) so it reads as a position
     /// marker, not furniture. Counted in cards (not screen rows) over the variable card
     /// heights, from the placement the cards were painted with.
-    fn render_nav_scrollbar(&mut self, frame: &mut Frame, bar: Rect, flow: &side::Flow) {
+    fn render_nav_scrollbar(
+        &mut self,
+        frame: &mut Frame,
+        bar: Rect,
+        flow: &side::Flow,
+        palette: &palette::Palette,
+    ) {
         let total = self.painted_rows();
         if bar.width == 0 || bar.height == 0 {
             return;
@@ -591,7 +620,7 @@ impl Switcher {
                 .end_symbol(None)
                 .track_symbol(None)
                 .thumb_symbol("▐")
-                .thumb_style(Style::default().fg(palette::get().decoration)),
+                .thumb_style(Style::default().fg(palette.decoration)),
             bar,
             &mut sb,
         );
@@ -610,8 +639,14 @@ impl Switcher {
     /// content paints, and how many rows it takes. A section title measures its
     /// `{host}/{mux}` alone, which is the whole of what it paints in the band: the
     /// trailing rule belongs to the side list.
-    fn flow_card(&self, i: usize, num_w: usize, spinner_glyph: char) -> columns::Card {
-        let lines = self.nav_row_lines(i, num_w, spinner_glyph, 0);
+    fn flow_card(
+        &self,
+        i: usize,
+        num_w: usize,
+        spinner_glyph: char,
+        palette: &palette::Palette,
+    ) -> columns::Card {
+        let lines = self.nav_row_lines(i, num_w, spinner_glyph, 0, palette);
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
         let starts_run = self.starts_run(i);
         // A session card is pushed right by the connector's strip, so the column has to
@@ -655,12 +690,13 @@ impl Switcher {
         num_w: usize,
         spinner_glyph: char,
         width: u16,
+        palette: &palette::Palette,
     ) -> Vec<Line<'static>> {
         let row = &self.rows[i];
         let selected = self.list_state.selected() == Some(i);
-        let accent = Style::default().fg(palette::get().accent);
-        let number = Style::default().fg(color_decoration());
-        let separator = Style::default().fg(color_decoration());
+        let accent = Style::default().fg(palette.accent);
+        let number = Style::default().fg(palette.decoration);
+        let separator = Style::default().fg(palette.decoration);
         // The address column every card writes on - the only line, now that a card has
         // none other. A section title never calls it: it carries no number and is never
         // the selection.
@@ -683,7 +719,7 @@ impl Switcher {
         // columns rather than as anything about the group: the title stands alone.
         if let RowRef::Section { .. } = &row.reference {
             let (host, mux, _) = context_of(row);
-            let header = Style::default().fg(palette::get().secondary);
+            let header = Style::default().fg(palette.secondary);
             let title = if mux.is_empty() {
                 host.to_string()
             } else {
@@ -721,13 +757,13 @@ impl Switcher {
         } = &row.reference
         {
             let (host, mux, _) = context_of(row);
-            let pending = Style::default().fg(palette::get().warning);
+            let pending = Style::default().fg(palette.warning);
             // A host-state card's number sits on the host/mux line: the row is a word
             // about the host, not the thing the number names.
             let mut line = address();
             line.push(Span::styled(
                 host.to_string(),
-                Style::default().fg(color_secondary()),
+                Style::default().fg(palette.secondary),
             ));
             if *blocked {
                 // The block mark rides the host row flush after the host name. A blocked
@@ -735,16 +771,13 @@ impl Switcher {
                 // like the unreachable mark.
                 line.push(Span::styled(
                     crate::ui::chrome::BLOCK_MARK,
-                    Style::default().fg(palette::get().warning),
+                    Style::default().fg(palette.warning),
                 ));
             } else if *unreachable {
                 // The mark rides the host row flush after the host name.
                 // Danger keeps its colour: an unreachable host is still a failure, the
                 // card just says so with a mark instead of a second row of text.
-                line.push(Span::styled(
-                    "⚠",
-                    Style::default().fg(palette::get().warning),
-                ));
+                line.push(Span::styled("⚠", Style::default().fg(palette.warning)));
             }
             if !mux.is_empty() {
                 line.push(Span::styled("/", separator));
@@ -753,7 +786,7 @@ impl Switcher {
                 // still scans for its sessions.
                 line.push(Span::styled(
                     mux.to_string(),
-                    Style::default().fg(color_secondary()),
+                    Style::default().fg(palette.secondary),
                 ));
             }
             if *scanning {
@@ -808,12 +841,19 @@ impl Switcher {
     /// shared opaque `render_popup`, and caches its rect for drag hit-testing. Only the
     /// keys help is a popup now: an input renders in the hint bar instead, so its
     /// presence never draws a centered box here.
-    fn render_modal_popup(&mut self, frame: &mut Frame, area: Rect, state: &crate::state::State) {
+    fn render_modal_popup(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &crate::state::State,
+        palette: &palette::Palette,
+    ) {
         let Some(Modal::Help) = &state.modal else {
             self.popup_geo.rect = Rect::default();
             return;
         };
-        let (title, lines) = modal::help_lines(&state.chrome.ui_prefix, state.chrome.nav_position);
+        let (title, lines) =
+            modal::help_lines(&state.chrome.ui_prefix, state.chrome.nav_position, palette);
         let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
         // borders + a cell of right padding, at least 24 wide, never past the screen.
         // `.max(24).min(width)` (not `clamp`) so a sub-24-col terminal cannot panic.
@@ -821,6 +861,6 @@ impl Switcher {
         let h = (lines.len() as u16 + 2).min(area.height.max(1));
         let rect = modal::offset_centered(w, h, area, self.popup_geo.offset);
         self.popup_geo.rect = rect;
-        modal::render_popup(frame, area, rect, &title, lines);
+        modal::render_popup(frame, area, rect, &title, lines, palette);
     }
 }

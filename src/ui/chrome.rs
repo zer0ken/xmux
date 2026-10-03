@@ -87,21 +87,38 @@ pub struct ViewBorderColors {
 
 impl Default for ViewBorderColors {
     fn default() -> Self {
-        let pal = crate::ui::palette::get();
+        Self::from_palette(&crate::ui::palette::Palette::default())
+    }
+}
+
+impl ViewBorderColors {
+    fn from_palette(pal: &crate::ui::palette::Palette) -> Self {
         ViewBorderColors {
             active: pal.primary,
             inactive: pal.disabled,
             hover: pal.accent,
         }
     }
-}
 
-impl ViewBorderColors {
     /// Applies the `[ui] view-*-border-style` overrides over the defaults. An empty
     /// config string means "unset" - that is why the config keys default to empty (see
     /// [`crate::provision::config::UiConfig`]) - and leaves that role at its default colour.
     pub fn resolve(cfg_active: &str, cfg_inactive: &str, cfg_hover: &str) -> Self {
-        let d = ViewBorderColors::default();
+        Self::resolve_with_palette(
+            cfg_active,
+            cfg_inactive,
+            cfg_hover,
+            &crate::ui::palette::Palette::default(),
+        )
+    }
+
+    pub(crate) fn resolve_with_palette(
+        cfg_active: &str,
+        cfg_inactive: &str,
+        cfg_hover: &str,
+        palette: &crate::ui::palette::Palette,
+    ) -> Self {
+        let d = ViewBorderColors::from_palette(palette);
         let pick = |cfg: &str, fb: Color| {
             if cfg.trim().is_empty() {
                 fb
@@ -124,10 +141,8 @@ impl ViewBorderColors {
 /// Key tokens get the accent on top of this (see [`Chrome::hint_bar_spans`] - only
 /// while this default is in effect, so a `[ui] hint-bar-style` override keeps its
 /// exact colours). Used when `[ui] hint-bar-style` is unset.
-pub(crate) fn hint_bar_default_style() -> Style {
-    Style::default()
-        .bg(crate::ui::palette::get().bar_bg)
-        .fg(crate::ui::palette::get().bar_fg)
+pub(crate) fn hint_bar_default_style(palette: &crate::ui::palette::Palette) -> Style {
+    Style::default().bg(palette.bar_bg).fg(palette.bar_fg)
 }
 
 /// Parses a `[ui] hint-bar-style` spec into the hint bar [`Style`]. Empty ⇒ the
@@ -135,9 +150,9 @@ pub(crate) fn hint_bar_default_style() -> Style {
 /// list: `bg=<colour>` sets the background, `fg=<colour>` (or a bare colour token) the
 /// foreground, using the same colour slots as the view border ([`map_color`], so
 /// named colours, `colourN`, `#RRGGBB`, `default`). Unrecognised tokens are ignored.
-pub(crate) fn parse_hint_bar_style(spec: &str) -> Style {
+pub(crate) fn parse_hint_bar_style(spec: &str, palette: &crate::ui::palette::Palette) -> Style {
     if spec.trim().is_empty() {
-        return hint_bar_default_style();
+        return hint_bar_default_style(palette);
     }
     let mut style = Style::default();
     for tok in spec.split(',') {
@@ -174,8 +189,7 @@ pub(crate) fn parse_selection_bg(spec: &str) -> Option<Color> {
 
 /// Builds the palette overrides from `[ui]` keys: each non-empty role string becomes
 /// `Some(map_color(..))`, each empty one `None` (the theme's own slot). `selection-style`
-/// folds into the same struct. The caller applies the result via
-/// [`crate::ui::palette::apply`].
+/// folds into the same struct. The caller resolves the result with the selected theme.
 pub(crate) fn palette_overrides(
     ui: &crate::provision::config::UiConfig,
 ) -> crate::ui::palette::Overrides {
@@ -207,20 +221,16 @@ pub(crate) fn palette_overrides(
 /// error at a glance, not as more of the key cheatsheet. Every error flash paints
 /// this. Fixed, not configurable: an error must stay legible regardless of any
 /// `[ui] hint-bar-style` override.
-pub(crate) fn error_flash_style() -> Style {
-    Style::default()
-        .bg(crate::ui::palette::get().error)
-        .fg(crate::ui::palette::get().bar_fg)
+pub(crate) fn error_flash_style(palette: &crate::ui::palette::Palette) -> Style {
+    Style::default().bg(palette.error).fg(palette.bar_fg)
 }
 
 /// The hint bar's notice style: the bar's own background with its key accent as the
 /// text. A notice tells the user something worth acting on (a newer release) without
 /// anything having gone wrong, so it reads apart from the cheatsheet but never as the
 /// error bar.
-pub(crate) fn notice_flash_style() -> Style {
-    Style::default()
-        .bg(crate::ui::palette::get().bar_bg)
-        .fg(crate::ui::palette::get().bar_accent)
+pub(crate) fn notice_flash_style(palette: &crate::ui::palette::Palette) -> Style {
+    Style::default().bg(palette.bar_bg).fg(palette.bar_accent)
 }
 
 /// What a flash is about, which decides how the bar paints it.
@@ -274,6 +284,12 @@ pub(crate) enum ViewScreen {
     Login,
     /// The host answered and is serving no session.
     Empty,
+}
+
+pub(crate) struct ViewScreenRender<'a> {
+    pub(crate) address: &'a crate::session::Address,
+    pub(crate) kind: ViewScreen,
+    pub(crate) focused: bool,
 }
 
 impl ViewScreen {
@@ -387,10 +403,10 @@ impl ScreenCell {
         }
     }
 
-    fn style(&self) -> Style {
+    fn style(&self, palette: &crate::ui::palette::Palette) -> Style {
         match self {
             ScreenCell::Key(_) => Style::default().add_modifier(Modifier::BOLD),
-            ScreenCell::Label(_) => Style::default().fg(crate::ui::palette::get().decoration),
+            ScreenCell::Label(_) => Style::default().fg(palette.decoration),
             ScreenCell::Continued | ScreenCell::Gap => Style::default(),
         }
     }
@@ -471,6 +487,7 @@ pub struct Chrome {
 
 impl Default for Chrome {
     fn default() -> Self {
+        let palette = crate::ui::palette::Palette::default();
         Chrome {
             flash: String::new(),
             flash_until: None,
@@ -489,13 +506,27 @@ impl Default for Chrome {
             ui_prefix: "C-g".into(),
             armed: false,
             nav_position: crate::ui::switcher::NavPosition::Left,
-            colors: ViewBorderColors::default(),
-            hint_bar_style: hint_bar_default_style(),
+            colors: ViewBorderColors::from_palette(&palette),
+            hint_bar_style: hint_bar_default_style(&palette),
         }
     }
 }
 
 impl Chrome {
+    pub(crate) fn apply_palette(
+        &mut self,
+        ui: &crate::provision::config::UiConfig,
+        palette: &crate::ui::palette::Palette,
+    ) {
+        self.colors = ViewBorderColors::resolve_with_palette(
+            &ui.view_active_border_style,
+            &ui.view_border_style,
+            &ui.view_border_hover_style,
+            palette,
+        );
+        self.hint_bar_style = parse_hint_bar_style(&ui.hint_bar_style, palette);
+    }
+
     /// Sets the transient error flash shown in the nav's hint bar. The next tree key
     /// clears it (the switcher's `handle_key`), and [`FLASH_TTL`] clears it for a user
     /// who presses nothing, so the normal help/status hint bar returns either way.
@@ -558,9 +589,8 @@ impl Chrome {
         self.view_border_hovered = on;
     }
 
-    /// Sets the tree|terminal view border colours. The app calls this once at startup
-    /// with the resolved set (see [`ViewBorderColors::resolve`]); nothing on the wire
-    /// changes them afterwards.
+    /// Replaces the tree|terminal view border colours with a resolved set.
+    #[cfg(test)]
     pub(crate) fn set_view_border_colors(&mut self, colors: ViewBorderColors) {
         self.colors = colors;
     }
@@ -582,12 +612,6 @@ impl Chrome {
     /// resolved position; the cheatsheet reads it to name the active arrow pair.
     pub(crate) fn set_nav_position(&mut self, position: crate::ui::switcher::NavPosition) {
         self.nav_position = position;
-    }
-
-    /// Sets the hint bar style. The app calls this once at startup from
-    /// `[ui] hint-bar-style` (empty ⇒ the tmux default; see [`parse_hint_bar_style`]).
-    pub(crate) fn set_hint_bar_style(&mut self, style: Style) {
-        self.hint_bar_style = style;
     }
 
     /// Sets the raw `~/.ssh/config` text the unreachable host screen reads.
@@ -755,11 +779,17 @@ impl Chrome {
         frame: &mut Frame,
         area: Rect,
         state: &crate::state::State,
-        address: &crate::session::Address,
-        kind: ViewScreen,
-        focused: bool,
+        view: ViewScreenRender<'_>,
+        palette: &crate::ui::palette::Palette,
     ) {
-        let lines = self.view_screen_lines(state, address, kind, area.width, focused);
+        let lines = self.view_screen_lines(
+            state,
+            view.address,
+            view.kind,
+            area.width,
+            view.focused,
+            palette,
+        );
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
     }
 
@@ -805,8 +835,9 @@ impl Chrome {
         kind: ViewScreen,
         width: u16,
         focused: bool,
+        palette: &crate::ui::palette::Palette,
     ) -> Vec<Line<'static>> {
-        let pal = crate::ui::palette::get();
+        let pal = palette;
         let p = &self.ui_prefix;
         let source = address.source.as_str();
         // The rows in reading order: WHY the state is what it is, then what to press
@@ -1168,7 +1199,7 @@ impl Chrome {
                 continue;
             }
             out.push(Line::from(vec![
-                Span::styled(format!(" {:>cw$} ", cell.text()), cell.style()),
+                Span::styled(format!(" {:>cw$} ", cell.text()), cell.style(palette)),
                 rule.clone(),
                 Span::raw(value),
             ]));
@@ -1271,13 +1302,13 @@ impl Chrome {
     /// the [`error_flash_style`] for an error or the [`notice_flash_style`] for a
     /// notice; otherwise the configured status style. Split from
     /// [`Self::render_hint_bar`] so the choice is unit-testable without a backend.
-    pub(crate) fn hint_bar_render_style(&self) -> Style {
+    pub(crate) fn hint_bar_render_style(&self, palette: &crate::ui::palette::Palette) -> Style {
         if self.flash.is_empty() {
             self.hint_bar_style
         } else {
             match self.flash_kind {
-                FlashKind::Error => error_flash_style(),
-                FlashKind::Notice => notice_flash_style(),
+                FlashKind::Error => error_flash_style(palette),
+                FlashKind::Notice => notice_flash_style(palette),
             }
         }
     }
@@ -1287,15 +1318,19 @@ impl Chrome {
     /// gets the accent, the separators go muted, and the rest inherits the bar's base
     /// style. Purely presentational - the text is exactly the [`Self::hint_bar_lines`]
     /// line, so the fit / wrap behaviour is untouched.
-    fn hint_bar_line_spans(&self, line: String) -> Line<'static> {
+    fn hint_bar_line_spans(
+        &self,
+        line: String,
+        palette: &crate::ui::palette::Palette,
+    ) -> Line<'static> {
         // The bar's OWN accent, not the card accent: the keys sit on `bar_bg`, a
         // surface the card accent may not read on (see `Palette::bar_accent`). The keys
         // are also BOLD, so a key reads as a key wherever it is offered (the help modal's
         // key column and the host-screen rows are bold the same way).
         let accent = Style::default()
-            .fg(crate::ui::palette::get().bar_accent)
+            .fg(palette.bar_accent)
             .add_modifier(Modifier::BOLD);
-        let sep_style = Style::default().fg(crate::ui::palette::get().decoration);
+        let sep_style = Style::default().fg(palette.decoration);
         let mut spans: Vec<Span> = Vec::new();
         for (i, seg) in line.split(" · ").enumerate() {
             if i > 0 {
@@ -1339,6 +1374,7 @@ impl Chrome {
         area: Rect,
         state: &crate::state::State,
         fill: BarFill,
+        palette: &crate::ui::palette::Palette,
     ) {
         // An open input owns the bar outright: the bar BECOMES the input line (see
         // [`Self::hint_bar_text`]), painted as the status bar with a reversed-block
@@ -1348,10 +1384,10 @@ impl Chrome {
         // orders them.
         if self.flash.is_empty() {
             if let Some(Modal::Input(input)) = &state.modal {
-                let line = crate::ui::modal::input_hint_line(input, area.width);
+                let line = crate::ui::modal::input_hint_line(input, area.width, palette);
                 frame.render_widget(Clear, area);
                 frame.render_widget(
-                    Paragraph::new(line).style(self.hint_bar_render_style()),
+                    Paragraph::new(line).style(self.hint_bar_render_style(palette)),
                     area,
                 );
                 return;
@@ -1380,12 +1416,13 @@ impl Chrome {
             .map(|l| l.chars().count() as u16)
             .max()
             .unwrap_or(0);
-        let styled = self.flash.is_empty() && self.hint_bar_style == hint_bar_default_style();
+        let styled =
+            self.flash.is_empty() && self.hint_bar_style == hint_bar_default_style(palette);
         let text = if styled {
             Text::from(
                 lines
                     .into_iter()
-                    .map(|l| self.hint_bar_line_spans(l))
+                    .map(|l| self.hint_bar_line_spans(l, palette))
                     .collect::<Vec<_>>(),
             )
         } else {
@@ -1410,7 +1447,7 @@ impl Chrome {
         // cheatsheet was fit to `text_w`, so painting it across the whole bar fills the gap
         // with the status background while the label sits clear of the text at the right.
         frame.render_widget(
-            Paragraph::new(text).style(self.hint_bar_render_style()),
+            Paragraph::new(text).style(self.hint_bar_render_style(palette)),
             painted,
         );
         if !version.0.is_empty() {
@@ -1424,7 +1461,7 @@ impl Chrome {
             let white = Style::default().fg(Color::White);
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(version.0, white)))
-                    .style(self.hint_bar_render_style()),
+                    .style(self.hint_bar_render_style(palette)),
                 vrect,
             );
         }
@@ -1437,14 +1474,15 @@ impl Chrome {
         frame: &mut Frame,
         area: Rect,
         position: crate::ui::switcher::NavPosition,
+        palette: &crate::ui::palette::Palette,
     ) {
         frame.render_widget(Clear, area);
-        let line = self.hint_bar_line_spans(format!(" {}", self.ui_prefix));
+        let line = self.hint_bar_line_spans(format!(" {}", self.ui_prefix), palette);
         frame.render_widget(
-            Paragraph::new(line).style(self.hint_bar_render_style()),
+            Paragraph::new(line).style(self.hint_bar_render_style(palette)),
             area,
         );
-        self.render_collapse_button(frame, area, position, true);
+        self.render_collapse_button(frame, area, position, true, palette);
     }
 
     /// Paints the collapse/expand token at the far end of a nav-local hint bar.
@@ -1454,22 +1492,23 @@ impl Chrome {
         hint_bar: Rect,
         position: crate::ui::switcher::NavPosition,
         collapsed: bool,
+        palette: &crate::ui::palette::Palette,
     ) {
         let rect = crate::ui::switcher::collapse_button_rect(hint_bar, position, collapsed);
         if rect.is_empty() {
             return;
         }
         let token = crate::ui::switcher::collapse_button_token(position, collapsed);
-        let token_style = if self.hint_bar_style == hint_bar_default_style() {
+        let token_style = if self.hint_bar_style == hint_bar_default_style(palette) {
             Style::default()
-                .fg(crate::ui::palette::get().bar_accent)
+                .fg(palette.bar_accent)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(token, token_style)))
-                .style(self.hint_bar_render_style()),
+                .style(self.hint_bar_render_style(palette)),
             rect,
         );
     }
@@ -1527,8 +1566,12 @@ mod tests {
     fn a_notice_paints_apart_from_an_error() {
         let state = crate::state::State::default();
         let mut c = Chrome::default();
+        let palette = crate::ui::palette::Palette::default();
         c.notice("xmux 9.9.9 is available");
-        assert_eq!(c.hint_bar_render_style(), notice_flash_style());
+        assert_eq!(
+            c.hint_bar_render_style(&palette),
+            notice_flash_style(&palette)
+        );
         let text = c.hint_bar_text(80, &state);
         assert!(!text.contains('⚠'), "{text:?}");
         assert!(text.contains("xmux 9.9.9 is available"), "{text:?}");
@@ -1538,9 +1581,12 @@ mod tests {
         );
 
         c.flash("boom");
-        assert_eq!(c.hint_bar_render_style(), error_flash_style());
+        assert_eq!(
+            c.hint_bar_render_style(&palette),
+            error_flash_style(&palette)
+        );
         assert!(c.hint_bar_text(80, &state).contains('⚠'));
-        assert_ne!(notice_flash_style(), error_flash_style());
+        assert_ne!(notice_flash_style(&palette), error_flash_style(&palette));
     }
 
     #[test]
@@ -1578,15 +1624,22 @@ mod tests {
 
     #[test]
     fn parse_hint_bar_style_default_and_override() {
+        let palette = crate::ui::palette::Palette::default();
         // Empty (and whitespace-only) ⇒ the built-in tmux default (yellowgreen / gray5).
-        assert_eq!(parse_hint_bar_style(""), hint_bar_default_style());
-        assert_eq!(parse_hint_bar_style("   "), hint_bar_default_style());
+        assert_eq!(
+            parse_hint_bar_style("", &palette),
+            hint_bar_default_style(&palette)
+        );
+        assert_eq!(
+            parse_hint_bar_style("   ", &palette),
+            hint_bar_default_style(&palette)
+        );
         // bg=/fg= tokens set the two colours (tmux status-style syntax).
-        let s = parse_hint_bar_style("bg=blue,fg=white");
+        let s = parse_hint_bar_style("bg=blue,fg=white", &palette);
         assert_eq!(s.bg, Some(Color::Blue));
         assert_eq!(s.fg, Some(Color::White));
         // A bare colour token is the foreground (tmux convention).
-        assert_eq!(parse_hint_bar_style("red").fg, Some(Color::Red));
+        assert_eq!(parse_hint_bar_style("red", &palette).fg, Some(Color::Red));
     }
 
     #[test]
@@ -1707,19 +1760,20 @@ mod tests {
     #[test]
     fn flash_paints_the_error_style_not_the_status_style() {
         let mut c = Chrome::default();
+        let palette = crate::ui::palette::Palette::default();
         assert_eq!(
-            c.hint_bar_render_style(),
+            c.hint_bar_render_style(&palette),
             c.hint_bar_style,
             "with no flash the bar keeps the configured status style"
         );
         c.flash("cannot kill a host");
         assert_eq!(
-            c.hint_bar_render_style(),
-            error_flash_style(),
+            c.hint_bar_render_style(&palette),
+            error_flash_style(&palette),
             "a refusal flash paints the distinct error style"
         );
         assert_ne!(
-            error_flash_style(),
+            error_flash_style(&palette),
             c.hint_bar_style,
             "the error style is visually distinct from the status style"
         );
@@ -1751,21 +1805,21 @@ mod tests {
     fn resolve_layers_the_config_override_over_the_fixed_defaults() {
         // Unset → xmux's own pair, whatever source is displayed: the palette primary lit
         // against its disabled tone, the hover cue on the accent.
-        let pal = crate::ui::palette::get();
-        let d = ViewBorderColors::resolve("", "", "");
+        let pal = crate::ui::palette::Palette::default();
+        let d = ViewBorderColors::resolve_with_palette("", "", "", &pal);
         assert_eq!(d.active, pal.primary);
         assert_eq!(d.inactive, pal.disabled);
         assert_eq!(d.hover, pal.accent);
         assert_eq!(d, ViewBorderColors::default());
 
         // Each key overrides its own role and leaves the others at the default.
-        let c = ViewBorderColors::resolve("red", "", "cyan");
+        let c = ViewBorderColors::resolve_with_palette("red", "", "cyan", &pal);
         assert_eq!(c.active, Color::Red);
         assert_eq!(c.inactive, pal.disabled);
         assert_eq!(c.hover, Color::Cyan);
 
         // The tmux colour syntax applies to the overrides (`default` = Reset).
-        let c = ViewBorderColors::resolve("fg=green", "default", "");
+        let c = ViewBorderColors::resolve_with_palette("fg=green", "default", "", &pal);
         assert_eq!(c.active, Color::Green);
         assert_eq!(c.inactive, Color::Reset);
     }
