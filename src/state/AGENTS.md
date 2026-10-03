@@ -58,10 +58,11 @@ holds the modal state plus its popup geometry and forwards to that module.
 
 ## Module Seams
 
-- The state depends on the domain layer for the selection and the action, command,
-  and effect sets; on the UI layer for the inventory groups, the open
-  modal, and the switcher it rebuilds rows against; on the app layer for the focus
-  state machine; and on the connection layer for the inbound events.
+- The state depends on the domain layer for inventory groups, login inputs,
+  operation results, the selection, and the action, command, and effect sets; on
+  the UI layer for the open modal and the switcher it rebuilds rows against; on
+  the app layer for the focus state machine; and on the connection layer for the
+  inbound events.
 - It stores state facts plus the two mutation sites. The run loop owns effect
   dispatch, both the synchronous commands from an action (switcher selection move,
   attach, preferences IO, quit) and the mux follow-ups from an event (inventory

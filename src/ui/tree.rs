@@ -6,22 +6,8 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
+pub use crate::model::{sort_by_name, Group};
 use crate::session::Session;
-
-/// The sessions of one source. A non-`None` `err` means the host was
-/// unreachable, in which case `sessions` carries no meaning.
-#[derive(Debug, Clone)]
-pub struct Group {
-    pub source: String,
-    pub err: Option<String>,
-    pub sessions: Vec<Session>,
-}
-
-/// Orders sessions in place by name ascending. The sort is stable so sessions
-/// with equal names keep their original relative order.
-pub fn sort_by_name(sessions: &mut [Session]) {
-    sessions.sort_by(|a, b| a.name.cmp(&b.name));
-}
 
 /// The one session a re-enumeration RENAMED, as `(from, to)`: exactly one name left the
 /// list and exactly one name joined it. A listing carries names only, so a rename is
@@ -521,27 +507,6 @@ mod tests {
                 sessions: vec![sess("deadhost", "ghost")],
             },
         ]
-    }
-
-    #[test]
-    fn sort_by_name_orders() {
-        let mut in_ = vec![
-            sess("local", "beta"),
-            sess("local", "alpha"),
-            sess("local", "gamma"),
-            sess("local", "delta"),
-        ];
-        sort_by_name(&mut in_);
-        let names: Vec<&str> = in_.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["alpha", "beta", "delta", "gamma"]);
-    }
-
-    #[test]
-    fn sort_by_name_stable_for_equal_names() {
-        let mut in_ = vec![sess("h1", "x"), sess("h2", "x"), sess("h3", "x")];
-        sort_by_name(&mut in_);
-        let srcs: Vec<&str> = in_.iter().map(|s| s.source.as_str()).collect();
-        assert_eq!(srcs, vec!["h1", "h2", "h3"]);
     }
 
     #[test]
