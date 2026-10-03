@@ -587,6 +587,10 @@ impl Runtime {
                 .display()
                 .to_string(),
         );
+        // The palette is ANSI-16 slots and attributes throughout, so it needs nothing from
+        // the terminal but the theme the terminal already has: no colour query, no probing,
+        // no fallback to guess at. The colours from outside those slots are the ones the
+        // user names in `[ui]` role keys and `[ui] selection-style`.
         let palette = crate::ui::palette::resolve(
             &roster.cfg.ui.theme,
             crate::ui::chrome::palette_overrides(&roster.cfg.ui),

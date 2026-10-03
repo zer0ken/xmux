@@ -73,9 +73,9 @@ pub(crate) struct Palette {
     pub selection_bg: Option<Color>,
 }
 
-/// The two built-in themes' names. `[ui] theme` names one; `auto` is not a mode, the
-/// two names ARE the two ANSI-only themes - `auto-light` for a light terminal, `auto-
-/// dark` for a dark one, each following the terminal's own palette by painting only
+/// The light built-in theme's name; the dark one is the config default
+/// (`auto-dark`). `[ui] theme` names one; `auto` is not a mode, the two names ARE the
+/// two ANSI-only themes - `auto-light` for a light terminal, `auto-dark` for a dark one, each following the terminal's own palette by painting only
 /// ANSI slots. See the module doc and `Colour ownership` in `CONTEXT.md`.
 pub(crate) const AUTO_LIGHT: &str = "auto-light";
 

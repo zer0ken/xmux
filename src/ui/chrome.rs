@@ -513,6 +513,9 @@ impl Default for Chrome {
 }
 
 impl Chrome {
+    /// Derives the chrome's own styles from the applied palette and the `[ui]` overrides:
+    /// the view border colours, which mark the focused view and take no colour from any
+    /// host or mux, and the hint bar style (`[ui] hint-bar-style`, else the tmux default).
     pub(crate) fn apply_palette(
         &mut self,
         ui: &crate::provision::config::UiConfig,

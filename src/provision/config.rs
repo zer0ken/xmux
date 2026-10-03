@@ -269,6 +269,7 @@ impl UiConfig {
     }
 }
 
+/// The built-in theme `[ui] theme` falls back to when it is unset or names no theme.
 pub(crate) const DEFAULT_THEME: &str = "auto-dark";
 
 fn default_theme() -> String {
