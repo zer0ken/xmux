@@ -10,7 +10,7 @@ release:
 | `docs/assets/xmux-nav-resize.gif` | widening and narrowing the nav |
 | `docs/assets/xmux-nav-move.gif` | moving the nav to each side of the terminal view |
 | `docs/assets/xmux-nav-autohide.gif` | auto-hiding the nav |
-| `docs/assets/xmux-demo.png` | the last frame of the comparison, as a still for places that take only an image |
+| `docs/assets/xmux.png` | the xmux window alone after a session switch, as a still for places that take only an image |
 
 ## Usage
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerates the README demo GIFs, and a PNG still of the comparison, in
+# Regenerates the README demo GIFs, and a PNG still of the xmux window, in
 # docs/assets from a released xmux.
 #
 # usage: scripts/demo/make-gifs.sh [version]

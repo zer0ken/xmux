@@ -3,8 +3,8 @@
 // The stage page replays each recording in a terminal emulator; this script steps
 // its clock frame by frame and screenshots it with a transparent background, so the
 // video timing never depends on how fast the machine renders. It writes
-// <dir>/manifest.json, which encode.py turns into the GIFs and the PNG still under
-// <dir>/gifs.
+// <dir>/manifest.json, which encode.py turns into the GIFs under <dir>/gifs, and
+// saves a PNG still of the xmux window there.
 //
 // usage: node render.mjs <dir>
 import fs from "node:fs";
@@ -59,9 +59,22 @@ async function capture(browser, spec, from, to, dir, label = null) {
 }
 
 const jobs = [];
-function addGif(dir, gif, holdEnd, still = null) {
-  jobs.push({ frames: path.relative(inDir, dir), gif: path.join("gifs", gif), fps: FPS, hold: holdEnd,
-              ...(still && { still: path.join("gifs", still) }) });
+function addGif(dir, gif, holdEnd) {
+  jobs.push({ frames: path.relative(inDir, dir), gif: path.join("gifs", gif), fps: FPS, hold: holdEnd });
+}
+
+// One frame of a single pane, without the key strip, as a full-colour PNG.
+async function still(browser, rec, t, file) {
+  const page = await browser.newPage({ viewport: { width: 2400, height: 1200 }, deviceScaleFactor: 1 });
+  await page.goto(pathToFileURL(path.join(here, "stage.html")).href);
+  await page.evaluate(() => document.fonts.ready);
+  await page.evaluate(s => setup(s), [{ title: "xmux", timer: false, pulse: null, rec }]);
+  await page.evaluate(() => { setWindow(1e9, ""); document.querySelectorAll(".foot").forEach(f => f.remove()); });
+  await page.evaluate(v => frame(v), t);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  await (await page.$("#stage")).screenshot({ path: file, omitBackground: true });
+  await page.close();
+  console.log(`${path.basename(file)}: one frame at ${t.toFixed(2)} s`);
 }
 
 const browser = await chromium.launch();
@@ -73,7 +86,7 @@ await capture(browser, [
   { title: "ssh + tmux", timer: true, pulse: "243,139,168", rec: manual },
   { title: "xmux", timer: true, pulse: "166,227,161", rec: viaXmux },
 ], null, null, path.join(work, "compare"));
-addGif(path.join(work, "compare"), "xmux-demo.gif", 0, "xmux-demo.png");
+addGif(path.join(work, "compare"), "xmux-demo.gif", 0);
 console.log(`  ssh + tmux ${(manual.done - manual.keys[0][0]).toFixed(1)}s, xmux ${(viaXmux.done - viaXmux.keys[0][0]).toFixed(1)}s`);
 
 // One GIF per captioned feature, cut from a single recording.
@@ -89,8 +102,11 @@ for (const [name, label] of Object.entries(FEATURES)) {
     caps[i][0] - 0.4, caps[i + 1][0] - 0.06, dir, label);
   addGif(dir, `xmux-nav-${name}.gif`, HOLD_END);
 }
+
+// The xmux window alone, after the session switch settles and before the resize starts.
+const resize = caps.find(([, c]) => c === "Resize the nav");
+await still(browser, tour, resize[0] - 0.1, path.join(inDir, "gifs", "xmux.png"));
 await browser.close();
 fs.mkdirSync(path.join(inDir, "gifs"), { recursive: true });
 fs.writeFileSync(path.join(inDir, "manifest.json"), JSON.stringify(jobs.map(j => ({ ...j,
-  frames: j.frames.split(path.sep).join("/"), gif: j.gif.split(path.sep).join("/"),
-  ...(j.still && { still: j.still.split(path.sep).join("/") }) })), null, 1));
+  frames: j.frames.split(path.sep).join("/"), gif: j.gif.split(path.sep).join("/") })), null, 1));
