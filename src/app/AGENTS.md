@@ -57,8 +57,8 @@ the card numbers it needs.
 - `runtime/` also owns DISCOVERY's async half. It leads with a per-machine
   REACHABILITY probe (bounded): a machine that connects goes on to detection, its
   metadata channels, and, when it named no mux, MUX DISCOVERY (a fire-and-forget probe
-  whose answers become new sources through an effect); a machine that fails classifies
-  its cards locked or unreachable and opens no channel. A host that named no mux is
+  whose answers become new sources through an effect); the model classifies a failed
+  machine probe for every card on that machine, and no channel opens. A host that named no mux is
   held by name and transport with no source until its answer arrives, so the probe,
   the login, and mux discovery address a HOST, never a source it may not have yet. It is
   the loop's job because only the loop holds the source registry (what a host already

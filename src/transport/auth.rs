@@ -176,6 +176,12 @@ pub struct SshProfile {
     pub proxied: bool,
 }
 
+pub fn local_user() -> Option<String> {
+    std::env::var("USER")
+        .ok()
+        .or_else(|| std::env::var("USERNAME").ok())
+}
+
 impl Drop for Inner {
     fn drop(&mut self) {
         if let Some(broker) = self.broker.get_mut().expect("broker lock").take() {
@@ -324,8 +330,7 @@ impl Credentials {
             .user
             .clone()
             .or(profile.login.user)
-            .or_else(|| std::env::var("USER").ok())
-            .or_else(|| std::env::var("USERNAME").ok());
+            .or_else(local_user);
         let (revoked, _) = tokio::sync::watch::channel(false);
         let credential = Arc::new(Credential {
             machine: machine.to_string(),

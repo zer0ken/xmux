@@ -16,6 +16,7 @@ pub mod plan;
 pub mod selection;
 pub mod server_model;
 pub mod source;
+pub mod view;
 
 pub use action::{Action, Command, EventEffect, FocusTarget, MuxOp};
 pub use death::{
@@ -25,7 +26,7 @@ pub use death::{
 pub(crate) use host::PendingInstall;
 pub use host::{Host, HostDisplay, Liveness, ReadyOutcome};
 pub use hosts::{host_for, Hosts, RosterDelta};
-pub use inventory::{sort_by_name, Group};
+pub use inventory::{sort_by_name, FailureKind, Group};
 pub(crate) use login::SECRET_INPUT_CAPACITY;
 pub use login::{Remember, SecretInput};
 pub use nav::{step_nav_position, NavPosition, NavSize, ViewLayout};
@@ -33,3 +34,4 @@ pub use operation::{KeyRegistration, LoginOutcome, OpResult, Ops, RegistrationOu
 pub use plan::{DeathSignal, DisplayTty, EventSource};
 pub use selection::Selection;
 pub use server_model::ServerModel;
+pub use view::{choose_view_screen, ViewScreen};

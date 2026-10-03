@@ -1888,8 +1888,9 @@ mod tests {
                 .iter()
                 .find(|g| g.source == source)
                 .unwrap_or_else(|| panic!("{source} group"));
-            assert!(
-                g.err.as_deref().is_some_and(crate::mux::is_blocked),
+            assert_eq!(
+                g.failure(),
+                Some(crate::model::FailureKind::Blocked),
                 "{source} classifies locked: {:?}",
                 g.err
             );
@@ -1919,10 +1920,10 @@ mod tests {
             &mut sw,
             &mut connected,
         );
-        assert!(state.groups[0]
-            .err
-            .as_deref()
-            .is_some_and(crate::mux::is_blocked));
+        assert_eq!(
+            state.groups[0].failure(),
+            Some(crate::model::FailureKind::Blocked)
+        );
     }
 
     #[test]
@@ -2019,12 +2020,10 @@ mod tests {
             &mut sw,
             &mut connected,
         );
-        assert!(crate::mux::is_blocked(
-            state.groups[0]
-                .err
-                .as_deref()
-                .expect("refusal remains visible")
-        ));
+        assert_eq!(
+            state.groups[0].failure(),
+            Some(crate::model::FailureKind::Blocked)
+        );
     }
 
     #[test]
@@ -2077,8 +2076,9 @@ mod tests {
         );
         let g = state.groups.iter().find(|g| g.source == "prod").unwrap();
         assert!(g.err.is_some(), "the card is unreachable");
-        assert!(
-            !g.err.as_deref().is_some_and(crate::mux::is_blocked),
+        assert_eq!(
+            g.failure(),
+            Some(crate::model::FailureKind::Unreachable),
             "a reach failure is not locked: {:?}",
             g.err
         );

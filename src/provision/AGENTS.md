@@ -22,13 +22,14 @@ The resolved environment owns the process-memory credential store for the run. E
 configured, discovered, and freshly reconciled source receives that same store, keyed by
 machine, so off-loop operations cannot miss a login or copy its password.
 OpenSSH's effective local configuration supplies each ssh host's login defaults, prompt
-identity, and host-key policy; stanza parsing is only the display fallback when OpenSSH
-cannot report them.
+identity, and host-key policy. Provisioning applies the provider, port, and local-user
+fallbacks and extracts the matching stanza before the app supplies both to the chrome.
 
 ## Module Seams
 
 - Config loads the optional TOML and merges it with ssh-config discovery to
-  produce the set of hosts and mux binaries to use.
+  produce the set of hosts and mux binaries to use. It also resolves the login pane's
+  starting values and the matching host stanza as pure configuration results.
 - Roster answers only "which hosts does xmux offer", from one or more providers
   that each yield plain ssh target names.
 - The neighbour provider answers "which machines does this OS already reach in one hop",

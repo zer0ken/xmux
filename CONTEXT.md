@@ -86,6 +86,8 @@ UI elements a user perceives as distinct things:
 - view screen - what fills the terminal-view region in place of a mux, for a selection
   with no grid to show there. Where a card states the selection's STATE, the screen
   states WHY: it is the one surface with the room to hold a tool's diagnostic whole.
+  The domain model chooses the screen from the selected address, typed host failure,
+  scanning state, empty state, and own-session address. The UI renders that choice.
   One screen in four states, so a reader of any of them reads the others: the subject
   as the headline (a host for the three host states, the session address for
   `own session`), under it the state word, then the rows that apply. A row is the key-column row the help also uses - a
@@ -280,13 +282,15 @@ UI elements a user perceives as distinct things:
   connectivity failures, and a changed host key stay unreachable. A blocked card keeps the `?` mark (warning, like unreachable's
   `⚠`), is never hidden by hide-unreachable (it is the one entry to the login pane), and
   shows that pane above the same failure facts the unreachable screen states. What it was
-  blocked ON is not in its state word: the reason row carries ssh's own sentence.
+  blocked ON is not in its state word: the reason row carries ssh's own sentence. The
+  transport diagnoses the ssh text and the inventory group exposes the typed failure.
 - login pane - the form a blocked host's panel opens, holding the three values ssh will
   not ask for and must know before it dials: the address, the port, and the username. A
   masked password field is optional beside them. Every value starts at what ssh WOULD
   use. Address, port, and user come from OpenSSH's effective configuration when present;
   missing values use a provider address or host name, port 22, and this machine's account
-  name. A required field is marked in its label; an empty optional one says so in
+  name. Provisioning resolves those values and the matching ssh stanza before the app
+  supplies them to the chrome. A required field is marked in its label; an empty optional one says so in
   the space its value would occupy. Two choices follow: whether to record the values, and
   whether to register this machine's public key on the host. The record choice appears
   only once a value differs from what ssh would have used, since a stanza repeating what

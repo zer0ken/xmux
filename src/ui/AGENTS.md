@@ -65,7 +65,8 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   the palette is guarded so a stray RGB colour cannot reach it.
 - The view screens are ONE screen in several states, not a panel each: one builder lays
   them all out, so the headline, the state word, and the key rows cannot drift apart. A
-  state added later joins that grammar rather than bringing its own.
+  state added later joins that grammar rather than bringing its own. The domain model
+  chooses the state; this layer renders the result.
 - The terminal view refuses exactly one address, the session xmux is running in, and it
   refuses it by emptying the view TARGET rather than at each place that would attach.
   The target is what the display reconcile, the attach and the mux-side switch all read,
@@ -103,7 +104,8 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 - A BLOCKED host, whose authentication ssh refused or whose first-seen host key needs
   login-time approval under an effective `ask` policy, never hides, whatever
   hide-unreachable says: its card is the one entry to that pane, so the prune keeps it
-  alongside a filter-named card. The classification reads only ssh's own final
+  alongside a filter-named card. The model supplies the typed classification, based only
+  on ssh's own final
   account-and-host authentication line or an approvable unknown host-key verification failure, never
   a generic permission error, name resolution, connectivity, or changed host key.
   An unknown key under a strict policy is unreachable and gives the fingerprint command.
@@ -112,7 +114,9 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   with credential presence and is per MACHINE, since a login authenticates the machine
   and not the one mux whose card carried the pane.
 - The login pane holds what ssh will not ask for and nothing else. Every value starts at
-  what OpenSSH reports it would use, with the matching ssh config entry as fallback. A
+  what provisioning reports OpenSSH would use, with the matching ssh config entry as
+  fallback. The chrome receives resolved starting values and matching stanza text, and
+  does not parse ssh configuration. A
   blocked host's switch and create are refused. The password is never rendered, and after
   submit it lives only in the process credential broker. The rendered frame carries no
   plaintext.

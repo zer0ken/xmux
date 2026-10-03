@@ -138,6 +138,12 @@ pub fn host_key_unknown(stderr: &str) -> bool {
         && !host_key_changed(stderr)
 }
 
+/// Whether the failure can be answered by the address, port, username, or host-key
+/// acceptance collected by the login pane.
+pub fn requires_login(stderr: &str) -> bool {
+    contains_auth_refusal(stderr) || host_key_unknown(stderr)
+}
+
 pub fn explain(input: &str, password_supplied: bool) -> String {
     let detail = sanitize(input);
     let lower = detail.to_ascii_lowercase();
@@ -268,5 +274,25 @@ mod tests {
         let detail = "xmux credential broker unavailable: connection refused\n\
                       dev@box: Permission denied (publickey,password).";
         assert!(explain(detail, false).starts_with("xmux could not provide the held password\n"));
+    }
+
+    #[test]
+    fn login_requirement_matches_failures_the_pane_can_answer() {
+        for text in [
+            "pwtest@127.0.0.1: Permission denied (publickey,password).",
+            "command failed (exit 255): Host key verification failed.",
+        ] {
+            assert!(requires_login(text), "the pane can answer this: {text}");
+        }
+
+        for text in [
+            "ssh: connect to host prod port 22: Connection refused",
+            "tmux: open /tmp/tmux-0/default: Permission denied",
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
+             @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n\
+             Host key verification failed.",
+        ] {
+            assert!(!requires_login(text), "not answerable here: {text}");
+        }
     }
 }

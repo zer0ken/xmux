@@ -649,11 +649,17 @@ pub fn host_specs_for(alias: &str, muxes: &[String]) -> Vec<HostSpec> {
 /// here; `host_stanza` still shows them for display. A missing file yields an
 /// empty list.
 pub fn ssh_host_aliases(path: &Path) -> Vec<String> {
+    read_ssh_config(path).1
+}
+
+/// Reads an OpenSSH client config and returns its root text with every concrete alias.
+pub fn read_ssh_config(path: &Path) -> (String, Vec<String>) {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
     let mut aliases = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut stack = Vec::new();
-    collect_ssh_aliases(path, &mut aliases, &mut seen, &mut stack);
-    aliases
+    collect_ssh_aliases_from_text(path, &content, &mut aliases, &mut seen, &mut stack);
+    (content, aliases)
 }
 
 /// Recursively reads `path`'s `Host` aliases into `aliases`, expanding `Include`
@@ -669,13 +675,23 @@ fn collect_ssh_aliases(
         Ok(s) => s,
         Err(_) => return,
     };
+    collect_ssh_aliases_from_text(path, &content, aliases, seen, stack);
+}
+
+fn collect_ssh_aliases_from_text(
+    path: &Path,
+    content: &str,
+    aliases: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+    stack: &mut Vec<std::path::PathBuf>,
+) {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     if stack.contains(&canonical) {
         return;
     }
     stack.push(canonical);
 
-    for line in logical_lines(&content) {
+    for line in logical_lines(content) {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -991,6 +1007,27 @@ pub fn stanza_login(config_text: &str, alias: &str) -> crate::transport::Login {
     login
 }
 
+/// The address, port, and username the login pane starts with.
+pub fn login_defaults(
+    alias: &str,
+    provider_address: Option<&str>,
+    effective: Option<&crate::transport::Login>,
+    config_text: &str,
+    local_user: &str,
+) -> (String, String, String) {
+    let configured = effective
+        .cloned()
+        .unwrap_or_else(|| stanza_login(config_text, alias));
+    let address = configured
+        .address
+        .filter(|address| address != alias || provider_address.is_none())
+        .or_else(|| provider_address.map(str::to_string))
+        .unwrap_or_else(|| alias.to_string());
+    let port = configured.port.unwrap_or(22).to_string();
+    let user = configured.user.unwrap_or_else(|| local_user.to_string());
+    (address, port, user)
+}
+
 fn ssh_directive(line: &str) -> Option<(&str, String)> {
     let line = line.trim();
     let (key, value) = if let Some((key, value)) = line.split_once('=') {
@@ -1142,6 +1179,57 @@ mod tests {
                 port: Some(2222),
                 user: Some("dev".into()),
             }
+        );
+    }
+
+    #[test]
+    fn login_defaults_resolve_before_the_view_receives_them() {
+        let text = "Host prod\n    HostName stanza.example\n    Port 2200\n    User stanza-user\n";
+        let effective = crate::transport::Login {
+            address: Some("effective.example".into()),
+            port: Some(2222),
+            user: Some("effective-user".into()),
+        };
+
+        assert_eq!(
+            login_defaults(
+                "prod",
+                Some("192.0.2.10"),
+                Some(&effective),
+                text,
+                "local-user",
+            ),
+            (
+                "effective.example".into(),
+                "2222".into(),
+                "effective-user".into(),
+            )
+        );
+        assert_eq!(
+            login_defaults("prod", None, None, text, "local-user"),
+            ("stanza.example".into(), "2200".into(), "stanza-user".into(),)
+        );
+    }
+
+    #[test]
+    fn login_defaults_preserve_provider_and_ssh_fallback_order() {
+        let effective = crate::transport::Login {
+            address: Some("prod".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            login_defaults(
+                "prod",
+                Some("192.0.2.10"),
+                Some(&effective),
+                "",
+                "local-user",
+            ),
+            ("192.0.2.10".into(), "22".into(), "local-user".into())
+        );
+        assert_eq!(
+            login_defaults("prod", None, Some(&effective), "", "local-user"),
+            ("prod".into(), "22".into(), "local-user".into())
         );
     }
     use crate::model::NavPosition;

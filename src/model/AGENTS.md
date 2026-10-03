@@ -4,10 +4,10 @@
 
 `model` holds runtime domain values shared across the mux and transport axes,
 connection management (`link`), provisioning, state, and app code: the source
-definition and source state, source collections, inventory groups, login input
-values, nav geometry, the operation port and its exchanged results, the action /
-command / event-effect unidirectional-flow set, transport dispatch results, server
-models, plans, and death-signal helpers.
+definition and source state, source collections, inventory groups and typed failures,
+view screen policy, login input values, nav geometry, the operation port and its
+exchanged results, the action / command / event-effect unidirectional-flow set,
+transport dispatch results, server models, plans, and death-signal helpers.
 
 ## Mental Model
 
@@ -30,7 +30,12 @@ registry.
   distinct types in separate modules. The event effect carries a boxed mux, so it
   is neither cloneable nor comparable and has a hand-written debug form.
 - Inventory groups and their deterministic session ordering are domain values.
-  Presentation filtering and row construction consume them without owning them.
+  Each group classifies its diagnostic as blocked or unreachable through the ssh
+  diagnostic owned by the transport layer. Presentation filtering and row construction
+  consume the typed result without owning the classification.
+- View screen selection is pure domain policy over the selected source and address,
+  typed failure, scanning state, empty state, and own-session address. Rendering consumes
+  the selected screen without choosing it.
 - The operation port carries slow host operations and their plain results.
   Execution policy and user-facing completion messages stay in the UI layer.
 - Login input values carry the remember choice and bounded secret. The secret
