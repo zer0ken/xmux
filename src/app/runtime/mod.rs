@@ -38,12 +38,6 @@ use crate::ui::switcher::TerminalViewTarget;
 /// starves under a PTY-output flood.
 const SPINNER_FRAME_MS: u64 = 120;
 
-/// How long a login may go with NOTHING said on it. It is counted from ssh's last word,
-/// so a server taking its time over a slow link never ends the login, while an ssh that
-/// went quiet on something xmux cannot answer does. Nobody is typing into a login, so the
-/// budget only has to cover ssh's own pace.
-const LOGIN_IDLE_SECS: u64 = 30;
-
 /// Max events (host or PTY) drained into one redraw before the loop yields back to
 /// `select!`. Coalesces an output burst without letting a sustained flood
 /// monopolize the single thread.
@@ -1529,12 +1523,10 @@ fn start_login(
         });
         return;
     };
-    // What the login is FOR rides its own session, so the command is composed on the
-    // login's thread: composing it may have to make this machine a key pair, and a spawn
-    // is the one thing the runtime thread must never wait on.
-    let ops = op_sink.0.clone();
-    let remote: Box<dyn FnOnce() -> String + Send> =
-        Box::new(move || ops.login_remote(register_key));
+    let remote = op_sink.0.login_remote(register_key);
+    // The registration authenticates with the same answer, so it keeps one copy for as
+    // long as the login and its follow-ups run, and no longer.
+    let key_password = register_key.then(|| password.clone());
     // The login is the one thing the user starts that shows no output of its own, so the
     // log is where a run that went nowhere is read back. The values ride ssh's argv and
     // the password rides neither, so only the host is named.
@@ -1542,24 +1534,37 @@ fn start_login(
     let (running, done) = crate::link::unlock::start_login(
         source.clone(),
         argv,
-        remote,
+        Box::new(move || remote),
         password,
-        std::time::Duration::from_secs(LOGIN_IDLE_SECS),
+        crate::link::unlock::LOGIN_IDLE,
     );
     state.login_run = Some(running);
 
     let ops = op_sink.0.clone();
     let tx = op_sink.1.clone();
     tokio::spawn(async move {
-        let connect = done.await.unwrap_or_else(|_| {
-            crate::link::unlock::UnlockOutcome::Failed("the login ended without a verdict".into())
-        });
+        let conversation = done
+            .await
+            .unwrap_or_else(|_| crate::link::unlock::Conversation {
+                outcome: crate::link::unlock::UnlockOutcome::Failed(
+                    "the login ended without a verdict".into(),
+                ),
+                output: String::new(),
+            });
+        let connect = conversation.outcome;
         tracing::info!(source = %source, outcome = ?connect, "login finished");
+        // The login's own command read the host's shell family, which is what the
+        // registration has to be written for.
+        let register = key_password.map(|password| crate::ui::ops::KeyRegistration {
+            shell: crate::transport::vocab::RemoteShell::from_marked_probe(&conversation.output),
+            password,
+        });
         let result = crate::ui::switcher::run_login_follow_ups(
             &source,
             &login,
             connect,
             write_config,
+            register,
             ops.as_ref(),
         )
         .await;

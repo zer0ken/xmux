@@ -24,7 +24,15 @@ use std::time::{Duration, Instant};
 /// How often the conversation wakes while ssh is silent. It bounds how long a cancel
 /// waits, and nothing else: the idle budget is counted from its own deadline.
 const POLL: Duration = Duration::from_millis(100);
-const DIAGNOSTIC_LIMIT: usize = 64 * 1024;
+/// How much of what ssh wrote a conversation keeps. The remote command's answer comes
+/// last, after the prompts and any banner, so the bound is far above what a login writes.
+const OUTPUT_LIMIT: usize = 64 * 1024;
+
+/// How long a conversation may go with NOTHING said on it. It is counted from ssh's last
+/// word, so a server taking its time over a slow link never ends it, while an ssh that went
+/// quiet on something xmux cannot answer does. Nobody is typing into a conversation, so
+/// the budget only has to cover ssh's own pace.
+pub const LOGIN_IDLE: Duration = Duration::from_secs(30);
 
 /// The verdict of one login.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +49,15 @@ pub enum UnlockOutcome {
     Unavailable,
     /// A spawn/io/exit failure that is neither auth nor a timeout.
     Failed(String),
+}
+
+/// What one conversation came to: the verdict, and what ssh wrote to the PTY on the way,
+/// which carries the remote command's own output after the prompts. The password is not
+/// in it, because xmux writes that only to the PTY input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conversation {
+    pub outcome: UnlockOutcome,
+    pub output: String,
 }
 
 /// The pure prompt-answer state machine for one login. Fed the ssh child's output, it
@@ -173,7 +190,7 @@ pub fn start_login(
     remote: Box<dyn FnOnce() -> String + Send>,
     password: String,
     idle: Duration,
-) -> (RunningLogin, tokio::sync::oneshot::Receiver<UnlockOutcome>) {
+) -> (RunningLogin, tokio::sync::oneshot::Receiver<Conversation>) {
     let cancel = Arc::new(AtomicBool::new(false));
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     let handle = RunningLogin {
@@ -196,7 +213,7 @@ fn converse(
     password: String,
     idle: Duration,
     cancel: Arc<AtomicBool>,
-) -> UnlockOutcome {
+) -> Conversation {
     // Composing it can spawn (a machine with no key pair is given one), which is why it
     // happens here and not where the login was asked for.
     argv.push(remote());
@@ -205,14 +222,16 @@ fn converse(
     // nowhere else, so one is opened to answer it and nothing renders it.
     let (mut console, tap) = match crate::display::console::spawn_console(&argv, &env_clear) {
         Ok(v) => v,
-        Err(e) => return UnlockOutcome::Failed(e.to_string()),
+        Err(e) => {
+            return Conversation {
+                outcome: UnlockOutcome::Failed(e.to_string()),
+                output: String::new(),
+            }
+        }
     };
 
     let mut answerer = Answerer::new(password);
-    // ssh writes its diagnostics to the PTY's merged output stream. Keep a bounded copy
-    // so a failed login leaves the reason in the device log without retaining the secret
-    // that xmux writes only to the PTY input.
-    let mut diagnostic = Vec::new();
+    let mut output = Vec::new();
     let mut deadline = Instant::now() + idle;
     // An ending that KILLS the child still waits for it, so a login the user walked away
     // from leaves no process behind for the rest of the run.
@@ -224,8 +243,8 @@ fn converse(
         match tap.recv_timeout(POLL) {
             Ok(chunk) => {
                 deadline = Instant::now() + idle;
-                let remaining = DIAGNOSTIC_LIMIT.saturating_sub(diagnostic.len());
-                diagnostic.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                let remaining = OUTPUT_LIMIT.saturating_sub(output.len());
+                output.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
                 let text = String::from_utf8_lossy(&chunk);
                 if let Some(reply) = answerer.feed(&text) {
                     console.input(reply);
@@ -244,8 +263,8 @@ fn converse(
                 // still read, so a refusal is still named as one.
                 if console.has_exited() {
                     while let Ok(chunk) = tap.recv_timeout(POLL) {
-                        let remaining = DIAGNOSTIC_LIMIT.saturating_sub(diagnostic.len());
-                        diagnostic.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                        let remaining = OUTPUT_LIMIT.saturating_sub(output.len());
+                        output.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
                         answerer.feed(&String::from_utf8_lossy(&chunk));
                     }
                     break None;
@@ -261,11 +280,13 @@ fn converse(
     };
     let code = console.wait();
     let outcome = ended.unwrap_or_else(|| answerer.verdict(code));
+    let output = String::from_utf8_lossy(&output).into_owned();
+    // ssh writes its diagnostics to the same stream, so a failed login leaves the reason
+    // in the device log.
     if outcome != UnlockOutcome::Ok {
-        let stderr = String::from_utf8_lossy(&diagnostic);
-        tracing::warn!(source = %source, outcome = ?outcome, stderr = ?stderr.trim(), "login_failed");
+        tracing::warn!(source = %source, outcome = ?outcome, stderr = ?output.trim(), "login_failed");
     }
-    outcome
+    Conversation { outcome, output }
 }
 
 #[cfg(test)]
@@ -406,7 +427,7 @@ mod tests {
         );
         assert_eq!(login.source, "prod");
         assert_eq!(
-            done.await.expect("the verdict arrives"),
+            done.await.expect("the verdict arrives").outcome,
             UnlockOutcome::Ok,
             "the pane's password was typed at the prompt"
         );
@@ -436,7 +457,7 @@ mod tests {
             Duration::from_secs(60),
         );
         assert_eq!(
-            done.await.expect("the verdict arrives"),
+            done.await.expect("the verdict arrives").outcome,
             UnlockOutcome::AuthFailed
         );
         assert!(
@@ -463,7 +484,7 @@ mod tests {
             Duration::from_secs(60),
         );
         assert_eq!(
-            done.await.expect("the verdict arrives"),
+            done.await.expect("the verdict arrives").outcome,
             UnlockOutcome::Failed("the server asked for a password".into())
         );
     }
@@ -487,7 +508,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         login.cancel();
         assert_eq!(
-            done.await.expect("the verdict arrives"),
+            done.await.expect("the verdict arrives").outcome,
             UnlockOutcome::Cancelled
         );
     }
@@ -510,7 +531,7 @@ mod tests {
             Duration::from_millis(300),
         );
         assert_eq!(
-            done.await.expect("the verdict arrives"),
+            done.await.expect("the verdict arrives").outcome,
             UnlockOutcome::Timeout
         );
     }
@@ -551,7 +572,7 @@ mod tests {
             Duration::from_secs(30),
         );
         assert_eq!(
-            done.await.expect("the verdict arrives"),
+            done.await.expect("the verdict arrives").outcome,
             UnlockOutcome::Ok,
             "the submitted address reaches the host the name does not"
         );
