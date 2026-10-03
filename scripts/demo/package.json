@@ -1,0 +1,10 @@
+{
+  "name": "xmux-demo-render",
+  "private": true,
+  "type": "module",
+  "description": "Renders the README demo GIFs from the recordings make-gifs.sh produces",
+  "dependencies": {
+    "@xterm/xterm": "6.0.0",
+    "playwright": "1.63.0"
+  }
+}

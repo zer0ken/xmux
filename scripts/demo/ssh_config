@@ -1,0 +1,11 @@
+Host gpu-01
+  User dev
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  LogLevel ERROR
+
+Host web-01
+  User dev
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  LogLevel ERROR
