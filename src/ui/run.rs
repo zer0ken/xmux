@@ -17,7 +17,9 @@ pub fn dump_switcher(
 }
 
 /// Renders the nav-focused view with the selected host's live grid, when one
-/// exists, to an off-screen backend and flattens it.
+/// exists, to an off-screen backend and flattens it. A headless `dump` therefore
+/// reflects the same screen the main draw produces, including the live terminal
+/// grid, without a real terminal.
 pub fn dump_screen(
     switcher: &mut Switcher,
     grid: Option<&crate::display::grid::Grid>,
@@ -48,6 +50,7 @@ pub fn dump_screen(
     flatten_buffer(term.backend().buffer())
 }
 
+/// Flattens a rendered buffer to text (one trimmed line per row).
 fn flatten_buffer(buf: &ratatui::buffer::Buffer) -> String {
     let mut out = String::new();
     for y in 0..buf.area.height {
@@ -89,6 +92,8 @@ mod tests {
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
         let out = dump_switcher(&mut sw, &state, 100, 30);
+        // The dump renders the full screen (tree and hint bar); at rest the bar shows the
+        // prefix and collapse button.
         assert!(out.contains("editor"));
         assert!(out.contains("C-g"), "hint bar prefix present:\n{out}");
     }
@@ -99,6 +104,8 @@ mod tests {
         let mut sw = Switcher::new(&mut state);
         let mut grid = crate::display::grid::Grid::new(30, 100);
         grid.feed(b"LIVEGRID");
+        // A dump with a live grid includes both the tree and the grid content (the
+        // terminal view), so a headless `dump` reflects the live grid.
         let out = dump_screen(&mut sw, Some(&grid), 100, 30, &state);
         assert!(out.contains("editor"), "tree still rendered:\n{out}");
         assert!(
