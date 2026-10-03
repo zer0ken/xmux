@@ -4,11 +4,6 @@ English · [한국어](README.ko.md)
 
 *A cross-host terminal-multiplexer switcher.*
 
-![Two terminals recorded side by side at the same typing speed. On the left,
-ssh gpu-01, tmux ls and tmux attach reach a remote tmux session in 7.1
-seconds; on the right, xmux selects the same session from its nav list in 2.1
-seconds.](docs/assets/xmux-demo.gif)
-
 xmux is a persistent, terminal-owning supervisor written in Rust. It owns the
 terminal you launch it in, keeps its live mux attachments running, and renders
 a split view: a **nav list** of every reachable session on the left, the
@@ -27,9 +22,10 @@ xmux is built for people who:
   - xmux is not an alternative to tmux. It only makes getting to your tmux
     sessions simpler.
 
-![The xmux split view: a nav list of psmux sessions on this machine and tmux
-sessions inside a WSL distribution, with the selected session's terminal view
-filling the right side.](docs/assets/xmux.png)
+![Two terminals recorded side by side at the same typing speed. On the left,
+ssh gpu-01, tmux ls and tmux attach reach a remote tmux session in 7.1
+seconds; on the right, xmux selects the same session from its nav list in 2.1
+seconds.](docs/assets/xmux-demo.gif)
 
 - **Every session in one list.** Sessions on this machine, on its WSL
   distributions, and on every ssh host it can reach, side by side.
@@ -39,6 +35,26 @@ filling the right side.](docs/assets/xmux.png)
   this box already reaches; each host's mux is detected from what it runs.
 - **Scriptable.** Every running instance takes commands over a local control
   socket.
+
+**Switch sessions**
+
+![Moving down one card, then jumping to sessions 5 and 3 by number; the terminal
+view follows each selection.](docs/assets/xmux-nav-switch.gif)
+
+**Resize the nav**
+
+![Holding prefix Ctrl-→ widens the nav one column per press, and Ctrl-← narrows
+it back.](docs/assets/xmux-nav-resize.gif)
+
+**Move the nav**
+
+![Each prefix p moves the nav to the next side of the terminal view: top, right,
+bottom, then back to the left.](docs/assets/xmux-nav-move.gif)
+
+**Auto-hide the nav**
+
+![With auto-hide on, focusing the terminal view hides the nav and gives the
+terminal the full width; prefix Tab brings the nav back.](docs/assets/xmux-nav-autohide.gif)
 
 ## Quick start
 
@@ -157,26 +173,6 @@ The nav list fills the left side; the terminal view on the right shows the
 selected session's live grid. Keyboard focus is on one region at a time.
 
 ## Keys
-
-**Switch sessions**
-
-![Moving down one card, then jumping to sessions 5 and 3 by number; the terminal
-view follows each selection.](docs/assets/xmux-nav-switch.gif)
-
-**Resize the nav**
-
-![Holding prefix Ctrl-→ widens the nav one column per press, and Ctrl-← narrows
-it back.](docs/assets/xmux-nav-resize.gif)
-
-**Move the nav**
-
-![Each prefix p moves the nav to the next side of the terminal view: top, right,
-bottom, then back to the left.](docs/assets/xmux-nav-move.gif)
-
-**Auto-hide the nav**
-
-![With auto-hide on, focusing the terminal view hides the nav and gives the
-terminal the full width; prefix Tab brings the nav back.](docs/assets/xmux-nav-autohide.gif)
 
 In the nav list:
 
