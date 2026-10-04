@@ -1015,20 +1015,24 @@ pub fn login_defaults(
     config_text: &str,
     local_user: &str,
 ) -> crate::provision::env::LoginDefaults {
-    let configured = effective
-        .cloned()
-        .unwrap_or_else(|| stanza_login(config_text, alias));
+    let stanza = stanza_login(config_text, alias);
+    let configured = effective.cloned().unwrap_or_else(|| stanza.clone());
     let configured_address = configured.address;
     let address_from_ssh = configured_address
         .as_ref()
-        .is_some_and(|address| address != alias || provider_address.is_none());
+        .is_some_and(|address| address != alias)
+        || stanza.address.is_some();
     let address = configured_address
         .filter(|address| address != alias || provider_address.is_none())
         .or_else(|| provider_address.map(str::to_string))
         .unwrap_or_else(|| alias.to_string());
-    let port_from_ssh = configured.port.is_some();
+    let port_from_ssh = configured.port.is_some_and(|port| port != 22) || stanza.port.is_some();
     let port = configured.port.unwrap_or(22).to_string();
-    let user_from_ssh = configured.user.is_some();
+    let user_from_ssh = configured
+        .user
+        .as_ref()
+        .is_some_and(|user| user != local_user)
+        || stanza.user.is_some();
     let user = configured.user.unwrap_or_else(|| local_user.to_string());
     crate::provision::env::LoginDefaults {
         address: crate::provision::env::LoginValue {
@@ -1259,7 +1263,20 @@ mod tests {
         assert_eq!(defaults.username.value, "local-user");
         let defaults = login_defaults("prod", None, Some(&effective), "", "local-user");
         assert_eq!(defaults.address.value, "prod");
-        assert_eq!(defaults.address.provenance, "from ssh config");
+        assert_eq!(defaults.address.provenance, "host name");
+    }
+
+    #[test]
+    fn effective_ssh_defaults_do_not_claim_an_explicit_configuration() {
+        let effective = crate::transport::Login {
+            address: Some("prod".into()),
+            port: Some(22),
+            user: Some("local-user".into()),
+        };
+        let defaults = login_defaults("prod", None, Some(&effective), "", "local-user");
+        assert_eq!(defaults.address.provenance, "host name");
+        assert_eq!(defaults.port.provenance, "default");
+        assert_eq!(defaults.username.provenance, "local account");
     }
     use crate::model::NavPosition;
     use std::io::Write;

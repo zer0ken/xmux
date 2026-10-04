@@ -250,7 +250,28 @@ impl Switcher {
     }
 
     pub(super) fn update_filter_label(&self, state: &mut crate::state::State) {
-        let matches = crate::ui::tree::filter_groups(&state.groups, &state.filter)
+        let normally_visible = if self.hide_unreachable {
+            crate::ui::tree::drop_hidden_unreachable(
+                &state.groups,
+                &state.scanning,
+                &state.logged_in,
+                "",
+            )
+        } else {
+            state.groups.clone()
+        };
+        let filter_visible = if self.hide_unreachable {
+            crate::ui::tree::drop_hidden_unreachable(
+                &state.groups,
+                &state.scanning,
+                &state.logged_in,
+                &state.filter,
+            )
+        } else {
+            state.groups.clone()
+        };
+        let filtered = crate::ui::tree::filter_groups(&filter_visible, &state.filter);
+        let matches = filtered
             .iter()
             .map(|group| {
                 if group.err.is_some() || group.sessions.is_empty() {
@@ -261,15 +282,9 @@ impl Switcher {
             })
             .sum::<usize>();
         let hidden = if self.hide_unreachable {
-            state
-                .groups
+            filtered
                 .iter()
-                .filter(|group| {
-                    group.err.is_some()
-                        && !state.scanning.contains(&group.source)
-                        && group.failure() == Some(crate::model::FailureKind::Unreachable)
-                        && crate::ui::tree::fuzzy_match(&state.filter, &group.source)
-                })
+                .filter(|group| !normally_visible.iter().any(|g| g.source == group.source))
                 .count()
         } else {
             0

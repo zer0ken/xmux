@@ -39,7 +39,7 @@ mod tests {
             crate::ui::chrome::BLOCK_MARK.chars().next().unwrap(),
             crate::ui::chrome::UNREACHABLE_MARK.chars().next().unwrap(),
             crate::ui::chrome::LIST_FAILED_MARK.chars().next().unwrap(),
-            '…',
+            crate::ui::switcher::MIDDLE_ELLIPSIS,
         ];
         for glyph in persistent
             .into_iter()

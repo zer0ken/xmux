@@ -273,13 +273,35 @@ pub(crate) fn help_lines(
 /// The hint-bar input line split into its parts: the feature head (the bracketed
 /// name and the guide text, `[filter] filter sessions: `), the buffer before the
 /// caret, the char under it (or a trailing space at end of line), and the buffer
-/// after it. The buffer is WINDOWED to `width`: only as many cells as the bar can
-/// spare after the head show, and the window always keeps the caret (and the char
-/// under it) on screen, so the edit position never scrolls off as the buffer
-/// outgrows the bar.
+/// after it. Optional guide segments give way before the buffer, which is WINDOWED
+/// to the remaining `width`. The window always keeps the caret and the char under it
+/// on screen, so the edit position never scrolls off as the buffer outgrows the bar.
 fn input_segments(input: &Input, width: u16) -> (String, String, String, String, String) {
     let title = format!("[{}]", input_title(input.mode));
-    let guide = format!(" {}: ", input.label.trim());
+    let label = input.label.trim();
+    let parts: Vec<&str> = label.split(" · ").collect();
+    let mut labels = vec![label.to_string()];
+    if parts.len() > 2 {
+        labels.push(parts[..2].join(" · "));
+    }
+    if parts.len() > 1 {
+        labels.push(parts[0].to_string());
+    }
+    labels.push(input_title(input.mode).to_string());
+    labels.push(String::new());
+    labels.dedup();
+    let reserve = 2usize.min(width as usize);
+    let guide = labels
+        .into_iter()
+        .map(|label| {
+            if label.is_empty() {
+                " ".to_string()
+            } else {
+                format!(" {label}: ")
+            }
+        })
+        .find(|guide| title.chars().count() + guide.chars().count() + reserve <= width as usize)
+        .unwrap_or_else(|| " ".to_string());
     let head_w = title.chars().count() + guide.chars().count();
     // Cells the buffer area can use; never 0, so the caret stays on screen however
     // narrow the bar gets. A block caret at END of buffer needs its own cell past the

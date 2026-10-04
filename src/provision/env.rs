@@ -52,9 +52,21 @@ impl LoginDefaults {
             },
             username: LoginValue {
                 value: String::new(),
-                provenance: "local account",
+                provenance: "",
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod login_defaults_tests {
+    use super::*;
+
+    #[test]
+    fn fallback_does_not_name_a_source_for_an_empty_username() {
+        let defaults = LoginDefaults::fallback("prod");
+        assert!(defaults.username.value.is_empty());
+        assert!(defaults.username.provenance.is_empty());
     }
 }
 /// Everything a config resolution decides about WHICH sources exist.

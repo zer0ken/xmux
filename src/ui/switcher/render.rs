@@ -45,6 +45,7 @@ pub(super) fn hint_bar_rect(nav_local: Rect, area: Rect, hint_bar_h: u16, floati
 /// absorbed into the inverted row's left edge - the mark vanishes exactly where it is
 /// needed. An outline keeps its silhouette either way round.
 pub(crate) const SELECTED_MARK: &str = "\u{276f}";
+pub(crate) const MIDDLE_ELLIPSIS: char = '…';
 
 const MIN_SCREEN_WIDTH: u16 = 24;
 const MIN_SCREEN_HEIGHT: u16 = 4;
@@ -54,6 +55,7 @@ struct NavRowPaint<'a> {
     layout: ViewLayout,
     filter: &'a str,
     palette: &'a palette::Palette,
+    reserve_state_word: bool,
 }
 
 fn middle_ellipsize(text: &str, width: usize) -> String {
@@ -64,7 +66,7 @@ fn middle_ellipsize(text: &str, width: usize) -> String {
         return String::new();
     }
     if width == 1 {
-        return "…".into();
+        return MIDDLE_ELLIPSIS.into();
     }
     let chars: Vec<char> = text.chars().collect();
     let front_budget = (width - 1).div_ceil(2);
@@ -89,7 +91,21 @@ fn middle_ellipsize(text: &str, width: usize) -> String {
         back.insert(0, *ch);
         used += cw;
     }
-    format!("{front}…{back}")
+    format!("{front}{MIDDLE_ELLIPSIS}{back}")
+}
+
+fn remaining_filter(prefix: &str, filter: &str) -> String {
+    let lower_filter = filter.to_lowercase();
+    let mut wanted = lower_filter.chars().peekable();
+    for ch in prefix.chars() {
+        if wanted
+            .peek()
+            .is_some_and(|next| ch.to_lowercase().next() == Some(*next))
+        {
+            wanted.next();
+        }
+    }
+    wanted.collect()
 }
 
 fn highlighted(text: String, filter: &str, style: Style) -> Vec<Span<'static>> {
@@ -620,6 +636,7 @@ impl Switcher {
                     layout: plan.layout,
                     filter: &state.filter,
                     palette,
+                    reserve_state_word: false,
                 },
             );
             frame.render_widget(Paragraph::new(lines), rect);
@@ -803,6 +820,7 @@ impl Switcher {
                 layout: ViewLayout::Band,
                 filter: "",
                 palette,
+                reserve_state_word: true,
             },
         );
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
@@ -854,6 +872,7 @@ impl Switcher {
             layout,
             filter,
             palette,
+            reserve_state_word,
         } = paint;
         let row = &self.rows[i];
         let selected = self.selected == i;
@@ -897,7 +916,7 @@ impl Switcher {
                 ViewLayout::Column => width.saturating_sub(title_w.saturating_add(1)),
                 ViewLayout::Band => 0,
             };
-            let mut spans = highlighted(title, filter, header);
+            let mut spans = vec![Span::styled(title, header)];
             if rule_w > 0 {
                 spans.push(Span::styled(
                     format!(" {}", BAND_RULE.repeat(rule_w as usize)),
@@ -908,14 +927,10 @@ impl Switcher {
             return vec![Line::from(spans)];
         }
 
-        // Host-state card: a settled host (reachable empty or unreachable) and a
-        // scanning host read the same way, one row: the host name, the state mark that
-        // rides it, the confirmed mux, and - while the host is still
-        // scanning - ONE spinner trailing the line. The spinner always stands in that
-        // one trailing place whether or not the mux is already known, so every scanning
-        // card reads as the same thing loading. The mux is accent whenever it is shown:
-        // flatten emits it only once confirmed, so a card never shows a mux it is not
-        // sure of, and the mux it shows is a settled fact even while its sessions stream.
+        // Host-state cards keep one fixed glyph slot after the host/mux identity. The
+        // selected card adds its state word after that slot. Column measurement reserves
+        // the word on every host card, so moving the selection changes paint but never
+        // moves the columns.
         if let RowRef::Host {
             unreachable,
             blocked,
@@ -955,7 +970,11 @@ impl Switcher {
             } else {
                 format!("{host}/{mux}")
             };
-            let suffix_w = 2 + if selected { word.len() + 1 } else { 0 };
+            let suffix_w = 2 + if selected || reserve_state_word {
+                word.len() + 1
+            } else {
+                0
+            };
             let identity_w = if width == 0 {
                 usize::MAX
             } else {
@@ -989,7 +1008,7 @@ impl Switcher {
             line.extend(identity);
             line.push(Span::raw(" "));
             line.push(Span::styled(glyph, glyph_style));
-            if selected {
+            if selected || reserve_state_word {
                 line.push(Span::styled(
                     format!(" {word}"),
                     Style::default().fg(palette.secondary),
@@ -1008,16 +1027,25 @@ impl Switcher {
         // of the card and is painted separately; what a card holds is what a card holds
         // in either layout.
         let (_, _, sess) = context_of(row);
+        let source = match &row.reference {
+            RowRef::Session { sess } => sess.source.as_str(),
+            _ => "",
+        };
         let mut detail = address();
         let available = if width == 0 {
             usize::MAX
         } else {
             (width as usize).saturating_sub(num_w + 2)
         };
+        let session_style = if filter.is_empty() {
+            accent.add_modifier(Modifier::BOLD)
+        } else {
+            accent
+        };
         detail.extend(highlighted(
             middle_ellipsize(sess, available),
-            filter,
-            accent.add_modifier(Modifier::BOLD),
+            &remaining_filter(&format!("{source}/"), filter),
+            session_style,
         ));
         detail.push(Span::raw(" "));
         vec![Line::from(detail)]

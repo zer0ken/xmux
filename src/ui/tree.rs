@@ -292,12 +292,9 @@ fn push_session_card(rows: &mut Vec<Row>, sess: &Session, mux_of_source: &dyn Fn
     });
 }
 
-/// The status word a SETTLED host reads on its host screen. One source for the
-/// unreachable and the empty states, so the screen a user reaches from a card can
-/// never name the same state two ways. `blocked`
-/// names a failure the user can answer; it precedes `unreachable` (a blocked host is
-/// one). What it was blocked ON is not in the word: the screen's reason row carries
-/// ssh's own sentence, which says it better than a state name could.
+/// The status word a host-state card and its screen share. The specific states precede
+/// unreachable because authentication and listing failures carry their own words. The
+/// reason stays on the screen rather than in this compact state name.
 pub(crate) fn host_state_word(
     scanning: bool,
     blocked: bool,
@@ -370,9 +367,9 @@ pub(crate) fn flatten(
     // 2. Host-state cards for hosts with no session to show - sunk to the bottom band.
     for g in groups {
         let is_scanning = scanning.contains(&g.source);
-        let unreachable = g.err.is_some();
         let blocked = g.failure() == Some(crate::model::FailureKind::Blocked);
         let list_failed = g.failure() == Some(crate::model::FailureKind::ListFailed);
+        let unreachable = g.err.is_some() && !list_failed;
         if !unreachable && !g.sessions.is_empty() {
             continue;
         }
@@ -1254,7 +1251,7 @@ mod tests {
     fn host_state_word_names_the_login_state() {
         assert_eq!(host_state_word(true, false, false, false), "scanning");
         assert_eq!(host_state_word(false, true, false, true), "login needed");
-        assert_eq!(host_state_word(false, false, true, true), "list failed");
+        assert_eq!(host_state_word(false, false, true, false), "list failed");
         assert_eq!(host_state_word(false, false, false, true), "unreachable");
         assert_eq!(host_state_word(false, false, false, false), "no sessions");
     }

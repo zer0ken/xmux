@@ -53,8 +53,8 @@ pub(crate) struct Palette {
     /// scroll-overflow cue (`« n more` / `n more »`). All the quiet marks a card needs
     /// to read apart without being part of any level.
     pub decoration: Color,
-    /// In-flight and special-state marks: the scanning spinner and state glyphs.
-    /// and any `!` status character.
+    /// In-flight and actionable-state marks: the scanning spinner and login-needed
+    /// glyph.
     pub warning: Color,
     /// Failure state: error text and the refusal bar's background.
     pub error: Color,

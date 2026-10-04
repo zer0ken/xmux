@@ -355,6 +355,8 @@ mod input;
 mod mouse;
 mod render;
 #[cfg(test)]
+pub(crate) use render::MIDDLE_ELLIPSIS;
+#[cfg(test)]
 pub(crate) use render::SELECTED_MARK;
 mod side;
 

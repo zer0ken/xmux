@@ -1176,10 +1176,10 @@ async fn open_filter_reports_matches_hidden_hosts_and_bolds_matching_cells() {
     let mut h = Harness::new(Scan {
         groups: vec![
             Group {
-                source: "local".into(),
+                source: "host".into(),
                 err: None,
                 sessions: vec![Session {
-                    source: "local".into(),
+                    source: "host".into(),
                     name: "alpha".into(),
                     ..Default::default()
                 }],
@@ -1194,14 +1194,119 @@ async fn open_filter_reports_matches_hidden_hosts_and_bolds_matching_cells() {
     h.sw.hide_unreachable = true;
     h.sw.rebuild(&mut h.state);
     h.key(KeyCode::Char('/')).await;
-    h.ch('a').await;
+    h.ch('l').await;
+    h.ch('p').await;
     let hint = h.hint_bar_text();
     assert!(hint.contains("2 matches"), "match count:\n{hint}");
     assert!(hint.contains("1 hidden host"), "hidden-host count:\n{hint}");
-    assert_eq!(
-        h.nav_mod_of("a"),
-        Some(Modifier::BOLD),
-        "matching cells are bold"
+    assert!(
+        h.nav_mod_of("l")
+            .is_some_and(|m| m.contains(Modifier::BOLD)),
+        "a matching session-name cell is bold:\n{}",
+        h.nav_cards_text()
+    );
+    assert!(
+        h.nav_mod_of("a")
+            .is_some_and(|m| !m.contains(Modifier::BOLD)),
+        "a non-matching session-name cell is not bold:\n{}",
+        h.nav_cards_text()
+    );
+}
+
+#[tokio::test]
+async fn filter_highlights_the_session_part_of_the_matched_address_not_its_title() {
+    let mut h = Harness::new(Scan {
+        groups: vec![Group {
+            source: "host".into(),
+            err: None,
+            sessions: vec![Session {
+                source: "host".into(),
+                name: "alpha".into(),
+                ..Default::default()
+            }],
+        }],
+    });
+    h.key(KeyCode::Char('/')).await;
+    h.ch('h').await;
+    h.ch('a').await;
+    assert!(
+        h.nav_mod_of("h")
+            .is_some_and(|m| !m.contains(Modifier::BOLD)),
+        "section titles do not carry match emphasis:\n{}",
+        h.nav_cards_text()
+    );
+    assert!(
+        h.nav_mod_of("a")
+            .is_some_and(|m| m.contains(Modifier::BOLD)),
+        "the session character that completes the address match is bold:\n{}",
+        h.nav_cards_text()
+    );
+}
+
+#[tokio::test]
+async fn filter_input_keeps_typed_text_visible_at_supported_widths() {
+    for width in [24, 50] {
+        let mut h = Harness::new_sized(sample(), width, 20);
+        h.key(KeyCode::Char('/')).await;
+        for ch in "needle".chars() {
+            h.ch(ch).await;
+        }
+        assert!(
+            h.text().contains("needle"),
+            "counts give way before the edit buffer at width {width}:\n{}",
+            h.text()
+        );
+    }
+}
+
+#[tokio::test]
+async fn empty_filter_counts_only_visible_cards_and_no_logged_in_host_as_hidden() {
+    let mut h = Harness::new(Scan {
+        groups: vec![
+            Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![Session {
+                    source: "local".into(),
+                    name: "alpha".into(),
+                    ..Default::default()
+                }],
+            },
+            Group {
+                source: "hidden".into(),
+                err: Some("connection refused".into()),
+                sessions: vec![],
+            },
+            Group {
+                source: "kept".into(),
+                err: Some("connection refused".into()),
+                sessions: vec![],
+            },
+        ],
+    });
+    h.state.logged_in.insert("kept".into());
+    h.sw.hide_unreachable = true;
+    h.sw.rebuild(&mut h.state);
+    h.key(KeyCode::Char('/')).await;
+    let hint = h.hint_bar_text();
+    assert!(hint.contains("2 matches"), "visible-card count: {hint}");
+    assert!(hint.contains("0 hidden hosts"), "hidden-host count: {hint}");
+}
+
+#[tokio::test]
+async fn list_failure_allows_a_new_session_on_the_answering_host() {
+    let mut h = Harness::new(Scan {
+        groups: vec![Group {
+            source: "list-box:tmux".into(),
+            err: Some("invalid tmux session listing: expected value".into()),
+            sessions: vec![],
+        }],
+    });
+    h.ch('n').await;
+    assert!(h.state.is_inputting(), "new-session input opens");
+    assert!(
+        h.state.chrome.flash.is_empty(),
+        "the host is not unreachable"
     );
 }
 
@@ -5810,6 +5915,32 @@ fn the_portrait_band_flows_cards_down_then_right() {
         cells[&0].x < cells[&3].x && cells[&3].x < cells[&6].x,
         "later sources open columns to the right: {cells:?}"
     );
+}
+
+#[tokio::test]
+async fn moving_selection_does_not_reflow_host_cards_in_a_band() {
+    let scan = Scan {
+        groups: [
+            (
+                "alpha",
+                "dev@alpha: Permission denied (publickey,password).",
+            ),
+            ("bravo", "connection refused"),
+            ("charlie", "connection refused"),
+        ]
+        .into_iter()
+        .map(|(source, error)| Group {
+            source: source.into(),
+            err: Some(error.into()),
+            sessions: vec![],
+        })
+        .collect(),
+    };
+    let mut h = Harness::new_sized(scan, 60, 12);
+    assert_eq!(h.plan.layout, ViewLayout::Band);
+    let before = cells_of(&h.plan);
+    h.key(KeyCode::Down).await;
+    assert_eq!(cells_of(&h.plan), before, "selection keeps every card rect");
 }
 
 #[test]

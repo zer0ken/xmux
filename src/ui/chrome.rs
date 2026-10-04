@@ -523,9 +523,9 @@ impl Chrome {
                 }
             }
             // An EMPTY host answered - it has no session, which is itself an answer
-            // through its mux - so its screen names the pair. The two failure states
-            // answered nothing, so theirs reads the host alone unless the id names the
-            // mux, which is the name the user types for it.
+            // through its mux - so its screen names the pair. An unreachable or blocked
+            // host answered nothing, so its screen reads the host alone unless the id
+            // names the mux. A listing failure keeps the confirmed mux that answered.
             ViewScreen::Unreachable
             | ViewScreen::Login
             | ViewScreen::ListFailed
