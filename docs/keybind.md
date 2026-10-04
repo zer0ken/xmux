@@ -51,8 +51,12 @@ side pinned at runtime, else this default.
 
 The inner layout of the nav region is identical at all four placements: a right column is
 the same vertical card list as a left one, and a bottom band is the same down-then-right
-flow as a top one. Only what sits on which side of the view border flips. The status line
-stays the nav region's bottom row in all four (see below).
+flow as a top one. Only what sits on which side of the view border flips. The groups read
+the same at all four: a dim `{host}/{mux}` title with its cards indented under it, and a
+band column that continues a section repeats that title on its top row followed by `…`.
+A band one row tall writes titles and cards along that one row and scrolls sideways. The
+view border is the only line the nav draws; what is off screen is shown on it (see the
+prefix indicator below).
 
 `prefix p` moves the nav one side clockwise from where it is now - left → top → right →
 bottom - and the fifth step returns it to the default above. The choice is
@@ -128,8 +132,9 @@ nav or the terminal view holds focus.
 | `prefix q` | quit xmux (the only quit binding) |
 | `prefix ?` | toggle the keybinding help |
 | `prefix t` | toggle auto-hide-nav (focusing the screen then gives it the full width) |
+| `prefix z` | collapse or expand the nav |
 | `prefix p` | move the nav one side clockwise (left → top → right → bottom → default) |
-| `prefix h` / `prefix l` | move the view border left / right (the nav width follows the placement; the floor is just past the resting `C-g` status line) |
+| `prefix h` / `prefix l` | move the view border left / right (the nav width follows the placement; the floor fits a card with eight cells of name) |
 | `prefix Ctrl-←` / `prefix Ctrl-→` | move the view border left / right (then a bare `Ctrl-←`/`Ctrl-→` keeps resizing for a moment) |
 | `prefix Ctrl-↑` / `prefix Ctrl-↓` | move the band's view border up / down in a band layout (then a bare `Ctrl-↑`/`Ctrl-↓` keeps resizing for a moment) |
 | `prefix prefix` | send one literal prefix byte to the focused session's pane |
@@ -137,24 +142,27 @@ nav or the terminal view holds focus.
 The resize keys move the view border the way the key points, so whether the nav grows or
 shrinks follows the placement: on a left or top nav the border is the nav's far edge, so
 moving it outward grows the nav; on a right or bottom nav the border is the nav's near
-edge, so the same movement shrinks it. The width floor is just past the resting `C-g`
-status line.
+edge, so the same movement shrinks it. The width floor fits a card's indent, a two-digit
+number, and eight cells of name; a band is at least one row.
 
-The button at the far end of the resting status line collapses or expands the nav.
-Its arrows point in the direction the nav will move. A collapsed left or right nav keeps
-only enough width for the prefix, one space, and the button; a collapsed top or bottom nav
-keeps one row. Cards are not shown while collapsed, and focusing the nav by keyboard
-expands it. Auto-hide still takes the whole nav away and restores the same collapsed or
-expanded state when it returns. Drag-resizing is disabled while the nav is collapsed.
+`prefix z` collapses or expands the nav, and dragging the view border past the nav's
+minimum collapses it (dragging back out in the same drag expands it again). A collapsed
+left or right nav keeps a column just wide enough for the prefix; a collapsed top or bottom
+nav keeps only its view border row, with the prefix at its right end. Cards are not shown
+while collapsed. A click anywhere on the collapsed nav expands it, and so does focusing
+the nav by keyboard. Auto-hide still takes the whole nav away and restores the same
+collapsed or expanded state when it returns.
 
-## The status line
+## The prefix indicator
 
-The nav's bottom row is its status line, in all four placements. With the nav as a left or
-right column, or a top band, that is the lowest row the nav owns on screen; with the nav as
-  a bottom band it is the bottom row of the screen itself. At rest it shows the prefix and
-  collapse button, and stops at the view border so the terminal view keeps every row it has. In a band
-it stops at its own text instead, because it shares that row with the
-offscreen-card counts. Press the prefix and the same row widens to the whole window,
+The nav shows the prefix in one place at rest: the bottom row of a left or right column,
+and the right end of the view border row of a top or bottom band, so every row of a band
+holds cards. It is a label sized to its text, and the rest of its row stays the nav's (a
+column) or the view border's (a band, where the offscreen-card counts share the row).
+Cards off screen are shown on the view border too: a column thickens the stretch beside
+the cards on screen to `┃`, and a band writes `‹ 5` at its left end and `7 ›` before the
+prefix, counting the cards scrolled off each side.
+Press the prefix and the same row widens to the whole window,
 floating over the border and the terminal view to list the keys that prefix unlocks; it
 shrinks back when the function it started ends, or when the prefix is canceled (a
 focus switch or any mouse action: a click, a wheel, a drag - a prefix waits for the
@@ -172,7 +180,7 @@ bar blinks until the key comes up.
 
 Only the paint moves, never the layout, so arming the prefix never shifts a card.
 
-With the nav auto-hidden the mux owns every row, status line included, until a prefix
+With the nav auto-hidden the mux owns every row, prefix indicator included, until a prefix
 interaction starts: then the nav comes back for the moment it is needed, so a jump can
 read the card numbers, and it hides again when the interaction ends. The bar also floats
 over the bottom of the window for the two things that must be seen the moment they
@@ -196,6 +204,10 @@ nav. With the nav on the left or above, that is `prefix →` / `prefix ↓` for 
 and `prefix ←` / `prefix ↑` for the nav; with the nav on the right or below the whole pair
 flips (`prefix ←` / `prefix ↑` name the terminal, `prefix →` / `prefix ↓` the nav). An
 arrow naming the view that already has focus does nothing.
+
+The view border's colour shows which view holds focus, and the selected card agrees: it is
+reverse video while the nav holds focus and keeps only its `❯` mark while the terminal view
+does.
 
 When the terminal view has focus, every key that is not a prefix chord is
 forwarded raw to the session's active pane, so programs running inside the mux
@@ -227,9 +239,11 @@ place of the split interface.
 |---|---|
 | left-click a card | select that card (nav focused) |
 | left-click a view | focus that view |
-| left-click `<<`, `>>`, `▲`, or `▼` | collapse or expand the nav |
+| left-click a collapsed nav | expand the nav |
+| left-click `‹ 5` or `7 ›` on a band's view border | select the nearest card scrolled off that side |
 | wheel over the nav | move the selection (nav focused) |
-| drag the view border | resize the expanded nav (at any of the four borders: the drag mirrors the placement, measuring from the near edge) |
+| drag the view border | resize the expanded nav (at any of the four borders: the drag mirrors the placement, measuring from the near edge); past the minimum it collapses the nav |
+
 | drag a modal's border | move the modal |
 
 There is no context menu: every action a right-click could offer is either a

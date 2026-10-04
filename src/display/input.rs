@@ -121,7 +121,17 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
+                // prefix z → collapse or expand the nav; same shape as prefix t.
+                if b0 == b'z' {
+                    if !fwd.is_empty() {
+                        out.push(Action::Forward(std::mem::take(&mut fwd)));
+                    }
+                    out.push(Action::ToggleCollapse);
+                    i += 1;
+                    continue;
+                }
                 // prefix p → cycle the nav position; same shape: applied on the input path,
+
                 // terminal-view focus kept, the rest of the read still forwards.
                 if b0 == b'p' {
                     if !fwd.is_empty() {
@@ -603,9 +613,10 @@ mod tests {
         assert!(!t.is_armed(), "the doubled-prefix consumes ready");
         // The default prefix's byte is ordinary input to a differently-configured app.
         assert_eq!(fwd(&t.feed(&[0x07], NavPosition::Left)), vec![0x07]);
-        // `z` is not a command key (unlike q/?/h/l/t/n/R/x/r), so it is swallowed.
+        // `y` is not a command key (unlike q/?/h/l/t/z/n/R/x/r), so it is swallowed.
         t.feed(&[0x02], NavPosition::Left);
-        let out = t.feed(b"z", NavPosition::Left);
+        let out = t.feed(b"y", NavPosition::Left);
+
         assert!(
             out.is_empty(),
             "unrecognised follow-up is swallowed: {out:?}"

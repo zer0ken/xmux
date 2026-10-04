@@ -403,7 +403,7 @@ fn reconciled_nav_width_hides_only_when_focused_and_enabled_and_no_prefix() {
     );
     assert_eq!(
         reconciled_nav_width(false, false, false, 48, true, "C-g"),
-        7
+        5
     );
     assert_eq!(
         reconciled_nav_width(true, true, false, 48, true, "C-g"),
@@ -447,24 +447,25 @@ fn spinner_frame_advances_with_wall_clock() {
 
 #[test]
 fn nav_width_adjust_clamps() {
-    // The floor holds the resting prefix, a separating cell, and the collapse button.
+    // The floor holds a card's indent, a two-digit number, and eight cells of name.
     let min = nav_width_min("C-g");
     assert_eq!(adjust_nav_width(48, 1, "C-g"), 49);
     assert_eq!(adjust_nav_width(48, -1, "C-g"), 47);
     assert_eq!(
         adjust_nav_width(min, -1, "C-g"),
         min,
-        "clamped at the prefix floor"
+        "clamped at the card floor"
     );
     assert_eq!(
         adjust_nav_width(NAV_WIDTH_MAX, 1, "C-g"),
         NAV_WIDTH_MAX,
         "clamped at max"
     );
+    assert_eq!(nav_width_min("C-g"), 14);
     assert_eq!(
-        nav_width_min("C-Space"),
-        11,
-        "a wider prefix raises the floor"
+        nav_width_min("C-Space-Shift-Alt-Ctrl"),
+        25,
+        "a prefix wider than the card floor raises the floor"
     );
 }
 
@@ -3378,62 +3379,6 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
 }
 
 #[test]
-fn collapse_button_click_toggles_without_focus_or_drag() {
-    use crate::ui::switcher::{collapse_button_rect, compute_regions, Scan, Switcher};
-
-    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
-    let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
-    rt.model.state = state;
-    rt.model.switcher = switcher;
-    rt.cols = 140;
-    rt.body_rows = 29;
-    sync_test_render_plan(&mut rt);
-    let area = ratatui::layout::Rect::new(0, 0, 140, 30);
-    let regions = compute_regions(area, rt.nav_size(), 1);
-    let button = collapse_button_rect(regions.hint_bar, rt.model.nav_position, false);
-    assert_eq!(rt.model.render_plan.collapse_button, button);
-    let press = crate::display::mouse::MouseEvent {
-        cb: 0,
-        col: button.x + button.width,
-        row: button.y + 1,
-        pressed: true,
-    };
-    let focus_before = rt.model.state.focus;
-    let mut focus_toggle = false;
-    let mut wheel = false;
-    assert!(rt.handle_mouse_event(&press, &Selection::default(), &mut focus_toggle, &mut wheel,));
-    assert!(rt.model.nav_collapsed, "the button collapses the nav");
-    assert_eq!(
-        rt.model.state.focus, focus_before,
-        "the button does not move focus"
-    );
-    assert!(!focus_toggle);
-    assert!(!rt.model.mouse_state.dragging_view_border);
-
-    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
-    // The draw is frame-gated; move the last draw out of the gate so this frame paints.
-    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
-    rt.prepare_and_draw(&mut term);
-    let regions = compute_regions(area, rt.nav_size(), 1);
-    let button = collapse_button_rect(regions.hint_bar, rt.model.nav_position, true);
-    assert_eq!(rt.model.render_plan.collapse_button, button);
-    let press = crate::display::mouse::MouseEvent {
-        cb: 0,
-        col: button.x + button.width,
-        row: button.y + 1,
-        pressed: true,
-    };
-    assert!(rt.handle_mouse_event(&press, &Selection::default(), &mut focus_toggle, &mut wheel,));
-    assert!(!rt.model.nav_collapsed, "the button expands the nav");
-    assert_eq!(rt.model.state.focus, focus_before);
-    assert!(!focus_toggle);
-    assert!(!rt.model.mouse_state.dragging_view_border);
-    rt.prepare_and_draw(&mut term);
-    assert_eq!(rt.model.nav_width, rt.model.nav_width_natural);
-}
-
-#[test]
 fn focusing_the_nav_expands_a_collapsed_nav() {
     use crate::ui::switcher::{Scan, Switcher};
     use ratatui::backend::TestBackend;
@@ -5128,4 +5073,130 @@ fn clear_screen_wipes_the_screen_and_repaints_every_cell() {
     term.draw(|f| f.render_widget(Paragraph::new("y"), f.area()))
         .unwrap();
     term.backend().assert_buffer_lines(["y   ", "    "]);
+}
+
+fn collapse_rt(position: crate::ui::switcher::NavPosition) -> Runtime {
+    use crate::ui::switcher::{Scan, Switcher};
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.cols = 140;
+    rt.body_rows = 29;
+    rt.model.nav_position = position;
+    rt.model.nav_position_pinned = Some(position);
+    sync_test_render_plan(&mut rt);
+    rt
+}
+
+const EVERY_POSITION: [crate::ui::switcher::NavPosition; 4] = [
+    crate::ui::switcher::NavPosition::Left,
+    crate::ui::switcher::NavPosition::Right,
+    crate::ui::switcher::NavPosition::Top,
+    crate::ui::switcher::NavPosition::Bottom,
+];
+
+fn mouse(cb: u16, col: u16, row: u16, pressed: bool) -> crate::display::mouse::MouseEvent {
+    crate::display::mouse::MouseEvent {
+        cb,
+        col,
+        row,
+        pressed,
+    }
+}
+
+#[test]
+fn prefix_z_toggles_the_collapse_from_either_view() {
+    let mut rt = collapse_rt(crate::ui::switcher::NavPosition::Left);
+    rt.handle_stdin_bytes(b"\x07z", &Selection::default());
+    assert!(rt.model.nav_collapsed, "prefix z collapses from nav focus");
+    rt.handle_stdin_bytes(b"\x07z", &Selection::default());
+    assert!(!rt.model.nav_collapsed, "a second prefix z expands");
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    let out = rt.handle_stdin_bytes(b"\x07z", &Selection::default());
+    assert!(
+        rt.model.nav_collapsed,
+        "prefix z collapses from terminal focus"
+    );
+    assert!(!out.focus_nav, "the terminal keeps the focus");
+}
+
+#[test]
+fn dragging_the_seam_past_the_minimum_collapses_the_nav_at_every_position() {
+    use crate::ui::switcher::NavPosition;
+    let sel = Selection::default();
+    for position in EVERY_POSITION {
+        let mut rt = collapse_rt(position);
+        let seam = rt.model.render_plan.regions.view_border;
+        rt.handle_mouse_event(
+            &mouse(0, seam.x + 1, seam.y + 1, true),
+            &sel,
+            &mut false,
+            &mut false,
+        );
+        assert!(
+            rt.model.mouse_state.dragging_view_border,
+            "{position:?}: the press grabs the seam"
+        );
+        let (col, row) = match position {
+            NavPosition::Left => (1, seam.y + 1),
+            NavPosition::Right => (140, seam.y + 1),
+            NavPosition::Top => (seam.x + 1, 1),
+            NavPosition::Bottom => (seam.x + 1, 30),
+        };
+        rt.handle_mouse_event(&mouse(0x20, col, row, true), &sel, &mut false, &mut false);
+        assert!(
+            rt.model.nav_collapsed,
+            "{position:?}: dragging past the minimum collapses the nav"
+        );
+        let (col, row) = match position {
+            NavPosition::Left => (61, seam.y + 1),
+            NavPosition::Right => (80, seam.y + 1),
+            NavPosition::Top => (seam.x + 1, 11),
+            NavPosition::Bottom => (seam.x + 1, 20),
+        };
+        rt.handle_mouse_event(&mouse(0x20, col, row, true), &sel, &mut false, &mut false);
+        assert!(
+            !rt.model.nav_collapsed,
+            "{position:?}: dragging back out expands it within the same drag"
+        );
+        rt.handle_mouse_event(&mouse(0, col, row, false), &sel, &mut false, &mut false);
+        assert!(!rt.model.mouse_state.dragging_view_border);
+    }
+}
+
+#[test]
+fn a_click_anywhere_on_a_collapsed_nav_expands_it_at_every_position() {
+    use crate::ui::switcher::NavPosition;
+    for position in EVERY_POSITION {
+        let mut rt = collapse_rt(position);
+        rt.model.nav_collapsed = true;
+        rt.model.applied_nav_collapsed = true;
+        rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
+        sync_test_render_plan(&mut rt);
+        let (col, row) = match position {
+            NavPosition::Left | NavPosition::Top => (1, 1),
+            NavPosition::Right => (140, 1),
+            NavPosition::Bottom => (1, 30),
+        };
+        let focus_before = rt.model.state.focus;
+        let mut focus_toggle = false;
+        rt.handle_mouse_event(
+            &mouse(0, col, row, true),
+            &Selection::default(),
+            &mut focus_toggle,
+            &mut false,
+        );
+        assert!(!rt.model.nav_collapsed, "{position:?}: the click expands");
+        assert_eq!(rt.model.state.focus, focus_before, "{position:?}");
+        assert!(!focus_toggle, "{position:?}: the click is not a focus move");
+        assert!(
+            !rt.model.mouse_state.dragging_view_border,
+            "{position:?}: the click is not a drag"
+        );
+    }
 }

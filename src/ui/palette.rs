@@ -39,19 +39,19 @@ pub(crate) struct Palette {
     /// card accent, so the divider is tuned independently of the selection mark and
     /// session name.
     pub primary: Color,
-    /// The host/mux text wherever it appears: the host half of a host-state card and
-    /// the `{host}/{mux}` section title above a group of session cards. The group
-    /// identity reads in one colour, brighter than the furniture that surrounds it.
+    /// The host/mux text of a host-state card and the state word beside it. A section
+    /// title over a group of session cards reads dim instead, in `decoration`, so the
+    /// group label stays below the sessions it names.
     pub secondary: Color,
     /// The single accent: the session name, the selection mark, the popup titles, and
     /// the view border's drag-hover cue all share it, so "interactive / current" is
     /// one colour everywhere. Painted on the CARD / TERMINAL background, so it
     /// follows the theme.
     pub accent: Color,
-    /// Content furniture: the card number, the `/` separator, the section-title rule,
-    /// the band/column rules, the scrollbar thumb, the popup borders, and the
-    /// scroll-overflow cue (`« n more` / `n more »`). All the quiet marks a card needs
-    /// to read apart without being part of any level.
+    /// Content furniture: the card number, the `/` separator, the section title, the
+    /// band/column rules, the popup borders, and a band's overflow counts (`‹ n` /
+    /// `n ›`). All the quiet marks a card needs to read apart without being part of any
+    /// level.
     pub decoration: Color,
     /// In-flight and actionable-state marks: the scanning spinner and login-needed
     /// glyph.

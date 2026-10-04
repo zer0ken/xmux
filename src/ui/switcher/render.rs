@@ -1,12 +1,13 @@
 use super::*;
 
 use ratatui::style::Modifier;
-use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::Paragraph;
 
 use crate::ui::palette;
 
-/// Where the hint bar actually paints. At rest it is the nav-local rect
-/// `compute_regions` derived (empty when the nav is hidden, so the mux keeps every row).
+/// Where the hint bar actually paints. At rest it is the prefix indicator's rect: a
+/// column's bottom row, or the right end of a band's view border row (empty when the nav
+/// is hidden, so the mux keeps every row).
 /// Floating, it spans the whole window width. A multi-row bar grows down from a collapsed
 /// top nav and up from every other visible edge. Only the paint moves; the layout is
 /// untouched, so nothing reflows.
@@ -52,7 +53,6 @@ const MIN_SCREEN_HEIGHT: u16 = 4;
 
 struct NavRowPaint<'a> {
     width: u16,
-    layout: ViewLayout,
     filter: &'a str,
     palette: &'a palette::Palette,
     reserve_state_word: bool,
@@ -134,58 +134,49 @@ fn highlighted(text: String, filter: &str, style: Style) -> Vec<Span<'static>> {
         .collect()
 }
 
-/// Splits a nav region into `(cards, scrollbar strip)`. `needed` false gives the whole
-/// region to the cards and an empty strip, so a nav that fits spends nothing on furniture.
-/// The strip is the bottom ROW when the cards scroll sideways (the portrait column flow)
-/// and the right COLUMN when they scroll down (the side list). Reserving instead of
-/// overlaying is what keeps the thumb out of the selected card's inverted rect.
-fn reserve_bar(area: Rect, needed: bool, horizontal: bool) -> (Rect, Rect) {
-    if !needed {
-        return (area, Rect::default());
+/// The thick segment of a side nav's seam: where the cards on screen sit in the whole
+/// list, as a scrollbar thumb would, drawn on the seam rather than in a column of its own,
+/// so the cards keep the nav's full width. Counted in cards over the placement the cards
+/// were painted with. Empty when everything fits.
+fn seam_thumb(track: Rect, total: usize, offset: usize, visible: usize) -> Rect {
+    if track.height == 0 || total == 0 || visible >= total {
+        return Rect::default();
     }
-    if horizontal {
-        if area.height < 2 {
-            return (area, Rect::default());
-        }
-        let cards = Rect {
-            height: area.height - 1,
-            ..area
-        };
-        let bar = Rect {
-            y: area.y + area.height - 1,
-            height: 1,
-            ..area
-        };
-        (cards, bar)
+    let t = track.height as usize;
+    let len = (t * visible / total).clamp(1, t);
+    let y = if offset + visible >= total {
+        t - len
     } else {
-        if area.width < 2 {
-            return (area, Rect::default());
-        }
-        let cards = Rect {
-            width: area.width - 1,
-            ..area
-        };
-        let bar = Rect {
-            x: area.x + area.width - 1,
-            width: 1,
-            ..area
-        };
-        (cards, bar)
+        (t * offset / total).min(t - len)
+    };
+    Rect {
+        y: track.y + y as u16,
+        height: len as u16,
+        ..track
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct ScrollbarPlan {
-    area: Rect,
-    content_len: usize,
-    position: usize,
-    viewport_len: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NavRule {
     Horizontal(Rect),
     Vertical(Rect),
+}
+
+/// A band's count of the cards scrolled off one side, written on the seam: `‹ 5` at the
+/// left end and `7 ›` at the right end, before the prefix. `target` is the hidden card
+/// nearest the visible ones, which a click on the count selects so the band scrolls to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OverflowMark {
+    rect: Rect,
+    count: usize,
+    left: bool,
+    target: Option<usize>,
+}
+
+impl OverflowMark {
+    fn width(count: usize) -> u16 {
+        count.to_string().len() as u16 + 2
+    }
 }
 
 /// Immutable geometry for one rendered frame. The app retains the latest plan so paint
@@ -202,12 +193,15 @@ pub struct RenderPlan {
     pub nav_col_offset: usize,
     pub popup_rect: Rect,
     hint_bar_rect: Rect,
-    pub collapse_button: Rect,
-    hidden_counts: Option<(usize, usize)>,
-    hidden_counts_rect: Rect,
-    connectors: Vec<Rect>,
+    /// The cells a click on a collapsed nav expands it from: the whole collapsed column
+    /// with its seam, or a collapsed band's seam row. Empty while the nav is expanded.
+    pub expand_area: Rect,
+    overflow_marks: Vec<OverflowMark>,
+    /// The repeated title on the top row of each band column that continues a section,
+    /// paired with the title's row index.
+    title_repeats: Vec<(usize, Rect)>,
     nav_rule: Option<NavRule>,
-    scrollbar: ScrollbarPlan,
+    seam_thumb: Rect,
     floating_hint_bar: bool,
     fill_hint_bar_row: bool,
     pub nav_hidden: bool,
@@ -227,17 +221,27 @@ impl Default for RenderPlan {
             nav_col_offset: 0,
             popup_rect: Rect::default(),
             hint_bar_rect: Rect::default(),
-            collapse_button: Rect::default(),
-            hidden_counts: None,
-            hidden_counts_rect: Rect::default(),
-            connectors: Vec::new(),
+            expand_area: Rect::default(),
+            overflow_marks: Vec::new(),
+            title_repeats: Vec::new(),
             nav_rule: None,
-            scrollbar: ScrollbarPlan::default(),
+            seam_thumb: Rect::default(),
             floating_hint_bar: false,
             fill_hint_bar_row: false,
             nav_hidden: true,
             nav_collapsed: false,
         }
+    }
+}
+
+impl RenderPlan {
+    /// The card a click at `(col, row)` on a band's overflow count selects.
+    pub(crate) fn overflow_target(&self, col: u16, row: u16) -> Option<usize> {
+        let at = Position { x: col, y: row };
+        self.overflow_marks
+            .iter()
+            .find(|m| m.rect.contains(at))
+            .and_then(|m| m.target)
     }
 }
 
@@ -252,29 +256,52 @@ impl Switcher {
         previous: &RenderPlan,
     ) -> RenderPlan {
         let floating = hint_bar_floats(state);
-        let bar_w = if floating { area.width } else { nav.width };
+        let band = nav.position.layout() == ViewLayout::Band;
+        let bar_w = if floating || band {
+            area.width
+        } else {
+            nav.width
+        };
         let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
         let regions = compute_regions(area, nav, hint_bar_h);
         let fill_hint_bar_row = floating || !state.chrome.flash.is_empty();
-        let collapse_button = if floating || nav.width == 0 {
-            Rect::default()
-        } else {
-            collapse_button_rect(regions.hint_bar, nav.position, nav.collapsed)
-        };
-        let paint_button = if nav.collapsed {
-            Rect::default()
-        } else {
-            collapse_button
-        };
-        let resting_bar = if paint_button.is_empty() {
-            regions.hint_bar
-        } else {
+        // At rest the prefix indicator is a label on the column's bottom row, and the right
+        // end of the seam row in a band.
+        let resting_bar = if band && !regions.hint_bar.is_empty() {
+            let chip = if nav.collapsed {
+                collapsed_nav_width(&state.chrome.ui_prefix)
+            } else {
+                state
+                    .chrome
+                    .hint_bar_chip_width(regions.hint_bar.width, state)
+            }
+            .min(regions.hint_bar.width);
             Rect {
-                width: paint_button.x.saturating_sub(regions.hint_bar.x),
+                x: regions.hint_bar.right() - chip,
+                width: chip,
                 ..regions.hint_bar
             }
+        } else {
+            regions.hint_bar
         };
         let hint_bar_rect = hint_bar_rect(resting_bar, area, hint_bar_h, floating);
+        let seam = regions.view_border;
+        let expand_area = if nav.collapsed && nav.width > 0 {
+            match nav.position {
+                NavPosition::Left => Rect {
+                    width: seam.right().saturating_sub(area.x),
+                    ..area
+                },
+                NavPosition::Right => Rect {
+                    x: seam.x,
+                    width: area.right().saturating_sub(seam.x),
+                    ..area
+                },
+                NavPosition::Top | NavPosition::Bottom => seam,
+            }
+        } else {
+            Rect::default()
+        };
         let mut plan = RenderPlan {
             screen_area: area,
             layout: regions.layout,
@@ -289,7 +316,7 @@ impl Switcher {
             nav_col_offset: previous.nav_col_offset,
             popup_rect: self.modal_popup_rect(area, state),
             hint_bar_rect,
-            collapse_button,
+            expand_area,
             floating_hint_bar: floating,
             fill_hint_bar_row,
             nav_hidden: nav.width == 0,
@@ -297,29 +324,27 @@ impl Switcher {
             ..RenderPlan::default()
         };
         if !plan.nav_inner.is_empty() {
-            self.layout_nav(&mut plan, state);
-        }
-        if plan.hidden_counts.is_some() {
-            let chip = state
-                .chrome
-                .hint_bar_chip_width(resting_bar.width, state)
-                .min(resting_bar.width);
-            plan.hidden_counts_rect = Rect {
-                x: resting_bar.x + chip,
-                width: resting_bar.width - chip,
-                height: 1,
-                ..resting_bar
+            // The band's overflow counts share the seam row with the prefix, so they get
+            // what the prefix leaves; a floating bar covers the row and leaves them none.
+            let track = if band && !fill_hint_bar_row {
+                Rect {
+                    width: resting_bar.x.saturating_sub(seam.x),
+                    ..seam
+                }
+            } else {
+                Rect::default()
             };
+            self.layout_nav(&mut plan, state, track);
         }
         plan
     }
 
-    fn layout_nav(&self, plan: &mut RenderPlan, state: &crate::state::State) {
+    fn layout_nav(&self, plan: &mut RenderPlan, state: &crate::state::State, track: Rect) {
         let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
         let num_w = self.number_width();
         match plan.layout {
             ViewLayout::Column => self.layout_nav_list(plan),
-            ViewLayout::Band => self.layout_nav_columns(plan, num_w, spinner_glyph),
+            ViewLayout::Band => self.layout_nav_columns(plan, num_w, spinner_glyph, track),
         }
     }
 
@@ -333,18 +358,23 @@ impl Switcher {
             self.selected,
             self.selected_section_title(),
         );
-        let (cards, bar) = reserve_bar(plan.nav_inner, flow.scrolls, false);
+        let cards = plan.nav_inner;
         plan.nav_row_offset = flow.offset;
         plan.nav_cells = flow
             .slots
             .iter()
             .map(|slot| {
+                let indent = if self.starts_run(slot.idx) {
+                    0
+                } else {
+                    CARD_INDENT
+                };
                 (
                     slot.idx,
                     Rect {
-                        x: cards.x,
+                        x: cards.x + indent,
                         y: cards.y + slot.y,
-                        width: cards.width,
+                        width: cards.width.saturating_sub(indent),
                         height: slot.h,
                     },
                 )
@@ -358,32 +388,38 @@ impl Switcher {
                 height: 1,
             })
         });
-        if !bar.is_empty() {
-            plan.scrollbar = ScrollbarPlan {
-                area: bar,
-                content_len: self.painted_rows().saturating_sub(flow.visible),
-                position: flow.offset,
-                viewport_len: flow.visible,
-            };
+        if flow.scrolls {
+            let seam = plan.regions.view_border;
+            plan.seam_thumb = seam_thumb(
+                Rect {
+                    x: seam.x,
+                    y: cards.y,
+                    width: 1,
+                    height: cards.height,
+                },
+                self.painted_rows(),
+                flow.offset,
+                flow.visible,
+            );
         }
     }
 
-    fn layout_nav_columns(&self, plan: &mut RenderPlan, num_w: usize, spinner_glyph: char) {
+    fn layout_nav_columns(
+        &self,
+        plan: &mut RenderPlan,
+        num_w: usize,
+        spinner_glyph: char,
+        track: Rect,
+    ) {
         let palette = self.palette;
-        let cards: Vec<columns::Card> = (0..self.painted_rows())
-            .map(|i| self.flow_card(i, num_w, spinner_glyph, &palette))
-            .collect();
         let band = plan.nav_inner;
+        let indent = if band.height == 1 { 0 } else { CARD_INDENT };
+        let cards: Vec<columns::Card> = (0..self.painted_rows())
+            .map(|i| self.flow_card(i, num_w, spinner_glyph, &palette, indent))
+            .collect();
         let boundary = self.painted_boundary().unwrap_or(cards.len());
         let placed = columns::place(&cards, band.height, boundary);
-        let mut home_col = vec![false; cards.len()];
-        let mut head_col = None;
-        for (i, flag) in home_col.iter_mut().enumerate() {
-            if self.starts_run(i) {
-                head_col = placed.get(i).map(|p| p.col);
-            }
-            *flag = matches!((head_col, placed.get(i)), (Some(c), Some(p)) if c == p.col);
-        }
+        let continuations = columns::continuations(&cards, &placed);
         let widths = columns::widths(&cards, &placed, band.width);
         let bcol = columns::boundary_col(&placed, boundary);
         let parting = columns::parting(&widths, bcol, band.width, COL_GUTTER);
@@ -413,14 +449,20 @@ impl Switcher {
             COL_GUTTER,
         );
         for cell in cells {
-            let indent = if self.starts_run(cell.idx) {
-                0
-            } else {
-                CONNECTOR_W
-            };
-            if indent > 0 && home_col[cell.idx] {
-                plan.connectors.push(cell.rect);
+            let p = &placed[cell.idx];
+            if p.y == 1 {
+                if let Some(&(_, title)) = continuations.iter().find(|(c, _)| *c == p.col) {
+                    plan.title_repeats.push((
+                        title,
+                        Rect {
+                            y: band.y,
+                            height: 1,
+                            ..cell.rect
+                        },
+                    ));
+                }
             }
+            let indent = if self.starts_run(cell.idx) { 0 } else { indent };
             plan.nav_cells.push((
                 cell.idx,
                 Rect {
@@ -445,14 +487,53 @@ impl Switcher {
                 widths.len(),
             ),
         };
-        if shown < n {
-            plan.hidden_counts = Some(columns::hidden_counts(
-                &placed,
-                bcol,
-                parting,
-                plan.nav_col_offset,
-                shown,
-            ));
+        if shown >= n || track.is_empty() {
+            return;
+        }
+        let first = plan.nav_col_offset;
+        let selectable = |i: &usize| self.rows.get(*i).is_some_and(Row::selectable);
+        let (left, right) =
+            columns::hidden_counts(&placed, bcol, parting, first, shown, |i| selectable(&i));
+        let dcol = |i: usize| columns::display_col(placed[i].col, bcol, parting);
+
+        // Each count sits a cell in from its end of the track, the right one clear of the
+        // prefix, and is dropped rather than clipped when the track cannot hold it.
+        let mut used = 1u16;
+        if left > 0 {
+            let w = OverflowMark::width(left);
+            if used + w < track.width {
+                plan.overflow_marks.push(OverflowMark {
+                    rect: Rect {
+                        x: track.x + used,
+                        width: w,
+                        ..track
+                    },
+                    count: left,
+                    left: true,
+                    target: (0..placed.len())
+                        .filter(|&i| dcol(i) < first)
+                        .filter(selectable)
+                        .max(),
+                });
+                used += w + 1;
+            }
+        }
+        if right > 0 {
+            let w = OverflowMark::width(right);
+            if used + w < track.width {
+                plan.overflow_marks.push(OverflowMark {
+                    rect: Rect {
+                        x: track.right() - 1 - w,
+                        width: w,
+                        ..track
+                    },
+                    count: right,
+                    left: false,
+                    target: (0..placed.len())
+                        .filter(|&i| dcol(i) >= first + shown)
+                        .find(selectable),
+                });
+            }
         }
     }
 
@@ -513,15 +594,20 @@ impl Switcher {
         // One geometry source for the whole frame (compute_regions), shared with the PTY
         // sizing and mouse hit-testing so they never diverge: the nav list / terminal split
         // side by side (Column) or stacked (Band), parted by the view
-        // border, and the hint bar takes the nav's bottom rows. The hint bar is normally one
-        // row; a long flash wraps, so size it to the wrapped line count (never clipped).
-        // Measured at the width it will RENDER at: the nav column normally, the whole
-        // window whenever the bar floats (see `hint_bar_floats` / `hint_bar_rect`).
-        self.render_nav(frame, state, plan, &palette);
-        // The view border marks focus between the two views (vertical in a column, horizontal in a band).
+        // border, and the hint bar rests on a column's bottom row or a band's view border
+        // row. The hint bar is normally one row; a long flash wraps, so size it to the
+        // wrapped line count (never clipped). Measured at the width it will RENDER at: the
+        // nav column at rest in a column, the whole window in a band or whenever the bar
+        // floats (see `hint_bar_floats` / `hint_bar_rect`).
+        self.render_nav(frame, state, plan, &palette, terminal_focused);
+        // The seam is the one line the nav draws: its colour says which view holds the
+        // focus, and a side nav's overflow thickens the stretch beside the cards on screen.
         state
             .chrome
             .render_view_border(frame, plan.regions.view_border, terminal_focused);
+        state
+            .chrome
+            .render_seam_thumb(frame, plan.seam_thumb, terminal_focused);
         let term_area = plan.regions.terminal;
         // A selected host with no session to show has no live grid to mirror: its host
         // screen fills the region instead, so neither state is ever a blank view with no
@@ -543,46 +629,31 @@ impl Switcher {
             self.render_terminal_view(frame, term_area, grid);
         }
         // The hint bar paints LAST of the two views, so a floating bar can cover the
-        // terminal view. At rest it stays inside the nav (its own status line); floating,
-        // it widens to the whole window - the layout never reflows, only the paint reaches
-        // further, so arming the prefix cannot shift a single card.
-        // The bar is fit to what it has to say in either nav layout: the side layout's
-        // status line reads as a label on its row, and the portrait band's bar shares its
-        // row with the flow's offscreen counts (the bar keeps its own background but takes
-        // only the cells it needs, and the counts sit at the ends of what is left). An
-        // ARMED or flashing bar takes the whole row back, because a cheatsheet has to be
-        // readable over whatever it covers.
+        // terminal view. At rest it is the prefix indicator, a label sized to what it says
+        // on the column's bottom row or at the right end of a band's seam; floating, it
+        // widens to the whole window - the layout never reflows, only the paint reaches
+        // further, so arming the prefix cannot shift a single card. A band's overflow
+        // counts share the seam with the resting label and give way to a floating bar.
         let fill = if plan.fill_hint_bar_row {
             crate::ui::chrome::BarFill::Row
         } else {
             crate::ui::chrome::BarFill::Content
         };
-        if let (Some(counts), crate::ui::chrome::BarFill::Content) = (plan.hidden_counts, fill) {
-            Self::render_hidden_counts(frame, plan.hidden_counts_rect, counts, &palette);
+        if fill == crate::ui::chrome::BarFill::Content {
+            for mark in &plan.overflow_marks {
+                Self::render_overflow_mark(frame, *mark, &palette);
+            }
         }
         if plan.nav_collapsed && !plan.floating_hint_bar {
-            state.chrome.render_collapsed_hint_bar(
-                frame,
-                plan.hint_bar_rect,
-                plan.nav_position,
-                &palette,
-            );
+            state
+                .chrome
+                .render_collapsed_hint_bar(frame, plan.hint_bar_rect, &palette);
         } else {
             state
                 .chrome
                 .render_hint_bar(frame, plan.hint_bar_rect, state, fill, &palette);
-            if !plan.collapse_button.is_empty() {
-                state.chrome.render_collapse_button(
-                    frame,
-                    plan.regions.hint_bar,
-                    plan.nav_position,
-                    false,
-                    &palette,
-                );
-            }
-        }
-        // In the terminal view, place the real cursor at the grid's cursor so typing in the
-        // mux is visible and tracks. Skipped when the child hid its cursor.
+        } // In the terminal view, place the real cursor at the grid's cursor so typing in the
+          // mux is visible and tracks. Skipped when the child hid its cursor.
         if terminal_focused {
             if let Some(g) = grid {
                 if !g.hide_cursor() {
@@ -610,21 +681,28 @@ impl Switcher {
     /// band flows them into columns (see [`columns`]), because a wide,
     /// short region shows three cards as a list and twenty as a grid.
     ///
-    /// Either way a scrollbar, when one is needed, gets its own row or column of the
-    /// region rather than sitting over the cards: the selected card is painted by
-    /// inverting its whole rect, and a thumb inside that rect inverts with it into a
-    /// hole in the bar.
+    /// Nothing but cards, titles and the band parting is painted inside the nav: what is
+    /// off screen is said on the seam. The selected card is reverse video while the nav
+    /// holds the focus and keeps only its mark while the terminal does, so the selection
+    /// and the seam colour say the same thing about the focus.
     fn render_nav(
         &self,
         frame: &mut Frame,
         state: &crate::state::State,
         plan: &RenderPlan,
         palette: &palette::Palette,
+        terminal_focused: bool,
     ) {
         let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
         let num_w = self.number_width();
-        for rect in &plan.connectors {
-            Self::render_card_connector(frame, *rect, palette);
+        let dim = Style::default().fg(palette.decoration);
+        for &(title, rect) in &plan.title_repeats {
+            let room = (rect.width as usize).saturating_sub(CONTINUED.chars().count() + 1);
+            let text = format!(
+                "{}{CONTINUED}",
+                middle_ellipsize(&self.section_title(title), room)
+            );
+            frame.render_widget(Paragraph::new(Line::from(Span::styled(text, dim))), rect);
         }
         for &(idx, rect) in &plan.nav_cells {
             let lines = self.nav_row_lines(
@@ -633,14 +711,13 @@ impl Switcher {
                 spinner_glyph,
                 NavRowPaint {
                     width: rect.width,
-                    layout: plan.layout,
                     filter: &state.filter,
                     palette,
                     reserve_state_word: false,
                 },
             );
             frame.render_widget(Paragraph::new(lines), rect);
-            if self.selected == idx {
+            if self.selected == idx && !terminal_focused {
                 frame
                     .buffer_mut()
                     .set_style(rect, palette::selection_style(palette));
@@ -651,7 +728,6 @@ impl Switcher {
             Some(NavRule::Vertical(rect)) => Self::render_column_rule(frame, rect, palette),
             None => {}
         }
-        self.render_nav_scrollbar(frame, plan.scrollbar, palette);
     }
 
     /// The rule parting the side list's two bands once they scroll as one run. A single
@@ -680,117 +756,29 @@ impl Switcher {
         }
     }
 
-    /// The connector down the left of one session card, marking the title that owns it.
-    /// Painted OUTSIDE the card, in the strip the column reserves for it, so the
-    /// selection's inversion of the card rect cannot reach it.
-    fn render_card_connector(frame: &mut Frame, rect: Rect, palette: &palette::Palette) {
-        let cell = &mut frame.buffer_mut()[(rect.x, rect.y)];
-        cell.set_symbol(CARD_CONNECTOR);
-        cell.set_style(Style::default().fg(palette.decoration));
-    }
-
-    /// Writes the offscreen-card counts in `track` - the hint bar's row minus the cells the
-    /// bar's own label takes - at the ends the hidden columns are behind: `<< 5 more` on the
-    /// left, `7 more >>` on the right. The arrows point the way the cards went, and the
-    /// count says how many, which a scrollbar thumb cannot. Dropped, not clipped, when the
-    /// row is too narrow to hold them.
-    fn render_hidden_counts(
-        frame: &mut Frame,
-        track: Rect,
-        (left, right): (usize, usize),
-        palette: &palette::Palette,
-    ) {
-        // Neither count sits flush against what it is beside: the left one clears the
-        // status label, the right one the window's edge, so each reads as a note in the
-        // margin rather than text jammed into a corner.
-        const PAD: u16 = 2;
-        let track = Rect {
-            x: track.x + PAD.min(track.width),
-            width: track.width.saturating_sub(PAD * 2),
-            ..track
+    /// Writes one overflow count on the band's seam: `‹ 5` or `7 ›`, the angle pointing
+    /// the way the cards went and the count, the thing a user reaches for, bold.
+    fn render_overflow_mark(frame: &mut Frame, mark: OverflowMark, palette: &palette::Palette) {
+        let style = Style::default().fg(palette.decoration);
+        let bold = style.add_modifier(Modifier::BOLD);
+        let n = mark.count.to_string();
+        let spans = if mark.left {
+            vec![Span::styled("\u{2039} ", style), Span::styled(n, bold)]
+        } else {
+            vec![Span::styled(n, bold), Span::styled(" \u{203a}", style)]
         };
-        // The overflow cue's OWN role, with the count BOLD so the number - the thing a
-        // user reaches for - stands off the `<< … more >>` furniture around it.
-        let more_style = Style::default().fg(palette.decoration);
-        let bold = more_style.add_modifier(Modifier::BOLD);
-        // `<< n more` / `n more >>`, the count the one bold cell in the run.
-        let make_label = |n: usize, left_arrow: bool| -> (Vec<Span<'static>>, u16) {
-            let n = n.to_string();
-            let (pre, post) = if left_arrow {
-                ("<< ", " more")
-            } else {
-                ("", " more >>")
-            };
-            let w = (pre.chars().count() + n.chars().count() + post.chars().count()) as u16;
-            (
-                vec![
-                    Span::styled(pre, more_style),
-                    Span::styled(n, bold),
-                    Span::styled(post, more_style),
-                ],
-                w,
-            )
-        };
-        let mut used = 0u16;
-        if left > 0 {
-            let (spans, w) = make_label(left, true);
-            if w <= track.width {
-                frame.render_widget(
-                    Paragraph::new(Line::from(spans)),
-                    Rect {
-                        width: w,
-                        height: 1,
-                        ..track
-                    },
-                );
-                used = w + 1;
-            }
-        }
-        if right > 0 {
-            let (spans, w) = make_label(right, false);
-            if w + used <= track.width {
-                frame.render_widget(
-                    Paragraph::new(Line::from(spans)),
-                    Rect {
-                        x: track.x + track.width - w,
-                        width: w,
-                        height: 1,
-                        ..track
-                    },
-                );
-            }
-        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), mark.rect);
     }
 
-    /// A minimal scrollbar in the strip `reserve_bar` set aside beside the nav list,
-    /// drawn only when the cards overflow the region - the offscreen-content cue the flat
-    /// list otherwise lacks. Thumb only (no track / arrows) so it reads as a position
-    /// marker, not furniture. Counted in cards (not screen rows) over the variable card
-    /// heights, from the placement the cards were painted with.
-    fn render_nav_scrollbar(
-        &self,
-        frame: &mut Frame,
-        plan: ScrollbarPlan,
-        palette: &palette::Palette,
-    ) {
-        if plan.area.is_empty() {
-            return;
+    /// A section title's `{host}/{mux}`, or the host alone when no mux is confirmed.
+    fn section_title(&self, i: usize) -> String {
+        let (host, mux, _) = context_of(&self.rows[i]);
+        if mux.is_empty() {
+            host.to_string()
+        } else {
+            format!("{host}/{mux}")
         }
-        let mut sb = ScrollbarState::new(plan.content_len)
-            .position(plan.position)
-            .viewport_content_length(plan.viewport_len);
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .track_symbol(None)
-                .thumb_symbol("▐")
-                .thumb_style(Style::default().fg(palette.decoration)),
-            plan.area,
-            &mut sb,
-        );
     }
-
     /// How many columns the card numbers need: the digit count of the highest card
     /// number. One width for the whole frame, so the names stay aligned with each
     /// other instead of stepping right as the numbers gain a digit, and the numbers
@@ -810,6 +798,7 @@ impl Switcher {
         num_w: usize,
         spinner_glyph: char,
         palette: &palette::Palette,
+        indent: u16,
     ) -> columns::Card {
         let lines = self.nav_row_lines(
             i,
@@ -817,7 +806,6 @@ impl Switcher {
             spinner_glyph,
             NavRowPaint {
                 width: 0,
-                layout: ViewLayout::Band,
                 filter: "",
                 palette,
                 reserve_state_word: true,
@@ -825,12 +813,9 @@ impl Switcher {
         );
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
         let starts_run = self.starts_run(i);
-        // A session card is pushed right by the connector's strip, so the column has to
-        // be wide enough for both. The strip is reserved whether or not the glyph is
-        // painted there: the widths are measured before the flow decides columns, so a
-        // card that reserved nothing could not be given the strip afterwards, and every
-        // card of a section reads at one offset inside its column wherever it landed.
-        let indent = if starts_run { 0 } else { CONNECTOR_W };
+        // A session card is indented under its title, so the column has to be wide
+        // enough for both.
+        let indent = if starts_run { 0 } else { indent };
         columns::Card {
             starts_run,
             width: w(0) + indent,
@@ -869,7 +854,6 @@ impl Switcher {
     ) -> Vec<Line<'static>> {
         let NavRowPaint {
             width,
-            layout,
             filter,
             palette,
             reserve_state_word,
@@ -890,43 +874,21 @@ impl Switcher {
             }
         };
 
-        // Section title: `{host}/{mux}` in the quiet header role. Not a card - no
-        // number, not selectable, and the selection can never land on it.
-        //
-        // A rule fills the rest of the row in the SIDE list only, where the nav is one
-        // full-width run and the rule reads as the group's own underline. The portrait
-        // band's columns are each only as wide as their widest card and stand side by
-        // side, so a rule there would run into the gutter and read as a bar parting the
-        // columns rather than as anything about the group: the title stands alone.
+        // Section title: `{host}/{mux}`, dim, alone on its row. Not a card - no number,
+        // not selectable, and the selection can never land on it. The cards under it are
+        // indented, which is what marks the group at every nav position.
         if let RowRef::Section { .. } = &row.reference {
-            let (host, mux, _) = context_of(row);
-            let header = Style::default().fg(palette.secondary);
-            let title = if mux.is_empty() {
-                host.to_string()
-            } else {
-                format!("{host}/{mux}")
-            };
+            let title = self.section_title(i);
             let title = if width == 0 {
                 title
             } else {
                 middle_ellipsize(&title, width.saturating_sub(1) as usize)
             };
-            let title_w = UnicodeWidthStr::width(title.as_str()) as u16;
-            let rule_w = match layout {
-                ViewLayout::Column => width.saturating_sub(title_w.saturating_add(1)),
-                ViewLayout::Band => 0,
-            };
-            let mut spans = vec![Span::styled(title, header)];
-            if rule_w > 0 {
-                spans.push(Span::styled(
-                    format!(" {}", BAND_RULE.repeat(rule_w as usize)),
-                    header,
-                ));
-            }
-            spans.push(Span::raw(" "));
-            return vec![Line::from(spans)];
+            return vec![Line::from(vec![
+                Span::styled(title, Style::default().fg(palette.decoration)),
+                Span::raw(" "),
+            ])];
         }
-
         // Host-state cards keep one fixed glyph slot after the host/mux identity. The
         // selected card adds its state word after that slot. Column measurement reserves
         // the word on every host card, so moving the selection changes paint but never
@@ -1023,9 +985,8 @@ impl Switcher {
         // The session name is the lowest level the card displays, so it takes the accent
         // and stays bold.
         //
-        // The connector the portrait band draws down a session card's left is NOT part
-        // of the card and is painted separately; what a card holds is what a card holds
-        // in either layout.
+        // The indent a session card hangs at under its title is NOT part of the card;
+        // what a card holds is what a card holds at every position.
         let (_, _, sess) = context_of(row);
         let source = match &row.reference {
             RowRef::Session { sess } => sess.source.as_str(),

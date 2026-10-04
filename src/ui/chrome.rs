@@ -231,18 +231,14 @@ pub(crate) fn notice_flash_style(palette: &crate::ui::palette::Palette) -> Style
 /// What a flash is about, which decides how the bar paints it.
 /// How much of its row the hint bar paints.
 ///
-/// The bar is a status bar where it owns its row, and a label where it does not: the
-/// portrait band's bar shares one row with the horizontal scrollbar, so at rest it paints
-/// its glyphs alone and leaves the thumb showing. Arming the prefix takes the whole row
-/// back, because the cheatsheet has to be readable over whatever it covers.
+/// At rest the bar is the prefix indicator, a label sized to what it says, so a column's
+/// bottom row and a band's seam keep the rest of their cells. Arming the prefix takes the
+/// whole row, because the cheatsheet has to be readable over whatever it covers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BarFill {
-    /// The whole rect: a solid bar. What an armed or flashing bar always uses, and what
-    /// the side column's own status row uses.
+    /// The whole rect: a solid bar. What an armed or flashing bar always uses.
     Row,
-    /// The text plus a cell of padding, on its own background: the portrait band's bar
-    /// shares its row with the horizontal scrollbar, so it takes only the cells it needs
-    /// and leaves the rest of the row to the thumb.
+    /// The text plus a cell of padding, on its own background: the resting label.
     Content,
 }
 
@@ -471,6 +467,28 @@ impl Chrome {
                 .collect::<Vec<_>>(),
         );
         frame.render_widget(Paragraph::new(bars), area);
+    }
+
+    /// Thickens the stretch of a side nav's seam beside the cards on screen when the list
+    /// overflows: the seam's own heavy glyph in the seam's own colour, so the overflow is
+    /// read off the one line the nav draws. The hover cue already thickens the whole seam,
+    /// so the stretch is not drawn over it.
+    pub(crate) fn render_seam_thumb(&self, frame: &mut Frame, rect: Rect, terminal_focused: bool) {
+        if rect.is_empty() || self.view_border_hovered {
+            return;
+        }
+        let color = if terminal_focused {
+            self.colors.inactive
+        } else {
+            self.colors.active
+        };
+        let style = Style::default().fg(color);
+        let buf = frame.buffer_mut();
+        for y in rect.y..rect.bottom() {
+            let cell = &mut buf[(rect.x, y)];
+            cell.set_symbol("┃");
+            cell.set_style(style);
+        }
     }
 
     /// The terminal-view HOST SCREEN: what fills the terminal-view region in place of a
@@ -957,7 +975,7 @@ impl Chrome {
     }
 
     /// The hint bar's logical text, fit to `width`. At rest this text is only the prefix,
-    /// with the collapse button painted separately at the row's far end. Once the prefix
+    /// the nav's prefix indicator. Once the prefix
     /// is armed, the text becomes the list of keys that prefix unlocks. An
     /// open input outranks everything: the bar BECOMES the input line (feature name,
     /// guide text, and the windowed buffer), so what is being typed is what the bar
@@ -979,8 +997,8 @@ impl Chrome {
         } else if self.armed {
             // The prefix is held: name what it unlocks. Longest-first so a narrow nav
             // drops the rarer chords rather than clipping mid-word.
-            // Order: focus nav, focus terminal, jump, new, filter, hide, position, rescan, help,
-            // quit. The focus rows name the arrow PAIR the current placement makes
+            // Order: focus nav, focus terminal, jump, new, filter, hide, collapse, position,
+            // rescan, help, quit. The focus rows name the arrow PAIR the current placement makes
             // active (the pair facing the terminal's side names the terminal), and the
             // resize keys are left out (the help modal has them).
             let focus = if self.nav_position.forward_arrows_face_terminal() {
@@ -990,10 +1008,10 @@ impl Chrome {
             };
             fit(
                 &[
-                    format!(" {p} · {focus} · 1-9 jump to a session · n new session · / filter · t hide nav · p nav position · r rescan · ? help · q quit"),
-                    format!(" {p} · {focus} · 1-9 jump to · n new · / filter · t hide · p position · r rescan · ? help · q quit"),
-                    format!(" {p} · {focus} · 1-9 · n · / · t · p · r · ? · q"),
-                    format!(" {p} · ←/↑ · →/↓ · 1-9 · n · / · t · p · r · ? · q"),
+                    format!(" {p} · {focus} · 1-9 jump to a session · n new session · / filter · t hide nav · z collapse nav · p nav position · r rescan · ? help · q quit"),
+                    format!(" {p} · {focus} · 1-9 jump to · n new · / filter · t hide · z collapse · p position · r rescan · ? help · q quit"),
+                    format!(" {p} · {focus} · 1-9 · n · / · t · z · p · r · ? · q"),
+                    format!(" {p} · ←/↑ · →/↓ · 1-9 · n · / · t · z · p · r · ? · q"),
                     format!(" {p}…"),
                 ],
                 width,
@@ -1026,7 +1044,7 @@ impl Chrome {
                 width,
             )
         } else {
-            // At rest the text portion is the prefix. The renderer adds the button.
+            // At rest the text is the prefix alone.
             fit(&[format!(" {p}"), p.to_string()], width)
         }
     }
@@ -1214,13 +1232,12 @@ impl Chrome {
         }
     }
 
-    /// Paints the resting prefix and the collapse button across a collapsed nav's whole
-    /// hint bar. Transient bars are handled by the ordinary floating-bar path instead.
+    /// Paints the resting prefix across a collapsed nav's indicator. Transient bars are
+    /// handled by the ordinary floating-bar path instead.
     pub(crate) fn render_collapsed_hint_bar(
         &self,
         frame: &mut Frame,
         area: Rect,
-        position: crate::ui::switcher::NavPosition,
         palette: &crate::ui::palette::Palette,
     ) {
         frame.render_widget(Clear, area);
@@ -1229,40 +1246,11 @@ impl Chrome {
             Paragraph::new(line).style(self.hint_bar_render_style(palette)),
             area,
         );
-        self.render_collapse_button(frame, area, position, true, palette);
-    }
-
-    /// Paints the collapse/expand token at the far end of a nav-local hint bar.
-    pub(crate) fn render_collapse_button(
-        &self,
-        frame: &mut Frame,
-        hint_bar: Rect,
-        position: crate::ui::switcher::NavPosition,
-        collapsed: bool,
-        palette: &crate::ui::palette::Palette,
-    ) {
-        let rect = crate::ui::switcher::collapse_button_rect(hint_bar, position, collapsed);
-        if rect.is_empty() {
-            return;
-        }
-        let token = crate::ui::switcher::collapse_button_token(position, collapsed);
-        let token_style = if self.hint_bar_style == hint_bar_default_style(palette) {
-            Style::default()
-                .fg(palette.bar_accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(token, token_style)))
-                .style(self.hint_bar_render_style(palette)),
-            rect,
-        );
     }
 
     /// How many cells a [`BarFill::Content`] bar paints, so whatever else is on the row
-    /// (the portrait flow's scrollbar) can start where the bar stops instead of being
-    /// painted over.
+    /// (a band's overflow counts) can stop where the bar starts instead of being painted
+    /// over.
     pub(crate) fn hint_bar_chip_width(&self, width: u16, state: &crate::state::State) -> u16 {
         let content = self
             .hint_bar_lines(width, state)
@@ -1441,11 +1429,12 @@ mod tests {
     fn hint_bar_shows_the_prefix_at_rest_and_its_keys_when_armed() {
         let mut c = Chrome::default();
         let state = crate::state::State::default();
-        // At rest the logical text is the prefix; the switcher paints the button.
+        // At rest the logical text is the prefix alone.
         assert_eq!(c.hint_bar_text(80, &state).trim(), "C-g");
         // Armed: the keys the prefix unlocks. Wide enough for the full descriptions,
         // the rows run in the bar's fixed order (focus nav, focus terminal, jump, new,
-        // filter, hide, position, rescan, help, quit) and the focus rows use arrow symbols that
+        // filter, hide, collapse, position, rescan, help, quit) and the focus rows use arrow
+        // symbols that
         // point at the view they focus.
         c.set_armed(true);
         let full = c.hint_bar_text(400, &state);
@@ -1457,6 +1446,7 @@ mod tests {
             "n new session",
             "/ filter",
             "t hide nav",
+            "z collapse nav",
             "p nav position",
             "r rescan",
             "? help",
@@ -1474,14 +1464,21 @@ mod tests {
             last = pos;
         }
         // A narrower bar drops to short descriptions while keeping the focus guidance
-        // (the pair segment rides every rung). The full line is ~151 cells, so a 130-wide
+        // (the pair segment rides every rung). The full line is ~166 cells, so a 145-wide
         // bar forces the middle rung, whose focus rows keep the full pair wording.
-        let armed = c.hint_bar_text(130, &state);
+        let armed = c.hint_bar_text(145, &state);
         assert!(
             armed.contains("→/↓ focus terminal"),
             "short bar keeps focus-terminal: {armed:?}"
         );
-        for key in ["n new", "/ filter", "r rescan", "? help", "q quit"] {
+        for key in [
+            "n new",
+            "/ filter",
+            "z collapse",
+            "r rescan",
+            "? help",
+            "q quit",
+        ] {
             assert!(armed.contains(key), "armed bar lists {key:?}: {armed:?}");
         }
         // A flash outranks the armed cheatsheet: a refusal must not be hidden by it.

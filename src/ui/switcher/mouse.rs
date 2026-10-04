@@ -20,14 +20,18 @@ impl Switcher {
     }
 
     /// The card index under a 0-based screen `(col, row)`, or `None` if it is outside the
-    /// nav or on none of its cards (the gap between the bands, the band rule, the
-    /// scrollbar strip, the rows past the last card).
+    /// nav or on none of its cards (the gap between the bands, the band rule, a title, an
+    /// indent, the rows past the last card). A band's overflow count on the seam stands
+    /// for the hidden card nearest the visible ones.
     ///
     /// Neither layout puts cards on a fixed row pitch - the side list parts its two bands
     /// and its card heights vary, the portrait flow runs them into columns - so the plan
     /// records each card's rect and the hit-test reads those back. One geometry, so a
     /// click cannot land on a card the renderer put elsewhere.
     fn row_at(plan: &RenderPlan, col: u16, row: u16) -> Option<usize> {
+        if let Some(target) = plan.overflow_target(col, row) {
+            return Some(target);
+        }
         if !Self::in_tree(plan, col, row) {
             return None;
         }

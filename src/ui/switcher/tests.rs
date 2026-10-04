@@ -2355,10 +2355,10 @@ async fn hint_bar_shows_scanning_progress_then_clears() {
         !hint_bar.contains("scanning"),
         "the scanning indicator clears once all hosts settle:\n{hint_bar:?}"
     );
-    assert!(hint_bar.contains("C-g"));
-    assert!(
-        hint_bar.trim_end().ends_with("<<"),
-        "the resting hint bar carries the collapse button:\n{hint_bar:?}"
+    assert_eq!(
+        hint_bar.trim(),
+        "C-g",
+        "the resting hint bar is the prefix alone:\n{hint_bar:?}"
     );
 }
 
@@ -2394,8 +2394,8 @@ async fn armed_hint_bar_fits_a_narrow_nav() {
 
 #[test]
 fn the_nav_renders_at_the_minimum_width() {
-    // The side nav may be shrunk to its resting prefix, separating cell, and collapse
-    // button. At that width the full control stays visible and the cards clip.
+    // The side nav may be shrunk to its minimum width. At that width the prefix stays
+    // visible and the cards clip.
     let min = crate::app::model::nav_width_min("C-g");
     let mut state = crate::state::State::from_scan(sample());
     let sw = Switcher::new(&mut state);
@@ -2405,7 +2405,7 @@ fn the_nav_renders_at_the_minimum_width() {
     let buf = term.backend().buffer();
     let y = buf.area.height - 1;
     let text: String = (0..min).map(|x| buf[(x, y)].symbol()).collect();
-    assert_eq!(text, " C-g <<", "resting bar at min width");
+    assert_eq!(text.trim_end(), " C-g", "resting bar at min width");
 
     state.scanning.insert("local".into());
     term.draw(|f| sw.render_test(f, None, false, NavSize::visible(min), &state))
@@ -2416,11 +2416,7 @@ fn the_nav_renders_at_the_minimum_width() {
     let done = total.saturating_sub(state.scanning.len());
     assert!(
         text.contains(&format!("{done}/{total}")),
-        "scan progress stays intact beside the button: {text:?}"
-    );
-    assert!(
-        text.ends_with("<<"),
-        "button stays at the far end: {text:?}"
+        "scan progress stays intact: {text:?}"
     );
 }
 
@@ -2508,7 +2504,7 @@ async fn the_selected_card_is_painted_in_the_terminals_own_reverse_video() {
         "and only that row inverts: {other}"
     );
     assert_eq!(
-        h.buf()[(0, sel)].symbol(),
+        h.buf()[(CARD_INDENT, sel)].symbol(),
         super::render::SELECTED_MARK,
         "the selection mark stands in the selected card's address column"
     );
@@ -2927,7 +2923,7 @@ async fn both_host_screens_share_one_grammar() {
 #[tokio::test]
 async fn levels_render_from_the_switchers_palette() {
     // The selection parks on a remote card so the local rows render UNSELECTED: the
-    // section title reads in the secondary role, the session name in the accent.
+    // section title reads dim, in the decoration role, the session name in the accent.
     let mut h = Harness::new(sample());
     h.sw.set_palette(crate::ui::palette::resolve(
         "auto-light",
@@ -2940,8 +2936,8 @@ async fn levels_render_from_the_switchers_palette() {
     h.draw();
     assert_eq!(
         h.nav_fg_of("local"),
-        Some(h.sw.palette().secondary),
-        "the section title is the secondary role"
+        Some(h.sw.palette().decoration),
+        "the section title is dim"
     );
     assert_eq!(
         h.nav_fg_of("editor"),
@@ -3125,13 +3121,13 @@ async fn the_section_title_shows_host_mux_and_the_session_takes_the_accent() {
     );
     assert_eq!(
         h.nav_fg_of("srv"),
-        Some(crate::ui::palette::Palette::default().secondary),
-        "the host half is the secondary role"
+        Some(crate::ui::palette::Palette::default().decoration),
+        "the section title is dim, host half"
     );
     assert_eq!(
         h.nav_fg_of("tmux"),
-        Some(crate::ui::palette::Palette::default().secondary),
-        "the mux half is the secondary role"
+        Some(crate::ui::palette::Palette::default().decoration),
+        "and mux half"
     );
     assert_eq!(
         h.nav_fg_of("alpha"),
@@ -3141,100 +3137,60 @@ async fn the_section_title_shows_host_mux_and_the_session_takes_the_accent() {
 }
 
 #[tokio::test]
-async fn only_the_side_lists_section_title_trails_a_rule() {
-    // The side list is one full-width run, so the rule after `{host}/{mux}` reads as
-    // that group's underline. The portrait band flows the same rows into columns
-    // standing side by side, where the rule would run into the gutter and read as a bar
-    // parting the columns instead - so the band's title stands alone.
+async fn no_section_title_trails_a_rule_or_a_connector() {
+    // The dim title and the indent under it mark a group at every position, so neither
+    // layout spends a glyph on a rule after the title or a connector down the cards.
     let side = Harness::new(sample());
     assert_eq!(side.plan.layout, ViewLayout::Column, "landscape → Side");
     let y = side.nav_row_of("local").expect("the section title");
     let painted = nav_line(&side, y);
     assert!(
-        painted.contains(BAND_RULE),
-        "the side list's title trails a rule:\n{painted}"
+        !painted.contains(BAND_RULE),
+        "the side list's title stands alone:\n{painted}"
     );
 
     let top = Harness::new_sized(sample(), 60, 70);
     assert_eq!(top.plan.layout, ViewLayout::Band, "portrait → Top");
-    let y = row_of(top.buf(), "local", top.buf().area.width).expect("the section title");
+    let w = top.buf().area.width;
+    let y = row_of(top.buf(), "local", w).expect("the section title");
     let painted = band_line(&top, y);
     assert!(
         !painted.contains(BAND_RULE),
-        "the band's title carries no rule:\n{painted}"
-    );
-}
-
-#[tokio::test]
-async fn the_band_connects_a_session_card_to_the_title_that_owns_it() {
-    // The band's columns stand side by side, so where a card falls in the reading order
-    // does not say which title owns it - a connector down the card's left does. The
-    // title itself carries none: it is what the connector points at.
-    let h = Harness::new_sized(sample(), 60, 70);
-    assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
-    let w = h.buf().area.width;
-    let title = row_of(h.buf(), "local", w).expect("the section title");
-    assert!(
-        !band_line(&h, title).starts_with(CARD_CONNECTOR),
-        "the title is what the connector points at, not a card that carries one"
+        "the band's title stands alone:\n{painted}"
     );
     for name in ["build", "editor"] {
-        let painted = band_line(&h, row_of(h.buf(), name, w).expect(name));
+        let painted = band_line(&top, row_of(top.buf(), name, w).expect(name));
         assert!(
-            painted.starts_with(CARD_CONNECTOR),
-            "{name} is connected to the title above it:\n{painted}"
+            painted.starts_with("  "),
+            "{name} is indented under its title with nothing in the indent:\n{painted}"
         );
     }
 }
 
 #[tokio::test]
-async fn a_split_sections_continuation_columns_carry_no_connector() {
-    // Only a section taller than a whole column splits, and each continuation column
-    // opens with the title RE-STATED. The connector marks the title that owns the group,
-    // so it stays in that title's own column rather than running under a repeat of it.
-    // Ten sessions in a three-row band: one section across five columns.
+async fn a_split_sections_cards_read_at_one_offset_in_every_column() {
+    // Every card of a section reads at one offset INSIDE its column whichever column it
+    // landed in, a continuation included. Measured against the rect the plan recorded,
+    // since the columns start wherever the widths put them.
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
     assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
     let w = h.buf().area.width;
-    for name in ["s0", "s1"] {
-        let painted = band_line(&h, row_of(h.buf(), name, w).expect(name));
-        assert!(
-            painted.starts_with(CARD_CONNECTOR),
-            "{name} stands in the title's own column:\n{painted}"
-        );
-        assert_eq!(
-            painted.matches(CARD_CONNECTOR).count(),
-            1,
-            "the row's other columns are continuations and carry none:\n{painted}"
-        );
-    }
-    // The continuation still INDENTS by the connector's two columns, so every card of
-    // the section reads at one offset INSIDE its column whichever one it landed in.
-    // Measured against the rect the plan recorded, since the columns start wherever the
-    // widths put them.
-    let offset = |name: &str| -> u16 {
-        let (x, y) = locate(h.buf(), name, w).expect(name);
-        let (_, rect) = h
-            .plan
-            .nav_cells
-            .iter()
-            .find(|(_, r)| r.y == y && r.x <= x && x < r.x + r.width)
-            .expect("the card in the frame plan");
-        x - rect.x
-    };
+    let (s0, _) = locate(h.buf(), "s0", w).expect("s0");
+    let (s5, _) = locate(h.buf(), "s5", w).expect("s5");
+    let title_x = locate(h.buf(), "local", w).expect("the title").0;
+    let repeat_x = locate(h.buf(), "local …", w).expect("the repeated title").0;
     assert_eq!(
-        offset("s2"),
-        offset("s0"),
-        "a continuation's card reads at the same offset inside its column"
+        s0 - title_x,
+        s5 - repeat_x,
+        "a continuation's card reads at the same offset under its repeated title"
     );
 }
 
 #[tokio::test]
-async fn the_selections_inversion_stops_at_the_card_and_spares_the_connector() {
-    // The connector is the title's furniture, not the card's. The selection paints a
-    // card by inverting its whole rect, so a connector standing INSIDE that rect would
-    // invert with it and notch the line at exactly the row the eye is on. It sits in the
-    // strip left of the rect instead, and the line runs past the selected card unbroken.
+async fn the_selections_inversion_stops_at_the_card_and_spares_the_indent() {
+    // The indent is the title's, not the card's. The selection paints a card by
+    // inverting its whole rect, so the rect starts past the indent and the indent stays
+    // blank on the selected card's row.
     let h = Harness::new_sized(sample(), 60, 70);
     assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
     let sel = h.sw.selected;
@@ -3245,20 +3201,16 @@ async fn the_selections_inversion_stops_at_the_card_and_spares_the_connector() {
         .find(|(i, _)| *i == sel)
         .expect("the selected card's rect");
     assert!(
-        rect.x >= CONNECTOR_W,
-        "the selected card is a session card, which stands past a strip"
+        rect.x >= CARD_INDENT,
+        "the selected card is a session card, which stands past the indent"
     );
     let buf = h.buf();
     assert!(
         buf[(rect.x, rect.y)].modifier.contains(Modifier::REVERSED),
         "the card itself is painted in the terminal's own reverse video"
     );
-    let strip = &buf[(rect.x - CONNECTOR_W, rect.y)];
-    assert_eq!(
-        strip.symbol(),
-        CARD_CONNECTOR,
-        "the connector stands left of the card"
-    );
+    let strip = &buf[(rect.x - CARD_INDENT, rect.y)];
+    assert_eq!(strip.symbol(), " ", "the indent is blank");
     assert!(
         !strip.modifier.contains(Modifier::REVERSED),
         "and the inversion does not reach it"
@@ -3266,12 +3218,10 @@ async fn the_selections_inversion_stops_at_the_card_and_spares_the_connector() {
 }
 
 #[tokio::test]
-async fn a_split_sections_continuation_columns_name_nothing() {
-    // Only a section taller than a whole column splits. The continuation picks it up at
-    // the TOP of the next column and names nothing: the title stands once, over the
-    // column the section starts in, and the reading order - down, then right - is what
-    // says the continuation is the same section. A row spent naming it again is a row of
-    // cards lost, which is the whole reason the band flows into columns at all.
+async fn a_split_sections_continuation_columns_repeat_the_title() {
+    // Only a section taller than a whole column splits. The continuation keeps its
+    // column's top row for the title, dim and followed by `…`, so a column read alone
+    // still says whose cards it holds; its cards start on the row under it.
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
     assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
     let band = h.plan.nav_inner;
@@ -3279,22 +3229,22 @@ async fn a_split_sections_continuation_columns_name_nothing() {
         .map(|y| band_line(&h, y))
         .collect::<Vec<_>>()
         .join("\n");
+    let first_row = band_line(&h, band.y);
     assert_eq!(
-        painted.matches("local").count(),
-        1,
-        "the section is named once across every column it spans:\n{painted}"
+        first_row.matches("local").count(),
+        first_row.matches("local …").count() + 1,
+        "the title once, then a repeat over every continuation:\n{painted}"
     );
     let cells = cells_of(&h.plan);
-    assert!(
-        cells[&3].x > cells[&2].x,
-        "the section really did split: s2 opened a column"
-    );
+    let split = (1..cells.len())
+        .find(|i| cells[i].x > cells[&(i - 1)].x)
+        .expect("the section really did split");
     assert_eq!(
-        cells[&3].y, cells[&0].y,
-        "and it opens at the band's top row, no row held for a name"
+        cells[&split].y,
+        band.y + 1,
+        "the continuation's first card hangs under the repeated title"
     );
 }
-
 #[tokio::test]
 async fn a_column_is_never_narrower_than_the_title_naming_it() {
     // A column is as wide as the WIDEST thing in it, and the section title is one of
@@ -3667,7 +3617,7 @@ async fn a_sources_sessions_are_each_a_single_row_under_one_section_title() {
         );
     }
     assert!(
-        !out.contains("├") && !out.contains("└") && !out.contains(CARD_CONNECTOR),
+        !out.contains("├") && !out.contains("└") && !out.contains('│'),
         "no connector draws a group the title already draws:\n{out}"
     );
 }
@@ -3697,7 +3647,7 @@ async fn focus_changes_only_the_address_column() {
     );
     // The mark stands in the address column, on the same row that carries the session.
     assert_eq!(
-        h.buf()[(0, beta_row)].symbol(),
+        h.buf()[(CARD_INDENT, beta_row)].symbol(),
         super::render::SELECTED_MARK,
         "the selection mark replaces the number in the address column"
     );
@@ -4211,9 +4161,8 @@ fn compute_regions_side_top_and_hidden() {
         1,
     );
     assert_eq!(squeezed.layout, ViewLayout::Band);
-    // Portrait → band on top: tree band on top, 1-row border, terminal below. The hint bar is
-    // the BAND's bottom row, so it sits directly above the view border, not at the
-    // screen's bottom edge.
+    // Portrait → band on top: tree band on top, 1-row border, terminal below. Every band
+    // row holds cards, and the hint bar rests on the view border row itself.
     let port = Rect::new(0, 0, 40, 100);
     let t = compute_regions(
         port,
@@ -4223,9 +4172,9 @@ fn compute_regions_side_top_and_hidden() {
     assert_eq!(t.layout, ViewLayout::Band);
     assert_eq!(t.tree.y, 0);
     assert_eq!(t.tree.width, 40);
-    let band_h = t.tree.height + t.hint_bar.height;
-    assert_eq!(t.hint_bar, Rect::new(0, t.tree.height, 40, 1));
+    let band_h = t.tree.height;
     assert_eq!(t.view_border, Rect::new(0, band_h, 40, 1));
+    assert_eq!(t.hint_bar, t.view_border);
     assert_eq!(t.terminal.x, 0);
     assert_eq!(t.terminal.y, band_h + 1);
     assert_eq!(t.terminal.width, 40);
@@ -4270,9 +4219,8 @@ fn compute_regions_right_column() {
 #[test]
 fn compute_regions_bottom_band() {
     use ratatui::layout::Rect;
-    // Pinned bottom: terminal above, 1-row border, tree band below. The hint bar is the
-    // bottom row of the SCREEN - the status line stays the nav region's lowest row in
-    // every placement - not the row adjacent to the view border.
+    // Pinned bottom: terminal above, 1-row border, tree band below. Every band row holds
+    // cards, and the hint bar rests on the view border row above them.
     let port = Rect::new(0, 0, 40, 100);
     let b = compute_regions(
         port,
@@ -4282,8 +4230,8 @@ fn compute_regions_bottom_band() {
     assert_eq!(b.layout, ViewLayout::Band);
     assert_eq!(b.terminal, Rect::new(0, 0, 40, 59));
     assert_eq!(b.view_border, Rect::new(0, 59, 40, 1));
-    assert_eq!(b.tree, Rect::new(0, 60, 40, 39));
-    assert_eq!(b.hint_bar, Rect::new(0, 99, 40, 1));
+    assert_eq!(b.tree, Rect::new(0, 60, 40, 40));
+    assert_eq!(b.hint_bar, b.view_border);
 }
 
 #[tokio::test]
@@ -4921,11 +4869,11 @@ fn a_hidden_nav_keeps_no_status_line_until_it_has_something_to_say() {
 #[tokio::test]
 async fn hint_bar_and_help_reflect_new_model() {
     let mut h = Harness::new(sample());
-    // At rest the bar names the prefix and collapse button. The keys it unlocks are one
-    // keypress away, so they do not crowd the nav's bottom row.
+    // At rest the bar names the prefix alone. The keys it unlocks are one keypress away,
+    // so they do not crowd the nav's bottom row.
     let resting = h.hint_bar_text();
-    assert!(resting.contains("C-g"));
-    assert!(resting.trim_end().ends_with("<<"));
+    assert_eq!(resting.trim(), "C-g");
+
     // Armed, it becomes the cheatsheet for exactly those keys.
     h.state.chrome.set_armed(true);
     h.draw();
@@ -5098,10 +5046,16 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
         },
         1,
     );
-    assert_eq!(top.tree, Rect::default());
-    assert_eq!(top.hint_bar, Rect::new(0, 0, 140, 1));
-    assert_eq!(top.view_border, Rect::new(0, 1, 140, 1));
-    assert_eq!(top.terminal, Rect::new(0, 2, 140, 28));
+    assert!(
+        top.tree.is_empty(),
+        "a collapsed band is the seam line only"
+    );
+    assert_eq!(top.view_border, Rect::new(0, 0, 140, 1));
+    assert_eq!(
+        top.hint_bar, top.view_border,
+        "the prefix rests on the seam"
+    );
+    assert_eq!(top.terminal, Rect::new(0, 1, 140, 29));
 
     let bottom = compute_regions(
         area,
@@ -5112,46 +5066,16 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
         },
         1,
     );
-    assert_eq!(bottom.tree, Rect::default());
-    assert_eq!(bottom.terminal, Rect::new(0, 0, 140, 28));
-    assert_eq!(bottom.view_border, Rect::new(0, 28, 140, 1));
-    assert_eq!(bottom.hint_bar, Rect::new(0, 29, 140, 1));
-}
-
-#[test]
-fn collapse_button_hit_rect_tracks_position_and_state() {
-    let bar = Rect::new(10, 20, 30, 1);
-    for position in [
-        NavPosition::Left,
-        NavPosition::Top,
-        NavPosition::Right,
-        NavPosition::Bottom,
-    ] {
-        for collapsed in [false, true] {
-            let rect = collapse_button_rect(bar, position, collapsed);
-            let token_width = UnicodeWidthStr::width(collapse_button_token(position, collapsed));
-            assert_eq!(rect.width as usize, token_width);
-            assert_eq!(rect.x + rect.width, bar.x + bar.width);
-            assert!(rect.contains(Position::new(bar.x + bar.width - 1, bar.y)));
-        }
-    }
-}
-
-#[test]
-fn collapse_button_tokens_match_position_and_state() {
-    let cases = [
-        (NavPosition::Left, false, "<<"),
-        (NavPosition::Left, true, ">>"),
-        (NavPosition::Right, false, ">>"),
-        (NavPosition::Right, true, "<<"),
-        (NavPosition::Top, false, "▲"),
-        (NavPosition::Top, true, "▼"),
-        (NavPosition::Bottom, false, "▼"),
-        (NavPosition::Bottom, true, "▲"),
-    ];
-    for (position, collapsed, expected) in cases {
-        assert_eq!(collapse_button_token(position, collapsed), expected);
-    }
+    assert!(
+        bottom.tree.is_empty(),
+        "a collapsed band is the seam line only"
+    );
+    assert_eq!(bottom.terminal, Rect::new(0, 0, 140, 29));
+    assert_eq!(bottom.view_border, Rect::new(0, 29, 140, 1));
+    assert_eq!(
+        bottom.hint_bar, bottom.view_border,
+        "the prefix rests on the seam"
+    );
 }
 
 #[test]
@@ -5217,7 +5141,9 @@ async fn view_border_color_is_independent_of_nav_position() {
     let mut state = crate::state::State::from_scan(sample());
     let sw = Switcher::new(&mut state);
     state.chrome.set_nav_position(NavPosition::Bottom);
-    let (y, left, right_col) = (59u16, 0u16, 39u16);
+    // The far end of the seam row holds the resting prefix, so the right sample stands
+    // clear of it.
+    let (y, left, right_col) = (59u16, 0u16, 30u16);
 
     // Nav focused: both ends use the active colour.
     term.draw(|f| sw.render_test(f, None, false, bottom, &state))
@@ -5397,9 +5323,9 @@ fn popup_border_press_then_drag_moves_the_rect() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state); // the help popup, the one popup that remains
-    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
     let before_plan = sw.layout(
-        Rect::new(0, 0, 140, 30),
+        Rect::new(0, 0, 140, 40),
         NavSize::hidden(NAV_WIDTH),
         &state,
         &RenderPlan::default(),
@@ -5414,7 +5340,7 @@ fn popup_border_press_then_drag_moves_the_rect() {
     );
     sw.drag_popup(bx + 5, by + 1);
     let after_plan = sw.layout(
-        Rect::new(0, 0, 140, 30),
+        Rect::new(0, 0, 140, 40),
         NavSize::hidden(NAV_WIDTH),
         &state,
         &before_plan,
@@ -5903,7 +5829,7 @@ fn the_portrait_band_flows_cards_down_then_right() {
         let (title, a, b) = (cells[&base], cells[&(base + 1)], cells[&(base + 2)]);
         // One column, but a session card starts past the connector's strip while the
         // title it hangs under holds the column's left edge.
-        assert_eq!(a.x, title.x + CONNECTOR_W, "a source's rows share a column");
+        assert_eq!(a.x, title.x + CARD_INDENT, "a source's rows share a column");
         assert_eq!(b.x, a.x, "and the session cards line up with each other");
         assert_eq!(title.y, 0, "the section title starts its column");
         assert_eq!(title.height, 1, "a title is one row");
@@ -5949,7 +5875,7 @@ fn a_column_holds_whole_sections() {
     // the third section's title, but not for the section. It moves right ENTIRE rather
     // than leaving a card behind at the foot of the column: a source's rows stay
     // together, and the title naming them stays at the top of them.
-    let (_sw, plan, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 23);
+    let (_sw, plan, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 21);
     let cells = cells_of(&plan);
     assert_eq!(cells.len(), 9);
     let x0 = cells[&0].x;
@@ -5957,7 +5883,7 @@ fn a_column_holds_whole_sections() {
     for i in [1usize, 2, 4, 5] {
         assert_eq!(
             cells[&i].x,
-            x0 + CONNECTOR_W,
+            x0 + CARD_INDENT,
             "sections one and two share the first column, their cards past the strip"
         );
     }
@@ -5972,7 +5898,7 @@ fn a_column_holds_whole_sections() {
     assert_eq!(cells[&6].y, 0, "at the top of it");
     assert_eq!(
         cells[&7].x,
-        cells[&6].x + CONNECTOR_W,
+        cells[&6].x + CARD_INDENT,
         "with its sessions under it"
     );
 }
@@ -6063,51 +5989,45 @@ fn portrait_scanning_hosts_anchor_to_the_right_until_found() {
 }
 
 #[test]
-fn the_hidden_columns_are_counted_on_the_status_row() {
-    // Columns too wide to all fit leave cards off screen. The status row says which way
-    // they went and how many, at the end they went off: the count is in CARDS, because
-    // what the reader is hunting for is a session, not a column.
-    //
-    // The row is the band's own last row, never a card's: a selected card inverts its
-    // whole rect, and anything sharing that rect inverts with it.
+fn the_hidden_columns_are_counted_on_the_seam() {
+    // Columns too wide to all fit leave cards off screen. The seam says which way they
+    // went and how many, at the end they went off: the count is in CARDS, because what
+    // the reader is hunting for is a session, not a column. The count costs no row: every
+    // band row holds cards, and the seam row is the line the nav already draws.
     let (_sw, _plan, mut term) = portrait(
         column_flow_scan_sized(&[("aa", 2), ("bb", 3), ("cc", 2)], 26),
         60,
         20,
     );
-    let bar_y = 7; // the band is 8 rows: 7 of cards, then its own status row
+    let seam_y = 8; // the band is 8 rows of cards, then the seam
     let row = |t: &Terminal<TestBackend>| -> String {
         let buf = t.backend().buffer();
         (0..buf.area.width)
-            .map(|x| buf[(x, bar_y)].symbol())
+            .map(|x| buf[(x, seam_y)].symbol())
             .collect()
     };
     let at_left = row(&term);
     assert!(
-        at_left.contains("C-g"),
-        "the bar still names the prefix: {at_left:?}"
+        at_left.trim_end().ends_with("C-g"),
+        "the prefix owns the far end of the seam: {at_left:?}"
     );
     assert!(
-        at_left.contains("more >>"),
-        "and the cards off to the right are counted at that end: {at_left:?}"
+        at_left.contains(" \u{203a}"),
+        "the cards off to the right are counted at that end: {at_left:?}"
     );
     assert!(
-        at_left.trim_end().ends_with('▲'),
-        "the collapse button owns the far end of the status row: {at_left:?}"
-    );
-    assert!(
-        !at_left.contains("<<"),
+        !at_left.contains('\u{2039}'),
         "nothing is off to the left from the first column: {at_left:?}"
     );
-    // The label sits on its own background, sized to itself; the counts do not.
+    // The prefix sits on its own background, sized to itself; the counts do not.
     let bar_bg = crate::ui::palette::Palette::default().bar_bg;
     let buf = term.backend().buffer();
     let lit = (0..buf.area.width)
-        .filter(|x| buf[(*x, bar_y)].bg == bar_bg)
+        .filter(|x| buf[(*x, seam_y)].bg == bar_bg)
         .count();
     assert!(
         lit > 0 && lit < buf.area.width as usize / 2,
-        "the label is a label, not a slab: {lit} of {} cells",
+        "the prefix is a label, not a slab: {lit} of {} cells",
         buf.area.width
     );
     // Walk to the last card: now the hidden columns are behind us, so the count swaps ends.
@@ -6121,27 +6041,31 @@ fn the_hidden_columns_are_counted_on_the_status_row() {
         .unwrap();
     let at_right = row(&term);
     assert!(
-        at_right.contains("<<") && at_right.contains("more"),
+        at_right.contains("\u{2039} "),
         "the cards left behind are counted at the left end: {at_right:?}"
     );
 }
 #[test]
-fn the_portrait_status_line_is_a_label_until_the_prefix_is_armed() {
-    // Nothing off screen, so the status row is the bar's alone. It still paints only what
-    // it has to say plus a cell of padding: a full-width slab of bar colour across a wide
+fn the_portrait_prefix_is_a_label_until_the_prefix_is_armed() {
+    // Nothing off screen, so the seam carries only the prefix. It paints only what it
+    // has to say plus a cell of padding: a full-width slab of bar colour across a wide
     // window is a lot of paint for one word.
     let (_sw, _plan, mut term) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 20);
     let bar_bg = crate::ui::palette::Palette::default().bar_bg;
-    let bar_y = 7;
+    let seam_y = 8;
     {
         let buf = term.backend().buffer();
         let row: String = (0..buf.area.width)
-            .map(|x| buf[(x, bar_y)].symbol())
+            .map(|x| buf[(x, seam_y)].symbol())
             .collect();
-        assert!(row.contains("C-g"), "the bar names the prefix: {row:?}");
-        assert_eq!(buf[(0, bar_y)].bg, bar_bg, "on its own background: {row:?}");
+        assert!(row.contains("C-g"), "the seam names the prefix: {row:?}");
+        assert_eq!(
+            buf[(buf.area.width - 1, seam_y)].bg,
+            bar_bg,
+            "on its own background at the right end: {row:?}"
+        );
         let lit = (0..buf.area.width)
-            .filter(|x| buf[(*x, bar_y)].bg == bar_bg)
+            .filter(|x| buf[(*x, seam_y)].bg == bar_bg)
             .count();
         assert!(
             lit < buf.area.width as usize / 2,
@@ -6157,19 +6081,18 @@ fn the_portrait_status_line_is_a_label_until_the_prefix_is_armed() {
     term.draw(|f| sw.render_test(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
     let buf = term.backend().buffer();
-    let armed_y = bar_y; // it widens in place: the band's own row, the window's full width
     assert!(
-        (0..buf.area.width).all(|x| buf[(x, armed_y)].bg == bar_bg),
-        "the armed bar fills its row: {:?}",
+        (0..buf.area.width).all(|x| buf[(x, seam_y)].bg == bar_bg),
+        "the armed bar fills the seam row: {:?}",
         (0..buf.area.width)
-            .map(|x| buf[(x, armed_y)].symbol())
+            .map(|x| buf[(x, seam_y)].symbol())
             .collect::<String>()
     );
 }
 #[test]
-fn the_side_lists_scrollbar_column_is_outside_every_card() {
-    // Same rule on the other axis: when the side list overflows, its thumb takes the
-    // nav's last column and the cards give it up, so no inverted card runs under it.
+fn the_side_lists_overflow_thickens_the_seam_and_spares_every_card() {
+    // When the side list overflows, the seam beside the cards on screen turns heavy. No
+    // column of the nav is given up for it, so the cards keep the nav's full width.
     let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
     let sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(140, 8)).unwrap();
@@ -6183,19 +6106,14 @@ fn the_side_lists_scrollbar_column_is_outside_every_card() {
         .unwrap();
     assert_eq!(plan.layout, ViewLayout::Column);
     let buf = term.backend().buffer();
-    let bar_x = NAV_WIDTH - 1;
-    let col: String = (0..buf.area.height - 1)
-        .map(|y| buf[(bar_x, y)].symbol())
+    let seam: String = (0..buf.area.height)
+        .map(|y| buf[(NAV_WIDTH, y)].symbol())
         .collect();
+    assert!(seam.contains('┃'), "the seam thickens: {seam:?}");
     assert!(
-        col.contains("▐"),
-        "the overflow cue is in the nav's last column: {col:?}"
+        seam.contains('│'),
+        "only where the cards on screen are: {seam:?}"
     );
-    assert!(
-        (0..buf.area.height).all(|y| !buf[(bar_x, y)].modifier.contains(Modifier::REVERSED)),
-        "and no selected card reaches into it"
-    );
-    // The selected card itself is still inverted; the section title above it is not.
     let selected = sw.selected;
     let sel_rect = plan
         .nav_cells
@@ -6203,6 +6121,11 @@ fn the_side_lists_scrollbar_column_is_outside_every_card() {
         .find(|(i, _)| *i == selected)
         .map(|(_, r)| *r)
         .unwrap();
+    assert_eq!(
+        sel_rect.right(),
+        NAV_WIDTH,
+        "the selected card reaches the nav's last column"
+    );
     assert!(
         buf[(sel_rect.x, sel_rect.y)]
             .modifier
