@@ -16,7 +16,7 @@ release:
 
 ```sh
 scripts/demo/make-gifs.sh            # the version in Cargo.toml
-scripts/demo/make-gifs.sh 0.11.2     # any published release
+scripts/demo/make-gifs.sh 0.12.3     # any published release
 ```
 
 The script needs Docker and Node.js on `PATH`. It overwrites the GIFs in
@@ -41,7 +41,7 @@ Each scenario runs a shell on a pseudo terminal inside `laptop` and types keys a
 a fixed pace. A step that waits on the app waits until the screen shows the
 expected text, so the recording keeps the real latency of ssh, tmux, and xmux.
 Both sides of the comparison type at the same pace. Every xmux scenario starts
-with the smallest nav that shows each demo card whole. The pacing constants and
+with a nav wide enough to show each demo card whole. The pacing constants and
 the nav size sit at the top of `record.py`.
 
 The recordings are replayed in a terminal emulator in a headless browser, one

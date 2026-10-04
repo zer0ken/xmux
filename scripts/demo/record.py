@@ -19,10 +19,9 @@ CHORD = 0.6       # after the prefix, before its command key
 HOLD = 0.3        # a held Ctrl-arrow; inside the app's 400 ms resize repeat window
 REACT = 0.6       # after the screen answers, before the next command
 
-# The smallest nav that shows every demo card whole: the widest card is
-# "3 my-important-session" (22 columns), and a band holds a source title, its two
-# cards, and the status line (4 rows).
-NAV_WIDTH = 22
+# The nav leaves room for card padding around "3 my-important-session".
+# A band holds a source title, its two cards, and the status line (4 rows).
+NAV_WIDTH = 26
 NAV_HEIGHT = 4
 
 KEYS = {
@@ -167,7 +166,7 @@ def compare_xmux(s):
     fresh_app_state()
     s.type("xmux"); s.key("Enter", TYPE)
     s.answered("my-important-session")
-    s.type("/my-imp"); s.key("Enter", TYPE)
+    s.prefix(); s.type("/my-imp"); s.key("Enter", TYPE)
     enter = s.term.keys[-1][0]
     return max(s.term.wait("epoch 17/50"), enter)
 
