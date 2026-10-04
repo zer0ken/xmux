@@ -366,6 +366,8 @@ impl Default for Chrome {
             flash: String::new(),
             flash_until: None,
             selection_hint: None,
+            first_key_seen: false,
+            first_key_notice: false,
             auto_hide: false,
             view_border_hovered: false,
             spinner: HashSet::new(),
@@ -394,13 +396,18 @@ impl Chrome {
         ui: &crate::provision::config::UiConfig,
         palette: &crate::ui::palette::Palette,
     ) {
-        self.colors = ViewBorderColors::resolve_with_palette(
-            &ui.view_active_border_style,
-            &ui.view_border_style,
-            &ui.view_border_hover_style,
-            palette,
-        );
-        self.hint_bar_style = parse_hint_bar_style(&ui.hint_bar_style, palette);
+        if crate::ui::palette::no_color() {
+            self.colors = ViewBorderColors::from_palette(palette);
+            self.hint_bar_style = hint_bar_default_style(palette);
+        } else {
+            self.colors = ViewBorderColors::resolve_with_palette(
+                &ui.view_active_border_style,
+                &ui.view_border_style,
+                &ui.view_border_hover_style,
+                palette,
+            );
+            self.hint_bar_style = parse_hint_bar_style(&ui.hint_bar_style, palette);
+        }
     }
 
     /// The rule between the tree and the terminal view. The whole rule uses the active
@@ -1018,6 +1025,20 @@ impl Chrome {
                 "",
                 LoginField::Password,
             ));
+            if !state.recent_logins.is_empty() {
+                out.push(Line::from(""));
+                out.push(group("recent logins"));
+                for (i, item) in state.recent_logins.iter().enumerate() {
+                    let value = format!(
+                        "{}  {}@{}:{}",
+                        item.source,
+                        item.login.user.as_deref().unwrap_or(""),
+                        item.login.address.as_deref().unwrap_or(""),
+                        item.login.port.map(|p| p.to_string()).unwrap_or_default(),
+                    );
+                    out.push(choice("", "↳", &value, d.focus == LoginFocus::Recent(i)));
+                }
+            }
             out.push(Line::from(""));
             out.push(group("after login"));
             // The remember choice appears only once a value differs from what ssh would

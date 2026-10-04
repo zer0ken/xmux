@@ -219,6 +219,9 @@ impl Runtime {
                 Effect::PersistNavScope(scope) => {
                     crate::app::prefs::save_nav_scope(&self.env.xmux_dir, scope);
                 }
+                Effect::PersistFirstKeyHelpSeen => {
+                    crate::app::prefs::mark_first_key_help_seen(&self.env.xmux_dir);
+                }
                 Effect::ReattachDisplay(selection) => {
                     let key = display_key(&self.hosts, &selection);
                     self.registry.remove(&key);

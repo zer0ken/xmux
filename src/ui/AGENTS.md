@@ -74,7 +74,7 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 ## Invariants
 
 - Every colour xmux itself paints is an ANSI-16 slot or an attribute (reverse
-  video, bold), so the terminal theme resolves it, never an RGB value. A
+  video, bold, dim), so the terminal theme resolves it, never an RGB value. A
   background with no slot for it is an attribute instead: the selected card is
   reverse video, not a computed surface. See "Colour ownership" in `CONTEXT.md`;
   the palette is guarded so a stray RGB colour cannot reach it.
@@ -207,7 +207,7 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   layout puts cards on a fixed pitch the paint ignores (a column parts its bands, a
   band runs columns), so a hit-test that measured its own pitch would land clicks
   on cards the renderer put elsewhere.
-- A group reads the same at every nav position: a dim section title with its session
+- A group reads the same at every nav position: a bold section title with its session
   cards indented under it, and nothing else. The indent is never inside a card's rect: the
   selected card is painted by inverting that rect, so the rect the paint records - what
   the selection inverts and what the hit-test reads - starts past the indent. A band

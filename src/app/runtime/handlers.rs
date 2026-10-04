@@ -676,7 +676,7 @@ impl Runtime {
         // the terminal but the theme the terminal already has: no colour query, no probing,
         // no fallback to guess at. The colours from outside those slots are the ones the
         // user names in `[ui]` role keys and `[ui] selection-style`.
-        let palette = crate::ui::palette::resolve(
+        let palette = crate::ui::palette::resolve_output(
             &roster.cfg.ui.theme,
             crate::ui::chrome::palette_overrides(&roster.cfg.ui),
         );
@@ -684,6 +684,7 @@ impl Runtime {
         switcher.set_palette(palette);
         // The help modal must show the prefix the user configured, not a literal.
         state.chrome.set_ui_prefix(env.ui_prefix.clone());
+        state.chrome.first_key_seen = crate::app::prefs::first_key_help_seen(&env.xmux_dir);
         drop(roster);
 
         // The live mutate ops (create/rename/kill) - NOT nav probing.
@@ -1733,8 +1734,10 @@ impl Runtime {
                 return true;
             }
         };
-        let palette =
-            crate::ui::palette::resolve(&ui.theme, crate::ui::chrome::palette_overrides(&ui));
+        let palette = crate::ui::palette::resolve_output(
+            &ui.theme,
+            crate::ui::chrome::palette_overrides(&ui),
+        );
         let effects = update(
             &mut self.model,
             Msg::ConfigObserved {
