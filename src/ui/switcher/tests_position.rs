@@ -600,7 +600,7 @@ fn the_prefix_key_list_opens_toward_the_terminal_and_the_indicator_keeps_the_pre
 }
 
 #[test]
-fn the_selection_hint_floats_from_the_indicator_at_every_position() {
+fn the_selection_hint_uses_the_seam_or_the_side_layout_bottom_row() {
     for position in ALL {
         let mut shot = Shot::new(two_groups(), nav_at(position), false);
         shot.state.chrome.set_nav_position(position);
@@ -618,6 +618,9 @@ fn the_selection_hint_floats_from_the_indicator_at_every_position() {
         let r = shot.plan.regions;
         if matches!(position, NavPosition::Left | NavPosition::Right) {
             assert_eq!(bar, Rect::new(0, H - 1, W, 1), "{position:?}");
+        } else {
+            assert_eq!(bar.y, r.view_border.y, "{position:?}");
+            assert!(bar.right() < r.hint_bar.right(), "{position:?}");
         }
         assert!(
             !bar.intersects(r.tree),
@@ -635,5 +638,46 @@ fn the_selection_hint_floats_from_the_indicator_at_every_position() {
                 "{position:?}: the indicator keeps the prefix: {indicator:?}"
             );
         }
+    }
+}
+
+#[test]
+fn a_band_flash_opens_beside_the_seam() {
+    for position in [NavPosition::Top, NavPosition::Bottom] {
+        let mut shot = Shot::new(two_groups(), nav_at(position), false);
+        shot.state
+            .chrome
+            .flash("a refusal with enough words to wrap if the window is narrow");
+        shot.draw(false);
+        let bar = shot.plan.hint_bar_rect;
+        let seam = shot.plan.regions.view_border;
+        if position == NavPosition::Top {
+            assert_eq!(bar.y, seam.bottom(), "{position:?}");
+        } else {
+            assert_eq!(bar.bottom(), seam.y, "{position:?}");
+        }
+        assert!(shot.seam_text().contains("C-g"), "{position:?}");
+    }
+}
+
+#[test]
+fn a_band_selection_hint_owns_the_seam_until_it_expires() {
+    for position in [NavPosition::Top, NavPosition::Bottom] {
+        let mut shot = Shot::new(many_sessions(60, 12), nav_at(position), false);
+        let (mark_x, mark_y) = shot.find_in(shot.plan.regions.view_border, " ›").unwrap();
+        assert!(shot.plan.overflow_target(mark_x, mark_y).is_some());
+        shot.state.chrome.show_selection_hint(
+            vec![("Enter".into(), "focus".into(), "focus".into())],
+            "3 windows".into(),
+            std::time::Instant::now(),
+        );
+        shot.draw(false);
+        assert!(shot.plan.overflow_target(mark_x, mark_y).is_none());
+        assert_eq!(shot.plan.hint_bar_rect.y, shot.plan.regions.view_border.y);
+        assert!(shot.seam_text().contains("3 windows"), "{position:?}");
+        assert!(shot.seam_text().contains("C-g"), "{position:?}");
+        shot.state.chrome.clear_selection_hint();
+        shot.draw(false);
+        assert!(shot.plan.overflow_target(mark_x, mark_y).is_some());
     }
 }

@@ -82,8 +82,9 @@ UI elements a user perceives as distinct things:
   the key list beside it names the keys. It shows one thing at a time, in order: a flash,
   an input line, the prefix while the key list is open, the selection hint, the scan
   indicator, the active filter, then the resting prefix. An input line, a flash, and the
-  selection hint use the whole window's bottom rows beside a side column, the rows
-  below a top band's seam, or the rows above a bottom band's seam. With the nav hidden
+  selection hint use the whole window's bottom rows beside a side column. In a band,
+  the selection hint uses the view border beside the prefix, while an input or flash
+  uses the rows below a top band's seam or above a bottom band's seam. With the nav hidden
   they use the window's bottom rows. The indicator keeps the prefix in a band. The bar
   wraps instead of clipping. A flash paints the bar in the
   error style with a `✗` mark.
