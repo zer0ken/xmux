@@ -60,7 +60,7 @@ fn note_lines(note: &Note, inner: u16, palette: &Palette) -> Vec<Line<'static>> 
 }
 
 /// The size of `toast` when it may be at most `max_w` cells wide: as wide as its longest
-/// note or its title needs, and as tall as its wrapped notes plus the border.
+/// note or its title needs, and as tall as its wrapped notes, history key, and border.
 fn toast_size(toast: &Toast, max_w: u16) -> (u16, u16) {
     let words = toast
         .notes
@@ -70,22 +70,19 @@ fn toast_size(toast: &Toast, max_w: u16) -> (u16, u16) {
         .max()
         .unwrap_or(0);
     let title = UnicodeWidthStr::width(toast.title.as_str()) + 4;
-    let w = ((words.max(title) + 2) as u16).min(max_w);
+    let w = ((words.max(title) + 2) as u16).max(16).min(max_w);
     let inner = w.saturating_sub(2);
     let body: usize = toast
         .notes
         .iter()
         .map(|n| note_lines(n, inner, &Palette::default()).len())
         .sum();
-    (w, body as u16 + 2)
+    (w, body as u16 + 3)
 }
 
-/// Where each toast floats: the terminal view's top corner farthest from the nav, or its
-/// bottom right corner when the nav rides on top. The newest toast takes the corner and
-/// older ones stack away from it; a toast that does not fit in the room left, or that
-/// would cover `keep` (the prefix key list while it is open), is left for the history and
-/// the next older one is tried. No toast is wider than [`TOAST_MAX_PERCENT`] of the
-/// window.
+/// Toasts float in the terminal corner nearest the hint and stack inward. If the
+/// prefix key list or floating hint occupies that corner, they start beyond it.
+/// A toast that cannot fit stays in the history. Width is capped at 40% of the window.
 pub(crate) fn place_toasts(
     notify: &Notifications,
     terminal: Rect,
@@ -98,8 +95,8 @@ pub(crate) fn place_toasts(
     if max_w < TOAST_MIN_WIDTH || terminal.height < 3 {
         return Vec::new();
     }
-    let from_bottom = position == NavPosition::Top;
-    let at_left = position == NavPosition::Right;
+    let from_bottom = position != NavPosition::Top;
+    let at_left = position == NavPosition::Left;
     let mut placed = Vec::new();
     let mut used = 0u16;
     for toast in notify.toasts.iter().rev() {
@@ -112,24 +109,38 @@ pub(crate) fn place_toasts(
         } else {
             terminal.right() - w
         };
-        let y = if from_bottom {
+        let mut y = if from_bottom {
             terminal.bottom() - used - h
         } else {
             terminal.y + used
         };
+        if !keep.is_empty() && Rect::new(x, y, w, h).intersects(keep) {
+            y = if from_bottom {
+                match keep.y.checked_sub(h) {
+                    Some(y) => y,
+                    None => continue,
+                }
+            } else {
+                keep.bottom()
+            };
+        }
         let rect = Rect::new(x, y, w, h);
-        if !keep.is_empty() && rect.intersects(keep) {
+        if rect.y < terminal.y || rect.bottom() > terminal.bottom() {
             continue;
         }
         placed.push((toast.id, rect));
-        used += h;
+        used = if from_bottom {
+            terminal.bottom() - rect.y
+        } else {
+            rect.bottom() - terminal.y
+        };
     }
     placed
 }
 
 /// Paints one toast: a rounded box titled with what it reports on, its notes inside, and
-/// the key that opens the history on its bottom border. A toast that leaves by itself
-/// counts down on its first line: an underline across the share of its life still ahead.
+/// the key that opens the history inside. A timed toast fills its bottom border for
+/// the share of its life still ahead.
 pub(crate) fn render_toast(
     frame: &mut Frame,
     rect: Rect,
@@ -139,7 +150,7 @@ pub(crate) fn render_toast(
     palette: &Palette,
 ) {
     let inner = rect.width.saturating_sub(2);
-    let lines: Vec<Line> = toast
+    let mut lines: Vec<Line> = toast
         .notes
         .iter()
         .flat_map(|n| note_lines(n, inner, palette))
@@ -156,15 +167,23 @@ pub(crate) fn render_toast(
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    let footer = format!(" {prefix} m history ");
-    if UnicodeWidthStr::width(footer.as_str()) as u16 + 2 <= rect.width {
-        block = block.title_bottom(Line::from(vec![
+    let footer = format!(" {prefix} m history");
+    if UnicodeWidthStr::width(footer.as_str()) as u16 <= inner {
+        lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(
                 format!("{prefix} m"),
                 crate::ui::palette::interaction_key_style(),
             ),
-            Span::styled(" history ", Style::default().fg(palette.decoration)),
+            Span::styled(" history", Style::default().fg(palette.decoration)),
+        ]));
+    } else if UnicodeWidthStr::width(format!(" {prefix} m").as_str()) as u16 <= inner {
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                format!("{prefix} m"),
+                crate::ui::palette::interaction_key_style(),
+            ),
         ]));
     }
     frame.render_widget(Clear, rect);
@@ -173,9 +192,19 @@ pub(crate) fn render_toast(
     if let Some(left) = left {
         let cells = (left * inner as f32).ceil() as u16;
         let buf = frame.buffer_mut();
-        for x in rect.x + 1..rect.x + 1 + cells.min(inner) {
-            let cell = &mut buf[(x, rect.y + 1)];
-            cell.set_style(cell.style().add_modifier(Modifier::UNDERLINED));
+        for i in 0..inner {
+            let cell = &mut buf[(rect.x + 1 + i, rect.bottom() - 1)];
+            if i < cells {
+                cell.set_symbol("━");
+                cell.set_style(
+                    Style::default()
+                        .fg(palette.accent)
+                        .add_modifier(Modifier::BOLD),
+                );
+            } else {
+                cell.set_symbol("─");
+                cell.set_style(Style::default().fg(palette.decoration));
+            }
         }
     }
 }
@@ -280,26 +309,28 @@ mod tests {
     }
 
     #[test]
-    fn a_toast_floats_in_the_terminal_corner_farthest_from_the_nav() {
+    fn a_toast_floats_in_the_terminal_corner_nearest_the_hint() {
         let window = Rect::new(0, 0, 100, 30);
         let n = notify_with(&["gpu-02"]);
         for (position, corner) in [
-            (NavPosition::Left, "top right"),
-            (NavPosition::Right, "top left"),
-            (NavPosition::Bottom, "top right"),
-            (NavPosition::Top, "bottom right"),
+            (NavPosition::Left, "bottom left"),
+            (NavPosition::Right, "bottom right"),
+            (NavPosition::Bottom, "bottom right"),
+            (NavPosition::Top, "top right"),
         ] {
             let terminal = terminal_for(position);
             let placed = place_toasts(&n, terminal, window, position, Rect::default());
             assert_eq!(placed.len(), 1, "{position:?}");
             let r = placed[0].1;
-            let (left, top) = match corner {
-                "top right" => (r.right() == terminal.right(), r.y == terminal.y),
-                "top left" => (r.x == terminal.x, r.y == terminal.y),
-                _ => (
-                    r.right() == terminal.right(),
-                    r.bottom() == terminal.bottom(),
-                ),
+            let left = if corner.ends_with("left") {
+                r.x == terminal.x
+            } else {
+                r.right() == terminal.right()
+            };
+            let top = if corner.starts_with("top") {
+                r.y == terminal.y
+            } else {
+                r.bottom() == terminal.bottom()
             };
             assert!(
                 left && top,
@@ -320,21 +351,33 @@ mod tests {
         let placed = place_toasts(&n, terminal, window, NavPosition::Left, Rect::default());
         let new_id = n.toasts[1].id;
         assert_eq!(placed[0].0, new_id, "the newest is placed first");
-        assert_eq!(placed[0].1.y, terminal.y);
-        assert_eq!(
-            placed[1].1.y,
-            placed[0].1.bottom(),
-            "the older one stacks below"
-        );
-
-        let terminal = terminal_for(NavPosition::Top);
-        let placed = place_toasts(&n, terminal, window, NavPosition::Top, Rect::default());
         assert_eq!(placed[0].1.bottom(), terminal.bottom());
         assert_eq!(
             placed[1].1.bottom(),
             placed[0].1.y,
-            "from the bottom it stacks up"
+            "the older one stacks above"
         );
+
+        let terminal = terminal_for(NavPosition::Top);
+        let placed = place_toasts(&n, terminal, window, NavPosition::Top, Rect::default());
+        assert_eq!(placed[0].1.y, terminal.y);
+        assert_eq!(
+            placed[1].1.y,
+            placed[0].1.bottom(),
+            "from the top it stacks down"
+        );
+    }
+
+    #[test]
+    fn a_toast_moves_past_the_prefix_key_list_when_there_is_room() {
+        let window = Rect::new(0, 0, 100, 30);
+        let n = notify_with(&["gpu-02"]);
+        let terminal = terminal_for(NavPosition::Left);
+        let keep = Rect::new(31, 24, 30, 6);
+        let placed = place_toasts(&n, terminal, window, NavPosition::Left, keep);
+        assert_eq!(placed.len(), 1);
+        assert_eq!(placed[0].1.bottom(), keep.y);
+        assert!(!placed[0].1.intersects(keep));
     }
 
     #[test]
@@ -387,7 +430,7 @@ mod tests {
             [n.toasts[0].id],
             "the older toast that fits is still drawn"
         );
-        assert_eq!(placed[0].1.y, terminal.y);
+        assert_eq!(placed[0].1.bottom(), terminal.bottom());
     }
 
     #[test]
@@ -404,44 +447,45 @@ mod tests {
     }
 
     #[test]
-    fn a_timed_toast_underlines_its_remaining_life_on_its_message_line() {
+    fn a_timed_toast_fills_its_bottom_border_for_the_remaining_life() {
         let mut n = Notifications::default();
         let t0 = Instant::now();
         n.toast_at(t0, "re-scan", vec![Note::new(Level::Success, "no changes")]);
         let toast = n.toasts[0].clone();
-        let rect = Rect::new(0, 0, 22, 3);
-        let underlined = |now: Instant| {
-            let mut term = Terminal::new(TestBackend::new(22, 3)).unwrap();
+        let rect = Rect::new(0, 0, 22, 4);
+        let progress = |now: Instant| {
+            let mut term = Terminal::new(TestBackend::new(22, 4)).unwrap();
             term.draw(|f| render_toast(f, rect, &toast, Some(now), "C-g", &Palette::default()))
                 .unwrap();
             let buf = term.backend().buffer().clone();
-            (1..21)
-                .filter(|&x| buf[(x, 1)].modifier.contains(Modifier::UNDERLINED))
-                .count()
+            let filled = (1..21)
+                .filter(|&x| {
+                    buf[(x, 3)].symbol() == "━" && buf[(x, 3)].modifier.contains(Modifier::BOLD)
+                })
+                .count();
+            assert!((1..21).all(|x| matches!(buf[(x, 3)].symbol(), "━" | "─")));
+            assert!((1..21).all(|x| !buf[(x, 1)].modifier.contains(Modifier::UNDERLINED)));
+            filled
         };
-        assert_eq!(
-            underlined(t0),
-            20,
-            "a fresh toast underlines its whole line"
-        );
-        let half = underlined(t0 + crate::state::notify::TOAST_TTL / 2);
-        assert_eq!(half, 10, "half its life underlines half its line");
-        assert_eq!(underlined(t0 + crate::state::notify::TOAST_TTL), 0);
+        assert_eq!(progress(t0), 20);
+        assert_eq!(progress(t0 + crate::state::notify::TOAST_TTL / 2), 10);
+        assert_eq!(progress(t0 + crate::state::notify::TOAST_TTL), 0);
     }
 
     #[test]
     fn a_sticky_toast_draws_no_countdown() {
         let n = notify_with(&["gpu-02"]);
-        let rect = Rect::new(0, 0, 30, 3);
-        let mut term = Terminal::new(TestBackend::new(30, 3)).unwrap();
+        let rect = Rect::new(0, 0, 30, 4);
+        let mut term = Terminal::new(TestBackend::new(30, 4)).unwrap();
         term.draw(|f| render_toast(f, rect, &n.toasts[0], n.now, "C-g", &Palette::default()))
             .unwrap();
         let buf = term.backend().buffer().clone();
         assert!(!(1..29).any(|x| buf[(x, 1)].modifier.contains(Modifier::UNDERLINED)));
         let row: String = (0..30).map(|x| buf[(x, 1)].symbol().to_string()).collect();
         assert!(row.contains("✗ login failed"), "{row:?}");
-        let bottom: String = (0..30).map(|x| buf[(x, 2)].symbol().to_string()).collect();
-        assert!(bottom.contains("C-g m history"), "{bottom:?}");
+        let footer: String = (0..30).map(|x| buf[(x, 2)].symbol().to_string()).collect();
+        assert!(footer.contains("C-g m history"), "{footer:?}");
+        assert!((1..29).all(|x| buf[(x, 3)].symbol() == "─"));
     }
 
     #[test]
