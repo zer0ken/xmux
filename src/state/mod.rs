@@ -148,8 +148,8 @@ pub struct RecentLogin {
 /// drives it.
 ///
 /// Address and port start at what ssh would use; username comes from an exact host
-/// stanza or starts empty. The starting
-/// values are kept beside the fields so the remember choice appears after an edit.
+/// stanza or starts empty. The starting values stay beside the fields so the remember
+/// choice appears after an edit.
 #[derive(Clone, Default)]
 pub struct LoginDraft {
     /// The blocked source this draft belongs to; a different current source resets it.
@@ -361,9 +361,9 @@ impl State {
     ///
     /// A draft for a different source is reset first. Address and port start at the
     /// values ssh would have used, while username needs input when no host stanza
-    /// supplies it. On submit
-    /// the password leaves the rendered draft and enters the process-only credential
-    /// broker. A failed or replaced login removes that exact credential.
+    /// supplies it. On submit the password leaves the rendered draft and enters the
+    /// process-only credential broker. A failed or replaced login removes that exact
+    /// credential.
     pub fn feed_login(&mut self, source: &str, bytes: &[u8]) -> Option<crate::model::Command> {
         let details = self.login_failure(source).is_some();
         let recent = self.recent_logins.clone();

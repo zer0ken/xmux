@@ -1013,14 +1013,22 @@ fn strip_managed(config_text: &str, marker: &str) -> String {
 /// the alias exactly. A stanza reached only through a pattern is not consulted, so a
 /// value this returns is one the user wrote against this host by name.
 pub fn stanza_user(config_text: &str, alias: &str) -> Option<String> {
-    host_stanza(config_text, alias).lines().find_map(|line| {
-        let mut it = line.split_whitespace();
-        let key = it.next()?;
-        if !key.eq_ignore_ascii_case("User") {
-            return None;
+    let mut exact_host = false;
+    for line in host_stanza(config_text, alias).lines() {
+        let key = line.split_whitespace().next();
+        if key.is_some_and(|key| key.eq_ignore_ascii_case("Host")) {
+            exact_host = true;
+        } else if key.is_some_and(|key| key.eq_ignore_ascii_case("Match")) {
+            exact_host = false;
+        } else if exact_host {
+            if let Some((_, value)) =
+                ssh_directive(line).filter(|(key, _)| key.eq_ignore_ascii_case("User"))
+            {
+                return Some(value);
+            }
         }
-        it.next().map(str::to_string)
-    })
+    }
+    None
 }
 
 /// The connection values the named ssh-config stanza supplies. OpenSSH keeps the first
@@ -1063,7 +1071,7 @@ pub fn login_defaults(
         .unwrap_or_else(|| alias.to_string());
     let port_from_ssh = configured.port.is_some_and(|port| port != 22) || stanza.port.is_some();
     let port = configured.port.unwrap_or(22).to_string();
-    let user = stanza.user.unwrap_or_default();
+    let user = stanza_user(config_text, alias).unwrap_or_default();
     crate::provision::env::LoginDefaults {
         address: crate::provision::env::LoginValue {
             value: address,
@@ -1220,6 +1228,38 @@ mod tests {
         assert_eq!(stanza_user(text, "other").as_deref(), Some("bob"));
         assert_eq!(stanza_user(text, "absent"), None);
         assert_eq!(stanza_user("Host prod\n    Port 22\n", "prod"), None);
+    }
+
+    #[test]
+    fn login_username_ignores_patterns_and_match_blocks() {
+        let text = "Host *\n    User wildcard\nMatch originalhost prod\n    User matched\nHost prod\n    Port 2222\n";
+        let effective = crate::transport::Login {
+            user: Some("wildcard".into()),
+            ..Default::default()
+        };
+        let defaults = login_defaults("prod", None, Some(&effective), text);
+        assert!(defaults.username.value.is_empty());
+        assert!(defaults.username.provenance.is_empty());
+
+        let text = format!("Host prod\n    User = 'recorded'\n{text}");
+        let defaults = login_defaults("prod", None, Some(&effective), &text);
+        assert_eq!(defaults.username.value, "recorded");
+        assert_eq!(defaults.username.provenance, "from ssh config");
+    }
+
+    #[test]
+    fn remembered_user_prefills_the_next_login() {
+        let config = upsert_managed_stanza(
+            "Host *\n    User fallback\n",
+            "prod",
+            &crate::transport::Login {
+                user: Some("alice".into()),
+                ..Default::default()
+            },
+        );
+        let defaults = login_defaults("prod", None, None, &config);
+        assert_eq!(defaults.username.value, "alice");
+        assert_eq!(defaults.username.provenance, "from ssh config");
     }
 
     #[test]

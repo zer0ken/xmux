@@ -327,8 +327,8 @@ UI elements a user perceives as distinct things:
 - login pane - the form a blocked host's panel opens, or that the user opens for an
   unreachable host from the hosts-to-check table or command palette. It holds the three values ssh will
   not ask for and must know before it dials: the address, the port, and the username. A
-  masked password field is optional beside them. Every value starts at what ssh WOULD
-  use. Address and port come from OpenSSH's effective configuration when present,
+  masked password field is optional beside them. Address and port start at what ssh WOULD
+  use and come from OpenSSH's effective configuration when present,
   and each states that provenance beside its value. Missing values use a provider
   address or host name and port 22. The username comes from an exact host stanza if
   one names it; otherwise it starts empty and must be entered.
@@ -336,8 +336,7 @@ UI elements a user perceives as distinct things:
   supplies them to the chrome. A required field is marked in its label; an empty optional one says so in
   the space its value would occupy. Two choices follow: whether to record the values, and
   whether to register this machine's public key on the host. The record choice appears
-  only once a value differs from what ssh would have used, since a stanza repeating what
-  ssh already resolves records nothing. The connection values and the two choices are two
+  only once a value differs from its starting value. The connection values and the two choices are two
   titled groups. A recent list between them offers successful connection values from
   this run without passwords; selecting an entry fills the three connection fields.
   The focused stop's name is reversed while the pane takes keys, and a rule
