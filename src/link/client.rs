@@ -208,28 +208,31 @@ impl HostClient {
             .is_ok()
     }
 
-    /// Stop the host: the writer returns on `Shutdown`, `child.kill()` closes the
-    /// child's stdout/stderr so the reader's `lines()` and the stderr drain both
-    /// hit EOF, then all threads join.
-    ///
-    /// The join is bounded in practice: we use PIPES (not ConPTY), so killing the
-    /// child closes stdout/stderr immediately and the reader + stderr drain reach
-    /// EOF — no `ClosePseudoConsole` stall is possible here (that risk is PTY-only).
+    /// Stop the host: signal the writer, kill the child, and reap the child and I/O
+    /// threads on a detached thread. A PTY reader can remain in `read` until the mux
+    /// server releases its side of the terminal, so joining it must not block the
+    /// runtime that initiated teardown.
     pub fn teardown(mut self) {
         let _ = self.cmd_tx.send(HostCmd::Shutdown);
         let _ = self.child.kill();
-        if let Some(h) = self.writer.take() {
-            let _ = h.join();
-        }
-        if let Some(h) = self.reader.take() {
-            let _ = h.join();
-        }
-        if let Some(h) = self.stderr_drain.take() {
-            let _ = h.join();
-        }
-        // Reap the killed child so it is not left a zombie (Unix) / leaked handle.
-        // It was just killed, so this returns at once.
-        let _ = self.child.wait();
+        let mut child = self.child;
+        let auth = self._auth;
+        let writer = self.writer.take();
+        let reader = self.reader.take();
+        let stderr_drain = self.stderr_drain.take();
+        std::thread::spawn(move || {
+            if let Some(h) = writer {
+                let _ = h.join();
+            }
+            if let Some(h) = reader {
+                let _ = h.join();
+            }
+            if let Some(h) = stderr_drain {
+                let _ = h.join();
+            }
+            let _ = child.wait();
+            drop(auth);
+        });
     }
 }
 
@@ -342,6 +345,43 @@ pub(super) fn spawn_pty_child(
 mod tests {
     use super::*;
     use crate::link::test_control_proto;
+
+    #[test]
+    fn teardown_returns_without_waiting_for_reader_eof() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let _ = release_rx.recv();
+        });
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        drop(cmd_rx);
+        let client = HostClient {
+            host: "local".into(),
+            connecting: Arc::new(AtomicBool::new(false)),
+            proto: test_control_proto(),
+            cmd_tx,
+            child: Box::new(crate::display::attachment::DummyChild::default()),
+            _auth: None,
+            reader: Some(reader),
+            writer: None,
+            stderr_drain: None,
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let teardown = std::thread::spawn(move || {
+            client.teardown();
+            let _ = done_tx.send(());
+        });
+
+        let returned = done_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_ok();
+        let _ = release_tx.send(());
+        let _ = teardown.join();
+
+        assert!(
+            returned,
+            "teardown must not wait for a control reader whose PTY has not reached EOF"
+        );
+    }
 
     #[test]
     #[ignore = "real -CC is the live gate; this just proves a piped child spawns + tears down"]
