@@ -549,11 +549,12 @@ UI elements a user perceives as distinct things:
   already happened. A flash is a refusal, never the result of work: that is a toast.
 - toast - the result of work the user started (a login and what it registered, a new
   session, a re-scan's summary of what changed), or the release notice at launch, in a
-  rounded box floating in the terminal view's top corner farthest from the nav (bottom
-  right when the nav rides on top), at most 40% of the window wide. A toast of successes
-  and facts leaves after five seconds and underlines its first line for the share of that
-  life still ahead; one carrying a warning `▲` or a failure `✗` stays until a click on it
-  or opening the history dismisses it. `[ui] notifications` turns toasts off.
+  rounded box floating in the terminal view's corner nearest the hint, at most 40% of
+  the window wide. It avoids the prefix key list and floating hint. A toast of successes
+  and facts leaves after five seconds and fills its bottom border with a bold accent
+  line for the share of that life still ahead. One carrying a warning `▲` or a failure
+  `✗` stays until a click on it or opening the history dismisses it.
+  `[ui] notifications` turns toasts off.
 - history - the bounded record of every toast and every background event, opened with
   `prefix m`, newest first. A background event is one nobody asked about (a host that
   stops answering outside a re-scan) and is recorded without a toast. When full, it drops

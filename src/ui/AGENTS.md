@@ -28,10 +28,10 @@ toward the terminal view. Its layout is pure: it takes the room beside the indic
 returns the columns, the description length, and which keys it gave up, so the render
 plan carries one answer that the paint and the tests both read.
 
-The toast module places and paints the toasts in the terminal view's corner farthest
-from the nav, and builds the history popup's lines. A toast never covers the prefix key
-list, since a live prefix reads its next key from it. The render plan carries each toast's
-rect, so a click is hit-tested against what was painted.
+The toast module places and paints toasts in the terminal view's corner nearest the
+hint, and builds the history popup's lines. A toast never covers the prefix key list
+or floating hint. The render plan carries each toast's rect, so a click is hit-tested
+against what was painted. Timed toasts show remaining life on their bottom border.
 
 The operations module holds the off-loop mux-action runners and the UI decisions
 that turn domain operation results into toasts. The operation port
