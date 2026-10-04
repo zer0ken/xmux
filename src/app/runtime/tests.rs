@@ -1902,6 +1902,7 @@ fn test_rt(env: Env) -> Runtime {
         config_last_mtime: None,
         width_dirty: false,
         width_flush_at: None,
+        rescan_before: None,
     };
     let mut rt = Runtime {
         instance_name: "test".into(),

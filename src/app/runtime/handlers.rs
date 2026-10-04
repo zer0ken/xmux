@@ -606,6 +606,9 @@ impl Runtime {
         // [ui] hide-unreachable: the nav drops the settled unreachable hosts' cards. The
         // filter naming one brings its card, and its unreachable screen, back.
         switcher.set_hide_unreachable(roster.cfg.ui_hide_unreachable(), &mut state);
+        // [ui] notifications: whether results show as toasts; the history keeps them either
+        // way.
+        state.notify.toasts_enabled = roster.cfg.ui.notifications;
         // And what offered each host, so an unreachable one can name the provider that
         // put it on the roster. Reduced to words here: the screen prints them and
         // nothing branches on which provider it was.
@@ -675,6 +678,7 @@ impl Runtime {
             config_last_mtime: None,
             width_dirty: false,
             width_flush_at: None,
+            rescan_before: None,
         };
         let rt = Runtime {
             env,
@@ -1622,6 +1626,7 @@ impl Runtime {
         // user who pressed nothing. The tick is where that is noticed, because it is the
         // one wake that happens without the user doing anything.
         let had_flash = !self.model.state.chrome.flash.is_empty();
+        let toasts = self.model.state.notify.toasts.len();
         // Spinner set = the selected session if its PTY is still connecting.
         let mut sp = HashSet::new();
         if !self.model.state.selection.is_empty() {
@@ -1650,6 +1655,12 @@ impl Runtime {
         );
         debug_assert!(effects.is_empty());
         if had_flash && self.model.state.chrome.flash.is_empty() {
+            self.dirty = true;
+        }
+        // A toast that left, or one still counting down its remaining time, is a change
+        // on screen the tick is the only wake for.
+        if toasts != self.model.state.notify.toasts.len() || self.model.state.notify.counting_down()
+        {
             self.dirty = true;
         }
     }

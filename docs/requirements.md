@@ -192,9 +192,11 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B9** - The nav carries a prefix indicator, not a screen-wide footer: on the bottom
   row of a side column, and at the right end of the seam row in a top or bottom band. At
   rest it names the prefix alone; the states that outrank it (a refusal, scan progress,
-  an active filter) take its place while they apply. Arming the prefix widens the PAINT
-  to the whole window so the cheatsheet floats over the view border and the live grid,
-  leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
+  an active filter) take its place while they apply. Arming the prefix opens the
+  cheatsheet from the indicator toward the terminal view while the indicator keeps the
+  prefix: across the terminal view's columns on a side column's indicator row, on the row
+  below a top band's seam, and on the row above a bottom band's seam. Only the PAINT
+  moves, floating over the live grid and leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
   prefix interaction brings the nav back for the moment it needs it (a jump reads the
   card numbers), and it hides again when the interaction ends.
 - **FR-B10** - Every unselected card carries a 1-based number in its address column, on
@@ -305,7 +307,8 @@ no function, and no test, so renaming code is never a documentation change.
   a cell of padding on the bar's background and leaves the rest of its row to the nav (a
   side column's bottom row) or to the seam and its offscreen counts (a band's seam row). A
   ready or flashing bar fills its whole row, because it has to be readable over what it
-  covers. A flash comes down
+  covers. A flash is the reason a key did nothing, a refusal rather than the result of
+  work. It comes down
   on the next tree key and, for a user who presses nothing, after ten seconds of its own:
   it reports something that already happened, so holding one indefinitely would keep the
   nav's own help text off screen over a message that has stopped being news.
@@ -505,7 +508,7 @@ no function, and no test, so renaming code is never a documentation change.
   from what ssh would have used. A password is never recorded, because ssh config has
   nowhere to put one.
 - **FR-B30** - REGISTERING runs after a connection that worked and reports registered,
-  skipped with a reason, or failed with ssh's reason in a completion message, the log,
+  skipped with a reason, or failed with ssh's reason in the login's toast, the log,
   and the host information rows. The login command
   reads the host's shell family, since a locked host's family is unknown before it. The
   registration is an ordinary ssh command using the same per-machine authentication as
@@ -521,6 +524,30 @@ no function, and no test, so renaming code is never a documentation change.
   `✓`, `✗`, braille spinner frames led by `⠋`, box drawing led by `╭`, `▲`, `?`, and
   `…`. A terminal smaller than 24 columns by 4 rows renders only a size screen naming
   the required and current dimensions, so the nav and terminal view never overlap.
+
+- **FR-B32** - The result of work the user started is a TOAST: a login with the
+  public-key registration and ssh-config recording it ran, a new session, and a re-scan.
+  The newest recorded release is announced the same way at launch. A toast floats in the
+  terminal view's top corner farthest from the nav, or its bottom right corner when the
+  nav rides on top, is at most 40% of the window wide, and wraps a long reason inside that
+  width. A toast of successes and facts leaves after five seconds and shows the time it has
+  left as an underline under its first line that shrinks with it, which needs no extra
+  row and no colour the view border already uses. A toast carrying a warning or a failure
+  stays until a click on it or opening the history dismisses it. Three toasts stand at
+  most, the newest in the corner. `[ui] notifications` (default true) turns toasts off;
+  the history still records every result.
+- **FR-B33** - `prefix m` opens the HISTORY in either focus: every toast and every
+  background event, newest first, each with how long ago it happened. A background event
+  is one nobody asked about, such as a host that stops answering outside a re-scan; it
+  is recorded without a toast, so it never pulls attention from the terminal. The history
+  is bounded at 200 records and, when full, drops its oldest success or info record
+  before any warning or failure.
+- **FR-B34** - A re-scan ends in ONE toast that states what changed against the inventory
+  the user saw when they asked: hosts added and removed, sessions started and ended, and
+  hosts that stopped or started answering, naming the first few of each and counting the
+  rest. A re-scan that changed nothing says so with the host and session counts it found.
+  The toast is made once every source has answered, and a host that stopped answering
+  keeps it on screen until it is dismissed.
 
 ## C. Switching (the keystone)
 
@@ -620,7 +647,7 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-D11** - xmux tells the user that a newer version exists. It asks the release
   feed at most once a day and records the answer, so a launch never waits on that
   question and a launch with no network paints as fast as one with it; the answer is
-  shown on startup and by `doctor`, and one config key turns the asking off. This is
+  shown on startup as a toast and by `doctor`, and one config key turns the asking off. This is
   not the request rule of FR-G7: that rule governs the machines the roster names,
   which xmux reaches over ssh and which refuse every retry identically once they
   refuse one. Asking a release feed authenticates nothing and retries nothing.

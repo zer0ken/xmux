@@ -8,16 +8,27 @@ use crate::ui::palette;
 /// Where the hint bar actually paints. At rest it is the prefix indicator's rect: a
 /// column's bottom row, or the right end of a band's view border row (empty when the nav
 /// is hidden, so the mux keeps every row).
-/// Floating, it spans the whole window width. A multi-row bar grows down from a collapsed
-/// top nav and up from every other visible edge. Only the paint moves; the layout is
+///
+/// Floating, it opens from the indicator toward the terminal view and leaves the
+/// indicator itself in place: across the terminal view's columns on a side column's
+/// bottom row, on the rows below a top band's seam, and on the rows above a bottom band's
+/// seam. A multi-row bar grows away from the indicator. With the nav hidden there is no
+/// indicator, so it borrows the window's bottom rows. Only the paint moves; the layout is
 /// untouched, so nothing reflows.
-pub(super) fn hint_bar_rect(nav_local: Rect, area: Rect, hint_bar_h: u16, floating: bool) -> Rect {
+pub(super) fn hint_bar_rect(
+    indicator: Rect,
+    terminal: Rect,
+    area: Rect,
+    hint_bar_h: u16,
+    floating: bool,
+    position: NavPosition,
+) -> Rect {
     if !floating {
-        return nav_local;
+        return indicator;
     }
-    if nav_local.height == 0 {
+    let h = hint_bar_h.min(area.height);
+    if indicator.height == 0 {
         // Nav hidden: no row was reserved, so borrow the window's bottom rows.
-        let h = hint_bar_h.min(area.height);
         return Rect {
             x: area.x,
             y: area.y + area.height - h,
@@ -25,17 +36,25 @@ pub(super) fn hint_bar_rect(nav_local: Rect, area: Rect, hint_bar_h: u16, floati
             height: h,
         };
     }
-    let h = hint_bar_h.min(area.height);
-    let y = if nav_local.y == area.y {
-        area.y
-    } else {
-        nav_local.bottom().saturating_sub(h).max(area.y)
-    };
-    Rect {
-        x: area.x,
-        y,
-        width: area.width,
-        height: h,
+    match position {
+        NavPosition::Left | NavPosition::Right => Rect {
+            x: terminal.x,
+            y: indicator.bottom().saturating_sub(h).max(area.y),
+            width: terminal.width,
+            height: h,
+        },
+        NavPosition::Top => Rect {
+            x: area.x,
+            y: indicator.bottom().min(area.bottom() - h),
+            width: area.width,
+            height: h,
+        },
+        NavPosition::Bottom => Rect {
+            x: area.x,
+            y: indicator.y.saturating_sub(h).max(area.y),
+            width: area.width,
+            height: h,
+        },
     }
 }
 
@@ -193,6 +212,12 @@ pub struct RenderPlan {
     pub nav_col_offset: usize,
     pub popup_rect: Rect,
     hint_bar_rect: Rect,
+    /// Where the prefix indicator keeps the prefix while the bar floats away from it;
+    /// empty while the bar rests or the nav is hidden.
+    prefix_label: Rect,
+    /// Each toast on screen and the rect it floats in, newest first. A click inside one
+    /// takes it down.
+    pub(crate) toasts: Vec<(u64, Rect)>,
     /// The cells a click on a collapsed nav expands it from: the whole collapsed column
     /// with its seam, or a collapsed band's seam row. Empty while the nav is expanded.
     pub expand_area: Rect,
@@ -203,7 +228,6 @@ pub struct RenderPlan {
     nav_rule: Option<NavRule>,
     pub(super) seam_thumb: Rect,
     floating_hint_bar: bool,
-    fill_hint_bar_row: bool,
     pub nav_hidden: bool,
     pub nav_collapsed: bool,
 }
@@ -221,13 +245,14 @@ impl Default for RenderPlan {
             nav_col_offset: 0,
             popup_rect: Rect::default(),
             hint_bar_rect: Rect::default(),
+            prefix_label: Rect::default(),
+            toasts: Vec::new(),
             expand_area: Rect::default(),
             overflow_marks: Vec::new(),
             title_repeats: Vec::new(),
             nav_rule: None,
             seam_thumb: Rect::default(),
             floating_hint_bar: false,
-            fill_hint_bar_row: false,
             nav_hidden: true,
             nav_collapsed: false,
         }
@@ -235,6 +260,15 @@ impl Default for RenderPlan {
 }
 
 impl RenderPlan {
+    /// The toast a click at `(col, row)` lands on, if any.
+    pub(crate) fn toast_at(&self, col: u16, row: u16) -> Option<u64> {
+        let at = Position { x: col, y: row };
+        self.toasts
+            .iter()
+            .find(|(_, rect)| rect.contains(at))
+            .map(|(id, _)| *id)
+    }
+
     /// The card a click at `(col, row)` on a band's overflow count selects.
     pub(crate) fn overflow_target(&self, col: u16, row: u16) -> Option<usize> {
         let at = Position { x: col, y: row };
@@ -257,19 +291,24 @@ impl Switcher {
     ) -> RenderPlan {
         let floating = hint_bar_floats(state);
         let band = nav.position.layout() == ViewLayout::Band;
-        let bar_w = if floating || band {
+        // The resting indicator is one row, so the layout is cut for one row whatever the
+        // bar says: a floating bar only paints further, it never takes a row from the nav.
+        let regions = compute_regions(area, nav, 1);
+        let bar_w = if !floating {
+            nav.width
+        } else if band || nav.width == 0 || regions.terminal.width == 0 {
             area.width
         } else {
-            nav.width
+            regions.terminal.width
         };
         let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
-        let regions = compute_regions(area, nav, hint_bar_h);
-        let fill_hint_bar_row = floating || !state.chrome.flash.is_empty();
         // At rest the prefix indicator is a label on the column's bottom row, and the right
-        // end of the seam row in a band.
+        // end of the seam row in a band. While the bar floats away from it, the indicator
+        // keeps the prefix alone.
+        let prefix_w = collapsed_nav_width(&state.chrome.ui_prefix);
         let resting_bar = if band && !regions.hint_bar.is_empty() {
-            let chip = if nav.collapsed {
-                collapsed_nav_width(&state.chrome.ui_prefix)
+            let chip = if nav.collapsed || floating {
+                prefix_w
             } else {
                 state
                     .chrome
@@ -284,7 +323,22 @@ impl Switcher {
         } else {
             regions.hint_bar
         };
-        let hint_bar_rect = hint_bar_rect(resting_bar, area, hint_bar_h, floating);
+        let prefix_label = if floating && !regions.hint_bar.is_empty() {
+            Rect {
+                width: prefix_w.min(resting_bar.width),
+                ..resting_bar
+            }
+        } else {
+            Rect::default()
+        };
+        let hint_bar_rect = hint_bar_rect(
+            resting_bar,
+            regions.terminal,
+            area,
+            hint_bar_h,
+            floating,
+            nav.position,
+        );
         let seam = regions.view_border;
         let expand_area = if nav.collapsed && nav.width > 0 {
             match nav.position {
@@ -316,17 +370,23 @@ impl Switcher {
             nav_col_offset: previous.nav_col_offset,
             popup_rect: self.modal_popup_rect(area, state),
             hint_bar_rect,
+            prefix_label,
+            toasts: crate::ui::toast::place_toasts(
+                &state.notify,
+                regions.terminal,
+                area,
+                nav.position,
+            ),
             expand_area,
             floating_hint_bar: floating,
-            fill_hint_bar_row,
             nav_hidden: nav.width == 0,
             nav_collapsed: nav.collapsed,
             ..RenderPlan::default()
         };
         if !plan.nav_inner.is_empty() {
             // The band's overflow counts share the seam row with the prefix, so they get
-            // what the prefix leaves; a floating bar covers the row and leaves them none.
-            let track = if band && !fill_hint_bar_row {
+            // what the prefix leaves. A floating bar opens off the seam and leaves them be.
+            let track = if band {
                 Rect {
                     width: resting_bar.x.saturating_sub(seam.x),
                     ..seam
@@ -587,6 +647,7 @@ impl Switcher {
                     &palette,
                 );
             }
+            self.render_toasts(frame, state, plan, &palette);
             // The modal stacks above the bar: a popup is a stronger claim on the screen.
             self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
             return;
@@ -597,8 +658,9 @@ impl Switcher {
         // border, and the hint bar rests on a column's bottom row or a band's view border
         // row. The hint bar is normally one row; a long flash wraps, so size it to the
         // wrapped line count (never clipped). Measured at the width it will RENDER at: the
-        // nav column at rest in a column, the whole window in a band or whenever the bar
-        // floats (see `hint_bar_floats` / `hint_bar_rect`).
+        // nav column at rest in a column, and once the bar floats the terminal view's width
+        // beside a column or the whole window across a band (see `hint_bar_floats` /
+        // `hint_bar_rect`).
         self.render_nav(frame, state, plan, &palette, terminal_focused);
         // The seam is the one line the nav draws: its colour says which view holds the
         // focus, and a side nav's overflow thickens the stretch beside the cards on screen.
@@ -631,28 +693,38 @@ impl Switcher {
         // The hint bar paints LAST of the two views, so a floating bar can cover the
         // terminal view. At rest it is the prefix indicator, a label sized to what it says
         // on the column's bottom row or at the right end of a band's seam; floating, it
-        // widens to the whole window - the layout never reflows, only the paint reaches
-        // further, so arming the prefix cannot shift a single card. A band's overflow
-        // counts share the seam with the resting label and give way to a floating bar.
-        let fill = if plan.fill_hint_bar_row {
-            crate::ui::chrome::BarFill::Row
-        } else {
-            crate::ui::chrome::BarFill::Content
-        };
-        if fill == crate::ui::chrome::BarFill::Content {
-            for mark in &plan.overflow_marks {
-                Self::render_overflow_mark(frame, *mark, &palette);
-            }
+        // opens from there toward the terminal view while the indicator keeps the prefix -
+        // the layout never reflows, only the paint reaches further, so arming the prefix
+        // cannot shift a single card. A band's overflow counts share the seam with the
+        // indicator.
+        for mark in &plan.overflow_marks {
+            Self::render_overflow_mark(frame, *mark, &palette);
         }
-        if plan.nav_collapsed && !plan.floating_hint_bar {
+        if plan.floating_hint_bar {
+            state
+                .chrome
+                .render_collapsed_hint_bar(frame, plan.prefix_label, &palette);
+            state.chrome.render_hint_bar(
+                frame,
+                plan.hint_bar_rect,
+                state,
+                crate::ui::chrome::BarFill::Row,
+                &palette,
+            );
+        } else if plan.nav_collapsed {
             state
                 .chrome
                 .render_collapsed_hint_bar(frame, plan.hint_bar_rect, &palette);
         } else {
-            state
-                .chrome
-                .render_hint_bar(frame, plan.hint_bar_rect, state, fill, &palette);
+            state.chrome.render_hint_bar(
+                frame,
+                plan.hint_bar_rect,
+                state,
+                crate::ui::chrome::BarFill::Content,
+                &palette,
+            );
         }
+        self.render_toasts(frame, state, plan, &palette);
         // In the terminal view, place the real cursor at the grid's cursor so typing in the
         // mux is visible and tracks. Skipped when the child hid its cursor.
         if terminal_focused {
@@ -1037,18 +1109,53 @@ impl Switcher {
     }
 
     fn modal_popup_rect(&self, area: Rect, state: &crate::state::State) -> Rect {
-        let Some(Modal::Help) = &state.modal else {
-            return Rect::default();
-        };
-        let (_, lines) = modal::help_lines(
-            &state.chrome.ui_prefix,
-            state.chrome.nav_position,
-            &self.palette,
-        );
-        let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
-        let w = (inner_w + 3).max(24).min(area.width.max(1));
-        let h = (lines.len() as u16 + 2).min(area.height.max(1));
-        modal::offset_centered(w, h, area, self.popup_geo.offset)
+        match &state.modal {
+            Some(Modal::Help) => {
+                let (_, lines) = modal::help_lines(
+                    &state.chrome.ui_prefix,
+                    state.chrome.nav_position,
+                    &self.palette,
+                );
+                let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+                let w = (inner_w + 3).max(24).min(area.width.max(1));
+                let h = (lines.len() as u16 + 2).min(area.height.max(1));
+                modal::offset_centered(w, h, area, self.popup_geo.offset)
+            }
+            Some(Modal::History { scroll }) => {
+                let w = history_popup_width(area);
+                let (_, lines) = crate::ui::toast::history_lines(
+                    &state.notify,
+                    *scroll,
+                    w.saturating_sub(2),
+                    &self.palette,
+                );
+                let h = (lines.len() as u16 + 2).min(area.height.max(1));
+                modal::offset_centered(w, h, area, self.popup_geo.offset)
+            }
+            _ => Rect::default(),
+        }
+    }
+
+    /// Paints every toast the plan placed, oldest first, so the newest lands on top.
+    fn render_toasts(
+        &self,
+        frame: &mut Frame,
+        state: &crate::state::State,
+        plan: &RenderPlan,
+        palette: &palette::Palette,
+    ) {
+        for (id, rect) in plan.toasts.iter().rev() {
+            if let Some(toast) = state.notify.toasts.iter().find(|t| t.id == *id) {
+                crate::ui::toast::render_toast(
+                    frame,
+                    *rect,
+                    toast,
+                    state.notify.now,
+                    &state.chrome.ui_prefix,
+                    palette,
+                );
+            }
+        }
     }
 
     /// Draws the active modal at the rectangle supplied by the frame's plan.
@@ -1060,11 +1167,27 @@ impl Switcher {
         rect: Rect,
         palette: &palette::Palette,
     ) {
-        let Some(Modal::Help) = &state.modal else {
-            return;
+        let (title, lines) = match &state.modal {
+            Some(Modal::Help) => {
+                modal::help_lines(&state.chrome.ui_prefix, state.chrome.nav_position, palette)
+            }
+            Some(Modal::History { scroll }) => crate::ui::toast::history_lines(
+                &state.notify,
+                *scroll,
+                rect.width.saturating_sub(2),
+                palette,
+            ),
+            _ => return,
         };
-        let (title, lines) =
-            modal::help_lines(&state.chrome.ui_prefix, state.chrome.nav_position, palette);
         modal::render_popup(frame, area, rect, &title, lines, palette);
     }
+}
+
+/// The history popup's width: most of the window, capped so a record reads as one line
+/// on a wide screen.
+fn history_popup_width(area: Rect) -> u16 {
+    area.width
+        .saturating_sub(4)
+        .clamp(24, 84)
+        .min(area.width.max(1))
 }

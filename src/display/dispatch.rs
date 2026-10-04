@@ -29,6 +29,8 @@ pub enum Action {
     Quit,
     /// `prefix ?` — toggle the keys help modal. Focus stays on the terminal view.
     ShowHelp,
+    /// `prefix m`: toggle the history. Focus stays where it is.
+    ShowHistory,
     /// `prefix h`/`l` or `prefix Ctrl+←/→` — the nav WIDTH step on the horizontal axis
     /// (applied only in a column layout). The delta is the key's SCREEN direction (+1 =
     /// right, -1 = left): the border moves that way, so it grows the nav on the left and
@@ -69,6 +71,7 @@ impl Action {
             | Action::ToggleCollapse
             | Action::Forward(_)
             | Action::ShowHelp
+            | Action::ShowHistory
             | Action::NavKey(_) => None,
         }
     }

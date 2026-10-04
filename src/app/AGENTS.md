@@ -134,6 +134,11 @@ the card numbers it needs.
   if any, is open. Focus and modal transitions stay in the focus module; the app
   and the state call into it rather than open-coding view or modal bookkeeping.
 - This layer carries no PTY, grid, or terminal-protocol logic; that is `display`.
+- The update transition is where results become reports. A re-scan keeps the inventory
+  the user saw when they asked and, once every source has answered, makes one toast of
+  what changed. A source that stops answering outside a re-scan is recorded in the
+  history without a toast, because nobody asked for that answer. The tick is the only
+  wake for a toast that leaves or counts down, so the loop repaints on it while one does.
 - The effective nav width is reconciled at the loop top against the one prefix-interaction
   signal the hint bar also reads, so a held prefix cannot make the nav and the bar
   disagree. The band height comes from the resize keys and border drags, and the nav's

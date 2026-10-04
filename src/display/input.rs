@@ -130,6 +130,15 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
+                // prefix m → toggle the history; same shape as prefix ?.
+                if b0 == b'm' {
+                    if !fwd.is_empty() {
+                        out.push(Action::Forward(std::mem::take(&mut fwd)));
+                    }
+                    out.push(Action::ShowHistory);
+                    i += 1;
+                    continue;
+                }
                 // prefix p → cycle the nav position; same shape: applied on the input path,
                 // terminal-view focus kept, the rest of the read still forwards.
                 if b0 == b'p' {
@@ -477,10 +486,14 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_question_toggles_help() {
+    fn prefix_then_question_or_m_toggles_help_or_history() {
         let mut t = m();
         t.feed(&[0x07], NavPosition::Left);
         assert_eq!(t.feed(b"?", NavPosition::Left), vec![Action::ShowHelp]);
+        assert_eq!(
+            t.feed(b"\x07m", NavPosition::Left),
+            vec![Action::ShowHistory]
+        );
     }
 
     #[test]

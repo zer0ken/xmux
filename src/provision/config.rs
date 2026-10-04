@@ -194,6 +194,11 @@ pub struct UiConfig {
     /// startup, like `auto-hide-nav`'s initial state, and there is no live toggle.
     #[serde(rename = "hide-unreachable", default = "default_hide_unreachable")]
     pub hide_unreachable: bool,
+    /// Whether the result of work the user started floats as a toast over the terminal
+    /// view (default true). Off, results still land in the `prefix m` history. A config
+    /// edit applies it live.
+    #[serde(rename = "notifications", default = "default_notifications")]
+    pub notifications: bool,
     /// The nav placement when nothing is pinned by `prefix p`: `left` | `top` | `right`
     /// | `bottom`. An unknown word falls back to `left`. The nav never moves on its own;
     /// `prefix p` pins a side (persisted to `~/.xmux/nav_position`) and this default
@@ -257,6 +262,10 @@ fn default_hide_unreachable() -> bool {
     true
 }
 
+fn default_notifications() -> bool {
+    true
+}
+
 fn default_nav_position() -> String {
     "left".to_string()
 }
@@ -283,6 +292,7 @@ impl Default for UiConfig {
             prefix: default_prefix(),
             auto_hide_nav: false,
             hide_unreachable: default_hide_unreachable(),
+            notifications: default_notifications(),
             nav_position: default_nav_position(),
             // Empty leaves the view border at its theme role.
             view_active_border_style: String::new(),
@@ -467,7 +477,7 @@ impl Config {
     }
 
     /// The initial auto-hide-nav mode from config (default false). The live toggle's
-    /// persisted state, when present, overrides this — see `state::load_auto_hide_nav`.
+    /// persisted state, when present, overrides this - see `state::load_auto_hide_nav`.
     pub fn ui_auto_hide_nav(&self) -> bool {
         self.ui.auto_hide_nav
     }
@@ -644,8 +654,8 @@ pub fn host_specs_for(alias: &str, muxes: &[String]) -> Vec<HostSpec> {
 /// Backslash line continuations and `Include` directives are honored: an
 /// `Include` glob is expanded (relative to the including file, with `~` expanded
 /// to the home the shell ssh uses) and the included files are parsed in turn,
-/// with include cycles broken. `Match` blocks declare no aliases of their own —
-/// they only apply options to hosts named elsewhere — so they contribute nothing
+/// with include cycles broken. `Match` blocks declare no aliases of their own -
+/// they only apply options to hosts named elsewhere - so they contribute nothing
 /// here; `host_stanza` still shows them for display. A missing file yields an
 /// empty list.
 pub fn ssh_host_aliases(path: &Path) -> Vec<String> {
@@ -899,7 +909,7 @@ fn parse_class(p: &[char], c: char) -> Option<(bool, &[char])> {
 /// Returns the raw ssh-config stanza(s) that name `alias`: every `Host`/`Match`
 /// block whose header line lists `alias` as a whitespace token, joined with a blank
 /// line between blocks. A stanza runs from its `Host`/`Match` header to the next
-/// header (or EOF). Display text only — Match-resolved values (e.g. an exec-chosen
+/// header (or EOF). Display text only - Match-resolved values (e.g. an exec-chosen
 /// HostName) are NOT computed; the literal config lines are shown. Empty when no
 /// block names the alias.
 /// The marker that opens a stanza xmux wrote, naming the host it is for.
@@ -1788,7 +1798,7 @@ mux = "tmux"
     #[test]
     fn exclude_names_a_wsl_machine_by_its_prefixed_name() {
         // `exclude` names MACHINES, and a distribution's machine name carries the WSL
-        // prefix — which is how the Docker Desktop distributions are dropped.
+        // prefix - which is how the Docker Desktop distributions are dropped.
         let cfg = Config {
             exclude: vec!["wsl.docker-desktop".into()],
             ..Config::default()
@@ -2054,6 +2064,14 @@ bogus = "nope"
         // Explicit false.
         let path = write_temp("[ui]\nauto-hide-nav = false\n", "autohide-false.toml");
         assert!(!load(&path).unwrap().ui_auto_hide_nav());
+    }
+
+    #[test]
+    fn ui_notifications_defaults_true_and_round_trips() {
+        let path = write_temp("[ui]\n", "notifications-missing.toml");
+        assert!(load(&path).unwrap().ui.notifications);
+        let path = write_temp("[ui]\nnotifications = false\n", "notifications-false.toml");
+        assert!(!load(&path).unwrap().ui.notifications);
     }
 
     #[test]

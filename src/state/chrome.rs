@@ -23,16 +23,6 @@ pub struct ViewBorderColors {
     pub hover: Color,
 }
 
-/// What a flash is about, which decides how the bar paints it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) enum FlashKind {
-    /// A refused action or a failure: the error bar and warning mark.
-    #[default]
-    Error,
-    /// Information that is not a failure: the notice style and no mark.
-    Notice,
-}
-
 /// How xmux reaches one source, in the words the unreachable screen prints.
 ///
 /// Resolved once at startup from that source's own config, because how a source is
@@ -58,7 +48,7 @@ pub struct SourceReach {
     pub socket: String,
 }
 
-/// How long a flash stays up with nothing pressed. A refusal is about something that
+/// How long a flash stays up with nothing pressed. A refused key is about something that
 /// already happened, so a bar holding one forever keeps the nav's own help text off
 /// screen over a message that has stopped being news. Ten seconds reads a wrapped line
 /// twice over.
@@ -66,11 +56,11 @@ pub(crate) const FLASH_TTL: Duration = Duration::from_secs(10);
 
 /// Runtime-owned chrome data read by border, hint bar, and host-screen rendering.
 pub struct Chrome {
+    /// A refused key's reason, shown in the hint bar until the next key or its own life
+    /// ends. Empty when nothing is flashing.
     pub(crate) flash: String,
     /// When the flash stops showing itself, or `None` when nothing is flashing.
     pub(crate) flash_until: Option<Instant>,
-    /// Whether the current flash is an error or a notice.
-    pub(crate) flash_kind: FlashKind,
     /// Auto-hide-tree mode (set by the app each frame). Drives the view border glyph:
     /// ║ (double) when on, │ (single) when off - the only on-screen cue, since while
     /// the mode is on but the tree is focused the tree still shows.
@@ -116,22 +106,11 @@ pub struct Chrome {
 }
 
 impl Chrome {
-    /// Sets the transient error flash shown in the nav's hint bar. The next tree key
-    /// clears it (the switcher's `handle_key`), and [`FLASH_TTL`] clears it for a user
-    /// who presses nothing, so the normal help/status hint bar returns either way.
+    /// Sets the flash shown in the nav's hint bar: why a key was refused. The next tree
+    /// key clears it (the switcher's `handle_key`), and [`FLASH_TTL`] clears it for a user
+    /// who presses nothing, so the normal hint bar returns either way.
     pub(crate) fn flash(&mut self, msg: impl Into<String>) {
-        self.show_flash(msg.into(), FlashKind::Error);
-    }
-
-    /// Sets a transient notice in the nav's hint bar: the same life as a flash, painted
-    /// as information rather than as an error.
-    pub(crate) fn notice(&mut self, msg: impl Into<String>) {
-        self.show_flash(msg.into(), FlashKind::Notice);
-    }
-
-    fn show_flash(&mut self, msg: String, kind: FlashKind) {
-        self.flash = msg;
-        self.flash_kind = kind;
+        self.flash = msg.into();
         self.flash_until = Some(Instant::now() + FLASH_TTL);
     }
 

@@ -1537,7 +1537,7 @@ async fn login_pane_prefills_all_values_from_ssh_config() {
 }
 
 #[tokio::test]
-async fn key_registration_result_is_flashed_and_kept_for_the_host() {
+async fn login_and_key_registration_results_are_one_toast_kept_for_the_host() {
     use crate::link::unlock::UnlockOutcome;
     use crate::ui::ops::{LoginOutcome, OpResult, RegistrationOutcome};
     let mut h = Harness::from_sources(&["pwbox"]);
@@ -1554,11 +1554,98 @@ async fn key_registration_result_is_flashed_and_kept_for_the_host() {
         &mut h.state,
     );
     h.draw();
-    assert!(h.hint_bar_text().contains("public key registered on pwbox"));
+    let toast = &h.state.notify.toasts[0];
+    assert_eq!(
+        toast.title, "pwbox",
+        "the toast names the host it reports on"
+    );
+    let lines: Vec<&str> = toast.notes.iter().map(|n| n.text.as_str()).collect();
+    assert_eq!(lines, ["logged in", "public key registered"]);
+    assert!(toast.until.is_some(), "a success leaves by itself");
+    assert!(
+        h.text().contains("public key registered"),
+        "the toast is on screen:\n{}",
+        h.text()
+    );
+    assert_eq!(
+        h.state.notify.history.len(),
+        2,
+        "both results are in the history"
+    );
     assert_eq!(
         h.state.registration_reports.get("pwbox"),
         Some(&RegistrationOutcome::Registered)
     );
+}
+
+#[tokio::test]
+async fn a_failed_login_and_a_skipped_key_are_a_toast_that_stays() {
+    use crate::link::unlock::{FailureKind, UnlockOutcome};
+    use crate::state::notify::Level;
+    use crate::ui::ops::{LoginOutcome, OpResult, RegistrationOutcome};
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_op_result(
+        OpResult::Login {
+            source: "pwbox".into(),
+            login: crate::transport::Login::default(),
+            outcome: LoginOutcome {
+                connect: UnlockOutcome::Failed {
+                    kind: FailureKind::WrongPassword,
+                    reason: "the password was refused\nalice@pwbox: Permission denied".into(),
+                },
+                registration: RegistrationOutcome::NotRequested,
+                notes: Vec::new(),
+            },
+        },
+        &mut h.state,
+    );
+    let toast = &h.state.notify.toasts[0];
+    assert_eq!(toast.notes[0].level, Level::Error);
+    assert_eq!(
+        toast.notes[0].text, "login failed: the password was refused",
+        "the toast carries the verdict; the pane keeps ssh's own words"
+    );
+    assert!(toast.until.is_none(), "a failure waits to be dismissed");
+
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_op_result(
+        OpResult::Login {
+            source: "pwbox".into(),
+            login: crate::transport::Login::default(),
+            outcome: LoginOutcome {
+                connect: UnlockOutcome::Ok,
+                registration: RegistrationOutcome::Skipped("no key to send".into()),
+                notes: Vec::new(),
+            },
+        },
+        &mut h.state,
+    );
+    let levels: Vec<Level> = h.state.notify.toasts[0]
+        .notes
+        .iter()
+        .map(|n| n.level)
+        .collect();
+    assert_eq!(levels, [Level::Success, Level::Warning]);
+    assert!(h.state.notify.toasts[0].until.is_none());
+
+    // A cancelled login says nothing about the connection the user ended.
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_op_result(
+        OpResult::Login {
+            source: "pwbox".into(),
+            login: crate::transport::Login::default(),
+            outcome: LoginOutcome {
+                connect: UnlockOutcome::Failed {
+                    kind: FailureKind::Cancelled,
+                    reason: "cancelled".into(),
+                },
+                registration: RegistrationOutcome::NotRequested,
+                notes: Vec::new(),
+            },
+        },
+        &mut h.state,
+    );
+    assert!(h.state.notify.toasts.is_empty());
 }
 
 #[tokio::test]
@@ -1657,6 +1744,8 @@ async fn the_verdict_takes_the_login_screen_down() {
         h.state.login_run.is_none(),
         "the running login is gone once the verdict is in"
     );
+    // The verdict's toast is the subject of its own test; this one reads the pane.
+    h.state.notify.dismiss_all();
     h.draw();
     assert!(
         h.text().contains("alice"),
@@ -3875,10 +3964,10 @@ async fn help_overlay_renders_and_closes_on_q() {
         "show_help opens the help modal:\n{out}"
     );
     assert!(out.contains("fuzzy filter"), "help should list keybindings");
-    // Modal dismissal (tmux view-mode): the app routes keys to feed_help_key
+    // Modal dismissal (tmux view-mode): the app routes keys to feed_reader_key
     // above the tree/terminal split - q closes it; other keys are swallowed (no nav).
     assert!(
-        h.sw.feed_help_key(b"q", &mut h.state),
+        h.sw.feed_reader_key(b"q", &mut h.state),
         "q is consumed while help is open"
     );
     h.draw();
@@ -4044,7 +4133,10 @@ fn a_collapsed_nav_renders_every_wrapped_flash_line() {
         .unwrap();
 
     let buf = term.backend().buffer();
-    let lines = state.chrome.hint_bar_lines(buf.area.width, &state);
+    // The bar opens across the terminal view beside the collapsed column.
+    let lines = state
+        .chrome
+        .hint_bar_lines(buf.area.width - width - 1, &state);
     assert!(lines.len() > 1);
     let first = buf.area.height - lines.len() as u16;
     let painted = (first..buf.area.height)
@@ -4055,10 +4147,12 @@ fn a_collapsed_nav_renders_every_wrapped_flash_line() {
         })
         .collect::<Vec<_>>()
         .join(" ");
-    assert!(
-        painted.contains("cannot create here"),
-        "all wrapped flash text remains visible: {painted:?}"
-    );
+    for word in ["host", "unreachable,", "cannot", "create", "here"] {
+        assert!(
+            painted.contains(word),
+            "all wrapped flash text remains visible: {painted:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -5072,16 +5166,71 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
 }
 
 #[test]
-fn a_floating_bar_grows_inward_from_a_collapsed_nav() {
+fn a_floating_bar_opens_from_the_prefix_indicator_toward_the_terminal() {
+    use super::render::hint_bar_rect;
     let area = Rect::new(0, 0, 24, 8);
-    let top = super::render::hint_bar_rect(Rect::new(0, 0, 24, 1), area, 3, true);
-    assert_eq!(top, Rect::new(0, 0, 24, 3));
-
-    let bottom = super::render::hint_bar_rect(Rect::new(0, 7, 24, 1), area, 3, true);
-    assert_eq!(bottom, Rect::new(0, 5, 24, 3));
-
-    let side = super::render::hint_bar_rect(Rect::new(0, 7, 7, 1), area, 3, true);
-    assert_eq!(side, Rect::new(0, 5, 24, 3));
+    let full = Rect::new(0, 0, 24, 8);
+    // A top band opens below its seam, collapsed or not, and grows down.
+    let top = hint_bar_rect(
+        Rect::new(0, 0, 24, 1),
+        Rect::new(0, 1, 24, 7),
+        area,
+        3,
+        true,
+        NavPosition::Top,
+    );
+    assert_eq!(top, Rect::new(0, 1, 24, 3));
+    let top_band = hint_bar_rect(
+        Rect::new(20, 3, 4, 1),
+        Rect::new(0, 4, 24, 4),
+        area,
+        1,
+        true,
+        NavPosition::Top,
+    );
+    assert_eq!(top_band, Rect::new(0, 4, 24, 1), "the row below the seam");
+    // A bottom band opens above its seam and grows up.
+    let bottom = hint_bar_rect(
+        Rect::new(20, 5, 4, 1),
+        Rect::new(0, 0, 24, 5),
+        area,
+        1,
+        true,
+        NavPosition::Bottom,
+    );
+    assert_eq!(bottom, Rect::new(0, 4, 24, 1), "the row above the seam");
+    // A side column opens on its bottom row across the terminal view's columns.
+    let left = hint_bar_rect(
+        Rect::new(0, 7, 7, 1),
+        Rect::new(8, 0, 16, 8),
+        area,
+        3,
+        true,
+        NavPosition::Left,
+    );
+    assert_eq!(left, Rect::new(8, 5, 16, 3));
+    let right = hint_bar_rect(
+        Rect::new(17, 7, 7, 1),
+        Rect::new(0, 0, 16, 8),
+        area,
+        1,
+        true,
+        NavPosition::Right,
+    );
+    assert_eq!(right, Rect::new(0, 7, 16, 1));
+    // A hidden nav has no indicator: the bar borrows the window's bottom rows.
+    let hidden = hint_bar_rect(Rect::default(), full, area, 2, true, NavPosition::Left);
+    assert_eq!(hidden, Rect::new(0, 6, 24, 2));
+    // At rest the bar is the indicator itself.
+    let rest = hint_bar_rect(
+        Rect::new(0, 7, 7, 1),
+        Rect::new(8, 0, 16, 8),
+        area,
+        1,
+        false,
+        NavPosition::Left,
+    );
+    assert_eq!(rest, Rect::new(0, 7, 7, 1));
 }
 
 #[tokio::test]
@@ -5462,24 +5611,24 @@ fn toggle_help_flips_visibility() {
 }
 
 #[test]
-fn feed_help_key_is_modal_and_closes_on_q_or_esc() {
+fn feed_reader_key_is_modal_and_closes_on_q_or_esc() {
     // tmux view-mode style: while open, every key is consumed; q/Esc closes, the
     // rest are swallowed; while closed, nothing is consumed (falls through).
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     assert!(
-        !sw.feed_help_key(b"q", &mut state),
+        !sw.feed_reader_key(b"q", &mut state),
         "closed → not consumed, routes normally"
     );
 
     sw.toggle_help(&mut state);
-    assert!(sw.feed_help_key(b"j", &mut state), "open → consumed");
+    assert!(sw.feed_reader_key(b"j", &mut state), "open → consumed");
     assert!(
         matches!(state.modal, Some(Modal::Help)),
         "a non-close key is swallowed but keeps help open"
     );
     assert!(
-        sw.feed_help_key(b"\x1b[A", &mut state),
+        sw.feed_reader_key(b"\x1b[A", &mut state),
         "an arrow (ESC [) is swallowed, not a close"
     );
     assert!(
@@ -5487,11 +5636,14 @@ fn feed_help_key_is_modal_and_closes_on_q_or_esc() {
         "arrow keeps help open"
     );
 
-    assert!(sw.feed_help_key(b"q", &mut state), "q → consumed");
+    assert!(sw.feed_reader_key(b"q", &mut state), "q → consumed");
     assert!(!matches!(state.modal, Some(Modal::Help)), "q closes help");
 
     sw.toggle_help(&mut state);
-    assert!(sw.feed_help_key(b"\x1b", &mut state), "lone Esc → consumed");
+    assert!(
+        sw.feed_reader_key(b"\x1b", &mut state),
+        "lone Esc → consumed"
+    );
     assert!(!matches!(state.modal, Some(Modal::Help)), "Esc closes help");
 }
 
@@ -6066,20 +6218,29 @@ fn the_portrait_prefix_is_a_label_until_the_prefix_is_armed() {
             buf.area.width
         );
     }
-    // Arming the prefix takes the whole width: the cheatsheet has to be readable over
-    // everything it now covers.
+    // Arming the prefix opens the cheatsheet below the seam, across the whole width: it
+    // has to be readable over everything it now covers, and the seam keeps the prefix.
     let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
     let sw = Switcher::new(&mut state);
     state.chrome.set_armed(true);
     term.draw(|f| sw.render_test(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
     let buf = term.backend().buffer();
-    assert!(
-        (0..buf.area.width).all(|x| buf[(x, seam_y)].bg == bar_bg),
-        "the armed bar fills the seam row: {:?}",
+    let text = |y: u16| {
         (0..buf.area.width)
-            .map(|x| buf[(x, seam_y)].symbol())
+            .map(|x| buf[(x, y)].symbol())
             .collect::<String>()
+    };
+    assert!(
+        (0..buf.area.width).all(|x| buf[(x, seam_y + 1)].bg == bar_bg),
+        "the armed bar fills the row below the seam: {:?}",
+        text(seam_y + 1)
+    );
+    assert!(text(seam_y + 1).contains("C-g"), "{:?}", text(seam_y + 1));
+    assert!(
+        text(seam_y).trim_end().ends_with("C-g"),
+        "the seam keeps the prefix: {:?}",
+        text(seam_y)
     );
 }
 #[test]

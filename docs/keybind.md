@@ -131,6 +131,7 @@ nav or the terminal view holds focus.
 |---|---|
 | `prefix q` | quit xmux (the only quit binding) |
 | `prefix ?` | toggle the keybinding help |
+| `prefix m` | toggle the history of results and background events |
 | `prefix t` | toggle auto-hide-nav (focusing the screen then gives it the full width) |
 | `prefix z` | collapse or expand the nav |
 | `prefix p` | move the nav one side clockwise (left → top → right → bottom → default) |
@@ -162,13 +163,16 @@ column) or the view border's (a band, where the offscreen-card counts share the 
 Cards off screen are shown on the view border too: a column thickens the stretch beside
 the cards on screen to `┃`, and a band writes `‹ 5` at its left end and `7 ›` before the
 prefix, counting the cards scrolled off each side.
-Press the prefix and the same row widens to the whole window,
-floating over the border and the terminal view to list the keys that prefix unlocks; it
-shrinks back when the function it started ends, or when the prefix is canceled (a
-focus switch or any mouse action: a click, a wheel, a drag - a prefix waits for the
-next input, whatever that turns out to be).
+Press the prefix and the list of keys that prefix unlocks opens from the indicator toward
+the terminal view, while the indicator keeps the prefix: beside a left or right column it
+covers the terminal view's columns on the indicator's row, below a top band's seam it takes
+the row under the seam, and above a bottom band's seam the row over it. The list floats over
+the terminal view and closes when the function it started ends, or when the prefix is
+canceled (a focus switch or any mouse action: a click, a wheel, a drag - a prefix waits for
+the next input, whatever that turns out to be). The xmux version sits at the list's far
+end whenever the keys fit beside it.
 
-Most keys end their function as they run, so the bar shrinks with the keystroke. Two
+Most keys end their function as they run, so the bar closes with the keystroke. Two
 kinds run longer and keep the bar up for as long as they last: a key that opens an
 input row holds it until Enter or Esc closes the row, and a resize holds it until the
 repeat window lapses, so a whole Ctrl+arrow burst reads as one interaction.
@@ -182,13 +186,15 @@ Only the paint moves, never the layout, so arming the prefix never shifts a card
 
 With the nav auto-hidden the mux owns every row, prefix indicator included, until a prefix
 interaction starts: then the nav comes back for the moment it is needed, so a jump can
-read the card numbers, and it hides again when the interaction ends. The bar also floats
-over the bottom of the window for the two things that must be seen the moment they
-happen: a live prefix, and a refusal. A refusal floats over the whole window and wraps
-instead of clipping. Scan progress and the active filter
-persist, so they stay in the nav and never take a row back from a hidden one. Four
-states outrank the prefix while they apply, in order: a refusal message (in yellow), the
-scan progress, the active filter, and then the resting prefix. A
+read the card numbers, and it hides again when the interaction ends. With no indicator on
+screen, the bar floats over the bottom of the window for the two things that must be seen
+the moment they happen: a live prefix, and a refusal. A refusal is the reason a key did
+nothing (a jump number no card carries, a new session on an unreachable host); it opens
+where the key list does, in the error colour, wraps instead of clipping, and goes away on
+the next key or after ten seconds. Scan progress and the active filter persist, so they
+stay in the nav and never take a row back from a hidden one. Four states outrank the
+prefix while they apply, in order: a refusal, the scan progress, the active filter, and
+then the resting prefix.
 
 ## Focus
 
@@ -217,6 +223,10 @@ forwarded raw to the session's active pane, so programs running inside the mux
 
 - **Help** (`prefix ?`): a scrollless key reference. `q` or `Esc` closes it;
   any other key is swallowed while it is open.
+- **History** (`prefix m`): every result and background event, newest first, each with
+  how long ago it happened. `↑`/`↓` (or `k`/`j`) scroll one record and `PgUp`/`PgDn`
+  ten; `q` or `Esc` closes it, and any other key is swallowed while it is open. Opening
+  it takes every toast down.
 - **Input** (filter, new session, jump): the hint bar becomes the input line,
   `[feature] guide: <buffer>` with the caret at the edit position. Type into the
   buffer, `Backspace` deletes, `Enter` submits, `Esc` cancels.
@@ -233,6 +243,32 @@ forwarded raw to the session's active pane, so programs running inside the mux
 A terminal smaller than 24 columns by 4 rows shows the required and current size in
 place of the split interface.
 
+## Toasts
+
+The result of work you started floats as a toast in the terminal view's top corner
+farthest from the nav (the bottom right corner when the nav rides on top): a login and
+the public-key registration it ran, a new session, and a re-scan, which reports in one
+toast what changed (hosts added or removed, sessions started or ended, hosts that stopped
+or started answering) or that nothing did. The newest release, when one is recorded, is
+announced the same way at launch. A toast is at most 40% of the window wide and names its
+subject on its top border and `prefix m history` on its bottom one.
+
+A toast that reports only successes and facts leaves after five seconds, and an underline
+under its first line shrinks with the time it has left. A toast carrying a warning (`▲`)
+or a failure (`✗`) stays until it is dismissed: a click on it takes it down, and opening
+the history takes every toast down. Up to three toasts stand at once, the newest in the
+corner.
+
+Something nobody asked about, such as a host that stops answering while you work, raises
+no toast. It goes to the history only, so it never pulls attention from the terminal.
+The history keeps the last 200 records; when it is full, the oldest success or info
+record goes first, so failures outlive routine reports.
+
+```toml
+[ui]
+notifications = true   # false keeps results out of toasts; the history still has them
+```
+
 ## Mouse
 
 | Gesture | Action |
@@ -244,6 +280,7 @@ place of the split interface.
 | wheel over the nav | move the selection (nav focused) |
 | drag the view border | resize the expanded nav (at any of the four borders: the drag mirrors the placement, measuring from the near edge); past the minimum it collapses the nav |
 | drag a modal's border | move the modal |
+| left-click a toast | dismiss it |
 
 There is no context menu: every action a right-click could offer is either a
 plain click (focus, select) or a prefix chord. While the terminal view is focused,

@@ -45,10 +45,16 @@ ordered backend effects. An exit from a once-connected source is a transient dro
 that keeps the last-known inventory. Connection and inventory events carry parsed
 sessions for update to fold into the source's own inventory, the single owner.
 
-The modal is ONE optional value: at most one of help or inline input. A single
-option, rather than independent fields, makes the modals' mutual exclusion
+The modal is ONE optional value: at most one of help, the history, or inline input.
+A single option, rather than independent fields, makes the modals' mutual exclusion
 structural, so opening one drops whatever was open. State owns the modal types,
-classifiers, input editing, and help feed. The UI owns popup geometry and rendering.
+classifiers, input editing, and the read-only popup feed. The UI owns popup geometry
+and rendering.
+
+The notifications are the toasts on screen and the bounded history behind them. A
+result of work the user started is a toast and a history record; a background event is
+a history record only. The clock enters on the tick, which takes down the toasts whose
+life is over, so rendering reads remaining life and ages without reading the clock.
 
 ## Module Seams
 

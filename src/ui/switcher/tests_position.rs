@@ -468,3 +468,77 @@ fn pl9_the_armed_hint_and_the_help_name_prefix_z() {
         "the help names prefix z: {help:#?}"
     );
 }
+
+#[test]
+fn a_toast_floats_in_the_terminal_corner_farthest_from_the_nav_at_every_position() {
+    for position in ALL {
+        let mut shot = Shot::new(two_groups(), nav_at(position), true);
+        shot.state.notify.toast(
+            "gpu-02",
+            vec![crate::state::notify::Note::new(
+                crate::state::notify::Level::Success,
+                "logged in",
+            )],
+        );
+        shot.draw(true);
+        let terminal = shot.plan.regions.terminal;
+        let (id, rect) = shot.plan.toasts[0];
+        let expected_x = if position == NavPosition::Right {
+            terminal.x
+        } else {
+            terminal.right() - rect.width
+        };
+        let expected_y = if position == NavPosition::Top {
+            terminal.bottom() - rect.height
+        } else {
+            terminal.y
+        };
+        assert_eq!(
+            (rect.x, rect.y),
+            (expected_x, expected_y),
+            "{position:?}: {rect:?} in {terminal:?}"
+        );
+        assert!(rect.width <= W * 2 / 5, "{position:?}: {rect:?}");
+        let row: String = (rect.x..rect.right())
+            .map(|x| shot.buf[(x, rect.y + 1)].symbol())
+            .collect();
+        assert!(row.contains("✓ logged in"), "{position:?}: {row:?}");
+        assert_eq!(
+            shot.plan.toast_at(rect.x + 1, rect.y + 1),
+            Some(id),
+            "{position:?}: a click inside lands on the toast"
+        );
+        assert_eq!(shot.plan.toast_at(terminal.x, terminal.y + H), None);
+    }
+}
+
+#[test]
+fn the_prefix_key_list_opens_toward_the_terminal_and_the_indicator_keeps_the_prefix() {
+    for position in ALL {
+        let mut shot = Shot::new(two_groups(), nav_at(position), false);
+        shot.state.chrome.set_armed(true);
+        shot.state.chrome.set_nav_position(position);
+        shot.draw(false);
+        let r = shot.plan.regions;
+        let text = |y: u16, from: u16, to: u16| -> String {
+            (from..to).map(|x| shot.buf[(x, y)].symbol()).collect()
+        };
+        let (row, from, to) = match position {
+            NavPosition::Left | NavPosition::Right => {
+                (r.hint_bar.y, r.terminal.x, r.terminal.right())
+            }
+            NavPosition::Top => (r.view_border.y + 1, 0, W),
+            NavPosition::Bottom => (r.view_border.y - 1, 0, W),
+        };
+        let list = text(row, from, to);
+        assert!(
+            list.contains("· m"),
+            "{position:?}: the key list opens beside the indicator: {list:?}"
+        );
+        let indicator = text(r.hint_bar.y, r.hint_bar.x, r.hint_bar.right());
+        assert!(
+            indicator.contains("C-g"),
+            "{position:?}: the indicator keeps the prefix: {indicator:?}"
+        );
+    }
+}

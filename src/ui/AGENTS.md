@@ -18,11 +18,16 @@ view-local state (flash, spinner, view border colours, prefix, ready). The hint
 bar is the nav's prefix indicator, not a full-width strip: a label on a side column's
 bottom row, and at the right end of the view border row in a band. It shows the prefix
 alone until a prefix interaction is live (the prefix ready), when it
-lists the keys that interaction unlocks. The chrome instance
+lists the keys that interaction unlocks, opening from the indicator toward the terminal
+view while the indicator keeps the prefix. The chrome instance
 itself lives in the runtime state, fed by the app each frame and rendered from it.
 
+The toast module places and paints the toasts in the terminal view's corner farthest
+from the nav, and builds the history popup's lines. The render plan carries each toast's
+rect, so a click is hit-tested against what was painted.
+
 The operations module holds the off-loop mux-action runners and the UI decisions
-that turn domain operation results into completion messages. The operation port
+that turn domain operation results into toasts. The operation port
 and its exchanged values live in the model. A switcher key that COMMITS a slow
 action resolves it through the state's apply into a deferred-operation command it
 RETURNS up; the run loop spawns the runner and folds the outcome back through the
@@ -127,7 +132,7 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   offered and keeps the values on screen. A lone Esc ends it. The verdict brings the
   button back with what was typed still there, so a failure is retried rather than
   retyped. The pane shows the login's own categorized ssh reason separately from later
-  probe errors. Key registration reports through a completion message and remains in the
+  probe errors. Key registration reports through the login's toast and remains in the
   host information after the pane gives way to sessions. A success re-probes that host.
 - The dump should reflect the same split view the main draw path renders.
 - The nav's two bands are parted by the ROOM between them while the cards can spare a row

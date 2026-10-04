@@ -14,7 +14,7 @@ use ratatui::Frame;
 
 #[cfg(test)]
 use crate::state::chrome::FLASH_TTL;
-use crate::state::{Chrome, FlashKind};
+use crate::state::Chrome;
 pub use crate::state::{SourceReach, ViewBorderColors};
 use crate::ui::modal::{wrap_text, Modal};
 use crate::ui::switcher::fit;
@@ -213,22 +213,13 @@ pub(crate) fn palette_overrides(
 /// The hint bar's refusal style: a solid error bar (the active palette's
 /// `error` as the background, the bar's own text slot on top) that breaks hard
 /// from the calm default so a refused action reads as an
-/// error at a glance, not as more of the key cheatsheet. Every error flash paints
+/// error at a glance, not as more of the key cheatsheet. Every flash paints
 /// this. Fixed, not configurable: an error must stay legible regardless of any
 /// `[ui] hint-bar-style` override.
 pub(crate) fn error_flash_style(palette: &crate::ui::palette::Palette) -> Style {
     Style::default().bg(palette.error).fg(palette.bar_fg)
 }
 
-/// The hint bar's notice style: the bar's own background with its key accent as the
-/// text. A notice tells the user something worth acting on (a newer release) without
-/// anything having gone wrong, so it reads apart from the cheatsheet but never as the
-/// error bar.
-pub(crate) fn notice_flash_style(palette: &crate::ui::palette::Palette) -> Style {
-    Style::default().bg(palette.bar_bg).fg(palette.bar_accent)
-}
-
-/// What a flash is about, which decides how the bar paints it.
 /// How much of its row the hint bar paints.
 ///
 /// At rest the bar is the prefix indicator, a label sized to what it says, so a column's
@@ -373,7 +364,6 @@ impl Default for Chrome {
         Chrome {
             flash: String::new(),
             flash_until: None,
-            flash_kind: FlashKind::Error,
             auto_hide: false,
             view_border_hovered: false,
             spinner: HashSet::new(),
@@ -988,17 +978,14 @@ impl Chrome {
         if !self.flash.is_empty() {
             // A flash outranks even an open input: a dead jump number flashed its range
             // while leaving the input open, so the range must show over the input line.
-            match self.flash_kind {
-                FlashKind::Error => format!(" ✗ {}", self.flash),
-                FlashKind::Notice => format!(" {}", self.flash),
-            }
+            format!(" ✗ {}", self.flash)
         } else if let Some(Modal::Input(input)) = &state.modal {
             crate::ui::modal::input_hint_text(input, width)
         } else if self.armed {
             // The prefix is held: name what it unlocks. Longest-first so a narrow nav
             // drops the rarer chords rather than clipping mid-word.
             // Order: focus nav, focus terminal, jump, new, filter, hide, collapse, position,
-            // rescan, help, quit. The focus rows name the arrow PAIR the current placement makes
+            // rescan, history, help, quit. The focus rows name the arrow PAIR the current placement makes
             // active (the pair facing the terminal's side names the terminal), and the
             // resize keys are left out (the help modal has them).
             let focus = if self.nav_position.forward_arrows_face_terminal() {
@@ -1008,10 +995,10 @@ impl Chrome {
             };
             fit(
                 &[
-                    format!(" {p} · {focus} · 1-9 jump to a session · n new session · / filter · t hide nav · z collapse nav · p nav position · r rescan · ? help · q quit"),
-                    format!(" {p} · {focus} · 1-9 jump to · n new · / filter · t hide · z collapse · p position · r rescan · ? help · q quit"),
-                    format!(" {p} · {focus} · 1-9 · n · / · t · z · p · r · ? · q"),
-                    format!(" {p} · ←/↑ · →/↓ · 1-9 · n · / · t · z · p · r · ? · q"),
+                    format!(" {p} · {focus} · 1-9 jump to a session · n new session · / filter · t hide nav · z collapse nav · p nav position · r rescan · m history · ? help · q quit"),
+                    format!(" {p} · {focus} · 1-9 jump to · n new · / filter · t hide · z collapse · p position · r rescan · m history · ? help · q quit"),
+                    format!(" {p} · {focus} · 1-9 · n · / · t · z · p · r · m · ? · q"),
+                    format!(" {p} · ←/↑ · →/↓ · 1-9 · n · / · t · z · p · r · m · ? · q"),
                     format!(" {p}…"),
                 ],
                 width,
@@ -1066,17 +1053,13 @@ impl Chrome {
     }
 
     /// The style the hint bar paints with this frame. While a flash is showing it is
-    /// the [`error_flash_style`] for an error or the [`notice_flash_style`] for a
-    /// notice; otherwise the configured status style. Split from
+    /// the [`error_flash_style`]; otherwise the configured status style. Split from
     /// [`Self::render_hint_bar`] so the choice is unit-testable without a backend.
     pub(crate) fn hint_bar_render_style(&self, palette: &crate::ui::palette::Palette) -> Style {
         if self.flash.is_empty() {
             self.hint_bar_style
         } else {
-            match self.flash_kind {
-                FlashKind::Error => error_flash_style(palette),
-                FlashKind::Notice => notice_flash_style(palette),
-            }
+            error_flash_style(palette)
         }
     }
 
@@ -1159,20 +1142,20 @@ impl Chrome {
             }
         }
         // While the prefix is HELD the bar is expanded, and it pins its name and version to
-        // the far right: a cheap build pointer that never crowds the cheatsheet. A flash is
-        // a refusal and must own the whole row, so it displaces the version. The version
-        // only appears on a solid (Row) bar, which is exactly what an armed bar always is.
-        let version = if self.armed && self.flash.is_empty() && fill == BarFill::Row {
-            let label = self.version_label();
-            let gap = 2; // a two-cell breathing room between the cheatsheet and the label
-            (label, gap)
-        } else {
-            (String::new(), 0)
-        };
+        // the far right: a cheap build pointer that never crowds the cheatsheet, so it
+        // gives way whenever the cheatsheet would have to drop a key to make room for it. A
+        // flash is a refusal and must own the whole row, so it displaces the version. The
+        // version only appears on a solid (Row) bar, which is exactly what an armed bar
+        // always is.
+        let label = self.version_label();
+        let gap = 2; // a two-cell breathing room between the cheatsheet and the label
         let right_margin = 1; // a one-cell margin between the label and the far right edge
-        let version_w = version.0.chars().count() as u16 + version.1 + right_margin;
-        let text_w = area.width.saturating_sub(version_w);
-        let lines = self.hint_bar_lines(text_w, state);
+        let version_w = label.chars().count() as u16 + gap + right_margin;
+        let full = self.hint_bar_lines(area.width, state);
+        let beside = self.hint_bar_lines(area.width.saturating_sub(version_w), state);
+        let pinned = self.armed && self.flash.is_empty() && fill == BarFill::Row && beside == full;
+        let version = if pinned { label } else { String::new() };
+        let lines = full;
         // Key tokens get the accent only on the built-in default style with no flash
         // showing: a `[ui] hint-bar-style` override keeps its exact colours (uniform,
         // as configured), and a flash keeps the one solid style of its kind.
@@ -1209,14 +1192,15 @@ impl Chrome {
         };
         frame.render_widget(Clear, painted);
         // The cheatsheet takes the left of the bar; the version the rightmost cells. The
-        // cheatsheet was fit to `text_w`, so painting it across the whole bar fills the gap
-        // with the status background while the label sits clear of the text at the right.
+        // label is pinned only when the cheatsheet fits beside it, so painting the
+        // cheatsheet across the whole bar fills the gap with the status background while
+        // the label sits clear of the text at the right.
         frame.render_widget(
             Paragraph::new(text).style(self.hint_bar_render_style(palette)),
             painted,
         );
-        if !version.0.is_empty() {
-            let vw = version.0.chars().count() as u16;
+        if !version.is_empty() {
+            let vw = version.chars().count() as u16;
             let vrect = Rect {
                 x: painted.x + painted.width.saturating_sub(vw + right_margin),
                 y: painted.y,
@@ -1225,7 +1209,7 @@ impl Chrome {
             };
             let white = Style::default().fg(Color::White);
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(version.0, white)))
+                Paragraph::new(Line::from(Span::styled(version, white)))
                     .style(self.hint_bar_render_style(palette)),
                 vrect,
             );
@@ -1295,35 +1279,6 @@ mod tests {
 
     /// A key that takes the flash down takes its deadline with it, so nothing is left to
     /// fire later at a bar the user already cleared.
-    /// A notice is information, not a failure: it has a flash's life but paints the
-    /// notice style without the `✗` mark, while an error keeps both.
-    #[test]
-    fn a_notice_paints_apart_from_an_error() {
-        let state = crate::state::State::default();
-        let mut c = Chrome::default();
-        let palette = crate::ui::palette::Palette::default();
-        c.notice("xmux 9.9.9 is available");
-        assert_eq!(
-            c.hint_bar_render_style(&palette),
-            notice_flash_style(&palette)
-        );
-        let text = c.hint_bar_text(80, &state);
-        assert!(!text.contains('✗'), "{text:?}");
-        assert!(text.contains("xmux 9.9.9 is available"), "{text:?}");
-        assert!(
-            c.expire_flash(Instant::now() + FLASH_TTL),
-            "a notice has the same life"
-        );
-
-        c.flash("boom");
-        assert_eq!(
-            c.hint_bar_render_style(&palette),
-            error_flash_style(&palette)
-        );
-        assert!(c.hint_bar_text(80, &state).contains('✗'));
-        assert_ne!(notice_flash_style(&palette), error_flash_style(&palette));
-    }
-
     #[test]
     fn clearing_a_flash_leaves_nothing_to_expire() {
         let mut c = Chrome::default();
@@ -1464,9 +1419,9 @@ mod tests {
             last = pos;
         }
         // A narrower bar drops to short descriptions while keeping the focus guidance
-        // (the pair segment rides every rung). The full line is ~166 cells, so a 145-wide
+        // (the pair segment rides every rung). The full line is ~180 cells, so a 160-wide
         // bar forces the middle rung, whose focus rows keep the full pair wording.
-        let armed = c.hint_bar_text(145, &state);
+        let armed = c.hint_bar_text(160, &state);
         assert!(
             armed.contains("→/↓ focus terminal"),
             "short bar keeps focus-terminal: {armed:?}"
@@ -1476,6 +1431,7 @@ mod tests {
             "/ filter",
             "z collapse",
             "r rescan",
+            "m history",
             "? help",
             "q quit",
         ] {
