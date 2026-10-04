@@ -207,6 +207,8 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   layout puts cards on a fixed pitch the paint ignores (a column parts its bands, a
   band runs columns), so a hit-test that measured its own pitch would land clicks
   on cards the renderer put elsewhere.
+- A selected host's floating state word in a band has one blank cell on each side.
+  Both cells join its reverse-video highlight under nav focus without widening the card.
 - A group reads the same at every nav position: a bold section title with its session
   cards indented under it, and nothing else. The indent is never inside a card's rect: the
   selected card is painted by inverting that rect, so the rect the paint records - what
