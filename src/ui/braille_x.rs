@@ -16,6 +16,10 @@ const HEIGHT_64: usize = 33;
 const FRAMES_32: &[u8] = include_bytes!("braille_x/frames_32.bin");
 const FRAMES_64: &[u8] = include_bytes!("braille_x/frames_64.bin");
 
+pub(crate) fn fits(area: Rect) -> bool {
+    area.width >= WIDTH_32 as u16 && area.height >= HEIGHT_32 as u16
+}
+
 fn frame_index(elapsed_ms: u64) -> usize {
     let glyph = (elapsed_ms / PERIOD_MS % GLYPHS as u64) as usize;
     let phase = elapsed_ms % PERIOD_MS;

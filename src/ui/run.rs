@@ -184,6 +184,29 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_screen_keeps_its_content_and_animation_with_the_nav_hidden() {
+        let mut state = crate::state::State::from_scan(Scan {
+            groups: vec![crate::ui::tree::Group {
+                source: "fresh".into(),
+                err: None,
+                sessions: vec![],
+            }],
+        });
+        let switcher = Switcher::new(&mut state);
+        let area = ratatui::layout::Rect::new(0, 0, 80, 40);
+        let previous = switcher.layout(
+            area,
+            crate::ui::switcher::NavSize::hidden(crate::ui::switcher::NAV_WIDTH),
+            &state,
+            &Default::default(),
+        );
+        let dump = dump_screen(&switcher, None, area.width, area.height, &state, &previous);
+        assert!(dump.contains("no sessions"));
+        assert!(dump.contains("re-scan every host"));
+        assert!(dump.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)));
+    }
+
+    #[test]
     fn full_rescan_keeps_the_confirmed_grid_visible() {
         let mut state = crate::state::State::from_scan(sample());
         let mut switcher = Switcher::new(&mut state);

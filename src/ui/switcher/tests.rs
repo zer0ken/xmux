@@ -3380,6 +3380,55 @@ async fn both_host_screens_share_one_grammar() {
     }
 }
 
+#[test]
+fn an_empty_host_animates_only_below_its_screen_content_when_it_fits() {
+    let scan = Scan {
+        groups: vec![Group {
+            source: "fresh".into(),
+            err: None,
+            sessions: vec![],
+        }],
+    };
+    let mut tall = Harness::new_sized(scan.clone(), 180, 60);
+    assert_eq!(tall.plan.view_screen, Some(crate::model::ViewScreen::Empty));
+    let view = tall.plan.regions.terminal;
+    let last_content = (view.y..view.bottom())
+        .find(|&y| {
+            (view.x..view.right())
+                .map(|x| tall.buf()[(x, y)].symbol())
+                .collect::<String>()
+                .contains("re-scan every host")
+        })
+        .expect("the screen actions");
+    let braille_rows = |h: &Harness| -> Vec<u16> {
+        let view = h.plan.regions.terminal;
+        (view.y..view.bottom())
+            .filter(|&y| {
+                (view.x..view.right()).any(|x| {
+                    h.buf()[(x, y)]
+                        .symbol()
+                        .chars()
+                        .next()
+                        .is_some_and(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
+                })
+            })
+            .collect()
+    };
+    let rows = braille_rows(&tall);
+    assert_eq!(rows.len(), 33);
+    assert!(rows[0] > last_content);
+    let before = tall.view_text();
+    tall.state.chrome.animation_ms = 1_033;
+    tall.draw();
+    assert_ne!(tall.view_text(), before, "the frame advances");
+
+    let short = Harness::new_sized(scan, 100, 20);
+    assert!(
+        braille_rows(&short).is_empty(),
+        "the remaining rows do not fit"
+    );
+}
+
 #[tokio::test]
 async fn levels_render_from_the_switchers_palette() {
     // The selection parks on a remote card so the local rows render UNSELECTED: the
@@ -3621,7 +3670,7 @@ async fn a_section_title_stands_alone_over_its_cards() {
     for name in ["build", "editor"] {
         let painted = band_line(&top, row_of(top.buf(), name, w).expect(name));
         assert!(
-            painted.starts_with("  "),
+            painted.starts_with(' ') && !painted.starts_with("  "),
             "{name} is indented under its title with nothing in the indent:\n{painted}"
         );
     }
@@ -4554,10 +4603,8 @@ fn a_collapsed_nav_renders_every_wrapped_flash_line() {
         .unwrap();
 
     let buf = term.backend().buffer();
-    // The bar opens across the terminal view beside the collapsed column.
-    let lines = state
-        .chrome
-        .hint_bar_lines(buf.area.width - width - 1, &state);
+    // The bar spans the whole window below the collapsed column.
+    let lines = state.chrome.hint_bar_lines(buf.area.width, &state);
     assert!(lines.len() > 1);
     let first = buf.area.height - lines.len() as u16;
     let painted = (first..buf.area.height)
@@ -5589,67 +5636,24 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
 fn a_floating_bar_opens_from_the_prefix_indicator_toward_the_terminal() {
     use super::render::hint_bar_rect;
     let area = Rect::new(0, 0, 24, 8);
-    let full = Rect::new(0, 0, 24, 8);
     // A top band opens below its seam, collapsed or not, and grows down.
-    let top = hint_bar_rect(
-        Rect::new(0, 0, 24, 1),
-        Rect::new(0, 1, 24, 7),
-        area,
-        3,
-        true,
-        NavPosition::Top,
-    );
+    let top = hint_bar_rect(Rect::new(0, 0, 24, 1), area, 3, true, NavPosition::Top);
     assert_eq!(top, Rect::new(0, 1, 24, 3));
-    let top_band = hint_bar_rect(
-        Rect::new(20, 3, 4, 1),
-        Rect::new(0, 4, 24, 4),
-        area,
-        1,
-        true,
-        NavPosition::Top,
-    );
+    let top_band = hint_bar_rect(Rect::new(20, 3, 4, 1), area, 1, true, NavPosition::Top);
     assert_eq!(top_band, Rect::new(0, 4, 24, 1), "the row below the seam");
     // A bottom band opens above its seam and grows up.
-    let bottom = hint_bar_rect(
-        Rect::new(20, 5, 4, 1),
-        Rect::new(0, 0, 24, 5),
-        area,
-        1,
-        true,
-        NavPosition::Bottom,
-    );
+    let bottom = hint_bar_rect(Rect::new(20, 5, 4, 1), area, 1, true, NavPosition::Bottom);
     assert_eq!(bottom, Rect::new(0, 4, 24, 1), "the row above the seam");
-    // A side column opens on its bottom row across the terminal view's columns.
-    let left = hint_bar_rect(
-        Rect::new(0, 7, 7, 1),
-        Rect::new(8, 0, 16, 8),
-        area,
-        3,
-        true,
-        NavPosition::Left,
-    );
-    assert_eq!(left, Rect::new(8, 5, 16, 3));
-    let right = hint_bar_rect(
-        Rect::new(17, 7, 7, 1),
-        Rect::new(0, 0, 16, 8),
-        area,
-        1,
-        true,
-        NavPosition::Right,
-    );
-    assert_eq!(right, Rect::new(0, 7, 16, 1));
+    // A side column opens across the whole bottom row.
+    let left = hint_bar_rect(Rect::new(0, 7, 7, 1), area, 3, true, NavPosition::Left);
+    assert_eq!(left, Rect::new(0, 5, 24, 3));
+    let right = hint_bar_rect(Rect::new(17, 7, 7, 1), area, 1, true, NavPosition::Right);
+    assert_eq!(right, Rect::new(0, 7, 24, 1));
     // A hidden nav has no indicator: the bar borrows the window's bottom rows.
-    let hidden = hint_bar_rect(Rect::default(), full, area, 2, true, NavPosition::Left);
+    let hidden = hint_bar_rect(Rect::default(), area, 2, true, NavPosition::Left);
     assert_eq!(hidden, Rect::new(0, 6, 24, 2));
     // At rest the bar is the indicator itself.
-    let rest = hint_bar_rect(
-        Rect::new(0, 7, 7, 1),
-        Rect::new(8, 0, 16, 8),
-        area,
-        1,
-        false,
-        NavPosition::Left,
-    );
+    let rest = hint_bar_rect(Rect::new(0, 7, 7, 1), area, 1, false, NavPosition::Left);
     assert_eq!(rest, Rect::new(0, 7, 7, 1));
 }
 
@@ -6560,6 +6564,41 @@ fn portrait_scanning_hosts_anchor_to_the_right_until_found() {
     for i in 1..3 {
         assert_eq!(cells[&i].x, x0, "every scanning host shares that column");
     }
+    assert!(
+        cells[&0].width < 20,
+        "the status word takes no column width"
+    );
+    let row = (0..band_w)
+        .map(|x| term.backend().buffer()[(x, cells[&0].y)].symbol())
+        .collect::<String>();
+    assert!(
+        row.contains("no sessions"),
+        "the selected status floats over the row: {row}"
+    );
+}
+
+#[test]
+fn floating_host_status_preserves_the_selected_mark_in_a_narrow_band() {
+    let scan = Scan {
+        groups: vec![Group {
+            source: "very-long-host-name".into(),
+            err: Some("refused".into()),
+            sessions: vec![],
+        }],
+    };
+    let (_sw, plan, term) = portrait(scan, 24, 12);
+    let card = plan.nav_cells[0].1;
+    let row = (0..24)
+        .map(|x| term.backend().buffer()[(x, card.y)].symbol())
+        .collect::<String>();
+    assert!(
+        row.contains(SELECTED_MARK),
+        "the selected card remains identifiable: {row}"
+    );
+    assert!(
+        row.contains("unreachable"),
+        "the status stays visible: {row}"
+    );
 }
 
 #[test]

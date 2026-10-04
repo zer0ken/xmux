@@ -82,10 +82,10 @@ UI elements a user perceives as distinct things:
   the key list beside it names the keys. It shows one thing at a time, in order: a flash,
   an input line, the prefix while the key list is open, the selection hint, the scan
   indicator, the active filter, then the resting prefix. An input line, a flash, and the
-  selection hint float away from the indicator toward the terminal view while the
-  indicator keeps the prefix: across the terminal view's columns beside a side column,
-  below a top band's seam, above a bottom band's seam, and over the window's bottom rows
-  when the nav is hidden. It wraps instead of clipping. A flash paints the bar in the
+  selection hint use the whole window's bottom rows beside a side column, the rows
+  below a top band's seam, or the rows above a bottom band's seam. With the nav hidden
+  they use the window's bottom rows. The indicator keeps the prefix in a band. The bar
+  wraps instead of clipping. A flash paints the bar in the
   error style with a `✗` mark.
 - key table - the one table of every key xmux binds, with the words that name each key.
   Both focus paths resolve a prefix command through it, and the help, the key list, and
@@ -132,7 +132,8 @@ UI elements a user perceives as distinct things:
   cards. The same animation fills the view during an initial scan before a card can
   be selected. Its fixed 32- or 64-column frame is centered and
   clipped in smaller views; one symbol holds for one second and turns in 0.4 seconds.
-  It yields immediately to a confirmed session or settled host state. The
+  A settled screen retains its text and centers the animation in the rows below it
+  only when at least a 32-column, 16-row frame fits. A confirmed session shows its grid. The
   `own session` state's rows are why it is refused, and no key, because nothing pressed
   here would make it showable.
 - nesting - xmux running inside a mux session. Allowed: the app attaches mux clients as
@@ -159,7 +160,7 @@ UI elements a user perceives as distinct things:
   card from the moment its host resolves.
 - section title - the non-selectable `{host}/{mux}` header row a source's session
   cards hang under, dim (the decoration role) with nothing after it, its cards
-  indented two cells under it at every nav position. A band column that continues a
+  indented one cell under it at every nav position. A band column that continues a
   split section repeats it on its top row followed by `…`. It is not a card: it carries
   no number, the selection can never land on it, and a click on it or on the indent
   selects nothing. `n` on one of its session cards creates a sibling in the same
@@ -245,7 +246,8 @@ UI elements a user perceives as distinct things:
   login needed uses `?` in the warning role, unreachable uses `▲` in the error role,
   and a listing failure uses `✗` in the primary role. The scanning spinner stays in
   the pending role. Every host-state card reserves one cell for its glyph. Only the
-  selected card adds its state word; unselected cards retain the glyph alone.
+  selected host shows its state word; unselected cards retain the glyph alone. In a
+  band, the state word floats over neighboring cells and does not set the column width.
   A host-state card claims a mux only when the mux is CONFIRMED - a settled reachable
   host's enumeration answered through its mux, and a source id that names its own mux
   was resolved from what the machine actually serves; a section title's mux is

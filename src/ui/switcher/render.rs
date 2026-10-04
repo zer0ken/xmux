@@ -9,15 +9,13 @@ use crate::ui::palette;
 /// column's bottom row, or the right end of a band's view border row (empty when the nav
 /// is hidden, so the mux keeps every row).
 ///
-/// Floating, it opens from the indicator toward the terminal view and leaves the
-/// indicator itself in place: across the terminal view's columns on a side column's
-/// bottom row, on the rows below a top band's seam, and on the rows above a bottom band's
-/// seam. A multi-row bar grows away from the indicator. With the nav hidden there is no
+/// Floating, it spans the full bottom row of a side layout, opens below a top band's
+/// seam, or opens above a bottom band's seam. A multi-row bar grows away from the
+/// indicator. With the nav hidden there is no
 /// indicator, so it borrows the window's bottom rows. Only the paint moves; the layout is
 /// untouched, so nothing reflows.
 pub(super) fn hint_bar_rect(
     indicator: Rect,
-    terminal: Rect,
     area: Rect,
     hint_bar_h: u16,
     floating: bool,
@@ -38,9 +36,9 @@ pub(super) fn hint_bar_rect(
     }
     match position {
         NavPosition::Left | NavPosition::Right => Rect {
-            x: terminal.x,
+            x: area.x,
             y: indicator.bottom().saturating_sub(h).max(area.y),
-            width: terminal.width,
+            width: area.width,
             height: h,
         },
         NavPosition::Top => Rect {
@@ -74,7 +72,7 @@ struct NavRowPaint<'a> {
     width: u16,
     filter: &'a str,
     palette: &'a palette::Palette,
-    reserve_state_word: bool,
+    show_state_word: bool,
 }
 
 fn middle_ellipsize(text: &str, width: usize) -> String {
@@ -311,13 +309,7 @@ impl Switcher {
         // The resting indicator is one row, so the layout is cut for one row whatever the
         // bar says: a floating bar only paints further, it never takes a row from the nav.
         let regions = compute_regions(area, nav, 1);
-        let bar_w = if !floating {
-            nav.width
-        } else if band || nav.width == 0 || regions.terminal.width == 0 {
-            area.width
-        } else {
-            regions.terminal.width
-        };
+        let bar_w = if floating { area.width } else { nav.width };
         let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
         // At rest the prefix indicator is a label on the column's bottom row, and the right
         // end of the seam row in a band. While the bar floats away from it, the indicator
@@ -340,7 +332,7 @@ impl Switcher {
         } else {
             regions.hint_bar
         };
-        let prefix_label = if floating && !regions.hint_bar.is_empty() {
+        let prefix_label = if floating && band && !regions.hint_bar.is_empty() {
             Rect {
                 width: prefix_w.min(resting_bar.width),
                 ..resting_bar
@@ -348,14 +340,7 @@ impl Switcher {
         } else {
             Rect::default()
         };
-        let hint_bar_rect = hint_bar_rect(
-            resting_bar,
-            regions.terminal,
-            area,
-            hint_bar_h,
-            floating,
-            nav.position,
-        );
+        let hint_bar_rect = hint_bar_rect(resting_bar, area, hint_bar_h, floating, nav.position);
         // A live prefix opens its key list from the indicator toward the terminal view,
         // sized to the room there.
         let key_list = if key_list_open(state) {
@@ -715,12 +700,27 @@ impl Switcher {
         }
         // nav_width == 0 is the "nav hidden" sentinel (terminal view focused + auto-hide):
         // the terminal view owns the whole area - no nav list, no view border, and no
-        // prefix indicator of its own. A selected scan still owns that terminal view.
+        // prefix indicator of its own. A selected view screen still owns that region.
         if plan.nav_hidden {
-            if plan.view_screen == Some(crate::model::ViewScreen::Scanning) {
-                crate::ui::braille_x::render(frame, area, state.chrome.animation_ms);
-            } else {
-                self.render_terminal_view(frame, area, grid);
+            match plan.view_screen {
+                Some(crate::model::ViewScreen::Scanning) => {
+                    crate::ui::braille_x::render(frame, area, state.chrome.animation_ms);
+                }
+                Some(kind) => {
+                    let address = self.view_screen_address(state, kind);
+                    state.chrome.render_view_screen(
+                        frame,
+                        area,
+                        state,
+                        crate::ui::chrome::ViewScreenRender {
+                            address: &address,
+                            kind,
+                            focused: terminal_focused,
+                        },
+                        &palette,
+                    );
+                }
+                None => self.render_terminal_view(frame, area, grid),
             }
             if let Some(g) = grid.filter(|_| plan.view_screen.is_none()) {
                 if !g.hide_cursor() {
@@ -751,8 +751,8 @@ impl Switcher {
         // border, and the hint bar rests on a column's bottom row or a band's view border
         // row. The hint bar is normally one row; a long flash wraps, so size it to the
         // wrapped line count (never clipped). Measured at the width it will RENDER at: the
-        // nav column at rest in a column, and once the bar floats the terminal view's width
-        // beside a column or the whole window across a band (see `hint_bar_floats` /
+        // nav column at rest in a column, and the whole window once the bar floats
+        // (see `hint_bar_floats` /
         // `hint_bar_rect`).
         self.render_nav(frame, state, plan, &palette, terminal_focused);
         // The seam is the one line the nav draws: its colour says which view holds the
@@ -788,11 +788,10 @@ impl Switcher {
         }
         // The hint bar paints LAST of the two views, so a floating bar can cover the
         // terminal view. At rest it is the prefix indicator, a label sized to what it says
-        // on the column's bottom row or at the right end of a band's seam; floating, it
-        // opens from there toward the terminal view while the indicator keeps the prefix -
-        // the layout never reflows, only the paint reaches further, so arming the prefix
-        // cannot shift a single card. A band's overflow counts share the seam with the
-        // indicator.
+        // on the column's bottom row or at the right end of a band's seam. A floating
+        // bar spans the whole width in a side layout, or opens across the terminal view
+        // beside a band while its seam indicator keeps the prefix. The layout never
+        // reflows. A band's overflow counts share the seam with the indicator.
         for mark in &plan.overflow_marks {
             Self::render_overflow_mark(frame, *mark, &palette);
         }
@@ -883,7 +882,7 @@ impl Switcher {
                     width: rect.width,
                     filter: &state.filter,
                     palette,
-                    reserve_state_word: false,
+                    show_state_word: plan.layout == ViewLayout::Column,
                 },
             );
             frame.render_widget(Paragraph::new(lines), rect);
@@ -904,6 +903,61 @@ impl Switcher {
                 *rect,
             );
         }
+        if plan.layout == ViewLayout::Band {
+            self.render_selected_host_word(frame, plan, palette, terminal_focused);
+        }
+    }
+
+    fn render_selected_host_word(
+        &self,
+        frame: &mut Frame,
+        plan: &RenderPlan,
+        palette: &palette::Palette,
+        terminal_focused: bool,
+    ) {
+        let Some(&(_, card)) = plan.nav_cells.iter().find(|(i, _)| *i == self.selected) else {
+            return;
+        };
+        if card.is_empty() {
+            return;
+        }
+        let RowRef::Host {
+            scanning,
+            blocked,
+            list_failed,
+            unreachable,
+            ..
+        } = &self.rows[self.selected].reference
+        else {
+            return;
+        };
+        let word =
+            crate::ui::tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable);
+        let width = word.len() as u16 + 1;
+        let room_right = plan.nav_inner.right().saturating_sub(card.right());
+        let (x, label) = if room_right >= width.saturating_sub(1) {
+            (card.right().saturating_sub(1), format!(" {word}"))
+        } else if card.x.saturating_sub(plan.nav_inner.x) >= width {
+            (card.x - width, format!("{word} "))
+        } else {
+            (
+                plan.nav_inner.right().saturating_sub(width),
+                format!("{word} "),
+            )
+        };
+        let rect = Rect {
+            x,
+            y: card.y,
+            width: width.min(plan.nav_inner.right().saturating_sub(x)),
+            height: 1,
+        };
+        let style = if terminal_focused {
+            Style::default().fg(palette.secondary)
+        } else {
+            palette::selection_style(palette)
+        };
+        frame.render_widget(Clear, rect);
+        frame.render_widget(Paragraph::new(label).style(style), rect);
     }
 
     /// The rule parting the side list's two bands once they scroll as one run. A single
@@ -983,7 +1037,7 @@ impl Switcher {
                 width: 0,
                 filter: "",
                 palette,
-                reserve_state_word: true,
+                show_state_word: false,
             },
         );
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
@@ -1031,7 +1085,7 @@ impl Switcher {
             width,
             filter,
             palette,
-            reserve_state_word,
+            show_state_word,
         } = paint;
         let row = &self.rows[i];
         let selected = self.selected == i;
@@ -1107,7 +1161,7 @@ impl Switcher {
             } else {
                 format!("{host}/{mux}")
             };
-            let suffix_w = 2 + if selected || reserve_state_word {
+            let suffix_w = 2 + if selected && show_state_word {
                 word.len() + 1
             } else {
                 0
@@ -1145,7 +1199,7 @@ impl Switcher {
             line.extend(identity);
             line.push(Span::raw(" "));
             line.push(Span::styled(glyph, glyph_style));
-            if selected || reserve_state_word {
+            if selected && show_state_word {
                 line.push(Span::styled(
                     format!(" {word}"),
                     Style::default().fg(palette.secondary),

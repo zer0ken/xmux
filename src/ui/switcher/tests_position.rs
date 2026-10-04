@@ -194,7 +194,7 @@ fn pl1_group_titles_are_dim_and_their_cards_indent_at_every_position() {
             .find_in(nav, "3 inference")
             .unwrap_or_else(|| panic!("{position:?}: the card is painted"));
         assert_eq!(cy, ty + 1, "{position:?}: the card hangs under its title");
-        assert_eq!(cx, tx + 2, "{position:?}: the card indents under its title");
+        assert_eq!(cx, tx + 1, "{position:?}: the card indents under its title");
         let after = shot.row(ty, tx + 9, shot.plan.regions.tree.right());
         assert!(
             !after.contains('─') && !after.contains('│'),
@@ -616,6 +616,9 @@ fn the_selection_hint_floats_from_the_indicator_at_every_position() {
         shot.draw(false);
         let bar = shot.plan.hint_bar_rect;
         let r = shot.plan.regions;
+        if matches!(position, NavPosition::Left | NavPosition::Right) {
+            assert_eq!(bar, Rect::new(0, H - 1, W, 1), "{position:?}");
+        }
         assert!(
             !bar.intersects(r.tree),
             "{position:?}: the hint covers no card: {bar:?}"
@@ -626,9 +629,11 @@ fn the_selection_hint_floats_from_the_indicator_at_every_position() {
             "{position:?}: {text:?}"
         );
         let indicator = shot.row(r.hint_bar.y, r.hint_bar.x, r.hint_bar.right());
-        assert!(
-            indicator.contains("C-g"),
-            "{position:?}: the indicator keeps the prefix: {indicator:?}"
-        );
+        if is_band(position) {
+            assert!(
+                indicator.contains("C-g"),
+                "{position:?}: the indicator keeps the prefix: {indicator:?}"
+            );
+        }
     }
 }
