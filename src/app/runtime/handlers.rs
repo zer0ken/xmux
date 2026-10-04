@@ -224,6 +224,7 @@ impl Runtime {
                         model,
                         Msg::RemoveSource {
                             source: machine.clone(),
+                            clear_tracking: false,
                         },
                     );
                     debug_assert!(effects.is_empty());
@@ -319,7 +320,13 @@ impl Runtime {
                             registry.remove(&address);
                         }
                     }
-                    let effects = update(model, Msg::RemoveSource { source: id.clone() });
+                    let effects = update(
+                        model,
+                        Msg::RemoveSource {
+                            source: id.clone(),
+                            clear_tracking: true,
+                        },
+                    );
                     debug_assert!(effects.is_empty());
                 }
                 for id in &delta.added {
@@ -682,6 +689,7 @@ impl Runtime {
             spinner_start: std::time::Instant::now(),
             dirty: true,
             last_draw: std::time::Instant::now() - std::time::Duration::from_millis(FRAME_MS),
+            rescan_pending: false,
             #[cfg(test)]
             discovery_runs: 0,
             // The live config watch records a baseline on its first frame tick, so the
@@ -1392,6 +1400,7 @@ impl Runtime {
                 }
             }
         }
+        self.flush_rescan();
         false
     }
 

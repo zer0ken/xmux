@@ -91,6 +91,7 @@ impl Runtime {
             rows,
             nav_width,
         );
+        self.flush_rescan();
         (
             focus_terminal,
             quit,
@@ -642,10 +643,9 @@ impl Runtime {
                     }
                     // prefix n/r reach here from terminal focus: run them through the
                     // switcher exactly like the nav path. handle_key opens the new-session
-                    // input (n) or arms the re-scan (r); Enter then routes via the modal
-                    // path (is_modal) on the next read. `r` only sets the re-scan flag, so
-                    // kick_rescan must fire it: the nav path (handle_nav_bytes) runs the
-                    // same tail after every read.
+                    // input (n) or requests the re-scan (r); Enter then routes via the modal
+                    // path (is_modal) on the next read. Discovery is flushed once after the
+                    // full input batch has applied its other effects.
                     Action::NavKey(k) => {
                         let effects = update(&mut self.model, Msg::Key(k));
                         let (cq, cwc, _) = self.execute_effects(effects);
@@ -724,6 +724,7 @@ impl Runtime {
         if self.prefix_active() != armed_before {
             *dirty = true;
         }
+        self.flush_rescan();
         outcome
     }
 }

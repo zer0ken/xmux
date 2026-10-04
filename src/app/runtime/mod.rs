@@ -223,11 +223,7 @@ impl Runtime {
                         unreachable!("selection commands are applied inside update: {address:?}")
                     }
                     Command::Rescan => {
-                        #[cfg(test)]
-                        {
-                            self.discovery_runs += 1;
-                        }
-                        run_discovery(&self.env, &self.hosts, &self.mgr, &self.scan_pool, true);
+                        self.rescan_pending = true;
                     }
                     Command::AdjustNavWidth(_) => {
                         width_changed = true;
@@ -293,6 +289,19 @@ impl Runtime {
             }
         }
         (quit, width_changed, rearm)
+    }
+
+    /// Runs a requested discovery once after the current input or control batch has
+    /// finished its other effects and ensured the selected host.
+    fn flush_rescan(&mut self) {
+        if !std::mem::take(&mut self.rescan_pending) {
+            return;
+        }
+        #[cfg(test)]
+        {
+            self.discovery_runs += 1;
+        }
+        run_discovery(&self.env, &self.hosts, &self.mgr, &self.scan_pool, true);
     }
 }
 
@@ -1286,6 +1295,7 @@ struct Runtime {
     spinner_start: std::time::Instant,
     dirty: bool,
     last_draw: std::time::Instant,
+    rescan_pending: bool,
     #[cfg(test)]
     discovery_runs: usize,
 }

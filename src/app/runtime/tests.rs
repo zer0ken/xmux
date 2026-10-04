@@ -1453,6 +1453,8 @@ async fn a_re_scan_roster_drops_a_machine_it_stopped_naming() {
     // three registries have to let go, or the nav paints a card nothing can reach.
     let mut rt = test_rt(fake_env_with_sources(&["prod", "stage"]));
     assert!(rt.hosts.get("stage").is_some(), "precondition");
+    rt.model.connected.insert("stage".into());
+    rt.model.detecting.insert("stage".into());
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod"])),
     });
@@ -1462,6 +1464,8 @@ async fn a_re_scan_roster_drops_a_machine_it_stopped_naming() {
         !rt.model.state.groups.iter().any(|g| g.source == "stage"),
         "and the card is gone"
     );
+    assert!(!rt.model.connected.contains("stage"));
+    assert!(!rt.model.detecting.contains("stage"));
     assert!(rt.hosts.get("prod").is_some(), "prod is still named");
 }
 
@@ -1854,6 +1858,7 @@ fn test_rt(env: Env) -> Runtime {
         spinner_start: std::time::Instant::now(),
         dirty: true,
         last_draw: std::time::Instant::now(),
+        rescan_pending: false,
         discovery_runs: 0,
     };
     sync_test_render_plan(&mut rt);
@@ -1913,6 +1918,31 @@ fn host_event_and_command_run_through_the_same_executor() {
         rt.hosts.get("local").unwrap().display_tty.0.as_deref(),
         Some("/dev/pts/41")
     );
+}
+
+#[tokio::test]
+async fn rescan_discovery_waits_for_the_batch_boundary() {
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let effects = update(
+        &mut rt.model,
+        Msg::Commands(vec![
+            crate::model::Command::Rescan,
+            crate::model::Command::Quit,
+        ]),
+    );
+
+    let outcome = rt.execute_effects(effects);
+
+    assert_eq!(outcome, (true, false, false));
+    assert!(rt.rescan_pending);
+    assert_eq!(
+        rt.discovery_runs, 0,
+        "the executor finishes the command batch before discovery"
+    );
+
+    rt.flush_rescan();
+    assert!(!rt.rescan_pending);
+    assert_eq!(rt.discovery_runs, 1);
 }
 
 #[test]
@@ -3050,13 +3080,13 @@ fn rt_terminal_focus_with_session() -> Runtime {
     rt
 }
 
-// A re-scan starts the roster re-resolution off the loop, so the harness needs the
-// runtime the real loop always runs inside.
+// A re-scan starts roster resolution off the loop, so the harness needs the runtime
+// that the real loop always runs inside.
 #[tokio::test]
 async fn prefix_r_in_terminal_focus_kicks_rescan() {
     // prefix r is focus-independent: from the terminal view it re-scans every host. The
-    // re-scan clears each group's sessions and re-arms scanning - and kick_rescan must
-    // run for it to fire, which the terminal arm now does.
+    // re-scan clears each group's sessions, re-arms scanning, and flushes one discovery
+    // pass after the terminal input batch.
     let mut rt = rt_terminal_focus_with_session();
     assert!(
         !rt.model.state.groups[0].sessions.is_empty(),
@@ -3071,6 +3101,7 @@ async fn prefix_r_in_terminal_focus_kicks_rescan() {
         rt.model.state.scanning.contains("jup"),
         "and re-armed scanning for the source"
     );
+    assert_eq!(rt.discovery_runs, 1, "and started one discovery pass");
 }
 
 #[test]

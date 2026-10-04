@@ -597,6 +597,16 @@ async fn rescan_resets_to_scanning_skeleton() {
     );
 }
 
+#[test]
+fn initial_source_seed_does_not_arm_a_rescan() {
+    let mut h = Harness::from_sources(&["local", "jupiter00"]);
+
+    assert!(
+        !h.sw.take_rescan_kick(),
+        "launch discovery is started directly, not by the first user input"
+    );
+}
+
 // --- streaming model (render-first, per-element) ------------------------
 
 #[tokio::test]
@@ -1347,9 +1357,6 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
         &mut h.state,
     );
     h.draw();
-    // Drain the launch kick a fresh switcher arms, so what is asserted below is the
-    // unlock's own effect, not the first-frame scan.
-    h.sw.take_rescan_kick();
     // A successful unlock returns the unlocked source so the app re-probes ONLY that
     // machine (its reach changed locked→connected), and it does NOT arm a whole-roster
     // re-scan - that would re-probe every host for one that changed.

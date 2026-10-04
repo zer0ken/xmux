@@ -132,6 +132,7 @@ pub(crate) enum Msg {
     },
     RemoveSource {
         source: String,
+        clear_tracking: bool,
     },
     DetectionFinished {
         source: String,
@@ -620,7 +621,14 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             }
             Vec::new()
         }
-        Msg::RemoveSource { source } => {
+        Msg::RemoveSource {
+            source,
+            clear_tracking,
+        } => {
+            if clear_tracking {
+                model.connected.remove(&source);
+                model.detecting.remove(&source);
+            }
             model.switcher.remove_source(&source, &mut model.state);
             Vec::new()
         }
@@ -1000,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_source_leaves_connection_and_detection_tracking_unchanged() {
+    fn remove_source_tracking_depends_on_the_removal_origin() {
         let mut model = model();
         model.connected.insert("local".into());
         model.detecting.insert("local".into());
@@ -1009,12 +1017,25 @@ mod tests {
             &mut model,
             Msg::RemoveSource {
                 source: "local".into(),
+                clear_tracking: false,
             },
         );
 
         assert!(effects.is_empty());
         assert!(model.connected.contains("local"));
         assert!(model.detecting.contains("local"));
+
+        let effects = update(
+            &mut model,
+            Msg::RemoveSource {
+                source: "local".into(),
+                clear_tracking: true,
+            },
+        );
+
+        assert!(effects.is_empty());
+        assert!(!model.connected.contains("local"));
+        assert!(!model.detecting.contains("local"));
     }
 
     #[test]
