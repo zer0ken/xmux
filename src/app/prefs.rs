@@ -37,6 +37,17 @@ const NAV_COLLAPSED_FILE: &str = "nav_collapsed";
 /// The file under the xmux dir holding the nav scope the user last set with `prefix s`.
 const NAV_SCOPE_FILE: &str = "nav_scope";
 
+/// A marker written after the first interactive key has introduced the prefix.
+const FIRST_KEY_HELP_FILE: &str = "first_key_help_seen";
+
+pub fn first_key_help_seen(xmux_dir: &Path) -> bool {
+    xmux_dir.join(FIRST_KEY_HELP_FILE).exists()
+}
+
+pub fn mark_first_key_help_seen(xmux_dir: &Path) {
+    let _ = std::fs::write(xmux_dir.join(FIRST_KEY_HELP_FILE), "1");
+}
+
 /// Reads the persisted nav scope. A missing or unrecognised value means the default
 /// scope.
 pub fn load_nav_scope(xmux_dir: &Path) -> crate::model::NavScope {
@@ -150,6 +161,15 @@ pub fn save_last_session(xmux_dir: &Path, address: &Address) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_key_help_marker_survives_the_run() {
+        let dir = temp_dir("first-key-help");
+        assert!(!first_key_help_seen(&dir));
+        mark_first_key_help_seen(&dir);
+        assert!(first_key_help_seen(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("xmux-state-{}-{tag}", std::process::id()));

@@ -684,6 +684,7 @@ impl Runtime {
         switcher.set_palette(palette);
         // The help modal must show the prefix the user configured, not a literal.
         state.chrome.set_ui_prefix(env.ui_prefix.clone());
+        state.chrome.first_key_seen = crate::app::prefs::first_key_help_seen(&env.xmux_dir);
         drop(roster);
 
         // The live mutate ops (create/rename/kill) - NOT nav probing.

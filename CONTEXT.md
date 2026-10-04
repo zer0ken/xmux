@@ -105,7 +105,8 @@ UI elements a user perceives as distinct things:
   selection: the selected card's most relevant keys and one fact about it (a session's
   windows, a host's state word and the reason behind it). Any key ends it and the next
   move replaces it. A selection xmux was told to make raises none.
-  The first interactive key in a run briefly names the configured prefix and its help key.
+  The first interactive key before the help-seen preference is recorded briefly names
+  the configured prefix and its help key; later runs keep the resting indicator.
 - view screen - what fills the terminal-view region in place of a mux while a selected
   host scans or has settled without a session to show, or when xmux would mirror its
   own session. A settled-state card names the STATE; its screen has room to state WHY.

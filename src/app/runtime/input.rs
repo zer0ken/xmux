@@ -504,7 +504,7 @@ impl Runtime {
                 || self.model.state.chrome.selection_hint.is_some())
         {
             let effects = update(&mut self.model, Msg::KeysRead);
-            debug_assert!(effects.is_empty());
+            let _ = self.execute_effects(effects);
             *dirty = true;
         }
         // Watchdog: a view border drag is normally ended by the button-up event, but a

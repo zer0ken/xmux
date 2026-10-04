@@ -299,6 +299,7 @@ pub(crate) enum Effect {
     PersistNavCollapsed(bool),
     PersistNavPosition(Option<NavPosition>),
     PersistNavScope(crate::model::NavScope),
+    PersistFirstKeyHelpSeen,
     ReattachDisplay(Selection),
     CancelLogin(crate::link::unlock::RunningLogin),
 }
@@ -340,6 +341,7 @@ impl std::fmt::Debug for Effect {
                 f.debug_tuple("PersistNavPosition").field(position).finish()
             }
             Self::PersistNavScope(scope) => f.debug_tuple("PersistNavScope").field(scope).finish(),
+            Self::PersistFirstKeyHelpSeen => f.write_str("PersistFirstKeyHelpSeen"),
             Self::ReattachDisplay(selection) => {
                 f.debug_tuple("ReattachDisplay").field(selection).finish()
             }
@@ -840,8 +842,11 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::KeysRead => {
-            model.state.chrome.key_read();
-            Vec::new()
+            if model.state.chrome.key_read() {
+                vec![Effect::PersistFirstKeyHelpSeen]
+            } else {
+                Vec::new()
+            }
         }
         Msg::Key(key) => {
             let before = model.switcher.selected_card();
@@ -1425,11 +1430,14 @@ mod tests {
     fn first_interactive_key_introduces_prefix_and_help_once() {
         let mut m = model();
         assert!(!m.state.chrome.first_key_seen);
-        update(&mut m, Msg::KeysRead);
+        assert!(matches!(
+            update(&mut m, Msg::KeysRead).as_slice(),
+            [Effect::PersistFirstKeyHelpSeen]
+        ));
         assert!(m.state.chrome.first_key_seen);
         assert!(hint_text(&m).contains("C-g prefix"));
         assert!(hint_text(&m).contains("C-g ? help"));
-        update(&mut m, Msg::KeysRead);
+        assert!(update(&mut m, Msg::KeysRead).is_empty());
         assert!(!m.state.chrome.first_key_notice);
         assert!(!hint_text(&m).contains("C-g ? help"));
     }

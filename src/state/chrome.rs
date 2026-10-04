@@ -80,7 +80,7 @@ pub struct Chrome {
     pub(crate) flash_until: Option<Instant>,
     /// The hint about the card the selection moved to, while it lasts.
     pub(crate) selection_hint: Option<SelectionHint>,
-    /// The first interactive key introduces the configured prefix and its help key.
+    /// The first interactive key without a saved preference introduces the prefix.
     pub(crate) first_key_seen: bool,
     pub(crate) first_key_notice: bool,
     /// Auto-hide-tree mode (set by the app each frame). Drives the view border glyph:
@@ -171,7 +171,7 @@ impl Chrome {
         self.selection_hint = None;
     }
 
-    pub(crate) fn key_read(&mut self) {
+    pub(crate) fn key_read(&mut self) -> bool {
         if !self.first_key_seen {
             self.first_key_seen = true;
             self.first_key_notice = true;
@@ -184,9 +184,11 @@ impl Chrome {
                 String::new(),
                 Instant::now(),
             );
+            true
         } else {
             self.first_key_notice = false;
             self.clear_selection_hint();
+            false
         }
     }
 
