@@ -195,9 +195,9 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   where the sessions that will be found land. As each source resolves, its section and
   cards move to the top / left, so a scan reads as the pending hosts draining toward the
   sessions they become.
-- The host band's hiding (terminal view focused from a session card) is a PAINT decision:
-  the rows stay whole and only what is painted shrinks to the rows above the boundary,
-  with no boundary to part. So card numbers, the selection and the list-walking keys are
+- The host band's hiding (`sessions` scope, terminal view focused from a session card)
+  is a PAINT decision: the rows stay whole and only what is painted shrinks to the rows
+  above the boundary, with no boundary to part. So card numbers, the selection and the list-walking keys are
   identical either way, and the hit-test reads the shorter paint like any other. The
   decision is latched on the nav-to-terminal edge from the effective view (a modal keeps
   the view behind it), not re-derived each frame from the selection. A live prefix
@@ -219,9 +219,8 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   on the border row beside the prefix, so the cards keep every row and column the nav
   has and no inverted card runs under a cue. A count is a hit target for the hidden card
   nearest the visible ones, read back from the same plan the paint used.
-- The focus is said twice and the two always agree: the view border's colour, and the
-  selected card's shape, reverse video under nav focus and the mark alone under terminal
-  focus.
+- The view border's colour identifies focus. The selected card keeps reverse video and its
+  mark in both focus states.
 - A collapsed nav expands from the prefix or from a click anywhere on it, and a view border
   drag past the minimum collapses it, so the
   collapsed shape is the prefix indicator alone and the whole of it is one hit target.

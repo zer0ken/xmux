@@ -2372,7 +2372,7 @@ mod tests {
             &mut m,
             Msg::FeedLogin {
                 source: sources[0].to_owned(),
-                bytes: b"\r\r\r\r\r\r".to_vec(),
+                bytes: b"\r\ralice\r\r\r\r\r\r".to_vec(),
             },
         );
         assert!(

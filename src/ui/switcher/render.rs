@@ -874,9 +874,8 @@ impl Switcher {
     /// short region shows three cards as a list and twenty as a grid.
     ///
     /// Nothing but cards, titles and the band parting is painted inside the nav: what is
-    /// off screen is said on the seam. The selected card is reverse video while the nav
-    /// holds the focus and keeps only its mark while the terminal does, so the selection
-    /// and the seam colour say the same thing about the focus.
+    /// off screen is said on the seam. The selected card stays in reverse video when
+    /// focus moves between views; the seam colour identifies the focused view.
     fn render_nav(
         &self,
         frame: &mut Frame,
@@ -909,7 +908,7 @@ impl Switcher {
                 },
             );
             frame.render_widget(Paragraph::new(lines), rect);
-            if self.selected == idx && !terminal_focused {
+            if self.selected == idx {
                 frame
                     .buffer_mut()
                     .set_style(rect, palette::selection_style(palette));

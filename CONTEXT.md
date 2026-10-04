@@ -233,10 +233,10 @@ UI elements a user perceives as distinct things:
   the host band alone, and it still takes its side of the split: anchored to the
   bottom (column) / right edge (band), the blank rows or columns opposite being where
   the sessions that will be found land, so a scan reads as the pending hosts draining
-  toward the sessions they become. The host band is hidden while the terminal view
-  holds the focus when a session card was selected on the move into it, and shown
-  again on the move back into the nav or once the selection reaches a host card; a
-  host card selected on the move keeps it. A live prefix paints the band while it lasts,
+  toward the sessions they become. In the `sessions` scope, the host band is hidden
+  while the terminal view holds the focus when a session card was selected on the move
+  into it, and shown again on the move back into the nav or once the selection reaches
+  a host card; a host card selected on the move keeps it. A live prefix paints the band while it lasts,
   since its hint bar offers a jump to any card by number, and the band is hidden again
   when the prefix ends. Hidden cards leave the screen, not the list, so card numbers do
   not shift.
@@ -276,11 +276,10 @@ UI elements a user perceives as distinct things:
   answering late can take it. The preselect and the
   reselect are the launch and post-rescan selections.
 - selection highlight - the selected card's rendering: reverse video filling the whole
-  card, the terminal theme's own selected look, while the nav holds focus,
+  card, the terminal theme's own selected look, in both focus states,
   plus a `❯` mark standing in the address column of the card's row, where
-  every other card carries its number. While the terminal holds focus the card keeps the
-  mark alone, so the selection and the view border colour say the same thing about the
-  focus. The inversion is uniform because the highlight
+  every other card carries its number. The view border colour identifies which view
+  holds focus. The inversion is uniform because the highlight
   pins both foreground and background to the terminal's defaults: inverting per span
   would turn each level color into a background and stripe the card. That same pinning
   is why the mark is an open shape and
@@ -329,16 +328,16 @@ UI elements a user perceives as distinct things:
 - login pane - the form a blocked host's panel opens, or that the user opens for an
   unreachable host from the hosts-to-check table or command palette. It holds the three values ssh will
   not ask for and must know before it dials: the address, the port, and the username. A
-  masked password field is optional beside them. Every value starts at what ssh WOULD
-  use. Address, port, and user come from OpenSSH's effective configuration when present,
-  and each field states that provenance beside its value. Missing values use a provider
-  address or host name, port 22, and this machine's account
-  name. Provisioning resolves those values and the matching ssh stanza before the app
+  masked password field is optional beside them. Address and port start at what ssh WOULD
+  use and come from OpenSSH's effective configuration when present,
+  and each states that provenance beside its value. Missing values use a provider
+  address or host name and port 22. The username comes from an exact host stanza if
+  one names it; otherwise it starts empty and must be entered.
+  Provisioning resolves those values and the matching ssh stanza before the app
   supplies them to the chrome. A required field is marked in its label; an empty optional one says so in
   the space its value would occupy. Two choices follow: whether to record the values, and
   whether to register this machine's public key on the host. The record choice appears
-  only once a value differs from what ssh would have used, since a stanza repeating what
-  ssh already resolves records nothing. The connection values and the two choices are two
+  only once a value differs from its starting value. The connection values and the two choices are two
   titled groups. A recent list between them offers successful connection values from
   this run without passwords; selecting an entry fills the three connection fields.
   The focused stop's name is reversed while the pane takes keys, and a rule

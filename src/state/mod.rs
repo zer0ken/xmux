@@ -153,9 +153,9 @@ pub struct RecentLogin {
 /// because the pane is a feature of the terminal view, so nothing in the nav path
 /// drives it.
 ///
-/// The three connection values start at what ssh WOULD use, and those starting values
-/// are kept beside them: the remember choice is only worth offering once the user has
-/// changed something, since a stanza repeating what ssh already resolves says nothing.
+/// Address and port start at what ssh would use; username comes from an exact host
+/// stanza or starts empty. The starting values stay beside the fields so the remember
+/// choice appears after an edit.
 #[derive(Clone, Default)]
 pub struct LoginDraft {
     /// The blocked source this draft belongs to; a different current source resets it.
@@ -377,10 +377,11 @@ impl State {
     /// picks a choice. Enter on a text field passes the focus on, so filling the pane top
     /// to bottom with Enter alone ends on the button, where Enter submits.
     ///
-    /// A draft for a different source is reset first, and a fresh draft starts at the
-    /// values ssh would have used, so the pane opens showing what just failed. On submit
-    /// the password leaves the rendered draft and enters the process-only credential
-    /// broker. A failed or replaced login removes that exact credential.
+    /// A draft for a different source is reset first. Address and port start at the
+    /// values ssh would have used, while username needs input when no host stanza
+    /// supplies it. On submit the password leaves the rendered draft and enters the
+    /// process-only credential broker. A failed or replaced login removes that exact
+    /// credential.
     pub fn feed_login(&mut self, source: &str, bytes: &[u8]) -> Option<crate::model::Command> {
         let details = self.login_failure(source).is_some();
         let recent = self.recent_logins.clone();
@@ -438,6 +439,10 @@ impl State {
             }
         }
         if !submit {
+            return None;
+        }
+        if draft.username.trim().is_empty() {
+            draft.focus = LoginFocus::Username;
             return None;
         }
         let port = draft.port.trim().parse::<u16>().ok();
@@ -815,6 +820,28 @@ mod tests {
     use crate::session::Session;
     use crate::state::Focus;
     use std::time::Duration;
+
+    #[test]
+    fn login_requires_a_manually_entered_username() {
+        let mut state = State {
+            login: Some(LoginDraft {
+                source: "prod".into(),
+                address: "prod.example".into(),
+                port: "22".into(),
+                focus: LoginFocus::Submit,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(state.feed_login("prod", b"\r").is_none());
+        assert_eq!(state.login.as_ref().unwrap().focus, LoginFocus::Username);
+        assert!(state.feed_login("prod", b"alice").is_none());
+        state.login.as_mut().unwrap().focus = LoginFocus::Submit;
+        let command = state.feed_login("prod", b"\r").expect("login command");
+        assert!(
+            matches!(command, Command::RunLogin { login, .. } if login.user.as_deref() == Some("alice"))
+        );
+    }
 
     #[test]
     fn default_state_is_empty() {

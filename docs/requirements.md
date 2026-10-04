@@ -232,10 +232,8 @@ no function, and no test, so renaming code is never a documentation change.
   in the same bold shape. A section title reads bold in the `decoration` slot, while
   card numbers stay dim, so the group remains clear without colour.
   What the sixteen slots cannot say is said with an attribute: the selected card is
-  REVERSE VIDEO while the nav holds focus, the terminal swapping its own pair, which is
-  what a theme itself means by "selected"; while the terminal holds focus the selected
-  card keeps only its mark, so the selection and the view border say the same thing
-  about the focus.
+  REVERSE VIDEO in both focus states, the terminal swapping its own pair, which is
+  what a theme itself means by "selected". The view border identifies the focused view.
   A background xmux picked instead would be wrong on every theme it was not picked for,
   and it cannot be computed from the terminal's own background either, since a terminal
   is free to answer no colour query at all. `[ui] selection-style` names a background
@@ -359,10 +357,10 @@ no function, and no test, so renaming code is never a documentation change.
   list with NOTHING but host cards is the host band alone, and it still takes its side of
   the split: anchored to the bottom (side) / right edge (portrait), the blank rows or
   columns opposite being where the sessions that will be found land, so a scan reads as
-  the pending hosts draining toward the sessions they become. The host band is HIDDEN
-  while the terminal view holds the focus, decided once on the move from the nav into
-  it: a session card selected then hides the band, because what the user went to look
-  at is a session and hosts with nothing to show are noise beside it; a host card
+  the pending hosts draining toward the sessions they become. In the `sessions` scope,
+  the host band is HIDDEN while the terminal view holds the focus, decided once on the
+  move from the nav into it: a session card selected then hides the band, because what
+  the user went to look at is a session and hosts with nothing to show are noise beside it; a host card
   selected keeps it, because the screen beside the nav is that host's own. A modal
   over the terminal view is not a move back, the move back into the nav shows the band
   again, and a selection that reaches a host card while the band is hidden shows it,
@@ -464,12 +462,13 @@ no function, and no test, so renaming code is never a documentation change.
   together with the failure facts, which stay folded until it is picked.
 - **FR-B27** - The LOGIN PANE holds the three values ssh will not ask for and must know
   before it dials - the address, the port, and the username - with an optional masked
-  password beside them. Every value starts at what ssh WOULD use. An address, port, or
-  user from OpenSSH's effective configuration wins; the matching stanza is the fallback
-  when OpenSSH cannot report it. Missing values use the address a provider
-  reported else the host's own name, port 22, and this machine's account name. Each
-  field shows whether its value came from ssh configuration, discovery, a default, the
-  host name, the local account, or an edit. A required field is marked in its
+  password beside them. Address and port start at what ssh WOULD use, while the
+  username comes from an exact host stanza when it names one, otherwise starts empty
+  for the user to enter. An address or port from OpenSSH's
+  effective configuration wins; the matching stanza is the fallback when OpenSSH
+  cannot report it. Missing values use the address a provider reported else the
+  host's own name and port 22. Each prefilled field shows whether its value came
+  from ssh configuration, discovery, a default, or the host name. A required field is marked in its
   label and an empty optional one says so in the space its value would occupy. It is not
   a modal and nothing in the nav drives it. Enter means one thing throughout: submit from
   the button, pass the focus on from anywhere else. Space picks a choice, Tab and the

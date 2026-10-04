@@ -2996,6 +2996,37 @@ async fn the_selected_card_is_painted_in_the_terminals_own_reverse_video() {
 }
 
 #[tokio::test]
+async fn selected_card_stays_reversed_with_terminal_focus() {
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::Down).await;
+    h.sw.sync_view_focus(true);
+    h.draw_terminal_focused();
+    let selected = h.nav_row_of("editor").expect("editor row");
+    let other = h.nav_row_of("inference").expect("inference row");
+    assert!(h.buf()[(4, selected)].modifier.contains(Modifier::REVERSED));
+    assert!(!h.buf()[(4, other)].modifier.contains(Modifier::REVERSED));
+}
+
+#[tokio::test]
+async fn selected_host_card_stays_reversed_with_terminal_focus() {
+    let mut h = Harness::new_sized(scan_with_a_host_band(), 60, 70);
+    h.key(KeyCode::Right).await;
+    h.key(KeyCode::Right).await;
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { .. })));
+    h.sw.sync_view_focus(true);
+    h.draw_terminal_focused();
+    let (_, rect) = h
+        .plan
+        .nav_cells
+        .iter()
+        .find(|(i, _)| *i == h.sw.selected)
+        .expect("selected host card");
+    assert!(
+        (rect.x..rect.right()).all(|x| h.buf()[(x, rect.y)].modifier.contains(Modifier::REVERSED))
+    );
+}
+
+#[tokio::test]
 async fn filter_narrows() {
     let mut h = Harness::new(sample());
     h.ch('/').await;
@@ -7224,6 +7255,37 @@ async fn moving_into_the_terminal_view_from_a_session_card_hides_the_host_band()
         h.nav_cards_text().contains("db-2"),
         "the move back into the nav shows the band again"
     );
+}
+
+#[tokio::test]
+async fn all_hosts_scope_paints_host_band_with_terminal_focus() {
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.sw.sync_view_focus(true);
+    h.draw_terminal_focused();
+    assert!(!h.nav_cards_text().contains("db-2"));
+
+    h.sw.set_scope(crate::model::NavScope::AllHosts, &mut h.state);
+    h.draw_terminal_focused();
+    let nav = h.nav_cards_text();
+    assert!(nav.contains("db-2") && nav.contains("db-3"), "{nav}");
+    let boundary = h.sw.band_boundary().expect("host band exists");
+    assert!(h.plan.nav_cells.iter().any(|(i, _)| *i >= boundary));
+
+    h.sw.set_scope(crate::model::NavScope::Sessions, &mut h.state);
+    h.draw_terminal_focused();
+    assert!(!h.nav_cards_text().contains("db-2"));
+}
+
+#[tokio::test]
+async fn needs_attention_scope_paints_host_cards_with_terminal_focus() {
+    let mut h = Harness::new(problem_scan());
+    h.sw.sync_view_focus(true);
+    h.sw.set_scope(crate::model::NavScope::NeedsAttention, &mut h.state);
+    h.draw_terminal_focused();
+    let nav = h.nav_cards_text();
+    assert!(nav.contains("dead-1") && nav.contains("list-box"), "{nav}");
+    assert!(!nav.contains("work"), "{nav}");
 }
 
 #[tokio::test]
