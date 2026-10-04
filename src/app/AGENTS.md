@@ -12,12 +12,13 @@ The runtime is a persistent supervisor. It keeps ONE real attached mux client
 per session alive in a PTY across selections and renders the SELECTED session's
 live grid on the right. A separate control-mode client per remote source supplies
 the nav view inventory, mux-side change events, and display-driver
-selection; a local mux is enumerated or polled with plain commands. One async
-loop interleaves stdin, source events, PTY events, the control socket, terminal
-resize, and an animation tick. It folds domain actions and inbound source events
-through the runtime state, dispatches the returned commands and effects, keeps
-the state in sync with the switcher selection, drives the debounced attach, and
-draws the split view.
+selection; a local mux is enumerated or polled with plain commands. One async loop
+interleaves stdin, source events, PTY events, the control socket, terminal resize,
+and an animation tick. Every application input becomes a message to the one update
+transition over the application model. The transition keeps domain state,
+switcher state, geometry, interaction state, source tracking, and the render plan
+coherent, then returns ordered effects to the runtime's one executor. The loop
+drives I/O and draws the split view from that model.
 
 The ctl server owns each instance endpoint and translates wire requests into app
 commands. Preference persistence stores lightweight UI hints as best-effort files
@@ -41,11 +42,15 @@ the card numbers it needs.
 
 ## Module Seams
 
-- `runtime/` owns the main event loop as one struct: the entry point builds it,
-  keeps the loop's receivers, timers, and terminal as loop-locals, and drives a
-  select where each arm is one method on that struct. It resolves the source's own
-  driver for display and reads the grid back from it; it branches on nothing
-  mux-specific. The canonical selection it reads lives in `src/model`.
+- The application model owns domain state, switcher interaction state,
+  navigation geometry and preference values, mouse state, connected and
+  detecting source sets, and the last render plan. Its update transition is the
+  only writer of those values.
+- `runtime/` owns only the main event loop and I/O resources: the entry point
+  keeps receivers, timers, and the terminal as loop-locals, and drives a select
+  where each arm turns its input into a message or performs direct terminal byte
+  forwarding. It resolves the source's own driver for display and reads the grid
+  back from it; it branches on nothing mux-specific.
 - `runtime/` owns holding the nav selection and xmux's own display client to ONE
   session. It learns where the client is in whichever way the mux offers - pushed
   over a control channel, or read off the live client for a mux that pushes
@@ -72,8 +77,8 @@ the card numbers it needs.
   predicates, the input outcome types); the stateful handlers are runtime methods
   that call into it. The prefix is tracked as ready (an interaction is live): the end
   of the function it started, or a focus switch / mouse action (a cancel), clears it.
-- The runtime state owns focus and modal data plus their transition helpers. The
-  app reads and mutates them through the state layer.
+- Domain state owns focus and modal values plus their reducers. The application
+  update transition is the only caller that mutates them during a running app.
 - The ctl server owns binding, endpoint permissions, stale endpoint replacement,
   request dispatch, and connection lifetime. Wire parsing and client discovery
   remain in `src/link`.
@@ -85,17 +90,15 @@ the card numbers it needs.
 
 ## Invariants
 
-- The entry point is thin: the runtime struct owns the loop's world state, and
-  every select arm and stateful helper is a method on it, so each takes a small
-  argument list rather than a large loose-parameter bundle.
-- One runtime-owned command executor handles every command from domain actions,
-  switcher input, login input, and ticks. Source-event effects use their own
-  exhaustive executor.
-- The app loop is not a second writer of the runtime state. The display truth,
-  the attach debounce, and the focus all change only inside the state's apply,
-  routed there as actions. The loop makes the decision (a live grid exists, a
-  deadline elapsed, a click landed) and folds the result through apply, so domain
-  mutation stays at one site.
+- The entry point is thin: the runtime struct owns I/O handles and one application
+  model. Every select arm and stateful helper is a method on the runtime, so each
+  takes a small argument list rather than a large loose-parameter bundle.
+- One exhaustive runtime executor handles every effect from domain actions,
+  switcher input, source events, login input, ticks, persistence, and attachment
+  bookkeeping. It has no ignored effect variant.
+- The app loop is not a second writer of application state. It supplies I/O facts
+  as message data, runs update, and executes the returned effects in order. Raw
+  terminal bytes forwarded to the selected display are the only direct path.
 - Only the attach the SELECTION is displayed through confirms the display truth. A
   landed attach for any other key installs and stays warm without claiming the
   terminal view, so a host warming a PTY on its own inventory cannot move the view to

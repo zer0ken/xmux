@@ -1,11 +1,9 @@
 //! The unidirectional-flow core: [`Action`] (intent) and [`Command`] (effect).
 //!
-//! Every input surface - keys, the `xmux ctl` socket, the loop-top selection
-//! derive - resolves to an `Action`. `State::apply(Action) -> Vec<Command>` is the
-//! single site that mutates domain state, and it returns the side effects to run as
-//! `Command`s. The app run loop dispatches each `Command` (switcher selection move,
-//! attach, prefs persist, quit) - `apply` itself touches only `State`, so the
-//! intent → state-change → effect flow is one direction with one mutation point.
+//! Semantic inputs resolve to an `Action`. The state reducer folds that domain
+//! intent into domain state and commands. The application update transition owns
+//! the reducer call, applies state-only commands, suppresses no-op commands, and
+//! emits runtime-facing effects for attachment, persistence, operations, and quit.
 //!
 //! `Action` is the domain action set, distinct from `display::dispatch::Action` (the
 //! app's raw-byte input set, which projects INTO this via `as_action`).
@@ -164,17 +162,12 @@ pub enum MuxOp {
     Create { source: String, name: String },
 }
 
-/// An ordered action emitted by [`State::apply_event`](crate::state::State::apply_event)
-/// for one [`HostEvent`](crate::link::HostEvent). The sequence preserves each event's
-/// state and runtime ordering without letting `state` import the application or UI
-/// layers. The app run loop takes the actions in order: a state-facing action updates
-/// the application state and may yield I/O-facing actions, which run before the next
-/// action, with the host clients, attach registry, and display worker the loop owns.
-///
-/// Events that mutate `State` directly, such as focus and pane metadata updates, emit
-/// no action. Events that need navigation behavior, runtime registries, or mux I/O emit
-/// the corresponding actions in the order the run loop must apply them.
-/// Not `Clone`/`Eq` - `DispatchScanned` carries a `Box<dyn Mux>`; tests match
+/// An ordered source-event effect emitted by the application update transition.
+/// The sequence preserves state and runtime ordering without letting backend or
+/// domain layers import the application or UI layers. Effects that require host
+/// clients, the attach registry, or the display worker run through the app's unified
+/// effect executor in the order update emits them.
+/// Not `Clone`/`Eq`: `DispatchScanned` carries a `Box<dyn Mux>`; tests match
 /// structurally.
 pub enum EventEffect {
     /// Record that a metadata source has connected before applying its inventory.
@@ -257,6 +250,12 @@ pub enum EventEffect {
         source: String,
         from: String,
         to: String,
+    },
+    /// `Connected`/`Inventory` after the navigation model and any display rename have
+    /// been applied: sync `source`'s display terminal(s).
+    SyncInventorySessions {
+        source: String,
+        sessions: Vec<Session>,
     },
     /// `Sessions` (poll host, no enumeration error): drop any stale attach whose
     /// registry `.port` vanished, then sync `source`'s display terminal(s).
@@ -368,6 +367,11 @@ impl std::fmt::Debug for EventEffect {
                 .field("source", source)
                 .field("from", from)
                 .field("to", to)
+                .finish(),
+            EventEffect::SyncInventorySessions { source, sessions } => f
+                .debug_struct("SyncInventorySessions")
+                .field("source", source)
+                .field("sessions", sessions)
                 .finish(),
             EventEffect::SyncPollSessions { source, sessions } => f
                 .debug_struct("SyncPollSessions")

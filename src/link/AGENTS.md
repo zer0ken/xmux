@@ -129,8 +129,8 @@ and the composed control argv.
 
 - Decide whether the change is metadata (here), display PTY (`src/display`), or
   transport dispatch (the host axis).
-- For a new event, add the event variant, its arm in the state's event apply, and
-  its effect follow-up together.
+- For a new event, add the event variant, its application-update arm, and its
+  effect follow-up together.
 
 ## Verification
 

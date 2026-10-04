@@ -305,8 +305,9 @@ pub struct Switcher {
     /// decide whether a vanished card falls back to its neighbour or to the rebuild's
     /// own preselect.
     user_moved: bool,
-    /// Signals the event loop to (re)kick the streaming probes - set on the
-    /// initial seed and on an `r` re-scan; the loop reads + clears it.
+    /// Set by [`Switcher::request_rescan`] (the `r` key and the ctl `rescan` verb) and
+    /// taken by the update step that turns the rescan command into a runtime effect, so
+    /// the runtime starts discovery only for a rescan that cleared the nav.
     rescan_kick: bool,
     /// Signals the event loop to re-attach the CURRENT display: tear the (possibly
     /// detached / dead) attachment down so the next attach re-creates a fresh client.
@@ -395,7 +396,6 @@ impl Switcher {
     /// [`crate::state::State::from_sources`].
     pub fn from_sources(state: &mut crate::state::State) -> Self {
         let mut s = Switcher::blank();
-        s.rescan_kick = true; // the event loop kicks the probes on the first frame
         s.rebuild(state);
         s
     }
@@ -466,8 +466,8 @@ impl Switcher {
         }
     }
 
-    /// Takes the pending rescan-kick flag (true once after seeding or an `r`
-    /// re-scan) - the event loop spawns the streaming probes when it is set.
+    /// Takes the pending rescan-kick flag that [`Switcher::request_rescan`] sets. The
+    /// update step takes it when it turns the rescan command into a runtime effect.
     pub fn take_rescan_kick(&mut self) -> bool {
         std::mem::take(&mut self.rescan_kick)
     }

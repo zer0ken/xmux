@@ -15,7 +15,7 @@ use crate::link::control;
 
 /// A unit of work the app loop processes, from the control socket.
 pub enum Cmd {
-    /// A resolved domain action, folded in at the app's single `State::apply` site.
+    /// A resolved domain action, folded by the app's single update transition.
     /// Carries the channel the loop answers with the ctl reply: `switch` replies by
     /// the address resolution against the current inventory; the other verbs have no
     /// synchronous outcome and answer `ok`.
@@ -270,7 +270,7 @@ mod tests {
                         let _ = sw.handle_key(k, &mut state);
                     }
                     Cmd::Dump(reply) => {
-                        let _ = reply.send(dump_switcher(&mut sw, &state, 100, 30));
+                        let _ = reply.send(dump_switcher(&sw, &state, 100, 30));
                     }
                     Cmd::Status(reply) => {
                         let _ = reply.send("focus=nav target=editor".into());

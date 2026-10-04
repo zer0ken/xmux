@@ -23,6 +23,9 @@ use crate::app::input::{
     leading_ctrl_arrow, resolve_mouse_chain, resolve_nav_key, to_grid_local,
     view_border_drag_height, view_border_drag_width, ChainAction, MouseState, StdinOutcome,
 };
+use crate::app::model::{adjust_nav_width, update, AppModel, Effect, Msg};
+#[cfg(test)]
+use crate::app::model::{nav_width_min, note_host_exited, NAV_WIDTH_MAX};
 use crate::display::attachment::PtyEvent;
 use crate::display::dispatch::Action;
 use crate::display::registry::AttachRegistry;
@@ -31,6 +34,7 @@ use crate::driver::{display_key, host_selection_key, DriverCtx};
 use crate::link::{HostEvent, HostManager};
 use crate::model::Selection;
 use crate::provision::env::Env;
+#[cfg(test)]
 use crate::ui::switcher::TerminalViewTarget;
 
 /// Milliseconds per braille-spinner frame. The frame index is derived from
@@ -50,19 +54,6 @@ const EVENT_DRAIN_BUDGET: usize = 512;
 /// terminal with full-screen repaints and stall the single-threaded loop. A frame
 /// timer at this cadence flushes a pending dirty draw promptly even with no input.
 const FRAME_MS: u64 = 33;
-
-pub(crate) const NAV_WIDTH_MAX: u16 = 100;
-
-/// The nav's floor width: its resting prefix, a separating cell, and the collapse
-/// button. A wider configured prefix raises the floor.
-pub(crate) fn nav_width_min(ui_prefix: &str) -> u16 {
-    crate::ui::switcher::collapsed_nav_width(ui_prefix)
-}
-
-/// The band-layout nav height drag range. The min keeps a few nav rows; compute_regions
-/// clamps the max down to the body so the terminal always keeps room.
-pub(crate) const NAV_HEIGHT_MIN: u16 = 3;
-pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
 
 /// The ratatui terminal the app draws into. Loop-local in [`run_app`] (owns stdout);
 /// passed to the `Runtime` methods that draw / resize / dump.
@@ -98,14 +89,11 @@ const RESIZE_REPEAT_MS: u64 = 400;
 /// at the end, not per tick.
 const WIDTH_FLUSH_MS: u64 = 400;
 
-fn adjust_nav_width(w: u16, delta: i32, ui_prefix: &str) -> u16 {
-    (w as i32 + delta).clamp(nav_width_min(ui_prefix) as i32, NAV_WIDTH_MAX as i32) as u16
-}
-
 /// Adjusts the natural nav width by `wd`, clamped to the allowed range. Returns
 /// true if the width actually changed (so the loop can schedule a debounced
 /// persist). A zero delta or a clamp-noop returns false. Write-free: the loop
 /// owns the single persist.
+#[cfg(test)]
 fn apply_width_delta(wd: i32, natural: &mut u16, ui_prefix: &str) -> bool {
     if wd == 0 {
         return false;
@@ -116,27 +104,6 @@ fn apply_width_delta(wd: i32, natural: &mut u16, ui_prefix: &str) -> bool {
     }
     *natural = next;
     true
-}
-
-/// Flips the auto-hide-nav mode and persists it, so the next launch restores it.
-/// Shared by the nav- and terminal-view focus `prefix t` paths. The effective nav width is
-/// reconciled at the next loop top (`reconciled_nav_width`); the caller marks dirty.
-fn toggle_auto_hide(mode: &mut bool, xmux_dir: &std::path::Path) {
-    *mode = !*mode;
-    crate::app::prefs::save_auto_hide_nav(xmux_dir, *mode);
-}
-
-/// Applies one step of the `prefix p` cycle to the pin and saves it at once (the same
-/// moment `toggle_auto_hide` saves its toggle). `None` (the fifth step) stores "auto",
-/// which returns the nav to following the `[ui] nav-position` default.
-fn cycle_nav_position(
-    pinned: &mut Option<crate::ui::switcher::NavPosition>,
-    effective: crate::ui::switcher::NavPosition,
-    xmux_dir: &std::path::Path,
-) {
-    let next = crate::ui::switcher::step_nav_position(*pinned, effective);
-    *pinned = next;
-    crate::app::prefs::save_nav_position(xmux_dir, next);
 }
 
 /// The mutate-op sink handed to [`start_login`]: the `Ops` interface plus the channel
@@ -152,97 +119,189 @@ impl Runtime {
     /// [`State::apply`](crate::state::State::apply) and executes every command it
     /// returns.
     fn dispatch_action(&mut self, action: crate::model::Action) -> (bool, bool) {
-        let commands = self.state.apply(action);
-        self.execute_commands(commands)
+        let effects = update(&mut self.model, Msg::Action(action));
+        let (quit, width_changed, _) = self.execute_effects(effects);
+        (quit, width_changed)
     }
 
     /// Executes every [`Command`](crate::model::Command) produced by the runtime state.
     /// Returns `(quit, width_changed)` for the loop bookkeeping owned by the caller.
+    #[cfg(test)]
     fn execute_commands(&mut self, commands: Vec<crate::model::Command>) -> (bool, bool) {
+        let effects = update(&mut self.model, Msg::Commands(commands));
+        let (quit, width_changed, _) = self.execute_effects(effects);
+        (quit, width_changed)
+    }
+
+    #[cfg(test)]
+    fn execute_source_effect_for_test(&mut self, effect: crate::model::EventEffect) -> bool {
+        self.execute_effects(vec![Effect::Event(effect)]).2
+    }
+
+    fn execute_effects(&mut self, effects: Vec<Effect>) -> (bool, bool, bool) {
         use crate::model::Command;
 
         let mut quit = false;
         let mut width_changed = false;
-        for command in commands {
-            match command {
-                Command::SelectAddress(address) => {
-                    self.switcher.select_address(&address, &self.state);
-                }
-                Command::Rescan => {
-                    self.switcher.request_rescan(&mut self.state);
-                }
-                Command::AdjustNavWidth(delta) => {
-                    if apply_width_delta(
-                        delta,
-                        &mut self.nav_width_natural,
-                        &self.state.chrome.ui_prefix,
-                    ) {
-                        width_changed = true;
+        let mut rearm = false;
+        let mut pending: std::collections::VecDeque<_> = effects.into();
+        while let Some(effect) = pending.pop_front() {
+            match effect {
+                Effect::Event(effect) => {
+                    let (event_rearm, followups) = self.perform_source_effect(effect);
+                    rearm |= event_rearm;
+                    for followup in followups.into_iter().rev() {
+                        pending.push_front(followup);
                     }
                 }
-                Command::ToggleAutoHide => {
-                    toggle_auto_hide(&mut self.auto_hide_nav, &self.env.xmux_dir);
+                Effect::EventBatch(effects) => {
+                    for effect in effects.into_iter().rev() {
+                        pending.push_front(Effect::Event(effect));
+                    }
                 }
-                Command::PersistLastSession(address) => {
-                    crate::app::prefs::save_last_session(&self.env.xmux_dir, &address);
-                }
-                Command::Attach(selection) => {
-                    let started = std::time::Instant::now();
-                    let nav = self.nav_size();
-                    // select_attach picks the host's driver and hands it the intent.
-                    let shown = select_attach(
-                        &selection,
-                        &mut crate::driver::DriverCtx {
-                            registry: &mut self.registry,
-                            hosts: &mut self.hosts,
-                            instance_name: &self.instance_name,
-                            mgr: &self.mgr,
-                            worker: &self.worker,
-                            pty_tx: &self.driver_pty_tx,
-                            attach_seq: &mut self.attach_seq,
-                            viewport: terminal_view_size(self.cols, self.body_rows, nav),
+                Effect::LoginApplied { source, login } => {
+                    let machine = crate::session::machine_of(&source).to_owned();
+                    self.hosts.for_each_transport_of(&machine, |transport| {
+                        transport.set_login(login.clone())
+                    });
+                    let effects = update(
+                        &mut self.model,
+                        Msg::LoginSettled {
+                            source,
+                            credential_held: self.env.credentials().contains(&machine),
+                            machine_has_sources: self.hosts.serves_any(&machine),
                         },
                     );
-                    let key = display_key(&self.hosts, &selection);
-                    if shown {
-                        // Advance the display truth synchronously ONLY for a confirmed
-                        // in-place path: a live grid for the key exists AND no reattach
-                        // is in flight. A pending reattach KEEPS the prior session's grid
-                        // (stale-while-revalidate) until the paint gate swaps it in.
-                        let reattach_pending = self.hosts.get(&selection.source).is_some_and(|h| {
-                            h.display.in_flight_contains(&key)
-                                || h.display.pending_paint_contains(&key)
-                        });
-                        if self.registry.contains(&key) && !reattach_pending {
-                            self.state
-                                .apply(crate::model::Action::ConfirmDisplay(selection.clone()));
-                        }
-                    }
-                    DrawObserver::slow_step("select_attach", started);
+                    debug_assert!(effects.is_empty());
+                    probe_machine(
+                        &machine,
+                        &self.hosts,
+                        self.mgr.events(),
+                        &self.scan_pool,
+                        false,
+                    );
                     self.dirty = true;
-                    let session = &selection.session;
-                    tracing::debug!(key, session, "selection");
                 }
-                Command::Quit => quit = true,
-                Command::RunOp(op) => spawn_op(op, &self.ops, &self.op_tx),
-                Command::RunLogin {
+                Effect::StartLogin {
                     source,
                     login,
                     password,
                     remember,
                     pubkey,
+                    cancel,
                 } => start_login(
                     source,
                     login,
                     password,
                     remember == crate::state::Remember::SshConfig,
                     pubkey,
-                    &mut self.state,
+                    cancel,
                     (&self.ops, &self.op_tx),
                 ),
+                Effect::PersistNavWidth(width) => {
+                    crate::app::prefs::save_nav_width(&self.env.xmux_dir, width);
+                }
+                Effect::PersistNavHeight(height) => {
+                    crate::app::prefs::save_nav_height(&self.env.xmux_dir, height);
+                }
+                Effect::PersistNavCollapsed(collapsed) => {
+                    crate::app::prefs::save_nav_collapsed(&self.env.xmux_dir, collapsed);
+                }
+                Effect::PersistNavPosition(position) => {
+                    crate::app::prefs::save_nav_position(&self.env.xmux_dir, position);
+                }
+                Effect::ReattachDisplay(selection) => {
+                    let key = display_key(&self.hosts, &selection);
+                    self.registry.remove(&key);
+                    if let Some(host) = self.hosts.get_mut(&selection.source) {
+                        host.display.clear(&key);
+                    }
+                }
+                Effect::CancelLogin(login) => login.cancel(),
+                Effect::Command(command) => match command {
+                    Command::SelectAddress(address) => {
+                        unreachable!("selection commands are applied inside update: {address:?}")
+                    }
+                    Command::Rescan => {
+                        self.rescan_pending = true;
+                    }
+                    Command::AdjustNavWidth(_) => {
+                        width_changed = true;
+                    }
+                    Command::ToggleAutoHide => {
+                        crate::app::prefs::save_auto_hide_nav(
+                            &self.env.xmux_dir,
+                            self.model.auto_hide_nav,
+                        );
+                    }
+                    Command::PersistLastSession(address) => {
+                        crate::app::prefs::save_last_session(&self.env.xmux_dir, &address);
+                    }
+                    Command::Attach(selection) => {
+                        let started = std::time::Instant::now();
+                        let nav = self.nav_size();
+                        // select_attach picks the host's driver and hands it the intent.
+                        let shown = select_attach(
+                            &selection,
+                            &mut crate::driver::DriverCtx {
+                                registry: &mut self.registry,
+                                hosts: &mut self.hosts,
+                                instance_name: &self.instance_name,
+                                mgr: &self.mgr,
+                                worker: &self.worker,
+                                pty_tx: &self.driver_pty_tx,
+                                attach_seq: &mut self.attach_seq,
+                                viewport: terminal_view_size(self.cols, self.body_rows, nav),
+                            },
+                        );
+                        let key = display_key(&self.hosts, &selection);
+                        if shown {
+                            // Advance the display truth synchronously ONLY for a confirmed
+                            // in-place path: a live grid for the key exists AND no reattach
+                            // is in flight. A pending reattach KEEPS the prior session's grid
+                            // (stale-while-revalidate) until the paint gate swaps it in.
+                            let reattach_pending =
+                                self.hosts.get(&selection.source).is_some_and(|h| {
+                                    h.display.in_flight_contains(&key)
+                                        || h.display.pending_paint_contains(&key)
+                                });
+                            if self.registry.contains(&key) && !reattach_pending {
+                                let effects = update(
+                                    &mut self.model,
+                                    Msg::Action(crate::model::Action::ConfirmDisplay(
+                                        selection.clone(),
+                                    )),
+                                );
+                                debug_assert!(effects.is_empty());
+                            }
+                        }
+                        DrawObserver::slow_step("select_attach", started);
+                        self.dirty = true;
+                        let session = &selection.session;
+                        tracing::debug!(key, session, "selection");
+                    }
+                    Command::Quit => quit = true,
+                    Command::RunOp(op) => spawn_op(op, &self.ops, &self.op_tx),
+                    Command::RunLogin { .. } => {
+                        unreachable!("login commands become StartLogin effects in update")
+                    }
+                },
             }
         }
-        (quit, width_changed)
+        (quit, width_changed, rearm)
+    }
+
+    /// Runs a requested discovery once after the current input or control batch has
+    /// finished its other effects and ensured the selected host.
+    fn flush_rescan(&mut self) {
+        if !std::mem::take(&mut self.rescan_pending) {
+            return;
+        }
+        #[cfg(test)]
+        {
+            self.discovery_runs += 1;
+        }
+        run_discovery(&self.env, &self.hosts, &self.mgr, &self.scan_pool, true);
     }
 }
 
@@ -382,6 +441,7 @@ impl DrawObserver {
 /// whole target is the session name the card carries, which keys the PTY attachment.
 /// Stays in `app` because it depends on the ui [`TerminalViewTarget`] - the
 /// [`Selection`] value itself is a pure `model` type.
+#[cfg(test)]
 fn selection_from_target(t: &TerminalViewTarget) -> Selection {
     // The target is the session name as the card carries it, whole - no window suffix
     // to part off, so a session name holding a colon survives as it is.
@@ -403,16 +463,11 @@ fn selection_from_target(t: &TerminalViewTarget) -> Selection {
 ///
 /// [`Action::Select`]: crate::model::Action::Select
 /// [`Action::Tick`]: crate::model::Action::Tick
-fn sync_selection_from_switcher(
-    state: &mut crate::state::State,
-    switcher: &crate::ui::switcher::Switcher,
-) -> bool {
-    let new_sel = selection_from_target(&switcher.terminal_view_target());
-    if new_sel == state.selection {
-        return false;
-    }
-    state.apply(crate::model::Action::Select(new_sel));
-    true
+fn sync_selection_from_switcher(model: &mut AppModel) -> bool {
+    let previous = model.state.selection.clone();
+    let effects = update(model, Msg::SyncSelection);
+    debug_assert!(effects.is_empty());
+    model.state.selection != previous
 }
 
 /// The session a source's display client is ON: the one fact the nav selection is held
@@ -828,7 +883,7 @@ fn dispatch_detected_host(
 fn scan_or_dispatch_host(
     mgr: &mut HostManager,
     hosts: &crate::model::Hosts,
-    detecting: &mut HashSet<String>,
+    model: &mut AppModel,
     source: &str,
     cols: u16,
     rows: u16,
@@ -838,7 +893,9 @@ fn scan_or_dispatch_host(
         return;
     };
     if !host.detected {
-        if detecting.insert(source.to_string()) {
+        if !model.detecting.contains(source) {
+            let effects = update(model, Msg::DetectionStarted(source.to_string()));
+            debug_assert!(effects.is_empty());
             spawn_host_detection(
                 source.to_string(),
                 host.transport.clone(),
@@ -866,23 +923,6 @@ fn apply_scan_result(
         }
         host.detected = true;
     }
-}
-
-/// Consumes a pending re-scan kick (set by `r` or a menu "reconnect"): runs the shared
-/// discovery pass with the rescan flag, so a re-scan refreshes WHICH MACHINES exist
-/// (re-resolves the roster) and re-probes every machine's reachability, exactly the work
-/// a fresh launch runs. A no-op when no kick is pending. Shared by the key and menu paths.
-fn kick_rescan(
-    switcher: &mut crate::ui::switcher::Switcher,
-    env: &Env,
-    hosts: &crate::model::Hosts,
-    mgr: &HostManager,
-    gate: &std::sync::Arc<tokio::sync::Semaphore>,
-) {
-    if !switcher.take_rescan_kick() {
-        return;
-    }
-    run_discovery(env, hosts, mgr, gate, true);
 }
 
 /// The shared discovery pass a fresh launch and a re-scan both run: probe every
@@ -958,39 +998,6 @@ fn clear_display_tty_for_attach(
             h.display_tty = crate::model::DisplayTty(None);
         }
     }
-}
-
-/// Handles a remote host's control client dying. A host that had connected keeps its
-/// last-known rows. A never-connected host that died with "no sessions" / "no server
-/// running" is REACHABLE but has no mux server - it renders "(empty)" (and a session
-/// can be created there), NOT "⚠". Any other never-connected death is a real
-/// transport failure and renders "⚠". Returns `true` only when it marked the host
-/// unreachable.
-pub(crate) fn note_host_exited(
-    switcher: &mut crate::ui::switcher::Switcher,
-    state: &mut crate::state::State,
-    connected: &mut HashSet<String>,
-    host: &str,
-    reason: Option<String>,
-) -> bool {
-    // Clear the connected mark so this host is no longer pinned to "keep last-known
-    // rows". A transient drop of a once-connected host keeps its rows (no unreachable
-    // flash) on THIS exit; but a later reconnect that fails (no sessions / unreachable)
-    // must then resolve its real state - otherwise a refresh that set it scanning would
-    // spin on "loading…" forever, since a sticky `connected` made every exit a no-op.
-    if connected.remove(host) {
-        return false;
-    }
-    if reason
-        .as_deref()
-        .is_some_and(crate::model::source::reason_is_no_sessions)
-    {
-        switcher.apply_source_result(host.to_string(), Vec::new(), None, state);
-        return false;
-    }
-    let msg = reason.unwrap_or_else(|| "connection closed".into());
-    switcher.apply_source_result(host.to_string(), Vec::new(), Some(msg), state);
-    true
 }
 
 /// The `xmux` (no subcommand) entry: the persistent app. Keeps one real attached
@@ -1172,7 +1179,8 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
             crate::cli::update::notify::read(&rt.env.xmux_dir).as_ref(),
             current,
         ) {
-            rt.state.notice(line);
+            let effects = update(&mut rt.model, Msg::Notice(line));
+            debug_assert!(effects.is_empty());
         }
         crate::cli::update::notify::refresh_in_background(&rt.env.xmux_dir, check_enabled);
     }
@@ -1224,8 +1232,8 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                 // spans (a slow remote host between answers), and the dirty-gated
                 // draw would hold the last frame the whole time.
                 if rt.on_config_check()
-                    || !rt.state.scanning.is_empty()
-                    || !rt.state.chrome.spinner.is_empty()
+                    || !rt.model.state.scanning.is_empty()
+                    || !rt.model.state.chrome.spinner.is_empty()
                 {
                     rt.dirty = true;
                 }
@@ -1240,14 +1248,11 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // A resize within the last WIDTH_FLUSH_MS before quit leaves the debounce deadline
     // unreached, so the final width is still pending - persist it on the way out so the
     // nav width the user left with survives the next launch.
-    if rt.width_dirty {
-        crate::app::prefs::save_nav_width(&rt.env.xmux_dir, rt.nav_width_natural);
-    }
     // A login still on screen at quit is a child nobody will watch again: end it here so
-    // the ssh it started goes with the app rather than outliving it.
-    if let Some(login) = rt.state.login_run.take() {
-        login.cancel();
-    }
+    // the ssh it started goes with the app rather than outliving it. A pending nav width
+    // is persisted through the same effect stream before the runtime tears I/O down.
+    let effects = update(&mut rt.model, Msg::Shutdown);
+    let _ = rt.execute_effects(effects);
     rt.registry.teardown_all();
     rt.mgr.teardown_all();
     0
@@ -1276,62 +1281,23 @@ struct Runtime {
     /// The off-loop attach worker. Its reply receiver is taken out in `run_app`
     /// ([`DisplayWorker::take_events`]); this keeps only the send half (`ensure`).
     worker: DisplayWorker,
-    switcher: crate::ui::switcher::Switcher,
-    render_plan: crate::ui::switcher::RenderPlan,
-    state: crate::state::State,
+    model: AppModel,
     attach_seq: u64,
     /// A clone of the loop's `PtyEvent` sender handed to drivers for off-loop probes.
     driver_pty_tx: tokio::sync::mpsc::UnboundedSender<PtyEvent>,
     op_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
     cols: u16,
     body_rows: u16,
-    /// The EFFECTIVE nav width (0 = nav hidden, terminal full width).
-    nav_width: u16,
-    /// The nav's natural width (what prefix h/l adjusts; restored when shown again).
-    nav_width_natural: u16,
-    /// Whether the nav shows only its resting hint bar and collapse button. Its natural
-    /// width and height stay untouched so expanding restores them.
-    nav_collapsed: bool,
-    /// The band-layout nav height, set by dragging the horizontal view border or the resize
-    /// keys. 0 = auto (~40% of the body). Only used in a band layout; ignored in a column.
-    nav_height: u16,
-    /// The side the nav is attached to this frame; the layout and every region cut
-    /// follows it.
-    nav_position: crate::ui::switcher::NavPosition,
-    /// The keyboard/config pin on the nav position (`prefix p`): `Some(side)` overrides
-    /// the [ui] resolution outright, `None` follows it. Persisted on every change.
-    nav_position_pinned: Option<crate::ui::switcher::NavPosition>,
-    /// The `[ui] nav-position` default the loop-top resolution falls back to when
-    /// nothing is pinned. Refreshed when a live config apply lands; the reconcile at the
-    /// next loop top applies the new value.
-    nav_default: crate::ui::switcher::NavPosition,
-    /// The `nav_height` last applied to the PTY sizes, so the loop-top reconcile resizes the
-    /// mux terminals when the band height changes (not only on a width change). `u16::MAX`
-    /// forces the first reconcile to size them.
-    applied_nav_height: u16,
-    /// The collapsed state last applied to PTY sizing. A band can change height while its
-    /// width stays constant, so this participates in the resize reconcile directly.
-    applied_nav_collapsed: bool,
-    auto_hide_nav: bool,
-    /// Whether the nav side held focus on the preceding loop pass. A transition into nav
-    /// focus expands a collapsed nav without expanding a persisted collapsed startup.
-    nav_was_focused: bool,
-    mouse_state: MouseState,
     term_input: crate::display::input::TermInput,
     nav_decoder: crate::display::decode::KeyDecoder,
     prefix: u8,
-    connected: HashSet<String>,
-    detecting: HashSet<String>,
     draw_observer: DrawObserver,
     spinner_start: std::time::Instant,
     dirty: bool,
     last_draw: std::time::Instant,
-    /// The last modified time of `~/.config/xmux/config.toml`, for the live config
-    /// watch. `None` until the first frame tick records a baseline, so the startup
-    /// apply (which already ran) is not duplicated.
-    config_last_mtime: Option<std::time::SystemTime>,
-    width_dirty: bool,
-    width_flush_at: Option<std::time::Instant>,
+    rescan_pending: bool,
+    #[cfg(test)]
+    discovery_runs: usize,
 }
 
 /// The loop's receiver halves, whose send halves `Runtime::new` wired into the world
@@ -1380,15 +1346,9 @@ fn start_login(
     mut password: crate::state::SecretInput,
     write_config: bool,
     register_key: bool,
-    state: &mut crate::state::State,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     op_sink: OpSink<'_>,
 ) {
-    let machine = crate::session::machine_of(&source).to_string();
-    state.logged_in.remove(&machine);
-    state.login_reports.remove(&machine);
-    let (running, cancel) = crate::link::unlock::RunningLogin::pending(source.clone());
-    state.login_run = Some(running);
-
     let ops = op_sink.0.clone();
     let tx = op_sink.1.clone();
     let password = password.take_plain();

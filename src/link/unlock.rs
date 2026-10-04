@@ -63,6 +63,7 @@ pub struct Conversation {
     pub password_supplied: bool,
 }
 
+#[derive(Clone)]
 pub struct RunningLogin {
     pub source: String,
     cancel: Arc<AtomicBool>,

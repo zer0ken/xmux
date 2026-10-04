@@ -9,7 +9,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::app::runtime::{NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH_MAX};
+use crate::app::model::{nav_width_min, NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH_MAX};
 use crate::display::dispatch::Action;
 
 /// The nav width a view border drag to 1-based screen column `col` sets, clamped to the
@@ -27,7 +27,7 @@ pub(crate) fn view_border_drag_width(
     } else {
         col.saturating_sub(1)
     };
-    w.clamp(crate::app::runtime::nav_width_min(ui_prefix), NAV_WIDTH_MAX)
+    w.clamp(nav_width_min(ui_prefix), NAV_WIDTH_MAX)
 }
 
 /// The band-layout nav height a horizontal view border drag to 1-based screen row `row`
@@ -794,7 +794,7 @@ mod tests {
         assert_eq!(view_border_drag_width(51, "C-g", 140, false), 50);
         assert_eq!(
             view_border_drag_width(5, "C-g", 140, false),
-            crate::app::runtime::nav_width_min("C-g"),
+            crate::app::model::nav_width_min("C-g"),
             "too far left clamps to the prefix floor"
         );
         assert_eq!(
@@ -804,7 +804,7 @@ mod tests {
         );
         assert_eq!(
             view_border_drag_width(5, "C-Space", 140, false),
-            crate::app::runtime::nav_width_min("C-Space"),
+            crate::app::model::nav_width_min("C-Space"),
             "a wider prefix raises the floor"
         );
     }
@@ -818,7 +818,7 @@ mod tests {
         assert_eq!(view_border_drag_width(100, "C-g", 140, true), 40);
         assert_eq!(
             view_border_drag_width(135, "C-g", 140, true),
-            crate::app::runtime::nav_width_min("C-g"),
+            crate::app::model::nav_width_min("C-g"),
             "dragging the right border rightward clamps to the prefix floor"
         );
         // Same mirror on the height: dragging the bottom border (0-based row 35 at

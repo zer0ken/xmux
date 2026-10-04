@@ -12,14 +12,12 @@ transport dispatch results, server models, plans, and death-signal helpers.
 ## Mental Model
 
 The model layer carries facts and intent, not live process ownership. A source
-combines host transport and mux state. An action is the single domain intent
-set shared by key handling and ctl; a command is the matching effect
-set the run loop dispatches. Applying an action, in `src/state`, is the
-one site that turns intent into state changes plus commands. An event effect is
-the inbound mirror: applying a source event folds that event's self-contained state
-mutation and returns the mux follow-ups (refetch, probe, reap, sync, scan
-dispatch, source add) the run loop runs against the source clients and the
-registry.
+combines host transport and mux state. An action is the domain intent set shared
+by key handling and ctl; a command is the matching domain effect set. The
+application update transition invokes the state action reducer, normalizes its
+commands into runtime-facing effects, and owns every application-state change.
+Event effects carry the I/O follow-ups (refetch, probe, reap, sync, scan dispatch,
+source add) that remain after update folds an inbound source event into the model.
 
 ## Module Seams
 
@@ -53,9 +51,9 @@ registry.
 ## Invariants
 
 - Action variants represent user-visible domain intents, not key strokes; command
-  variants represent effects the run loop carries out; event-effect variants
-  represent the mux I/O an inbound source event requires after its state mutation
-  has been folded.
+  variants represent effects the application update transition normalizes;
+  event-effect variants represent the remaining mux I/O an inbound source event
+  requires after update has folded its model changes.
 - Live control clients, polling tasks, and PTY attachments are owned outside
   `model`.
 - Transport dispatch should preserve mux intent without introducing mux policy.
@@ -78,5 +76,5 @@ registry.
 
 - Check equality, parsing, dispatch, and collection behavior for the value you
   touched.
-- Re-check the state, ctl, and app surfaces when the intent or effect set
-  changes: all three read it, and the apply site is in `src/state`.
+- Re-check the state, ctl, and app surfaces when the intent or effect set changes:
+  all three read it, and the application update transition owns their integration.

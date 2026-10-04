@@ -580,7 +580,8 @@ async fn rescan_resets_to_scanning_skeleton() {
     // re-kick the probes - the tree returns to skeletons until results land.
     let mut h = Harness::new(sample());
     assert!(h.text().contains("inference"), "sessions before rescan");
-    h.ch('r').await;
+    h.sw.request_rescan(&mut h.state);
+    h.draw();
     assert!(
         h.sw.take_rescan_kick(),
         "rescan must signal the loop to re-probe"
@@ -593,6 +594,16 @@ async fn rescan_resets_to_scanning_skeleton() {
     assert!(
         !tree.contains("inference"),
         "stale sessions clear until the re-probe lands:\n{tree}"
+    );
+}
+
+#[test]
+fn initial_source_seed_does_not_arm_a_rescan() {
+    let mut h = Harness::from_sources(&["local", "jupiter00"]);
+
+    assert!(
+        !h.sw.take_rescan_kick(),
+        "launch discovery is started directly, not by the first user input"
     );
 }
 
@@ -1346,9 +1357,6 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
         &mut h.state,
     );
     h.draw();
-    // Drain the launch kick a fresh switcher arms, so what is asserted below is the
-    // unlock's own effect, not the first-frame scan.
-    h.sw.take_rescan_kick();
     // A successful unlock returns the unlocked source so the app re-probes ONLY that
     // machine (its reach changed locked→connected), and it does NOT arm a whole-roster
     // re-scan - that would re-probe every host for one that changed.
@@ -2063,7 +2071,7 @@ async fn armed_hint_bar_fits_a_narrow_nav() {
 fn the_nav_renders_at_the_minimum_width() {
     // The side nav may be shrunk to its resting prefix, separating cell, and collapse
     // button. At that width the full control stays visible and the cards clip.
-    let min = crate::app::runtime::nav_width_min("C-g");
+    let min = crate::app::model::nav_width_min("C-g");
     let mut state = crate::state::State::from_scan(sample());
     let sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
