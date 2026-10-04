@@ -199,16 +199,23 @@ no function, and no test, so renaming code is never a documentation change.
   leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
   prefix interaction brings the nav back for the moment it needs it (a jump reads the
   card numbers), and it hides again when the interaction ends.
-- **FR-B10** - Every unselected card carries a 1-based number in its address column, on
-  the row of the session it addresses, and `prefix <digit>` jumps to it. The selected
-  card holds the selection mark in that same column instead. Selecting a card changes
-  nothing else on the card (the address column keeps its width), so a
-  name holds its column as the selection passes over it. The input stays
-  open in the hint bar so the number can grow, and every digit is taken as typed: the
-  number only has to name a real card at Enter. Each edit moves the selection while
-  the number names a card and leaves it alone otherwise; `Enter` closes when the
-  number names a card and flashes the valid range while leaving the input open
-  otherwise; `Esc` returns to where the jump started.
+- **FR-B10** - Every unselected card carries a number in its address column, on the row
+  of the session it addresses, and `prefix <digit>` jumps to it. A card takes its number
+  the first time it appears and keeps it for the whole run: a card that ends leaves its
+  number vacant, no other card's number shifts, and a new card takes the next number past
+  the highest one given. A session that returns under its own name takes its number back.
+  While a full scan is in flight (the launch scan and every `prefix r`) the numbers are
+  dealt again from 1 in list order, so that scan ends with numbers that read in list
+  order; a one-host re-scan, a filter, and a nav scope change leave every number where it
+  is. The order of the cards on screen is the list order whatever their numbers say. The
+  selected card holds the selection mark in that same column instead. Selecting a card
+  changes nothing else on the card (the address column keeps its width), so a name holds
+  its column as the selection passes over it. The input stays open in the hint bar so
+  the number can grow, and every digit is taken as typed: the number only has to name a
+  card on the list at Enter. Each edit moves the selection while the number names a card
+  and leaves it alone otherwise; `Enter` closes when the number names a card and, for a
+  vacant number or one past the highest, flashes the range up to the highest number on
+  the list while leaving the input open; `Esc` returns to where the jump started.
 - **FR-B11** - Every colour xmux paints is an ANSI-16 slot, so the TERMINAL THEME
   resolves the hue and the whole UI recolours with the user's own scheme. A THEME is a
   named role→ANSI-slot assignment curated in a registry: the built-ins are
@@ -392,7 +399,17 @@ no function, and no test, so renaming code is never a documentation change.
   it, and any other difference is read as sessions made or ended.
 
 - **FR-B24** - The nav hides the hosts no scan has reached: an unreachable host takes no
-  card by default, and `[ui] hide-unreachable` (default true) controls that hiding. The
+  card by default, and `[ui] hide-unreachable` (default true) controls that hiding. How
+  many hosts are hidden is said wherever the user is interacting with the nav: on the
+  prefix key list's bottom border and in the open filter's line, which counts the hidden
+  hosts the filter matches. `prefix h` opens the table of the hosts to check, which lists
+  every host in a problem state grouped by cause (`?` login needed, `▲` unreachable, `✗`
+  list failed), each with the reason its last answer gave and a mark on the ones the
+  hiding leaves without a card; `Enter` on a row selects that host's card, sets the
+  filter to the host's name when the host has no card on the list, and hands the focus to
+  the terminal view when the host's login pane answers it. A nav with no card at all
+  writes one line in its body instead: how many hosts are hidden and `prefix h`, or, in
+  the needs-attention scope (FR-B39), that nothing needs attention and the scope key. The
   filter naming a hidden host brings its card back, and that named card is the one entry
   to its unreachable screen. An empty filter hides every unreachable host, and a filter
   matching nothing does not bring them back through the no-match fallback that shows the
@@ -567,7 +584,13 @@ no function, and no test, so renaming code is never a documentation change.
   rest. A host whose login was refused is reported as needing a login, never as its
   sessions ending. A re-scan that changed nothing says so with the host and session counts
   it found. The toast is made once every source and the roster have answered, and a host
-  that stopped answering keeps it on screen until it is dismissed.
+  that stopped answering keeps it on screen until it is dismissed. `prefix R` re-scans
+  the selected card's host alone: that machine's reachability probe and then every
+  source it serves, with no roster resolution and no other machine asked. Its cards keep
+  their sessions and numbers while it runs, and it ends in one toast titled with the
+  host's name that compares that host's sources alone. It is refused while that host is
+  still being scanned and while another re-scan has not reported, and a `prefix r` asked
+  meanwhile takes over with its own summary.
 - **FR-B35** - Every key xmux binds is listed ONCE, in one key table with the words that
   name it. Both focus paths resolve a prefix command through that table, and the help,
   the key list, and the selection hint are built from it, so a surface never names a key
@@ -577,7 +600,8 @@ no function, and no test, so renaming code is never a documentation change.
   sessions, view, app), in as many columns as the room beside the indicator holds. When
   the keys do not fit, the box shortens every description first and then gives up the
   keys needed least, counting them as `+N more`; the jump, help, and quit keys are never
-  given up, and no key is ever shown without its name.
+  given up, and no key is ever shown without its name. Its bottom border names the nav
+  scope (FR-B39) and, while the hiding leaves any host without a card, how many.
 - **FR-B37** - For three seconds after the user moves the selection, the hint bar names
   the selected card's most relevant keys (one to three) and one fact about it: a
   session's windows, or a host's state word with the reason behind it. Any key ends it,
@@ -588,6 +612,14 @@ no function, and no test, so renaming code is never a documentation change.
   mark, the overflow cues, the auto-hide border, and the toast levels). Typing searches
   it, ignoring case, and the arrows, `PgUp`/`PgDn`, and `Home`/`End` scroll it; `Esc` or
   `prefix ?` closes it, and the search line says so whatever the search leaves.
+- **FR-B39** - The nav lists one of three SCOPES, and `prefix s` steps through them in
+  either focus: `sessions` (the default: every session, and a card for each host with
+  none to show except the hosts FR-B24 hides), `all hosts` (the same list with nothing
+  hidden), and `needs attention` (only the hosts in a settled problem state, sessions
+  left out). The scope is named only while the user interacts: on the key list's bottom
+  border, and in a toast when the key steps it. The resting nav carries no scope word.
+  The filter, the card order, and the card numbers work the same in every scope. The
+  scope is remembered in `~/.xmux/nav_scope` for the next launch.
 
 ## C. Switching (the keystone)
 

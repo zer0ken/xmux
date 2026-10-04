@@ -124,6 +124,47 @@ impl NavPosition {
     }
 }
 
+/// Which cards the nav lists. The scope changes only which hosts take a card; the order,
+/// the card numbers and the filter work the same in every scope.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NavScope {
+    /// Every session, and a card for each host with none to show, except the hosts the
+    /// unreachable hiding leaves out.
+    #[default]
+    Sessions,
+    /// The same list with nothing hidden: every host the hiding leaves out takes a card.
+    AllHosts,
+    /// Only the hosts in a problem state: login needed, unreachable, or list failed.
+    NeedsAttention,
+}
+
+impl NavScope {
+    /// The next scope in the cycle the scope key steps through.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Sessions => Self::AllHosts,
+            Self::AllHosts => Self::NeedsAttention,
+            Self::NeedsAttention => Self::Sessions,
+        }
+    }
+
+    /// The name a reader sees, also the word written to preferences.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Sessions => "sessions",
+            Self::AllHosts => "all hosts",
+            Self::NeedsAttention => "needs attention",
+        }
+    }
+
+    /// Parses a persisted scope.
+    pub fn parse(value: &str) -> Option<Self> {
+        [Self::Sessions, Self::AllHosts, Self::NeedsAttention]
+            .into_iter()
+            .find(|scope| scope.word() == value.trim())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +266,17 @@ mod tests {
         let hidden = NavSize::hidden(48).with_position(NavPosition::Bottom);
         assert_eq!(hidden.position, NavPosition::Bottom);
         assert_eq!(hidden.width, 0);
+    }
+
+    #[test]
+    fn the_scope_cycles_through_three_and_round_trips_through_its_word() {
+        let mut scope = NavScope::default();
+        assert_eq!(scope, NavScope::Sessions);
+        for _ in 0..3 {
+            assert_eq!(NavScope::parse(scope.word()), Some(scope));
+            scope = scope.next();
+        }
+        assert_eq!(scope, NavScope::Sessions);
+        assert_eq!(NavScope::parse("bogus"), None);
     }
 }

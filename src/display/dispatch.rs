@@ -31,7 +31,11 @@ pub enum Action {
     ShowHelp,
     /// `prefix m`: toggle the history. Focus stays where it is.
     ShowHistory,
-    /// `prefix h`/`l` or `prefix Ctrl+←/→` — the nav WIDTH step on the horizontal axis
+    /// `prefix h`: toggle the table of the hosts to check. Focus stays where it is.
+    ShowCheck,
+    /// `prefix s`: step the nav scope. Key-driven only, no ctl verb.
+    CycleNavScope,
+    /// `prefix Ctrl+←/→`: the nav WIDTH step on the horizontal axis
     /// (applied only in a column layout). The delta is the key's SCREEN direction (+1 =
     /// right, -1 = left): the border moves that way, so it grows the nav on the left and
     /// shrinks it on the right.
@@ -72,6 +76,8 @@ impl Action {
             | Action::Forward(_)
             | Action::ShowHelp
             | Action::ShowHistory
+            | Action::ShowCheck
+            | Action::CycleNavScope
             | Action::NavKey(_) => None,
         }
     }

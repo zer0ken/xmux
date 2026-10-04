@@ -132,6 +132,12 @@ pub enum KeyCommand {
     NewSession,
     /// Re-scan every host.
     Rescan,
+    /// Re-scan the selected card's host alone.
+    RescanHost,
+    /// Toggle the table of the hosts to check.
+    Check,
+    /// Step the nav scope.
+    Scope,
     /// Collapse or expand the nav.
     Collapse,
     /// Toggle auto-hide-nav.
@@ -425,6 +431,33 @@ pub static TABLE: &[KeyEntry] = &[
         rank: 1,
     },
     KeyEntry {
+        section: Section::Sessions,
+        keys: Keys::Prefix(&[(Chord::Char('R'), KeyCommand::RescanHost)]),
+        label: "R",
+        help: "re-scan the selected card's host only",
+        long: "re-scan this host",
+        short: "host",
+        rank: 2,
+    },
+    KeyEntry {
+        section: Section::Sessions,
+        keys: Keys::Prefix(&[(Chord::Char('h'), KeyCommand::Check)]),
+        label: "h",
+        help: "hosts to check, by cause: ↑/↓ move, Enter opens the host, Esc closes",
+        long: "hosts to check",
+        short: "check",
+        rank: 2,
+    },
+    KeyEntry {
+        section: Section::View,
+        keys: Keys::Prefix(&[(Chord::Char('s'), KeyCommand::Scope)]),
+        label: "s",
+        help: "nav scope: sessions · all hosts · needs attention",
+        long: "change the scope",
+        short: "scope",
+        rank: 3,
+    },
+    KeyEntry {
         section: Section::View,
         keys: Keys::Prefix(&[(Chord::Char('z'), KeyCommand::Collapse)]),
         label: "z",
@@ -450,18 +483,6 @@ pub static TABLE: &[KeyEntry] = &[
         long: "move the nav",
         short: "side",
         rank: 4,
-    },
-    KeyEntry {
-        section: Section::View,
-        keys: Keys::Prefix(&[
-            (Chord::Char('h'), KeyCommand::Width(-1)),
-            (Chord::Char('l'), KeyCommand::Width(1)),
-        ]),
-        label: "h/l",
-        help: "move the side view border left / right",
-        long: "move the border",
-        short: "border",
-        rank: 5,
     },
     KeyEntry {
         section: Section::View,
@@ -662,5 +683,20 @@ mod tests {
             (Some(Chord::Arrow(Arrow::Down)), 3)
         );
         assert_eq!(Chord::from_bytes(b"\x1b", p), (None, 1));
+    }
+
+    #[test]
+    fn the_nav_structure_keys_are_bound_in_the_table() {
+        for position in [NavPosition::Left, NavPosition::Bottom] {
+            for (c, command) in [
+                ('h', KeyCommand::Check),
+                ('R', KeyCommand::RescanHost),
+                ('s', KeyCommand::Scope),
+            ] {
+                assert_eq!(prefix_command(Chord::Char(c), position), Some(command));
+                assert!(entry_for(command).is_some_and(|e| e.prefixed()));
+            }
+            assert_eq!(prefix_command(Chord::Char('l'), position), None);
+        }
     }
 }

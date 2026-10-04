@@ -389,19 +389,28 @@ UI elements a user perceives as distinct things:
   from that file. It adds the line only when that line is absent, so a second login
   changes nothing, and it makes this machine an ed25519 pair first when it has none.
 - address column - the leftmost column set of every card, holding the one thing that
-  answers "where is this": the dim 1-based number `prefix <digit>` jumps to, or, on the
+  answers "where is this": the dim card number `prefix <digit>` jumps to, or, on the
   SELECTED card, the selection mark - the number there would be the address of where you
   already are. One column carries both, so a card's name never moves as the selection
   passes over it. It is written on the card's single row, beside the session it
   addresses; a section title is not a card and spends no number there at all (its
   `{host}/{mux}` label is flush left). The column is one width per frame, so the names
-  stay aligned and the numbers line up by units place as the count crosses 10.
+  stay aligned and the numbers line up by units place as the highest number crosses 10.
+- card number - the number a card takes the first time it appears and keeps for the
+  whole run. A card that ends leaves its number VACANT: no other card's number shifts,
+  and a new card takes the next number past the highest one given. A full scan (the
+  launch scan and every `prefix r`) deals the numbers again from 1 in list order while it
+  runs, so it ends with numbers that read in list order; a one-host re-scan, a filter,
+  and a nav scope change leave every number where it is. A session that returns under
+  its own name takes its number back. The list order, not the numbers, decides where a
+  card sits.
 - jump - the digits-only input `prefix <digit>` opens in the hint bar holding the
   digit. It acts WHILE open: each edit moves the selection while the number names a
-  card, and a number no card carries leaves the selection alone. Enter closes the
-  popup when the number names a card and flashes the valid range while leaving it
-  open otherwise; Esc restores where it started. User-facing text calls this "jump to
-  a session" (see the naming rule below).
+  card on the list, and a number no card carries (0, a vacant number, one past the
+  highest) leaves the selection alone. Enter closes the popup when the number names a
+  card and flashes the range up to the highest number while leaving it open otherwise;
+  Esc restores where it started. User-facing text calls this "jump to a session" (see
+  the naming rule below).
 - instance name - a running app's identity: an auto-generated `<adjective>-<noun>`
   (or `--name`), owning `ctl-<name>.sock` for its lifetime. `xmux send <name>` and
   `xmux instances` address instances by it; a unique name prefix resolves, and `-`
@@ -499,6 +508,18 @@ UI elements a user perceives as distinct things:
   Esc restores the filter the input opened with; with the input closed, Esc clears an
   active filter. A host hidden from the nav (`[ui] hide-unreachable`) shows its card
   while the filter names it.
+- nav scope - which cards the nav lists: `sessions` (the default, with the hidden hosts
+  left out), `all hosts` (nothing hidden), or `needs attention` (only the hosts in a
+  settled problem state, no session). `prefix s` steps it, it is named only while the
+  user interacts (the key list's bottom border, a toast when it steps), and it is
+  remembered across runs.
+- hosts to check - the table `prefix h` opens: every host in a problem state grouped by
+  cause, each with its reason and a mark on the ones the hiding leaves without a card.
+  Enter on a row selects that host's card, bringing a hidden host back through the
+  filter, and focuses the terminal view for a host whose login pane answers it.
+- one-host re-scan - `prefix R`: the selected card's machine asked again alone, its
+  reachability probe and then every source it serves, reported in its own summary toast.
+  A full re-scan (`prefix r`) asked meanwhile takes over.
 - flash - the reason a key did nothing, shown in the hint bar (a jump number no card
   carries, a new session on an unreachable host). It goes away on the next tree key, and
   after ten seconds for a user who presses nothing, since it is about something that
@@ -633,8 +654,10 @@ with a middle ellipsis rather than displacing state or navigation cells.
 
 An interaction surface spends the available space on state words, counts, the next
 key, and complete reasons or solutions. The selected card names its state, an open
-filter names total matches and matches from hidden hosts, and a host screen keeps the
-failure reason whole. A live prefix names every key it unlocks, and a selection move names
+filter names total matches and matches from hidden hosts, the key list's bottom border
+names the nav scope and the hidden host count, and a host screen keeps the failure
+reason whole. A nav left with no card is the one exception at rest: its body says in one
+line why it is empty and which key answers it. A live prefix names every key it unlocks, and a selection move names
 the selected card's next keys and its state for three seconds; both read the one key table,
 and the help adds the glyph legend.
 

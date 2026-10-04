@@ -211,6 +211,44 @@ pub(crate) fn drop_hidden_unreachable(
         .collect()
 }
 
+/// The sources the hiding leaves without a card under an empty filter: what the nav
+/// counts as hidden, and what the check table marks hidden. Inputs are not mutated.
+pub(crate) fn hidden_sources(
+    groups: &[Group],
+    scanning: &HashSet<String>,
+    logged_in: &HashSet<String>,
+) -> Vec<String> {
+    let kept = drop_hidden_unreachable(groups, scanning, logged_in, "");
+    groups
+        .iter()
+        .filter(|g| !kept.iter().any(|k| k.source == g.source))
+        .map(|g| g.source.clone())
+        .collect()
+}
+
+/// The groups a nav scope lists before the hiding and the filter run. The needs-attention
+/// scope keeps the hosts in a settled problem state (login needed, unreachable, list
+/// failed) and drops the rest, sessions included; the other scopes keep every group.
+/// Inputs are not mutated.
+pub(crate) fn scoped_groups<'a>(
+    groups: &'a [Group],
+    scanning: &HashSet<String>,
+    scope: crate::model::NavScope,
+) -> Cow<'a, [Group]> {
+    match scope {
+        crate::model::NavScope::NeedsAttention => Cow::Owned(
+            groups
+                .iter()
+                .filter(|g| g.err.is_some() && !scanning.contains(&g.source))
+                .cloned()
+                .collect(),
+        ),
+        crate::model::NavScope::Sessions | crate::model::NavScope::AllHosts => {
+            Cow::Borrowed(groups)
+        }
+    }
+}
+
 /// The groups to render, in `groups` order - that order is authoritative (established
 /// by the deterministic source order at rebuild via [`order_groups`], which a routine
 /// poll reproduces exactly, so a poll never reshuffles the tree). An empty filter

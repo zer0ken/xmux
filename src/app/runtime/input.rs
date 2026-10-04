@@ -3,7 +3,7 @@ use super::*;
 impl Runtime {
     /// Processes a batch of NAV-focus input bytes through ONE path - used for both real
     /// stdin and bytes replayed after a terminal→nav switch. Handles prefix arming
-    /// (`C-g` then `q` → quit, `h`/`Ctrl+←` → move the border left, `l`/`Ctrl+→` → right,
+    /// (`C-g` then `q` → quit, `Ctrl+←` → move the border left, `Ctrl+→` → right,
     /// the nav width following the placement),
     /// Enter → focus terminal (unless an inline input is open),
     /// ←/→ navigate the nav; then the off-loop op dispatch, ensure-current-host, and
@@ -62,6 +62,12 @@ impl Runtime {
                 }
                 Some(Action::ShowHistory) => {
                     effects.extend(update(&mut self.model, Msg::ToggleHistory));
+                }
+                Some(Action::ShowCheck) => {
+                    effects.extend(update(&mut self.model, Msg::ToggleCheck));
+                }
+                Some(Action::CycleNavScope) => {
+                    effects.extend(update(&mut self.model, Msg::CycleNavScope));
                 }
                 // resolve_nav_key never emits the mux-only or terminal-only variants
                 // (Forward/FocusNav); None = armed/consumed.
@@ -151,7 +157,7 @@ impl Runtime {
         // nav width, only when the nav is shown) with the left button and
         // drag to resize. Once grabbed it owns every mouse event until the
         // button is released. Sets the NATURAL width; the loop-top reconcile
-        // applies it and resizes the PTYs (same path as prefix h/l).
+        // applies it and resizes the PTYs (same path as prefix Ctrl-←/→).
         let col0 = ev.col.saturating_sub(1); // 1-based SGR → 0-based screen col
         let row0 = ev.row.saturating_sub(1);
         // The view border rect from the one shared geometry, so the grab / hover works in
@@ -392,7 +398,7 @@ impl Runtime {
 
 impl Runtime {
     /// Applies a nav-resize delta on ONE axis, gated to the layout that actually shows that
-    /// axis so a key never resizes a dimension the user cannot see: `horizontal` (←/→ · h/l)
+    /// axis so a key never resizes a dimension the user cannot see: `horizontal` (Ctrl-←/→)
     /// resizes the WIDTH only in a column, `!horizontal` (↑/↓) the HEIGHT only in a band; the
     /// perpendicular axis is a no-op. The delta is the key's SCREEN direction (+1 = right /
     /// down), and the nav-size effect follows the placement: on the left or above that
@@ -584,6 +590,8 @@ impl Runtime {
             && !non_mouse.is_empty()
             && crate::state::is_reader(&self.model.state.modal)
         {
+            // The table of the hosts to check acts on Enter: it selects a host and may hand
+            // the focus to the terminal view, whose login pane then takes the keys.
             let effects = update(
                 &mut self.model,
                 Msg::ReaderBytes {
@@ -591,7 +599,11 @@ impl Runtime {
                     prefix: self.prefix,
                 },
             );
-            debug_assert!(effects.is_empty());
+            let (cq, cwc, _) = self.execute_effects(effects);
+            *quit |= cq;
+            if cwc {
+                *width_changed = true;
+            }
             // The help and the history are modal (tmux view-mode style): while one is
             // open it captures every key in EITHER focus - q/Esc or the prefix key that
             // opened it closes it, the history scrolls, the rest are swallowed - so
@@ -608,7 +620,7 @@ impl Runtime {
             let (ft, q, wd, hd, th, cp) = self.handle_nav_bytes(&non_mouse, width_changed);
             *focus_terminal = ft;
             *quit = q;
-            // A prefix-driven resize: width (←/→ · h/l) or height (↑/↓); each applies only in
+            // A prefix-driven resize: width (Ctrl-←/→) or height (Ctrl-↑/↓); each applies only in
             // its layout, and opens the bare-Ctrl-arrow repeat window.
             let rw = self.resize_and_repeat(true, wd);
             let rh = self.resize_and_repeat(false, hd);
@@ -682,6 +694,16 @@ impl Runtime {
                     Action::ShowHistory => {
                         let effects = update(&mut self.model, Msg::ToggleHistory);
                         debug_assert!(effects.is_empty());
+                        *dirty = true;
+                    }
+                    Action::ShowCheck => {
+                        let effects = update(&mut self.model, Msg::ToggleCheck);
+                        debug_assert!(effects.is_empty());
+                        *dirty = true;
+                    }
+                    Action::CycleNavScope => {
+                        let effects = update(&mut self.model, Msg::CycleNavScope);
+                        let _ = self.execute_effects(effects);
                         *dirty = true;
                     }
                     // Same resize + repeat-window as the nav path, so a resize started from
