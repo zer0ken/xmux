@@ -172,8 +172,8 @@ pub(crate) fn help_lines(
         ("←/↑", "→/↓")
     };
 
-    // Tree section - the mutating keys carry the prefix (bare presses are inert);
-    // navigation and the `/` filter stay bare.
+    // Tree section - the mutating keys and the filter carry the prefix (bare presses
+    // are inert); navigation stays bare.
     let rows: Vec<HelpRow> = vec![
         HelpRow::Head("navigation".into()),
         HelpRow::Key("↑/↓ · j/k".into(), "move one card".into()),
@@ -188,7 +188,7 @@ pub(crate) fn help_lines(
             "jump to a session by its number (keep typing for 10+)".into(),
         ),
         HelpRow::Key(format!("{p} n"), "new session on the selected host".into()),
-        HelpRow::Key("/".into(), "fuzzy filter <source>/<name>".into()),
+        HelpRow::Key(format!("{p} /"), "fuzzy filter <source>/<name>".into()),
         HelpRow::Key(format!("{p} r"), "re-scan every host".into()),
         HelpRow::Gap,
         // Focus section - prefix rows built from `prefix`.
