@@ -120,8 +120,8 @@ UI elements a user perceives as distinct things:
   pressed here and a muted cell names a datum. No value on a screen is shortened to fit
   its column: one too wide hangs under the same rule, a multi-line one keeps its lines,
   and a control character is written as its escape rather than printed as nothing. The
-  UNREACHABLE leads with a plain verdict, the failure run and the last successful
-  connection time when known, followed by the keys to check this host or every host.
+  UNREACHABLE leads with a plain verdict carrying the last successful reach when
+  known, then the failure run and the keys to check this host or every host.
   Its details choice unfolds everything known about the failure: the transport reason,
   what was asked and over what (the mux binary, how the machine is addressed and the
   wait that bounds it, the socket, and the session-listing command itself), the roster

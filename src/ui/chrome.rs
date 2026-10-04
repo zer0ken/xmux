@@ -844,17 +844,17 @@ impl Chrome {
                     matches!(cell, ScreenCell::Label("reason")).then_some(value.as_str())
                 })
                 .unwrap_or("connection closed");
-            rows.push((ScreenCell::Label("verdict"), unreachable_verdict(reason)));
-            let failures = state.failure_runs.get(source).copied().unwrap_or(1);
             let reached = state
                 .last_reached
                 .get(source)
                 .map(|time| format!(" · last reached {}", reached_at(*time)))
                 .unwrap_or_default();
             rows.push((
-                ScreenCell::Label("status"),
-                format!("{}{}", failure_run_words(failures), reached),
+                ScreenCell::Label("verdict"),
+                format!("{}{}", unreachable_verdict(reason), reached),
             ));
+            let failures = state.failure_runs.get(source).copied().unwrap_or(1);
+            rows.push((ScreenCell::Label("status"), failure_run_words(failures)));
             rows.push((ScreenCell::Gap, String::new()));
             rows.push((ScreenCell::Label("What to do"), String::new()));
             rows.push((

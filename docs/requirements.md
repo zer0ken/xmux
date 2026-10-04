@@ -641,9 +641,9 @@ no function, and no test, so renaming code is never a documentation change.
   immediately.
 - **FR-C3** - Source degradation is graceful, never a silent loss: an unreachable source
   is marked `▲` and gains the word `unreachable` when selected. Its view screen leads
-  with a plain verdict, the failure run, the last successful reach when known, and
-  actions to check this host or every host. The details choice unfolds the transport
-  reason, the mux binary asked for, how the machine is
+  with a plain verdict carrying the last successful reach when known, followed by
+  the failure run and actions to check this host or every host. The details choice
+  unfolds the transport reason, the mux binary asked for, how the machine is
   addressed and the wait that bounds reaching it, the socket, the session-listing command
   itself (spelled so it can be run by hand outside xmux), the PROVIDER that put that host
   on the roster (so a host the user never wrote down is traceable to the thing that
