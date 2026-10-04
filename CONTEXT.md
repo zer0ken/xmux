@@ -133,7 +133,7 @@ UI elements a user perceives as distinct things:
   no session grid has been confirmed; its card keeps the in-flight spinner. A full
   re-scan preserves the confirmed grid while session cards temporarily become host
   cards. The same animation fills the view during an initial scan before a card can
-  be selected. Its fixed 32- or 64-column frame is centered and
+  be selected. Its fixed 32-column frame is centered and
   clipped in smaller views; one symbol holds for one second and turns in 0.4 seconds.
   A settled screen retains its text and centers the animation in the rows below it
   only when at least a 32-column, 16-row frame fits. A confirmed session shows its grid. The
