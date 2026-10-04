@@ -373,7 +373,7 @@ impl Runtime {
                 for id in &delta.added {
                     let machine = crate::session::machine_of(id);
                     if probed.insert(machine) {
-                        probe_machine(machine, hosts, mgr.events(), scan_pool, false);
+                        probe_machine(machine, hosts, mgr.events(), scan_pool, false, 0);
                     }
                 }
                 // The nav now holds what this roster added and dropped, so a re-scan that
@@ -726,6 +726,7 @@ impl Runtime {
             // probe), owned off the draw block so it does nothing but lock → render.
             draw_observer: DrawObserver::default(),
             spinner_start: std::time::Instant::now(),
+            login_probes: 0,
             dirty: true,
             last_draw: std::time::Instant::now() - std::time::Duration::from_millis(FRAME_MS),
             rescan_pending: false,

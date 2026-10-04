@@ -1080,17 +1080,20 @@ impl crate::ui::switcher::Ops for CreateRecordingOps {
         Ok(None)
     }
 
-    async fn login_follow_ups(
+    fn write_login_stanza(
         &self,
         _source: &str,
         _login: &crate::transport::Login,
-        _write_config: bool,
-        _register: Option<crate::ui::ops::KeyRegistration>,
-    ) -> (crate::ui::ops::RegistrationOutcome, Vec<String>) {
-        (
-            crate::ui::ops::RegistrationOutcome::NotRequested,
-            Vec::new(),
-        )
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    async fn register_login_key(
+        &self,
+        _source: &str,
+        _login: &crate::transport::Login,
+        _register: crate::ui::ops::KeyRegistration,
+    ) -> crate::ui::ops::RegistrationOutcome {
+        crate::ui::ops::RegistrationOutcome::NotRequested
     }
 }
 
@@ -1943,6 +1946,7 @@ fn test_rt(env: Env) -> Runtime {
         rescan: None,
     };
     let mut rt = Runtime {
+        login_probes: 0,
         instance_name: "test".into(),
         env,
         ops,
@@ -4647,12 +4651,12 @@ fn feed_login_offers_the_remember_choice_only_after_a_value_changes() {
     s.feed_login("prod", b"x");
     let d = s.login.as_ref().unwrap();
     assert!(d.changed(), "the address was edited");
-    assert!(d.stops().contains(&LoginFocus::RememberSshConfig));
+    assert!(d.stops(false).contains(&LoginFocus::RememberSshConfig));
     // Undoing the edit takes the choice away again.
     s.feed_login("prod", b"\x7f");
     let d = s.login.as_ref().unwrap();
     assert!(!d.changed());
-    assert!(!d.stops().contains(&LoginFocus::RememberSshConfig));
+    assert!(!d.stops(false).contains(&LoginFocus::RememberSshConfig));
 }
 
 #[test]
@@ -4702,6 +4706,7 @@ fn machine_probe_connected_forwards_the_connect_to_the_loop() {
             credential_generation: 0,
             current_credential_generation: 0,
             rescan: false,
+            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -4742,6 +4747,7 @@ fn machine_probe_auth_failure_marks_every_source_of_the_machine_locked() {
             credential_generation: 0,
             current_credential_generation: 0,
             rescan: false,
+            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -4785,6 +4791,7 @@ fn a_refusal_that_did_not_use_the_held_password_is_visible() {
             credential_generation: 1,
             current_credential_generation: 1,
             rescan: false,
+            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -4813,6 +4820,7 @@ fn an_auth_refusal_from_an_older_credential_generation_is_ignored() {
             credential_generation: 3,
             current_credential_generation: 4,
             rescan: false,
+            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -4839,6 +4847,7 @@ fn any_probe_result_from_an_older_credential_generation_is_ignored() {
             credential_generation: 3,
             current_credential_generation: 4,
             rescan: false,
+            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -4865,6 +4874,7 @@ fn successful_probe_from_an_older_credential_generation_is_ignored() {
             credential_generation: 3,
             current_credential_generation: 4,
             rescan: false,
+            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -4889,6 +4899,7 @@ fn probe_that_rejected_its_own_credential_is_not_discarded_as_stale() {
             credential_generation: 3,
             current_credential_generation: 4,
             rescan: false,
+            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -4917,6 +4928,7 @@ fn rejected_probe_from_before_a_newer_key_login_is_ignored() {
             credential_generation: 3,
             current_credential_generation: 5,
             rescan: false,
+            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -4945,6 +4957,7 @@ fn machine_probe_unreachable_marks_the_machine_unreachable_not_locked() {
             credential_generation: 1,
             current_credential_generation: 1,
             rescan: false,
+            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -5058,6 +5071,7 @@ fn a_stray_detection_failure_does_not_overwrite_a_settled_card() {
             credential_generation: 0,
             current_credential_generation: 0,
             rescan: false,
+            probe: 0,
         },
         &mut sw,
         &mut connected,

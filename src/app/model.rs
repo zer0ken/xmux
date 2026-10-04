@@ -143,6 +143,9 @@ pub(crate) enum Msg {
         source: String,
         credential_held: bool,
         machine_has_sources: bool,
+        /// The machine probe the runtime starts for this login, whose answer alone
+        /// settles the login's mux search.
+        probe: u64,
     },
     ApplyInventory {
         source: String,
@@ -266,6 +269,8 @@ pub(crate) enum Effect {
         password: crate::model::SecretInput,
         remember: crate::model::Remember,
         pubkey: bool,
+        /// The submission this run is, carried on every report it sends back.
+        attempt: u64,
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     },
     PersistNavWidth(u16),
@@ -374,7 +379,20 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             let machine = crate::session::machine_of(&source);
             model.state.logged_in.remove(machine);
             model.state.login_reports.remove(machine);
-            let (running, cancel) = crate::link::unlock::RunningLogin::pending(source.clone());
+            model.state.login_attempts += 1;
+            let attempt = model.state.login_attempts;
+            model.state.login_progress.insert(
+                source.clone(),
+                crate::model::LoginProgress::start(
+                    attempt,
+                    &login,
+                    !password.is_empty(),
+                    remember == crate::state::Remember::SshConfig,
+                    pubkey,
+                ),
+            );
+            let (running, cancel) =
+                crate::link::unlock::RunningLogin::pending(source.clone(), attempt);
             model.state.login_run = Some(running);
             Some(Effect::StartLogin {
                 source,
@@ -382,6 +400,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                 password,
                 remember,
                 pubkey,
+                attempt,
                 cancel,
             })
         }
@@ -446,6 +465,17 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             vec![EventEffect::RecordDisplayTty { host, tty }]
         }
         HostEvent::MuxesFound { machine, muxes } => {
+            // Discovery that found nothing ends a login's mux search here: no source
+            // result follows it, since the machine's card goes instead.
+            match &muxes {
+                Ok(found) if found.is_empty() => model
+                    .state
+                    .login_mux_answered(&machine, &crate::model::MuxAnswer::NoMux),
+                Err(reason) => model
+                    .state
+                    .login_mux_answered(&machine, &crate::model::MuxAnswer::Failed(reason.clone())),
+                Ok(_) => {}
+            }
             vec![EventEffect::AddDiscoveredSources { machine, muxes }]
         }
         HostEvent::RosterResolved { roster, rescan } => vec![EventEffect::ApplyRoster {
@@ -474,6 +504,17 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             detected,
             err,
         } => {
+            // Detection that found no mux ends a login's mux search whether or not a
+            // source result follows: a source no longer scanning gets none.
+            if detected.is_none() {
+                let answer = match &err {
+                    Some(reason) => crate::model::MuxAnswer::Failed(reason.clone()),
+                    None => crate::model::MuxAnswer::NoMux,
+                };
+                model
+                    .state
+                    .login_mux_answered(crate::session::machine_of(&source), &answer);
+            }
             if detected.is_none() && model.state.scanning.contains(&source) {
                 let reason = err.clone().unwrap_or_else(|| "mux not detected".to_owned());
                 return vec![
@@ -505,7 +546,13 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             credential_generation,
             current_credential_generation,
             rescan,
+            probe,
         } => {
+            // The login steps take every machine answer, including one the generation
+            // check below sets aside: the probe a login started answers that login.
+            model
+                .state
+                .login_probe_answered(&machine, probe, err.as_deref());
             let result_generation =
                 credential_rejection_generation.unwrap_or(credential_generation);
             if result_generation != current_credential_generation {
@@ -758,7 +805,11 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             source,
             credential_held,
             machine_has_sources,
+            probe,
         } => {
+            if let Some(progress) = model.state.login_progress.get_mut(&source) {
+                progress.arm_probe(probe);
+            }
             let machine = crate::session::machine_of(&source);
             if credential_held {
                 model.state.logged_in.insert(machine.to_owned());
@@ -822,6 +873,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 model.connected.remove(&source);
                 model.detecting.remove(&source);
             }
+            model.state.login_progress.remove(&source);
             model.switcher.remove_source(&source, &mut model.state);
             Vec::new()
         }
@@ -1509,6 +1561,7 @@ mod tests {
                     credential_generation: 1,
                     current_credential_generation: 1,
                     rescan: true,
+                    probe: 0,
                 },
                 logged_in: HashSet::new(),
             },
@@ -1879,5 +1932,310 @@ mod tests {
         assert_eq!(failed.notes[0].text, "create failed: boom");
         assert!(failed.until.is_none(), "a failure waits to be dismissed");
         assert!(m.state.chrome.flash.is_empty(), "a result is no flash");
+    }
+
+    /// A model with `sources` blocked by a refused probe, then a login submitted on the
+    /// first of them through the pane's own keys. Returns the submission's attempt.
+    fn submitted_login(sources: &[&str]) -> (AppModel, u64) {
+        let mut m = AppModel::from_sources(sources.iter().map(|s| (*s).to_owned()).collect());
+        for source in sources {
+            update(
+                &mut m,
+                Msg::ApplySourceResult {
+                    source: (*source).to_owned(),
+                    sessions: Vec::new(),
+                    err: Some("alice@box: Permission denied (publickey,password).".to_owned()),
+                },
+            );
+        }
+        // Enter walks every stop to the button and submits there.
+        let effects = update(
+            &mut m,
+            Msg::FeedLogin {
+                source: sources[0].to_owned(),
+                bytes: b"\r\r\r\r\r\r".to_vec(),
+            },
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::StartLogin { .. })),
+            "the button submits"
+        );
+        let attempt = m.state.login_attempts;
+        (m, attempt)
+    }
+
+    fn step(m: &AppModel, source: &str, step: crate::model::LoginStep) -> crate::model::StepState {
+        m.state.login_progress[source]
+            .state_of(step)
+            .expect("the step is listed")
+    }
+
+    fn login_event(source: &str, attempt: u64, event: crate::model::LoginEvent) -> Msg {
+        Msg::OpResult {
+            result: crate::ui::switcher::OpResult::LoginProgress {
+                source: source.to_owned(),
+                attempt,
+                event,
+            },
+            logged_in: HashSet::new(),
+        }
+    }
+
+    fn login_result(
+        source: &str,
+        attempt: u64,
+        connect: crate::link::unlock::UnlockOutcome,
+    ) -> Msg {
+        Msg::OpResult {
+            result: crate::ui::switcher::OpResult::Login {
+                source: source.to_owned(),
+                login: crate::transport::Login::default(),
+                attempt,
+                outcome: crate::ui::ops::LoginOutcome {
+                    connect,
+                    output: String::new(),
+                    saved: None,
+                    registration: crate::ui::ops::RegistrationOutcome::NotRequested,
+                },
+            },
+            logged_in: HashSet::new(),
+        }
+    }
+
+    fn probed(machine: &str, probe: u64, err: Option<&str>) -> Msg {
+        Msg::HostEvent {
+            event: crate::link::HostEvent::MachineProbed {
+                machine: machine.to_owned(),
+                err: err.map(str::to_owned),
+                shell: None,
+                password_supplied: false,
+                credential_rejection_generation: None,
+                credential_held: false,
+                credential_generation: 0,
+                current_credential_generation: 0,
+                rescan: false,
+                probe,
+            },
+            logged_in: HashSet::new(),
+        }
+    }
+
+    /// A working login whose re-probe got `probe` and found the machine answering.
+    fn logged_in_awaiting_mux(sources: &[&str], probe: u64) -> AppModel {
+        let (mut m, attempt) = submitted_login(sources);
+        let source = sources[0];
+        update(
+            &mut m,
+            login_result(source, attempt, crate::link::unlock::UnlockOutcome::Ok),
+        );
+        update(
+            &mut m,
+            Msg::LoginSettled {
+                source: source.to_owned(),
+                credential_held: false,
+                machine_has_sources: true,
+                probe,
+            },
+        );
+        update(
+            &mut m,
+            probed(crate::session::machine_of(source), probe, None),
+        );
+        m
+    }
+
+    #[test]
+    fn login_steps_advance_from_the_events_the_login_reports() {
+        use crate::model::{LoginEvent, LoginStep, StepState};
+        let (mut m, attempt) = submitted_login(&["pwbox"]);
+        assert_eq!(step(&m, "pwbox", LoginStep::Connect), StepState::Running);
+        assert_eq!(
+            step(&m, "pwbox", LoginStep::Authenticate),
+            StepState::Pending
+        );
+
+        update(
+            &mut m,
+            login_event("pwbox", attempt, LoginEvent::PasswordAsked),
+        );
+        assert_eq!(step(&m, "pwbox", LoginStep::Connect), StepState::Done);
+        assert_eq!(
+            step(&m, "pwbox", LoginStep::Authenticate),
+            StepState::Running
+        );
+
+        let effects = update(
+            &mut m,
+            login_result("pwbox", attempt, crate::link::unlock::UnlockOutcome::Ok),
+        );
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::LoginApplied { .. })));
+        assert_eq!(step(&m, "pwbox", LoginStep::Authenticate), StepState::Done);
+        assert_eq!(step(&m, "pwbox", LoginStep::FindMux), StepState::Running);
+
+        update(
+            &mut m,
+            Msg::LoginSettled {
+                source: "pwbox".to_owned(),
+                credential_held: false,
+                machine_has_sources: true,
+                probe: 9,
+            },
+        );
+        // A probe already in flight, and the source answer it leads to, came before the
+        // login's own probe: neither settles the search.
+        update(&mut m, probed("pwbox", 0, None));
+        answer(&mut m, "pwbox", &["work"], None);
+        assert_eq!(step(&m, "pwbox", LoginStep::FindMux), StepState::Running);
+
+        update(&mut m, probed("pwbox", 9, None));
+        answer(&mut m, "pwbox", &["work"], None);
+        assert!(
+            !m.state.login_progress.contains_key("pwbox"),
+            "a mux answered, so the steps leave with the pane"
+        );
+    }
+
+    #[test]
+    fn detection_that_finds_no_mux_settles_the_search() {
+        use crate::model::{LoginStep, StepState};
+        // The source was blocked at launch, so it is undetected and no longer scanning:
+        // detection's answer is the only one it gets.
+        let mut m = logged_in_awaiting_mux(&["pwbox"], 3);
+        m.state.scanning.clear();
+        update(
+            &mut m,
+            Msg::HostEvent {
+                event: crate::link::HostEvent::Scanned {
+                    source: "pwbox".to_owned(),
+                    detected: None,
+                    err: None,
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        assert_eq!(step(&m, "pwbox", LoginStep::FindMux), StepState::Failed);
+        assert!(
+            !m.state.login_progress["pwbox"].running(),
+            "nothing keeps the frame redrawing"
+        );
+
+        let mut m = logged_in_awaiting_mux(&["pwbox"], 3);
+        m.state.scanning.clear();
+        update(
+            &mut m,
+            Msg::HostEvent {
+                event: crate::link::HostEvent::Scanned {
+                    source: "pwbox".to_owned(),
+                    detected: None,
+                    err: Some("tmux: command not found".to_owned()),
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        assert_eq!(step(&m, "pwbox", LoginStep::FindMux), StepState::Failed);
+        assert_eq!(
+            m.state.login_progress["pwbox"].steps[2].note.as_deref(),
+            Some("tmux: command not found")
+        );
+    }
+
+    #[test]
+    fn discovery_that_finds_no_mux_settles_the_search_and_the_card_takes_its_steps() {
+        use crate::model::{LoginStep, StepState};
+        let mut m = logged_in_awaiting_mux(&["pwbox"], 3);
+        update(
+            &mut m,
+            Msg::HostEvent {
+                event: crate::link::HostEvent::MuxesFound {
+                    machine: "pwbox".to_owned(),
+                    muxes: Ok(Vec::new()),
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        assert_eq!(step(&m, "pwbox", LoginStep::FindMux), StepState::Failed);
+        update(
+            &mut m,
+            Msg::RemoveSource {
+                source: "pwbox".to_owned(),
+                clear_tracking: false,
+            },
+        );
+        assert!(m.state.login_progress.is_empty());
+    }
+
+    #[test]
+    fn steps_belong_to_one_submission_on_one_source() {
+        use crate::link::unlock::{FailureKind, UnlockOutcome};
+        use crate::model::{LoginEvent, LoginStep, StepState};
+        let (mut m, first) = submitted_login(&["box:tmux", "box:zellij"]);
+        assert!(
+            !m.state.login_progress.contains_key("box:zellij"),
+            "another card on the machine has no steps of this login"
+        );
+        // A second submission replaces the first; the first's late reports change
+        // nothing, and its result leaves the newer running handle in place.
+        update(
+            &mut m,
+            Msg::FeedLogin {
+                source: "box:tmux".to_owned(),
+                bytes: b"\r".to_vec(),
+            },
+        );
+        let second = m.state.login_attempts;
+        assert_ne!(first, second);
+        update(
+            &mut m,
+            login_event("box:tmux", first, LoginEvent::PasswordAsked),
+        );
+        assert_eq!(step(&m, "box:tmux", LoginStep::Connect), StepState::Running);
+        update(
+            &mut m,
+            login_result(
+                "box:tmux",
+                first,
+                UnlockOutcome::Failed {
+                    kind: FailureKind::Cancelled,
+                    reason: "cancelled".into(),
+                },
+            ),
+        );
+        assert_eq!(step(&m, "box:tmux", LoginStep::Connect), StepState::Running);
+        assert_eq!(
+            m.state.login_run.as_ref().map(|run| run.attempt),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn settled_steps_leave_once_the_machine_is_looked_at_again() {
+        use crate::link::unlock::{FailureKind, UnlockOutcome};
+        let (mut m, attempt) = submitted_login(&["pwbox"]);
+        update(
+            &mut m,
+            login_result(
+                "pwbox",
+                attempt,
+                UnlockOutcome::Failed {
+                    kind: FailureKind::WrongPassword,
+                    reason: "the password was refused".into(),
+                },
+            ),
+        );
+        assert!(m.state.login_progress.contains_key("pwbox"));
+        // A probe the login did not start is a newer look at the machine.
+        update(
+            &mut m,
+            probed(
+                "pwbox",
+                0,
+                Some("alice@box: Permission denied (publickey)."),
+            ),
+        );
+        assert!(!m.state.login_progress.contains_key("pwbox"));
     }
 }

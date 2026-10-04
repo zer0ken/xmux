@@ -19,31 +19,40 @@ pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
     }
 }
 
-/// Finishes a login the app already ran: takes the connection's verdict, runs the two
-/// checkboxes over the master it left (and only if it left one), and returns the
-/// [`OpResult`] the switcher folds. Pure over `ops` (no switcher state), so it runs in a
-/// detached task off the event loop like [`run_op`].
+/// Finishes a login the app already ran: takes the ssh child's conversation, runs the
+/// pane's two choices after a connection that worked, and returns the [`LoginOutcome`]
+/// the switcher folds. Each follow-up reports through `progress` as it settles, so the pane's
+/// steps advance with the work rather than all at once. Pure over `ops` (no switcher
+/// state), so it runs in a detached task off the event loop like [`run_op`].
 pub async fn run_login_follow_ups(
     source: &str,
     login: &crate::transport::Login,
-    connect: crate::link::unlock::UnlockOutcome,
+    conversation: crate::link::unlock::Conversation,
     write_config: bool,
-    register: Option<KeyRegistration>,
+    register_key: bool,
     ops: &dyn Ops,
-) -> OpResult {
-    let (registration, notes) = if connect.is_ok() {
-        ops.login_follow_ups(source, login, write_config, register)
-            .await
-    } else {
-        (RegistrationOutcome::NotRequested, Vec::new())
-    };
-    OpResult::Login {
-        source: source.to_string(),
-        login: login.clone(),
-        outcome: LoginOutcome {
-            connect,
-            registration,
-            notes,
-        },
+    progress: &(dyn Fn(crate::model::LoginEvent) + Send + Sync),
+) -> LoginOutcome {
+    let connect = conversation.outcome;
+    let mut saved = None;
+    let mut registration = RegistrationOutcome::NotRequested;
+    if connect.is_ok() {
+        if write_config {
+            let result = ops.write_login_stanza(source, login);
+            progress(crate::model::LoginEvent::Saved(result.clone()));
+            saved = Some(result);
+        }
+        if register_key {
+            let register = KeyRegistration {
+                shell: conversation.shell,
+            };
+            registration = ops.register_login_key(source, login, register).await;
+        }
+    }
+    LoginOutcome {
+        connect,
+        output: conversation.output,
+        saved,
+        registration,
     }
 }

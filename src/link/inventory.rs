@@ -169,6 +169,8 @@ pub enum HostEvent {
         credential_generation: u64,
         current_credential_generation: u64,
         rescan: bool,
+        /// The number a login gave the probe it started, or zero for every other probe.
+        probe: u64,
     },
 }
 /// The reader's shared liveness flag the app also reads. The parsed inventory is no

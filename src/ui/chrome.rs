@@ -563,6 +563,9 @@ impl Chrome {
         // the ssh stanza it was reached through, which is what a fix needs; a reachable
         // empty host has no why, so its screen is the keys alone.
         let mut rows: Vec<(ScreenCell, String)> = Vec::new();
+        // The rows before this index are the host facts; on the login pane they fold
+        // under its details choice while it states a failure.
+        let mut facts_end = 0;
         if kind == ViewScreen::SelfSession {
             // The whole screen is the why. No key is offered: nothing the user could
             // press here would make this session showable, and the session is reachable
@@ -590,18 +593,22 @@ impl Chrome {
             // fault. Nothing here is abbreviated to fit - a value too wide hangs under
             // its own rule (see below), because a datum the user came here to read is
             // worth more than a tidy column.
-            let login_report = state.login_reports.get(crate::session::machine_of(source));
-            let reason = login_report
-                .and_then(|report| report.connect.reason().map(str::to_string))
-                .or_else(|| {
-                    state
-                        .groups
-                        .iter()
-                        .find(|g| g.source == source)
-                        .and_then(|g| g.err.clone())
-                })
-                .unwrap_or_else(|| "connection closed".into());
-            rows.push((ScreenCell::Label("reason"), reason));
+            // The login pane states its failure above these rows, as a verdict over ssh's
+            // own text, so only the other screens carry the reason as a row.
+            if kind != ViewScreen::Login {
+                let login_report = state.login_reports.get(crate::session::machine_of(source));
+                let reason = login_report
+                    .and_then(|report| report.connect.reason().map(str::to_string))
+                    .or_else(|| {
+                        state
+                            .groups
+                            .iter()
+                            .find(|g| g.source == source)
+                            .and_then(|g| g.err.clone())
+                    })
+                    .unwrap_or_else(|| "connection closed".into());
+                rows.push((ScreenCell::Label("reason"), reason));
+            }
             if let Some(registration) = state
                 .registration_reports
                 .get(crate::session::machine_of(source))
@@ -688,6 +695,7 @@ impl Chrome {
                 rows.push((ScreenCell::Label("log"), self.log_path.clone()));
             }
             rows.push((ScreenCell::Gap, String::new()));
+            facts_end = rows.len();
         } else {
             if let Some(registration) = state
                 .registration_reports
@@ -717,6 +725,38 @@ impl Chrome {
                 ScreenCell::Key(format!("{p} r")),
                 "re-scan every host".into(),
             ));
+        }
+
+        // The login pane's failure folds the host facts under its details choice: ssh's
+        // whole text and the facts come back together when the user unfolds them.
+        let failure = (kind == ViewScreen::Login)
+            .then(|| state.login_failure(source))
+            .flatten();
+        let unfolded = state
+            .login
+            .as_ref()
+            .filter(|d| d.source == source)
+            .is_some_and(|d| d.details);
+        // While a login's steps run, the facts describe the probe failure that login is
+        // answering, so they stay folded with nothing to unfold them.
+        let steps_running = kind == ViewScreen::Login
+            && state
+                .login_progress
+                .get(source)
+                .is_some_and(crate::model::LoginProgress::running);
+        match &failure {
+            Some(failure) if unfolded => {
+                if !failure.raw.is_empty() {
+                    rows.insert(0, (ScreenCell::Label("ssh output"), failure.raw.clone()));
+                }
+            }
+            Some(_) => {
+                rows.drain(..facts_end);
+            }
+            None if steps_running => {
+                rows.drain(..facts_end);
+            }
+            None => {}
         }
 
         // One column width for keys and labels alike: every row of a screen meets the
@@ -776,11 +816,17 @@ impl Chrome {
             Line::from(Span::styled(format!(" {}", kind.word()), state_style)),
         ];
         // The login pane OWNS the connection values: they sit at the panel's top,
-        // edited in place from the terminal view (no modal, no nav). The focused element
-        // shows a cursor only while the terminal view is focused, so the pane says
-        // whether it is taking keys.
+        // edited in place from the terminal view (no modal, no nav). The inputs come in
+        // two groups, what ssh dials with and what happens after it worked, and a rule
+        // parts them from what the pane reports back: the steps of a login and the
+        // failure it ended in. The focused stop's name is reversed and the focused text
+        // field shows a cursor, both only while the terminal view is focused and no login
+        // runs, so the pane says whether it is taking keys.
         if kind == ViewScreen::Login {
+            use crate::model::{LoginField, LoginStep, StepState};
+            use crate::state::{LoginFocus, Remember};
             let running = state.login_run.as_ref().is_some_and(|l| l.source == source);
+            let taking_keys = focused && !running;
             let defaults = self.login_defaults(source);
             let draft = state.login.as_ref().filter(|d| d.source == source);
             let fallback = crate::state::LoginDraft {
@@ -793,30 +839,50 @@ impl Chrome {
                 ..Default::default()
             };
             let d = draft.unwrap_or(&fallback);
-            // No cursor while the login runs: the pane takes no keys then, and a cursor
-            // would say it does.
-            let cursor = |active: bool| {
-                if active && focused && !running {
-                    "▊"
+            let marked = failure.as_ref().map(|f| f.fields()).unwrap_or_default();
+            // The inputs keep one column of their own, so unfolding the host facts below
+            // the rule never moves a field.
+            let fcw = [
+                "address*",
+                "port*",
+                "username*",
+                "password",
+                "remember",
+                "pubkey",
+            ]
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0);
+            let cursor = |active: bool| if active && taking_keys { "▊" } else { "" };
+            let reversed = |style: Style, active: bool| {
+                if active && taking_keys {
+                    style.add_modifier(Modifier::REVERSED)
                 } else {
-                    ""
+                    style
                 }
             };
-            let label = |text: String| {
-                Span::styled(
-                    format!(" {text:>cw$} "),
-                    Style::default().fg(pal.decoration),
-                )
+            // Only the name inverts, not the padding that right-aligns it.
+            let label = |text: String, active: bool, cause: bool| -> Vec<Span<'static>> {
+                let style = Style::default().fg(if cause { pal.error } else { pal.decoration });
+                let pad = fcw.saturating_sub(text.chars().count());
+                vec![
+                    Span::raw(format!(" {}", " ".repeat(pad))),
+                    Span::styled(text, reversed(style, active)),
+                    Span::raw(" "),
+                ]
             };
             // A field carries its own emptiness: a required one is marked in its label,
             // and an optional one says so in the space its value would occupy, so the
-            // pane never needs a legend to be read.
+            // pane never needs a legend to be read. The field a failure concerns carries
+            // the failure's mark after its value.
             let field = |name: &str,
                          required: bool,
                          value: &str,
                          mask: bool,
                          active: bool,
-                         provenance: &str| {
+                         provenance: &str,
+                         which: LoginField| {
                 let shown = if mask {
                     "•".repeat(value.chars().count())
                 } else {
@@ -834,42 +900,57 @@ impl Chrome {
                 } else {
                     (shown, Style::default().fg(pal.secondary))
                 };
-                Line::from(vec![
-                    label(format!("{name}{}", if required { "*" } else { "" })),
-                    rule.clone(),
-                    Span::styled(
-                        format!(
-                            "{text}{}{}",
-                            cursor(active),
-                            if provenance.is_empty() {
-                                String::new()
-                            } else {
-                                format!("  {provenance}")
-                            }
-                        ),
-                        style,
-                    ),
-                ])
-            };
-            let choice = |name: &str, mark: &str, text: &str, active: bool| {
-                Line::from(vec![
-                    label(name.to_string()),
-                    rule.clone(),
-                    Span::styled(
-                        format!(
-                            "{mark}{}{text}{}",
-                            if mark.is_empty() { "" } else { " " },
-                            cursor(active)
-                        ),
-                        if active {
-                            Style::default().fg(pal.secondary)
+                let cause = marked.contains(&which);
+                let mut spans = label(
+                    format!("{name}{}", if required { "*" } else { "" }),
+                    active,
+                    cause,
+                );
+                spans.push(rule.clone());
+                spans.push(Span::styled(
+                    format!(
+                        "{text}{}{}",
+                        cursor(active),
+                        if provenance.is_empty() {
+                            String::new()
                         } else {
-                            Style::default().fg(pal.decoration)
-                        },
+                            format!("  {provenance}")
+                        }
                     ),
-                ])
+                    style,
+                ));
+                if cause {
+                    spans.push(Span::styled("  ✗", Style::default().fg(pal.error)));
+                }
+                Line::from(spans)
             };
-            use crate::state::{LoginFocus, Remember};
+            // A stop with no name of its own (the second remember option, the button, the
+            // details choice) inverts its text instead.
+            let choice = |name: &str, mark: &str, text: &str, active: bool| {
+                let style = if active {
+                    Style::default().fg(pal.secondary)
+                } else {
+                    Style::default().fg(pal.decoration)
+                };
+                let mut spans = label(name.to_string(), active, false);
+                spans.push(rule.clone());
+                spans.push(Span::styled(
+                    format!("{mark}{}{text}", if mark.is_empty() { "" } else { " " }),
+                    if name.is_empty() {
+                        reversed(style, active)
+                    } else {
+                        style
+                    },
+                ));
+                spans.push(Span::styled(cursor(active), style));
+                Line::from(spans)
+            };
+            let group = |title: &str| {
+                Line::from(Span::styled(
+                    format!(" {title}"),
+                    Style::default().fg(pal.decoration),
+                ))
+            };
             let provenance = |value: &str, original: &str, resolved: &'static str| {
                 if value == original {
                     resolved
@@ -878,6 +959,7 @@ impl Chrome {
                 }
             };
             out.push(Line::from(""));
+            out.push(group("connection"));
             out.push(field(
                 "address",
                 true,
@@ -885,6 +967,7 @@ impl Chrome {
                 false,
                 d.focus == LoginFocus::Address,
                 provenance(&d.address, &d.default_address, defaults.address.provenance),
+                LoginField::Address,
             ));
             out.push(field(
                 "port",
@@ -893,6 +976,7 @@ impl Chrome {
                 false,
                 d.focus == LoginFocus::Port,
                 provenance(&d.port, &d.default_port, defaults.port.provenance),
+                LoginField::Port,
             ));
             out.push(field(
                 "username",
@@ -905,6 +989,7 @@ impl Chrome {
                     &d.default_username,
                     defaults.username.provenance,
                 ),
+                LoginField::Username,
             ));
             out.push(field(
                 "password",
@@ -913,11 +998,13 @@ impl Chrome {
                 true,
                 d.focus == LoginFocus::Password,
                 "",
+                LoginField::Password,
             ));
+            out.push(Line::from(""));
+            out.push(group("after login"));
             // The remember choice appears only once a value differs from what ssh would
             // have used: a stanza repeating what ssh already resolves records nothing.
             if d.changed() {
-                out.push(Line::from(""));
                 let pick = |on: bool| if on { "(•)" } else { "( )" };
                 out.push(choice(
                     "remember",
@@ -932,7 +1019,6 @@ impl Chrome {
                     d.focus == LoginFocus::RememberSshConfig,
                 ));
             }
-            out.push(Line::from(""));
             out.push(choice(
                 "pubkey",
                 if d.pubkey { "[x]" } else { "[ ]" },
@@ -947,6 +1033,117 @@ impl Chrome {
                 out.push(choice("", "", "logging in…  esc to stop", false));
             } else {
                 out.push(choice("", "", "[ login ]", d.focus == LoginFocus::Submit));
+            }
+            out.push(Line::from(""));
+            out.push(Line::from(Span::styled(
+                format!(" {}", "─".repeat(width.saturating_sub(2) as usize)),
+                Style::default().fg(pal.decoration),
+            )));
+            // The steps of this source's last login, while they run and after one of them
+            // failed. A login whose every step worked has handed the pane to its sessions,
+            // so its steps say nothing more.
+            let wrap_w = width.saturating_sub(4).max(1);
+            let progress = state.login_progress.get(source).filter(|p| !p.succeeded());
+            if let Some(progress) = progress {
+                out.push(Line::from(""));
+                for row in &progress.steps {
+                    let name = match row.step {
+                        LoginStep::Connect => match &progress.target {
+                            Some(target) => format!("connect {target}"),
+                            None => "connect".to_string(),
+                        },
+                        LoginStep::Authenticate => format!(
+                            "authenticate{}{}",
+                            progress
+                                .user
+                                .as_ref()
+                                .map(|u| format!(" as {u}"))
+                                .unwrap_or_default(),
+                            if progress.password {
+                                " with the password"
+                            } else {
+                                ""
+                            }
+                        ),
+                        LoginStep::Save => "write address, port, username to ssh config".into(),
+                        LoginStep::RegisterKey => "register my public key".into(),
+                        LoginStep::FindMux => "find mux".into(),
+                    };
+                    let (glyph, glyph_style, text_style) = match row.state {
+                        StepState::Pending => {
+                            (' ', Style::default(), Style::default().fg(pal.decoration))
+                        }
+                        StepState::Running => (
+                            crate::ui::spinner_glyph(self.spinner_frame),
+                            Style::default().fg(pal.warning),
+                            Style::default().fg(pal.secondary),
+                        ),
+                        StepState::Done => (
+                            '✓',
+                            Style::default().fg(pal.accent),
+                            Style::default().fg(pal.secondary),
+                        ),
+                        StepState::Failed => (
+                            '✗',
+                            Style::default().fg(pal.error),
+                            Style::default().fg(pal.error),
+                        ),
+                        StepState::Skipped => (
+                            '·',
+                            Style::default().fg(pal.decoration),
+                            Style::default().fg(pal.decoration),
+                        ),
+                    };
+                    let text = match &row.note {
+                        Some(note) => format!("{name}: {note}"),
+                        None => name,
+                    };
+                    // A note may run over several lines (a summary over its detail), so each
+                    // line wraps on its own, as the verdict's do.
+                    let parts: Vec<String> = text
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .flat_map(|l| wrap_text(l.trim(), wrap_w))
+                        .collect();
+                    for (i, part) in parts.into_iter().enumerate() {
+                        let mark = if i == 0 { glyph } else { ' ' };
+                        out.push(Line::from(vec![
+                            Span::styled(format!(" {mark} "), glyph_style),
+                            Span::styled(part, text_style),
+                        ]));
+                    }
+                }
+            }
+            // The failure reads in one order: the verdict, the field it concerns (marked
+            // above), ssh's own last line dimmed, and the choice that unfolds the rest.
+            if let Some(failure) = &failure {
+                out.push(Line::from(""));
+                for (i, line) in failure.verdict.lines().enumerate() {
+                    for (j, part) in wrap_text(line, wrap_w).into_iter().enumerate() {
+                        let mark = if i == 0 && j == 0 { "✗" } else { " " };
+                        out.push(Line::from(vec![
+                            Span::styled(format!(" {mark} "), Style::default().fg(pal.error)),
+                            Span::styled(
+                                part,
+                                Style::default().fg(if i == 0 { pal.error } else { pal.secondary }),
+                            ),
+                        ]));
+                    }
+                }
+                if let Some(last) = failure.raw.lines().rev().find(|l| !l.trim().is_empty()) {
+                    for part in wrap_text(last.trim(), wrap_w) {
+                        out.push(Line::from(Span::styled(
+                            format!("   {part}"),
+                            Style::default().fg(pal.decoration),
+                        )));
+                    }
+                }
+                out.push(choice(
+                    "",
+                    if d.details { "[x]" } else { "[ ]" },
+                    "details",
+                    d.focus == LoginFocus::Details,
+                ));
             }
         }
         out.push(Line::from(""));

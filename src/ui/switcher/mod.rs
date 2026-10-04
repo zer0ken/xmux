@@ -905,6 +905,13 @@ impl Switcher {
                 state.failure_runs.remove(&source);
             }
         }
+        // The mux search a working login started ends with the first source answer after
+        // the login's own probe, whichever way that answer went.
+        let answer = match &err {
+            None => crate::model::MuxAnswer::Found,
+            Some(reason) => crate::model::MuxAnswer::Failed(reason.clone()),
+        };
+        state.login_mux_answered(crate::session::machine_of(&source), &answer);
         let existing = state.groups.iter().position(|g| g.source == source);
         match existing {
             Some(i) => {

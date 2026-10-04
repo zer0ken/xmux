@@ -436,8 +436,12 @@ no function, and no test, so renaming code is never a documentation change.
   unreachable. A
   blocked host keeps its card whatever hide-unreachable says, renders the `?` mark, and
   shows the pane above the same failure facts the unreachable screen states. What it was
-  blocked on is not in its state word: the reason row carries a plain-language summary
-  followed by ssh's sanitized detail.
+  blocked on is not in its state word: the pane states a plain-language verdict, marks
+  with `✗` the input field the failure concerns (the address for a name that does not
+  resolve or a host key, the port for a refused connection, the password for a refused
+  password, the username and password for a refused authentication), and shows ssh's
+  own last line dimmed under it. A details choice unfolds ssh's whole sanitized text
+  together with the failure facts, which stay folded until it is picked.
 - **FR-B27** - The LOGIN PANE holds the three values ssh will not ask for and must know
   before it dials - the address, the port, and the username - with an optional masked
   password beside them. Every value starts at what ssh WOULD use. An address, port, or
@@ -450,9 +454,24 @@ no function, and no test, so renaming code is never a documentation change.
   a modal and nothing in the nav drives it. Enter means one thing throughout: submit from
   the button, pass the focus on from anywhere else. Space picks a choice, Tab and the
   vertical arrows walk the stops, and an escape sequence xmux does not act on is consumed
-  whole rather than landing in a field as text. While a login runs the pane keeps every
-  value on screen and says so in place of the button it was submitted from, taking no key
-  but the lone Esc that ends the attempt, since there is nothing left to fill in.
+  whole rather than landing in a field as text. The connection values and the two choices
+  stand in two titled groups, the focused stop's name is shown in reverse video while the
+  pane takes keys, and a rule parts the inputs from the login's steps and failure below
+  it. The details choice is a stop only while the pane states a failure. While a login
+  runs the pane keeps every value on screen and says so in place of the button it was
+  submitted from, taking no key but the lone Esc that ends the attempt, since there is
+  nothing left to fill in. Below the rule it lists the steps in the order they run:
+  connect, authenticate, the selected recording and key registration, and find mux. Each
+  step is pending, running with the spinner, done `✓`, failed `✗`, or skipped `·`, and
+  changes only when the login reports it: the password handed to ssh ends the connect
+  step, the ssh verdict settles both connection steps, each follow-up settles its own, and
+  find mux settles on the answer to the re-probe the working login started, then on the
+  first mux answer after it: a mux answering, no mux answering, or the search failing.
+  A failed connect or authenticate step marks every later step skipped. A failed
+  recording does not stop the key registration or find mux, and a key registration that
+  declines to run is itself skipped. The steps belong to one submission on one host
+  card, so a report from a replaced submission changes nothing. They stay on screen with
+  the failure until the machine is probed again, and leave once a mux answers.
 - **FR-B28** - Submitting creates a pending password in process memory and runs only the
   submitted login with it. Success promotes that exact credential for the machine only
   when that login actually requested the password;

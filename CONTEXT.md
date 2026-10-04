@@ -272,7 +272,8 @@ UI elements a user perceives as distinct things:
 - spinner - the braille activity glyph marking the work still in flight. One
   glyph and one frame counter for the whole UI, so every marker on screen turns
   together. It stands on a SCANNING host's card, trailing the line in the same place
-  every scanning card uses, and on the hint bar's global scan count; a settled session
+  every scanning card uses, on the hint bar's global scan count, and on the login pane's
+  running step; a settled session
   card never spins, because a session is a plain session card the moment its host
   resolves.
 - status - a host-state card's state: `?` for login needed, `▲` for unreachable,
@@ -287,9 +288,10 @@ UI elements a user perceives as distinct things:
   key under a strict policy stays unreachable and names a command that displays its fingerprint. Remote command permissions, name resolution,
   connectivity failures, and a changed host key stay unreachable. A blocked card keeps
   the warning-coloured `?` mark, is never hidden by hide-unreachable (it is the one entry to the login pane), and
-  shows that pane above the same failure facts the unreachable screen states. What it was
-  blocked ON is not in its state word: the reason row carries ssh's own sentence. The
-  transport diagnoses the ssh text and the inventory group exposes the typed failure.
+  shows that pane above the same failure facts the unreachable screen states, folded under
+  the pane's details choice. What it was blocked ON is not in its state word: the pane
+  states a verdict over ssh's own sentence. The transport diagnoses the ssh text and the
+  inventory group exposes the typed failure.
 - login pane - the form a blocked host's panel opens, holding the three values ssh will
   not ask for and must know before it dials: the address, the port, and the username. A
   masked password field is optional beside them. Every value starts at what ssh WOULD
@@ -301,9 +303,13 @@ UI elements a user perceives as distinct things:
   the space its value would occupy. Two choices follow: whether to record the values, and
   whether to register this machine's public key on the host. The record choice appears
   only once a value differs from what ssh would have used, since a stanza repeating what
-  ssh already resolves records nothing. Enter means one thing throughout - submit from
-  the button, pass the focus on from anywhere else - and Space picks a choice. It is not
-  a modal and nothing in the nav drives it. The submitted password is held only in xmux
+  ssh already resolves records nothing. The connection values and the two choices are two
+  titled groups, the focused stop's name is reversed while the pane takes keys, and a rule
+  parts the inputs from the login's steps and its failure. A failure reads as a verdict in
+  plain words, a `✗` on the field it concerns, ssh's own last line dimmed, and a details
+  choice that unfolds ssh's whole text and the host facts. Enter means one thing
+  throughout - submit from the button, pass the focus on from anywhere else - and Space
+  picks a choice. It is not a modal and nothing in the nav drives it. The submitted password is held only in xmux
   process memory for that machine and is never logged, rendered, serialized, placed in a
   command argument, child environment, or file. The held credential allocation and the
   current password-field allocation are overwritten in full when released. Transient
@@ -322,7 +328,17 @@ UI elements a user perceives as distinct things:
   refuses every other prompt. The submitted login
   accepts a new host key only when the effective ssh policy is `ask`, never weakens `yes`,
   and refuses a changed key; background commands keep the user's host-key policy. The pane says a
-  login is under way in place of the button and takes no input but Esc. Its result keeps
+  login is under way in place of the button and takes no input but Esc. Below the rule it
+  lists the login's steps in the order they run: connect, authenticate, the selected
+  recording and key registration, then find mux, the re-probe a working login starts. Each
+  step is pending, running (the spinner), done (`✓`), failed (`✗`), or skipped (`·`), and
+  moves only on what the login reports: askpass handing over the password ends the connect
+  step, the ssh child's verdict, each follow-up's own outcome, and the answer to the
+  re-probe the login itself started followed by the first mux answer after it: a mux
+  answering, no mux answering, or the search failing. The steps belong to one submission
+  on one host card; a report from a replaced submission changes nothing. A key login shows
+  no boundary between connecting and authenticating, so its connect step runs until the
+  verdict. Its result keeps
   ssh's own sanitized, bounded diagnostic and a failure category. A later probe cannot
   replace that login diagnosis. A refusal that did not receive the held password remains
   visible. A refused password, pending-login cancellation, roster removal, or
