@@ -5,12 +5,15 @@ use crate::session::Session;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailureKind {
     Blocked,
+    ListFailed,
     Unreachable,
 }
 
 impl FailureKind {
     pub fn from_error(error: &str) -> Self {
-        if crate::transport::diagnostic::requires_login(error) {
+        if error.starts_with("invalid ") && error.contains(" session listing:") {
+            Self::ListFailed
+        } else if crate::transport::diagnostic::requires_login(error) {
             Self::Blocked
         } else {
             Self::Unreachable
@@ -119,6 +122,13 @@ mod tests {
         assert_eq!(
             group("ssh: connect to host prod port 22: Connection refused").failure(),
             Some(FailureKind::Unreachable)
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                group("invalid tuios session listing: expected value at line 1 column 1").failure()
+            ),
+            "Some(ListFailed)"
         );
         assert_eq!(
             Group {

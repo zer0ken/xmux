@@ -25,6 +25,10 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+pub(crate) fn interaction_key_style() -> Style {
+    Style::default().add_modifier(Modifier::BOLD)
+}
+
 /// The semantic colour set. One field per UI role - callers name the role, never
 /// a hue, so the assignments below stay changeable in one place. Every field is an
 /// ANSI-16 slot (see the module doc) except the one the user names; a `[ui]` key can
@@ -49,8 +53,8 @@ pub(crate) struct Palette {
     /// scroll-overflow cue (`« n more` / `n more »`). All the quiet marks a card needs
     /// to read apart without being part of any level.
     pub decoration: Color,
-    /// In-flight and special-state marks: the scanning spinner, the unreachable `⚠`
-    /// and any `!` status character.
+    /// In-flight and actionable-state marks: the scanning spinner and login-needed
+    /// glyph.
     pub warning: Color,
     /// Failure state: error text and the refusal bar's background.
     pub error: Color,

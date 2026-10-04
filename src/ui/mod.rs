@@ -26,3 +26,31 @@ const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧
 pub(crate) fn spinner_glyph(frame: usize) -> char {
     SPINNER[frame % SPINNER.len()]
 }
+
+#[cfg(test)]
+mod tests {
+    use unicode_width::UnicodeWidthChar;
+
+    #[test]
+    fn persistent_ui_glyphs_stay_on_the_safe_one_cell_allow_list() {
+        const SAFE: &[char] = &['❯', '✓', '✗', '⠋', '╭', '▲', '?', '…'];
+        let persistent = [
+            crate::ui::switcher::SELECTED_MARK.chars().next().unwrap(),
+            crate::ui::chrome::BLOCK_MARK.chars().next().unwrap(),
+            crate::ui::chrome::UNREACHABLE_MARK.chars().next().unwrap(),
+            crate::ui::chrome::LIST_FAILED_MARK.chars().next().unwrap(),
+            crate::ui::switcher::MIDDLE_ELLIPSIS,
+        ];
+        for glyph in persistent
+            .into_iter()
+            .chain(std::iter::once(super::SPINNER[0]))
+        {
+            assert!(SAFE.contains(&glyph), "unsafe UI glyph {glyph:?}");
+            assert_eq!(
+                UnicodeWidthChar::width(glyph),
+                Some(1),
+                "wide UI glyph {glyph:?}"
+            );
+        }
+    }
+}

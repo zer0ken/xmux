@@ -464,6 +464,9 @@ fn print_outcome(label: &str, outcome: Result<usize, String>) {
             crate::model::FailureKind::Blocked => {
                 println!("  {label}: LOGIN REQUIRED — {e}")
             }
+            crate::model::FailureKind::ListFailed => {
+                println!("  {label}: LIST FAILED: {e}")
+            }
             crate::model::FailureKind::Unreachable => {
                 println!("  {label}: UNREACHABLE — {e}")
             }

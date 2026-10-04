@@ -131,7 +131,8 @@ no function, and no test, so renaming code is never a documentation change.
   under a non-selectable `{host}/{mux}` SECTION TITLE that names the whole group once.
   The list is flat, with
   no window or pane rows: xmux aggregates and switches, and the mux itself already shows
-  its own windows, so a card has nothing to add below the session name.
+  its own windows, so a card has nothing to add below the session name. A name that
+  exceeds its card keeps both its beginning and end with a middle ellipsis.
 - **FR-B2** - Render-first: the source skeleton paints instantly; each source's
   sessions stream in independently.
 - **FR-B3** - The terminal view shows the confirmed session's live grid and follows
@@ -154,29 +155,31 @@ no function, and no test, so renaming code is never a documentation change.
   to be carried into one at a time, and the card step still reaches each of them. The
   category is left from any card of it, so a selection deep inside the band steps
   straight out. Both steps wrap, and both mean the same thing in either layout, since
-  neither is defined by where a card sits on screen.
+  neither is defined by where a card sits on screen. While filter input is open, its
+  line states the match count and how many matching hosts are normally hidden, and the
+  matching characters on cards are bold. Enter keeps the filter; Esc restores the
+  opening filter. With input closed, Esc clears an active filter.
 - **FR-B5** - Surveying without committing is first-class: xmux is a switcher, not a
   session owner. Quitting (`prefix q`, or the ctl `quit` verb) leaves the current
   mux session untouched: it is never killed or altered by exiting.
 - **FR-B6** - Under a filter, `Enter` attaches the **visible (filtered)** session,
   never a filtered-out one, even when a host row is selected.
-- **FR-B7** - A card that is WAITING turns ONE spinner trailing its line, in the
-  same place whatever the host has or has not resolved, so every scanning card reads as
-  the same thing loading and none leaves a blank second row. The nav's scan progress
-  turns the same spinner on the same frame. A session is a plain session card from the
-  moment its host resolves - no card spins for a resolved session. A card that has
-  SETTLED reads a
-  word only when it has one to carry: an unreachable host carries its `⚠` mark after
-  the host name, while a reachable empty host is a single host row with
-  no status word, and its view screen states `no sessions`. A host-state card claims a
+- **FR-B7** - Every host-state card reserves one fixed-width state-glyph slot. A card
+  that is WAITING turns one spinner there, so the animation never shifts the name. The
+  nav's scan progress turns the same spinner on the same frame. A session is a plain
+  session card from the moment its host resolves. Settled states use `?` for login
+  needed, `▲` for unreachable, `✗` for a listing failure, and a blank slot for a
+  reachable empty host. These three failure glyphs use the warning, error, and primary
+  ANSI-16 palette roles respectively. An unselected card carries only the glyph; the
+  selected card adds `login needed`, `unreachable`, `list failed`, `no sessions`, or
+  `scanning`. A host-state card claims a
   mux only when the mux is CONFIRMED: a settled reachable host's enumeration answered
   through its mux, and a source id that names its own mux was resolved from what the
   machine actually serves. A bare-id host that is unreachable or still scanning claims
   none - the card reads the host alone.
-  The word is all a card
-  carries: WHY a host failed is stated on
-  its view screen, which has the room to keep a tool's diagnostic whole, while a card
-  is only as wide as the nav and could carry no more than a cut-down copy of it.
+  WHY a host failed is stated on its view screen, which has the room to keep a tool's
+  diagnostic whole, while a card is only as wide as the nav and could carry no more than
+  a cut-down copy of it.
 - **FR-B8** - The session xmux is ITSELF running in is never mirrored into the terminal
   view: showing it attaches a second client to the session that HOLDS xmux, which moves
   the user's own client and paints xmux inside itself. The refusal is on the terminal-view
@@ -211,7 +214,8 @@ no function, and no test, so renaming code is never a documentation change.
   `auto-dark`, reported by `xmux doctor`). The session level reads BOLD so the level a
   user actually picks stands off the text parts of the same line; the
   hint bar keys read its own `bar_accent` slot, because a slot that reads on the cards
-  may not read on the bar's own background. What the
+  may not read on the bar's own background. Every interaction screen renders key tokens
+  in the same bold shape. What the
   sixteen slots cannot say is said with an attribute: the selected card is REVERSE VIDEO,
   the terminal swapping its own pair, which is what a theme itself means by "selected".
   A background xmux picked instead would be wrong on every theme it was not picked for,
@@ -381,7 +385,7 @@ no function, and no test, so renaming code is never a documentation change.
   it, and any other difference is read as sessions made or ended.
 
 - **FR-B24** - The nav hides the hosts no scan has reached: an unreachable host takes no
-  card by default, and `[ui] hide-unreachable` (default true) turns the hiding off. The
+  card by default, and `[ui] hide-unreachable` (default true) controls that hiding. The
   filter naming a hidden host brings its card back, and that named card is the one entry
   to its unreachable screen. An empty filter hides every unreachable host, and a filter
   matching nothing does not bring them back through the no-match fallback that shows the
@@ -392,7 +396,9 @@ no function, and no test, so renaming code is never a documentation change.
   because it is actionable, and a credential-backed host is kept while its requested
   result is pending. The exemption ends when an authentication refusal, roster removal,
   broker outage, or process exit makes the credential unavailable and is per machine, since a login authenticates
-  the machine and not the one mux whose card carried the pane.
+  the machine and not the one mux whose card carried the pane. A listing parse failure
+  proves that the host answered, so its `✗` card remains visible and its host screen
+  states the parser reason.
 - **FR-B25** - The nav attaches on one of FOUR sides of the terminal view - a left or
   right column, a top or bottom band - and the placement is a user choice at two layers:
   a single `[ui] nav-position` setting (default `left`) names the placement when nothing
@@ -430,7 +436,9 @@ no function, and no test, so renaming code is never a documentation change.
   password beside them. Every value starts at what ssh WOULD use. An address, port, or
   user from OpenSSH's effective configuration wins; the matching stanza is the fallback
   when OpenSSH cannot report it. Missing values use the address a provider
-  reported else the host's own name, port 22, and this machine's account name. A required field is marked in its
+  reported else the host's own name, port 22, and this machine's account name. Each
+  field shows whether its value came from ssh configuration, discovery, a default, the
+  host name, the local account, or an edit. A required field is marked in its
   label and an empty optional one says so in the space its value would occupy. It is not
   a modal and nothing in the nav drives it. Enter means one thing throughout: submit from
   the button, pass the focus on from anywhere else. Space picks a choice, Tab and the
@@ -504,6 +512,11 @@ no function, and no test, so renaming code is never a documentation change.
   `administrators_authorized_keys` when the host's sshd reads an Administrators member's
   keys from there and the account is one. Either form adds the line only when it is
   absent, and an ed25519 pair is generated first when the machine has no key to send.
+- **FR-B31** - Persistent UI symbols are conventional glyphs that OS-default terminal
+  fonts render in one cell without emoji presentation. The vocabulary includes `❯`,
+  `✓`, `✗`, braille spinner frames led by `⠋`, box drawing led by `╭`, `▲`, `?`, and
+  `…`. A terminal smaller than 24 columns by 4 rows renders only a size screen naming
+  the required and current dimensions, so the nav and terminal view never overlap.
 
 ## C. Switching (the keystone)
 
@@ -522,8 +535,9 @@ no function, and no test, so renaming code is never a documentation change.
   input already targets the fresh attachment, and the canonical selection is synced
   immediately.
 - **FR-C3** - Source degradation is graceful, never a silent loss: an unreachable source
-  is marked `⚠ unreachable`, and its view screen states everything known about the
-  failure rather than leaving the user with a message alone - the reason its transport
+  is marked `▲` and gains the word `unreachable` when selected, and its view screen states
+  everything known about the failure rather than leaving the user with a message alone -
+  the reason its transport
   gave, how many failures in a row it is, the mux binary asked for, how the machine is
   addressed and the wait that bounds reaching it, the socket, the session-listing command
   itself (spelled so it can be run by hand outside xmux), the PROVIDER that put that host
@@ -723,7 +737,8 @@ nothing to switch to until one exists.
 - **UC-4, find one session among many then go.** Filter to narrow, Enter on the
   visible match. *(FR-B4, FR-B6)*
 - **UC-5, the remote is down and I am not left in the dark.** An unreachable source shows
-  `⚠ unreachable`; a failed attach is logged and the nav stays usable.
+  `▲`, adds `unreachable` when selected, and keeps the reason on its host screen; a
+  failed attach is logged and the nav stays usable.
   *(FR-A2, FR-B7, FR-C4)*
 - **UC-6, deep in a remote, get back home.** Native detach (`prefix d`) inside the
   remote returns control to the local app's split view; pick local or another host.

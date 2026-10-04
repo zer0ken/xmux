@@ -26,7 +26,49 @@ const SSH_PROFILE_TIMEOUT: Duration = Duration::from_secs(3);
 const SCAN_TIMEOUT: Duration = crate::mux::POLL_SWEEP_BUDGET;
 const DETAIL_TIMEOUT: Duration = crate::mux::POLL_SWEEP_BUDGET;
 
-pub type LoginDefaults = (String, String, String);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginValue {
+    pub value: String,
+    pub provenance: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginDefaults {
+    pub address: LoginValue,
+    pub port: LoginValue,
+    pub username: LoginValue,
+}
+
+impl LoginDefaults {
+    pub fn fallback(host: &str) -> Self {
+        Self {
+            address: LoginValue {
+                value: host.to_string(),
+                provenance: "host name",
+            },
+            port: LoginValue {
+                value: "22".into(),
+                provenance: "default",
+            },
+            username: LoginValue {
+                value: String::new(),
+                provenance: "",
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod login_defaults_tests {
+    use super::*;
+
+    #[test]
+    fn fallback_does_not_name_a_source_for_an_empty_username() {
+        let defaults = LoginDefaults::fallback("prod");
+        assert!(defaults.username.value.is_empty());
+        assert!(defaults.username.provenance.is_empty());
+    }
+}
 /// Everything a config resolution decides about WHICH sources exist.
 ///
 /// One value because every field answers the same question from the same read of config
@@ -1698,11 +1740,20 @@ mod tests {
                 host_addresses: [("prod".to_string(), "100.87.27.26".to_string())].into(),
                 login_defaults: [(
                     "prod".to_string(),
-                    (
-                        "100.87.27.26".to_string(),
-                        "22".to_string(),
-                        "dev".to_string(),
-                    ),
+                    LoginDefaults {
+                        address: LoginValue {
+                            value: "100.87.27.26".into(),
+                            provenance: "from discovery",
+                        },
+                        port: LoginValue {
+                            value: "22".into(),
+                            provenance: "default",
+                        },
+                        username: LoginValue {
+                            value: "dev".into(),
+                            provenance: "from ssh config",
+                        },
+                    },
                 )]
                 .into(),
                 ssh_stanzas: [("prod".to_string(), "Host prod\n    User dev\n".to_string())].into(),
@@ -1743,11 +1794,7 @@ mod tests {
         );
         assert_eq!(
             fresh.login_defaults.get("prod"),
-            Some(&(
-                "100.87.27.26".to_string(),
-                "22".to_string(),
-                "dev".to_string(),
-            )),
+            env.roster().login_defaults.get("prod"),
             "the login pane still offers the defaults resolved for the machine"
         );
         assert_eq!(

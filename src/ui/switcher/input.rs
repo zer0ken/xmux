@@ -132,6 +132,7 @@ impl Switcher {
                 // live edit made while the input was open.
                 input.restore_filter = Some(state.filter.clone());
                 state.modal = Some(Modal::Input(Box::new(input)));
+                self.update_filter_label(state);
             }
             // New is opened by `open_new` and Jump by `open_jump` (both capture context
             // the mode alone does not carry). The unlock is not a modal: it lives in the
@@ -246,6 +247,57 @@ impl Switcher {
         }
         state.filter = filter;
         self.rebuild(state);
+    }
+
+    pub(super) fn update_filter_label(&self, state: &mut crate::state::State) {
+        let normally_visible = if self.hide_unreachable {
+            crate::ui::tree::drop_hidden_unreachable(
+                &state.groups,
+                &state.scanning,
+                &state.logged_in,
+                "",
+            )
+        } else {
+            state.groups.clone()
+        };
+        let filter_visible = if self.hide_unreachable {
+            crate::ui::tree::drop_hidden_unreachable(
+                &state.groups,
+                &state.scanning,
+                &state.logged_in,
+                &state.filter,
+            )
+        } else {
+            state.groups.clone()
+        };
+        let filtered = crate::ui::tree::filter_groups(&filter_visible, &state.filter);
+        let matches = filtered
+            .iter()
+            .map(|group| {
+                if group.err.is_some() || group.sessions.is_empty() {
+                    1
+                } else {
+                    group.sessions.len()
+                }
+            })
+            .sum::<usize>();
+        let hidden = if self.hide_unreachable {
+            filtered
+                .iter()
+                .filter(|group| !normally_visible.iter().any(|g| g.source == group.source))
+                .count()
+        } else {
+            0
+        };
+        if let Some(Modal::Input(input)) = state.modal.as_mut() {
+            if input.mode == InputMode::Filter {
+                input.label = format!(
+                    "filter sessions · {matches} {} · {hidden} hidden {}",
+                    if matches == 1 { "match" } else { "matches" },
+                    if hidden == 1 { "host" } else { "hosts" }
+                );
+            }
+        }
     }
 
     /// Returns the selection to the card a cancelled jump started from, matched by

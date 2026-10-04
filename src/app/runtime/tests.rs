@@ -593,7 +593,7 @@ fn a_blocked_host_shows_the_login_view_screen() {
         &crate::ui::switcher::RenderPlan::default(),
     );
     assert!(
-        out.contains("login required"),
+        out.contains("login needed"),
         "the login view names its state:\n{out}"
     );
     assert!(
@@ -723,7 +723,7 @@ async fn host_exited_with_no_sessions_marks_empty_not_unreachable() {
     let mut state = crate::state::State::from_sources(vec!["jupiter06".into()]);
     let mut switcher = Switcher::from_sources(&mut state);
     let mut connected: HashSet<String> = HashSet::new();
-    // A reachable host whose mux has no server: "no sessions" → (empty), not ⚠.
+    // A reachable host whose mux has no server is empty, not unreachable.
     assert!(
         !note_host_exited(
             &mut switcher,

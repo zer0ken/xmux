@@ -208,11 +208,11 @@ UI elements a user perceives as distinct things:
   accent and stays bold. The accent belongs to the LOWEST level the card displays:
   the session name on a session card, the mux on a host-state card that has a mux to
   name. A section title reads in the quiet header role (its `{host}/{mux}` and its
-  trailing rule), one step below the cards. The one mark that keeps its own colour is
-  the unreachable host's `⚠`, which stays danger yellow as a failure, and the scanning
-  spinner stays pending yellow. A settled host-state card is a
-  single host row: the unreachable one carries the `⚠` mark after its host name, and
-  a reachable empty host's card carries no word at all (its screen states "no sessions").
+  trailing rule), one step below the cards. Each state glyph keeps its own colour:
+  login needed uses `?` in the warning role, unreachable uses `▲` in the error role,
+  and a listing failure uses `✗` in the primary role. The scanning spinner stays in
+  the pending role. Every host-state card reserves one cell for its glyph. Only the
+  selected card adds its state word; unselected cards retain the glyph alone.
   A host-state card claims a mux only when the mux is CONFIRMED - a settled reachable
   host's enumeration answered through its mux, and a source id that names its own mux
   was resolved from what the machine actually serves; a section title's mux is
@@ -268,27 +268,27 @@ UI elements a user perceives as distinct things:
   every scanning card uses, and on the hint bar's global scan count; a settled session
   card never spins, because a session is a plain session card the moment its host
   resolves.
-- status - a host-state card's state once it has SETTLED: the unreachable host's `⚠`
-  mark riding after its host name, the blocked host's `?` mark, or nothing at all on
-  a reachable empty host
-  (whose screen states "no sessions"); a card still scanning carries the spinner
-  instead, because its spinner already says so. Not to be confused with the hint bar
+- status - a host-state card's state: `?` for login needed, `▲` for unreachable,
+  `✗` for a listing failure, a blank glyph slot for a reachable empty host, or the
+  spinner while scanning. Only the selected card adds the corresponding state word.
+  Not to be confused with the hint bar
   (below) or the `chrome`.
 - blocked - a host ssh refused for a reason the submitted login answers, a state apart
   from unreachable. ssh's final account-and-host authentication line enters this state,
   and so does a host-key verification failure for a host with no recorded key when the
   effective policy is `ask`, since the submitted login can accept that key. An unknown
   key under a strict policy stays unreachable and names a command that displays its fingerprint. Remote command permissions, name resolution,
-  connectivity failures, and a changed host key stay unreachable. A blocked card keeps the `?` mark (warning, like unreachable's
-  `⚠`), is never hidden by hide-unreachable (it is the one entry to the login pane), and
+  connectivity failures, and a changed host key stay unreachable. A blocked card keeps
+  the warning-coloured `?` mark, is never hidden by hide-unreachable (it is the one entry to the login pane), and
   shows that pane above the same failure facts the unreachable screen states. What it was
   blocked ON is not in its state word: the reason row carries ssh's own sentence. The
   transport diagnoses the ssh text and the inventory group exposes the typed failure.
 - login pane - the form a blocked host's panel opens, holding the three values ssh will
   not ask for and must know before it dials: the address, the port, and the username. A
   masked password field is optional beside them. Every value starts at what ssh WOULD
-  use. Address, port, and user come from OpenSSH's effective configuration when present;
-  missing values use a provider address or host name, port 22, and this machine's account
+  use. Address, port, and user come from OpenSSH's effective configuration when present,
+  and each field states that provenance beside its value. Missing values use a provider
+  address or host name, port 22, and this machine's account
   name. Provisioning resolves those values and the matching ssh stanza before the app
   supplies them to the chrome. A required field is marked in its label; an empty optional one says so in
   the space its value would occupy. Two choices follow: whether to record the values, and
@@ -450,8 +450,10 @@ UI elements a user perceives as distinct things:
   which scans a source for sessions, and from the host axis, which reaches one.
 - filter - the type-to-filter input over the nav list. It applies as you type: each
   edit re-filters the cards, the selection holds its card while that survives and
-  lands on the first remaining card otherwise, and Esc restores the filter the input
-  opened with. A host hidden from the nav (`[ui] hide-unreachable`) shows its card
+  lands on the first remaining card otherwise. The input states the total matches and
+  how many matching hosts are normally hidden, and matching characters are bold.
+  Esc restores the filter the input opened with; with the input closed, Esc clears an
+  active filter. A host hidden from the nav (`[ui] hide-unreachable`) shows its card
   while the filter names it.
 - flash - a transient notice or error line shown in the hint bar (e.g. a refused
   action's reason). It goes away on the next tree key, and after ten seconds for a user
@@ -564,6 +566,30 @@ value on a card.
 - A card states WHAT something is; WHY it is that way is the screen's. A
   card that cannot back a word omits it, and a value that was never
   confirmed is never presented as one.
+
+### Minimal Persistent Surface
+
+The always-visible card surface contains names, numbers, one state glyph, the selection
+mark, and the resting `C-g` prefix only. Long names preserve their beginning and end
+with a middle ellipsis rather than displacing state or navigation cells.
+
+### Helpful Interaction Surface
+
+An interaction surface spends the available space on state words, counts, the next
+key, and complete reasons or solutions. The selected card names its state, an open
+filter names total matches and matches from hidden hosts, and a host screen keeps the
+failure reason whole.
+
+### Four-Position Grammar
+
+The nav uses the same card, status, selection, filter, and key grammar at left, top,
+right, and bottom. Placement changes geometry, not vocabulary or interaction shape.
+
+### Terminal-Safe Shape Vocabulary
+
+Persistent UI symbols are conventional one-cell glyphs rendered by OS-default terminal
+fonts without emoji presentation. The allowed vocabulary includes `❯`, `✓`, `✗`,
+braille spinner frames led by `⠋`, box drawing led by `╭`, `▲`, `?`, and `…`.
 
 ## Architecture - the orthogonal design
 
