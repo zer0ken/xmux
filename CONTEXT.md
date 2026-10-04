@@ -120,13 +120,13 @@ UI elements a user perceives as distinct things:
   pressed here and a muted cell names a datum. No value on a screen is shortened to fit
   its column: one too wide hangs under the same rule, a multi-line one keeps its lines,
   and a control character is written as its escape rather than printed as nothing. The
-  UNREACHABLE state states everything known about the failure, in reading order: the
-  reason its transport gave, how many failures in a row it is, then what was asked and
-  over what (the mux binary, how the machine is addressed and the wait that bounds it,
-  the socket, and the session-listing command itself, spelled so it can be run by hand),
-  then the provider that put the host on the roster, the ssh stanza it was reached
-  through, what the OTHER muxes on that same machine answered, and the log file holding
-  the full history - then the rescan key. The BLOCKED state states the same failure
+  UNREACHABLE leads with a plain verdict carrying the last successful reach when
+  known, then the failure run and the keys to check this host or every host.
+  Its details choice unfolds everything known about the failure: the transport reason,
+  what was asked and over what (the mux binary, how the machine is addressed and the
+  wait that bounds it, the socket, and the session-listing command itself), the roster
+  provider, the ssh stanza, what other muxes on that machine answered, and the log path.
+  The BLOCKED state states the same failure
   facts and adds the login pane above them; the host stays blocked on any failed login
   and re-probes only itself on a successful one. The EMPTY state's rows are the keys that start a session or rescan. A host
   still scanning shows a monochrome Braille X rotation in the terminal view only when
@@ -161,19 +161,21 @@ UI elements a user perceives as distinct things:
   named once, on the section title, resolved at enumeration so several muxes on one
   host stay distinguishable. The loading card is gone: a session is a plain session
   card from the moment its host resolves.
-- section title - the non-selectable `{host}/{mux}` header row a source's session
-  cards hang under, dim (the decoration role) with nothing after it, its cards
+- section title - the `{host}/{mux}` header row a source's session
+  cards hang under, bold in the decoration role with nothing after it, its cards
   indented one cell under it at every nav position. A band column that continues a
   split section repeats it on its top row followed by `…`. It is not a card: it carries
-  no number, the selection can never land on it, and a click on it or on the indent
-  selects nothing. `n` on one of its session cards creates a sibling in the same
-  section.
+  no number and stays outside ordinary card stepping and number jumps. A click on
+  the title or `i` from one of its sessions selects it and opens the host information
+  screen; the indent selects nothing. The screen states the session count, how the
+  list updates, and its last successful reach. `n` on one of the session cards
+  creates a sibling in the same section.
 - card focus - the one thing a card's rendering changes when it gains the selection:
   the number in its address column becomes the `❯` mark. It does not grow a context
   line, it does not change height, and its session name keeps the same column - a name
   that shifts as the cursor passes is what makes a list twitch. The selected look is
   the inverted rect (see selection highlight) plus the mark, nothing more. A section
-  title never takes either.
+  title takes the selected mark and inversion when selected, but no number.
 - nav size - the nav's live geometry as one value: the width the user SET, the width ON
   SCREEN this frame (0 while auto-hide has taken it and no prefix interaction is live),
   the band height the user set (0 = auto), the side the nav is attached to, and whether

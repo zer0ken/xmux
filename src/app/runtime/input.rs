@@ -671,7 +671,10 @@ impl Runtime {
                                 let _ = self.execute_effects(effects);
                             }
                             *dirty = true;
-                        } else if self.model.switcher.current_host_blocked() {
+                        } else if self.model.switcher.current_host_blocked()
+                            || self.model.switcher.current_view_screen(&self.model.state)
+                                == Some(crate::model::ViewScreen::Login)
+                        {
                             if let Some(source) = self.model.switcher.current_source() {
                                 let effects =
                                     update(&mut self.model, Msg::FeedLogin { source, bytes: f });
@@ -681,6 +684,31 @@ impl Runtime {
                                     *width_changed = true;
                                 }
                                 *dirty = true;
+                            }
+                        } else if self
+                            .model
+                            .switcher
+                            .current_view_screen(&self.model.state)
+                            .is_some()
+                        {
+                            if self
+                                .model
+                                .switcher
+                                .current_unreachable_screen(&self.model.state)
+                            {
+                                for byte in f {
+                                    if byte == b'd' {
+                                        let effects = update(
+                                            &mut self.model,
+                                            Msg::Key(ratatui::crossterm::event::KeyEvent::new(
+                                                ratatui::crossterm::event::KeyCode::Char('d'),
+                                                ratatui::crossterm::event::KeyModifiers::NONE,
+                                            )),
+                                        );
+                                        let _ = self.execute_effects(effects);
+                                        *dirty = true;
+                                    }
+                                }
                             }
                         } else {
                             self.registry

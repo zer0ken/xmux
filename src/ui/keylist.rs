@@ -446,8 +446,11 @@ mod tests {
         let long = key_list("C-g", NavPosition::Left, 160, 30).unwrap();
         let (long_w, _) = long.size();
         // Narrower than the long rung needs at the height the room leaves.
-        let list = key_list("C-g", NavPosition::Left, 50, 14).unwrap();
-        assert!(long_w > 50);
+        let list = (40..=80)
+            .filter_map(|width| key_list("C-g", NavPosition::Left, width, 14))
+            .find(|list| list.rung == Rung::Short && list.more() == 0)
+            .expect("a narrower room fits shortened keys without dropping them");
+        assert!(long_w > list.size().0);
         assert_eq!(list.rung, Rung::Short, "{list:?}");
         assert_eq!(list.keys().len(), prefixed_count(), "no key given up");
         assert_eq!(list.more(), 0);

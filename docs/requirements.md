@@ -229,8 +229,8 @@ no function, and no test, so renaming code is never a documentation change.
   user actually picks stands off the text parts of the same line; the
   hint bar keys read its own `bar_accent` slot, because a slot that reads on the cards
   may not read on the bar's own background. Every interaction screen renders key tokens
-  in the same bold shape. A section title reads in the dim `decoration` slot, the same
-  quiet role as the card numbers, so the group label stays below the sessions it names.
+  in the same bold shape. A section title reads bold in the `decoration` slot, while
+  card numbers stay dim, so the group remains clear without colour.
   What the sixteen slots cannot say is said with an attribute: the selected card is
   REVERSE VIDEO in both focus states, the terminal swapping its own pair, which is
   what a theme itself means by "selected". The view border identifies the focused view.
@@ -640,10 +640,10 @@ no function, and no test, so renaming code is never a documentation change.
   input already targets the fresh attachment, and the canonical selection is synced
   immediately.
 - **FR-C3** - Source degradation is graceful, never a silent loss: an unreachable source
-  is marked `▲` and gains the word `unreachable` when selected, and its view screen states
-  everything known about the failure rather than leaving the user with a message alone -
-  the reason its transport
-  gave, how many failures in a row it is, the mux binary asked for, how the machine is
+  is marked `▲` and gains the word `unreachable` when selected. Its view screen leads
+  with a plain verdict carrying the last successful reach when known, followed by
+  the failure run and actions to check this host or every host. The details choice
+  unfolds the transport reason, the mux binary asked for, how the machine is
   addressed and the wait that bounds reaching it, the socket, the session-listing command
   itself (spelled so it can be run by hand outside xmux), the PROVIDER that put that host
   on the roster (so a host the user never wrote down is traceable to the thing that

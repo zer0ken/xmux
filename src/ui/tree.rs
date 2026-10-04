@@ -170,8 +170,8 @@ pub(crate) struct Row {
 }
 
 impl Row {
-    /// A section title is not a card: it names the group under it, and the selection
-    /// cannot land on it. Every card (session, host state) is a selectable target.
+    /// Session and host-state cards take numbers and participate in card navigation.
+    /// A section title opens its source's information screen by click or the info key.
     pub(crate) fn selectable(&self) -> bool {
         !matches!(self.reference, RowRef::Section { .. })
     }
@@ -299,11 +299,11 @@ pub(crate) fn first_visible_session(group: &Group, filter: &str) -> Option<Sessi
 
 /// The (source, target) an active-pane attach on `reference` would land on. `target`
 /// empty ⇒ no terminal view (a host with no visible session). Pure over the inventory.
-/// A section title is never the selection, so it targets nothing; the arm exists to
-/// keep the match total.
+/// A selected section targets its information screen, so it has no session target.
 pub(crate) fn target_for(reference: &RowRef, groups: &[Group], filter: &str) -> (String, String) {
     match reference {
-        RowRef::Host { source, .. } | RowRef::Section { source, .. } => match groups
+        RowRef::Section { source } => (source.clone(), String::new()),
+        RowRef::Host { source, .. } => match groups
             .iter()
             .find(|g| &g.source == source)
             .and_then(|g| first_visible_session(g, filter))
@@ -385,7 +385,7 @@ pub(crate) fn flatten(
     let groups: &[Group] = &groups;
 
     let mut rows = Vec::new();
-    // 1. A section per source that has a session to show: the non-selectable
+    // 1. A section per source that has a session to show: outside numbered-card steps
     //    `{host}/{mux}` title, then one session card per session. A session created
     //    from one of these cards is its sibling - it joins this same section.
     for g in groups {

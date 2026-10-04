@@ -52,7 +52,7 @@ side pinned at runtime, else this default.
 The inner layout of the nav region is identical at all four placements: a right column is
 the same vertical card list as a left one, and a bottom band is the same down-then-right
 flow as a top one. Only what sits on which side of the view border flips. The groups read
-the same at all four: a dim `{host}/{mux}` title with its cards indented under it, and a
+the same at all four: a bold `{host}/{mux}` title with its cards indented under it, and a
 band column that continues a section repeats that title on its top row followed by `…`.
 A band one row tall writes titles and cards along that one row and scrolls sideways. The
 view border is the only line the nav draws; what is off screen is shown on it (see the
@@ -94,12 +94,19 @@ The remaining actions all take the prefix and work from either focus:
 |---|---|
 | `prefix /` | fuzzy-filter the list by `<source>/<name>` (applies as you type, shows match counts, and bolds matching characters) |
 | `prefix 1`-`prefix 9` | jump to a session by its number |
+| `prefix i` | select the current source title and show its session count and update method |
 | `prefix n` | start a new session on the selected host |
 | `prefix r` | re-scan: refresh which machines exist, and every source's sessions |
 | `prefix R` | re-scan the selected card's host alone |
 | `prefix h` | open the table of the hosts to check |
 | `prefix :` | search commands by name; type to filter, use arrows to select, Enter to run, Esc to close |
 | `prefix s` | step the nav scope: sessions, all hosts, needs attention |
+
+While the nav holds focus, bare `i` selects the current source title too. Click the
+title for the same screen. Titles do not take card numbers or interrupt card stepping.
+The host screen states the session count, how the list updates, and when the source
+last answered. An unreachable host leads with its verdict and re-scan actions; `d`
+unfolds the full diagnostic.
 
 `prefix n` starts the new session on the host/mux the selected card belongs to -
 a host row or a session row both name one. Creating under an unreachable host is

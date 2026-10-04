@@ -53,6 +53,12 @@ pub struct State {
     /// SHOWN: the unreachable screen states it, because one failed sweep and a host that
     /// has not answered since launch are different problems behind the same message.
     pub failure_runs: HashMap<String, u32>,
+    /// Last successful enumeration of each source in this run.
+    pub last_reached: HashMap<String, std::time::SystemTime>,
+    /// Sources whose metadata push channel currently answers.
+    pub live_sources: HashSet<String>,
+    /// Sources whose host-screen diagnostic rows are expanded.
+    pub(crate) host_details: HashSet<String>,
     /// Active fuzzy-filter text (drives the visible tree + the hint_bar).
     pub filter: String,
     /// What the tree selection points at - the session to show.
@@ -329,6 +335,18 @@ fn decode_keys(bytes: &[u8]) -> Vec<Key> {
 }
 
 impl State {
+    /// The current session-list update method, including a closed push channel.
+    pub(crate) fn refresh_words(&self, source: &str) -> &str {
+        let Some(reach) = self.chrome.source_reach.get(source) else {
+            return "on request";
+        };
+        if reach.refresh == "live updates" && !self.live_sources.contains(source) {
+            "last observed (channel closed)"
+        } else {
+            &reach.refresh
+        }
+    }
+
     /// True while a modal owns the screen (the help popup or the inline input) is
     /// open. These drive [`ModalKind::Popup`]; the context
     /// menu is separate (pointer-anchored).

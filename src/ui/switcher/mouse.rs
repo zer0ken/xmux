@@ -53,7 +53,7 @@ impl Switcher {
         let Some(idx) = Self::row_at(plan, col, row) else {
             return;
         };
-        if self.rows.get(idx).is_some_and(Row::selectable) {
+        if self.rows.get(idx).is_some() {
             self.user_moved = true;
             self.set_selected(idx, state);
         }

@@ -46,6 +46,8 @@ pub struct SourceReach {
     /// The socket / ControlMaster path the mux is addressed through. Empty ⇒ no row,
     /// which is the honest answer for a machine addressed without one.
     pub socket: String,
+    /// How the source's session list becomes current.
+    pub refresh: String,
 }
 
 /// How long a flash stays up with nothing pressed. A refused key is about something that

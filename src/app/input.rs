@@ -224,6 +224,7 @@ fn nav_action(command: KeyCommand, key: ratatui::crossterm::event::KeyEvent) -> 
         | KeyCommand::NewSession
         | KeyCommand::Rescan
         | KeyCommand::RescanHost => Some(Action::NavKey(key)),
+        KeyCommand::HostInfo => Some(Action::NavKey(key)),
         KeyCommand::FocusNav | KeyCommand::LiteralPrefix => None,
     }
 }
@@ -423,6 +424,7 @@ mod tests {
             | KeyCommand::NewSession
             | KeyCommand::Rescan
             | KeyCommand::RescanHost => Some(Action::NavKey(key)),
+            KeyCommand::HostInfo => Some(Action::NavKey(key)),
             KeyCommand::FocusNav | KeyCommand::LiteralPrefix => None,
         }
     }

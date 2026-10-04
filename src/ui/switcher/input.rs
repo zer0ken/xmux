@@ -6,6 +6,17 @@ use crate::state::PaletteChoice;
 impl Switcher {
     // --- key handling -------------------------------------------------------
 
+    fn select_host_section(&mut self, state: &crate::state::State) {
+        let Some(source) = self.current_source() else {
+            return;
+        };
+        if let Some(index) = self.rows.iter().position(|row|
+            matches!(&row.reference, RowRef::Section { source: section } if section == &source)) {
+            self.user_moved = true;
+            self.set_selected(index, state);
+        }
+    }
+
     /// Open the modal keys help modal. In tree focus any key then dismisses it (see
     /// `handle_key`); [`toggle_help`] is the focus-independent open/close entry point.
     pub fn show_help(&mut self, state: &mut crate::state::State) {
@@ -293,10 +304,18 @@ impl Switcher {
                 self.rebuild(state);
             }
             KeyCode::Char(c) => match c {
+                'd' if self.current_unreachable_screen(state) => {
+                    if let Some(source) = self.current_source() {
+                        if !state.host_details.insert(source.clone()) {
+                            state.host_details.remove(&source);
+                        }
+                    }
+                }
                 '/' => self.open_input(InputMode::Filter, state),
                 'n' => self.open_new(state),
                 'r' => return vec![Command::Rescan],
                 'R' => return self.rescan_host(state),
+                'i' => self.select_host_section(state),
                 // Jump: the digit opens the jump popup already holding it, so the
                 // number can be extended (4 → 41) without a second keystroke.
                 '0'..='9' => self.open_jump(c, state),

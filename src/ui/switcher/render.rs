@@ -1116,8 +1116,7 @@ impl Switcher {
             .fg(palette.decoration)
             .add_modifier(Modifier::DIM);
         // The address column every card writes on - the only line, now that a card has
-        // none other. A section title never calls it: it carries no number and is never
-        // the selection.
+        // none other. A section title never calls it: it carries no number.
         let address = move || -> Vec<Span<'static>> {
             if selected {
                 vec![Span::styled(format!("{SELECTED_MARK:>num_w$} "), accent)]
@@ -1127,21 +1126,31 @@ impl Switcher {
             }
         };
 
-        // Section title: `{host}/{mux}`, bold, alone on its row. Not a card - no number,
-        // not selectable, and the selection can never land on it. The cards under it are
-        // indented, which is what marks the group at every nav position.
+        // A section title opens its source information screen when selected. It remains
+        // bold and unnumbered, with its session cards indented below it.
         if let RowRef::Section { .. } = &row.reference {
             let title = self.section_title(i);
             let title = if width == 0 {
                 title
             } else {
-                middle_ellipsize(&title, width.saturating_sub(1) as usize)
+                middle_ellipsize(
+                    &title,
+                    width.saturating_sub(if selected { 3 } else { 1 }) as usize,
+                )
             };
             return vec![Line::from(vec![
                 Span::styled(
-                    title,
+                    if selected {
+                        format!("{SELECTED_MARK} {title}")
+                    } else {
+                        title
+                    },
                     Style::default()
-                        .fg(palette.decoration)
+                        .fg(if selected {
+                            palette.accent
+                        } else {
+                            palette.decoration
+                        })
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),

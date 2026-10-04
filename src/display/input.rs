@@ -110,7 +110,8 @@ impl TermInput {
                     | KeyCommand::Filter
                     | KeyCommand::NewSession
                     | KeyCommand::Rescan
-                    | KeyCommand::RescanHost => Some(Action::NavKey(KeyEvent::new(
+                    | KeyCommand::RescanHost
+                    | KeyCommand::HostInfo => Some(Action::NavKey(KeyEvent::new(
                         KeyCode::Char(bytes[i] as char),
                         KeyModifiers::NONE,
                     ))),
@@ -237,6 +238,7 @@ mod tests {
             | KeyCommand::NewSession
             | KeyCommand::Rescan
             | KeyCommand::RescanHost => vec![Action::NavKey(key())],
+            KeyCommand::HostInfo => vec![Action::NavKey(key())],
             KeyCommand::LiteralPrefix => vec![Action::Forward(vec![0x07])],
             KeyCommand::FocusTerminal => vec![],
             KeyCommand::FocusNav | KeyCommand::FocusToggle => vec![Action::FocusNav(vec![])],

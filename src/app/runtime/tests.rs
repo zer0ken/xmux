@@ -5426,3 +5426,58 @@ fn any_key_ends_the_selection_hint_in_either_focus() {
     rt.handle_stdin_bytes(b"x", &Selection::default());
     assert!(rt.model.state.chrome.selection_hint.is_none());
 }
+
+#[test]
+fn terminal_prefix_info_selects_the_source_screen() {
+    let mut rt = rt_terminal_focus_with_session();
+    rt.handle_stdin_bytes(b"\x07i", &Selection::default());
+    assert_eq!(
+        rt.model.switcher.current_view_screen(&rt.model.state),
+        Some(crate::model::ViewScreen::HostInfo)
+    );
+}
+
+#[test]
+fn unreachable_screen_details_take_terminal_input() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    rt.model
+        .switcher
+        .set_hide_unreachable(false, &mut rt.model.state);
+    crate::app::model::update(
+        &mut rt.model,
+        crate::app::model::Msg::ApplySourceResult {
+            source: "local".into(),
+            sessions: vec![],
+            err: None,
+        },
+    );
+    crate::app::model::update(
+        &mut rt.model,
+        crate::app::model::Msg::ApplySourceResult {
+            source: "prod".into(),
+            sessions: vec![],
+            err: Some("connection refused".into()),
+        },
+    );
+    rt.model.switcher.handle_key(
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        &mut rt.model.state,
+    );
+    rt.model.state.apply(crate::model::Action::Focus(
+        crate::model::FocusTarget::Terminal,
+    ));
+    assert!(
+        rt.model
+            .switcher
+            .current_unreachable_screen(&rt.model.state),
+        "source={:?}, screen={:?}, groups={:?}",
+        rt.model.switcher.current_source(),
+        rt.model.switcher.current_view_screen(&rt.model.state),
+        rt.model.state.groups
+    );
+    rt.handle_stdin_bytes(b"d", &Selection::default());
+    assert!(rt.model.state.host_details.contains("prod"));
+    rt.handle_stdin_bytes(b"dd", &Selection::default());
+    assert!(rt.model.state.host_details.contains("prod"));
+}
