@@ -201,6 +201,10 @@ pub struct UiConfig {
     /// startup, like `auto-hide-nav`'s initial state, and there is no live toggle.
     #[serde(rename = "hide-unreachable", default = "default_hide_unreachable")]
     pub hide_unreachable: bool,
+    /// Whether card numbers follow the current sorted list (default true). When off,
+    /// cards keep their numbers until a full scan deals them again.
+    #[serde(rename = "renumbering", default = "default_renumbering")]
+    pub renumbering: bool,
     /// Whether the result of work the user started floats as a toast over the terminal
     /// view (default true). Off, results still land in the `prefix m` history. A config
     /// edit applies it live.
@@ -294,6 +298,10 @@ fn default_notifications() -> bool {
     true
 }
 
+fn default_renumbering() -> bool {
+    true
+}
+
 fn default_braille_animation() -> bool {
     true
 }
@@ -325,6 +333,7 @@ impl Default for UiConfig {
             prefix: default_prefix(),
             auto_hide_nav: false,
             hide_unreachable: default_hide_unreachable(),
+            renumbering: default_renumbering(),
             notifications: default_notifications(),
             braille_animation: default_braille_animation(),
             nav_position: default_nav_position(),
@@ -2142,6 +2151,14 @@ bogus = "nope"
         assert!(load(&path).unwrap().ui.notifications);
         let path = write_temp("[ui]\nnotifications = false\n", "notifications-false.toml");
         assert!(!load(&path).unwrap().ui.notifications);
+    }
+
+    #[test]
+    fn ui_renumbering_defaults_true_and_accepts_false() {
+        let config: Config = toml::from_str("[ui]").unwrap();
+        assert!(config.ui.renumbering);
+        let config: Config = toml::from_str("[ui]\nrenumbering = false").unwrap();
+        assert!(!config.ui.renumbering);
     }
 
     #[test]

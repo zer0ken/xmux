@@ -124,14 +124,12 @@ reported; a `prefix r` pressed meanwhile takes over.
 ### Jumping by number
 
 Every card carries a dim number in its left column, on the same row as the session it
-names. A card takes its number the first time it appears and keeps it for the whole run.
-A card that ends leaves its number vacant, so no other card's number shifts, and a new
-card takes the next number past the highest one given; a session that comes back under
-its own name takes its number back. While a full scan runs (the launch scan and every
-`prefix r`) the numbers are dealt again from 1 in the order the list reads, so after
-`prefix r` they read 1, 2, 3 down the list with no gap. `prefix R`, a filter, and the
-nav scope leave every number where it is. The cards stay in list order whatever their
-numbers say.
+names. With `[ui] renumbering = true` (the default), cards are numbered from 1 in
+the current sorted nav list. Adding or removing a card, filtering, changing nav scope,
+and scanning can change a card's number. With `renumbering = false`, a card keeps
+its number until a full scan; an ended card leaves a vacant number and a new card
+takes the next one. A full scan deals numbers again in list order. The cards stay in
+list order under either setting.
 
 The selected card shows the selection mark there instead: its number is the address of
 where you already are. `prefix <digit>` jumps straight there and opens the jump input in

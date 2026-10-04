@@ -417,14 +417,13 @@ UI elements a user perceives as distinct things:
   addresses; a section title is not a card and spends no number there at all (its
   `{host}/{mux}` label is flush left). The column is one width per frame, so the names
   stay aligned and the numbers line up by units place as the highest number crosses 10.
-- card number - the number a card takes the first time it appears and keeps for the
-  whole run. A card that ends leaves its number VACANT: no other card's number shifts,
-  and a new card takes the next number past the highest one given. A full scan (the
-  launch scan and every `prefix r`) deals the numbers again from 1 in list order while it
-  runs, so it ends with numbers that read in list order; a one-host re-scan, a filter,
-  and a nav scope change leave every number where it is. A session that returns under
-  its own name takes its number back. The list order, not the numbers, decides where a
-  card sits.
+- card number - with `[ui] renumbering = true` (the default), the card's 1-based
+  position in the current sorted nav list. Adding or removing a card, filtering,
+  changing nav scope, and scanning can change that number. A section title has no
+  number. With `renumbering = false`, a card keeps the number it first takes for the
+  run; an ended card leaves its number vacant, a new card takes the next number, and
+  a full scan deals numbers again in list order. The list order, not the numbers,
+  decides where a card sits.
 - jump - the digits-only input `prefix <digit>` opens in the hint bar holding the
   digit. It acts WHILE open: each edit moves the selection while the number names a
   card on the list, and a number no card carries (0, a vacant number, one past the
@@ -554,8 +553,10 @@ UI elements a user perceives as distinct things:
   rounded box floating in the terminal view's corner nearest the hint, at most 40% of
   the window wide. It avoids the prefix key list and floating hint. A toast of successes
   and facts leaves after five seconds and fills its bottom border with a bold accent
-  line for the share of that life still ahead. One carrying a warning `▲` or a failure
-  `✗` stays until a click on it or opening the history dismisses it.
+  line for the share of that life still ahead. A login result leaves after five seconds
+  even when it contains a warning or failure, since the login pane and history keep its
+  details. Other toasts carrying a warning `▲` or a failure `✗` stay until a click on
+  them or opening the history dismisses them.
   `[ui] notifications` turns toasts off.
 - history - the bounded record of every toast and every background event, opened with
   `prefix m`, newest first. A background event is one nobody asked about (a host that
@@ -838,7 +839,7 @@ not pick colours: the theme IS the slot mapping, and both ends (the accent on th
 cards, the `bar_accent` on the hint bar) stay within the slots.
 
 The `[ui]` presentation settings - theme / selection-style / hint-bar-style /
-view-border styles / notifications / braille-animation - are re-applied LIVE when `config.toml` changes: the redraw
+view-border styles / notifications / braille-animation / renumbering - are re-applied LIVE when `config.toml` changes: the redraw
 cadence stats the file (a cheap poll, no watch dependency) and a changed mtime
 reloads just that section, keeping the previous settings on a malformed edit. The
 roster and hosts are not part of it - re-scanning sources is the `rescan` key's job
