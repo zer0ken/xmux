@@ -109,6 +109,14 @@ pub enum HostEvent {
     RosterResolved {
         roster: Box<crate::provision::env::Roster>,
     },
+    /// The launch roster and startup-only facts resolved after the first frame. The
+    /// app applies the roster, arms ssh with the locally detected askpass capability,
+    /// records its own mux session, then starts discovery from the resolved hosts.
+    StartupResolved {
+        roster: Box<crate::provision::env::Roster>,
+        own_session: Option<crate::session::Address>,
+        force_askpass: bool,
+    },
     /// A detection probe resolved (`detect_and_correct`): the host's mux was
     /// (re)identified. `None` = still undetected / unreachable; `err` then carries the
     /// first probe error, the reason the caller settles the undetected card with.

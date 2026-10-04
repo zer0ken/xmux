@@ -1420,6 +1420,68 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
 /// attach worker (no real PTYs), dropped receiver halves, hosts built from `env`.
 /// A test overrides the fields it cares about (`rt.hosts`, `rt.model.state`, ...).
 #[tokio::test]
+async fn first_frame_does_not_wait_for_startup_roster_and_applies_its_answer() {
+    let mut env = fake_env_from(crate::provision::env::Roster::default());
+    env.startup_pending = true;
+    let env = std::sync::Arc::new(env);
+    let (mut rt, mut io) = Runtime::new(env);
+    assert_eq!(cards(&rt), vec!["local"], "the first frame has a skeleton");
+    assert!(rt.model.state.scanning.contains("local"));
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    spawn_startup_resolution_with(
+        rt.mgr.events(),
+        async move {
+            release_rx.await.expect("release startup resolution");
+            Some(StartupResolution {
+                roster: fake_roster(&["local", "stage"]),
+                own_session: None,
+                force_askpass: true,
+            })
+        },
+        async { Some(fake_roster(&["local", "stage", "neighbor"])) },
+    );
+
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 25)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    assert!(!rt.dirty, "the initial frame was painted");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), io.host_rx.recv())
+            .await
+            .is_err(),
+        "the roster provider is still pending"
+    );
+
+    release_tx.send(()).unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), io.host_rx.recv())
+        .await
+        .expect("startup resolution completed")
+        .expect("startup event");
+    rt.on_host_event(event, &mut io.host_rx);
+    assert!(
+        rt.env.source("stage").is_some(),
+        "the answer reached the app"
+    );
+    // The full roster follows the quick one on the same task (one event batch may carry
+    // both) and adds what only the neighbor scan names, keeping every machine the quick
+    // answer put on screen.
+    while rt.env.source("neighbor").is_none() {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), io.host_rx.recv())
+            .await
+            .expect("full roster completed")
+            .expect("full roster event");
+        rt.on_host_event(event, &mut io.host_rx);
+    }
+    assert!(
+        rt.env.source("neighbor").is_some(),
+        "the full roster adds the neighbor"
+    );
+    assert!(
+        rt.env.source("stage").is_some(),
+        "and keeps the quick answer's hosts"
+    );
+}
+
+#[tokio::test]
 async fn a_re_scan_roster_adds_a_machine_it_now_names() {
     // The point of re-resolving on a re-scan: a machine that was not reachable at launch
     // (a tailnet peer that has since come online, a host the user just wrote into the
@@ -1428,6 +1490,7 @@ async fn a_re_scan_roster_adds_a_machine_it_now_names() {
     assert!(rt.hosts.get("stage").is_none(), "nothing knows stage yet");
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod", "stage"])),
+        startup: None,
     });
     assert!(
         rt.hosts.get("stage").is_some(),
@@ -1457,6 +1520,7 @@ async fn a_re_scan_roster_drops_a_machine_it_stopped_naming() {
     rt.model.detecting.insert("stage".into());
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod"])),
+        startup: None,
     });
     assert!(rt.hosts.get("stage").is_none(), "the registry let go");
     assert!(rt.env.source("stage").is_none(), "the off-loop ops let go");
@@ -1712,6 +1776,7 @@ async fn the_card_of_a_host_with_no_source_says_how_the_host_is_reached() {
     let mut rt = test_rt(fake_env_with_sources(&["prod"]));
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(auto_roster(&["prod"], &["win"])),
+        startup: None,
     });
     let reach = rt
         .model
@@ -1763,6 +1828,7 @@ async fn a_re_scan_keeps_what_a_host_that_writes_no_mux_answered() {
     });
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(auto_roster(&[], &["win"])),
+        startup: None,
     });
     assert!(rt.hosts.get("win").is_some(), "the registry keeps it");
     assert!(rt.env.source("win").is_some(), "the off-loop ops keep it");
@@ -1774,11 +1840,13 @@ async fn a_re_scan_adds_and_drops_the_card_of_a_host_that_writes_no_mux() {
     let mut rt = test_rt(fake_env_with_sources(&["prod"]));
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(auto_roster(&["prod"], &["win"])),
+        startup: None,
     });
     assert_eq!(cards(&rt), vec!["local", "prod", "win"]);
     assert!(rt.model.state.scanning.contains("win"));
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod"])),
+        startup: None,
     });
     assert_eq!(cards(&rt), vec!["local", "prod"]);
     assert!(!rt.hosts.machines().contains(&"win".to_string()));

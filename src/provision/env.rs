@@ -1,5 +1,5 @@
 //! The resolved runtime: the source list and the lookups the commands share,
-//! resolved from config + the roster providers at launch and again on every re-scan.
+//! resolved from config plus roster providers after the first frame and on every re-scan.
 //! Owns the scan (concurrent
 //! reachability probe, used by `ls`) and the switcher's side-effecting [`Ops`]
 //! over the live mux - including the per-source/per-session probes the event
@@ -127,6 +127,8 @@ pub struct Env {
     /// The local mux server socket parsed from `$TMUX` (`-S` target), threaded into
     /// the local host's transport by `Hosts::build`. `None` on the default socket.
     pub local_socket: Option<String>,
+    /// Whether the roster contains only the config facts available for the first frame.
+    pub(crate) startup_pending: bool,
 }
 
 impl Drop for Env {
@@ -301,14 +303,18 @@ pub async fn resolve_roster(
     xmux_dir: &std::path::Path,
     local_socket: Option<String>,
 ) -> (Roster, Option<anyhow::Error>) {
-    let (cfg, mut cfg_warnings, cfg_err) = match config::load_verbose(&config_path()) {
-        Ok((c, w)) => (c, w, None),
-        Err(e) => (Config::default(), Vec::new(), Some(e)),
-    };
-    // Value-level advisories (an unrecognized `mux` typo) alongside the unknown-KEY
-    // warnings `load_verbose` already produced. On the parse-error branch cfg is a
-    // default, so this is a no-op there.
-    cfg_warnings.extend(cfg.value_warnings());
+    resolve_roster_with(xmux_dir, local_socket, true).await
+}
+
+/// [`resolve_roster`] with the neighbor provider optional. Launch resolves the roster
+/// once without it, because the neighbor scan waits out every silent address while the
+/// other providers answer in milliseconds, and once with it.
+pub async fn resolve_roster_with(
+    xmux_dir: &std::path::Path,
+    local_socket: Option<String>,
+    with_neighbors: bool,
+) -> (Roster, Option<anyhow::Error>) {
+    let (cfg, cfg_warnings, cfg_err) = load_roster_config();
     let os = current_os();
     // The ROSTER: which machines xmux offers. `~/.ssh/config` first, so a hand-written
     // alias keeps the position the user gave it; then each network provider the config
@@ -326,7 +332,7 @@ pub async fn resolve_roster(
     };
     let (neighbors, wsl_distros, installed) = tokio::join!(
         async {
-            if cfg.discovery.neighbors {
+            if with_neighbors && cfg.discovery.neighbors {
                 crate::provision::neighbor::neighbors().await
             } else {
                 Vec::new()
@@ -418,6 +424,49 @@ pub async fn resolve_roster(
     )
 }
 
+fn load_roster_config() -> (Config, Vec<String>, Option<anyhow::Error>) {
+    let (cfg, mut cfg_warnings, cfg_err) = match config::load_verbose(&config_path()) {
+        Ok((c, w)) => (c, w, None),
+        Err(e) => (Config::default(), Vec::new(), Some(e)),
+    };
+    // Value-level advisories (an unrecognized `mux` typo) alongside the unknown-KEY
+    // warnings `load_verbose` already produced. On the parse-error branch cfg is a
+    // default, so this is a no-op there.
+    cfg_warnings.extend(cfg.value_warnings());
+    (cfg, cfg_warnings, cfg_err)
+}
+
+/// Builds the config-only environment the interactive app paints before any roster
+/// provider, mux query, or ssh capability probe runs.
+pub fn build_startup_env() -> (Env, Option<anyhow::Error>) {
+    let xmux_dir = xmux_dir_path();
+    let local_socket = local_socket(std::env::var("TMUX").ok().as_deref());
+    let (cfg, cfg_warnings, cfg_err) = load_roster_config();
+    let os = current_os();
+    let local_muxes = cfg.local_muxes(os, &[]);
+    let sources = source::build(
+        &cfg,
+        &[],
+        &[],
+        os,
+        &local_muxes,
+        &xmux_dir,
+        local_socket.clone(),
+    );
+    let roster = Roster {
+        roster_providers: roster_providers(&cfg, &[], &[]),
+        cfg,
+        cfg_warnings,
+        sources,
+        local_muxes,
+        ..Roster::default()
+    };
+    let ui_prefix = roster.cfg.ui_prefix().to_string();
+    let mut env = Env::new(roster, ui_prefix, xmux_dir, None, local_socket);
+    env.startup_pending = true;
+    (env, cfg_err)
+}
+
 /// Loads the process-wide runtime: a resolved roster plus the values that are fixed for
 /// the life of the process. The returned error is the config-parse error.
 pub async fn build_env() -> (Env, Option<anyhow::Error>) {
@@ -444,7 +493,7 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
 /// this machine, because the refusal has to match the card exactly. A mux xmux does not
 /// serve here leaves it unresolved, which blocks nothing - the same as not being inside
 /// a mux at all.
-fn own_session_address(srcs: &[Source]) -> Option<crate::session::Address> {
+pub(crate) fn own_session_address(srcs: &[Source]) -> Option<crate::session::Address> {
     let (kind, session) = crate::display::attach::own_mux_session()?;
     Some(crate::session::Address::new(
         own_source_id(srcs, &kind)?,
@@ -554,6 +603,7 @@ impl Env {
             xmux_dir,
             own_session,
             local_socket,
+            startup_pending: false,
         }
     }
 

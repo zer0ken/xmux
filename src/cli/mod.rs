@@ -94,7 +94,7 @@ pub async fn run() -> i32 {
 
     let cli = Cli::parse();
     match cli.command {
-        None => match interactive_env().await {
+        None => match interactive_app_env() {
             Ok(env) => match resolve_requested_name(cli.name.as_deref()) {
                 Ok(requested) => runtime::run_app(Arc::new(env), requested).await,
                 Err(code) => code,
@@ -142,6 +142,16 @@ pub async fn run() -> i32 {
             0
         }
     }
+}
+
+/// Builds the config-only environment the TUI can paint before roster providers run.
+fn interactive_app_env() -> Result<Env, i32> {
+    let (env, cfg_err) = env::build_startup_env();
+    if let Some(e) = cfg_err {
+        eprintln!("xmux: {e}");
+        return Err(1);
+    }
+    Ok(env)
 }
 
 /// Validates an explicit `--name`. Rejected up front rather than silently rewritten,

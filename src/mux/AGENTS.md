@@ -74,8 +74,8 @@ it prints are one decision, so they move together.
 - Discovery answers "which muxes a host serves", and only ever from the
   registry: the candidate set is what xmux can drive, and each candidate is
   confirmed by ITS OWN identity probe answering AS that candidate. It is called
-  once per host, by the environment for this machine before the first paint and by
-  the runtime for each remote after it, never per source. No implementation is
+  once per host, by the environment for this machine after the config-only first paint
+  and by the runtime for each remote after it, never per source. No implementation is
   the fallback for another, and no name is dropped for another's
   sake - the psmux alias of tmux never counts as tmux because tmux's own help
   probe reads the alias's self-naming help.

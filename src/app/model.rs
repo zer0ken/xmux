@@ -387,7 +387,21 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
         HostEvent::MuxesFound { machine, muxes } => {
             vec![EventEffect::AddDiscoveredSources { machine, muxes }]
         }
-        HostEvent::RosterResolved { roster } => vec![EventEffect::ApplyRoster { roster }],
+        HostEvent::RosterResolved { roster } => vec![EventEffect::ApplyRoster {
+            roster,
+            startup: None,
+        }],
+        HostEvent::StartupResolved {
+            roster,
+            own_session,
+            force_askpass,
+        } => vec![EventEffect::ApplyRoster {
+            roster,
+            startup: Some(crate::model::StartupFacts {
+                own_session,
+                force_askpass,
+            }),
+        }],
         HostEvent::Scanned {
             source,
             detected,

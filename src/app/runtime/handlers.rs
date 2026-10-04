@@ -265,8 +265,13 @@ impl Runtime {
                     scan_or_dispatch_host(mgr, hosts, model, &id, vc, vr, scan_pool);
                 }
             }
-            EventEffect::ApplyRoster { roster } => {
-                // A re-scan re-resolved the roster. Three registries have to agree about
+            EventEffect::ApplyRoster { roster, startup } => {
+                let launching = startup.is_some();
+                if let Some(startup) = startup {
+                    env.credentials().set_force_askpass(startup.force_askpass);
+                    model.switcher.set_own_session(startup.own_session);
+                }
+                // A roster resolution completed. Three registries have to agree about
                 // which machines exist, so all three are reconciled from this ONE answer:
                 // the host registry the loop drives, the source list the off-loop ops
                 // resolve against, and the nav. Which makes this the one place to settle
@@ -335,10 +340,14 @@ impl Runtime {
                         model,
                         Msg::AddSource {
                             source: id.clone(),
-                            scanning: false,
+                            scanning: launching,
                         },
                     );
                     debug_assert!(effects.is_empty());
+                }
+                if launching {
+                    probe_machines(hosts, mgr.events(), scan_pool, false);
+                    return (false, Vec::new());
                 }
                 // Probe each ADDED machine's reachability (deduped by machine): a machine
                 // the roster just named turns into a connected card that streams its
@@ -415,8 +424,8 @@ impl Runtime {
                     }
                 }
                 // Mux discovery is a machine-level question, asked once per connect and
-                // only when the machine left its list to xmux. This box's muxes were
-                // resolved before the first paint, so it is never re-probed here.
+                // only when the machine left its list to xmux. The startup roster already
+                // resolved this box's muxes, so it is never re-probed here.
                 if !crate::session::is_local_source(&machine)
                     && env.roster().cfg.mux_is_auto(&machine)
                 {
@@ -579,6 +588,12 @@ impl Runtime {
             &env.xmux_dir,
             env.local_socket.clone(),
         );
+        if env.startup_pending && !hosts.serves_any(crate::session::LOCAL_SOURCE) {
+            hosts.hold_unresolved(
+                crate::session::LOCAL_SOURCE.to_string(),
+                crate::transport::local(None),
+            );
+        }
         hosts.set_credentials(env.credentials());
 
         // The app's runtime state (single source of truth), seeded from the host ids;
