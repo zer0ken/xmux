@@ -3507,7 +3507,7 @@ fn an_empty_host_animates_only_below_its_screen_content_when_it_fits() {
             .collect()
     };
     let rows = braille_rows(&tall);
-    assert_eq!(rows.len(), 33);
+    assert_eq!(rows.len(), 16);
     assert!(rows[0] > last_content);
     let before = tall.view_text();
     tall.state.chrome.animation_ms = 1_033;

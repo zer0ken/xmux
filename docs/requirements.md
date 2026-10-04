@@ -142,7 +142,8 @@ no function, and no test, so renaming code is never a documentation change.
   (stale-while-revalidate). Input targets the fresh attachment during that wait, and
   resize reaches both attachments. A selected scanning host without a confirmed grid,
   and the initial scan before a card is selected, show the monochrome Braille X
-  animation in the terminal view. A full re-scan keeps the confirmed grid visible;
+  animation in the terminal view with a centered 32-column, 16-row frame. A full
+  re-scan keeps the confirmed grid visible;
   settled host screens and confirmed sessions replace the animation immediately. An
   attachment a host warms on a session of its own choosing is kept
   live, because that is what makes its host instant to reach, but it is never

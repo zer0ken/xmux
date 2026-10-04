@@ -85,7 +85,7 @@ mod tests {
         let mut state = crate::state::State::from_sources(vec!["pending".into()]);
         let switcher = Switcher::from_sources(&mut state);
         state.chrome.animation_ms = 1_066;
-        for (width, height, expected_columns) in [(90, 24, 32), (130, 40, 64)] {
+        for (width, height) in [(90, 24), (130, 40)] {
             let previous = crate::ui::switcher::RenderPlan::default();
             let dumped = dump_screen(&switcher, None, width, height, &state, &previous);
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -98,12 +98,16 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(dumped, flatten_buffer(terminal.backend().buffer()));
-            assert!(dumped.lines().any(|line| {
-                line.chars()
-                    .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c))
-                    .count()
-                    >= expected_columns
-            }));
+            let widest_frame_row = dumped
+                .lines()
+                .map(|line| {
+                    line.chars()
+                        .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c))
+                        .count()
+                })
+                .max()
+                .unwrap_or(0);
+            assert_eq!(widest_frame_row, 32);
         }
     }
 
