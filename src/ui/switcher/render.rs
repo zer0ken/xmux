@@ -211,7 +211,7 @@ pub struct RenderPlan {
     pub nav_row_offset: usize,
     pub nav_col_offset: usize,
     pub popup_rect: Rect,
-    hint_bar_rect: Rect,
+    pub(super) hint_bar_rect: Rect,
     /// Where the prefix indicator keeps the prefix while the bar floats away from it;
     /// empty while the bar rests or the nav is hidden.
     prefix_label: Rect,
@@ -371,11 +371,18 @@ impl Switcher {
             popup_rect: self.modal_popup_rect(area, state),
             hint_bar_rect,
             prefix_label,
+            // A toast never covers the prefix key list: the list is what a live prefix
+            // reads its next key from.
             toasts: crate::ui::toast::place_toasts(
                 &state.notify,
                 regions.terminal,
                 area,
                 nav.position,
+                if floating {
+                    hint_bar_rect
+                } else {
+                    Rect::default()
+                },
             ),
             expand_area,
             floating_hint_bar: floating,

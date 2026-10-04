@@ -23,7 +23,8 @@ view while the indicator keeps the prefix. The chrome instance
 itself lives in the runtime state, fed by the app each frame and rendered from it.
 
 The toast module places and paints the toasts in the terminal view's corner farthest
-from the nav, and builds the history popup's lines. The render plan carries each toast's
+from the nav, and builds the history popup's lines. A toast never covers the prefix key
+list, since a live prefix reads its next key from it. The render plan carries each toast's
 rect, so a click is hit-tested against what was painted.
 
 The operations module holds the off-loop mux-action runners and the UI decisions

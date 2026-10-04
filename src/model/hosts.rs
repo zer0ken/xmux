@@ -367,6 +367,7 @@ impl Hosts {
             | Sessions { .. }
             | MuxesFound { .. }
             | RosterResolved { .. }
+            | RosterKept
             | StartupResolved { .. }
             | MachineProbed { .. } => {}
         }

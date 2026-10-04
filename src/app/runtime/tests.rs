@@ -1492,6 +1492,7 @@ async fn a_re_scan_roster_adds_a_machine_it_now_names() {
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod", "stage"])),
         startup: None,
+        rescan: false,
     });
     assert!(
         rt.hosts.get("stage").is_some(),
@@ -1522,6 +1523,7 @@ async fn a_re_scan_roster_drops_a_machine_it_stopped_naming() {
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod"])),
         startup: None,
+        rescan: false,
     });
     assert!(rt.hosts.get("stage").is_none(), "the registry let go");
     assert!(rt.env.source("stage").is_none(), "the off-loop ops let go");
@@ -1778,6 +1780,7 @@ async fn the_card_of_a_host_with_no_source_says_how_the_host_is_reached() {
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(auto_roster(&["prod"], &["win"])),
         startup: None,
+        rescan: false,
     });
     let reach = rt
         .model
@@ -1830,6 +1833,7 @@ async fn a_re_scan_keeps_what_a_host_that_writes_no_mux_answered() {
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(auto_roster(&[], &["win"])),
         startup: None,
+        rescan: false,
     });
     assert!(rt.hosts.get("win").is_some(), "the registry keeps it");
     assert!(rt.env.source("win").is_some(), "the off-loop ops keep it");
@@ -1842,12 +1846,14 @@ async fn a_re_scan_adds_and_drops_the_card_of_a_host_that_writes_no_mux() {
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(auto_roster(&["prod"], &["win"])),
         startup: None,
+        rescan: false,
     });
     assert_eq!(cards(&rt), vec!["local", "prod", "win"]);
     assert!(rt.model.state.scanning.contains("win"));
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod"])),
         startup: None,
+        rescan: false,
     });
     assert_eq!(cards(&rt), vec!["local", "prod"]);
     assert!(!rt.hosts.machines().contains(&"win".to_string()));
@@ -1902,7 +1908,7 @@ fn test_rt(env: Env) -> Runtime {
         config_last_mtime: None,
         width_dirty: false,
         width_flush_at: None,
-        rescan_before: None,
+        rescan: None,
     };
     let mut rt = Runtime {
         instance_name: "test".into(),
@@ -3082,6 +3088,40 @@ fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
     rt.model.switcher = switcher;
     let out = rt.handle_stdin_bytes(b"\x07q", &Selection::default());
     assert!(out.quit, "prefix+q in nav focus quits");
+}
+
+#[test]
+fn prefix_m_and_prefix_question_close_what_they_opened_in_either_focus() {
+    use crate::state::Modal;
+    use crate::ui::switcher::{Scan, Switcher};
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.hosts = crate::model::Hosts::default();
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    let history = |rt: &Runtime| matches!(rt.model.state.modal, Some(Modal::History { .. }));
+    rt.handle_stdin_bytes(b"\x07m", &Selection::default());
+    assert!(history(&rt), "prefix m opens the history");
+    rt.handle_stdin_bytes(b"\x07m", &Selection::default());
+    assert!(rt.model.state.modal.is_none(), "prefix m closes it again");
+    // The prefix and its key may arrive in two reads.
+    rt.handle_stdin_bytes(b"\x07m", &Selection::default());
+    rt.handle_stdin_bytes(b"\x07", &Selection::default());
+    assert!(history(&rt), "the prefix alone closes nothing");
+    rt.handle_stdin_bytes(b"m", &Selection::default());
+    assert!(rt.model.state.modal.is_none());
+    assert!(!rt.prefix_active(), "the key consumed the prefix");
+    rt.handle_stdin_bytes(b"\x07?", &Selection::default());
+    assert!(matches!(rt.model.state.modal, Some(Modal::Help)));
+    rt.handle_stdin_bytes(b"\x07?", &Selection::default());
+    assert!(rt.model.state.modal.is_none(), "prefix ? closes the help");
+
+    let mut rt = rt_terminal_focus_with_session();
+    rt.handle_stdin_bytes(b"\x07m", &Selection::default());
+    assert!(history(&rt), "prefix m opens it from the terminal view");
+    rt.handle_stdin_bytes(b"\x07m", &Selection::default());
+    assert!(rt.model.state.modal.is_none(), "and closes it there");
 }
 
 #[test]

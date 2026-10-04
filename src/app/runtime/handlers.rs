@@ -265,7 +265,11 @@ impl Runtime {
                     scan_or_dispatch_host(mgr, hosts, model, &id, vc, vr, scan_pool);
                 }
             }
-            EventEffect::ApplyRoster { roster, startup } => {
+            EventEffect::ApplyRoster {
+                roster,
+                startup,
+                rescan,
+            } => {
                 let launching = startup.is_some();
                 if let Some(startup) = startup {
                     env.credentials().set_force_askpass(startup.force_askpass);
@@ -361,6 +365,12 @@ impl Runtime {
                     if probed.insert(machine) {
                         probe_machine(machine, hosts, mgr.events(), scan_pool, false);
                     }
+                }
+                // The nav now holds what this roster added and dropped, so a re-scan that
+                // asked for it may report.
+                if rescan {
+                    let effects = update(model, Msg::RescanRosterApplied);
+                    debug_assert!(effects.is_empty());
                 }
             }
             EventEffect::DispatchScanned {
@@ -608,7 +618,7 @@ impl Runtime {
         switcher.set_hide_unreachable(roster.cfg.ui_hide_unreachable(), &mut state);
         // [ui] notifications: whether results show as toasts; the history keeps them either
         // way.
-        state.notify.toasts_enabled = roster.cfg.ui.notifications;
+        state.notify.set_toasts_enabled(roster.cfg.ui.notifications);
         // And what offered each host, so an unreachable one can name the provider that
         // put it on the roster. Reduced to words here: the screen prints them and
         // nothing branches on which provider it was.
@@ -678,7 +688,7 @@ impl Runtime {
             config_last_mtime: None,
             width_dirty: false,
             width_flush_at: None,
-            rescan_before: None,
+            rescan: None,
         };
         let rt = Runtime {
             env,
@@ -1626,7 +1636,6 @@ impl Runtime {
         // user who pressed nothing. The tick is where that is noticed, because it is the
         // one wake that happens without the user doing anything.
         let had_flash = !self.model.state.chrome.flash.is_empty();
-        let toasts = self.model.state.notify.toasts.len();
         // Spinner set = the selected session if its PTY is still connecting.
         let mut sp = HashSet::new();
         if !self.model.state.selection.is_empty() {
@@ -1657,10 +1666,9 @@ impl Runtime {
         if had_flash && self.model.state.chrome.flash.is_empty() {
             self.dirty = true;
         }
-        // A toast that left, or one still counting down its remaining time, is a change
-        // on screen the tick is the only wake for.
-        if toasts != self.model.state.notify.toasts.len() || self.model.state.notify.counting_down()
-        {
+        // A toast that left, one still counting down its remaining time, or the open
+        // history's ages moving is a change on screen the tick is the only wake for.
+        if self.model.state.notify.repaint {
             self.dirty = true;
         }
     }

@@ -513,6 +513,37 @@ fn a_toast_floats_in_the_terminal_corner_farthest_from_the_nav_at_every_position
 }
 
 #[test]
+fn no_toast_covers_the_prefix_key_list() {
+    for position in ALL {
+        let mut shot = Shot::new(two_groups(), nav_at(position), false);
+        shot.state.chrome.set_armed(true);
+        shot.state.chrome.set_nav_position(position);
+        // A toast exactly as tall as the terminal view would fit there, and would cover
+        // whichever of its rows the key list opens on.
+        let rows = shot.plan.regions.terminal.height as usize - 2;
+        shot.state.notify.toast(
+            "gpu-02",
+            vec![crate::state::notify::Note::new(
+                crate::state::notify::Level::Error,
+                vec!["denied"; rows].join("\n"),
+            )],
+        );
+        shot.draw(false);
+        let bar = shot.plan.hint_bar_rect;
+        assert!(
+            shot.plan.toasts.iter().all(|(_, r)| !r.intersects(bar)),
+            "{position:?}: {:?} against the key list at {bar:?}",
+            shot.plan.toasts
+        );
+        let list = shot.row(bar.y, bar.x, bar.right());
+        assert!(
+            list.contains("· m"),
+            "{position:?}: the key list stays readable: {list:?}"
+        );
+    }
+}
+
+#[test]
 fn the_prefix_key_list_opens_toward_the_terminal_and_the_indicator_keeps_the_prefix() {
     for position in ALL {
         let mut shot = Shot::new(two_groups(), nav_at(position), false);

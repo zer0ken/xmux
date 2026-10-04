@@ -3967,7 +3967,7 @@ async fn help_overlay_renders_and_closes_on_q() {
     // Modal dismissal (tmux view-mode): the app routes keys to feed_reader_key
     // above the tree/terminal split - q closes it; other keys are swallowed (no nav).
     assert!(
-        h.sw.feed_reader_key(b"q", &mut h.state),
+        h.sw.feed_reader_key(b"q", 0x07, &mut false, &mut h.state),
         "q is consumed while help is open"
     );
     h.draw();
@@ -5617,18 +5617,21 @@ fn feed_reader_key_is_modal_and_closes_on_q_or_esc() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     assert!(
-        !sw.feed_reader_key(b"q", &mut state),
+        !sw.feed_reader_key(b"q", 0x07, &mut false, &mut state),
         "closed → not consumed, routes normally"
     );
 
     sw.toggle_help(&mut state);
-    assert!(sw.feed_reader_key(b"j", &mut state), "open → consumed");
+    assert!(
+        sw.feed_reader_key(b"j", 0x07, &mut false, &mut state),
+        "open → consumed"
+    );
     assert!(
         matches!(state.modal, Some(Modal::Help)),
         "a non-close key is swallowed but keeps help open"
     );
     assert!(
-        sw.feed_reader_key(b"\x1b[A", &mut state),
+        sw.feed_reader_key(b"\x1b[A", 0x07, &mut false, &mut state),
         "an arrow (ESC [) is swallowed, not a close"
     );
     assert!(
@@ -5636,12 +5639,15 @@ fn feed_reader_key_is_modal_and_closes_on_q_or_esc() {
         "arrow keeps help open"
     );
 
-    assert!(sw.feed_reader_key(b"q", &mut state), "q → consumed");
+    assert!(
+        sw.feed_reader_key(b"q", 0x07, &mut false, &mut state),
+        "q → consumed"
+    );
     assert!(!matches!(state.modal, Some(Modal::Help)), "q closes help");
 
     sw.toggle_help(&mut state);
     assert!(
-        sw.feed_reader_key(b"\x1b", &mut state),
+        sw.feed_reader_key(b"\x1b", 0x07, &mut false, &mut state),
         "lone Esc → consumed"
     );
     assert!(!matches!(state.modal, Some(Modal::Help)), "Esc closes help");

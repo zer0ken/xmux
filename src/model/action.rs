@@ -218,6 +218,9 @@ pub enum EventEffect {
     ApplyRoster {
         roster: Box<crate::provision::env::Roster>,
         startup: Option<StartupFacts>,
+        /// Whether a re-scan asked for this roster, whose summary waits until it is
+        /// applied.
+        rescan: bool,
     },
     /// `Exited`: reap `host`'s metadata client after [`Self::NoteHostExited`] has folded
     /// the tree and connected-set state change.
@@ -338,10 +341,15 @@ impl std::fmt::Debug for EventEffect {
                 .field("muxes", muxes)
                 .finish(),
             EventEffect::Refetch { host } => f.debug_struct("Refetch").field("host", host).finish(),
-            EventEffect::ApplyRoster { roster, startup } => f
+            EventEffect::ApplyRoster {
+                roster,
+                startup,
+                rescan,
+            } => f
                 .debug_struct("ApplyRoster")
                 .field("sources", &roster.sources.len())
                 .field("startup", &startup.is_some())
+                .field("rescan", rescan)
                 .finish(),
             EventEffect::ReapHost { host } => {
                 f.debug_struct("ReapHost").field("host", host).finish()

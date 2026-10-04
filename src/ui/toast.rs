@@ -82,15 +82,19 @@ fn toast_size(toast: &Toast, max_w: u16) -> (u16, u16) {
 
 /// Where each toast floats: the terminal view's top corner farthest from the nav, or its
 /// bottom right corner when the nav rides on top. The newest toast takes the corner and
-/// older ones stack away from it while they fit; a toast that does not fit is left for
-/// the history. No toast is wider than [`TOAST_MAX_PERCENT`] of the window.
+/// older ones stack away from it; a toast that does not fit in the room left, or that
+/// would cover `keep` (the prefix key list while it is open), is left for the history and
+/// the next older one is tried. No toast is wider than [`TOAST_MAX_PERCENT`] of the
+/// window.
 pub(crate) fn place_toasts(
     notify: &Notifications,
     terminal: Rect,
     window: Rect,
     position: NavPosition,
+    keep: Rect,
 ) -> Vec<(u64, Rect)> {
-    let max_w = (window.width * TOAST_MAX_PERCENT / 100).min(terminal.width);
+    let share = u32::from(window.width) * u32::from(TOAST_MAX_PERCENT) / 100;
+    let max_w = u16::try_from(share).unwrap_or(u16::MAX).min(terminal.width);
     if max_w < TOAST_MIN_WIDTH || terminal.height < 3 {
         return Vec::new();
     }
@@ -100,8 +104,8 @@ pub(crate) fn place_toasts(
     let mut used = 0u16;
     for toast in notify.toasts.iter().rev() {
         let (w, h) = toast_size(toast, max_w);
-        if used + h > terminal.height {
-            break;
+        if u32::from(used) + u32::from(h) > u32::from(terminal.height) {
+            continue;
         }
         let x = if at_left {
             terminal.x
@@ -113,7 +117,11 @@ pub(crate) fn place_toasts(
         } else {
             terminal.y + used
         };
-        placed.push((toast.id, Rect::new(x, y, w, h)));
+        let rect = Rect::new(x, y, w, h);
+        if !keep.is_empty() && rect.intersects(keep) {
+            continue;
+        }
+        placed.push((toast.id, rect));
         used += h;
     }
     placed
@@ -282,7 +290,7 @@ mod tests {
             (NavPosition::Top, "bottom right"),
         ] {
             let terminal = terminal_for(position);
-            let placed = place_toasts(&n, terminal, window, position);
+            let placed = place_toasts(&n, terminal, window, position, Rect::default());
             assert_eq!(placed.len(), 1, "{position:?}");
             let r = placed[0].1;
             let (left, top) = match corner {
@@ -309,7 +317,7 @@ mod tests {
         let window = Rect::new(0, 0, 100, 30);
         let n = notify_with(&["old", "new"]);
         let terminal = terminal_for(NavPosition::Left);
-        let placed = place_toasts(&n, terminal, window, NavPosition::Left);
+        let placed = place_toasts(&n, terminal, window, NavPosition::Left, Rect::default());
         let new_id = n.toasts[1].id;
         assert_eq!(placed[0].0, new_id, "the newest is placed first");
         assert_eq!(placed[0].1.y, terminal.y);
@@ -320,7 +328,7 @@ mod tests {
         );
 
         let terminal = terminal_for(NavPosition::Top);
-        let placed = place_toasts(&n, terminal, window, NavPosition::Top);
+        let placed = place_toasts(&n, terminal, window, NavPosition::Top, Rect::default());
         assert_eq!(placed[0].1.bottom(), terminal.bottom());
         assert_eq!(
             placed[1].1.bottom(),
@@ -339,10 +347,47 @@ mod tests {
             terminal_for(NavPosition::Left),
             window,
             NavPosition::Left,
+            Rect::default(),
         );
         let r = placed[0].1;
         assert_eq!(r.width, 40);
         assert!(r.height > 3, "the reason wraps rather than clipping: {r:?}");
+    }
+
+    #[test]
+    fn a_very_wide_window_sizes_its_toasts_without_overflowing() {
+        let n = notify_with(&["gpu-02"]);
+        let window = Rect::new(0, 0, 2000, 30);
+        let terminal = Rect::new(0, 0, 1990, 30);
+        let placed = place_toasts(&n, terminal, window, NavPosition::Right, Rect::default());
+        assert_eq!(placed.len(), 1);
+        assert!(placed[0].1.width <= 800, "{:?}", placed[0].1);
+    }
+
+    #[test]
+    fn a_newest_toast_too_tall_to_fit_leaves_room_for_older_ones() {
+        let mut n = Notifications::default();
+        let t0 = Instant::now();
+        n.toast_at(t0, "old", vec![Note::new(Level::Error, "denied")]);
+        n.toast_at(
+            t0,
+            "new",
+            vec![Note::new(Level::Error, vec!["denied"; 20].join("\n"))],
+        );
+        let terminal = Rect::new(31, 0, 69, 10);
+        let placed = place_toasts(
+            &n,
+            terminal,
+            Rect::new(0, 0, 100, 10),
+            NavPosition::Left,
+            Rect::default(),
+        );
+        assert_eq!(
+            placed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [n.toasts[0].id],
+            "the older toast that fits is still drawn"
+        );
+        assert_eq!(placed[0].1.y, terminal.y);
     }
 
     #[test]
@@ -353,6 +398,7 @@ mod tests {
             Rect::new(0, 0, 10, 10),
             Rect::new(0, 0, 100, 10),
             NavPosition::Right,
+            Rect::default(),
         );
         assert!(placed.is_empty());
     }
@@ -408,7 +454,7 @@ mod tests {
             "re-scan",
             vec![Note::new(Level::Warning, "web-03 unreachable")],
         );
-        n.tick(t0 + std::time::Duration::from_secs(90));
+        n.tick(t0 + std::time::Duration::from_secs(90), false);
         let text = |scroll| {
             history_lines(&n, scroll, 60, &Palette::default())
                 .1

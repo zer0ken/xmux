@@ -545,9 +545,10 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B34** - A re-scan ends in ONE toast that states what changed against the inventory
   the user saw when they asked: hosts added and removed, sessions started and ended, and
   hosts that stopped or started answering, naming the first few of each and counting the
-  rest. A re-scan that changed nothing says so with the host and session counts it found.
-  The toast is made once every source has answered, and a host that stopped answering
-  keeps it on screen until it is dismissed.
+  rest. A host whose login was refused is reported as needing a login, never as its
+  sessions ending. A re-scan that changed nothing says so with the host and session counts
+  it found. The toast is made once every source and the roster have answered, and a host
+  that stopped answering keeps it on screen until it is dismissed.
 
 ## C. Switching (the keystone)
 

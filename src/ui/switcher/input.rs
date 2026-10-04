@@ -68,18 +68,55 @@ impl Switcher {
     /// Read-only popup input (the help and the history), tmux view-mode style. While one
     /// is open it captures the whole key read (returns true ⇒ consumed - nothing reaches
     /// the tree or the terminal view); `q` or Esc closes it, the history scrolls on its
-    /// arrows, and every other key is swallowed. Returns false when neither is open, so the
+    /// arrows, and every other key is swallowed. The keys that open the two popups toggle
+    /// them here too: `prefix` then `m` toggles the history and `prefix` then `?` the help,
+    /// with `armed` carrying a prefix that ended one read into the next. After the prefix
+    /// any other key reads as it would alone. Returns false when neither is open, so the
     /// read falls through to normal routing. The single owner of their dismissal - the
     /// app calls it above the tree/terminal split, so the behavior is identical in both
     /// focuses.
-    pub fn feed_reader_key(&mut self, bytes: &[u8], state: &mut crate::state::State) -> bool {
-        let consumed = modal::feed_reader(&mut state.modal, bytes);
+    pub fn feed_reader_key(
+        &mut self,
+        bytes: &[u8],
+        prefix: u8,
+        armed: &mut bool,
+        state: &mut crate::state::State,
+    ) -> bool {
+        if !crate::state::is_reader(&state.modal) {
+            return false;
+        }
+        let mut rest = bytes;
+        while !rest.is_empty() && crate::state::is_reader(&state.modal) {
+            if std::mem::take(armed) {
+                match rest[0] {
+                    b'm' => self.toggle_history(state),
+                    b'?' => self.toggle_help(state),
+                    _ => continue,
+                }
+                rest = &rest[1..];
+                continue;
+            }
+            let (keys, after) = match rest.iter().position(|&b| b == prefix) {
+                Some(i) => (&rest[..i], Some(&rest[i + 1..])),
+                None => (rest, None),
+            };
+            if !keys.is_empty() {
+                modal::feed_reader(&mut state.modal, keys);
+            }
+            match after {
+                Some(after) if crate::state::is_reader(&state.modal) => {
+                    *armed = true;
+                    rest = after;
+                }
+                _ => break,
+            }
+        }
         // The history scrolls no further than its oldest record.
         let last = state.notify.history.len().saturating_sub(1);
         if let Some(Modal::History { scroll }) = state.modal.as_mut() {
             *scroll = (*scroll).min(last);
         }
-        consumed
+        true
     }
 
     /// Handles one key against the switcher. Navigation/modal-open keys mutate the

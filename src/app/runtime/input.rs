@@ -577,13 +577,19 @@ impl Runtime {
             && !non_mouse.is_empty()
             && crate::state::is_reader(&self.model.state.modal)
         {
-            let effects = update(&mut self.model, Msg::ReaderBytes(non_mouse));
+            let effects = update(
+                &mut self.model,
+                Msg::ReaderBytes {
+                    bytes: non_mouse,
+                    prefix: self.prefix,
+                },
+            );
             debug_assert!(effects.is_empty());
             // The help and the history are modal (tmux view-mode style): while one is
-            // open it captures every key in EITHER focus - q/Esc closes it, the history
-            // scrolls, the rest are swallowed - so nothing leaks to the nav or the
-            // terminal view. Above the nav/terminal split so the behavior is identical
-            // regardless of focus.
+            // open it captures every key in EITHER focus - q/Esc or the prefix key that
+            // opened it closes it, the history scrolls, the rest are swallowed - so
+            // nothing leaks to the nav or the terminal view. Above the nav/terminal split
+            // so the behavior is identical regardless of focus.
             *dirty = true;
         } else if !consumed_by_repeat
             && (self.model.state.focus.is_nav_focused() || self.model.state.focus.is_modal())

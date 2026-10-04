@@ -221,12 +221,12 @@ forwarded raw to the session's active pane, so programs running inside the mux
 
 ## Modals
 
-- **Help** (`prefix ?`): a scrollless key reference. `q` or `Esc` closes it;
-  any other key is swallowed while it is open.
+- **Help** (`prefix ?`): a scrollless key reference. `q`, `Esc`, or `prefix ?` closes
+  it; any other key is swallowed while it is open.
 - **History** (`prefix m`): every result and background event, newest first, each with
   how long ago it happened. `↑`/`↓` (or `k`/`j`) scroll one record and `PgUp`/`PgDn`
-  ten; `q` or `Esc` closes it, and any other key is swallowed while it is open. Opening
-  it takes every toast down.
+  ten; `q`, `Esc`, or `prefix m` closes it, and any other key is swallowed while it is
+  open. Opening it takes every toast down.
 - **Input** (filter, new session, jump): the hint bar becomes the input line,
   `[feature] guide: <buffer>` with the caret at the edit position. Type into the
   buffer, `Backspace` deletes, `Enter` submits, `Esc` cancels.
