@@ -393,9 +393,9 @@ UI elements a user perceives as distinct things:
   is psmux's own alias). A written `mux` value is never probed: it is taken verbatim,
   unreachable and all. Distinct from `roster` (which HOSTS) and `discovery` (scanning a
   source for SESSIONS).
-  THIS BOX is resolved before the first paint (a local probe is milliseconds), once, and
-  threaded into the construction of both the source list and the runtime registry, so the
-  two cannot disagree on which sources exist. A REMOTE machine is asked only AFTER it is
+  THIS BOX is resolved once off the runtime loop after the config-only first paint, and
+  the answer is applied to both the source list and the runtime registry, so the two
+  cannot disagree on which sources exist. A REMOTE machine is asked only AFTER it is
   found to CONNECT: discovery leads with a bounded machine `reachability` probe, and mux
   discovery (one task per machine, which nothing may wait for) fires only for a connected
   one, over the machine's own transport, which carries what its reachability probe and
@@ -441,8 +441,10 @@ UI elements a user perceives as distinct things:
   target names, so nothing downstream BEHAVES differently for one; which provider
   offered a name is kept beside it and shown on the unreachable host's view screen, never read
   to decide anything. The roster is what makes a machine a
-  host: a machine no provider names is one xmux has nothing to say about. It is resolved
-  at launch and again on every re-scan, and what a re-scan resolves is reconciled by
+  host: a machine no provider names is one xmux has nothing to say about. The first frame
+  uses config-only host skeletons while every provider resolves off the runtime loop; the
+  completed roster is then applied through the same reconciliation used on every re-scan.
+  A re-scan result is reconciled by
   MACHINE: a machine that is still named keeps the sources it serves, including the ones
   `mux discovery` found rather than config, and a machine that is not named loses every
   source it served. Distinct

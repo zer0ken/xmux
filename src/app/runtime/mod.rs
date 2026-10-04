@@ -754,6 +754,76 @@ fn spawn_roster_resolve(
     });
 }
 
+struct StartupResolution {
+    roster: crate::provision::env::Roster,
+    own_session: Option<crate::session::Address>,
+    force_askpass: bool,
+}
+
+/// Runs the two launch roster answers on ONE task, so the full roster can never land
+/// before the quick one and be reconciled away by it. `quick` carries the startup-only
+/// facts; `full` is applied like a re-scan's roster.
+fn spawn_startup_resolution_with<Q, R>(
+    tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+    quick: Q,
+    full: R,
+) where
+    Q: std::future::Future<Output = Option<StartupResolution>> + Send + 'static,
+    R: std::future::Future<Output = Option<crate::provision::env::Roster>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let Some(resolved) = quick.await else {
+            return;
+        };
+        let _ = tx.send(HostEvent::StartupResolved {
+            roster: Box::new(resolved.roster),
+            own_session: resolved.own_session,
+            force_askpass: resolved.force_askpass,
+        });
+        if let Some(roster) = full.await {
+            let _ = tx.send(HostEvent::RosterResolved {
+                roster: Box::new(roster),
+            });
+        }
+    });
+}
+
+/// Resolves every launch fact that can wait on another process after the first frame.
+///
+/// The roster arrives in two answers. The first leaves out the neighbor scan, which
+/// waits out every silent address on the network, so this machine's cards and the
+/// configured hosts do not wait for it. The second is the full roster: the neighbors it
+/// adds are probed as they land and every machine already on screen keeps its cards.
+fn spawn_startup_resolution(
+    xmux_dir: std::path::PathBuf,
+    local_socket: Option<String>,
+    tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+) {
+    let quick_dir = xmux_dir.clone();
+    let quick_socket = local_socket.clone();
+    let quick = async move {
+        let ((roster, err), force_askpass) = tokio::join!(
+            crate::provision::env::resolve_roster_with(&quick_dir, quick_socket, false),
+            crate::transport::auth::detect_force_askpass(),
+        );
+        if let Some(e) = err {
+            tracing::warn!(error = %e, "config did not parse; keeping the startup roster");
+            return None;
+        }
+        let own_session = crate::provision::env::own_session_address(&roster.sources);
+        Some(StartupResolution {
+            roster,
+            own_session,
+            force_askpass,
+        })
+    };
+    let full = async move {
+        let (roster, err) = crate::provision::env::resolve_roster(&xmux_dir, local_socket).await;
+        (err.is_none() && roster.cfg.discovery.neighbors).then_some(roster)
+    };
+    spawn_startup_resolution_with(tx, quick, full);
+}
+
 /// Runs one machine's REACHABILITY probe off the loop - the shell probe over the
 /// machine's raw shell, bounded by the shared `gate` - and carries the outcome back as
 /// [`HostEvent::MachineProbed`]. A zero exit is connected (`err` `None`); ssh's own
@@ -925,13 +995,13 @@ fn apply_scan_result(
     }
 }
 
-/// The shared discovery pass a fresh launch and a re-scan both run: probe every
-/// machine's reachability, and on a re-scan re-resolve the roster too. A machine's
+/// The re-scan discovery pass: probe every machine's reachability while re-resolving
+/// the roster. A machine's
 /// answer (`HostEvent::MachineProbed`) drives the rest - a connected machine detects and
 /// dispatches its sources and, if auto, discovers its muxes; a locked or unreachable one
 /// classifies its cards - so this pass opens no channel itself.
 ///
-/// On a re-scan the roster is re-resolved concurrently; when it lands (`RosterResolved`),
+/// The roster is re-resolved concurrently; when it lands (`RosterResolved`),
 /// the freshly ADDED machines are probed, so a machine that just came online turns into a
 /// card without a restart. The machines standing right now are probed here regardless, so
 /// a slow provider delays no card already on screen.
@@ -1093,16 +1163,6 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
 
     // Build the world state (Runtime) + the loop's I/O (the receivers `select!` polls).
     let (mut rt, mut io) = Runtime::new(env);
-    // Kick the shared discovery pass at launch - the same one a re-scan runs, so a fresh
-    // launch and a re-scan are functionally identical. Each machine's reachability is
-    // probed first (bounded), and a connected one streams its rows in without waiting for
-    // a selection move: control hosts connect a `-CC` client, poll hosts start their
-    // self-looping enumeration task, both owned by the manager, and each auto machine is
-    // asked which muxes it has (a mux nobody wrote down appears as its machine answers).
-    // Deliberately off `Runtime::new` so a headless unit test can build a `Runtime`
-    // without launching real probes / control clients. PTYs are attached as each source's
-    // sessions arrive (see [`sync_source_terminals`]).
-    run_discovery(&rt.env, &rt.hosts, &rt.mgr, &rt.scan_pool, false);
     // Take the worker's reply receiver out so the loop can `select!` on it while `&mut rt`
     // is borrowed for the arm body (the send half stays on `rt.worker`).
     let mut worker_events = rt.worker.take_events();
@@ -1138,6 +1198,12 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     if let Err(e) = clear_screen(&mut term) {
         tracing::warn!(error = %e, "term_clear_failed");
     }
+    rt.prepare_and_draw(&mut term);
+    spawn_startup_resolution(
+        rt.env.xmux_dir.clone(),
+        rt.env.local_socket.clone(),
+        rt.mgr.events(),
+    );
 
     // The picker control socket: serves headless key/text/dump, and IS this instance's
     // identity - `xmux send <name>` dials exactly this path. An explicit `--name` is

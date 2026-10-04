@@ -60,6 +60,13 @@ impl Hosts {
         }
     }
 
+    /// Holds a machine as an unresolved host card until its mux list arrives.
+    pub(crate) fn hold_unresolved(&mut self, machine: String, transport: Box<dyn Transport>) {
+        if !self.serves_any(&machine) && !self.auto.iter().any(|(name, _)| *name == machine) {
+            self.auto.push((machine, transport));
+        }
+    }
+
     /// Assembles the hosts for a config: this machine's hosts first (one per entry of the
     /// RESOLVED `local_muxes`, its socket from `$TMUX`), then each ssh host in order,
     /// then each WSL distribution. Mirrors `source::build` but yields owning `Host`s.
@@ -360,6 +367,7 @@ impl Hosts {
             | Sessions { .. }
             | MuxesFound { .. }
             | RosterResolved { .. }
+            | StartupResolved { .. }
             | MachineProbed { .. } => {}
         }
     }

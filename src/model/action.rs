@@ -217,6 +217,7 @@ pub enum EventEffect {
     /// lives behind it.
     ApplyRoster {
         roster: Box<crate::provision::env::Roster>,
+        startup: Option<StartupFacts>,
     },
     /// `Exited`: reap `host`'s metadata client after [`Self::NoteHostExited`] has folded
     /// the tree and connected-set state change.
@@ -285,6 +286,13 @@ pub enum EventEffect {
     },
 }
 
+/// Launch facts that resolve off the runtime loop because learning them may spawn a
+/// subprocess. Present only on the first roster resolution.
+pub struct StartupFacts {
+    pub own_session: Option<Address>,
+    pub force_askpass: bool,
+}
+
 // Hand-written: `Box<dyn Mux>` is not `Debug`, so `DispatchScanned` cannot derive
 // it. Print the variant + its string fields (the detection box as a presence flag)
 // so test assertion messages can format `{effects:?}`.
@@ -330,9 +338,10 @@ impl std::fmt::Debug for EventEffect {
                 .field("muxes", muxes)
                 .finish(),
             EventEffect::Refetch { host } => f.debug_struct("Refetch").field("host", host).finish(),
-            EventEffect::ApplyRoster { roster } => f
+            EventEffect::ApplyRoster { roster, startup } => f
                 .debug_struct("ApplyRoster")
                 .field("sources", &roster.sources.len())
+                .field("startup", &startup.is_some())
                 .finish(),
             EventEffect::ReapHost { host } => {
                 f.debug_struct("ReapHost").field("host", host).finish()
