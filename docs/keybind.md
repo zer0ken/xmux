@@ -73,6 +73,11 @@ past nothing, so the category step treats the band as a single stop; the card st
 reaches every one of them. A category is left from any card of it, so a selection deep
 inside the band steps straight out.
 
+Every host card reserves one state-glyph cell: `?` means login needed, `▲` means
+unreachable, `✗` means the session listing could not be parsed, a braille glyph means
+scanning, and a blank cell means reachable with no sessions. Only the selected card
+adds the state word. Long names retain their beginning and end with a middle ellipsis.
+
 `Enter` hands focus to the terminal view, as does `prefix →`.
 
 ## Nav actions
@@ -83,7 +88,7 @@ The remaining actions all take the prefix and work from either focus:
 
 | Key | Action |
 |---|---|
-| `prefix /` | fuzzy-filter the list by `<source>/<name>` (applies as you type) |
+| `prefix /` | fuzzy-filter the list by `<source>/<name>` (applies as you type, shows match counts, and bolds matching characters) |
 | `prefix 1`-`prefix 9` | jump to a session by its number |
 | `prefix n` | start a new session on the selected host |
 | `prefix r` | re-scan: refresh which machines exist, and every source's sessions |
@@ -207,10 +212,14 @@ forwarded raw to the session's active pane, so programs running inside the mux
   visible before you press anything else; the selection holds its card while that
   survives and lands on the first remaining card otherwise. `Enter` closes it and
   keeps the filter; `Esc` restores the filter you opened with. With the filter
-  applied and the input closed, `Esc` in the nav clears it.
+  applied and the input closed, `Esc` in the nav clears it. The input line states the
+  total matches and how many matching hosts are normally hidden.
 - **Jump** (`prefix <digit>`): digits only. It acts while open (each edit moves the
   selection while the number names a card), so `Enter` closes when the number names a
   card and flashes the range otherwise, and `Esc` restores where you started.
+
+A terminal smaller than 24 columns by 4 rows shows the required and current size in
+place of the split interface.
 
 ## Mouse
 
