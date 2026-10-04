@@ -80,6 +80,9 @@ pub struct Chrome {
     pub(crate) flash_until: Option<Instant>,
     /// The hint about the card the selection moved to, while it lasts.
     pub(crate) selection_hint: Option<SelectionHint>,
+    /// The first interactive key introduces the configured prefix and its help key.
+    pub(crate) first_key_seen: bool,
+    pub(crate) first_key_notice: bool,
     /// Auto-hide-tree mode (set by the app each frame). Drives the view border glyph:
     /// ║ (double) when on, │ (single) when off - the only on-screen cue, since while
     /// the mode is on but the tree is focused the tree still shows.
@@ -168,10 +171,30 @@ impl Chrome {
         self.selection_hint = None;
     }
 
+    pub(crate) fn key_read(&mut self) {
+        if !self.first_key_seen {
+            self.first_key_seen = true;
+            self.first_key_notice = true;
+            let prefix = self.ui_prefix.clone();
+            self.show_selection_hint(
+                vec![
+                    (prefix.clone(), "prefix".into(), "prefix".into()),
+                    (format!("{prefix} ?"), "help".into(), "help".into()),
+                ],
+                String::new(),
+                Instant::now(),
+            );
+        } else {
+            self.first_key_notice = false;
+            self.clear_selection_hint();
+        }
+    }
+
     /// Drops a selection hint whose time is up, and says whether the bar changed.
     pub(crate) fn expire_selection_hint(&mut self, now: Instant) -> bool {
         if self.selection_hint.as_ref().is_some_and(|h| now >= h.until) {
             self.selection_hint = None;
+            self.first_key_notice = false;
             return true;
         }
         false

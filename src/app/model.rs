@@ -840,7 +840,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::KeysRead => {
-            model.state.chrome.clear_selection_hint();
+            model.state.chrome.key_read();
             Vec::new()
         }
         Msg::Key(key) => {
@@ -1346,6 +1346,9 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
 /// Raises the hint about the card the user just moved the selection to, replacing any
 /// earlier one. A selection that stayed on `before` raises nothing.
 fn hint_selection_move(model: &mut AppModel, before: &Option<crate::state::RowRef>) {
+    if model.state.chrome.first_key_notice {
+        return;
+    }
     if !model.switcher.selection_moved_from(before) {
         return;
     }
@@ -1419,6 +1422,19 @@ mod tests {
     }
 
     #[test]
+    fn first_interactive_key_introduces_prefix_and_help_once() {
+        let mut m = model();
+        assert!(!m.state.chrome.first_key_seen);
+        update(&mut m, Msg::KeysRead);
+        assert!(m.state.chrome.first_key_seen);
+        assert!(hint_text(&m).contains("C-g prefix"));
+        assert!(hint_text(&m).contains("C-g ? help"));
+        update(&mut m, Msg::KeysRead);
+        assert!(!m.state.chrome.first_key_notice);
+        assert!(!hint_text(&m).contains("C-g ? help"));
+    }
+
+    #[test]
     fn a_selection_move_raises_the_cards_keys_and_a_fact_for_three_seconds() {
         let mut model = model_with_cards();
         assert!(
@@ -1457,6 +1473,7 @@ mod tests {
     #[test]
     fn the_next_move_replaces_the_hint_and_any_key_ends_it() {
         let mut model = model_with_cards();
+        model.state.chrome.first_key_seen = true;
         update(&mut model, down());
         assert!(hint_text(&model).contains("1 window"));
         // The next move replaces it with the card it lands on: the unreachable host,
@@ -2320,6 +2337,28 @@ mod tests {
             },
             logged_in: HashSet::new(),
         }
+    }
+
+    #[test]
+    fn only_successful_logins_enter_the_recent_values_list() {
+        let (mut m, attempt) = submitted_login(&["pwbox"]);
+        let login = crate::transport::Login {
+            address: Some("10.0.0.8".into()),
+            port: Some(2222),
+            user: Some("alice".into()),
+        };
+        let mut ok = login_result("pwbox", attempt, crate::link::unlock::UnlockOutcome::Ok);
+        if let Msg::OpResult {
+            result: crate::ui::switcher::OpResult::Login { login: value, .. },
+            ..
+        } = &mut ok
+        {
+            *value = login.clone();
+        }
+        update(&mut m, ok);
+        assert_eq!(m.state.recent_logins.len(), 1);
+        assert_eq!(m.state.recent_logins[0].login, login);
+        assert_eq!(m.state.recent_logins[0].source, "pwbox");
     }
 
     fn probed(machine: &str, probe: u64, err: Option<&str>) -> Msg {

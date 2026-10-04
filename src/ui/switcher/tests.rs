@@ -1264,7 +1264,7 @@ async fn open_filter_reports_matches_hidden_hosts_and_bolds_matching_cells() {
 }
 
 #[tokio::test]
-async fn filter_highlights_the_session_part_of_the_matched_address_not_its_title() {
+async fn filter_highlights_the_session_part_of_the_matched_address() {
     let mut h = Harness::new(Scan {
         groups: vec![Group {
             source: "host".into(),
@@ -1281,8 +1281,8 @@ async fn filter_highlights_the_session_part_of_the_matched_address_not_its_title
     h.ch('a').await;
     assert!(
         h.nav_mod_of("h")
-            .is_some_and(|m| !m.contains(Modifier::BOLD)),
-        "section titles do not carry match emphasis:\n{}",
+            .is_some_and(|m| m.contains(Modifier::BOLD)),
+        "section titles keep their fixed bold weight:\n{}",
         h.nav_cards_text()
     );
     assert!(
@@ -1487,6 +1487,29 @@ async fn login_pane_draws_its_fields_with_the_password_masked() {
         !screen.contains("hunter2"),
         "no plaintext reaches the rendered frame:\n{screen}"
     );
+}
+
+#[tokio::test]
+async fn login_pane_lists_recent_successful_connection_values() {
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("alice@pwbox: Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.state.recent_logins.push(crate::state::RecentLogin {
+        source: "other".into(),
+        login: crate::transport::Login {
+            address: Some("10.0.0.8".into()),
+            port: Some(2222),
+            user: Some("alice".into()),
+        },
+    });
+    h.draw();
+    let screen = h.text();
+    assert!(screen.contains("recent logins"), "{screen}");
+    assert!(screen.contains("alice@10.0.0.8:2222"), "{screen}");
 }
 
 #[tokio::test]
@@ -3456,19 +3479,17 @@ async fn levels_render_from_the_switchers_palette() {
 }
 
 #[tokio::test]
-async fn the_session_reads_bold_on_its_card() {
-    // The session - the level a user actually picks - is the one element that leaves
-    // the text colour, and it is BOLD; the host and mux on the context line stay plain
-    // text so the session remains the detail line's anchor.
+async fn card_text_has_a_fixed_attribute_hierarchy() {
     let h = Harness::new(sample());
     assert!(
-        h.nav_mod_of("editor").unwrap().contains(Modifier::BOLD),
-        "the session reads bold on its card"
+        !h.nav_mod_of("editor").unwrap().contains(Modifier::BOLD),
+        "the session reads at normal weight"
     );
     assert!(
-        !h.nav_mod_of("local").unwrap().contains(Modifier::BOLD),
-        "the host stays plain"
+        h.nav_mod_of("local").unwrap().contains(Modifier::BOLD),
+        "the section title reads bold"
     );
+    assert!(h.nav_mod_of("2").unwrap().contains(Modifier::DIM));
 }
 
 /// A session stamped with its mux kind, for the context-line tests.

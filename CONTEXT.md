@@ -105,6 +105,7 @@ UI elements a user perceives as distinct things:
   selection: the selected card's most relevant keys and one fact about it (a session's
   windows, a host's state word and the reason behind it). Any key ends it and the next
   move replaces it. A selection xmux was told to make raises none.
+  The first interactive key in a run briefly names the configured prefix and its help key.
 - view screen - what fills the terminal-view region in place of a mux while a selected
   host scans or has settled without a session to show, or when xmux would mirror its
   own session. A settled-state card names the STATE; its screen has room to state WHY.
@@ -240,9 +241,10 @@ UI elements a user perceives as distinct things:
   is ANSI-16, so the terminal theme resolves the hue. There is one TEXT colour, one
   ACCENT, and the section title's quiet header role: a session card reads as one
   neutral line with a single highlighted element - the session name, which takes the
-  accent and stays bold. The accent belongs to the LOWEST level the card displays:
+  accent at normal weight. The title is bold and the card number dim, so the hierarchy
+  remains visible without colour. The accent belongs to the LOWEST level the card displays:
   the session name on a session card, the mux on a host-state card that has a mux to
-  name. A section title reads dim, in the decoration role, one step below the cards.
+  name. A section title uses the decoration role.
   Each state glyph keeps its own colour:
   login needed uses `?` in the warning role, unreachable uses `▲` in the error role,
   and a listing failure uses `✗` in the primary role. The scanning spinner stays in
@@ -333,7 +335,9 @@ UI elements a user perceives as distinct things:
   whether to register this machine's public key on the host. The record choice appears
   only once a value differs from what ssh would have used, since a stanza repeating what
   ssh already resolves records nothing. The connection values and the two choices are two
-  titled groups, the focused stop's name is reversed while the pane takes keys, and a rule
+  titled groups. A recent list between them offers successful connection values from
+  this run without passwords; selecting an entry fills the three connection fields.
+  The focused stop's name is reversed while the pane takes keys, and a rule
   parts the inputs from the login's steps and its failure. A failure reads as a verdict in
   plain words, a `✗` on the field it concerns, ssh's own last line dimmed, and a details
   choice that unfolds ssh's whole text and the host facts. Enter means one thing
@@ -829,9 +833,11 @@ roster and hosts are not part of it - re-scanning sources is the `rescan` key's 
 and a config edit must not reset the user's sessions.
 
 - The palette is the sixteen slots (one per UI role) plus ATTRIBUTES: reverse
-  video, bold. Nothing else. An RGB colour, or an indexed colour above 15, is a hue
+  video, bold, and dim. Nothing else. An RGB colour, or an indexed colour above 15, is a hue
   xmux chose for somebody else's terminal, and it is wrong on every
   theme it was not chosen for. The palette is guarded so one cannot reach it.
+  A nonempty `NO_COLOR` resets xmux's palette and configured chrome colours;
+  selection remains visible through reverse video.
 - Anything the sixteen slots cannot say is said with an attribute instead. "One step off
   the background" is the case that keeps coming up, and it is not a slot: so the selected
   card is REVERSE VIDEO, the terminal swapping its own pair, which is what a theme itself

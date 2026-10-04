@@ -212,6 +212,7 @@ and `[ui] prefix` replaces it. A chord is the prefix followed by one key:
 
 Pressing the prefix opens a box beside the prefix indicator that lists every key it
 unlocks. A click on a card selects it, and a click on the terminal view focuses it.
+The first key pressed in a run briefly points out the configured prefix and help key.
 [`docs/keybind.md`](docs/keybind.md) lists the remaining keys.
 
 ## Hosts and sources
@@ -237,6 +238,8 @@ login:
    - the port
    - the username
    - an optional masked password
+   The panel offers recent successful connection values from this run for reuse;
+   passwords are excluded.
 2. On submit, xmux hands those values to ssh and answers the host-key question
    and the password itself, so the login needs no further input. Esc ends the
    attempt.

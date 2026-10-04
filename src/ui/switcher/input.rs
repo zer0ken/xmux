@@ -708,7 +708,18 @@ impl Switcher {
                 }
                 state.notify.toast(machine.clone(), login_notes(&outcome));
                 match outcome.connect {
-                    crate::link::unlock::UnlockOutcome::Ok => Some((source, login)),
+                    crate::link::unlock::UnlockOutcome::Ok => {
+                        state.recent_logins.retain(|item| item.login != login);
+                        state.recent_logins.insert(
+                            0,
+                            crate::state::RecentLogin {
+                                source: source.clone(),
+                                login: login.clone(),
+                            },
+                        );
+                        state.recent_logins.truncate(5);
+                        Some((source, login))
+                    }
                     crate::link::unlock::UnlockOutcome::Unavailable => None,
                     crate::link::unlock::UnlockOutcome::Failed { .. } => {
                         state.logged_in.remove(&machine);
