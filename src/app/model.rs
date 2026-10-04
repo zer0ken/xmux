@@ -409,7 +409,21 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             EventEffect::ApplyInventory { host, sessions },
         ],
         HostEvent::Changed { host } => vec![EventEffect::Refetch { host }],
-        HostEvent::Exited { host, reason } => vec![
+        // The server detached a client that was answering (tmux does this when the
+        // client's attached session is destroyed): the host still serves its other
+        // sessions, so its card stands as the mux last reported it and the channel is
+        // opened once more. The connected mark is cleared here, so only a reopened channel
+        // that lists sessions again can make a later exit a detach: a reopen that fails
+        // takes the ordinary exit path below and never opens a third channel.
+        HostEvent::Exited {
+            host,
+            detached: true,
+            ..
+        } if model.connected.remove(&host) => vec![
+            EventEffect::ReapHost { host: host.clone() },
+            EventEffect::ReopenHost { host },
+        ],
+        HostEvent::Exited { host, reason, .. } => vec![
             EventEffect::NoteHostExited {
                 host: host.clone(),
                 reason,
@@ -1302,6 +1316,7 @@ mod tests {
             crate::link::HostEvent::Exited {
                 host: "jup".into(),
                 reason: Some("connection refused".into()),
+                detached: false,
             },
         );
         assert!(matches!(
@@ -1512,6 +1527,138 @@ mod tests {
             m.state.notify.history.is_empty(),
             "a host that never answered stopped nothing"
         );
+    }
+
+    fn host_event(m: &mut AppModel, event: crate::link::HostEvent) -> Vec<String> {
+        update(
+            m,
+            Msg::HostEvent {
+                event,
+                logged_in: HashSet::new(),
+            },
+        )
+        .into_iter()
+        .flat_map(|effect| match effect {
+            Effect::Event(effect) => vec![effect],
+            Effect::EventBatch(effects) => effects,
+            effect => panic!("a source event emitted an unrelated effect: {effect:?}"),
+        })
+        .map(|effect| format!("{effect:?}"))
+        .collect()
+    }
+
+    fn exited(reason: Option<&str>, detached: bool) -> crate::link::HostEvent {
+        crate::link::HostEvent::Exited {
+            host: "gpu".to_owned(),
+            reason: reason.map(str::to_owned),
+            detached,
+        }
+    }
+
+    /// A `gpu` host whose control channel connected listing `names`.
+    fn connected_gpu(names: &[&str]) -> AppModel {
+        let mut m = AppModel::from_sources(vec!["gpu".to_owned()]);
+        answer(&mut m, "gpu", names, None);
+        host_event(
+            &mut m,
+            crate::link::HostEvent::Connected {
+                host: "gpu".to_owned(),
+                sessions: sessions("gpu", names),
+            },
+        );
+        m
+    }
+
+    fn gpu_card(m: &AppModel) -> (Vec<String>, Option<String>) {
+        let g = m.state.groups.iter().find(|g| g.source == "gpu").unwrap();
+        (
+            g.sessions.iter().map(|s| s.name.clone()).collect(),
+            g.err.clone(),
+        )
+    }
+
+    fn unreachable_records(m: &AppModel) -> usize {
+        m.state
+            .notify
+            .history
+            .iter()
+            .filter(|e| e.note.text.starts_with("unreachable:"))
+            .count()
+    }
+
+    const REAP_AND_REOPEN: [&str; 2] =
+        ["ReapHost { host: \"gpu\" }", "ReopenHost { host: \"gpu\" }"];
+
+    #[test]
+    fn a_detach_of_a_connected_host_reopens_its_channel_and_keeps_its_card() {
+        let mut m = connected_gpu(&["keep", "train"]);
+        // tmux pushes the destroyed session to the nav before it detaches its client.
+        update(
+            &mut m,
+            Msg::ApplyInventory {
+                source: "gpu".to_owned(),
+                sessions: sessions("gpu", &["keep"]),
+                live: true,
+            },
+        );
+
+        let effects = host_event(&mut m, exited(None, true));
+
+        assert_eq!(effects, REAP_AND_REOPEN, "one reap, then one reopen");
+        assert_eq!(gpu_card(&m), (vec!["keep".to_owned()], None));
+        assert_eq!(unreachable_records(&m), 0, "a detach loses no host");
+        assert!(m.state.notify.toasts.is_empty());
+
+        // The reopened channel lists sessions, so its own later detach reopens it again.
+        host_event(
+            &mut m,
+            crate::link::HostEvent::Connected {
+                host: "gpu".to_owned(),
+                sessions: sessions("gpu", &["keep"]),
+            },
+        );
+        assert_eq!(host_event(&mut m, exited(None, true)), REAP_AND_REOPEN);
+    }
+
+    #[test]
+    fn a_reopen_that_fails_marks_the_host_unreachable_and_opens_nothing_more() {
+        let mut m = connected_gpu(&["keep", "train"]);
+        assert_eq!(host_event(&mut m, exited(None, true)), REAP_AND_REOPEN);
+
+        // The reopened stream ends before it lists any session.
+        let effects = host_event(&mut m, exited(None, false));
+
+        assert_eq!(effects, ["ReapHost { host: \"gpu\" }"], "no second reopen");
+        assert!(gpu_card(&m).1.is_some(), "the card reads unreachable");
+        assert_eq!(unreachable_records(&m), 1, "the lost host is recorded once");
+    }
+
+    #[test]
+    fn a_detach_notice_on_a_reopened_stream_that_never_listed_does_not_reopen_again() {
+        let mut m = connected_gpu(&["keep"]);
+        assert_eq!(host_event(&mut m, exited(None, true)), REAP_AND_REOPEN);
+
+        let effects = host_event(&mut m, exited(Some("too far behind"), true));
+
+        assert_eq!(effects, ["ReapHost { host: \"gpu\" }"]);
+        assert!(gpu_card(&m).1.is_some());
+    }
+
+    #[test]
+    fn a_reopen_onto_a_host_with_no_sessions_left_shows_it_empty() {
+        let mut m = connected_gpu(&["last"]);
+        assert_eq!(host_event(&mut m, exited(None, true)), REAP_AND_REOPEN);
+
+        // tmux answers the reopened attach with its own "no sessions" error and a notice.
+        let effects = host_event(&mut m, exited(Some("no sessions"), true));
+
+        assert_eq!(effects, ["ReapHost { host: \"gpu\" }"]);
+        assert_eq!(
+            gpu_card(&m),
+            (Vec::new(), None),
+            "an empty host, not unreachable"
+        );
+        assert_eq!(unreachable_records(&m), 0);
     }
 
     #[test]

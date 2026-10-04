@@ -62,10 +62,15 @@ pub enum HostEvent {
     /// (re-run list-sessions), since the notification carries only an
     /// id, not the new structure. Resyncs the nav (#5).
     Changed { host: String },
-    /// `%exit` / EOF - reap.
+    /// `%exit` / EOF - reap. A stream emits at most one.
     Exited {
         host: String,
         reason: Option<String>,
+        /// The mux ended this client with its own `%exit` notice, so the far side was
+        /// still answering when the stream closed. tmux sends a bare notice to a control
+        /// client whose attached session was destroyed while the server keeps serving
+        /// its other sessions. `false` when the stream ended without a notice.
+        detached: bool,
     },
     /// `%client-detached <client>` - some client of this host detached. The reader
     /// does not know which client is xmux's display attach (that tty lives on the

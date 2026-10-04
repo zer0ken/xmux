@@ -225,6 +225,9 @@ pub enum EventEffect {
     /// `Exited`: reap `host`'s metadata client after [`Self::NoteHostExited`] has folded
     /// the tree and connected-set state change.
     ReapHost { host: String },
+    /// `Exited` as a detach of a connected host: open `host`'s metadata channel once
+    /// more after [`Self::ReapHost`] has removed the detached one.
+    ReopenHost { host: String },
     /// `ClientDetached`: reap xmux's own display attach on `host` IFF the detaching
     /// `client` tty matches the host's recorded display tty. The loop owns the
     /// registry + the recover-from-detach rearm, so the match + reap run there.
@@ -353,6 +356,9 @@ impl std::fmt::Debug for EventEffect {
                 .finish(),
             EventEffect::ReapHost { host } => {
                 f.debug_struct("ReapHost").field("host", host).finish()
+            }
+            EventEffect::ReopenHost { host } => {
+                f.debug_struct("ReopenHost").field("host", host).finish()
             }
             EventEffect::ReapDisplayAttach { host, client } => f
                 .debug_struct("ReapDisplayAttach")

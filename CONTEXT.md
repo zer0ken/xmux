@@ -720,6 +720,14 @@ sees: a channel that dropped stays dropped, a display whose client died keeps th
 frame it drew, and a card that is unreachable stays unreachable, each until the user asks
 for it again.
 
+A DETACH is not a drop. A mux that ends a control client which had already listed
+sessions says so over the open push stream, and keeps serving its other sessions: tmux
+detaches a control client whose attached session was destroyed. The host answered, so
+its card stands as the mux last reported it and the channel is opened once more. Only a
+reopened channel that lists sessions again earns another reopen on its next detach, so a
+reopen that fails ends like any other channel: an empty host when the mux reports no
+sessions, and unreachable otherwise.
+
 Concurrency follows from the same fact. A machine counts the connections that have not
 authenticated yet, so work fans out ACROSS machines and never within one: a machine is
 asked one thing at a time, however many things there are to ask it.

@@ -108,6 +108,14 @@ impl Runtime {
             EventEffect::ReapHost { host } => {
                 mgr.reap(&host);
             }
+            EventEffect::ReopenHost { host } => {
+                // The detached channel is reaped, so this opens exactly one new one. tmux
+                // attaches it to another of the host's sessions; with none left, the new
+                // stream's own exit settles the card as an empty host.
+                tracing::info!(host, "control_reopen_after_detach");
+                let (vc, vr) = terminal_view_size(cols, rows, nav);
+                dispatch_detected_host(mgr, hosts, &host, vc, vr);
+            }
             EventEffect::ReapDisplayAttach { host, client } => {
                 // Reap our display attach ONLY when the detaching client is OUR display client
                 // (matched against the in-memory Host.display_tty). An unrelated client's detach

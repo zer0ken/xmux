@@ -335,6 +335,13 @@ impl Hosts {
                     h.liveness = Liveness::Live;
                 }
             }
+            // A live host the server detached still serves its other sessions, and its
+            // display client is untouched, so it stays live with its display tty.
+            Exited {
+                host,
+                detached: true,
+                ..
+            } if self.get(host).is_some_and(|h| h.liveness == Liveness::Live) => {}
             Exited { host, .. } => {
                 if let Some(h) = self.get_mut(host) {
                     h.clear_display_tty();
@@ -772,6 +779,7 @@ mod tests {
         hosts.apply_host_event(&HostEvent::Exited {
             host: "jup".into(),
             reason: None,
+            detached: false,
         });
         let h = hosts.get("jup").unwrap();
         assert!(
@@ -779,6 +787,41 @@ mod tests {
             "death clears the tty so no switch-client targets it"
         );
         assert_eq!(h.liveness, Liveness::Unreachable);
+    }
+
+    #[test]
+    fn apply_detach_of_a_live_host_keeps_it_live_with_its_tty() {
+        let mut hosts = Hosts::build(
+            &tmux_on(&["jup"]),
+            &["jup".to_string()],
+            &[],
+            "linux",
+            &local(),
+            std::path::Path::new("/x"),
+            None,
+        );
+        hosts.apply_host_event(&HostEvent::Connected {
+            host: "jup".into(),
+            sessions: vec![],
+        });
+        hosts
+            .get_mut("jup")
+            .unwrap()
+            .record_display_tty(Some("/dev/pts/9".into()));
+        let detach = HostEvent::Exited {
+            host: "jup".into(),
+            reason: None,
+            detached: true,
+        };
+        hosts.apply_host_event(&detach);
+        let h = hosts.get("jup").unwrap();
+        assert_eq!(h.liveness, Liveness::Live);
+        assert!(h.display_tty.0.is_some(), "the display client is untouched");
+
+        // A detach notice on a host that never went live is an ordinary exit.
+        hosts.get_mut("jup").unwrap().liveness = Liveness::Connecting;
+        hosts.apply_host_event(&detach);
+        assert_eq!(hosts.get("jup").unwrap().liveness, Liveness::Unreachable);
     }
 
     #[test]

@@ -253,6 +253,38 @@ async fn dispatch_scanned_without_a_resolved_mux_opens_no_channel() {
 }
 
 #[tokio::test]
+async fn a_detach_reopens_the_control_channel_once() {
+    // tmux detached the control client of a connected host: the runtime reaps it and
+    // opens one new channel. That channel's exit before it lists sessions reopens nothing.
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut host = crate::model::Host::new(
+        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
+        crate::mux::for_binary("tmux").unwrap(),
+    );
+    host.detected = true;
+    rt.hosts.insert(host);
+    rt.mgr.insert_fake("jup");
+    rt.model.connected.insert("jup".into());
+    let detach = || HostEvent::Exited {
+        host: "jup".into(),
+        reason: None,
+        detached: true,
+    };
+
+    rt.handle_host_event(detach());
+    assert!(
+        rt.mgr.get("jup").is_some(),
+        "the detach reopened the channel"
+    );
+
+    rt.handle_host_event(detach());
+    assert!(
+        rt.mgr.get("jup").is_none(),
+        "a reopened channel that never listed sessions is not reopened again"
+    );
+}
+
+#[tokio::test]
 async fn machine_connected_dispatches_a_detected_control_host() {
     // A machine that connected resolves each source it serves onto its metadata channel.
     // A detected tmux host gets a `-CC` control client (the child spawns and dies at once
@@ -4423,6 +4455,7 @@ fn host_event_exited_marks_unreachable_and_emits_reap() {
         HostEvent::Exited {
             host: "jup".into(),
             reason: Some("connection refused".into()),
+            detached: false,
         },
         &mut sw,
         &mut connected,
@@ -4450,6 +4483,7 @@ fn host_event_exited_of_connected_host_keeps_tree_and_still_reaps() {
         HostEvent::Exited {
             host: "jup".into(),
             reason: None,
+            detached: false,
         },
         &mut sw,
         &mut connected,
