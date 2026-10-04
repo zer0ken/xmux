@@ -1654,7 +1654,7 @@ async fn login_and_key_registration_results_are_one_toast_kept_for_the_host() {
 }
 
 #[tokio::test]
-async fn a_failed_login_and_a_skipped_key_are_a_toast_that_stays() {
+async fn a_failed_login_and_a_skipped_key_have_timed_toasts() {
     use crate::link::unlock::{FailureKind, UnlockOutcome};
     use crate::state::notify::Level;
     use crate::ui::ops::{LoginOutcome, OpResult, RegistrationOutcome};
@@ -1682,7 +1682,7 @@ async fn a_failed_login_and_a_skipped_key_are_a_toast_that_stays() {
         toast.notes[0].text, "login failed: the password was refused",
         "the toast carries the verdict; the pane keeps ssh's own words"
     );
-    assert!(toast.until.is_none(), "a failure waits to be dismissed");
+    assert!(toast.until.is_some(), "a failure toast expires");
 
     let mut h = Harness::from_sources(&["pwbox"]);
     h.sw.apply_op_result(
@@ -1705,7 +1705,7 @@ async fn a_failed_login_and_a_skipped_key_are_a_toast_that_stays() {
         .map(|n| n.level)
         .collect();
     assert_eq!(levels, [Level::Success, Level::Warning]);
-    assert!(h.state.notify.toasts[0].until.is_none());
+    assert!(h.state.notify.toasts[0].until.is_some());
 
     // A cancelled login says nothing about the connection the user ended.
     let mut h = Harness::from_sources(&["pwbox"]);

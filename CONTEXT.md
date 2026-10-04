@@ -554,8 +554,10 @@ UI elements a user perceives as distinct things:
   rounded box floating in the terminal view's corner nearest the hint, at most 40% of
   the window wide. It avoids the prefix key list and floating hint. A toast of successes
   and facts leaves after five seconds and fills its bottom border with a bold accent
-  line for the share of that life still ahead. One carrying a warning `▲` or a failure
-  `✗` stays until a click on it or opening the history dismisses it.
+  line for the share of that life still ahead. A login result leaves after five seconds
+  even when it contains a warning or failure, since the login pane and history keep its
+  details. Other toasts carrying a warning `▲` or a failure `✗` stay until a click on
+  them or opening the history dismisses them.
   `[ui] notifications` turns toasts off.
 - history - the bounded record of every toast and every background event, opened with
   `prefix m`, newest first. A background event is one nobody asked about (a host that

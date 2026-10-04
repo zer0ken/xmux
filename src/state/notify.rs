@@ -147,8 +147,24 @@ impl Notifications {
         self.toast_at(Instant::now(), title, notes);
     }
 
+    /// Reports a result whose details remain on its own screen, so its toast may leave
+    /// after the normal duration even when it contains a warning or an error.
+    pub(crate) fn timed_toast(&mut self, title: impl Into<String>, notes: Vec<Note>) {
+        self.toast_at_with_policy(Instant::now(), title, notes, true);
+    }
+
     /// [`Self::toast`] at a given instant.
     pub(crate) fn toast_at(&mut self, now: Instant, title: impl Into<String>, notes: Vec<Note>) {
+        self.toast_at_with_policy(now, title, notes, false);
+    }
+
+    fn toast_at_with_policy(
+        &mut self,
+        now: Instant,
+        title: impl Into<String>,
+        notes: Vec<Note>,
+        timed: bool,
+    ) {
         if notes.is_empty() {
             return;
         }
@@ -164,7 +180,7 @@ impl Notifications {
             title,
             notes,
             shown: now,
-            until: (!sticky).then(|| now + TOAST_TTL),
+            until: (timed || !sticky).then(|| now + TOAST_TTL),
         });
         if self.toasts.len() > TOAST_STACK {
             let older = &self.toasts[..self.toasts.len() - 1];
@@ -586,6 +602,19 @@ mod tests {
         n.set_toasts_enabled(true);
         n.toast("gpu-02", ok("logged in"));
         assert_eq!(n.toasts.len(), 1);
+    }
+
+    #[test]
+    fn timed_failure_toast_expires_and_keeps_its_history_record() {
+        let mut n = Notifications::default();
+        n.timed_toast("pwbox", err("login failed"));
+        let shown = n.toasts[0].shown;
+        assert_eq!(n.toasts[0].until, Some(shown + TOAST_TTL));
+        assert!(n.tick(shown + TOAST_TTL, false));
+        assert!(n.toasts.is_empty());
+        assert_eq!(n.history.len(), 1);
+        n.toast_at(shown + TOAST_TTL, "other", err("operation failed"));
+        assert!(n.toasts[0].until.is_none());
     }
 
     #[test]

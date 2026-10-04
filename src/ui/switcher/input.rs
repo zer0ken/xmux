@@ -853,7 +853,9 @@ impl Switcher {
                         .registration_reports
                         .insert(machine.clone(), outcome.registration.clone());
                 }
-                state.notify.toast(machine.clone(), login_notes(&outcome));
+                state
+                    .notify
+                    .timed_toast(machine.clone(), login_notes(&outcome));
                 match outcome.connect {
                     crate::link::unlock::UnlockOutcome::Ok => {
                         state.recent_logins.retain(|item| item.login != login);
