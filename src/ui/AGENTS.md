@@ -15,9 +15,10 @@ switcher reads and writes it and owns only transient popup geometry.
 
 The chrome is the view border, the hint bar, and the host screens, plus its
 view-local state (flash, spinner, view border colours, prefix, ready, the selection
-hint). The hint bar is the nav's prefix indicator, not a full-width strip: a label on a
-side column's bottom row, and at the right end of the view border row in a band. It shows
-the prefix alone at rest and while a prefix interaction is live. The chrome instance
+hint). The hint bar rests as the nav's prefix indicator: a label on a side column's
+bottom row, and at the right end of the view border row in a band. A floating bar
+spans the full width in a side layout. The indicator shows the prefix alone at rest
+and while a prefix interaction is live. The chrome instance
 itself lives in the runtime state, fed by the app each frame and rendered from it.
 
 The key list module lays out and paints the box a live prefix opens from the indicator
@@ -79,7 +80,9 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   states, not a panel each: one builder lays them all out, so the headline, the state
   word, and the key rows cannot drift apart. A later settled state joins that grammar.
   The domain model chooses the state; this layer renders the result.
-- Scanning uses a Braille-only animation instead of the settled-state grammar. The
+- Scanning uses a Braille-only animation instead of the settled-state grammar. A
+  settled screen centers the same animation below its content when the remaining
+  rectangle fits a complete frame. The
   application owns its clock, the render plan records the domain-selected screen,
   and both the live frame and off-screen dump paint from that same immutable choice.
   Its monochrome frame atlas is sampled from the approved outline prototype so font

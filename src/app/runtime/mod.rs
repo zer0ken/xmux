@@ -1346,13 +1346,10 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                 // file and re-apply the `[ui]` presentation settings when it changed.
                 // Marked dirty so the re-applied styles actually repaint this frame.
                 //
-                // While a scan is in flight or a spinner is showing, redraw on the
-                // frame cadence even with no new event, so the scanning/connecting
-                // spinner advances instead of freezing in the gaps between probe
-                // completions. Probe-completion events alone leave long event-free
-                // spans (a slow remote host between answers), and the dirty-gated
-                // draw would hold the last frame the whole time.
+                // Active view screens and spinners advance on the frame cadence even
+                // when no new event arrives.
                 if rt.on_config_check()
+                    || rt.model.render_plan.view_screen.is_some()
                     || !rt.model.state.scanning.is_empty()
                     || !rt.model.state.chrome.spinner.is_empty()
                     || rt

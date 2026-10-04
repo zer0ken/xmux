@@ -43,7 +43,7 @@ pub(super) const BAND_RULE: &str = "\u{2500}";
 /// selection's inversion of that rect starts where the card does. A band one row tall
 /// runs its titles and cards along one line, where an indent would mark nothing, so it
 /// indents nothing.
-pub(super) const CARD_INDENT: u16 = 2;
+pub(super) const CARD_INDENT: u16 = 1;
 
 /// What a band column that continues a section writes after the repeated title on its
 /// top row, saying the cards under it belong to a section begun in an earlier column.

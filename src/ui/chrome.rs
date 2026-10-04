@@ -487,8 +487,8 @@ impl Chrome {
     /// The terminal-view HOST SCREEN: what fills the terminal-view region in place of a
     /// mux, for a selected host with no session to show.
     ///
-    /// One screen, two states, so a reader of either reads the other: the host's name as
-    /// the headline, under it the same status word its nav card carries, then the rows
+    /// One screen grammar for settled states: the host's name as the headline,
+    /// under it the same status word its nav card carries, then the rows
     /// that apply to it. A row is the help modal's row borrowed whole - a right-aligned
     /// left cell, the `│` rule, the value - so a key offered on a screen looks like a key
     /// offered anywhere else, and a datum's name stays quieter than the datum.
@@ -508,7 +508,16 @@ impl Chrome {
             view.focused,
             palette,
         );
+        let content_rows = lines.len().min(area.height as usize) as u16;
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        let blank = Rect {
+            y: area.y + content_rows,
+            height: area.height - content_rows,
+            ..area
+        };
+        if crate::ui::braille_x::fits(blank) {
+            crate::ui::braille_x::render(frame, blank, self.animation_ms);
+        }
     }
 
     /// The name a view screen carries at its top, in the grammar the nav cards use:
