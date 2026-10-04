@@ -223,7 +223,7 @@ fn pl1_a_band_continuation_column_repeats_its_title() {
 }
 
 #[test]
-fn pl2_the_selected_card_reverses_only_under_nav_focus() {
+fn pl2_the_selected_card_reverses_in_both_focus_states() {
     for position in ALL {
         for terminal_focused in [false, true] {
             let shot = Shot::new(two_groups(), nav_at(position), terminal_focused);
@@ -231,9 +231,9 @@ fn pl2_the_selected_card_reverses_only_under_nav_focus() {
                 .find_in(shot.nav_area(), "❯ build")
                 .unwrap_or_else(|| panic!("{position:?}: the mark is painted"));
             let reversed = shot.buf[(x + 2, y)].modifier.contains(Modifier::REVERSED);
-            assert_eq!(
-                reversed, !terminal_focused,
-                "{position:?} terminal_focused={terminal_focused}: nav focus reverses, terminal focus keeps the mark only"
+            assert!(
+                reversed,
+                "{position:?} terminal_focused={terminal_focused}: the selected card stays reversed"
             );
         }
     }

@@ -492,9 +492,11 @@ impl Switcher {
     }
 
     /// Whether the paint leaves the host band out: hidden by the move into the terminal
-    /// view, and not overridden by a live prefix.
+    /// view in the sessions scope, and not overridden by a live prefix.
     fn band_unpainted(&self) -> bool {
-        self.host_band_hidden && !self.prefix_active
+        self.scope == crate::model::NavScope::Sessions
+            && self.host_band_hidden
+            && !self.prefix_active
     }
 
     /// Whether `(source, target)` addresses the session xmux is ITSELF running in.
