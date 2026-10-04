@@ -1,5 +1,7 @@
 use super::*;
+use crate::model::keys::KeyCommand;
 use crate::state::notify::{Level, Note};
+use crate::state::PaletteChoice;
 
 impl Switcher {
     // --- key handling -------------------------------------------------------
@@ -35,6 +37,104 @@ impl Switcher {
             state.notify.dismiss_all();
             state.modal = Some(Modal::History { scroll: 0 });
         }
+    }
+
+    pub fn toggle_palette(&mut self, state: &mut crate::state::State) {
+        if matches!(state.modal, Some(Modal::Palette { .. })) {
+            state.modal = None;
+        } else {
+            self.dismiss_modals(state);
+            state.modal = Some(Modal::Palette {
+                query: String::new(),
+                selected: 0,
+                open: false,
+                decoder: crate::display::decode::KeyDecoder::new(),
+            });
+        }
+    }
+
+    pub(crate) fn palette_entries(
+        &self,
+        state: &crate::state::State,
+        query: &str,
+    ) -> Vec<(String, PaletteChoice)> {
+        use KeyCommand::*;
+        let commands = [
+            Filter,
+            FocusTerminal,
+            FocusNav,
+            NewSession,
+            Rescan,
+            RescanHost,
+            Check,
+            Scope,
+            Collapse,
+            AutoHide,
+            Position,
+            History,
+            Help,
+            Quit,
+        ];
+        let mut entries: Vec<_> = commands
+            .into_iter()
+            .filter_map(|command| {
+                let entry = crate::model::keys::entry_for(command)?;
+                let name = format!(
+                    "{}  {}",
+                    entry.long,
+                    entry.full_label(&state.chrome.ui_prefix, state.chrome.nav_position)
+                );
+                Some((name, PaletteChoice::Command(command)))
+            })
+            .collect();
+        entries.extend(
+            self.check_entries(state)
+                .into_iter()
+                .filter(|entry| entry.kind != crate::model::FailureKind::ListFailed)
+                .map(|entry| {
+                    (
+                        format!("log in to {}", entry.label),
+                        PaletteChoice::Login(entry.source),
+                    )
+                }),
+        );
+        let terms: Vec<String> = query
+            .split_whitespace()
+            .map(|term| term.to_lowercase().replace('-', ""))
+            .collect();
+        entries.retain(|(name, choice)| {
+            let mut text = name.to_lowercase().replace(['-', ' '], "");
+            if let PaletteChoice::Login(source) = choice {
+                text.push_str(&source.to_lowercase().replace(['-', ' '], ""));
+            }
+            terms.iter().all(|term| text.contains(term))
+        });
+        entries
+    }
+
+    pub(crate) fn take_palette_choice(
+        &mut self,
+        state: &mut crate::state::State,
+    ) -> Option<PaletteChoice> {
+        let Some(Modal::Palette {
+            query,
+            selected,
+            open: true,
+            ..
+        }) = &state.modal
+        else {
+            return None;
+        };
+        let choice = self
+            .palette_entries(state, query)
+            .get(*selected)
+            .map(|(_, choice)| choice.clone());
+        if choice.is_some() {
+            state.modal = None;
+        } else if let Some(Modal::Palette { open, .. }) = &mut state.modal {
+            *open = false;
+        }
+        choice
     }
 
     /// Closes any open modal and resets the popup drag position. The single `popup`
@@ -99,6 +199,7 @@ impl Switcher {
                     b'm' => self.toggle_history(state),
                     b'?' => self.toggle_help(state),
                     b'h' => self.toggle_check(state),
+                    b':' => self.toggle_palette(state),
                     _ => continue,
                 }
                 rest = &rest[1..];
@@ -127,10 +228,17 @@ impl Switcher {
             Some(Modal::Check { .. }) => self.check_entries(state).len(),
             _ => 0,
         };
+        let palette_count = match &state.modal {
+            Some(Modal::Palette { query, .. }) => self.palette_entries(state, query).len(),
+            _ => 0,
+        };
         match state.modal.as_mut() {
             Some(Modal::History { scroll }) => *scroll = (*scroll).min(last),
             Some(Modal::Check { selected, .. }) => {
                 *selected = (*selected).min(checks.saturating_sub(1))
+            }
+            Some(Modal::Palette { selected, .. }) => {
+                *selected = (*selected).min(palette_count.saturating_sub(1))
             }
             Some(Modal::Help { query, scroll, .. }) => {
                 let rows = modal::matching_help_rows(
@@ -284,15 +392,32 @@ impl Switcher {
             return false;
         };
         state.modal = None;
+        self.open_host(&entry.source, state)
+    }
+
+    pub(crate) fn open_host(&mut self, source: &str, state: &mut crate::state::State) -> bool {
+        let login_needed = state
+            .groups
+            .iter()
+            .find(|group| group.source == source)
+            .and_then(crate::model::Group::failure)
+            .is_some_and(|kind| kind != crate::model::FailureKind::ListFailed);
+        if self
+            .hidden_sources(state)
+            .iter()
+            .any(|hidden| hidden == source)
+        {
+            self.set_scope(crate::model::NavScope::AllHosts, state);
+        }
         let host_row = |sw: &Switcher| {
             sw.rows.iter().position(
-                |r| matches!(&r.reference, RowRef::Host { source, .. } if *source == entry.source),
+                |r| matches!(&r.reference, RowRef::Host { source: row_source, .. } if row_source == source),
             )
         };
         let row = match host_row(self) {
             Some(i) => Some(i),
             None => {
-                state.filter = entry.source.clone();
+                state.filter.clear();
                 self.rebuild(state);
                 host_row(self)
             }
@@ -302,7 +427,10 @@ impl Switcher {
         };
         self.user_moved = true;
         self.set_selected(i, state);
-        entry.kind == crate::model::FailureKind::Blocked
+        if login_needed {
+            self.login_target = Some(source.to_owned());
+        }
+        login_needed
     }
 
     // --- input row ----------------------------------------------------------

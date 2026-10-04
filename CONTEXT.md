@@ -319,12 +319,13 @@ UI elements a user perceives as distinct things:
   effective policy is `ask`, since the submitted login can accept that key. An unknown
   key under a strict policy stays unreachable and names a command that displays its fingerprint. Remote command permissions, name resolution,
   connectivity failures, and a changed host key stay unreachable. A blocked card keeps
-  the warning-coloured `?` mark, is never hidden by hide-unreachable (it is the one entry to the login pane), and
+  the warning-coloured `?` mark, is never hidden by hide-unreachable, and
   shows that pane above the same failure facts the unreachable screen states, folded under
   the pane's details choice. What it was blocked ON is not in its state word: the pane
   states a verdict over ssh's own sentence. The transport diagnoses the ssh text and the
   inventory group exposes the typed failure.
-- login pane - the form a blocked host's panel opens, holding the three values ssh will
+- login pane - the form a blocked host's panel opens, or that the user opens for an
+  unreachable host from the hosts-to-check table or command palette. It holds the three values ssh will
   not ask for and must know before it dials: the address, the port, and the username. A
   masked password field is optional beside them. Every value starts at what ssh WOULD
   use. Address, port, and user come from OpenSSH's effective configuration when present,
@@ -523,6 +524,7 @@ UI elements a user perceives as distinct things:
   Esc restores the filter the input opened with; with the input closed, Esc clears an
   active filter. A host hidden from the nav (`[ui] hide-unreachable`) shows its card
   while the filter names it.
+  The hosts-to-check table and command palette open its login pane without a filter.
 - nav scope - which cards the nav lists: `sessions` (the default, with the hidden hosts
   left out), `all hosts` (nothing hidden), or `needs attention` (only the hosts in a
   settled problem state, no session). `prefix s` steps it, it is named only while the
@@ -530,8 +532,11 @@ UI elements a user perceives as distinct things:
   remembered across runs.
 - hosts to check - the table `prefix h` opens: every host in a problem state grouped by
   cause, each with its reason and a mark on the ones the hiding leaves without a card.
-  Enter on a row selects that host's card, bringing a hidden host back through the
-  filter, and focuses the terminal view for a host whose login pane answers it.
+  Enter on a row selects that host's card, switching to the all-hosts scope when
+  needed, and opens the login pane for a blocked or unreachable host.
+- command palette - the searchable popup `prefix :` opens. It lists named actions
+  from the key table and login entries for blocked or unreachable hosts. Enter runs
+  the selected action; Esc closes it.
 - one-host re-scan - `prefix R`: the selected card's machine asked again alone, its
   reachability probe and then every source it serves, reported in its own summary toast.
   A full re-scan (`prefix r`) asked meanwhile takes over.

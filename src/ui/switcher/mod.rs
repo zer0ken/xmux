@@ -297,6 +297,8 @@ pub struct Switcher {
 
     rows: Vec<Row>,
     selected: usize,
+    /// Host whose login pane was opened explicitly from the check table or palette.
+    login_target: Option<String>,
 
     terminal_view_target: TerminalViewTarget,
     /// The session xmux is ITSELF running in, when it is inside one. The
@@ -304,8 +306,8 @@ pub struct Switcher {
     own_session: Option<Address>,
     /// Whether the nav hides the settled unreachable hosts' cards (`[ui]
     /// hide-unreachable`). The app threads it in at construction; there is no live
-    /// toggle. The filter naming a hidden host keeps its card, which is the
-    /// unreachable screen's one entry point.
+    /// toggle. The filter naming a hidden host keeps its card; the check table and
+    /// command palette can also select it directly.
     hide_unreachable: bool,
     /// Which cards the nav lists. The app restores the persisted scope at construction and
     /// the scope key steps it.
@@ -367,6 +369,7 @@ impl Switcher {
             reattach_kick: false,
             rows: Vec::new(),
             selected: 0,
+            login_target: None,
             terminal_view_target: TerminalViewTarget::default(),
             own_session: None,
             hide_unreachable: false,
@@ -521,6 +524,14 @@ impl Switcher {
     // --- tree model ---------------------------------------------------------
 
     fn rebuild(&mut self, state: &mut crate::state::State) {
+        if self.login_target.as_ref().is_some_and(|source| {
+            !state
+                .groups
+                .iter()
+                .any(|group| group.source == *source && group.failure().is_some())
+        }) {
+            self.login_target = None;
+        }
         // Hold the selection on its session across this rebuild whenever that session
         // survives (matched by identity) - a rebuild re-derives the whole row list, so a
         // routine one (local poll, remote %-event refetch) must NOT snap the selection
@@ -733,6 +744,13 @@ impl Switcher {
             return;
         }
         let idx = idx.min(self.rows.len() - 1);
+        if self.rows.get(idx).and_then(|row| match &row.reference {
+            RowRef::Host { source, .. } => Some(source.as_str()),
+            _ => None,
+        }) != self.login_target.as_deref()
+        {
+            self.login_target = None;
+        }
         self.selected = idx;
         if !matches!(self.current_ref(), Some(RowRef::Session { .. })) {
             self.host_band_hidden = false;
@@ -931,7 +949,8 @@ impl Switcher {
     /// terminal-view panel carries the login pane, so a keystroke typed while the
     /// terminal view is focused drives that pane rather than reaching a session.
     pub(crate) fn current_host_blocked(&self) -> bool {
-        matches!(self.current_ref(), Some(RowRef::Host { blocked, .. }) if *blocked)
+        matches!(self.current_ref(), Some(RowRef::Host { blocked: true, .. }))
+            || matches!(self.current_ref(), Some(RowRef::Host { source, .. }) if self.login_target.as_deref() == Some(source))
     }
 
     /// Which screen the terminal view shows in place of the grid, or `None` for a session.
@@ -943,6 +962,11 @@ impl Switcher {
         };
         let group = selected_source
             .and_then(|source| state.groups.iter().find(|group| group.source == source));
+        if selected_source.is_some_and(|source| self.login_target.as_deref() == Some(source))
+            && group.and_then(crate::model::Group::failure).is_some()
+        {
+            return Some(ViewScreen::Login);
+        }
         let scanning = match self.current_ref() {
             Some(RowRef::Host { source, .. }) => state.scanning.contains(source),
             None => !state.scanning.is_empty(),

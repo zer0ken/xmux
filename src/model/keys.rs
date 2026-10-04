@@ -136,6 +136,8 @@ pub enum KeyCommand {
     RescanHost,
     /// Toggle the table of the hosts to check.
     Check,
+    /// Search and run a named command.
+    Palette,
     /// Step the nav scope.
     Scope,
     /// Collapse or expand the nav.
@@ -446,6 +448,15 @@ pub static TABLE: &[KeyEntry] = &[
         help: "hosts to check, by cause: ↑/↓ move, Enter opens the host, Esc closes",
         long: "hosts to check",
         short: "check",
+        rank: 2,
+    },
+    KeyEntry {
+        section: Section::Navigate,
+        keys: Keys::Prefix(&[(Chord::Char(':'), KeyCommand::Palette)]),
+        label: ":",
+        help: "command palette: type to search, Enter runs, Esc closes",
+        long: "find a command",
+        short: "commands",
         rank: 2,
     },
     KeyEntry {

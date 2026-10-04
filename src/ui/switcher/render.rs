@@ -466,9 +466,10 @@ impl Switcher {
         let hidden = self.hidden_sources(state).len();
         let scope = self.scope().word();
         if hidden == 0 {
-            format!("nav: {scope}")
+            format!("showing {scope}")
         } else {
-            format!("nav: {scope} · {hidden} hidden")
+            let hosts = if hidden == 1 { "host" } else { "hosts" };
+            format!("showing {scope} · {hidden} {hosts} hidden")
         }
     }
 
@@ -1304,6 +1305,16 @@ impl Switcher {
                 let h = (lines.len() as u16 + 2).min(area.height.max(1));
                 modal::offset_centered(w, h, area, self.popup_geo.offset)
             }
+            Some(Modal::Palette { query, .. }) => {
+                let w = history_popup_width(area);
+                let rows = self.palette_entries(state, query).len().clamp(1, 12) as u16;
+                modal::offset_centered(
+                    w,
+                    (rows + 4).min(area.height.max(1)),
+                    area,
+                    self.popup_geo.offset,
+                )
+            }
             Some(Modal::History { scroll }) => {
                 let w = history_popup_width(area);
                 let (_, lines) = crate::ui::toast::history_lines(
@@ -1414,6 +1425,27 @@ impl Switcher {
                 rect.width.saturating_sub(2),
                 rect.height.saturating_sub(2) as usize,
             ),
+            Some(Modal::Palette {
+                query, selected, ..
+            }) => {
+                let entries = self.palette_entries(state, query);
+                let visible = rect.height.saturating_sub(4) as usize;
+                let start = selected.saturating_sub(visible.saturating_sub(1));
+                let mut lines = vec![Line::from(format!(" : {query}▌")), Line::from("")];
+                if entries.is_empty() {
+                    lines.push(Line::from(" no matching commands"));
+                } else {
+                    for (i, (name, _)) in entries.iter().enumerate().skip(start).take(visible) {
+                        let line = Line::from(format!(" {name}"));
+                        lines.push(if i == *selected {
+                            line.style(palette::selection_style(palette))
+                        } else {
+                            line
+                        });
+                    }
+                }
+                ("commands".to_string(), lines)
+            }
             _ => return,
         };
         modal::render_popup(frame, area, rect, &title, lines, palette);
