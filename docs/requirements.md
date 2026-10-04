@@ -575,8 +575,10 @@ no function, and no test, so renaming code is never a documentation change.
   is at most 40% of the window wide, and wraps a long reason inside that width. A toast
   of successes and facts leaves after five seconds and shows the time it has left as a
   bold accent line on its bottom border, with the elapsed share as a normal line.
-  The history key appears inside the card when it fits. A toast carrying a warning or a failure
-  stays until a click on it or opening the history dismisses it. Three toasts stand at
+  The history key appears inside the card when it fits. A login result leaves after five
+  seconds regardless of level; its details remain in the login pane and history. Other
+  toasts carrying a warning or a failure stay until a click on one or opening the history
+  dismisses it. Three toasts stand at
   most, the newest in the corner. `[ui] notifications` (default true) turns toasts off;
   the history still records every result.
 - **FR-B33** - `prefix m` opens the HISTORY in either focus: every toast and every
