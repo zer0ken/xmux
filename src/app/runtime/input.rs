@@ -66,6 +66,9 @@ impl Runtime {
                 Some(Action::ShowCheck) => {
                     effects.extend(update(&mut self.model, Msg::ToggleCheck));
                 }
+                Some(Action::ShowPalette) => {
+                    effects.extend(update(&mut self.model, Msg::TogglePalette));
+                }
                 Some(Action::CycleNavScope) => {
                     effects.extend(update(&mut self.model, Msg::CycleNavScope));
                 }
@@ -499,9 +502,12 @@ impl Runtime {
         }
         // Any key ends the hint after a selection move, in either focus; a key below that
         // moves the selection again raises the next one.
-        if !non_mouse.is_empty() && self.model.state.chrome.selection_hint.is_some() {
+        if !non_mouse.is_empty()
+            && (!self.model.state.chrome.first_key_seen
+                || self.model.state.chrome.selection_hint.is_some())
+        {
             let effects = update(&mut self.model, Msg::KeysRead);
-            debug_assert!(effects.is_empty());
+            let _ = self.execute_effects(effects);
             *dirty = true;
         }
         // Watchdog: a view border drag is normally ended by the button-up event, but a
@@ -665,22 +671,10 @@ impl Runtime {
                                 let _ = self.execute_effects(effects);
                             }
                             *dirty = true;
-                        } else if f.as_slice() == b"d"
-                            && self
-                                .model
-                                .switcher
-                                .current_unreachable_screen(&self.model.state)
+                        } else if self.model.switcher.current_host_blocked()
+                            || self.model.switcher.current_view_screen(&self.model.state)
+                                == Some(crate::model::ViewScreen::Login)
                         {
-                            let effects = update(
-                                &mut self.model,
-                                Msg::Key(ratatui::crossterm::event::KeyEvent::new(
-                                    ratatui::crossterm::event::KeyCode::Char('d'),
-                                    ratatui::crossterm::event::KeyModifiers::NONE,
-                                )),
-                            );
-                            let _ = self.execute_effects(effects);
-                            *dirty = true;
-                        } else if self.model.switcher.current_host_blocked() {
                             if let Some(source) = self.model.switcher.current_source() {
                                 let effects =
                                     update(&mut self.model, Msg::FeedLogin { source, bytes: f });
@@ -690,6 +684,31 @@ impl Runtime {
                                     *width_changed = true;
                                 }
                                 *dirty = true;
+                            }
+                        } else if self
+                            .model
+                            .switcher
+                            .current_view_screen(&self.model.state)
+                            .is_some()
+                        {
+                            if self
+                                .model
+                                .switcher
+                                .current_unreachable_screen(&self.model.state)
+                            {
+                                for byte in f {
+                                    if byte == b'd' {
+                                        let effects = update(
+                                            &mut self.model,
+                                            Msg::Key(ratatui::crossterm::event::KeyEvent::new(
+                                                ratatui::crossterm::event::KeyCode::Char('d'),
+                                                ratatui::crossterm::event::KeyModifiers::NONE,
+                                            )),
+                                        );
+                                        let _ = self.execute_effects(effects);
+                                        *dirty = true;
+                                    }
+                                }
                             }
                         } else {
                             self.registry
@@ -713,6 +732,11 @@ impl Runtime {
                     }
                     Action::ShowCheck => {
                         let effects = update(&mut self.model, Msg::ToggleCheck);
+                        debug_assert!(effects.is_empty());
+                        *dirty = true;
+                    }
+                    Action::ShowPalette => {
+                        let effects = update(&mut self.model, Msg::TogglePalette);
                         debug_assert!(effects.is_empty());
                         *dirty = true;
                     }

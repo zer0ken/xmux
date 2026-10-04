@@ -5,7 +5,7 @@
 //! **The invariant: xmux never emits a colour of its own.** Every colour here is an
 //! ANSI-16 slot, so the TERMINAL THEME decides the actual hue and the whole UI recolours
 //! with whatever scheme the user runs. Anything that cannot be said in sixteen slots is
-//! said with an ATTRIBUTE instead - reverse video, bold - which the theme also resolves.
+//! said with an ATTRIBUTE instead - reverse video, bold, or dim - which the theme also resolves.
 //! A `Color::Rgb` or a `Color::Indexed` above 15 is a colour xmux picked for somebody
 //! else's terminal, and it is wrong on every theme it was not picked for; a test below
 //! fails if one appears.
@@ -40,7 +40,7 @@ pub(crate) struct Palette {
     /// session name.
     pub primary: Color,
     /// The host/mux text of a host-state card and the state word beside it. A section
-    /// title over a group of session cards reads dim instead, in `decoration`, so the
+    /// title over a group of session cards uses `decoration`, so the
     /// group label stays below the sessions it names.
     pub secondary: Color,
     /// The single accent: the session name, the selection mark, the popup titles, and
@@ -177,6 +177,34 @@ pub(crate) fn resolve(theme: &str, ov: Overrides) -> Palette {
     apply_overrides(*base, ov)
 }
 
+pub(crate) fn resolve_output(theme: &str, ov: Overrides) -> Palette {
+    let palette = resolve(theme, ov);
+    if no_color() {
+        without_color(palette)
+    } else {
+        palette
+    }
+}
+
+fn without_color(mut palette: Palette) -> Palette {
+    palette.primary = Color::Reset;
+    palette.secondary = Color::Reset;
+    palette.accent = Color::Reset;
+    palette.decoration = Color::Reset;
+    palette.warning = Color::Reset;
+    palette.error = Color::Reset;
+    palette.disabled = Color::Reset;
+    palette.bar_bg = Color::Reset;
+    palette.bar_fg = Color::Reset;
+    palette.bar_accent = Color::Reset;
+    palette.selection_bg = None;
+    palette
+}
+
+pub(crate) fn no_color() -> bool {
+    std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
+}
+
 fn apply_overrides(base: Palette, ov: Overrides) -> Palette {
     let mut p = base;
     p.primary = ov.primary.unwrap_or(p.primary);
@@ -253,6 +281,28 @@ fn describe(c: Color) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monochrome_palette_resets_every_colour_and_keeps_selection_visible() {
+        let p = without_color(auto_dark());
+        for color in [
+            p.primary,
+            p.secondary,
+            p.accent,
+            p.decoration,
+            p.warning,
+            p.error,
+            p.disabled,
+            p.bar_bg,
+            p.bar_fg,
+            p.bar_accent,
+        ] {
+            assert_eq!(color, Color::Reset);
+        }
+        assert!(selection_style(&p)
+            .add_modifier
+            .contains(Modifier::REVERSED));
+    }
 
     #[test]
     fn every_colour_every_theme_chooses_is_an_ansi_slot() {

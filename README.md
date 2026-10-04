@@ -212,6 +212,8 @@ and `[ui] prefix` replaces it. A chord is the prefix followed by one key:
 
 Pressing the prefix opens a box beside the prefix indicator that lists every key it
 unlocks. A click on a card selects it, and a click on the terminal view focuses it.
+The first key pressed after installation briefly points out the configured prefix and
+help key. xmux records that the introduction has been shown.
 [`docs/keybind.md`](docs/keybind.md) lists the remaining keys.
 
 ## Hosts and sources
@@ -237,6 +239,8 @@ login:
    - the port
    - the username
    - an optional masked password
+   The panel offers recent successful connection values from this run for reuse;
+   passwords are excluded.
 2. On submit, xmux hands those values to ssh and answers the host-key question
    and the password itself, so the login needs no further input. Esc ends the
    attempt.
@@ -314,7 +318,7 @@ theme = "auto-dark"                  # built-in ANSI theme: "auto-dark" (default
                                       # or "auto-light" (for a light terminal)
 prefix = "C-g"                        # xmux's prefix (e.g. C-g, C-Space, C-b)
 auto-hide-nav = false                 # initial auto-hide-nav state
-hide-unreachable = true               # hide hosts no scan has reached (the filter names one to show its card)
+hide-unreachable = true               # hide hosts no scan has reached (the check table can open one)
 notifications = true                  # show results as toasts (the prefix m history keeps them either way)
 nav-position = "left"                 # the nav's default side (left|top|right|bottom)
 max-fps = 30                          # maximum xmux draws per second (10 to 120)

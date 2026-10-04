@@ -229,8 +229,8 @@ no function, and no test, so renaming code is never a documentation change.
   user actually picks stands off the text parts of the same line; the
   hint bar keys read its own `bar_accent` slot, because a slot that reads on the cards
   may not read on the bar's own background. Every interaction screen renders key tokens
-  in the same bold shape. A section title reads in the dim `decoration` slot, the same
-  quiet role as the card numbers, so the group label stays below the sessions it names.
+  in the same bold shape. A section title reads bold in the `decoration` slot, while
+  card numbers stay dim, so the group remains clear without colour.
   What the sixteen slots cannot say is said with an attribute: the selected card is
   REVERSE VIDEO while the nav holds focus, the terminal swapping its own pair, which is
   what a theme itself means by "selected"; while the terminal holds focus the selected
@@ -409,13 +409,12 @@ no function, and no test, so renaming code is never a documentation change.
   hosts the filter matches. `prefix h` opens the table of the hosts to check, which lists
   every host in a problem state grouped by cause (`?` login needed, `▲` unreachable, `✗`
   list failed), each with the reason its last answer gave and a mark on the ones the
-  hiding leaves without a card; `Enter` on a row selects that host's card, sets the
-  filter to the host's name when the host has no card on the list, and hands the focus to
-  the terminal view when the host's login pane answers it. A nav with no card at all
+  hiding leaves without a card; `Enter` on a row selects that host's card, switches to
+  `all hosts` when needed, and opens the login pane for a login-needed or unreachable
+  host. The command palette also opens these hosts by name. A nav with no card at all
   writes one line in its body instead: how many hosts are hidden and `prefix h`, or, in
   the needs-attention scope (FR-B39), that nothing needs attention and the scope key. The
-  filter naming a hidden host brings its card back, and that named card is the one entry
-  to its unreachable screen. An empty filter hides every unreachable host, and a filter
+  filter naming a hidden host brings its card back. An empty filter hides every unreachable host, and a filter
   matching nothing does not bring them back through the no-match fallback that shows the
   other hosts. A reachable host with no sessions keeps its card, and a host still scanning
   never hides, whatever stale failure it carries. A host that goes unreachable mid-run
@@ -642,10 +641,10 @@ no function, and no test, so renaming code is never a documentation change.
   input already targets the fresh attachment, and the canonical selection is synced
   immediately.
 - **FR-C3** - Source degradation is graceful, never a silent loss: an unreachable source
-  is marked `▲` and gains the word `unreachable` when selected, and its view screen states
-  everything known about the failure rather than leaving the user with a message alone -
-  the reason its transport
-  gave, how many failures in a row it is, the mux binary asked for, how the machine is
+  is marked `▲` and gains the word `unreachable` when selected. Its view screen leads
+  with a plain verdict, the failure run, the last successful reach when known, and
+  actions to check this host or every host. The details choice unfolds the transport
+  reason, the mux binary asked for, how the machine is
   addressed and the wait that bounds reaching it, the socket, the session-listing command
   itself (spelled so it can be run by hand outside xmux), the PROVIDER that put that host
   on the roster (so a host the user never wrote down is traceable to the thing that

@@ -74,7 +74,7 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 ## Invariants
 
 - Every colour xmux itself paints is an ANSI-16 slot or an attribute (reverse
-  video, bold), so the terminal theme resolves it, never an RGB value. A
+  video, bold, dim), so the terminal theme resolves it, never an RGB value. A
   background with no slot for it is an attribute instead: the selected card is
   reverse video, not a computed surface. See "Colour ownership" in `CONTEXT.md`;
   the palette is guarded so a stray RGB colour cannot reach it.
@@ -207,7 +207,7 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   layout puts cards on a fixed pitch the paint ignores (a column parts its bands, a
   band runs columns), so a hit-test that measured its own pitch would land clicks
   on cards the renderer put elsewhere.
-- A group reads the same at every nav position: a dim section title with its session
+- A group reads the same at every nav position: a bold section title with its session
   cards indented under it, and nothing else. The indent is never inside a card's rect: the
   selected card is painted by inverting that rect, so the rect the paint records - what
   the selection inverts and what the hit-test reads - starts past the indent. A band
@@ -229,8 +229,8 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 - No card's height or shape moves with the selection: focus changes only the address
   column (the number becomes the mark), so a row that gained a line under the cursor
   would reflow the list and the columns as the cursor passed. A section title is a
-  fixed-height information target selected by click or the info key, and in a band the host band never shares a
-  column with session cards.
+  fixed-height information target selected by click or the info key, and in a band
+  the host band never shares a column with session cards.
 - A pending prefix is dropped by the next INPUT, mouse included. The mouse path has to say
   so itself, because mouse bytes never reach either focus path's key handling. Bare hover
   is exempt: it is the pointer sitting there, not an action.

@@ -105,6 +105,8 @@ UI elements a user perceives as distinct things:
   selection: the selected card's most relevant keys and one fact about it (a session's
   windows, a host's state word and the reason behind it). Any key ends it and the next
   move replaces it. A selection xmux was told to make raises none.
+  The first interactive key before the help-seen preference is recorded briefly names
+  the configured prefix and its help key; later runs keep the resting indicator.
 - view screen - what fills the terminal-view region in place of a mux while a selected
   host scans or has settled without a session to show, or when xmux would mirror its
   own session. A settled-state card names the STATE; its screen has room to state WHY.
@@ -160,7 +162,7 @@ UI elements a user perceives as distinct things:
   host stay distinguishable. The loading card is gone: a session is a plain session
   card from the moment its host resolves.
 - section title - the `{host}/{mux}` header row a source's session
-  cards hang under, dim (the decoration role) with nothing after it, its cards
+  cards hang under, bold in the decoration role with nothing after it, its cards
   indented one cell under it at every nav position. A band column that continues a
   split section repeats it on its top row followed by `…`. It is not a card: it carries
   no number and stays outside ordinary card stepping and number jumps. A click on
@@ -242,9 +244,10 @@ UI elements a user perceives as distinct things:
   is ANSI-16, so the terminal theme resolves the hue. There is one TEXT colour, one
   ACCENT, and the section title's quiet header role: a session card reads as one
   neutral line with a single highlighted element - the session name, which takes the
-  accent and stays bold. The accent belongs to the LOWEST level the card displays:
+  accent at normal weight. The title is bold and the card number dim, so the hierarchy
+  remains visible without colour. The accent belongs to the LOWEST level the card displays:
   the session name on a session card, the mux on a host-state card that has a mux to
-  name. A section title reads dim, in the decoration role, one step below the cards.
+  name. A section title uses the decoration role.
   Each state glyph keeps its own colour:
   login needed uses `?` in the warning role, unreachable uses `▲` in the error role,
   and a listing failure uses `✗` in the primary role. The scanning spinner stays in
@@ -318,12 +321,13 @@ UI elements a user perceives as distinct things:
   effective policy is `ask`, since the submitted login can accept that key. An unknown
   key under a strict policy stays unreachable and names a command that displays its fingerprint. Remote command permissions, name resolution,
   connectivity failures, and a changed host key stay unreachable. A blocked card keeps
-  the warning-coloured `?` mark, is never hidden by hide-unreachable (it is the one entry to the login pane), and
+  the warning-coloured `?` mark, is never hidden by hide-unreachable, and
   shows that pane above the same failure facts the unreachable screen states, folded under
   the pane's details choice. What it was blocked ON is not in its state word: the pane
   states a verdict over ssh's own sentence. The transport diagnoses the ssh text and the
   inventory group exposes the typed failure.
-- login pane - the form a blocked host's panel opens, holding the three values ssh will
+- login pane - the form a blocked host's panel opens, or that the user opens for an
+  unreachable host from the hosts-to-check table or command palette. It holds the three values ssh will
   not ask for and must know before it dials: the address, the port, and the username. A
   masked password field is optional beside them. Every value starts at what ssh WOULD
   use. Address, port, and user come from OpenSSH's effective configuration when present,
@@ -335,7 +339,9 @@ UI elements a user perceives as distinct things:
   whether to register this machine's public key on the host. The record choice appears
   only once a value differs from what ssh would have used, since a stanza repeating what
   ssh already resolves records nothing. The connection values and the two choices are two
-  titled groups, the focused stop's name is reversed while the pane takes keys, and a rule
+  titled groups. A recent list between them offers successful connection values from
+  this run without passwords; selecting an entry fills the three connection fields.
+  The focused stop's name is reversed while the pane takes keys, and a rule
   parts the inputs from the login's steps and its failure. A failure reads as a verdict in
   plain words, a `✗` on the field it concerns, ssh's own last line dimmed, and a details
   choice that unfolds ssh's whole text and the host facts. Enter means one thing
@@ -520,6 +526,7 @@ UI elements a user perceives as distinct things:
   Esc restores the filter the input opened with; with the input closed, Esc clears an
   active filter. A host hidden from the nav (`[ui] hide-unreachable`) shows its card
   while the filter names it.
+  The hosts-to-check table and command palette open its login pane without a filter.
 - nav scope - which cards the nav lists: `sessions` (the default, with the hidden hosts
   left out), `all hosts` (nothing hidden), or `needs attention` (only the hosts in a
   settled problem state, no session). `prefix s` steps it, it is named only while the
@@ -527,8 +534,11 @@ UI elements a user perceives as distinct things:
   remembered across runs.
 - hosts to check - the table `prefix h` opens: every host in a problem state grouped by
   cause, each with its reason and a mark on the ones the hiding leaves without a card.
-  Enter on a row selects that host's card, bringing a hidden host back through the
-  filter, and focuses the terminal view for a host whose login pane answers it.
+  Enter on a row selects that host's card, switching to the all-hosts scope when
+  needed, and opens the login pane for a blocked or unreachable host.
+- command palette - the searchable popup `prefix :` opens. It lists named actions
+  from the key table and login entries for blocked or unreachable hosts. Enter runs
+  the selected action; Esc closes it.
 - one-host re-scan - `prefix R`: the selected card's machine asked again alone, its
   reachability probe and then every source it serves, reported in its own summary toast.
   A full re-scan (`prefix r`) asked meanwhile takes over.
@@ -831,9 +841,11 @@ roster and hosts are not part of it - re-scanning sources is the `rescan` key's 
 and a config edit must not reset the user's sessions.
 
 - The palette is the sixteen slots (one per UI role) plus ATTRIBUTES: reverse
-  video, bold. Nothing else. An RGB colour, or an indexed colour above 15, is a hue
+  video, bold, and dim. Nothing else. An RGB colour, or an indexed colour above 15, is a hue
   xmux chose for somebody else's terminal, and it is wrong on every
   theme it was not chosen for. The palette is guarded so one cannot reach it.
+  A nonempty `NO_COLOR` resets xmux's palette and configured chrome colours;
+  selection remains visible through reverse video.
 - Anything the sixteen slots cannot say is said with an attribute instead. "One step off
   the background" is the case that keeps coming up, and it is not a slot: so the selected
   card is REVERSE VIDEO, the terminal swapping its own pair, which is what a theme itself

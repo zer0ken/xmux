@@ -11,6 +11,7 @@ pub use chrome::{Chrome, SourceReach, ViewBorderColors};
 pub use focus::{Focus, ModalKind, ViewFocus};
 pub(crate) use modal::{
     feed_reader, is_inputting, is_popup_open, is_reader, modal_kind, Input, InputMode, Modal,
+    PaletteChoice,
 };
 pub(crate) use view::RowRef;
 pub use view::{OpFollow, Scan};
@@ -106,6 +107,8 @@ pub struct State {
     /// starts a fresh draft. The password moves from here into the process-memory
     /// credential store; it is drawn masked and never logged or serialized.
     pub login: Option<LoginDraft>,
+    /// Successful connection values from this run, newest first. No secret enters this list.
+    pub recent_logins: Vec<RecentLogin>,
     /// The login that is RUNNING: once the pane is submitted, ssh validates the held
     /// credential on its own thread, and this is the handle that ends it. Present only
     /// while that validation runs, so its presence is what tells
@@ -129,6 +132,7 @@ pub enum LoginFocus {
     Port,
     Username,
     Password,
+    Recent(usize),
     RememberNothing,
     RememberSshConfig,
     Pubkey,
@@ -136,6 +140,12 @@ pub enum LoginFocus {
     /// The choice that unfolds the failure's full ssh text and host facts. A stop only
     /// while the pane states a failure.
     Details,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentLogin {
+    pub source: String,
+    pub login: crate::transport::Login,
 }
 
 /// The login pane's draft: what the user is entering for a host that would not answer
@@ -195,13 +205,14 @@ impl LoginDraft {
     /// The pane's focus stops in reading order. The remember choice is absent until the
     /// user changes a value, the details choice until the pane states a failure, and a
     /// stop that is not drawn is not one the keys land on.
-    pub fn stops(&self, details: bool) -> Vec<LoginFocus> {
+    pub fn stops(&self, details: bool, recent: usize) -> Vec<LoginFocus> {
         let mut v = vec![
             LoginFocus::Address,
             LoginFocus::Port,
             LoginFocus::Username,
             LoginFocus::Password,
         ];
+        v.extend((0..recent).map(LoginFocus::Recent));
         if self.changed() {
             v.push(LoginFocus::RememberNothing);
             v.push(LoginFocus::RememberSshConfig);
@@ -216,8 +227,8 @@ impl LoginDraft {
 
     /// Moves the focus `delta` stops, wrapping. A focus left on a stop that is no longer
     /// drawn (the user undid their edit) lands on the first stop rather than nowhere.
-    fn move_focus(&mut self, delta: isize, details: bool) {
-        let stops = self.stops(details);
+    fn move_focus(&mut self, delta: isize, details: bool, recent: usize) {
+        let stops = self.stops(details, recent);
         let at = stops.iter().position(|s| *s == self.focus).unwrap_or(0) as isize;
         let n = stops.len() as isize;
         self.focus = stops[(at + delta).rem_euclid(n) as usize];
@@ -237,11 +248,11 @@ impl LoginDraft {
     /// What Enter does: submit from the button, and pass the focus on from anywhere
     /// else. One meaning for the whole pane, so filling it top to bottom with Enter alone
     /// ends on the button and never toggles something on the way past.
-    fn enter(&mut self, details: bool) -> bool {
+    fn enter(&mut self, details: bool, recent: usize) -> bool {
         if self.focus == LoginFocus::Submit {
             return true;
         }
-        self.move_focus(1, details);
+        self.move_focus(1, details, recent);
         false
     }
 
@@ -372,6 +383,7 @@ impl State {
     /// broker. A failed or replaced login removes that exact credential.
     pub fn feed_login(&mut self, source: &str, bytes: &[u8]) -> Option<crate::model::Command> {
         let details = self.login_failure(source).is_some();
+        let recent = self.recent_logins.clone();
         let defaults = self.chrome.login_defaults(source);
         let address = defaults.address.value;
         let port = defaults.port.value;
@@ -395,10 +407,21 @@ impl State {
         let mut submit = false;
         for key in decode_keys(bytes) {
             match key {
-                Key::Tab => draft.move_focus(1, details),
-                Key::BackTab | Key::Up => draft.move_focus(-1, details),
-                Key::Down => draft.move_focus(1, details),
-                Key::Enter => submit |= draft.enter(details),
+                Key::Tab => draft.move_focus(1, details, recent.len()),
+                Key::BackTab | Key::Up => draft.move_focus(-1, details, recent.len()),
+                Key::Down => draft.move_focus(1, details, recent.len()),
+                Key::Enter => {
+                    if let LoginFocus::Recent(i) = draft.focus {
+                        if let Some(item) = recent.get(i) {
+                            draft.address = item.login.address.clone().unwrap_or_default();
+                            draft.port = item.login.port.map(|p| p.to_string()).unwrap_or_default();
+                            draft.username = item.login.user.clone().unwrap_or_default();
+                            draft.focus = LoginFocus::Password;
+                        }
+                    } else {
+                        submit |= draft.enter(details, recent.len());
+                    }
+                }
                 Key::Backspace => {
                     draft.field_mut().map(String::pop);
                 }
