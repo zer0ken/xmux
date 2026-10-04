@@ -665,6 +665,21 @@ impl Runtime {
                                 let _ = self.execute_effects(effects);
                             }
                             *dirty = true;
+                        } else if f.as_slice() == b"d"
+                            && self
+                                .model
+                                .switcher
+                                .current_unreachable_screen(&self.model.state)
+                        {
+                            let effects = update(
+                                &mut self.model,
+                                Msg::Key(ratatui::crossterm::event::KeyEvent::new(
+                                    ratatui::crossterm::event::KeyCode::Char('d'),
+                                    ratatui::crossterm::event::KeyModifiers::NONE,
+                                )),
+                            );
+                            let _ = self.execute_effects(effects);
+                            *dirty = true;
                         } else if self.model.switcher.current_host_blocked() {
                             if let Some(source) = self.model.switcher.current_source() {
                                 let effects =

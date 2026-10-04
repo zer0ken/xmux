@@ -17,6 +17,8 @@ pub enum ViewScreen {
     ListFailed,
     /// The host answered and serves no session.
     Empty,
+    /// A selected source section with sessions to inspect.
+    HostInfo,
 }
 
 /// Chooses the terminal view screen from domain facts. A confirmed display keeps
@@ -49,7 +51,11 @@ pub fn choose_view_screen(
     if scanning {
         return (!confirmed_display).then_some(ViewScreen::Scanning);
     }
-    empty.then_some(ViewScreen::Empty)
+    Some(if empty {
+        ViewScreen::Empty
+    } else {
+        ViewScreen::HostInfo
+    })
 }
 
 #[cfg(test)]
@@ -97,6 +103,10 @@ mod tests {
         assert_eq!(
             choose_view_screen(Some("prod"), None, None, false, true, None, false),
             Some(ViewScreen::Empty)
+        );
+        assert_eq!(
+            choose_view_screen(Some("prod"), None, None, false, false, None, true),
+            Some(ViewScreen::HostInfo)
         );
         assert_eq!(
             choose_view_screen(

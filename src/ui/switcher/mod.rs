@@ -538,6 +538,7 @@ impl Switcher {
             .get(self.selected)
             .and_then(|r| match &r.reference {
                 RowRef::Session { .. } => Some(r.reference.clone()),
+                RowRef::Section { .. } if self.user_moved => Some(r.reference.clone()),
                 RowRef::Host { .. } | RowRef::Section { .. } => None,
             });
 
@@ -670,8 +671,7 @@ impl Switcher {
     }
 
     /// The number card `i` carries: the number it was given when it first appeared, kept
-    /// for the whole run. A section title has no number; it is never the selection and
-    /// never a jump target.
+    /// for the whole run. A section title has no number and is never a jump target.
     fn card_number(&self, i: usize) -> usize {
         card_id(&self.rows[i].reference)
             .and_then(|id| self.numbers.get(&id).copied())
@@ -857,7 +857,18 @@ impl Switcher {
     ) -> Option<(Vec<crate::state::chrome::HintKey>, String)> {
         use crate::model::keys::{entry_for, KeyCommand};
         let (commands, fact): (&[KeyCommand], String) = match self.current_ref()? {
-            RowRef::Section { .. } => return None,
+            RowRef::Section { source } => {
+                let count = state
+                    .groups
+                    .iter()
+                    .find(|g| &g.source == source)
+                    .map_or(0, |g| g.sessions.len());
+                let method = state.refresh_words(source);
+                (
+                    &[KeyCommand::FocusTerminal, KeyCommand::RescanHost],
+                    format!("{count} sessions, {method}"),
+                )
+            }
             RowRef::Session { sess } => {
                 let mut facts = Vec::new();
                 if sess.windows > 0 {
@@ -927,6 +938,10 @@ impl Switcher {
         matches!(self.current_ref(), Some(RowRef::Host { unreachable, .. }) if *unreachable)
     }
 
+    pub(crate) fn current_unreachable_screen(&self, state: &crate::state::State) -> bool {
+        self.current_view_screen(state) == Some(ViewScreen::Unreachable)
+    }
+
     /// True when the selected host failed in a way the user can answer from xmux. Its
     /// terminal-view panel carries the login pane, so a keystroke typed while the
     /// terminal view is focused drives that pane rather than reaching a session.
@@ -938,16 +953,32 @@ impl Switcher {
     fn current_view_screen(&self, state: &crate::state::State) -> Option<ViewScreen> {
         let selected_address = self.current_screen_address(state);
         let selected_source = match self.current_ref() {
-            Some(RowRef::Host { source, .. }) => Some(source.as_str()),
+            Some(RowRef::Host { source, .. } | RowRef::Section { source }) => Some(source.as_str()),
             _ => None,
         };
         let group = selected_source
             .and_then(|source| state.groups.iter().find(|group| group.source == source));
         let scanning = match self.current_ref() {
-            Some(RowRef::Host { source, .. }) => state.scanning.contains(source),
+            Some(RowRef::Host { source, .. } | RowRef::Section { source }) => {
+                state.scanning.contains(source)
+            }
             None => !state.scanning.is_empty(),
             _ => false,
         };
+        if let Some(source) = selected_source {
+            if state
+                .login
+                .as_ref()
+                .is_some_and(|draft| draft.source == source)
+                && state
+                    .login_reports
+                    .get(crate::session::machine_of(source))
+                    .and_then(crate::model::LoginFailure::of_login)
+                    .is_some()
+            {
+                return Some(ViewScreen::Login);
+            }
+        }
         crate::model::choose_view_screen(
             selected_source,
             selected_address.as_ref(),
@@ -1134,6 +1165,9 @@ impl Switcher {
             Some(_) => *state.failure_runs.entry(source.clone()).or_insert(0) += 1,
             None => {
                 state.failure_runs.remove(&source);
+                state
+                    .last_reached
+                    .insert(source.clone(), std::time::SystemTime::now());
             }
         }
         // The mux search a working login started ends with the first source answer after
@@ -1226,6 +1260,9 @@ impl Switcher {
         state.groups.retain(|g| g.source != source);
         state.scanning.remove(source);
         state.failure_runs.remove(source);
+        state.last_reached.remove(source);
+        state.live_sources.remove(source);
+        state.host_details.remove(source);
         self.rebuild(state);
         self.restore_focus(prior, state);
     }
@@ -1254,8 +1291,7 @@ impl Switcher {
             let parked = match prior.reference.as_ref() {
                 Some(RowRef::Host { source, .. }) => addr.source == *source,
                 Some(RowRef::Session { sess }) => sess.address() == addr,
-                // A section title is never the selection, so it is never where a
-                // re-scan parked; the arm exists to keep the match total.
+                // A re-scan parks on the host-state card rather than its section title.
                 Some(RowRef::Section { .. }) => false,
                 None => false,
             };
@@ -1403,8 +1439,7 @@ fn session_addr_of(reference: &RowRef) -> Option<Address> {
 
 /// Whether two row references target the same row across a rebuild (host by source,
 /// section by source, session by address), so the selection stays put on a poll /
-/// re-scan. A section title is a source's header; it matches only itself, and it is
-/// never the selection.
+/// re-scan. A section title is a source's header and matches only itself.
 fn same_node(a: &RowRef, b: &RowRef) -> bool {
     match (a, b) {
         (RowRef::Host { source: x, .. }, RowRef::Host { source: y, .. }) => x == y,

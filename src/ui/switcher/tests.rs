@@ -2572,6 +2572,7 @@ async fn unreachable_host_screen_names_the_provider_that_offered_the_host() {
         Some("connection timed out".into()),
         &mut h.state,
     );
+    h.key(KeyCode::Char('d')).await;
     h.draw();
     let out = h.view_text();
     assert!(out.contains("provider"), "the row is named:\n{out}");
@@ -2614,6 +2615,7 @@ async fn unreachable_host_screen_shows_ssh_config_stanza() {
         Some("no route".into()),
         &mut h.state,
     );
+    h.key(KeyCode::Char('d')).await;
     h.draw();
     let out = h.text();
     assert!(
@@ -3317,6 +3319,42 @@ async fn host_with_sessions_has_no_host_screen() {
         !h.view_text().contains("start a new session"),
         "a host with sessions must not show a host screen"
     );
+}
+
+#[tokio::test]
+async fn a_section_opens_host_freshness_by_key_and_click_without_numbering_it() {
+    let mut h = Harness::new(sample());
+    h.state.chrome.source_reach.insert(
+        "local".into(),
+        reach("tmux", "local", "", "tmux list-sessions"),
+    );
+    h.state.live_sources.insert("local".into());
+    h.key(KeyCode::Char('i')).await;
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Section { source }) if source == "local"));
+    let screen = h.view_text();
+    assert!(screen.contains("sessions"), "{screen}");
+    assert!(screen.contains("live updates"), "{screen}");
+    assert!(h.sw.current_attach_target(&h.state).is_none());
+    let section = h.sw.selected;
+    assert_eq!(h.sw.card_number(section), 0);
+
+    h.key(KeyCode::Down).await;
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Session { .. })));
+    let rect = h
+        .plan
+        .nav_cells
+        .iter()
+        .find(|(i, _)| *i == section)
+        .unwrap()
+        .1;
+    h.sw.mouse_select(&h.plan.clone(), rect.x, rect.y, &h.state);
+    h.draw();
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Section { source }) if source == "local"));
+    h.sw.rebuild(&mut h.state);
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Section { source }) if source == "local"));
+    h.state.live_sources.remove("local");
+    h.draw();
+    assert!(h.view_text().contains("last observed (channel closed)"));
 }
 
 #[tokio::test]
@@ -4132,7 +4170,7 @@ async fn a_sources_sessions_are_each_a_single_row_under_one_section_title() {
 async fn focus_changes_only_the_address_column() {
     // Focus does NOT expand a card: the selection landing on a session card leaves its
     // row count and its content untouched, and only the address column changes - the
-    // number becomes the selection mark. The section title never takes the mark.
+    // number becomes the selection mark. This test keeps the selection on cards.
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
@@ -4964,7 +5002,7 @@ fn every_unselected_card_carries_its_1_based_number_beside_its_session() {
     // The address column starts at column 0, right-aligned in one width for the whole
     // frame, on the card's single row. The SELECTED card holds the mark there instead of
     // a number: it is the address you would type to get where you already are. A section
-    // title carries no number at all - it is not a card, and it is never the selection.
+    // title carries no number at all. The selection in this test stays on a card.
     let selected = sw.selected;
     let num_w = sw.highest_number().to_string().len().max(1) as u16;
     let read =
@@ -4974,7 +5012,7 @@ fn every_unselected_card_carries_its_1_based_number_beside_its_session() {
     assert_eq!(plan.nav_cells.len(), sw.rows.len(), "every row was drawn");
     for (i, rect) in plan.nav_cells.iter().copied() {
         if matches!(sw.rows[i].reference, RowRef::Section { .. }) {
-            assert_ne!(i, selected, "the selection never lands on a section title");
+            assert_ne!(i, selected, "this test selects a session card");
             // The section title is flush left - its host name occupies the address
             // column - so it must simply never carry a number or the mark.
             let first = read(rect.x, rect.y, num_w).trim().to_string();
@@ -6872,6 +6910,7 @@ async fn a_host_that_answered_nothing_headlines_without_a_mux() {
         &mut h.state,
     );
     select_unreachable_host(&mut h).await;
+    h.key(KeyCode::Char('d')).await;
     h.draw();
     let out = h.view_text();
     assert!(
@@ -6919,6 +6958,7 @@ fn reach(mux: &str, machine: &str, socket: &str, probe: &str) -> crate::ui::chro
         // The binary a test names IS its kind: no test reaches a mux through an alias.
         kind: mux.into(),
         socket: socket.into(),
+        refresh: "live updates".into(),
     }
 }
 
@@ -6966,6 +7006,7 @@ async fn unreachable_host_screen_states_what_was_asked_and_over_what() {
         Some("connection refused".into()),
         &mut h.state,
     );
+    h.key(KeyCode::Char('d')).await;
     h.draw();
     let out = h.view_text();
     for want in [
@@ -6980,6 +7021,43 @@ async fn unreachable_host_screen_states_what_was_asked_and_over_what() {
     ] {
         assert!(out.contains(want), "the screen states {want:?}:\n{out}");
     }
+}
+
+#[tokio::test]
+async fn unreachable_screen_keeps_last_success_and_folds_diagnostics() {
+    let mut h = Harness::from_sources(&["prod"]);
+    h.state.chrome.source_reach.insert(
+        "prod".into(),
+        reach(
+            "tmux",
+            "ssh to prod",
+            "/tmp/cm-prod.sock",
+            "ssh prod tmux ls",
+        ),
+    );
+    h.sw.apply_source_result("prod".into(), vec![], None, &mut h.state);
+    let last = h.state.last_reached["prod"];
+    h.sw.apply_source_result(
+        "prod".into(),
+        vec![],
+        Some("connection refused".into()),
+        &mut h.state,
+    );
+    h.draw();
+    let folded = h.view_text();
+    assert!(
+        folded.contains("verdict") && folded.contains("connection refused"),
+        "{folded}"
+    );
+    assert!(
+        folded.contains("last reached") && folded.contains("UTC"),
+        "{folded}"
+    );
+    assert!(folded.contains("check this host again"), "{folded}");
+    assert!(!folded.contains("/tmp/cm-prod.sock"), "{folded}");
+    assert_eq!(h.state.last_reached["prod"], last);
+    h.key(KeyCode::Char('d')).await;
+    assert!(h.view_text().contains("/tmp/cm-prod.sock"));
 }
 
 #[tokio::test]
@@ -7026,6 +7104,7 @@ async fn unreachable_host_screen_names_the_other_muxes_on_the_machine() {
         &mut h.state,
     );
     select_unreachable_host(&mut h).await;
+    h.key(KeyCode::Char('d')).await;
     h.draw();
     let out = h.view_text();
     assert!(out.contains("same machine"), "the row is named:\n{out}");
@@ -7057,6 +7136,7 @@ async fn unreachable_host_screen_separates_a_standing_failure_from_a_blip() {
             &mut h.state,
         );
     }
+    h.key(KeyCode::Char('d')).await;
     h.draw();
     let out = h.view_text();
     assert!(out.contains("failures"), "the row is named:\n{out}");
@@ -7090,6 +7170,7 @@ async fn unreachable_host_screen_names_the_log_file() {
         Some("connection refused".into()),
         &mut h.state,
     );
+    h.key(KeyCode::Char('d')).await;
     h.draw();
     let out = h.view_text();
     assert!(out.contains("log"), "the row is named:\n{out}");

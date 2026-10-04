@@ -262,21 +262,75 @@ impl ViewScreen {
             ViewScreen::ListFailed => crate::ui::tree::host_state_word(false, false, true, true),
             ViewScreen::Unreachable => crate::ui::tree::host_state_word(false, false, false, true),
             ViewScreen::Empty => crate::ui::tree::host_state_word(false, false, false, false),
+            ViewScreen::HostInfo => "sessions",
         }
     }
 }
 
 /// How many times in a row this source has failed, in words.
 ///
-/// It separates a host that just dropped from one that has not answered all session -
-/// two different problems that one error message reads identically for. No clock is
-/// involved and none is wanted: the sweep re-probes every host every couple of seconds,
-/// so a shown failure is always seconds old and an age row would say the same thing
-/// every time it was read.
+/// It separates one failed request from repeated failed requests. The last successful
+/// reach is recorded separately, since a failed host is asked again only on user action.
 fn failure_run_words(runs: u32) -> String {
     match runs {
         0 | 1 => "first failure".to_string(),
         n => format!("{n} in a row"),
+    }
+}
+
+fn reached_at(at: std::time::SystemTime) -> String {
+    time::OffsetDateTime::from(at)
+        .format(&time::macros::format_description!(
+            "[year]-[month]-[day] [hour]:[minute] UTC"
+        ))
+        .unwrap_or_else(|_| "unknown time".into())
+}
+
+fn unreachable_verdict(reason: &str) -> String {
+    let reason = crate::model::source::without_exit_line(reason);
+    if let Some(first) = reason
+        .lines()
+        .next()
+        .filter(|first| first.starts_with("the "))
+    {
+        return first.trim().to_string();
+    }
+    let line = reason
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("connection closed")
+        .trim();
+    if let Some(target) = line.strip_prefix("ssh: connect to host ") {
+        if let Some((address, rest)) = target.split_once(" port ") {
+            if let Some((port, cause)) = rest.split_once(": ") {
+                return match cause {
+                    "Connection timed out" => {
+                        format!("No answer from {address}:{port} before the connection timeout.")
+                    }
+                    "Connection refused" => format!("Connection refused by {address}:{port}."),
+                    _ => format!("{address}:{port}: {cause}"),
+                };
+            }
+        }
+    }
+    line.to_string()
+}
+
+#[cfg(test)]
+mod host_verdict_tests {
+    use super::unreachable_verdict;
+
+    #[test]
+    fn verdict_uses_the_meaningful_ssh_line() {
+        assert_eq!(
+            unreachable_verdict("ssh: connect to host 10.0.9.3 port 22: Connection timed out\ncommand exited with status 255"),
+            "No answer from 10.0.9.3:22 before the connection timeout."
+        );
+        assert_eq!(
+            unreachable_verdict("ssh: connect to host prod port 22: Connection refused"),
+            "Connection refused by prod:22."
+        );
     }
 }
 
@@ -550,9 +604,11 @@ impl Chrome {
             ViewScreen::Unreachable
             | ViewScreen::Login
             | ViewScreen::ListFailed
-            | ViewScreen::Empty => {
-                self.source_label_when(&address.source, matches!(kind, ViewScreen::Empty))
-            }
+            | ViewScreen::Empty
+            | ViewScreen::HostInfo => self.source_label_when(
+                &address.source,
+                matches!(kind, ViewScreen::Empty | ViewScreen::HostInfo),
+            ),
         }
     }
 
@@ -709,7 +765,36 @@ impl Chrome {
             }
             rows.push((ScreenCell::Gap, String::new()));
             facts_end = rows.len();
+        } else if kind == ViewScreen::HostInfo {
+            let count = state
+                .groups
+                .iter()
+                .find(|g| g.source == source)
+                .map_or(0, |g| g.sessions.len());
+            rows.push((ScreenCell::Label("sessions"), count.to_string()));
+            if self.source_reach.contains_key(source) {
+                rows.push((
+                    ScreenCell::Label("updates"),
+                    state.refresh_words(source).into(),
+                ));
+            }
+            if let Some(reached) = state.last_reached.get(source) {
+                rows.push((ScreenCell::Label("last reached"), reached_at(*reached)));
+            }
         } else {
+            if kind == ViewScreen::Empty {
+                rows.push((ScreenCell::Label("sessions"), "0".into()));
+                if self.source_reach.contains_key(source) {
+                    rows.push((
+                        ScreenCell::Label("updates"),
+                        state.refresh_words(source).into(),
+                    ));
+                }
+                if let Some(reached) = state.last_reached.get(source) {
+                    rows.push((ScreenCell::Label("last reached"), reached_at(*reached)));
+                }
+                rows.push((ScreenCell::Gap, String::new()));
+            }
             if let Some(registration) = state
                 .registration_reports
                 .get(crate::session::machine_of(source))
@@ -742,6 +827,50 @@ impl Chrome {
                 ScreenCell::Key(format!("{p} r")),
                 "re-scan every host".into(),
             ));
+        }
+
+        if kind == ViewScreen::Unreachable {
+            let diagnostics = std::mem::take(&mut rows);
+            let reason = diagnostics
+                .iter()
+                .find_map(|(cell, value)| {
+                    matches!(cell, ScreenCell::Label("reason")).then_some(value.as_str())
+                })
+                .unwrap_or("connection closed");
+            rows.push((ScreenCell::Label("verdict"), unreachable_verdict(reason)));
+            let failures = state.failure_runs.get(source).copied().unwrap_or(1);
+            let reached = state
+                .last_reached
+                .get(source)
+                .map(|time| format!(" · last reached {}", reached_at(*time)))
+                .unwrap_or_default();
+            rows.push((
+                ScreenCell::Label("status"),
+                format!("{}{}", failure_run_words(failures), reached),
+            ));
+            rows.push((ScreenCell::Gap, String::new()));
+            rows.push((ScreenCell::Label("What to do"), String::new()));
+            rows.push((
+                ScreenCell::Key(format!("{p} R")),
+                "check this host again".into(),
+            ));
+            rows.push((
+                ScreenCell::Key(format!("{p} r")),
+                "re-scan every host".into(),
+            ));
+            rows.push((ScreenCell::Gap, String::new()));
+            rows.push((
+                ScreenCell::Label("d details"),
+                if state.host_details.contains(source) {
+                    "hide diagnostics".into()
+                } else {
+                    "show diagnostics".into()
+                },
+            ));
+            if state.host_details.contains(source) {
+                rows.push((ScreenCell::Gap, String::new()));
+                rows.extend(diagnostics);
+            }
         }
 
         // The login pane's failure folds the host facts under its details choice: ssh's
@@ -820,7 +949,7 @@ impl Chrome {
             ViewScreen::Unreachable => pal.error,
             ViewScreen::Login => pal.warning,
             ViewScreen::ListFailed => pal.primary,
-            ViewScreen::Empty | ViewScreen::SelfSession => pal.decoration,
+            ViewScreen::Empty | ViewScreen::SelfSession | ViewScreen::HostInfo => pal.decoration,
         });
         let headline = format!(" {}", self.headline(address, kind));
         let mut out = vec![

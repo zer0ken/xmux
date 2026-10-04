@@ -1826,5 +1826,12 @@ pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::state::So
             .map(|m| m.kind().to_string())
             .unwrap_or_else(|| s.binary.clone()),
         socket: s.kind.socket_path(),
+        refresh: match s.host().mux.event_source() {
+            crate::model::EventSource::Control => "live updates".into(),
+            crate::model::EventSource::Poll if s.kind.clone().transport().reuses_connection() => {
+                "every 3 s over held connection".into()
+            }
+            crate::model::EventSource::Poll => "on request".into(),
+        },
     }
 }

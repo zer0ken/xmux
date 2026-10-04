@@ -489,17 +489,23 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             host,
             detached: true,
             ..
-        } if model.connected.remove(&host) => vec![
-            EventEffect::ReapHost { host: host.clone() },
-            EventEffect::ReopenHost { host },
-        ],
-        HostEvent::Exited { host, reason, .. } => vec![
-            EventEffect::NoteHostExited {
-                host: host.clone(),
-                reason,
-            },
-            EventEffect::ReapHost { host },
-        ],
+        } if model.connected.remove(&host) => {
+            model.state.live_sources.remove(&host);
+            vec![
+                EventEffect::ReapHost { host: host.clone() },
+                EventEffect::ReopenHost { host },
+            ]
+        }
+        HostEvent::Exited { host, reason, .. } => {
+            model.state.live_sources.remove(&host);
+            vec![
+                EventEffect::NoteHostExited {
+                    host: host.clone(),
+                    reason,
+                },
+                EventEffect::ReapHost { host },
+            ]
+        }
         HostEvent::ClientDetached { host, client } => {
             vec![EventEffect::ReapDisplayAttach { host, client }]
         }
@@ -1035,6 +1041,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .into_iter()
                 .filter_map(|effect| match effect {
                     EventEffect::MarkConnected { host } => {
+                        model.state.live_sources.insert(host.clone());
                         model.connected.insert(host);
                         None
                     }
@@ -1554,7 +1561,7 @@ mod tests {
         let (_, rect) = model
             .render_plan
             .nav_cells
-            .first()
+            .last()
             .expect("one session card");
         let (col, row) = (rect.x, rect.y);
 

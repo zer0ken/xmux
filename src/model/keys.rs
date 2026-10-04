@@ -134,6 +134,8 @@ pub enum KeyCommand {
     Rescan,
     /// Re-scan the selected card's host alone.
     RescanHost,
+    /// Select the current source's section information screen.
+    HostInfo,
     /// Toggle the table of the hosts to check.
     Check,
     /// Step the nav scope.
@@ -357,6 +359,15 @@ pub static TABLE: &[KeyEntry] = &[
     KeyEntry {
         section: Section::Move,
         keys: Keys::Bare(None),
+        label: "i",
+        help: "select the current host section and show its information",
+        long: "host information",
+        short: "host info",
+        rank: 0,
+    },
+    KeyEntry {
+        section: Section::Move,
+        keys: Keys::Bare(None),
         label: "Esc",
         help: "clear the applied filter",
         long: "clear the filter",
@@ -411,6 +422,15 @@ pub static TABLE: &[KeyEntry] = &[
         long: "focus the nav",
         short: "nav",
         rank: 3,
+    },
+    KeyEntry {
+        section: Section::Sessions,
+        keys: Keys::Prefix(&[(Chord::Char('i'), KeyCommand::HostInfo)]),
+        label: "i",
+        help: "select the current host section and show its session freshness",
+        long: "host information",
+        short: "host info",
+        rank: 2,
     },
     KeyEntry {
         section: Section::Sessions,

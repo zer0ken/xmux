@@ -229,7 +229,7 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 - No card's height or shape moves with the selection: focus changes only the address
   column (the number becomes the mark), so a row that gained a line under the cursor
   would reflow the list and the columns as the cursor passed. A section title is a
-  fixed non-selectable row, and in a band the host band never shares a
+  fixed-height information target selected by click or the info key, and in a band the host band never shares a
   column with session cards.
 - A pending prefix is dropped by the next INPUT, mouse included. The mouse path has to say
   so itself, because mouse bytes never reach either focus path's key handling. Bare hover
