@@ -293,9 +293,19 @@ fn pl4_overflow_is_a_thick_seam_segment_or_counts_on_the_band_seam() {
                 "{position:?}: a count stands before the mark: {seam:?}"
             );
         } else {
+            let thumb = shot.plan.seam_thumb;
+            let thick_rows: Vec<u16> = (shot.plan.regions.view_border.y
+                ..shot.plan.regions.view_border.bottom())
+                .filter(|&y| shot.buf[(shot.plan.regions.view_border.x, y)].symbol() == "┃")
+                .collect();
+            assert_eq!(
+                thick_rows,
+                (thumb.y..thumb.bottom()).collect::<Vec<_>>(),
+                "{position:?}: the seam thickens exactly where the visible cards are"
+            );
             assert!(
-                seam.contains('┃'),
-                "{position:?}: the seam thickens where the visible cards are"
+                !thick_rows.is_empty() && (thick_rows.len() as u16) < shot.plan.nav_inner.height,
+                "{position:?}: the thumb is a proportion of the card rows: {seam:?}"
             );
             assert!(
                 seam.contains('│'),
@@ -367,14 +377,14 @@ fn pl7_a_one_row_band_scrolls_to_the_selection() {
 }
 
 #[test]
-fn pl9_the_resting_nav_has_no_collapse_button() {
+fn pl9_the_resting_nav_text_carries_no_arrow_glyphs() {
     for position in ALL {
         let shot = Shot::new(two_groups(), nav_at(position), false);
         let text = shot.area_text(shot.nav_area());
         for token in ["<<", ">>", "▲", "▼"] {
             assert!(
                 !text.contains(token),
-                "{position:?}: no {token} button: {text:?}"
+                "{position:?}: the nav text holds no {token}: {text:?}"
             );
         }
     }

@@ -131,7 +131,6 @@ impl TermInput {
                     continue;
                 }
                 // prefix p → cycle the nav position; same shape: applied on the input path,
-
                 // terminal-view focus kept, the rest of the read still forwards.
                 if b0 == b'p' {
                     if !fwd.is_empty() {
@@ -616,7 +615,6 @@ mod tests {
         // `y` is not a command key (unlike q/?/h/l/t/z/n/R/x/r), so it is swallowed.
         t.feed(&[0x02], NavPosition::Left);
         let out = t.feed(b"y", NavPosition::Left);
-
         assert!(
             out.is_empty(),
             "unrecognised follow-up is swallowed: {out:?}"

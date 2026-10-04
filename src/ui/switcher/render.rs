@@ -201,7 +201,7 @@ pub struct RenderPlan {
     /// paired with the title's row index.
     title_repeats: Vec<(usize, Rect)>,
     nav_rule: Option<NavRule>,
-    seam_thumb: Rect,
+    pub(super) seam_thumb: Rect,
     floating_hint_bar: bool,
     fill_hint_bar_row: bool,
     pub nav_hidden: bool,
@@ -567,7 +567,7 @@ impl Switcher {
         }
         // nav_width == 0 is the "nav hidden" sentinel (terminal view focused + auto-hide):
         // the terminal view owns the whole area - no nav list, no view border, and no
-        // status line of its own, since the user asked for the whole screen to be the mux.
+        // prefix indicator of its own, since the user asked for the whole screen to be the mux.
         if plan.nav_hidden {
             self.render_terminal_view(frame, area, grid);
             if let Some(g) = grid {
@@ -576,7 +576,7 @@ impl Switcher {
                 }
             }
             // The bar still floats for the states that must be seen even here: an armed
-            // prefix, open input, or refusal flash. Hiding the nav hides the status line,
+            // prefix, open input, or refusal flash. Hiding the nav hides the prefix indicator,
             // not xmux's ability to answer a keypress.
             if plan.floating_hint_bar {
                 state.chrome.render_hint_bar(
@@ -652,8 +652,9 @@ impl Switcher {
             state
                 .chrome
                 .render_hint_bar(frame, plan.hint_bar_rect, state, fill, &palette);
-        } // In the terminal view, place the real cursor at the grid's cursor so typing in the
-          // mux is visible and tracks. Skipped when the child hid its cursor.
+        }
+        // In the terminal view, place the real cursor at the grid's cursor so typing in the
+        // mux is visible and tracks. Skipped when the child hid its cursor.
         if terminal_focused {
             if let Some(g) = grid {
                 if !g.hide_cursor() {

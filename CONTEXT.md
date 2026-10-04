@@ -71,7 +71,8 @@ UI elements a user perceives as distinct things:
   with the inactive color.
 - view border lines - the view border's line-drawing style (tmux
   `pane-border-lines`): `single │` (default), `double ║` (auto-hide-nav on),
-  `heavy ┃` (hover - the drag-resize grab cue).
+  `heavy ┃` (hover - the drag-resize grab cue; the seam thumb of an overflowing side nav
+  also draws `┃` at rest, in the normal border color).
 - chrome - the furniture around the two views: the view border, the hint bar, and
   the view screens.
 - hint bar - the nav's prefix indicator: a label on the bottom row of a side column's

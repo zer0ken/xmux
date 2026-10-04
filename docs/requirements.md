@@ -234,7 +234,7 @@ no function, and no test, so renaming code is never a documentation change.
   between hosts leaves it exactly as it was.
 - **FR-B12** - A group is drawn the same way at every nav position: a dim
   `{host}/{mux}` title over its session cards, each card indented two cells under it.
-  No rule follows the title and no connector runs down the cards. The indent is the
+  The indent is the
   title's and NOT part of the card: it stands left of the card's rect, so the selection,
   which paints a card by inverting that rect, leaves it blank, and a click on it is a
   click on no card.
@@ -291,7 +291,7 @@ no function, and no test, so renaming code is never a documentation change.
   so the renderer, the PTY sizing and mouse hit-testing cannot read different answers,
   and the effective width keeps its single owner. Hiding the nav does not move the
   layout: the side travels with the hidden nav, so the nav returns the shape it left.
-  The nav has no collapse button. `prefix z` collapses and expands it from either view,
+  `prefix z` collapses and expands it from either view,
   and dragging the view border past the nav's minimum width or height collapses it;
   dragging back out within the same drag expands it at the size the pointer reached. A
   collapsed side nav is a column exactly as wide as the resting prefix with a cell either
@@ -306,7 +306,6 @@ no function, and no test, so renaming code is never a documentation change.
   side column's bottom row) or to the seam and its offscreen counts (a band's seam row). A
   ready or flashing bar fills its whole row, because it has to be readable over what it
   covers. A flash comes down
-
   on the next tree key and, for a user who presses nothing, after ten seconds of its own:
   it reports something that already happened, so holding one indefinitely would keep the
   nav's own help text off screen over a message that has stopped being news.
@@ -414,8 +413,8 @@ no function, and no test, so renaming code is never a documentation change.
   mirror symmetry is shape-only: the layout INSIDE the
   nav region is identical at all four placements (a right column is the left column's
   list, a bottom band the top band's down-then-right flow), only what sits on which side
-  of the view border flips, and the status line stays the nav region's bottom row in all
-  four - with a bottom attachment that is the bottom row of the screen. The view border
+  of the view border flips, and the prefix indicator sits on the bottom row of a side
+  column and on the seam row of a top or bottom band. The view border
   drag mirrors its math per side (a right border measures the width from the right edge,
   a bottom border the height from the bottom edge), and the resize keys follow the same
   rule: the key moves the border the way it points, so the nav size follows the placement

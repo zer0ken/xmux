@@ -170,8 +170,8 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 - The focus is said twice and the two always agree: the view border's colour, and the
   selected card's shape, reverse video under nav focus and the mark alone under terminal
   focus.
-- A collapsed nav has no button. The prefix collapses and expands it, a view border
-  drag past the minimum collapses it, and a click anywhere on it expands it, so the
+- A collapsed nav expands from the prefix or from a click anywhere on it, and a view border
+  drag past the minimum collapses it, so the
   collapsed shape is the prefix indicator alone and the whole of it is one hit target.
 
 - No card's height or shape moves with the selection: focus changes only the address

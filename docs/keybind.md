@@ -243,7 +243,6 @@ place of the split interface.
 | left-click `‹ 5` or `7 ›` on a band's view border | select the nearest card scrolled off that side |
 | wheel over the nav | move the selection (nav focused) |
 | drag the view border | resize the expanded nav (at any of the four borders: the drag mirrors the placement, measuring from the near edge); past the minimum it collapses the nav |
-
 | drag a modal's border | move the modal |
 
 There is no context menu: every action a right-click could offer is either a

@@ -2423,7 +2423,7 @@ fn the_nav_renders_at_the_minimum_width() {
 #[test]
 fn hint_bar_has_status_bar_background() {
     // The hint bar is a solid dark status bar fit to what it has to say: at rest the
-    // prefix and collapse button sit on the nav's last row. The cells it owns carry the
+    // prefix sits on the nav's last row. The cells it owns carry the
     // dark bar background, while columns outside the controls remain with the view below.
     let mut state = crate::state::State::from_scan(sample());
     let sw = Switcher::new(&mut state);
@@ -3137,9 +3137,9 @@ async fn the_section_title_shows_host_mux_and_the_session_takes_the_accent() {
 }
 
 #[tokio::test]
-async fn no_section_title_trails_a_rule_or_a_connector() {
-    // The dim title and the indent under it mark a group at every position, so neither
-    // layout spends a glyph on a rule after the title or a connector down the cards.
+async fn a_section_title_stands_alone_over_its_cards() {
+    // The dim title and the indent under it mark a group at every position, so the
+    // title row and the card rows carry no rule or connector glyph.
     let side = Harness::new(sample());
     assert_eq!(side.plan.layout, ViewLayout::Column, "landscape → Side");
     let y = side.nav_row_of("local").expect("the section title");
@@ -3433,7 +3433,7 @@ async fn a_scrolling_list_parts_its_bands_with_a_rule() {
     let boundary = h.sw.band_boundary().expect("the list has a host card");
     let host = card_rect(&h, boundary);
     assert!(host.y > 0, "the rule needs a row above the host card");
-    // Across the CARDS' width: the column beside them is the scrollbar's own strip.
+    // Across the CARDS' width: the seam beside them carries the thumb.
     let rule: String = (host.x..host.x + host.width)
         .map(|x| h.buf()[(x, host.y - 1)].symbol().to_string())
         .collect();
@@ -3482,16 +3482,13 @@ async fn the_bands_never_touch_on_screen() {
         rule.chars().all(|c| c.to_string() == BAND_RULE),
         "and that row is the rule: {rule:?}"
     );
-    // Scrolling is on a row before the cards themselves would need it, so the strip beside
-    // them is reserved and the thumb is drawn.
-    let strip = h.plan.nav_inner.x + h.plan.nav_inner.width - 1;
+    // The list scrolls a row before the cards themselves would need it, so the seam
+    // carries the thumb.
+    let seam_x = h.plan.regions.view_border.x;
     assert!(
-        (h.plan.nav_inner.y..h.plan.nav_inner.y + h.plan.nav_inner.height).any(|y| h.buf()
-            [(strip, y)]
-            .symbol()
-            .trim()
-            != ""),
-        "the scrollbar strip is reserved and drawn"
+        (h.plan.nav_inner.y..h.plan.nav_inner.y + h.plan.nav_inner.height)
+            .any(|y| h.buf()[(seam_x, y)].symbol() == "┃"),
+        "the seam thumb is drawn"
     );
 }
 
@@ -4464,7 +4461,7 @@ fn the_armed_hint_bar_floats_across_the_whole_window() {
         let buf = term.backend().buffer();
         (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
     };
-    // At rest the bar is the nav's own status line, so the columns past the nav belong
+    // At rest the bar is the nav's prefix indicator, so the columns past the nav belong
     // to the view below it - the bar does not reach them.
     let resting = row(&term, y);
     assert!(
@@ -4491,10 +4488,6 @@ fn the_armed_hint_bar_floats_across_the_whole_window() {
     assert!(
         !armed.contains('X'),
         "the armed bar covers the grid across its whole row: {armed:?}"
-    );
-    assert!(
-        !armed.trim_end().ends_with("<<"),
-        "a floating bar carries no collapse button: {armed:?}"
     );
     assert_eq!(
         row(&term, 0),
@@ -4893,7 +4886,7 @@ async fn hint_bar_and_help_reflect_new_model() {
     );
     assert!(
         help.contains("collapse / expand the nav"),
-        "help explains the collapse button:\n{help}"
+        "help explains the collapse key:\n{help}"
     );
     assert!(
         help.contains("previous / next host/mux (host cards as one)"),
@@ -5827,7 +5820,7 @@ fn the_portrait_band_flows_cards_down_then_right() {
     assert_eq!(cells.len(), 9, "every row is placed: {cells:?}");
     for base in [0usize, 3, 6] {
         let (title, a, b) = (cells[&base], cells[&(base + 1)], cells[&(base + 2)]);
-        // One column, but a session card starts past the connector's strip while the
+        // One column, but a session card starts at the group indent while the
         // title it hangs under holds the column's left edge.
         assert_eq!(a.x, title.x + CARD_INDENT, "a source's rows share a column");
         assert_eq!(b.x, a.x, "and the session cards line up with each other");
@@ -6110,6 +6103,19 @@ fn the_side_lists_overflow_thickens_the_seam_and_spares_every_card() {
         .map(|y| buf[(NAV_WIDTH, y)].symbol())
         .collect();
     assert!(seam.contains('┃'), "the seam thickens: {seam:?}");
+    let thumb = plan.seam_thumb;
+    let thick_rows: Vec<u16> = (0..buf.area.height)
+        .filter(|&y| buf[(NAV_WIDTH, y)].symbol() == "┃")
+        .collect();
+    assert_eq!(
+        thick_rows,
+        (thumb.y..thumb.bottom()).collect::<Vec<_>>(),
+        "the thick segment covers exactly the thumb's rows: {seam:?}"
+    );
+    assert!(
+        thick_rows.len() < plan.nav_inner.height as usize,
+        "the thumb is a proportion of the card rows, not all of them: {seam:?}"
+    );
     assert!(
         seam.contains('│'),
         "only where the cards on screen are: {seam:?}"

@@ -189,7 +189,6 @@ pub(crate) fn resolve_nav_key(
             KeyCode::Char('t') => Some(Action::ToggleAutoHide),
             KeyCode::Char('z') => Some(Action::ToggleCollapse),
             KeyCode::Char('p') => Some(Action::CycleNavPosition),
-
             KeyCode::Char('?') => Some(Action::ShowHelp),
             // The arrow PAIR facing the terminal's side names the terminal: with the nav
             // on the left or above, prefix → and prefix ↓ both focus the terminal; with
