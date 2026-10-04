@@ -2,6 +2,12 @@
 
 use super::{ModalKind, RowRef};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PaletteChoice {
+    Command(crate::model::keys::KeyCommand),
+    Login(String),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InputMode {
     Filter,
@@ -137,8 +143,8 @@ impl Input {
     }
 }
 
-/// The single open modal, if any: at most one of the keys help, the history, and the
-/// inline input. Modeling it as one `Option` (not two independent fields) makes the
+/// The single open modal, if any: at most one popup or inline input. Modeling it as
+/// one `Option` (not independent fields) makes the
 /// modals' mutual exclusion structural: opening one drops whatever was open, and
 /// the compiler guarantees two can never coexist, so the hand-maintained "clear
 /// the others" invariant cannot drift. Lives on [`crate::state::State`]; the
@@ -168,15 +174,25 @@ pub(crate) enum Modal {
         selected: usize,
         open: bool,
     },
+    Palette {
+        query: String,
+        selected: usize,
+        open: bool,
+        decoder: crate::display::decode::KeyDecoder,
+    },
     Input(Box<Input>),
 }
 
-/// True while a popup that takes every key is open: the help, the history, or the table
-/// of the hosts to check.
+/// True while a popup that takes every key is open.
 pub(crate) fn is_reader(modal: &Option<Modal>) -> bool {
     matches!(
         modal,
-        Some(Modal::Help { .. } | Modal::History { .. } | Modal::Check { .. })
+        Some(
+            Modal::Help { .. }
+                | Modal::History { .. }
+                | Modal::Check { .. }
+                | Modal::Palette { .. }
+        )
     )
 }
 
@@ -241,6 +257,39 @@ pub(crate) fn feed_reader(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
                 KeyCode::Char(c) if !c.is_control() => {
                     query.push(c);
                     *scroll = 0;
+                }
+                _ => {}
+            }
+        }
+        return true;
+    }
+    if let Some(Modal::Palette {
+        query,
+        selected,
+        open,
+        decoder,
+    }) = modal
+    {
+        for key in decoder.feed(bytes) {
+            match key.code {
+                KeyCode::Esc => {
+                    *modal = None;
+                    return true;
+                }
+                KeyCode::Enter => *open = true,
+                KeyCode::Up => *selected = selected.saturating_sub(1),
+                KeyCode::Down => *selected = selected.saturating_add(1),
+                KeyCode::Backspace => {
+                    query.pop();
+                    *selected = 0;
+                }
+                KeyCode::Char('\u{15}') => {
+                    query.clear();
+                    *selected = 0;
+                }
+                KeyCode::Char(c) if !c.is_control() => {
+                    query.push(c);
+                    *selected = 0;
                 }
                 _ => {}
             }

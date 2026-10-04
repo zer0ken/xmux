@@ -4716,6 +4716,31 @@ fn login_draft_debug_redacts_the_password() {
 }
 
 #[test]
+fn recent_login_selection_fills_connection_values_without_a_password() {
+    let mut s = State::default();
+    s.recent_logins.push(crate::state::RecentLogin {
+        source: "other".into(),
+        login: crate::transport::Login {
+            address: Some("10.0.0.8".into()),
+            port: Some(2222),
+            user: Some("alice".into()),
+        },
+    });
+    for _ in 0..4 {
+        s.feed_login("prod", b"\t");
+    }
+    assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::Recent(0));
+    assert!(s.feed_login("prod", b"\r").is_none());
+    let d = s.login.as_ref().unwrap();
+    assert_eq!(
+        (&*d.address, &*d.port, &*d.username),
+        ("10.0.0.8", "2222", "alice")
+    );
+    assert_eq!(d.password, "");
+    assert_eq!(d.focus, LoginFocus::Password);
+}
+
+#[test]
 fn feed_login_walks_its_stops_with_tab_and_the_vertical_arrows() {
     let mut s = State::default();
     s.feed_login("prod", b"\t");
@@ -4736,12 +4761,12 @@ fn feed_login_offers_the_remember_choice_only_after_a_value_changes() {
     s.feed_login("prod", b"x");
     let d = s.login.as_ref().unwrap();
     assert!(d.changed(), "the address was edited");
-    assert!(d.stops(false).contains(&LoginFocus::RememberSshConfig));
+    assert!(d.stops(false, 0).contains(&LoginFocus::RememberSshConfig));
     // Undoing the edit takes the choice away again.
     s.feed_login("prod", b"\x7f");
     let d = s.login.as_ref().unwrap();
     assert!(!d.changed());
-    assert!(!d.stops(false).contains(&LoginFocus::RememberSshConfig));
+    assert!(!d.stops(false, 0).contains(&LoginFocus::RememberSshConfig));
 }
 
 #[test]
@@ -5378,6 +5403,7 @@ fn a_click_anywhere_on_a_collapsed_nav_expands_it_at_every_position() {
 #[test]
 fn any_key_ends_the_selection_hint_in_either_focus() {
     let raise = |rt: &mut Runtime| {
+        rt.model.state.chrome.first_key_seen = true;
         rt.model.state.chrome.show_selection_hint(
             vec![(
                 "Enter".into(),

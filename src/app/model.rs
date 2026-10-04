@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::app::input::MouseState;
 use crate::model::{Action, Command, EventEffect, Selection};
@@ -144,6 +145,7 @@ pub(crate) enum Msg {
     ToggleHelp,
     ToggleHistory,
     ToggleCheck,
+    TogglePalette,
     CycleNavScope,
     DismissToast(u64),
     /// A key read while the help or the history is open, with the configured prefix byte
@@ -299,6 +301,7 @@ pub(crate) enum Effect {
     PersistNavCollapsed(bool),
     PersistNavPosition(Option<NavPosition>),
     PersistNavScope(crate::model::NavScope),
+    PersistFirstKeyHelpSeen,
     ReattachDisplay(Selection),
     CancelLogin(crate::link::unlock::RunningLogin),
 }
@@ -340,6 +343,7 @@ impl std::fmt::Debug for Effect {
                 f.debug_tuple("PersistNavPosition").field(position).finish()
             }
             Self::PersistNavScope(scope) => f.debug_tuple("PersistNavScope").field(scope).finish(),
+            Self::PersistFirstKeyHelpSeen => f.write_str("PersistFirstKeyHelpSeen"),
             Self::ReattachDisplay(selection) => {
                 f.debug_tuple("ReattachDisplay").field(selection).finish()
             }
@@ -821,6 +825,56 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
     effects
 }
 
+fn run_palette_choice(model: &mut AppModel, choice: crate::state::PaletteChoice) -> Vec<Effect> {
+    use crate::model::keys::KeyCommand;
+    use crate::state::PaletteChoice;
+    match choice {
+        PaletteChoice::Login(source) => {
+            let scope = model.switcher.scope();
+            let opened = model.switcher.open_host(&source, &mut model.state);
+            let mut effects = if opened {
+                update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
+            } else {
+                Vec::new()
+            };
+            if scope != model.switcher.scope() {
+                effects.push(Effect::PersistNavScope(model.switcher.scope()));
+            }
+            effects
+        }
+        PaletteChoice::Command(command) => match command {
+            KeyCommand::Filter
+            | KeyCommand::NewSession
+            | KeyCommand::Rescan
+            | KeyCommand::RescanHost => {
+                let key = match command {
+                    KeyCommand::Filter => '/',
+                    KeyCommand::NewSession => 'n',
+                    KeyCommand::Rescan => 'r',
+                    _ => 'R',
+                };
+                update(
+                    model,
+                    Msg::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+                )
+            }
+            KeyCommand::FocusTerminal => {
+                update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
+            }
+            KeyCommand::FocusNav => update(model, Msg::Focus(crate::model::FocusTarget::Nav)),
+            KeyCommand::Check => update(model, Msg::ToggleCheck),
+            KeyCommand::Scope => update(model, Msg::CycleNavScope),
+            KeyCommand::Collapse => update(model, Msg::ToggleNavCollapsed),
+            KeyCommand::AutoHide => update(model, Msg::Action(Action::ToggleAutoHide)),
+            KeyCommand::Position => update(model, Msg::CycleNavPosition),
+            KeyCommand::History => update(model, Msg::ToggleHistory),
+            KeyCommand::Help => update(model, Msg::ToggleHelp),
+            KeyCommand::Quit => update(model, Msg::Action(Action::Quit)),
+            _ => Vec::new(),
+        },
+    }
+}
+
 fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
     match msg {
         Msg::Action(action) => {
@@ -840,8 +894,11 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::KeysRead => {
-            model.state.chrome.clear_selection_hint();
-            Vec::new()
+            if model.state.chrome.key_read() {
+                vec![Effect::PersistFirstKeyHelpSeen]
+            } else {
+                Vec::new()
+            }
         }
         Msg::Key(key) => {
             let before = model.switcher.selected_card();
@@ -878,6 +935,10 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.switcher.toggle_check(&mut model.state);
             Vec::new()
         }
+        Msg::TogglePalette => {
+            model.switcher.toggle_palette(&mut model.state);
+            Vec::new()
+        }
         Msg::CycleNavScope => {
             let scope = model.switcher.scope().next();
             model.switcher.set_scope(scope, &mut model.state);
@@ -903,8 +964,21 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 help_visible,
                 &mut model.state,
             );
-            if model.switcher.open_checked_host(&mut model.state) {
-                return update(model, Msg::Focus(crate::model::FocusTarget::Terminal));
+            let scope = model.switcher.scope();
+            let opened = model.switcher.open_checked_host(&mut model.state);
+            if opened || scope != model.switcher.scope() {
+                let mut effects = if opened {
+                    update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
+                } else {
+                    Vec::new()
+                };
+                if scope != model.switcher.scope() {
+                    effects.push(Effect::PersistNavScope(model.switcher.scope()));
+                }
+                return effects;
+            }
+            if let Some(choice) = model.switcher.take_palette_choice(&mut model.state) {
+                return run_palette_choice(model, choice);
             }
             Vec::new()
         }
@@ -1346,6 +1420,9 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
 /// Raises the hint about the card the user just moved the selection to, replacing any
 /// earlier one. A selection that stayed on `before` raises nothing.
 fn hint_selection_move(model: &mut AppModel, before: &Option<crate::state::RowRef>) {
+    if model.state.chrome.first_key_notice {
+        return;
+    }
     if !model.switcher.selection_moved_from(before) {
         return;
     }
@@ -1419,6 +1496,22 @@ mod tests {
     }
 
     #[test]
+    fn first_interactive_key_introduces_prefix_and_help_once() {
+        let mut m = model();
+        assert!(!m.state.chrome.first_key_seen);
+        assert!(matches!(
+            update(&mut m, Msg::KeysRead).as_slice(),
+            [Effect::PersistFirstKeyHelpSeen]
+        ));
+        assert!(m.state.chrome.first_key_seen);
+        assert!(hint_text(&m).contains("C-g prefix"));
+        assert!(hint_text(&m).contains("C-g ? help"));
+        assert!(update(&mut m, Msg::KeysRead).is_empty());
+        assert!(!m.state.chrome.first_key_notice);
+        assert!(!hint_text(&m).contains("C-g ? help"));
+    }
+
+    #[test]
     fn a_selection_move_raises_the_cards_keys_and_a_fact_for_three_seconds() {
         let mut model = model_with_cards();
         assert!(
@@ -1457,6 +1550,7 @@ mod tests {
     #[test]
     fn the_next_move_replaces_the_hint_and_any_key_ends_it() {
         let mut model = model_with_cards();
+        model.state.chrome.first_key_seen = true;
         update(&mut model, down());
         assert!(hint_text(&model).contains("1 window"));
         // The next move replaces it with the card it lands on: the unreachable host,
@@ -2322,6 +2416,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn only_successful_logins_enter_the_recent_values_list() {
+        let (mut m, attempt) = submitted_login(&["pwbox"]);
+        let login = crate::transport::Login {
+            address: Some("10.0.0.8".into()),
+            port: Some(2222),
+            user: Some("alice".into()),
+        };
+        let mut ok = login_result("pwbox", attempt, crate::link::unlock::UnlockOutcome::Ok);
+        if let Msg::OpResult {
+            result: crate::ui::switcher::OpResult::Login { login: value, .. },
+            ..
+        } = &mut ok
+        {
+            *value = login.clone();
+        }
+        update(&mut m, ok);
+        assert_eq!(m.state.recent_logins.len(), 1);
+        assert_eq!(m.state.recent_logins[0].login, login);
+        assert_eq!(m.state.recent_logins[0].source, "pwbox");
+    }
+
     fn probed(machine: &str, probe: u64, err: Option<&str>) -> Msg {
         Msg::HostEvent {
             event: crate::link::HostEvent::MachineProbed {
@@ -2676,5 +2792,62 @@ mod tests {
             "the login pane takes the keys"
         );
         assert_eq!(m.switcher.current_source().as_deref(), Some("lock"));
+    }
+
+    #[test]
+    fn palette_runs_a_named_command_and_ignores_unmatched_enter() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        update(&mut m, Msg::TogglePalette);
+        let no_match = update(
+            &mut m,
+            Msg::ReaderBytes {
+                bytes: b"unknown\r".to_vec(),
+                prefix: 0x07,
+            },
+        );
+        assert!(no_match.is_empty());
+        assert!(matches!(
+            m.state.modal,
+            Some(crate::state::Modal::Palette { .. })
+        ));
+        let effects = update(
+            &mut m,
+            Msg::ReaderBytes {
+                bytes: b"\x15quit xmux\r".to_vec(),
+                prefix: 0x07,
+            },
+        );
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Command(crate::model::Command::Quit)]
+        ));
+        assert!(m.state.modal.is_none());
+    }
+
+    #[test]
+    fn palette_login_opens_a_hidden_unreachable_host_without_filtering() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned(), "dead".to_owned()]);
+        answer(&mut m, "a", &["x"], None);
+        answer(&mut m, "dead", &[], Some("connection refused"));
+        m.switcher.set_hide_unreachable(true, &mut m.state);
+        update(&mut m, Msg::TogglePalette);
+        let effects = update(
+            &mut m,
+            Msg::ReaderBytes {
+                bytes: b"log in to dead\r".to_vec(),
+                prefix: 0x07,
+            },
+        );
+        assert_eq!(m.switcher.scope(), crate::model::NavScope::AllHosts);
+        assert!(m.state.filter.is_empty());
+        assert_eq!(m.switcher.current_source().as_deref(), Some("dead"));
+        assert!(m.switcher.current_host_blocked());
+        assert!(!m.state.focus.view_is_nav());
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::PersistNavScope(crate::model::NavScope::AllHosts)
+        )));
+        answer(&mut m, "dead", &[], None);
+        assert!(!m.switcher.current_host_blocked());
     }
 }

@@ -50,7 +50,8 @@ ordered backend effects. An exit from a once-connected source is a transient dro
 that keeps the last-known inventory. Connection and inventory events carry parsed
 sessions for update to fold into the source's own inventory, the single owner.
 
-The modal is ONE optional value: at most one of help, the history, or inline input.
+The modal is ONE optional value: at most one of help, history, host check, command
+palette, or inline input.
 A single option, rather than independent fields, makes the modals' mutual exclusion
 structural, so opening one drops whatever was open. State owns the modal types,
 classifiers, input editing, and the read-only popup feed. The UI owns popup geometry

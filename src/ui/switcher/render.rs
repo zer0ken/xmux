@@ -466,9 +466,10 @@ impl Switcher {
         let hidden = self.hidden_sources(state).len();
         let scope = self.scope().word();
         if hidden == 0 {
-            format!("nav: {scope}")
+            format!("showing {scope}")
         } else {
-            format!("nav: {scope} · {hidden} hidden")
+            let hosts = if hidden == 1 { "host" } else { "hosts" };
+            format!("showing {scope} · {hidden} {hosts} hidden")
         }
     }
 
@@ -1112,7 +1113,9 @@ impl Switcher {
         let row = &self.rows[i];
         let selected = self.selected == i;
         let accent = Style::default().fg(palette.accent);
-        let number = Style::default().fg(palette.decoration);
+        let number = Style::default()
+            .fg(palette.decoration)
+            .add_modifier(Modifier::DIM);
         // The address column every card writes on - the only line, now that a card has
         // none other. A section title never calls it: it carries no number and is never
         // the selection.
@@ -1125,7 +1128,7 @@ impl Switcher {
             }
         };
 
-        // Section title: `{host}/{mux}`, dim, alone on its row. Not a card - no number,
+        // Section title: `{host}/{mux}`, bold, alone on its row. Not a card - no number,
         // not selectable, and the selection can never land on it. The cards under it are
         // indented, which is what marks the group at every nav position.
         if let RowRef::Section { .. } = &row.reference {
@@ -1136,7 +1139,12 @@ impl Switcher {
                 middle_ellipsize(&title, width.saturating_sub(1) as usize)
             };
             return vec![Line::from(vec![
-                Span::styled(title, Style::default().fg(palette.decoration)),
+                Span::styled(
+                    title,
+                    Style::default()
+                        .fg(palette.decoration)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" "),
             ])];
         }
@@ -1233,8 +1241,7 @@ impl Switcher {
 
         // Session card: the address column + the session name on a single detail line.
         // The `{host}/{mux}` it used to restate now lives on the section title above it.
-        // The session name is the lowest level the card displays, so it takes the accent
-        // and stays bold.
+        // The session name is normal weight between the bold title and dim number.
         //
         // The indent a session card hangs at under its title is NOT part of the card;
         // what a card holds is what a card holds at every position.
@@ -1249,11 +1256,7 @@ impl Switcher {
         } else {
             (width as usize).saturating_sub(num_w + 2)
         };
-        let session_style = if filter.is_empty() {
-            accent.add_modifier(Modifier::BOLD)
-        } else {
-            accent
-        };
+        let session_style = accent;
         detail.extend(highlighted(
             middle_ellipsize(sess, available),
             &remaining_filter(&format!("{source}/"), filter),
@@ -1301,6 +1304,16 @@ impl Switcher {
                     self.check_table(state, *selected, w.saturating_sub(2), usize::MAX);
                 let h = (lines.len() as u16 + 2).min(area.height.max(1));
                 modal::offset_centered(w, h, area, self.popup_geo.offset)
+            }
+            Some(Modal::Palette { query, .. }) => {
+                let w = history_popup_width(area);
+                let rows = self.palette_entries(state, query).len().clamp(1, 12) as u16;
+                modal::offset_centered(
+                    w,
+                    (rows + 4).min(area.height.max(1)),
+                    area,
+                    self.popup_geo.offset,
+                )
             }
             Some(Modal::History { scroll }) => {
                 let w = history_popup_width(area);
@@ -1412,6 +1425,27 @@ impl Switcher {
                 rect.width.saturating_sub(2),
                 rect.height.saturating_sub(2) as usize,
             ),
+            Some(Modal::Palette {
+                query, selected, ..
+            }) => {
+                let entries = self.palette_entries(state, query);
+                let visible = rect.height.saturating_sub(4) as usize;
+                let start = selected.saturating_sub(visible.saturating_sub(1));
+                let mut lines = vec![Line::from(format!(" : {query}▌")), Line::from("")];
+                if entries.is_empty() {
+                    lines.push(Line::from(" no matching commands"));
+                } else {
+                    for (i, (name, _)) in entries.iter().enumerate().skip(start).take(visible) {
+                        let line = Line::from(format!(" {name}"));
+                        lines.push(if i == *selected {
+                            line.style(palette::selection_style(palette))
+                        } else {
+                            line
+                        });
+                    }
+                }
+                ("commands".to_string(), lines)
+            }
             _ => return,
         };
         modal::render_popup(frame, area, rect, &title, lines, palette);

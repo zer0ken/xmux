@@ -446,8 +446,8 @@ mod tests {
         let long = key_list("C-g", NavPosition::Left, 160, 30).unwrap();
         let (long_w, _) = long.size();
         // Narrower than the long rung needs at the height the room leaves.
-        let list = key_list("C-g", NavPosition::Left, 60, 13).unwrap();
-        assert!(long_w > 60);
+        let list = key_list("C-g", NavPosition::Left, 50, 14).unwrap();
+        assert!(long_w > 50);
         assert_eq!(list.rung, Rung::Short, "{list:?}");
         assert_eq!(list.keys().len(), prefixed_count(), "no key given up");
         assert_eq!(list.more(), 0);
