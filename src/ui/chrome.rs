@@ -248,9 +248,11 @@ pub(crate) enum BarFill {
 
 /// The mark a BLOCKED host wears on its nav card, flush after the host name. A blocked
 /// host is a failure the user can act on (the login pane), so it keeps the warning
-/// colour like the unreachable `⚠`. One column wide: a card's columns are laid out in
+/// colour. One column wide: a card's columns are laid out in
 /// cells, and a wide glyph here would shift every column after it.
 pub(crate) const BLOCK_MARK: &str = "?";
+pub(crate) const UNREACHABLE_MARK: &str = "▲";
+pub(crate) const LIST_FAILED_MARK: &str = "✗";
 
 use crate::model::ViewScreen;
 
@@ -268,8 +270,10 @@ impl ViewScreen {
     fn word(self) -> &'static str {
         match self {
             ViewScreen::SelfSession => "running xmux",
-            ViewScreen::Login => crate::ui::tree::host_state_word(true, true),
-            other => crate::ui::tree::host_state_word(false, other == ViewScreen::Unreachable),
+            ViewScreen::Login => crate::ui::tree::host_state_word(false, true, false, true),
+            ViewScreen::ListFailed => crate::ui::tree::host_state_word(false, false, true, true),
+            ViewScreen::Unreachable => crate::ui::tree::host_state_word(false, false, false, true),
+            ViewScreen::Empty => crate::ui::tree::host_state_word(false, false, false, false),
         }
     }
 }
@@ -306,14 +310,20 @@ fn siblings(
         .iter()
         .filter(|g| g.source != source && crate::session::machine_of(&g.source) == machine)
         .map(|g| {
-            let blocked = g.failure() == Some(crate::model::FailureKind::Blocked);
+            let failure = g.failure();
             let word = if state.scanning.contains(&g.source) {
                 "still scanning".to_string()
             } else if g.err.is_some() {
-                crate::ui::tree::host_state_word(blocked, true).to_string()
+                crate::ui::tree::host_state_word(
+                    false,
+                    failure == Some(crate::model::FailureKind::Blocked),
+                    failure == Some(crate::model::FailureKind::ListFailed),
+                    true,
+                )
+                .to_string()
             } else {
                 match g.sessions.len() {
-                    0 => crate::ui::tree::host_state_word(false, false).to_string(),
+                    0 => crate::ui::tree::host_state_word(false, false, false, false).to_string(),
                     1 => "1 session".to_string(),
                     n => format!("{n} sessions"),
                 }
@@ -354,7 +364,7 @@ impl ScreenCell {
 
     fn style(&self, palette: &crate::ui::palette::Palette) -> Style {
         match self {
-            ScreenCell::Key(_) => Style::default().add_modifier(Modifier::BOLD),
+            ScreenCell::Key(_) => crate::ui::palette::interaction_key_style(),
             ScreenCell::Label(_) => Style::default().fg(palette.decoration),
             ScreenCell::Continued | ScreenCell::Gap => Style::default(),
         }
@@ -516,7 +526,10 @@ impl Chrome {
             // through its mux - so its screen names the pair. The two failure states
             // answered nothing, so theirs reads the host alone unless the id names the
             // mux, which is the name the user types for it.
-            ViewScreen::Unreachable | ViewScreen::Login | ViewScreen::Empty => {
+            ViewScreen::Unreachable
+            | ViewScreen::Login
+            | ViewScreen::ListFailed
+            | ViewScreen::Empty => {
                 self.source_label_when(&address.source, matches!(kind, ViewScreen::Empty))
             }
         }
@@ -557,7 +570,10 @@ impl Chrome {
                  which moves your own client and paints xmux inside itself"
                     .into(),
             ));
-        } else if kind == ViewScreen::Unreachable || kind == ViewScreen::Login {
+        } else if matches!(
+            kind,
+            ViewScreen::Unreachable | ViewScreen::Login | ViewScreen::ListFailed
+        ) {
             // WHAT failed, then WHEN, then what was asked of the host and how, then who
             // put it on the list, then how it is configured, then what else on that same
             // machine answered, then where the whole history is written. Read top to
@@ -737,6 +753,7 @@ impl Chrome {
         let state_style = Style::default().fg(match kind {
             ViewScreen::Unreachable => pal.error,
             ViewScreen::Login => pal.warning,
+            ViewScreen::ListFailed => pal.primary,
             ViewScreen::Empty | ViewScreen::SelfSession => pal.decoration,
         });
         let headline = format!(" {}", self.headline(address, kind));
@@ -759,12 +776,12 @@ impl Chrome {
             let defaults = self.login_defaults(source);
             let draft = state.login.as_ref().filter(|d| d.source == source);
             let fallback = crate::state::LoginDraft {
-                address: defaults.0.clone(),
-                port: defaults.1.clone(),
-                username: defaults.2.clone(),
-                default_address: defaults.0.clone(),
-                default_port: defaults.1.clone(),
-                default_username: defaults.2.clone(),
+                address: defaults.address.value.clone(),
+                port: defaults.port.value.clone(),
+                username: defaults.username.value.clone(),
+                default_address: defaults.address.value.clone(),
+                default_port: defaults.port.value.clone(),
+                default_username: defaults.username.value.clone(),
                 ..Default::default()
             };
             let d = draft.unwrap_or(&fallback);
@@ -786,7 +803,12 @@ impl Chrome {
             // A field carries its own emptiness: a required one is marked in its label,
             // and an optional one says so in the space its value would occupy, so the
             // pane never needs a legend to be read.
-            let field = |name: &str, required: bool, value: &str, mask: bool, active: bool| {
+            let field = |name: &str,
+                         required: bool,
+                         value: &str,
+                         mask: bool,
+                         active: bool,
+                         provenance: &str| {
                 let shown = if mask {
                     "•".repeat(value.chars().count())
                 } else {
@@ -807,7 +829,18 @@ impl Chrome {
                 Line::from(vec![
                     label(format!("{name}{}", if required { "*" } else { "" })),
                     rule.clone(),
-                    Span::styled(format!("{text}{}", cursor(active)), style),
+                    Span::styled(
+                        format!(
+                            "{text}{}{}",
+                            cursor(active),
+                            if provenance.is_empty() {
+                                String::new()
+                            } else {
+                                format!("  {provenance}")
+                            }
+                        ),
+                        style,
+                    ),
                 ])
             };
             let choice = |name: &str, mark: &str, text: &str, active: bool| {
@@ -829,6 +862,13 @@ impl Chrome {
                 ])
             };
             use crate::state::{LoginFocus, Remember};
+            let provenance = |value: &str, original: &str, resolved: &'static str| {
+                if value == original {
+                    resolved
+                } else {
+                    "edited"
+                }
+            };
             out.push(Line::from(""));
             out.push(field(
                 "address",
@@ -836,6 +876,7 @@ impl Chrome {
                 &d.address,
                 false,
                 d.focus == LoginFocus::Address,
+                provenance(&d.address, &d.default_address, defaults.address.provenance),
             ));
             out.push(field(
                 "port",
@@ -843,6 +884,7 @@ impl Chrome {
                 &d.port,
                 false,
                 d.focus == LoginFocus::Port,
+                provenance(&d.port, &d.default_port, defaults.port.provenance),
             ));
             out.push(field(
                 "username",
@@ -850,6 +892,11 @@ impl Chrome {
                 &d.username,
                 false,
                 d.focus == LoginFocus::Username,
+                provenance(
+                    &d.username,
+                    &d.default_username,
+                    defaults.username.provenance,
+                ),
             ));
             out.push(field(
                 "password",
@@ -857,6 +904,7 @@ impl Chrome {
                 &d.password,
                 true,
                 d.focus == LoginFocus::Password,
+                "",
             ));
             // The remember choice appears only once a value differs from what ssh would
             // have used: a stanza repeating what ssh already resolves records nothing.
@@ -923,7 +971,7 @@ impl Chrome {
             // A flash outranks even an open input: a dead jump number flashed its range
             // while leaving the input open, so the range must show over the input line.
             match self.flash_kind {
-                FlashKind::Error => format!(" ⚠ {}", self.flash),
+                FlashKind::Error => format!(" ✗ {}", self.flash),
                 FlashKind::Notice => format!(" {}", self.flash),
             }
         } else if let Some(Modal::Input(input)) = &state.modal {
@@ -1028,9 +1076,7 @@ impl Chrome {
         // surface the card accent may not read on (see `Palette::bar_accent`). The keys
         // are also BOLD, so a key reads as a key wherever it is offered (the help modal's
         // key column and the host-screen rows are bold the same way).
-        let accent = Style::default()
-            .fg(palette.bar_accent)
-            .add_modifier(Modifier::BOLD);
+        let accent = crate::ui::palette::interaction_key_style().fg(palette.bar_accent);
         let sep_style = Style::default().fg(palette.decoration);
         let mut spans: Vec<Span> = Vec::new();
         for (i, seg) in line.split(" · ").enumerate() {
@@ -1262,7 +1308,7 @@ mod tests {
     /// A key that takes the flash down takes its deadline with it, so nothing is left to
     /// fire later at a bar the user already cleared.
     /// A notice is information, not a failure: it has a flash's life but paints the
-    /// notice style without the `⚠` mark, while an error keeps both.
+    /// notice style without the `✗` mark, while an error keeps both.
     #[test]
     fn a_notice_paints_apart_from_an_error() {
         let state = crate::state::State::default();
@@ -1274,7 +1320,7 @@ mod tests {
             notice_flash_style(&palette)
         );
         let text = c.hint_bar_text(80, &state);
-        assert!(!text.contains('⚠'), "{text:?}");
+        assert!(!text.contains('✗'), "{text:?}");
         assert!(text.contains("xmux 9.9.9 is available"), "{text:?}");
         assert!(
             c.expire_flash(Instant::now() + FLASH_TTL),
@@ -1286,7 +1332,7 @@ mod tests {
             c.hint_bar_render_style(&palette),
             error_flash_style(&palette)
         );
-        assert!(c.hint_bar_text(80, &state).contains('⚠'));
+        assert!(c.hint_bar_text(80, &state).contains('✗'));
         assert_ne!(notice_flash_style(&palette), error_flash_style(&palette));
     }
 

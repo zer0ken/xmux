@@ -226,12 +226,12 @@ impl Chrome {
     /// to the provider address or host name, port 22, and this machine's account name.
     /// A pane that opened on a failure therefore opens showing the effective connection
     /// values, and the user changes the part that was wrong.
-    pub(crate) fn login_defaults(&self, source: &str) -> (String, String, String) {
+    pub(crate) fn login_defaults(&self, source: &str) -> crate::provision::env::LoginDefaults {
         let host = crate::session::machine_of(source);
         self.login_defaults
             .get(host)
             .cloned()
-            .unwrap_or_else(|| (host.to_string(), "22".into(), String::new()))
+            .unwrap_or_else(|| crate::provision::env::LoginDefaults::fallback(host))
     }
 
     /// What the mux on `source` is CALLED. The resolved reach answers it; a source id that

@@ -44,7 +44,79 @@ pub(super) fn hint_bar_rect(nav_local: Rect, area: Rect, hint_bar_h: u16, floati
 /// cell's own pair, so a filled block inverts into a background-coloured half-cell and is
 /// absorbed into the inverted row's left edge - the mark vanishes exactly where it is
 /// needed. An outline keeps its silhouette either way round.
-pub(super) const SELECTED_MARK: &str = "\u{276f}";
+pub(crate) const SELECTED_MARK: &str = "\u{276f}";
+
+const MIN_SCREEN_WIDTH: u16 = 24;
+const MIN_SCREEN_HEIGHT: u16 = 4;
+
+struct NavRowPaint<'a> {
+    width: u16,
+    layout: ViewLayout,
+    filter: &'a str,
+    palette: &'a palette::Palette,
+}
+
+fn middle_ellipsize(text: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    if width == 1 {
+        return "…".into();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let front_budget = (width - 1).div_ceil(2);
+    let back_budget = width - 1 - front_budget;
+    let mut front = String::new();
+    let mut used = 0;
+    for ch in &chars {
+        let cw = unicode_width::UnicodeWidthChar::width(*ch).unwrap_or(0);
+        if used + cw > front_budget {
+            break;
+        }
+        front.push(*ch);
+        used += cw;
+    }
+    let mut back = String::new();
+    let mut used = 0;
+    for ch in chars.iter().rev() {
+        let cw = unicode_width::UnicodeWidthChar::width(*ch).unwrap_or(0);
+        if used + cw > back_budget {
+            break;
+        }
+        back.insert(0, *ch);
+        used += cw;
+    }
+    format!("{front}…{back}")
+}
+
+fn highlighted(text: String, filter: &str, style: Style) -> Vec<Span<'static>> {
+    if filter.is_empty() {
+        return vec![Span::styled(text, style)];
+    }
+    let lower_filter = filter.to_lowercase();
+    let mut wanted = lower_filter.chars().peekable();
+    text.chars()
+        .map(|ch| {
+            let matched = wanted
+                .peek()
+                .is_some_and(|next| ch.to_lowercase().next() == Some(*next));
+            if matched {
+                wanted.next();
+            }
+            Span::styled(
+                ch.to_string(),
+                if matched {
+                    style.add_modifier(Modifier::BOLD)
+                } else {
+                    style
+                },
+            )
+        })
+        .collect()
+}
 
 /// Splits a nav region into `(cards, scrollbar strip)`. `needed` false gives the whole
 /// region to the cards and an empty strip, so a nav that fits spends nothing on furniture.
@@ -386,6 +458,16 @@ impl Switcher {
         // Clearing first makes every unpainted cell default; ratatui still diffs against
         // the last frame, so static content writes nothing (no flicker).
         frame.render_widget(Clear, area);
+        if area.width < MIN_SCREEN_WIDTH || area.height < MIN_SCREEN_HEIGHT {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(format!("xmux need {MIN_SCREEN_WIDTH}x{MIN_SCREEN_HEIGHT}")),
+                    Line::from(format!("current {}x{}", area.width, area.height)),
+                ]),
+                area,
+            );
+            return;
+        }
         // nav_width == 0 is the "nav hidden" sentinel (terminal view focused + auto-hide):
         // the terminal view owns the whole area - no nav list, no view border, and no
         // status line of its own, since the user asked for the whole screen to be the mux.
@@ -529,8 +611,17 @@ impl Switcher {
             Self::render_card_connector(frame, *rect, palette);
         }
         for &(idx, rect) in &plan.nav_cells {
-            let lines =
-                self.nav_row_lines(idx, num_w, spinner_glyph, rect.width, plan.layout, palette);
+            let lines = self.nav_row_lines(
+                idx,
+                num_w,
+                spinner_glyph,
+                NavRowPaint {
+                    width: rect.width,
+                    layout: plan.layout,
+                    filter: &state.filter,
+                    palette,
+                },
+            );
             frame.render_widget(Paragraph::new(lines), rect);
             if self.selected == idx {
                 frame
@@ -703,7 +794,17 @@ impl Switcher {
         spinner_glyph: char,
         palette: &palette::Palette,
     ) -> columns::Card {
-        let lines = self.nav_row_lines(i, num_w, spinner_glyph, 0, ViewLayout::Band, palette);
+        let lines = self.nav_row_lines(
+            i,
+            num_w,
+            spinner_glyph,
+            NavRowPaint {
+                width: 0,
+                layout: ViewLayout::Band,
+                filter: "",
+                palette,
+            },
+        );
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
         let starts_run = self.starts_run(i);
         // A session card is pushed right by the connector's strip, so the column has to
@@ -723,8 +824,8 @@ impl Switcher {
     /// session name on a single detail line; a section title is the `{host}/{mux}`
     /// header (dim, with a rule filling the row's width in the side list) and carries
     /// no address column;
-    /// a host-state card is the host/mux name on its row, with the unreachable mark
-    /// (`⚠`) riding after the host name and the mux taking the accent, or a spinner in
+    /// a host-state card is the host/mux name on its row, with its state glyph in a
+    /// fixed slot, or a spinner in
     /// the level a scanning host has not resolved. A host-state card claims a mux only
     /// when the mux is CONFIRMED - a bare-id host that is unreachable or still scanning
     /// names none, so the card reads the host alone or spins in the mux position.
@@ -746,15 +847,18 @@ impl Switcher {
         i: usize,
         num_w: usize,
         spinner_glyph: char,
-        width: u16,
-        layout: ViewLayout,
-        palette: &palette::Palette,
+        paint: NavRowPaint<'_>,
     ) -> Vec<Line<'static>> {
+        let NavRowPaint {
+            width,
+            layout,
+            filter,
+            palette,
+        } = paint;
         let row = &self.rows[i];
         let selected = self.selected == i;
         let accent = Style::default().fg(palette.accent);
         let number = Style::default().fg(palette.decoration);
-        let separator = Style::default().fg(palette.decoration);
         // The address column every card writes on - the only line, now that a card has
         // none other. A section title never calls it: it carries no number and is never
         // the selection.
@@ -783,12 +887,17 @@ impl Switcher {
             } else {
                 format!("{host}/{mux}")
             };
+            let title = if width == 0 {
+                title
+            } else {
+                middle_ellipsize(&title, width.saturating_sub(1) as usize)
+            };
             let title_w = UnicodeWidthStr::width(title.as_str()) as u16;
             let rule_w = match layout {
                 ViewLayout::Column => width.saturating_sub(title_w.saturating_add(1)),
                 ViewLayout::Band => 0,
             };
-            let mut spans = vec![Span::styled(title, header)];
+            let mut spans = highlighted(title, filter, header);
             if rule_w > 0 {
                 spans.push(Span::styled(
                     format!(" {}", BAND_RULE.repeat(rule_w as usize)),
@@ -801,7 +910,7 @@ impl Switcher {
 
         // Host-state card: a settled host (reachable empty or unreachable) and a
         // scanning host read the same way, one row: the host name, the state mark that
-        // rides it (`⚠` unreachable), the confirmed mux, and - while the host is still
+        // rides it, the confirmed mux, and - while the host is still
         // scanning - ONE spinner trailing the line. The spinner always stands in that
         // one trailing place whether or not the mux is already known, so every scanning
         // card reads as the same thing loading. The mux is accent whenever it is shown:
@@ -810,45 +919,81 @@ impl Switcher {
         if let RowRef::Host {
             unreachable,
             blocked,
+            list_failed,
             scanning,
             ..
         } = &row.reference
         {
             let (host, mux, _) = context_of(row);
             let pending = Style::default().fg(palette.warning);
+            let word =
+                crate::ui::tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable);
             // A host-state card's number sits on the host/mux line: the row is a word
             // about the host, not the thing the number names.
-            let mut line = address();
-            line.push(Span::styled(
-                host.to_string(),
-                Style::default().fg(palette.secondary),
-            ));
-            if *blocked {
-                // The block mark rides the host row flush after the host name. A blocked
-                // host is a failure the user can act on, so it keeps the warning colour
-                // like the unreachable mark.
-                line.push(Span::styled(
-                    crate::ui::chrome::BLOCK_MARK,
+            let (glyph, glyph_style) = if *scanning {
+                (spinner_glyph.to_string(), pending)
+            } else if *blocked {
+                (
+                    crate::ui::chrome::BLOCK_MARK.to_string(),
                     Style::default().fg(palette.warning),
-                ));
+                )
+            } else if *list_failed {
+                (
+                    crate::ui::chrome::LIST_FAILED_MARK.to_string(),
+                    Style::default().fg(palette.primary),
+                )
             } else if *unreachable {
-                // The mark rides the host row flush after the host name.
-                // Danger keeps its colour: an unreachable host is still a failure, the
-                // card just says so with a mark instead of a second row of text.
-                line.push(Span::styled("⚠", Style::default().fg(palette.warning)));
-            }
-            if !mux.is_empty() {
-                line.push(Span::styled("/", separator));
-                // The mux is confirmed whenever it is shown, so it stays with the host:
-                // both halves of the group identity read in secondary even while the host
-                // still scans for its sessions.
+                (
+                    crate::ui::chrome::UNREACHABLE_MARK.to_string(),
+                    Style::default().fg(palette.error),
+                )
+            } else {
+                (" ".into(), Style::default())
+            };
+            let identity = if mux.is_empty() {
+                host.to_string()
+            } else {
+                format!("{host}/{mux}")
+            };
+            let suffix_w = 2 + if selected { word.len() + 1 } else { 0 };
+            let identity_w = if width == 0 {
+                usize::MAX
+            } else {
+                (width as usize).saturating_sub(num_w + 1 + suffix_w + 1)
+            };
+            let mut line = address();
+            let identity = middle_ellipsize(&identity, identity_w);
+            let identity = if filter.is_empty() {
+                if let Some((host, mux)) = identity.split_once('/') {
+                    vec![
+                        Span::styled(host.to_string(), Style::default().fg(palette.secondary)),
+                        Span::styled("/", Style::default().fg(palette.decoration)),
+                        Span::styled(mux.to_string(), Style::default().fg(palette.secondary)),
+                    ]
+                } else {
+                    vec![Span::styled(
+                        identity,
+                        Style::default().fg(palette.secondary),
+                    )]
+                }
+            } else {
+                let mut spans =
+                    highlighted(identity, filter, Style::default().fg(palette.secondary));
+                for span in &mut spans {
+                    if span.content == "/" {
+                        span.style = Style::default().fg(palette.decoration);
+                    }
+                }
+                spans
+            };
+            line.extend(identity);
+            line.push(Span::raw(" "));
+            line.push(Span::styled(glyph, glyph_style));
+            if selected {
                 line.push(Span::styled(
-                    mux.to_string(),
+                    format!(" {word}"),
                     Style::default().fg(palette.secondary),
                 ));
-            }
-            if *scanning {
-                line.push(Span::styled(format!(" {spinner_glyph}"), pending));
             }
             line.push(Span::raw(" "));
             return vec![Line::from(line)];
@@ -864,8 +1009,14 @@ impl Switcher {
         // in either layout.
         let (_, _, sess) = context_of(row);
         let mut detail = address();
-        detail.push(Span::styled(
-            sess.to_string(),
+        let available = if width == 0 {
+            usize::MAX
+        } else {
+            (width as usize).saturating_sub(num_w + 2)
+        };
+        detail.extend(highlighted(
+            middle_ellipsize(sess, available),
+            filter,
             accent.add_modifier(Modifier::BOLD),
         ));
         detail.push(Span::raw(" "));

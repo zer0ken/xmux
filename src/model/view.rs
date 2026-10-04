@@ -12,6 +12,8 @@ pub enum ViewScreen {
     Unreachable,
     /// The host failed in a way the login pane can answer.
     Login,
+    /// The host answered, but its session listing could not be parsed.
+    ListFailed,
     /// The host answered and serves no session.
     Empty,
 }
@@ -31,6 +33,7 @@ pub fn choose_view_screen(
     selected_source?;
     match failure {
         Some(FailureKind::Blocked) => return Some(ViewScreen::Login),
+        Some(FailureKind::ListFailed) => return Some(ViewScreen::ListFailed),
         Some(FailureKind::Unreachable) => return Some(ViewScreen::Unreachable),
         None => {}
     }

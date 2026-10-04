@@ -332,7 +332,10 @@ impl State {
     /// the password leaves the rendered draft and enters the process-only credential
     /// broker. A failed or replaced login removes that exact credential.
     pub fn feed_login(&mut self, source: &str, bytes: &[u8]) -> Option<crate::model::Command> {
-        let (address, port, username) = self.chrome.login_defaults(source);
+        let defaults = self.chrome.login_defaults(source);
+        let address = defaults.address.value;
+        let port = defaults.port.value;
+        let username = defaults.username.value;
         let draft = match &mut self.login {
             Some(d) if d.source == source => d,
             _ => {

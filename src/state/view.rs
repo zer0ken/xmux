@@ -34,6 +34,7 @@ pub(crate) enum RowRef {
         source: String,
         unreachable: bool,
         blocked: bool,
+        list_failed: bool,
         scanning: bool,
     },
 }

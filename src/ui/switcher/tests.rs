@@ -495,7 +495,7 @@ async fn renders_a_session_card_per_session() {
         "jupiter00",
         "inference",
         "db-2",
-        "⚠", // unreachable host marker (the reason now lives on the host screen)
+        "▲", // unreachable host marker (the reason lives on the host screen)
     ] {
         assert!(out.contains(want), "nav missing {want:?}\n{out}");
     }
@@ -621,9 +621,10 @@ async fn from_sources_renders_scanning_skeletons() {
         spins(&out),
         "each host card spins in the level it is waiting on:\n{out}"
     );
-    assert!(
-        !out.contains("scanning"),
-        "and says so with the spinner alone, no status word:\n{out}"
+    assert_eq!(
+        out.matches("scanning").count(),
+        1,
+        "only the selected card carries the scanning word:\n{out}"
     );
     assert!(
         !out.contains("window"),
@@ -651,13 +652,16 @@ async fn a_scanning_host_card_is_one_line_with_a_trailing_spinner() {
     let h = Harness::from_sources(&["local"]);
     let rows = non_empty(&h);
     assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
-    assert_eq!(rows[0], format!("{SELECTED_MARK} local {sp}"));
+    assert_eq!(rows[0], format!("{SELECTED_MARK} local {sp} scanning"));
 
     // A qualified id already confirms its mux: same shape, the mux in the middle.
     let h = Harness::from_sources(&["local:zellij"]);
     let rows = non_empty(&h);
     assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
-    assert_eq!(rows[0], format!("{SELECTED_MARK} local/zellij {sp}"));
+    assert_eq!(
+        rows[0],
+        format!("{SELECTED_MARK} local/zellij {sp} scanning")
+    );
 }
 
 #[tokio::test]
@@ -985,12 +989,12 @@ async fn apply_source_result_empty_shows_empty_status() {
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
     h.draw();
-    // The empty status lives on the HOST SCREEN the card selects; the card itself is a
-    // single host row that carries no status word.
+    // The selected card names its state, and the host screen repeats the state with its
+    // available actions.
     let cards = h.nav_cards_text();
     assert!(
-        !cards.contains("no sessions"),
-        "the card carries no status word:\n{cards}"
+        cards.contains("no sessions"),
+        "the selected card carries its status word:\n{cards}"
     );
     assert!(
         !spins(&cards),
@@ -1026,10 +1030,10 @@ async fn apply_source_result_marks_the_card_and_states_the_reason_on_the_screen(
         &mut h.state,
     );
     h.draw();
-    // Nav: the ⚠ marker and nothing more. No part of the message reaches the card -
+    // Nav: the one-cell marker and nothing more. No part of the message reaches the card -
     // the screen is where it is stated, and a card is too narrow to hold it whole.
     let tree = h.nav_text();
-    assert!(tree.contains('⚠'), "the host row is marked with ⚠:\n{tree}");
+    assert!(tree.contains('▲'), "the host row is marked with ▲:\n{tree}");
     for absent in ["connection refused", "command failed"] {
         assert!(
             !tree.contains(absent),
@@ -1050,8 +1054,206 @@ async fn apply_source_result_marks_the_card_and_states_the_reason_on_the_screen(
 }
 
 #[tokio::test]
+async fn host_failures_use_distinct_one_cell_glyphs_and_selected_state_words() {
+    let scan = Scan {
+        groups: vec![
+            Group {
+                source: "login-box".into(),
+                err: Some("alice@login-box: Permission denied (publickey,password).".into()),
+                sessions: vec![],
+            },
+            Group {
+                source: "list-box".into(),
+                err: Some("invalid tuios session listing: expected value".into()),
+                sessions: vec![],
+            },
+            Group {
+                source: "dead-box".into(),
+                err: Some("connection refused".into()),
+                sessions: vec![],
+            },
+        ],
+    };
+    let mut h = Harness::new(scan);
+    let cards = h.nav_cards_text();
+    assert!(cards.contains('?'), "login-needed glyph:\n{cards}");
+    assert!(cards.contains('✗'), "list-failure glyph:\n{cards}");
+    assert!(cards.contains('▲'), "unreachable glyph:\n{cards}");
+    assert_eq!(
+        h.nav_fg_of("?"),
+        Some(crate::ui::palette::Palette::default().warning)
+    );
+    assert_eq!(
+        h.nav_fg_of("✗"),
+        Some(crate::ui::palette::Palette::default().primary)
+    );
+    assert_eq!(
+        cards.matches("unreachable").count(),
+        1,
+        "only the selected card has a word:\n{cards}"
+    );
+    h.key(KeyCode::Down).await;
+    let cards = h.nav_cards_text();
+    assert_eq!(
+        h.nav_fg_of("▲"),
+        Some(crate::ui::palette::Palette::default().error)
+    );
+    assert!(!cards
+        .lines()
+        .any(|line| line.contains("dead-box") && line.contains("unreachable")));
+    assert!(cards
+        .lines()
+        .any(|line| line.contains("list-box") && line.contains("list failed")));
+    assert!(
+        h.view_text().contains("expected value"),
+        "the listing reason stays on the host screen:\n{}",
+        h.view_text()
+    );
+}
+
+#[tokio::test]
+async fn scanning_and_settled_host_glyphs_share_a_fixed_column() {
+    let mut h = Harness::from_sources(&["scanbox", "deadbox"]);
+    h.sw.apply_source_result(
+        "deadbox".into(),
+        vec![],
+        Some("connection refused".into()),
+        &mut h.state,
+    );
+    h.draw();
+    let spinner = crate::ui::spinner_glyph(h.state.chrome.spinner_frame).to_string();
+    let x_of = |needle: &str| {
+        let buffer = h.buf();
+        (0..buffer.area.height)
+            .find_map(|y| {
+                (0..NAV_WIDTH.min(buffer.area.width)).find(|x| buffer[(*x, y)].symbol() == needle)
+            })
+            .expect("glyph in nav")
+    };
+    assert_eq!(
+        x_of(&spinner),
+        x_of("▲"),
+        "state glyphs occupy one fixed slot"
+    );
+}
+
+#[tokio::test]
+async fn long_card_names_are_middle_ellipsized() {
+    let mut h = Harness::new_sized(
+        Scan {
+            groups: vec![Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![Session {
+                    source: "local".into(),
+                    name: "my-important-production-session-with-a-very-long-tail-session".into(),
+                    mux: "tmux".into(),
+                    ..Default::default()
+                }],
+            }],
+        },
+        48,
+        12,
+    );
+    h.draw();
+    let cards = h.nav_cards_text();
+    assert!(
+        cards.contains('…'),
+        "a long card uses a middle ellipsis:\n{cards}"
+    );
+    assert!(
+        cards.contains("my-"),
+        "the beginning remains visible:\n{cards}"
+    );
+    assert!(
+        cards.contains("session"),
+        "the end remains visible:\n{cards}"
+    );
+}
+
+#[tokio::test]
+async fn open_filter_reports_matches_hidden_hosts_and_bolds_matching_cells() {
+    let mut h = Harness::new(Scan {
+        groups: vec![
+            Group {
+                source: "local".into(),
+                err: None,
+                sessions: vec![Session {
+                    source: "local".into(),
+                    name: "alpha".into(),
+                    ..Default::default()
+                }],
+            },
+            Group {
+                source: "alpine".into(),
+                err: Some("connection refused".into()),
+                sessions: vec![],
+            },
+        ],
+    });
+    h.sw.hide_unreachable = true;
+    h.sw.rebuild(&mut h.state);
+    h.key(KeyCode::Char('/')).await;
+    h.ch('a').await;
+    let hint = h.hint_bar_text();
+    assert!(hint.contains("2 matches"), "match count:\n{hint}");
+    assert!(hint.contains("1 hidden host"), "hidden-host count:\n{hint}");
+    assert_eq!(
+        h.nav_mod_of("a"),
+        Some(Modifier::BOLD),
+        "matching cells are bold"
+    );
+}
+
+#[tokio::test]
+async fn open_filter_reports_zero_for_the_no_match_fallback() {
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::Char('/')).await;
+    for ch in "zzzz".chars() {
+        h.ch(ch).await;
+    }
+    assert!(
+        h.hint_bar_text().contains("0 matches"),
+        "fallback host cards are not matches: {}",
+        h.hint_bar_text()
+    );
+}
+
+#[tokio::test]
+async fn terminal_below_the_minimum_renders_the_required_size() {
+    let h = Harness::new_sized(Scan::default(), 20, 3);
+    let out = h.text();
+    assert!(
+        out.contains("need 24x4"),
+        "required dimensions are visible:\n{out}"
+    );
+    assert!(
+        out.contains("20x3"),
+        "current dimensions are visible:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn interaction_screens_render_key_tokens_in_one_shape() {
+    let mut h = Harness::new(Scan {
+        groups: vec![Group {
+            source: "local".into(),
+            err: None,
+            sessions: vec![],
+        }],
+    });
+    let key_shape = |h: &Harness, key: &str| {
+        mod_of(h.buf(), key, h.buf().area.width).expect("key token on screen")
+    };
+    assert!(key_shape(&h, "C-g n").contains(Modifier::BOLD));
+    h.sw.show_help(&mut h.state);
+    h.draw();
+    assert!(key_shape(&h, "C-g n").contains(Modifier::BOLD));
+}
+
+#[tokio::test]
 async fn an_unselected_unreachable_card_keeps_the_warning_mark() {
-    // The ⚠ mark keeps the warning colour. The SELECTED card is painted in
+    // The ▲ mark keeps the error colour. The SELECTED card is painted in
     // reverse video, which flattens every level colour on it by design, so the colour
     // assertion reads an UNSELECTED unreachable card.
     let scan = selection_parked_elsewhere(Scan {
@@ -1068,9 +1270,9 @@ async fn an_unselected_unreachable_card_keeps_the_warning_mark() {
         "the decoy holds the selection, so the mark's colour reads"
     );
     assert_eq!(
-        h.nav_fg_of("⚠"),
-        Some(crate::ui::palette::Palette::default().warning),
-        "the mark keeps the warning colour on an unselected card"
+        h.nav_fg_of("▲"),
+        Some(crate::ui::palette::Palette::default().error),
+        "the mark keeps the error colour on an unselected card"
     );
 }
 
@@ -1189,7 +1391,20 @@ async fn login_pane_prefills_all_values_from_ssh_config() {
     h.state.chrome.set_login_defaults(
         std::collections::HashMap::from([(
             "e2e-box".into(),
-            ("127.0.0.1".into(), "2222".into(), "dev".into()),
+            crate::provision::env::LoginDefaults {
+                address: crate::provision::env::LoginValue {
+                    value: "127.0.0.1".into(),
+                    provenance: "from ssh config",
+                },
+                port: crate::provision::env::LoginValue {
+                    value: "2222".into(),
+                    provenance: "from ssh config",
+                },
+                username: crate::provision::env::LoginValue {
+                    value: "dev".into(),
+                    provenance: "from ssh config",
+                },
+            },
         )]),
         Default::default(),
     );
@@ -1208,6 +1423,11 @@ async fn login_pane_prefills_all_values_from_ssh_config() {
     assert_eq!(draft.port, draft.default_port);
     assert_eq!(draft.username, draft.default_username);
     h.draw();
+    assert!(
+        h.view_text().contains("from ssh config"),
+        "resolved values show their provenance:\n{}",
+        h.view_text()
+    );
     assert!(!h.text().contains("write address, port, username"));
 }
 
@@ -1458,7 +1678,7 @@ async fn a_card_claims_a_mux_only_when_it_is_confirmed() {
         "a bare unreachable card claims no mux:\n{out}"
     );
     assert!(
-        out.contains("srv⚠/zellij"),
+        out.contains("srv/zellij ▲"),
         "a qualified unreachable card keeps its resolved mux:\n{out}"
     );
     assert!(
@@ -2567,7 +2787,7 @@ async fn both_host_screens_share_one_grammar() {
         }],
     });
     for (label, view, name, word) in [
-        ("unreachable", dead.view_text(), "prod", "⚠ unreachable"),
+        ("unreachable", dead.view_text(), "prod", "unreachable"),
         ("empty", empty.view_text(), "fresh", "no sessions"),
     ] {
         let lines: Vec<&str> = view.lines().collect();
@@ -4254,7 +4474,7 @@ async fn the_input_hint_bar_floats_across_the_whole_window() {
         .map(|x| term.backend().buffer()[(x, y)].symbol())
         .collect();
     assert!(
-        row.contains("[filter] filter sessions:"),
+        row.contains("[filter] filter sessions · 4 matches · 0 hidden hosts:"),
         "the input bar floats onto the hidden-nav bottom row: {row:?}"
     );
     assert!(
@@ -5263,7 +5483,7 @@ async fn input_renders_in_the_hint_bar() {
     let last = h.buf().area.height - 1;
     let bottom: String = (0..w).map(|x| h.buf()[(x, last)].symbol()).collect();
     assert!(
-        bottom.contains("[filter] filter sessions:"),
+        bottom.contains("[filter] filter sessions · 4 matches · 0 hidden hosts:"),
         "the bar shows the feature head and guide: {bottom:?}"
     );
     let whole: String = (0..h.buf().area.height)

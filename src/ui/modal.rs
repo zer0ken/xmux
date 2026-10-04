@@ -244,7 +244,7 @@ pub(crate) fn help_lines(
         })
         .max()
         .unwrap_or(0);
-    let bold = Style::new().add_modifier(Modifier::BOLD);
+    let bold = palette::interaction_key_style();
     let accent = Style::default().fg(palette.accent);
     let rule = Span::styled("│ ", Style::default().fg(palette.decoration));
     let lines: Vec<Line> = rows

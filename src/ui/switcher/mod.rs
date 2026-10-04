@@ -354,6 +354,8 @@ mod columns;
 mod input;
 mod mouse;
 mod render;
+#[cfg(test)]
+pub(crate) use render::SELECTED_MARK;
 mod side;
 
 pub use render::RenderPlan;
@@ -529,6 +531,7 @@ impl Switcher {
             .or_else(|| self.rows.iter().position(Row::selectable))
             .unwrap_or(0);
         self.set_selected(target, state);
+        self.update_filter_label(state);
     }
 
     // --- selection / navigation --------------------------------------------

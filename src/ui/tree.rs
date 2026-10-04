@@ -197,6 +197,9 @@ pub(crate) fn drop_hidden_unreachable(
                 // A blocked host is actionable (its login pane is the one entry
                 // point), so hiding never drops it, whatever the filter says.
                 || g.failure() == Some(crate::model::FailureKind::Blocked)
+                // A listing failure proves the host answered. It remains visible so the
+                // user can read the parser reason and request another scan.
+                || g.failure() == Some(crate::model::FailureKind::ListFailed)
                 // And a host the user LOGGED IN to stays for the same reason: it is the
                 // host they just acted on, so whatever it answers next is the answer they
                 // are waiting for. Otherwise succeeding at the login is what hides the
@@ -291,17 +294,24 @@ fn push_session_card(rows: &mut Vec<Row>, sess: &Session, mux_of_source: &dyn Fn
 
 /// The status word a SETTLED host reads on its host screen. One source for the
 /// unreachable and the empty states, so the screen a user reaches from a card can
-/// never name the same state two ways. The card itself no longer prints this word:
-/// an unreachable card carries the `⚠` mark on its host row, and a reachable empty
-/// host reads as the host row alone, so the word is the screen's alone. `blocked`
+/// never name the same state two ways. `blocked`
 /// names a failure the user can answer; it precedes `unreachable` (a blocked host is
 /// one). What it was blocked ON is not in the word: the screen's reason row carries
 /// ssh's own sentence, which says it better than a state name could.
-pub(crate) fn host_state_word(blocked: bool, unreachable: bool) -> &'static str {
-    if blocked {
-        "login required"
+pub(crate) fn host_state_word(
+    scanning: bool,
+    blocked: bool,
+    list_failed: bool,
+    unreachable: bool,
+) -> &'static str {
+    if scanning {
+        "scanning"
+    } else if blocked {
+        "login needed"
+    } else if list_failed {
+        "list failed"
     } else if unreachable {
-        "⚠ unreachable"
+        "unreachable"
     } else {
         "no sessions"
     }
@@ -362,6 +372,7 @@ pub(crate) fn flatten(
         let is_scanning = scanning.contains(&g.source);
         let unreachable = g.err.is_some();
         let blocked = g.failure() == Some(crate::model::FailureKind::Blocked);
+        let list_failed = g.failure() == Some(crate::model::FailureKind::ListFailed);
         if !unreachable && !g.sessions.is_empty() {
             continue;
         }
@@ -380,6 +391,7 @@ pub(crate) fn flatten(
                 source: g.source.clone(),
                 unreachable,
                 blocked,
+                list_failed,
                 scanning: is_scanning,
             },
         });
@@ -1224,9 +1236,26 @@ mod tests {
     }
 
     #[test]
+    fn drop_hidden_unreachable_keeps_a_listing_failure() {
+        let groups = vec![Group {
+            source: "bad-list".into(),
+            err: Some("invalid tuios session listing: expected value".into()),
+            sessions: vec![],
+        }];
+        let kept = drop_hidden_unreachable(&groups, &HashSet::new(), &HashSet::new(), "");
+        assert_eq!(
+            kept.len(),
+            1,
+            "an answered host remains available for diagnosis"
+        );
+    }
+
+    #[test]
     fn host_state_word_names_the_login_state() {
-        assert_eq!(host_state_word(true, false), "login required");
-        assert_eq!(host_state_word(false, true), "⚠ unreachable");
-        assert_eq!(host_state_word(false, false), "no sessions");
+        assert_eq!(host_state_word(true, false, false, false), "scanning");
+        assert_eq!(host_state_word(false, true, false, true), "login needed");
+        assert_eq!(host_state_word(false, false, true, true), "list failed");
+        assert_eq!(host_state_word(false, false, false, true), "unreachable");
+        assert_eq!(host_state_word(false, false, false, false), "no sessions");
     }
 }

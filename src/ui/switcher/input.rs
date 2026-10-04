@@ -132,6 +132,7 @@ impl Switcher {
                 // live edit made while the input was open.
                 input.restore_filter = Some(state.filter.clone());
                 state.modal = Some(Modal::Input(Box::new(input)));
+                self.update_filter_label(state);
             }
             // New is opened by `open_new` and Jump by `open_jump` (both capture context
             // the mode alone does not carry). The unlock is not a modal: it lives in the
@@ -246,6 +247,42 @@ impl Switcher {
         }
         state.filter = filter;
         self.rebuild(state);
+    }
+
+    pub(super) fn update_filter_label(&self, state: &mut crate::state::State) {
+        let matches = crate::ui::tree::filter_groups(&state.groups, &state.filter)
+            .iter()
+            .map(|group| {
+                if group.err.is_some() || group.sessions.is_empty() {
+                    1
+                } else {
+                    group.sessions.len()
+                }
+            })
+            .sum::<usize>();
+        let hidden = if self.hide_unreachable {
+            state
+                .groups
+                .iter()
+                .filter(|group| {
+                    group.err.is_some()
+                        && !state.scanning.contains(&group.source)
+                        && group.failure() == Some(crate::model::FailureKind::Unreachable)
+                        && crate::ui::tree::fuzzy_match(&state.filter, &group.source)
+                })
+                .count()
+        } else {
+            0
+        };
+        if let Some(Modal::Input(input)) = state.modal.as_mut() {
+            if input.mode == InputMode::Filter {
+                input.label = format!(
+                    "filter sessions · {matches} {} · {hidden} hidden {}",
+                    if matches == 1 { "match" } else { "matches" },
+                    if hidden == 1 { "host" } else { "hosts" }
+                );
+            }
+        }
     }
 
     /// Returns the selection to the card a cancelled jump started from, matched by

@@ -479,8 +479,8 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
 /// Handles a remote host's control client dying. A host that had connected keeps its
 /// last-known rows. A never-connected host that died with "no sessions" / "no server
 /// running" is REACHABLE but has no mux server - it renders "(empty)" (and a session
-/// can be created there), NOT "⚠". Any other never-connected death is a real
-/// transport failure and renders "⚠". Returns `true` only when it marked the host
+/// can be created there), not an unreachable state. Any other never-connected death is a
+/// transport failure and renders the unreachable state. Returns `true` only when it marked the host
 /// unreachable.
 pub(crate) fn note_host_exited(
     switcher: &mut Switcher,
