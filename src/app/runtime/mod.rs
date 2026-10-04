@@ -48,12 +48,10 @@ const SPINNER_FRAME_MS: u64 = 120;
 /// monopolize the single thread.
 const EVENT_DRAIN_BUDGET: usize = 512;
 
-/// Minimum interval between redraws. Drawing is decoupled from events and capped
-/// to this frame rate: rapid input (or a busy PTY) sets a `dirty` flag, and the
-/// loop redraws at most once per frame - so no navigation pattern can flood the
-/// terminal with full-screen repaints and stall the single-threaded loop. A frame
-/// timer at this cadence flushes a pending dirty draw promptly even with no input.
-const FRAME_MS: u64 = 33;
+/// The ceiling keeps timer rounding from exceeding the configured draw rate.
+fn frame_interval(fps: u16) -> std::time::Duration {
+    std::time::Duration::from_nanos(1_000_000_000_u64.div_ceil(u64::from(fps)))
+}
 
 /// The ratatui terminal the app draws into. Loop-local in [`run_app`] (owns stdout);
 /// passed to the `Runtime` methods that draw / resize / dump.
@@ -1310,7 +1308,9 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Frame timer: wakes the loop at the redraw cadence so a pending `dirty` draw is
     // flushed promptly even when no other event arrives.
-    let mut frame = tokio::time::interval(Duration::from_millis(FRAME_MS));
+    let mut frame_period = frame_interval(rt.model.max_fps);
+    let mut frame =
+        tokio::time::interval_at(tokio::time::Instant::now() + frame_period, frame_period);
     frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -1366,6 +1366,13 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         // Any real event (not the bare frame wake) means the UI may have changed.
         if !from_frame {
             rt.dirty = true;
+        }
+        let next_period = frame_interval(rt.model.max_fps);
+        if next_period != frame_period {
+            frame_period = next_period;
+            frame =
+                tokio::time::interval_at(tokio::time::Instant::now() + frame_period, frame_period);
+            frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         }
     }
 
