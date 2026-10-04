@@ -955,17 +955,15 @@ impl Switcher {
         };
         let word =
             crate::ui::tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable);
-        let width = word.len() as u16 + 1;
+        let label = format!(" {word} ");
+        let width = label.len() as u16;
         let room_right = plan.nav_inner.right().saturating_sub(card.right());
-        let (x, label) = if room_right >= width.saturating_sub(1) {
-            (card.right().saturating_sub(1), format!(" {word}"))
+        let x = if room_right >= width.saturating_sub(1) {
+            card.right().saturating_sub(1)
         } else if card.x.saturating_sub(plan.nav_inner.x) >= width {
-            (card.x - width, format!("{word} "))
+            card.x - width
         } else {
-            (
-                plan.nav_inner.right().saturating_sub(width),
-                format!("{word} "),
-            )
+            plan.nav_inner.right().saturating_sub(width)
         };
         let rect = Rect {
             x,

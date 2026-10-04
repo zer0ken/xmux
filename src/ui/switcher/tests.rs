@@ -6668,6 +6668,35 @@ fn portrait_scanning_hosts_anchor_to_the_right_until_found() {
 }
 
 #[test]
+fn floating_host_status_has_reversed_padding_on_both_sides() {
+    let scan = Scan {
+        groups: vec![Group {
+            source: "local".into(),
+            err: None,
+            sessions: vec![],
+        }],
+    };
+    let (_sw, plan, term) = portrait(scan, 60, 12);
+    let card = plan.nav_cells[0].1;
+    let buf = term.backend().buffer();
+    let label = " no sessions ";
+    let start = (0..=buf.area.width - label.len() as u16)
+        .find(|&x| {
+            (x..x + label.len() as u16)
+                .map(|cell_x| buf[(cell_x, card.y)].symbol())
+                .collect::<String>()
+                == label
+        })
+        .expect("the status has one space on each side");
+    assert!(
+        (start..start + label.len() as u16)
+            .all(|x| buf[(x, card.y)].modifier.contains(Modifier::REVERSED)),
+        "both spaces belong to the reversed status"
+    );
+    assert!(card.width < 20, "the status does not widen the card");
+}
+
+#[test]
 fn floating_host_status_preserves_the_selected_mark_in_a_narrow_band() {
     let scan = Scan {
         groups: vec![Group {
@@ -6688,6 +6717,25 @@ fn floating_host_status_preserves_the_selected_mark_in_a_narrow_band() {
     assert!(
         row.contains("unreachable"),
         "the status stays visible: {row}"
+    );
+    assert!(
+        row.contains(" unreachable "),
+        "the narrow status still has both spaces: {row}"
+    );
+    let buf = term.backend().buffer();
+    let label = " unreachable ";
+    let start = (0..=buf.area.width - label.len() as u16)
+        .find(|&x| {
+            (x..x + label.len() as u16)
+                .map(|cell_x| buf[(cell_x, card.y)].symbol())
+                .collect::<String>()
+                == label
+        })
+        .expect("the narrow status fits inside the nav");
+    assert!(
+        (start..start + label.len() as u16)
+            .all(|x| buf[(x, card.y)].modifier.contains(Modifier::REVERSED)),
+        "both spaces stay inside the reversed label"
     );
 }
 
