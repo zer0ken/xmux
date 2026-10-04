@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::notify::{Level, Note};
 
 impl Switcher {
     // --- key handling -------------------------------------------------------
@@ -18,6 +19,18 @@ impl Switcher {
         } else {
             self.dismiss_modals(state);
             state.modal = Some(Modal::Help);
+        }
+    }
+
+    /// Toggles the history (`prefix m`) in either focus. Opening it takes every toast down:
+    /// the history holds each of them, so the toasts have been read where they are kept.
+    pub fn toggle_history(&mut self, state: &mut crate::state::State) {
+        if matches!(state.modal, Some(Modal::History { .. })) {
+            state.modal = None;
+        } else {
+            self.dismiss_modals(state);
+            state.notify.dismiss_all();
+            state.modal = Some(Modal::History { scroll: 0 });
         }
     }
 
@@ -52,14 +65,58 @@ impl Switcher {
         self.popup_geo.end_drag();
     }
 
-    /// Modal help input, tmux view-mode style. While the modal is open it captures
-    /// the whole key read (returns true ⇒ consumed - nothing reaches the tree or the
-    /// terminal view); `q` or Esc closes it, every other key is swallowed. Returns false
-    /// when help is closed, so the read falls through to normal routing. The single
-    /// owner of help dismissal - the app calls it above the tree/terminal split, so the
-    /// behavior is identical in both focuses.
-    pub fn feed_help_key(&mut self, bytes: &[u8], state: &mut crate::state::State) -> bool {
-        modal::feed_help(&mut state.modal, bytes)
+    /// Read-only popup input (the help and the history), tmux view-mode style. While one
+    /// is open it captures the whole key read (returns true ⇒ consumed - nothing reaches
+    /// the tree or the terminal view); `q` or Esc closes it, the history scrolls on its
+    /// arrows, and every other key is swallowed. The keys that open the two popups toggle
+    /// them here too: `prefix` then `m` toggles the history and `prefix` then `?` the help,
+    /// with `armed` carrying a prefix that ended one read into the next. After the prefix
+    /// any other key reads as it would alone. Returns false when neither is open, so the
+    /// read falls through to normal routing. The single owner of their dismissal - the
+    /// app calls it above the tree/terminal split, so the behavior is identical in both
+    /// focuses.
+    pub fn feed_reader_key(
+        &mut self,
+        bytes: &[u8],
+        prefix: u8,
+        armed: &mut bool,
+        state: &mut crate::state::State,
+    ) -> bool {
+        if !crate::state::is_reader(&state.modal) {
+            return false;
+        }
+        let mut rest = bytes;
+        while !rest.is_empty() && crate::state::is_reader(&state.modal) {
+            if std::mem::take(armed) {
+                match rest[0] {
+                    b'm' => self.toggle_history(state),
+                    b'?' => self.toggle_help(state),
+                    _ => continue,
+                }
+                rest = &rest[1..];
+                continue;
+            }
+            let (keys, after) = match rest.iter().position(|&b| b == prefix) {
+                Some(i) => (&rest[..i], Some(&rest[i + 1..])),
+                None => (rest, None),
+            };
+            if !keys.is_empty() {
+                modal::feed_reader(&mut state.modal, keys);
+            }
+            match after {
+                Some(after) if crate::state::is_reader(&state.modal) => {
+                    *armed = true;
+                    rest = after;
+                }
+                _ => break,
+            }
+        }
+        // The history scrolls no further than its oldest record.
+        let last = state.notify.history.len().saturating_sub(1);
+        if let Some(Modal::History { scroll }) = state.modal.as_mut() {
+            *scroll = (*scroll).min(last);
+        }
+        true
     }
 
     /// Handles one key against the switcher. Navigation/modal-open keys mutate the
@@ -483,19 +540,33 @@ impl Switcher {
         match state.fold_op_result(result) {
             OpFollow::Reselect(addr) => {
                 self.rebuild(state);
+                state.notify.toast(
+                    "new session",
+                    vec![Note::new(
+                        Level::Success,
+                        format!(
+                            "{}/{} created",
+                            crate::session::machine_of(&addr.source),
+                            addr.session
+                        ),
+                    )],
+                );
                 if let Some(i) = self.row_of_session(&addr) {
                     self.user_moved = true;
                     self.set_selected(i, state);
                 }
                 None
             }
-            OpFollow::Flash(message) => {
-                state.flash(message);
+            OpFollow::Failed(message) => {
+                state
+                    .notify
+                    .toast("new session", vec![Note::new(Level::Error, message)]);
                 None
             }
             // A successful unlock promoted this machine's credential. Only this
-            // machine's reach changed, so the app re-probes just it.
-            // Any failure stays locked and flashes why; the user retypes the password.
+            // machine's reach changed, so the app re-probes just it. Either way one toast
+            // reports the login and the follow-ups it ran; the user retypes the password
+            // after a failure.
             OpFollow::LoginResult {
                 source,
                 login,
@@ -511,39 +582,12 @@ impl Switcher {
                         .registration_reports
                         .insert(machine.clone(), outcome.registration.clone());
                 }
-                let notes = if outcome.notes.is_empty() {
-                    String::new()
-                } else {
-                    format!("; {}", outcome.notes.join("; "))
-                };
-                match &outcome.registration {
-                    crate::ui::ops::RegistrationOutcome::Registered => {
-                        state.notice(format!("public key registered on {machine}{notes}"))
-                    }
-                    crate::ui::ops::RegistrationOutcome::Skipped(reason)
-                    | crate::ui::ops::RegistrationOutcome::Failed(reason) => state.flash(format!(
-                        "public key not registered on {machine}: {reason}{notes}"
-                    )),
-                    crate::ui::ops::RegistrationOutcome::NotRequested
-                        if !outcome.notes.is_empty() =>
-                    {
-                        state.flash(outcome.notes.join("; "))
-                    }
-                    crate::ui::ops::RegistrationOutcome::NotRequested => {}
-                }
+                state.notify.toast(machine.clone(), login_notes(&outcome));
                 match outcome.connect {
                     crate::link::unlock::UnlockOutcome::Ok => Some((source, login)),
-                    // Reached only for a machine there is nothing to log in TO: this box
-                    // and its WSL distributions are not behind ssh at all.
-                    crate::link::unlock::UnlockOutcome::Unavailable => {
-                        state.flash("this machine is reached without a login");
-                        None
-                    }
-                    crate::link::unlock::UnlockOutcome::Failed { kind, reason } => {
+                    crate::link::unlock::UnlockOutcome::Unavailable => None,
+                    crate::link::unlock::UnlockOutcome::Failed { .. } => {
                         state.logged_in.remove(&machine);
-                        if kind != crate::link::unlock::FailureKind::Cancelled {
-                            state.flash(format!("login failed: {reason}"));
-                        }
                         None
                     }
                 }
@@ -556,4 +600,50 @@ impl Switcher {
             .iter()
             .position(|r| session_addr_of(&r.reference).as_ref() == Some(address))
     }
+}
+
+/// The report lines a finished login makes: the connection's verdict, then the public-key
+/// registration it ran, then any follow-up that failed. A cancelled login reports nothing
+/// about the connection, because the user ended it and knows how it ended.
+pub(crate) fn login_notes(outcome: &crate::ui::ops::LoginOutcome) -> Vec<Note> {
+    use crate::link::unlock::{FailureKind, UnlockOutcome};
+    use crate::ui::ops::RegistrationOutcome;
+    let mut notes = Vec::new();
+    match &outcome.connect {
+        UnlockOutcome::Ok => notes.push(Note::new(Level::Success, "logged in")),
+        // Reached only for a machine there is nothing to log in TO: this box and its WSL
+        // distributions are not behind ssh at all.
+        UnlockOutcome::Unavailable => notes.push(Note::new(
+            Level::Error,
+            "this machine is reached without a login",
+        )),
+        UnlockOutcome::Failed { kind, reason } => {
+            // The verdict's first line; the login pane keeps the whole of ssh's reason.
+            if *kind != FailureKind::Cancelled {
+                let verdict = reason.lines().next().unwrap_or_default();
+                notes.push(Note::new(Level::Error, format!("login failed: {verdict}")));
+            }
+        }
+    }
+    match &outcome.registration {
+        RegistrationOutcome::Registered => {
+            notes.push(Note::new(Level::Success, "public key registered"))
+        }
+        RegistrationOutcome::Skipped(reason) => notes.push(Note::new(
+            Level::Warning,
+            format!("public key not registered: {reason}"),
+        )),
+        RegistrationOutcome::Failed(reason) => notes.push(Note::new(
+            Level::Error,
+            format!("public key not registered: {reason}"),
+        )),
+        RegistrationOutcome::NotRequested => {}
+    }
+    notes.extend(
+        outcome
+            .notes
+            .iter()
+            .map(|note| Note::new(Level::Error, note.clone())),
+    );
+    notes
 }

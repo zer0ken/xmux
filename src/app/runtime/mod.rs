@@ -746,10 +746,12 @@ fn spawn_roster_resolve(
         let (roster, err) = crate::provision::env::resolve_roster(&xmux_dir, local_socket).await;
         if let Some(e) = err {
             tracing::warn!(error = %e, "config did not parse; keeping the roster as it stands");
+            let _ = tx.send(HostEvent::RosterKept);
             return;
         }
         let _ = tx.send(HostEvent::RosterResolved {
             roster: Box::new(roster),
+            rescan: true,
         });
     });
 }
@@ -783,6 +785,7 @@ fn spawn_startup_resolution_with<Q, R>(
         if let Some(roster) = full.await {
             let _ = tx.send(HostEvent::RosterResolved {
                 roster: Box::new(roster),
+                rescan: false,
             });
         }
     });

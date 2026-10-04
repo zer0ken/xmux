@@ -206,6 +206,7 @@ and `[ui] prefix` replaces it. A chord is the prefix followed by one key:
 | ------------ | ------------------------------------------------ |
 | `prefix q`   | quit                                             |
 | `prefix ?`   | toggle the keybinding help                       |
+| `prefix m`   | toggle the history of results and events         |
 | `prefix Tab` | move focus between the nav and the terminal view |
 | `prefix p`   | move the nav to the next side of the view        |
 
@@ -313,6 +314,7 @@ theme = "auto-dark"                  # built-in ANSI theme: "auto-dark" (default
 prefix = "C-g"                        # xmux's prefix (e.g. C-g, C-Space, C-b)
 auto-hide-nav = false                 # initial auto-hide-nav state
 hide-unreachable = true               # hide hosts no scan has reached (the filter names one to show its card)
+notifications = true                  # show results as toasts (the prefix m history keeps them either way)
 nav-position = "left"                 # the nav's default side (left|top|right|bottom)
 view-active-border-style = "green"    # focused view-border colour
 hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style)

@@ -190,6 +190,7 @@ pub(crate) fn resolve_nav_key(
             KeyCode::Char('z') => Some(Action::ToggleCollapse),
             KeyCode::Char('p') => Some(Action::CycleNavPosition),
             KeyCode::Char('?') => Some(Action::ShowHelp),
+            KeyCode::Char('m') => Some(Action::ShowHistory),
             // The arrow PAIR facing the terminal's side names the terminal: with the nav
             // on the left or above, prefix → and prefix ↓ both focus the terminal; with
             // the nav on the right or below the pair flips and ←/↑ name it. The other
@@ -315,6 +316,11 @@ mod tests {
             rt(b"\x07?", false),
             vec![Action::ShowHelp],
             "prefix ? toggles help"
+        );
+        assert_eq!(
+            rt(b"\x07m", false),
+            vec![Action::ShowHistory],
+            "prefix m toggles the history"
         );
         // prefix Tab cycles focus to the terminal view, and prefix Right does too. (Tab
         // arrives as Char('\t') from the byte decoder, not KeyCode::Tab - both map to

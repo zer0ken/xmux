@@ -41,7 +41,7 @@ pub(crate) enum RowRef {
 
 /// What the switcher must do after [`State::fold_op_result`] applies an op's
 /// inventory mutation: rebuild the rows and, per the op, move the cursor to the
-/// new session (a create) or, on failure, flash a message with no inventory
+/// new session (a create) or, on failure, report a message with no inventory
 /// change. The mutation is State's; the row rebuild and cursor restore are the
 /// switcher's.
 ///
@@ -50,10 +50,10 @@ pub(crate) enum RowRef {
 pub enum OpFollow {
     /// Rebuild, then move the cursor to this new session's row (a create).
     Reselect(Address),
-    /// No inventory change. Flash this message for a failed operation.
-    Flash(String),
+    /// No inventory change. Report this message for a failed operation.
+    Failed(String),
     /// The login verdict: re-probe that `source`'s machine on success (only it could
-    /// have changed reach state), flash the failure reason otherwise. `login` rides along
+    /// have changed reach state), report the failure reason otherwise. `login` rides along
     /// so a success can be recorded on the machine before that re-probe goes out.
     LoginResult {
         source: String,

@@ -81,10 +81,11 @@ UI elements a user perceives as distinct things:
   prefix alone; while a prefix interaction is
   live (the prefix ready, or its key still held) it shows the keys that interaction
   unlocks. A flash, the scan indicator, and the active filter outrank both, in that
-  order. A flash floats across the whole window and wraps instead of clipping. An error
-  flash paints the bar in the error style with a warning mark; a notice (a newer release
-  being available) paints it in the bar's own background with its key accent and no
-  mark.
+  order. A live prefix or a flash floats away from the indicator toward the terminal view
+  while the indicator keeps the prefix: across the terminal view's columns beside a side
+  column, below a top band's seam, above a bottom band's seam, and over the window's
+  bottom rows when the nav is hidden. It wraps instead of clipping. A flash paints the bar
+  in the error style with a `✗` mark.
 - view screen - what fills the terminal-view region in place of a mux, for a selection
   with no grid to show there. Where a card states the selection's STATE, the screen
   states WHY: it is the one surface with the room to hold a tool's diagnostic whole.
@@ -346,7 +347,7 @@ UI elements a user perceives as distinct things:
   login command reads the host's shell family, because the registration is a command for
   one family and a locked host's family is unknown until someone gets in. Registration is
   an ordinary ssh command over the machine's in-memory authentication and reports
-  registered, skipped with a reason, or failed with ssh's reason in a completion message,
+  registered, skipped with a reason, or failed with ssh's reason in the login's toast,
   the log, and host information. A POSIX host gets the
   line in `~/.ssh/authorized_keys`; a Windows host gets it there too, and in
   `administrators_authorized_keys` when its sshd reads an Administrators member's keys
@@ -463,10 +464,21 @@ UI elements a user perceives as distinct things:
   Esc restores the filter the input opened with; with the input closed, Esc clears an
   active filter. A host hidden from the nav (`[ui] hide-unreachable`) shows its card
   while the filter names it.
-- flash - a transient notice or error line shown in the hint bar (e.g. a refused
-  action's reason). It goes away on the next tree key, and after ten seconds for a user
-  who presses nothing, since it is about something that already happened. Never a
-  "toast" or "notice".
+- flash - the reason a key did nothing, shown in the hint bar (a jump number no card
+  carries, a new session on an unreachable host). It goes away on the next tree key, and
+  after ten seconds for a user who presses nothing, since it is about something that
+  already happened. A flash is a refusal, never the result of work: that is a toast.
+- toast - the result of work the user started (a login and what it registered, a new
+  session, a re-scan's summary of what changed), or the release notice at launch, in a
+  rounded box floating in the terminal view's top corner farthest from the nav (bottom
+  right when the nav rides on top), at most 40% of the window wide. A toast of successes
+  and facts leaves after five seconds and underlines its first line for the share of that
+  life still ahead; one carrying a warning `▲` or a failure `✗` stays until a click on it
+  or opening the history dismisses it. `[ui] notifications` turns toasts off.
+- history - the bounded record of every toast and every background event, opened with
+  `prefix m`, newest first. A background event is one nobody asked about (a host that
+  stops answering outside a re-scan) and is recorded without a toast. When full, it drops
+  its oldest success or info record before any warning or failure.
 - scan indicator - the `scanning hosts n/m…` progress shown in the hint bar while
   host probes are in flight (a narrow row shortens it to `scanning n/m…`, then to the
   bare `n/m`), behind the same spinner on the same frame as the cards it counts. It
@@ -481,8 +493,8 @@ UI elements a user perceives as distinct things:
   becoming ready is a visible change and redraws the frame; the bar hides the
   moment ready clears.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a popup modal
-  draws, its accent title in the top border. Only the help is a popup; an input
-  renders in the hint bar instead, reading `[feature] guide: <buffer>` with a
+  draws, its accent title in the top border. The help and the history are popups; an
+  input renders in the hint bar instead, reading `[feature] guide: <buffer>` with a
   reversed-block caret at the edit position.
 
 A zellij TAB is a `window` and a zellij SESSION is a `session`: xmux uses
@@ -515,8 +527,8 @@ enclosing mux in the chain would have to pass through.
 
 `pane` is reserved for a mux window's terminal split (a tmux / psmux pane); it is
 never a screen region - screen regions are "views", and the line between them is
-the `view border`. A transient hint-bar message is a `flash`, never a "toast" or
-"notice". A card's trailing state is a `status`, never a "hint". The reverse-video
+the `view border`. A refused key's reason in the hint bar is a `flash`; the result of
+work the user started is a `toast`, never a "notice". A card's trailing state is a `status`, never a "hint". The reverse-video
 selected card is the `selection highlight`; `cursor` names only the grid's text
 cursor. The furniture around the views is the `chrome`, never a "status surface".
 The switcher's rendered screen is the "switcher screen", never an "overlay".

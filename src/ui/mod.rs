@@ -8,6 +8,7 @@ pub mod ops;
 pub(crate) mod palette;
 pub mod run;
 pub mod switcher;
+pub(crate) mod toast;
 pub mod tree;
 
 pub use tree::{
@@ -33,18 +34,25 @@ mod tests {
 
     #[test]
     fn persistent_ui_glyphs_stay_on_the_safe_one_cell_allow_list() {
-        const SAFE: &[char] = &['❯', '✓', '✗', '⠋', '╭', '▲', '?', '…'];
+        const SAFE: &[char] = &['❯', '✓', '✗', '⠋', '╭', '▲', '?', '…', '·'];
         let persistent = [
             crate::ui::switcher::SELECTED_MARK.chars().next().unwrap(),
             crate::ui::chrome::BLOCK_MARK.chars().next().unwrap(),
             crate::ui::chrome::UNREACHABLE_MARK.chars().next().unwrap(),
             crate::ui::chrome::LIST_FAILED_MARK.chars().next().unwrap(),
             crate::ui::switcher::MIDDLE_ELLIPSIS,
-        ];
-        for glyph in persistent
-            .into_iter()
-            .chain(std::iter::once(super::SPINNER[0]))
-        {
+        ]
+        .into_iter()
+        .chain(
+            [
+                crate::state::notify::Level::Success,
+                crate::state::notify::Level::Info,
+                crate::state::notify::Level::Warning,
+                crate::state::notify::Level::Error,
+            ]
+            .map(|level| level.glyph().chars().next().unwrap()),
+        );
+        for glyph in persistent.chain(std::iter::once(super::SPINNER[0])) {
             assert!(SAFE.contains(&glyph), "unsafe UI glyph {glyph:?}");
             assert_eq!(
                 UnicodeWidthChar::width(glyph),

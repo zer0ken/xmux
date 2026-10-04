@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-pub(crate) use crate::state::{feed_help, Input, InputMode, Modal};
+pub(crate) use crate::state::{feed_reader, Input, InputMode, Modal};
 #[cfg(test)]
 use crate::state::{is_popup_open, modal_kind};
 use crate::ui::palette;
@@ -190,6 +190,10 @@ pub(crate) fn help_lines(
         HelpRow::Key(format!("{p} n"), "new session on the selected host".into()),
         HelpRow::Key(format!("{p} /"), "fuzzy filter <source>/<name>".into()),
         HelpRow::Key(format!("{p} r"), "re-scan every host".into()),
+        HelpRow::Key(
+            format!("{p} m"),
+            "history of results and background events".into(),
+        ),
         HelpRow::Gap,
         // Focus section - prefix rows built from `prefix`.
         HelpRow::Head(format!("focus ({p} = prefix)")),
@@ -649,24 +653,24 @@ mod tests {
         // tmux view-mode style: while open, every key is consumed; q/Esc closes, the
         // rest are swallowed; while closed, nothing is consumed (falls through).
         let mut m: Option<Modal> = None;
-        assert!(!feed_help(&mut m, b"q"), "closed → not consumed");
+        assert!(!feed_reader(&mut m, b"q"), "closed → not consumed");
 
         m = Some(Modal::Help);
-        assert!(feed_help(&mut m, b"j"), "open → consumed");
+        assert!(feed_reader(&mut m, b"j"), "open → consumed");
         assert!(
             matches!(m, Some(Modal::Help)),
             "a non-close key is swallowed but keeps help open"
         );
         assert!(
-            feed_help(&mut m, b"\x1b[A"),
+            feed_reader(&mut m, b"\x1b[A"),
             "an arrow (ESC [) is swallowed, not a close"
         );
         assert!(matches!(m, Some(Modal::Help)), "arrow keeps help open");
-        assert!(feed_help(&mut m, b"q"), "q → consumed");
+        assert!(feed_reader(&mut m, b"q"), "q → consumed");
         assert!(m.is_none(), "q closes help");
 
         m = Some(Modal::Help);
-        assert!(feed_help(&mut m, b"\x1b"), "lone Esc → consumed");
+        assert!(feed_reader(&mut m, b"\x1b"), "lone Esc → consumed");
         assert!(m.is_none(), "Esc closes help");
     }
 

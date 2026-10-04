@@ -4,13 +4,13 @@
 pub(crate) mod chrome;
 mod focus;
 mod modal;
+pub(crate) mod notify;
 mod view;
 
-pub(crate) use chrome::FlashKind;
 pub use chrome::{Chrome, SourceReach, ViewBorderColors};
 pub use focus::{Focus, ModalKind, ViewFocus};
 pub(crate) use modal::{
-    feed_help, is_inputting, is_popup_open, modal_kind, Input, InputMode, Modal,
+    feed_reader, is_inputting, is_popup_open, is_reader, modal_kind, Input, InputMode, Modal,
 };
 pub(crate) use view::RowRef;
 pub use view::{OpFollow, Scan};
@@ -89,6 +89,9 @@ pub struct State {
     /// the app each frame; the switcher's `render` reads it off
     /// `&state`.
     pub(crate) chrome: Chrome,
+    /// The toasts on screen and the history behind them, read by the switcher's render
+    /// and by the `prefix m` history.
+    pub(crate) notify: notify::Notifications,
     /// The login draft for the blocked host whose panel is on screen: the connection
     /// values the user is entering INTO the login pane (the terminal view) and which
     /// element the keys drive. It is NOT a modal - it never routes through the nav input
@@ -603,7 +606,7 @@ impl State {
     /// [`OpFollow`] telling the switcher how to rebuild its rows (and, for a create,
     /// which session to reselect). The application update transition calls this
     /// reducer, while the row rebuild and cursor restore stay in the switcher. A
-    /// `Failed` op mutates no inventory; its message is returned to flash.
+    /// `Failed` op mutates no inventory; its message is returned for a toast.
     ///
     /// [`OpResult`]: crate::model::OpResult
     pub(crate) fn fold_op_result(&mut self, result: OpResult) -> OpFollow {
@@ -613,9 +616,9 @@ impl State {
                 self.groups = crate::model::add_session(&self.groups, session);
                 OpFollow::Reselect(addr)
             }
-            OpResult::Failed { message } => OpFollow::Flash(message),
+            OpResult::Failed { message } => OpFollow::Failed(message),
             // The unlock verdict is no inventory mutation: the app reacts to it (re-probe
-            // the unlocked machine on success, a flash on failure).
+            // the unlocked machine on success, a toast either way).
             OpResult::Login {
                 source,
                 login,
@@ -633,18 +636,12 @@ impl State {
         }
     }
 
-    /// Flashes a transient message in the tree-column hint bar (an error).
+    /// Flashes a refused key's reason in the tree-column hint bar.
     /// The next tree key clears it (the switcher's `handle_key` clear path), and so does
-    /// its own ten-second life, so the normal help/status hint bar returns whether or not
-    /// the user presses anything. Delegates to the chrome's flash API.
+    /// its own ten-second life, so the normal hint bar returns whether or not the user
+    /// presses anything. Delegates to the chrome's flash API.
     pub(crate) fn flash(&mut self, msg: impl Into<String>) {
         self.chrome.flash(msg);
-    }
-
-    /// Shows a transient notice in the hint bar: information that is not a failure, with
-    /// the same life and clearing as a flash. Delegates to the chrome's notice API.
-    pub(crate) fn notice(&mut self, msg: impl Into<String>) {
-        self.chrome.notice(msg);
     }
 }
 
@@ -1279,7 +1276,7 @@ mod tests {
     // the cursor. State owns the domain mutation.
 
     #[test]
-    fn fold_op_result_failed_flashes_and_leaves_inventory_untouched() {
+    fn fold_op_result_failed_reports_and_leaves_inventory_untouched() {
         use crate::model::OpResult;
         use crate::state::OpFollow;
         let mut s = State::default();
@@ -1292,8 +1289,8 @@ mod tests {
         });
         assert_eq!(s.groups.len(), before_groups, "a failure mutates no groups");
         assert!(
-            matches!(follow, OpFollow::Flash(m) if m == "create failed: boom"),
-            "a failure carries its message to the switcher's flash"
+            matches!(follow, OpFollow::Failed(m) if m == "create failed: boom"),
+            "a failure carries its message to the switcher's toast"
         );
     }
 }

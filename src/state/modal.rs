@@ -137,8 +137,8 @@ impl Input {
     }
 }
 
-/// The single open modal, if any: at most one of the keys help and the inline
-/// input. Modeling it as one `Option` (not two independent fields) makes the
+/// The single open modal, if any: at most one of the keys help, the history, and the
+/// inline input. Modeling it as one `Option` (not two independent fields) makes the
 /// modals' mutual exclusion structural: opening one drops whatever was open, and
 /// the compiler guarantees two can never coexist, so the hand-maintained "clear
 /// the others" invariant cannot drift. Lives on [`crate::state::State`]; the
@@ -150,7 +150,18 @@ impl Input {
 /// enum small; callers pattern-match through the box and never see the pointer.
 pub(crate) enum Modal {
     Help,
+    /// The history `prefix m` opens. `scroll` counts the records scrolled past from the
+    /// newest, which the list starts at.
+    History {
+        scroll: usize,
+    },
     Input(Box<Input>),
+}
+
+/// True while a read-only popup is open: the help or the history. Either one takes
+/// every key while it is open.
+pub(crate) fn is_reader(modal: &Option<Modal>) -> bool {
+    matches!(modal, Some(Modal::Help | Modal::History { .. }))
 }
 
 /// True while a centered modal popup is open. Every modal is one today, so this
@@ -171,18 +182,30 @@ pub(crate) fn modal_kind(modal: &Option<Modal>) -> Option<ModalKind> {
     modal.as_ref().map(|_| ModalKind::Popup)
 }
 
-/// Feeds a raw key read to the help modal, tmux view-mode style. While help is open
-/// every key is consumed (returns true, so nothing reaches the nav or the terminal
-/// view); `q` or a lone Esc closes it, every other key is swallowed. Returns false
-/// when help is closed, so the read falls through to normal routing.
-pub(crate) fn feed_help(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
-    if !matches!(modal, Some(Modal::Help)) {
+/// Feeds a raw key read to a read-only popup (the help or the history), tmux view-mode
+/// style. While one is open every key is consumed (returns true, so nothing reaches the
+/// nav or the terminal view); `q` or a lone Esc closes it, and in the history `↑`/`↓`
+/// (or `k`/`j`) scroll one record and `PgUp`/`PgDn` ten. Every other key is swallowed.
+/// Returns false when neither is open, so the read falls through to normal routing.
+pub(crate) fn feed_reader(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
+    if !is_reader(modal) {
         return false;
     }
     // `q`, or a real Esc (a lone ESC, not the ESC `[` that starts an arrow/CSI).
     let esc = bytes.contains(&0x1b) && !bytes.windows(2).any(|w| w == [0x1b, b'[']);
     if bytes.contains(&b'q') || esc {
         *modal = None;
+        return true;
+    }
+    if let Some(Modal::History { scroll }) = modal {
+        let step: isize = match bytes {
+            b"k" | b"\x1b[A" => -1,
+            b"j" | b"\x1b[B" => 1,
+            b"\x1b[5~" => -10,
+            b"\x1b[6~" => 10,
+            _ => 0,
+        };
+        *scroll = scroll.saturating_add_signed(step);
     }
     true
 }

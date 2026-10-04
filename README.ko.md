@@ -205,6 +205,7 @@ xmux에는 tmux의 `set -g prefix`처럼 자체 prefix가 있다. 기본값은 `
 | ------------ | ----------------------------------------- |
 | `prefix q`   | 종료                                      |
 | `prefix ?`   | 키 도움말 토글                            |
+| `prefix m`   | 작업 결과와 배경 사건 기록 토글           |
 | `prefix Tab` | nav와 terminal view 사이의 포커스 이동    |
 | `prefix p`   | nav를 terminal view의 다음 변으로 옮긴다  |
 
@@ -309,6 +310,7 @@ theme = "auto-dark"                  # 내장 ANSI 테마: "auto-dark"(기본값
 prefix = "C-g"                        # xmux의 prefix (예: C-g, C-Space, C-b)
 auto-hide-nav = false                 # auto-hide-nav의 초기 상태
 hide-unreachable = true               # 도달하지 못한 호스트는 nav에서 숨긴다 (필터에 이름을 입력하면 카드가 나타난다)
+notifications = true                  # 작업 결과를 toast로 띄운다 (끄더라도 prefix m 기록에는 남는다)
 nav-position = "left"                 # nav의 기본 위치 (left|top|right|bottom)
 view-active-border-style = "green"    # 포커스된 view border의 색
 hint-bar-style = "bg=blue,fg=white"   # 힌트 바의 색 (tmux status-style)

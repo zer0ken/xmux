@@ -108,7 +108,13 @@ pub enum HostEvent {
     /// the host registry and the live connections.
     RosterResolved {
         roster: Box<crate::provision::env::Roster>,
+        /// Whether a re-scan asked for this answer, which its summary waits for.
+        rescan: bool,
     },
+    /// A re-scan's ROSTER RE-RESOLUTION read a config that did not parse, so the roster
+    /// stands as it is. The re-scan's summary waits for this answer as it would for a
+    /// resolved roster.
+    RosterKept,
     /// The launch roster and startup-only facts resolved after the first frame. The
     /// app applies the roster, arms ssh with the locally detected askpass capability,
     /// records its own mux session, then starts discovery from the resolved hosts.

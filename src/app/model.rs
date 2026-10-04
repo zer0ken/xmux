@@ -47,6 +47,23 @@ pub(crate) struct AppModel {
     pub(crate) config_last_mtime: Option<std::time::SystemTime>,
     pub(crate) width_dirty: bool,
     pub(crate) width_flush_at: Option<std::time::Instant>,
+    /// The re-scan whose summary toast is still owed, held until every source and the
+    /// roster have answered.
+    pub(crate) rescan: Option<RescanInFlight>,
+}
+
+/// A re-scan the user asked for that has not reported yet.
+#[derive(Debug)]
+pub(crate) struct RescanInFlight {
+    /// The inventory as it stood when the re-scan was asked for, which the summary
+    /// compares against.
+    before: crate::state::notify::ScanSnapshot,
+    /// Whether the re-scan's roster answer is still out. The roster names the hosts that
+    /// came and went, so the summary waits for it as it waits for every source.
+    roster: bool,
+    /// The machines whose held password ssh refused during this re-scan. Their cards keep
+    /// no failure of their own, so the summary is told here.
+    locked: HashSet<String>,
 }
 
 impl AppModel {
@@ -75,6 +92,7 @@ impl AppModel {
             config_last_mtime: None,
             width_dirty: false,
             width_flush_at: None,
+            rescan: None,
         }
     }
 
@@ -109,7 +127,14 @@ pub(crate) enum Msg {
         down: bool,
     },
     ToggleHelp,
-    HelpBytes(Vec<u8>),
+    ToggleHistory,
+    DismissToast(u64),
+    /// A key read while the help or the history is open, with the configured prefix byte
+    /// so the prefix keys that open them can close them.
+    ReaderBytes {
+        bytes: Vec<u8>,
+        prefix: u8,
+    },
     OpResult {
         result: crate::ui::switcher::OpResult,
         logged_in: HashSet<String>,
@@ -137,6 +162,8 @@ pub(crate) enum Msg {
         source: String,
         clear_tracking: bool,
     },
+    /// The re-scan's roster answer has been reconciled into the registries and the nav.
+    RescanRosterApplied,
     DetectionFinished {
         source: String,
     },
@@ -300,6 +327,22 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             None
         }
         Command::Rescan => {
+            // A re-scan asked for while one is still running keeps the first snapshot, so
+            // its summary compares against what the user saw before any of them. Each one
+            // re-resolves the roster, so the summary waits for that answer again.
+            match model.rescan.as_mut() {
+                Some(rescan) => rescan.roster = true,
+                None => {
+                    model.rescan = Some(RescanInFlight {
+                        before: crate::state::notify::ScanSnapshot::of(
+                            &model.state,
+                            &HashSet::new(),
+                        ),
+                        roster: true,
+                        locked: HashSet::new(),
+                    })
+                }
+            }
             model.switcher.request_rescan(&mut model.state);
             let armed = model.switcher.take_rescan_kick();
             debug_assert!(armed);
@@ -391,10 +434,15 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
         HostEvent::MuxesFound { machine, muxes } => {
             vec![EventEffect::AddDiscoveredSources { machine, muxes }]
         }
-        HostEvent::RosterResolved { roster } => vec![EventEffect::ApplyRoster {
+        HostEvent::RosterResolved { roster, rescan } => vec![EventEffect::ApplyRoster {
             roster,
             startup: None,
+            rescan,
         }],
+        HostEvent::RosterKept => {
+            settle_rescan_roster(model);
+            Vec::new()
+        }
         HostEvent::StartupResolved {
             roster,
             own_session,
@@ -405,6 +453,7 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                 own_session,
                 force_askpass,
             }),
+            rescan: false,
         }],
         HostEvent::Scanned {
             source,
@@ -458,6 +507,9 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                             .state
                             .scanning
                             .retain(|source| crate::session::machine_of(source) != machine);
+                        if let Some(rescan) = model.rescan.as_mut() {
+                            rescan.locked.insert(machine);
+                        }
                         return Vec::new();
                     }
                     model
@@ -474,6 +526,9 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                 }
                 None => {
                     model.state.login_reports.remove(&machine);
+                    if let Some(rescan) = model.rescan.as_mut() {
+                        rescan.locked.remove(&machine);
+                    }
                     vec![EventEffect::MachineConnected {
                         machine,
                         shell,
@@ -527,7 +582,96 @@ pub(crate) fn note_host_exited(
     true
 }
 
+/// The sources whose last answer was an answer: settled, with no failure.
+fn answering_sources(state: &crate::state::State) -> HashSet<String> {
+    state
+        .groups
+        .iter()
+        .filter(|g| g.err.is_none() && !state.scanning.contains(&g.source))
+        .map(|g| g.source.clone())
+        .collect()
+}
+
+/// Records each source that was answering before and stopped since as a background event:
+/// the history only, because nobody asked for that answer just now. A source that has not
+/// answered yet (a launch scan failing its first probe) stopped nothing, so its card alone
+/// says so. A re-scan in flight is left to its own summary, which reports the same change
+/// as the result of the re-scan.
+fn record_lost_sources(model: &mut AppModel, before: &HashSet<String>) {
+    if model.rescan.is_some() {
+        return;
+    }
+    let lost: Vec<(String, String)> = model
+        .state
+        .groups
+        .iter()
+        .filter(|g| before.contains(&g.source) && !model.state.scanning.contains(&g.source))
+        .filter_map(|g| {
+            let reason = g.err.as_deref()?.lines().next().unwrap_or_default();
+            Some((
+                model.state.chrome.source_label_when(&g.source, false),
+                reason.to_string(),
+            ))
+        })
+        .collect();
+    for (label, reason) in lost {
+        model.state.notify.record(
+            label,
+            vec![crate::state::notify::Note::new(
+                crate::state::notify::Level::Warning,
+                format!("unreachable: {reason}"),
+            )],
+        );
+    }
+}
+
+/// Marks the re-scan's roster answer as in: applied, or kept because the config did not
+/// parse.
+fn settle_rescan_roster(model: &mut AppModel) {
+    if let Some(rescan) = model.rescan.as_mut() {
+        rescan.roster = false;
+    }
+}
+
+/// Makes the re-scan's summary toast once every source and the roster have answered.
+fn settle_rescan(model: &mut AppModel) {
+    if !model.state.scanning.is_empty() || model.rescan.as_ref().is_none_or(|r| r.roster) {
+        return;
+    }
+    let Some(RescanInFlight { before, locked, .. }) = model.rescan.take() else {
+        return;
+    };
+    let after = crate::state::notify::ScanSnapshot::of(&model.state, &locked);
+    // A source names its mux only when it answered, as its card does.
+    let state = &model.state;
+    let notes = before.summary(&after, |source| {
+        let answered = state
+            .groups
+            .iter()
+            .any(|g| g.source == source && g.err.is_none());
+        state.chrome.source_label_when(source, answered)
+    });
+    model.state.notify.toast("re-scan", notes);
+}
+
+/// The application update transition: one message in, the effects it asks for out. Every
+/// message is folded by [`step`]; around it, a message that can carry a source's answer
+/// records what stopped answering, and a re-scan whose last answer arrived reports.
 pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
+    let answers = matches!(
+        msg,
+        Msg::HostEvent { .. } | Msg::ApplySourceResult { .. } | Msg::ApplyInventory { .. }
+    );
+    let answering_before = answers.then(|| answering_sources(&model.state));
+    let effects = step(model, msg);
+    if let Some(before) = answering_before {
+        record_lost_sources(model, &before);
+    }
+    settle_rescan(model);
+    effects
+}
+
+fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
     match msg {
         Msg::Action(action) => {
             let commands = model.state.apply(action);
@@ -566,8 +710,21 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.switcher.toggle_help(&mut model.state);
             Vec::new()
         }
-        Msg::HelpBytes(bytes) => {
-            model.switcher.feed_help_key(&bytes, &mut model.state);
+        Msg::ToggleHistory => {
+            model.switcher.toggle_history(&mut model.state);
+            Vec::new()
+        }
+        Msg::DismissToast(id) => {
+            model.state.notify.dismiss(id);
+            Vec::new()
+        }
+        Msg::ReaderBytes { bytes, prefix } => {
+            model.switcher.feed_reader_key(
+                &bytes,
+                prefix,
+                &mut model.mouse_state.nav_armed,
+                &mut model.state,
+            );
             Vec::new()
         }
         Msg::OpResult { result, logged_in } => {
@@ -648,6 +805,10 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 model.detecting.remove(&source);
             }
             model.switcher.remove_source(&source, &mut model.state);
+            Vec::new()
+        }
+        Msg::RescanRosterApplied => {
+            settle_rescan_roster(model);
             Vec::new()
         }
         Msg::DetectionFinished { source } => {
@@ -930,6 +1091,9 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         }
         Msg::Tick { now, spinner } => {
             model.state.chrome.expire_flash(now);
+            let history_open =
+                matches!(model.state.modal, Some(crate::state::Modal::History { .. }));
+            model.state.notify.tick(now, history_open);
             model.state.chrome.set_spinner(spinner);
             Vec::new()
         }
@@ -940,11 +1104,19 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 model.state.chrome.apply_palette(&ui, &palette);
                 model.switcher.set_palette(palette);
                 model.nav_default = ui.nav_position();
+                model.state.notify.set_toasts_enabled(ui.notifications);
             }
             Vec::new()
         }
+        // The release notice answers the launch, so it is a toast like any other result.
         Msg::Notice(line) => {
-            model.state.notice(line);
+            model.state.notify.toast(
+                "update",
+                vec![crate::state::notify::Note::new(
+                    crate::state::notify::Level::Info,
+                    line,
+                )],
+            );
             Vec::new()
         }
         Msg::DetectionStarted(source) => {
@@ -1173,5 +1345,369 @@ mod tests {
 
         assert!(model.state.login_run.is_some());
         assert!(matches!(effects.as_slice(), [Effect::CancelLogin(_)]));
+    }
+
+    fn sessions(source: &str, names: &[&str]) -> Vec<crate::session::Session> {
+        names
+            .iter()
+            .map(|name| crate::session::Session {
+                source: source.to_owned(),
+                name: (*name).to_owned(),
+                mux: "tmux".to_owned(),
+                windows: 1,
+                attached: false,
+            })
+            .collect()
+    }
+
+    fn answer(model: &mut AppModel, source: &str, names: &[&str], err: Option<&str>) {
+        let effects = update(
+            model,
+            Msg::ApplySourceResult {
+                source: source.to_owned(),
+                sessions: sessions(source, names),
+                err: err.map(str::to_owned),
+            },
+        );
+        assert!(effects.is_empty());
+    }
+
+    fn note_texts(model: &AppModel) -> Vec<String> {
+        model.state.notify.toasts[0]
+            .notes
+            .iter()
+            .map(|n| n.text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_rescan_reports_one_summary_once_every_source_has_answered() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned(), "b".to_owned()]);
+        answer(&mut m, "a", &["x"], None);
+        answer(&mut m, "b", &[], None);
+        assert!(
+            m.state.notify.toasts.is_empty(),
+            "the launch scan makes no toast"
+        );
+
+        update(&mut m, Msg::Action(crate::model::Action::Rescan));
+        update(&mut m, Msg::RescanRosterApplied);
+        answer(&mut m, "a", &["x", "y"], None);
+        assert!(
+            m.state.notify.toasts.is_empty(),
+            "no summary while a source is still scanning"
+        );
+        answer(&mut m, "b", &[], Some("ssh: connect to host b: timed out"));
+        assert_eq!(m.state.notify.toasts.len(), 1, "one toast for the re-scan");
+        assert_eq!(m.state.notify.toasts[0].title, "re-scan");
+        assert_eq!(
+            note_texts(&m),
+            ["1 session started: a/y", "b unreachable"],
+            "the summary names what changed"
+        );
+        assert!(
+            m.state.notify.toasts[0].until.is_none(),
+            "a host that stopped answering keeps the summary up"
+        );
+        assert!(
+            !m.state
+                .notify
+                .history
+                .iter()
+                .any(|e| e.note.text.starts_with("unreachable:")),
+            "the re-scan's own summary reports the lost host, not a background record"
+        );
+
+        // A second re-scan that finds the same inventory says nothing changed.
+        update(&mut m, Msg::Action(crate::model::Action::Rescan));
+        update(&mut m, Msg::RescanRosterApplied);
+        answer(&mut m, "a", &["x", "y"], None);
+        answer(&mut m, "b", &[], Some("ssh: connect to host b: timed out"));
+        assert_eq!(m.state.notify.toasts.len(), 2);
+        assert_eq!(
+            m.state.notify.toasts[1].notes[0].text,
+            "no changes · 2 hosts, 2 sessions"
+        );
+    }
+
+    #[test]
+    fn a_rescan_summary_waits_for_the_roster_answer() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        answer(&mut m, "a", &["x"], None);
+        update(&mut m, Msg::Action(crate::model::Action::Rescan));
+        answer(&mut m, "a", &["x"], None);
+        assert!(
+            m.state.notify.toasts.is_empty(),
+            "every source answered, the roster has not"
+        );
+        update(
+            &mut m,
+            Msg::AddSource {
+                source: "b".to_owned(),
+                scanning: false,
+            },
+        );
+        update(&mut m, Msg::RescanRosterApplied);
+        assert!(
+            m.state.notify.toasts.is_empty(),
+            "the host the roster added is still scanning"
+        );
+        answer(&mut m, "b", &[], None);
+        assert_eq!(note_texts(&m), ["1 host added: b"]);
+
+        // A roster that could not be read leaves the hosts as they are and still lets the
+        // re-scan report.
+        update(&mut m, Msg::Action(crate::model::Action::Rescan));
+        answer(&mut m, "a", &["x"], None);
+        answer(&mut m, "b", &[], None);
+        assert_eq!(m.state.notify.toasts.len(), 1);
+        update(
+            &mut m,
+            Msg::HostEvent {
+                event: crate::link::HostEvent::RosterKept,
+                logged_in: HashSet::new(),
+            },
+        );
+        assert_eq!(m.state.notify.toasts.len(), 2);
+    }
+
+    #[test]
+    fn a_refused_saved_password_is_summarized_as_login_needed() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        answer(&mut m, "a", &["x", "y"], None);
+        update(&mut m, Msg::Action(crate::model::Action::Rescan));
+        update(&mut m, Msg::RescanRosterApplied);
+        update(
+            &mut m,
+            Msg::HostEvent {
+                event: crate::link::HostEvent::MachineProbed {
+                    machine: "a".to_owned(),
+                    err: Some("dev@a: Permission denied (publickey,password).".to_owned()),
+                    shell: None,
+                    password_supplied: true,
+                    credential_rejection_generation: None,
+                    credential_held: true,
+                    credential_generation: 1,
+                    current_credential_generation: 1,
+                    rescan: true,
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        assert!(m.state.scanning.is_empty(), "the refusal settles the card");
+        assert_eq!(
+            note_texts(&m),
+            ["a login needed"],
+            "the sessions did not end; the login was refused"
+        );
+        assert!(m.state.notify.toasts[0].until.is_none());
+    }
+
+    #[test]
+    fn a_launch_probe_that_fails_records_nothing() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        assert!(m.state.scanning.contains("a"));
+        answer(&mut m, "a", &[], Some("ssh: connect to host a: timed out"));
+        assert!(
+            m.state.notify.history.is_empty(),
+            "a host that never answered stopped nothing"
+        );
+    }
+
+    #[test]
+    fn turning_notifications_off_live_takes_the_toasts_down() {
+        let mut m = model();
+        m.state.notify.toast(
+            "gpu-02",
+            vec![crate::state::notify::Note::new(
+                crate::state::notify::Level::Error,
+                "login failed: denied",
+            )],
+        );
+        let ui = crate::provision::config::UiConfig {
+            notifications: false,
+            ..Default::default()
+        };
+        update(
+            &mut m,
+            Msg::ConfigObserved {
+                mtime: None,
+                ui: Some(Box::new((ui, crate::ui::palette::Palette::default()))),
+            },
+        );
+        assert!(m.state.notify.toasts.is_empty());
+        assert_eq!(m.state.notify.history.len(), 1, "the history keeps it");
+    }
+
+    #[test]
+    fn the_tick_repaints_the_open_history_as_its_ages_move() {
+        let mut m = model();
+        let t0 = std::time::Instant::now();
+        m.state.notify.record(
+            "a",
+            vec![crate::state::notify::Note::new(
+                crate::state::notify::Level::Warning,
+                "unreachable",
+            )],
+        );
+        let tick = |m: &mut AppModel, ms: u64| {
+            update(
+                m,
+                Msg::Tick {
+                    now: t0 + std::time::Duration::from_millis(ms),
+                    spinner: HashSet::new(),
+                },
+            );
+            m.state.notify.repaint
+        };
+        assert!(!tick(&mut m, 0), "a closed history asks for nothing");
+        update(&mut m, Msg::ToggleHistory);
+        assert!(tick(&mut m, 120));
+        assert!(!tick(&mut m, 240));
+        assert!(tick(&mut m, 1120), "a second later its ages move");
+    }
+
+    #[test]
+    fn a_source_that_stops_answering_unasked_is_recorded_without_a_toast() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        answer(&mut m, "a", &["x"], None);
+        answer(&mut m, "a", &[], Some("connection closed\nmore detail"));
+        assert!(
+            m.state.notify.toasts.is_empty(),
+            "nobody asked, so no toast"
+        );
+        let entry = m.state.notify.history.back().expect("a history record");
+        assert_eq!(entry.title, "a");
+        assert_eq!(entry.note.text, "unreachable: connection closed");
+        assert_eq!(entry.note.level, crate::state::notify::Level::Warning);
+        // The same failure answered again is no new event.
+        answer(&mut m, "a", &[], Some("connection closed"));
+        assert_eq!(m.state.notify.history.len(), 1);
+    }
+
+    #[test]
+    fn prefix_m_opens_the_history_takes_the_toasts_down_and_closes_again() {
+        let mut m = model();
+        m.state.notify.toast(
+            "gpu-02",
+            vec![crate::state::notify::Note::new(
+                crate::state::notify::Level::Error,
+                "login failed: denied",
+            )],
+        );
+        update(&mut m, Msg::ToggleHistory);
+        assert!(matches!(
+            m.state.modal,
+            Some(crate::state::Modal::History { scroll: 0 })
+        ));
+        assert!(
+            m.state.notify.toasts.is_empty(),
+            "reading the history dismisses"
+        );
+        assert_eq!(m.state.notify.history.len(), 1, "the history keeps it");
+        // The history scrolls no further than its oldest record.
+        update(
+            &mut m,
+            Msg::ReaderBytes {
+                bytes: b"j".to_vec(),
+                prefix: 0x07,
+            },
+        );
+        update(
+            &mut m,
+            Msg::ReaderBytes {
+                bytes: b"j".to_vec(),
+                prefix: 0x07,
+            },
+        );
+        assert!(matches!(
+            m.state.modal,
+            Some(crate::state::Modal::History { scroll: 0 })
+        ));
+        update(
+            &mut m,
+            Msg::ReaderBytes {
+                bytes: b"q".to_vec(),
+                prefix: 0x07,
+            },
+        );
+        assert!(m.state.modal.is_none(), "q closes it");
+        update(&mut m, Msg::ToggleHistory);
+        update(&mut m, Msg::ToggleHistory);
+        assert!(m.state.modal.is_none(), "prefix m toggles it closed");
+    }
+
+    #[test]
+    fn a_click_dismisses_one_toast_and_the_tick_expires_a_timed_one() {
+        let mut m = model();
+        let t0 = std::time::Instant::now();
+        m.state.notify.toast_at(
+            t0,
+            "a",
+            vec![crate::state::notify::Note::new(
+                crate::state::notify::Level::Error,
+                "boom",
+            )],
+        );
+        m.state.notify.toast_at(
+            t0,
+            "b",
+            vec![crate::state::notify::Note::new(
+                crate::state::notify::Level::Success,
+                "done",
+            )],
+        );
+        let sticky = m.state.notify.toasts[0].id;
+        update(
+            &mut m,
+            Msg::Tick {
+                now: t0 + crate::state::notify::TOAST_TTL,
+                spinner: HashSet::new(),
+            },
+        );
+        assert_eq!(m.state.notify.toasts.len(), 1, "the timed toast left");
+        update(&mut m, Msg::DismissToast(sticky));
+        assert!(
+            m.state.notify.toasts.is_empty(),
+            "the click took the error down"
+        );
+    }
+
+    #[test]
+    fn the_release_notice_is_an_info_toast() {
+        let mut m = model();
+        update(&mut m, Msg::Notice("xmux 9.9.9 is available".to_owned()));
+        let toast = &m.state.notify.toasts[0];
+        assert_eq!(toast.notes[0].level, crate::state::notify::Level::Info);
+        assert!(toast.until.is_some());
+    }
+
+    #[test]
+    fn a_session_create_reports_its_result_as_a_toast() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        answer(&mut m, "a", &[], None);
+        update(
+            &mut m,
+            Msg::OpResult {
+                result: crate::ui::switcher::OpResult::Created {
+                    session: sessions("a", &["api"]).remove(0),
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        assert_eq!(note_texts(&m), ["a/api created"]);
+        update(
+            &mut m,
+            Msg::OpResult {
+                result: crate::ui::switcher::OpResult::Failed {
+                    message: "create failed: boom".to_owned(),
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        let failed = &m.state.notify.toasts[1];
+        assert_eq!(failed.notes[0].text, "create failed: boom");
+        assert!(failed.until.is_none(), "a failure waits to be dismissed");
+        assert!(m.state.chrome.flash.is_empty(), "a result is no flash");
     }
 }
