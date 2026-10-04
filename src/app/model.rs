@@ -37,6 +37,7 @@ pub(crate) struct AppModel {
     pub(crate) nav_position: NavPosition,
     pub(crate) nav_position_pinned: Option<NavPosition>,
     pub(crate) nav_default: NavPosition,
+    pub(crate) max_fps: u16,
     pub(crate) applied_nav_height: u16,
     pub(crate) applied_nav_collapsed: bool,
     pub(crate) auto_hide_nav: bool,
@@ -92,6 +93,7 @@ impl AppModel {
             nav_position: NavPosition::Left,
             nav_position_pinned: None,
             nav_default: NavPosition::Left,
+            max_fps: crate::provision::config::DEFAULT_MAX_FPS,
             applied_nav_height: u16::MAX,
             applied_nav_collapsed: true,
             auto_hide_nav: false,
@@ -268,6 +270,7 @@ pub(crate) enum Msg {
             )>,
         >,
     },
+    ConfigError(String),
     Notice(String),
     DetectionStarted(String),
     Shutdown,
@@ -1294,8 +1297,19 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 model.state.chrome.apply_palette(&ui, &palette);
                 model.switcher.set_palette(palette);
                 model.nav_default = ui.nav_position();
+                model.max_fps = ui.max_fps;
                 model.state.notify.set_toasts_enabled(ui.notifications);
             }
+            Vec::new()
+        }
+        Msg::ConfigError(error) => {
+            model.state.notify.toast(
+                "config",
+                vec![crate::state::notify::Note::new(
+                    crate::state::notify::Level::Warning,
+                    format!("Config error: {error}"),
+                )],
+            );
             Vec::new()
         }
         // The release notice answers the launch, so it is a toast like any other result.
@@ -2038,6 +2052,32 @@ mod tests {
         );
         assert!(m.state.notify.toasts.is_empty());
         assert_eq!(m.state.notify.history.len(), 1, "the history keeps it");
+    }
+
+    #[test]
+    fn config_observation_updates_frame_cap() {
+        let mut m = model();
+        assert_eq!(m.max_fps, 30);
+        let ui = crate::provision::config::UiConfig {
+            max_fps: 120,
+            ..Default::default()
+        };
+        update(
+            &mut m,
+            Msg::ConfigObserved {
+                mtime: None,
+                ui: Some(Box::new((ui, crate::ui::palette::Palette::default()))),
+            },
+        );
+        assert_eq!(m.max_fps, 120);
+        update(
+            &mut m,
+            Msg::ConfigObserved {
+                mtime: None,
+                ui: None,
+            },
+        );
+        assert_eq!(m.max_fps, 120);
     }
 
     #[test]

@@ -317,6 +317,7 @@ auto-hide-nav = false                 # initial auto-hide-nav state
 hide-unreachable = true               # hide hosts no scan has reached (the filter names one to show its card)
 notifications = true                  # show results as toasts (the prefix m history keeps them either way)
 nav-position = "left"                 # the nav's default side (left|top|right|bottom)
+max-fps = 30                          # maximum xmux draws per second (10 to 120)
 view-active-border-style = "green"    # focused view-border colour
 hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style)
 primary = "brightwhite"               # per-role colour overrides: primary, secondary,
@@ -338,6 +339,7 @@ mux = "tmux"          # omitted or "auto": every mux the host answers it has
   - selection-style
   - hint-bar-style
   - view-border styles
+  - max-fps
 
   Host and roster edits take effect on a `prefix r` rescan.
 - **Nav position.** The nav rides on one of the four sides of the terminal view

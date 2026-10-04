@@ -169,6 +169,13 @@ impl MuxSpec {
 /// The optional `[ui]` table: xmux's own prefix.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UiConfig {
+    /// Maximum complete terminal draws per second (10 through 120).
+    #[serde(
+        rename = "max-fps",
+        default = "default_max_fps",
+        deserialize_with = "deserialize_max_fps"
+    )]
+    pub max_fps: u16,
     /// The built-in colour theme: `auto-dark` (the default) or `auto-light`, each
     /// painting only ANSI slots so the terminal theme resolves the actual hues. An
     /// unknown name falls back to `auto-dark` and the doctor reports the resolution.
@@ -258,6 +265,23 @@ fn default_prefix() -> String {
     "C-g".to_string()
 }
 
+pub const DEFAULT_MAX_FPS: u16 = 30;
+
+fn default_max_fps() -> u16 {
+    DEFAULT_MAX_FPS
+}
+
+fn deserialize_max_fps<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u16, D::Error> {
+    let fps = u16::deserialize(deserializer)?;
+    if (10..=120).contains(&fps) {
+        Ok(fps)
+    } else {
+        Err(serde::de::Error::custom(
+            "max-fps must be between 10 and 120",
+        ))
+    }
+}
+
 fn default_hide_unreachable() -> bool {
     true
 }
@@ -288,6 +312,7 @@ fn default_theme() -> String {
 impl Default for UiConfig {
     fn default() -> Self {
         UiConfig {
+            max_fps: default_max_fps(),
             theme: default_theme(),
             prefix: default_prefix(),
             auto_hide_nav: false,
@@ -1342,6 +1367,18 @@ ssh = "stage"
     fn load_malformed() {
         let path = write_temp("this is = = not valid toml [[[", "malformed.toml");
         assert!(load(&path).is_err());
+    }
+
+    #[test]
+    fn max_fps_accepts_supported_values_and_rejects_invalid_values() {
+        assert_eq!(toml::from_str::<Config>("[ui]").unwrap().ui.max_fps, 30);
+        for fps in [10, 30, 60, 90, 120] {
+            let config: Config = toml::from_str(&format!("[ui]\nmax-fps = {fps}")).unwrap();
+            assert_eq!(config.ui.max_fps, fps);
+        }
+        for value in ["9", "121", "-1", "60.0", "\"60\""] {
+            assert!(toml::from_str::<Config>(&format!("[ui]\nmax-fps = {value}")).is_err());
+        }
     }
 
     #[test]

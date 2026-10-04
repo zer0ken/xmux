@@ -1977,6 +1977,7 @@ fn test_rt(env: Env) -> Runtime {
         nav_position: crate::ui::switcher::NavPosition::Left,
         nav_position_pinned: None,
         nav_default: crate::ui::switcher::NavPosition::Left,
+        max_fps: crate::provision::config::DEFAULT_MAX_FPS,
         applied_nav_height: u16::MAX,
         applied_nav_collapsed: true,
         auto_hide_nav: false,
@@ -4258,14 +4259,34 @@ fn config_poll_records_baseline_then_reloads_on_change() {
     assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
     // A real edit reloads the [ui] section.
     std::thread::sleep(std::time::Duration::from_millis(30));
-    std::fs::write(&path, "[ui]\ntheme = \"auto-light\"\n").unwrap();
-    let ui = super::handlers::poll_ui_config(&mut last, &path).expect("a real change reloads");
+    std::fs::write(&path, "[ui]\ntheme = \"auto-light\"\nmax-fps = 120\n").unwrap();
+    let ui = super::handlers::poll_ui_config(&mut last, &path)
+        .expect("a real change reloads")
+        .expect("valid config");
     assert_eq!(ui.theme, "auto-light");
+    assert_eq!(ui.max_fps, 120);
     // A malformed edit keeps the last good config (None) but is still recorded.
     std::thread::sleep(std::time::Duration::from_millis(30));
     std::fs::write(&path, "not [[ valid toml").unwrap();
-    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
+    assert!(super::handlers::poll_ui_config(&mut last, &path)
+        .unwrap()
+        .is_err());
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    std::fs::write(&path, "[ui]\ntheme = \"auto-light\"\n").unwrap();
+    let ui = super::handlers::poll_ui_config(&mut last, &path)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ui.max_fps, 30);
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn frame_interval_never_rounds_below_the_fps_limit() {
+    for fps in [10, 30, 60, 90, 120] {
+        let interval = super::frame_interval(fps);
+        assert!(interval.as_nanos() * u128::from(fps) >= 1_000_000_000);
+        assert!((interval.as_nanos() - 1) * u128::from(fps) < 1_000_000_000);
+    }
 }
 
 #[test]

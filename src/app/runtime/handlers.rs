@@ -531,7 +531,7 @@ impl Runtime {
 pub(super) fn poll_ui_config(
     last: &mut Option<std::time::SystemTime>,
     path: &std::path::Path,
-) -> Option<crate::provision::config::UiConfig> {
+) -> Option<Result<crate::provision::config::UiConfig, String>> {
     let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
     if mtime == *last {
         return None;
@@ -543,7 +543,13 @@ pub(super) fn poll_ui_config(
     if prev.is_none() || mtime.is_none() {
         return None;
     }
-    crate::provision::config::load(path).ok().map(|c| c.ui)
+    match crate::provision::config::load(path) {
+        Ok(config) => Some(Ok(config.ui)),
+        Err(error) => {
+            tracing::warn!(%error, "config_reload_failed");
+            Some(Err(error.to_string()))
+        }
+    }
 }
 
 impl Runtime {
@@ -574,6 +580,7 @@ impl Runtime {
         // built from ONE answer about which machines exist.
         let roster = env.roster();
         let nav_default = roster.cfg.ui.nav_position();
+        let max_fps = roster.cfg.ui.max_fps;
         // The discovery pool capacity: the configured value, clamped to [1, MAX].
         let scan_concurrency = roster
             .cfg
@@ -697,6 +704,7 @@ impl Runtime {
             nav_position,
             nav_position_pinned,
             nav_default,
+            max_fps,
             applied_nav_height: u16::MAX,
             applied_nav_collapsed: !nav_collapsed,
             auto_hide_nav,
@@ -709,6 +717,7 @@ impl Runtime {
             width_flush_at: None,
             rescan: None,
         };
+        let initial_frame_interval = frame_interval(model.max_fps);
         let rt = Runtime {
             env,
             // Replaced in `run_app` once the free name is resolved (that needs a dial,
@@ -737,7 +746,7 @@ impl Runtime {
             spinner_start: std::time::Instant::now(),
             login_probes: 0,
             dirty: true,
-            last_draw: std::time::Instant::now() - std::time::Duration::from_millis(FRAME_MS),
+            last_draw: std::time::Instant::now() - initial_frame_interval,
             rescan_pending: false,
             #[cfg(test)]
             discovery_runs: 0,
@@ -776,7 +785,6 @@ impl Runtime {
         &mut self,
         term: &mut ratatui::Terminal<B>,
     ) {
-        use std::time::Duration;
         // Advance the spinner from wall-clock so it animates regardless of which arm fired.
         let spinner_frame = spinner_frame_at(self.spinner_start.elapsed());
         let view_border_hovered = self.model.mouse_state.hovered_view_border;
@@ -890,7 +898,7 @@ impl Runtime {
         // Draw the split (nav + selected session's live grid). GATED - redraw only when
         // something changed AND at most once per frame, so rapid navigation / a busy PTY
         // cannot flood the terminal.
-        if self.dirty && self.last_draw.elapsed() >= Duration::from_millis(FRAME_MS) {
+        if self.dirty && self.last_draw.elapsed() >= frame_interval(self.model.max_fps) {
             // Render the CONFIRMED display truth (`displayed`), not the selection: the prior
             // session stays on screen until the fresh one paints (stale-while-revalidate).
             let nav = self.nav_size();
@@ -1714,6 +1722,16 @@ impl Runtime {
             let effects = update(&mut self.model, Msg::ConfigObserved { mtime, ui: None });
             debug_assert!(effects.is_empty());
             return false;
+        };
+        let ui = match ui {
+            Ok(ui) => ui,
+            Err(error) => {
+                let effects = update(&mut self.model, Msg::ConfigObserved { mtime, ui: None });
+                debug_assert!(effects.is_empty());
+                let effects = update(&mut self.model, Msg::ConfigError(error));
+                debug_assert!(effects.is_empty());
+                return true;
+            }
         };
         let palette =
             crate::ui::palette::resolve(&ui.theme, crate::ui::chrome::palette_overrides(&ui));
