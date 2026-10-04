@@ -717,7 +717,7 @@ impl Switcher {
                                 login: login.clone(),
                             },
                         );
-                        state.recent_logins.truncate(5);
+                        state.recent_logins.truncate(3);
                         Some((source, login))
                     }
                     crate::link::unlock::UnlockOutcome::Unavailable => None,
