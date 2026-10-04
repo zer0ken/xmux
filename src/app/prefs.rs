@@ -1,6 +1,5 @@
 //! Persists lightweight, best-effort UI preferences across runs (the last-selected
-//! session address, the nav width and height, the auto-hide-nav mode, and the collapsed
-//! state). Every value is a hint
+//! session address, nav geometry and mode, and the first-use help marker). Every value is a hint
 //! only - a stale, missing, or unparsable file falls back to the built-in default,
 //! so xmux stays stateless about sessions themselves.
 
