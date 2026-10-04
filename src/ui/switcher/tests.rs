@@ -119,13 +119,12 @@ impl Harness {
     }
 
     /// The hint bar's row, read at the width it actually paints: the nav column at
-    /// rest, the whole window while the prefix is armed or an input is open (both
-    /// float the bar over the view). Reading the nav width unconditionally would clip
-    /// the armed cheatsheet or the input line.
+    /// rest, the whole window while a floating bar (an input, a refusal, a selection
+    /// hint) is up. Reading the nav width unconditionally would clip the floating bar.
     fn hint_bar_text(&self) -> String {
         let buf = self.buf();
         let y = buf.area.height - 1;
-        let limit = if self.state.chrome.armed || self.state.is_inputting() {
+        let limit = if hint_bar_floats(&self.state) {
             buf.area.width
         } else {
             NAV_WIDTH.min(buf.area.width)
@@ -2824,9 +2823,9 @@ async fn hint_bar_shows_scanning_progress_then_clears() {
 }
 
 #[tokio::test]
-async fn armed_hint_bar_fits_a_narrow_nav() {
-    // The armed cheatsheet is the widest thing the bar ever shows, and it now has only
-    // the nav column to fit in, so it must degrade to a shorter candidate, never clip.
+async fn the_armed_prefix_indicator_fits_a_narrow_nav() {
+    // A live prefix names its keys in the key list beside the nav, so the indicator in
+    // the nav column keeps the prefix alone and never clips.
     let mut state = crate::state::State::from_scan(sample());
     state.chrome.set_armed(true);
     let sw = Switcher::new(&mut state);
@@ -2845,7 +2844,7 @@ async fn armed_hint_bar_fits_a_narrow_nav() {
     let hint_bar = hint_bar.trim_end().to_string();
     assert!(
         UnicodeWidthStr::width(hint_bar.as_str()) <= nav_w as usize,
-        "the armed cheatsheet fits the nav column:\n{hint_bar:?}"
+        "the armed indicator fits the nav column:\n{hint_bar:?}"
     );
     assert!(
         hint_bar.contains("C-g"),
@@ -4325,9 +4324,9 @@ fn row_index<F: Fn(&RowRef) -> bool>(h: &Harness, pred: F) -> usize {
 }
 
 #[tokio::test]
-async fn help_overlay_renders_and_closes_on_q() {
+async fn help_overlay_renders_takes_q_as_search_and_closes_on_esc_or_prefix_help() {
     let mut h = Harness::new(sample());
-    assert!(!h.text().contains("keys"), "help hidden initially");
+    assert!(!h.text().contains("fuzzy filter"), "help hidden initially");
     h.sw.show_help(&mut h.state); // driven by the app's `prefix ?`
     h.draw();
     let out = h.text();
@@ -4336,16 +4335,66 @@ async fn help_overlay_renders_and_closes_on_q() {
         "show_help opens the help modal:\n{out}"
     );
     assert!(out.contains("fuzzy filter"), "help should list keybindings");
-    // Modal dismissal (tmux view-mode): the app routes keys to feed_reader_key
-    // above the tree/terminal split - q closes it; other keys are swallowed (no nav).
-    assert!(
-        h.sw.feed_reader_key(b"q", 0x07, &mut false, &mut h.state),
-        "q is consumed while help is open"
-    );
+    // q is a search character: it narrows the rows and keeps the help open.
+    assert!(h
+        .sw
+        .feed_reader_key(b"q", 0x07, &mut false, 200, &mut h.state));
     h.draw();
+    let out = h.text();
+    assert!(out.contains("search q"), "q types into the search:\n{out}");
+    assert!(out.contains("quit xmux"), "the match stays:\n{out}");
     assert!(
-        !h.text().contains("fuzzy filter"),
-        "q closes the help modal"
+        !out.contains("fuzzy filter"),
+        "the rest is filtered out:\n{out}"
+    );
+    // Esc closes it.
+    assert!(h
+        .sw
+        .feed_reader_key(b"\x1b", 0x07, &mut false, 200, &mut h.state));
+    h.draw();
+    assert!(!h.text().contains("quit xmux"), "Esc closes the help");
+    // prefix ? closes it too.
+    h.sw.show_help(&mut h.state);
+    assert!(h
+        .sw
+        .feed_reader_key(b"\x07?", 0x07, &mut false, 200, &mut h.state));
+    assert!(
+        !matches!(h.state.modal, Some(Modal::Help { .. })),
+        "prefix ? closes the help"
+    );
+}
+
+#[test]
+fn the_help_scrolls_back_up_at_once_from_its_end() {
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    sw.show_help(&mut state);
+    let visible = 11u16;
+    let rows = modal::help_rows(&state.chrome.ui_prefix, state.chrome.nav_position).len();
+    let max = modal::help_max_scroll(rows, visible);
+    let scroll = |state: &crate::state::State| match &state.modal {
+        Some(Modal::Help { scroll, .. }) => *scroll,
+        _ => panic!("help closed"),
+    };
+    sw.feed_reader_key(b"\x1b[F", 0x07, &mut false, visible, &mut state);
+    assert_eq!(
+        scroll(&state),
+        max,
+        "End lands on the last page the paint shows"
+    );
+    sw.feed_reader_key(b"\x1b[A", 0x07, &mut false, visible, &mut state);
+    assert_eq!(scroll(&state), max - 1, "one ↑ moves the view at once");
+    sw.feed_reader_key(
+        b"\x1b[6~\x1b[6~\x1b[6~",
+        0x07,
+        &mut false,
+        visible,
+        &mut state,
+    );
+    assert_eq!(
+        scroll(&state),
+        max,
+        "a PgDn past the end stops at the last page"
     );
 }
 
@@ -4903,15 +4952,15 @@ fn every_unselected_card_carries_its_1_based_number_beside_its_session() {
 }
 
 #[test]
-fn the_armed_hint_bar_floats_across_the_whole_window() {
+fn the_armed_key_list_covers_the_grid_beside_the_nav_and_moves_no_card() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
-    // A grid packed edge to edge, so any cell the bar fails to cover shows an `X`.
+    // A grid packed edge to edge, so any cell the box fails to cover shows an `X`.
     let mut grid = crate::display::grid::Grid::new(30, 140);
     let mut fill = Vec::new();
     for r in 0..30u16 {
-        fill.extend(format!("[{};1H", r + 1).bytes());
+        fill.extend(format!("\x1b[{};1H", r + 1).bytes());
         fill.extend(std::iter::repeat_n(b'X', 140));
     }
     grid.feed(&fill);
@@ -4922,50 +4971,45 @@ fn the_armed_hint_bar_floats_across_the_whole_window() {
                 .unwrap();
         };
     draw(&mut term, &mut sw, &state);
-    let y = term.backend().buffer().area.height - 1;
-    let row = |term: &Terminal<TestBackend>, y: u16| -> String {
+    let row = |term: &Terminal<TestBackend>, y: u16, x0: u16, x1: u16| -> String {
         let buf = term.backend().buffer();
-        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+        (x0..x1).map(|x| buf[(x, y)].symbol()).collect()
     };
-    // At rest the bar is the nav's prefix indicator, so the columns past the nav belong
-    // to the view below it - the bar does not reach them.
-    let resting = row(&term, y);
-    assert!(
-        resting[NAV_WIDTH as usize..].trim().is_empty() || !resting.trim_end().ends_with("quit"),
-        "the resting bar stays in the nav column: {resting:?}"
-    );
     // Where the cards sit is what must not move when the prefix is armed.
-    let cards_before = row(&term, 0);
+    let cards_before = row(&term, 0, 0, NAV_WIDTH);
     state.chrome.set_armed(true);
     draw(&mut term, &mut sw, &state);
-    let armed = row(&term, y);
-    assert!(
-        armed.contains("quit") || armed.contains("q "),
-        "the armed bar spans past the nav column: {armed:?}"
+    let plan = sw.layout(
+        Rect::new(0, 0, 140, 30),
+        NavSize::visible(NAV_WIDTH),
+        &state,
+        &RenderPlan::default(),
     );
-    let after_nav: String = armed.chars().skip(NAV_WIDTH as usize).collect();
+    let (list, _) = plan.key_list.clone().expect("the key list is open");
+    assert!(list.x > NAV_WIDTH, "it opens past the nav: {list:?}");
+    assert_eq!(list.bottom(), 30, "against the indicator's row: {list:?}");
+    // Covering, not just recolouring: the grid's own characters would otherwise show
+    // through the cells the keys do not reach.
+    let text: String = (list.y..list.bottom())
+        .map(|y| row(&term, y, list.x, list.right()))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        armed.chars().count() > NAV_WIDTH as usize && !after_nav.trim().is_empty(),
-        "and paints over the view beneath it: {armed:?}"
+        !text.contains('X'),
+        "the box covers the grid it opens over:\n{text}"
     );
-    // Covering, not just recolouring: a style alone leaves the grid's own characters in
-    // the columns the bar's text does not reach, which reads as text spilled across the
-    // screen rather than a bar over it.
-    assert!(
-        !armed.contains('X'),
-        "the armed bar covers the grid across its whole row: {armed:?}"
-    );
+    assert!(text.contains("quit"), "{text}");
     assert_eq!(
-        row(&term, 0),
+        row(&term, 0, 0, NAV_WIDTH),
         cards_before,
-        "arming the prefix only widens the paint, so no card moves"
+        "arming the prefix only adds paint, so no card moves"
     );
 }
 
 #[tokio::test]
 async fn the_input_hint_bar_floats_across_the_whole_window() {
     // An open input must be seen even with the nav hidden (auto-hide + terminal
-    // focus): like the armed bar, it floats to the window's bottom row and covers
+    // focus): like a refusal, it floats to the window's bottom row and covers
     // the grid, so what is being typed never disappears.
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
@@ -5294,13 +5338,14 @@ fn a_hidden_nav_keeps_no_status_line_until_it_has_something_to_say() {
         row(&term)
     );
 
-    // Armed: the prefix must still answer, so the bar floats on the window's bottom row.
+    // Armed: the prefix must still answer, so its key list opens over the window's
+    // bottom left even with the nav hidden.
     state.chrome.set_armed(true);
     draw(&mut term, &mut sw, &state);
     let armed = row(&term);
     assert!(
-        armed.contains("C-g") && !armed.contains('X'),
-        "an armed prefix floats the bar over the full width even with the nav hidden: {armed:?}"
+        armed.starts_with('╰') && armed.contains("╯X"),
+        "an armed prefix opens its key list over a hidden nav: {armed:?}"
     );
     state.chrome.set_armed(false);
 
@@ -5333,13 +5378,15 @@ async fn hint_bar_and_help_reflect_new_model() {
     let resting = h.hint_bar_text();
     assert_eq!(resting.trim(), "C-g");
 
-    // Armed, it becomes the cheatsheet for exactly those keys.
+    // Armed, the key list beside it names exactly those keys, and the bar keeps the
+    // prefix.
     h.state.chrome.set_armed(true);
     h.draw();
-    let armed = h.hint_bar_text();
+    assert_eq!(h.state.chrome.hint_bar_text(200, &h.state).trim(), "C-g");
+    let armed = h.text();
     assert!(
-        armed.contains("q") && armed.contains("?"),
-        "the armed bar lists the chords the prefix unlocks:\n{armed}"
+        armed.contains("quit") && armed.contains("help"),
+        "the key list names the chords the prefix unlocks:\n{armed}"
     );
     h.state.chrome.set_armed(false);
     h.draw();
@@ -5837,9 +5884,10 @@ fn popup_border_press_then_drag_moves_the_rect() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state); // the help popup, the one popup that remains
-    let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
+                              // A window taller than the help, so the popup has room to move down.
+    let mut term = Terminal::new(TestBackend::new(140, 70)).unwrap();
     let before_plan = sw.layout(
-        Rect::new(0, 0, 140, 40),
+        Rect::new(0, 0, 140, 70),
         NavSize::hidden(NAV_WIDTH),
         &state,
         &RenderPlan::default(),
@@ -5854,7 +5902,7 @@ fn popup_border_press_then_drag_moves_the_rect() {
     );
     sw.drag_popup(bx + 5, by + 1);
     let after_plan = sw.layout(
-        Rect::new(0, 0, 140, 40),
+        Rect::new(0, 0, 140, 70),
         NavSize::hidden(NAV_WIDTH),
         &state,
         &before_plan,
@@ -5877,12 +5925,12 @@ fn modals_are_mutually_exclusive() {
     assert!(state.is_inputting(), "input opened");
     sw.show_help(&mut state);
     assert!(
-        matches!(state.modal, Some(Modal::Help)) && !state.is_inputting(),
+        matches!(state.modal, Some(Modal::Help { .. })) && !state.is_inputting(),
         "help closes the input"
     );
     sw.open_input(InputMode::Filter, &mut state);
     assert!(
-        state.is_inputting() && !matches!(state.modal, Some(Modal::Help)),
+        state.is_inputting() && !matches!(state.modal, Some(Modal::Help { .. })),
         "the input closes help"
     );
 }
@@ -5975,60 +6023,56 @@ fn popup_drag_clamps_within_screen() {
 fn toggle_help_flips_visibility() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
-    assert!(!matches!(state.modal, Some(Modal::Help)));
+    assert!(!matches!(state.modal, Some(Modal::Help { .. })));
     sw.toggle_help(&mut state);
-    assert!(matches!(state.modal, Some(Modal::Help)));
+    assert!(matches!(state.modal, Some(Modal::Help { .. })));
     sw.toggle_help(&mut state);
-    assert!(!matches!(state.modal, Some(Modal::Help)));
+    assert!(!matches!(state.modal, Some(Modal::Help { .. })));
 }
 
 #[test]
-fn feed_reader_key_is_modal_and_closes_on_q_or_esc() {
-    // tmux view-mode style: while open, every key is consumed; q/Esc closes, the
-    // rest are swallowed; while closed, nothing is consumed (falls through).
+fn feed_reader_key_is_modal_searches_and_closes_on_esc() {
+    // tmux view-mode style: while open, every key is consumed; the help takes typing as
+    // its search, Esc closes it; while closed, nothing is consumed (falls through).
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     assert!(
-        !sw.feed_reader_key(b"q", 0x07, &mut false, &mut state),
+        !sw.feed_reader_key(b"q", 0x07, &mut false, 200, &mut state),
         "closed → not consumed, routes normally"
     );
 
     sw.toggle_help(&mut state);
     assert!(
-        sw.feed_reader_key(b"j", 0x07, &mut false, &mut state),
+        sw.feed_reader_key(b"q", 0x07, &mut false, 200, &mut state),
         "open → consumed"
     );
     assert!(
-        matches!(state.modal, Some(Modal::Help)),
-        "a non-close key is swallowed but keeps help open"
+        matches!(&state.modal, Some(Modal::Help { query, .. }) if query == "q"),
+        "q types into the search and keeps help open"
     );
     assert!(
-        sw.feed_reader_key(b"\x1b[A", 0x07, &mut false, &mut state),
-        "an arrow (ESC [) is swallowed, not a close"
+        sw.feed_reader_key(b"\x1b[6~\x1b[6~\x1b[6~", 0x07, &mut false, 200, &mut state),
+        "a scroll (ESC [) is swallowed, not a close"
     );
     assert!(
-        matches!(state.modal, Some(Modal::Help)),
-        "arrow keeps help open"
+        matches!(state.modal, Some(Modal::Help { scroll, .. }) if scroll < 2),
+        "a search with one match (under its head) scrolls no further than its last row"
     );
 
     assert!(
-        sw.feed_reader_key(b"q", 0x07, &mut false, &mut state),
-        "q → consumed"
-    );
-    assert!(!matches!(state.modal, Some(Modal::Help)), "q closes help");
-
-    sw.toggle_help(&mut state);
-    assert!(
-        sw.feed_reader_key(b"\x1b", 0x07, &mut false, &mut state),
+        sw.feed_reader_key(b"\x1b", 0x07, &mut false, 200, &mut state),
         "lone Esc → consumed"
     );
-    assert!(!matches!(state.modal, Some(Modal::Help)), "Esc closes help");
+    assert!(
+        !matches!(state.modal, Some(Modal::Help { .. })),
+        "Esc closes help"
+    );
 }
 
 #[tokio::test]
 async fn input_renders_in_the_hint_bar() {
     // The input is not a centered popup any more: it lives in the hint bar, which
-    // floats across the window (like the armed bar) and reads `[filter] filter
+    // floats across the window (like a refusal) and reads `[filter] filter
     // sessions: <buffer>` on its bottom row. No bordered box appears anywhere.
     let mut h = Harness::new(sample());
     h.ch('/').await; // open the filter input
@@ -6189,6 +6233,9 @@ fn help_lines_reflects_configured_prefix() {
         &state.chrome.ui_prefix,
         crate::ui::switcher::NavPosition::Left,
         &palette,
+        "",
+        0,
+        200,
     );
     let text: String = lines
         .iter()
@@ -6210,6 +6257,9 @@ fn help_lines_reflects_configured_prefix() {
         &state_default.chrome.ui_prefix,
         crate::ui::switcher::NavPosition::Left,
         &palette,
+        "",
+        0,
+        200,
     );
     let text_default: String = lines_default
         .iter()
@@ -6596,8 +6646,8 @@ fn the_portrait_prefix_is_a_label_until_the_prefix_is_armed() {
             buf.area.width
         );
     }
-    // Arming the prefix opens the cheatsheet below the seam, across the whole width: it
-    // has to be readable over everything it now covers, and the seam keeps the prefix.
+    // Arming the prefix opens the key list below the seam at its right end, where the
+    // indicator is, and the seam keeps the prefix.
     let mut state = crate::state::State::from_scan(column_flow_scan(&["aa", "bb", "cc"], 2));
     let sw = Switcher::new(&mut state);
     state.chrome.set_armed(true);
@@ -6610,11 +6660,10 @@ fn the_portrait_prefix_is_a_label_until_the_prefix_is_armed() {
             .collect::<String>()
     };
     assert!(
-        (0..buf.area.width).all(|x| buf[(x, seam_y + 1)].bg == bar_bg),
-        "the armed bar fills the row below the seam: {:?}",
+        text(seam_y + 1).trim_end().ends_with('╮') && text(seam_y + 1).contains("C-g"),
+        "the box's titled top border runs under the seam to its right end: {:?}",
         text(seam_y + 1)
     );
-    assert!(text(seam_y + 1).contains("C-g"), "{:?}", text(seam_y + 1));
     assert!(
         text(seam_y).trim_end().ends_with("C-g"),
         "the seam keeps the prefix: {:?}",

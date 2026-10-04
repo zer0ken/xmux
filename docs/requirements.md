@@ -192,11 +192,11 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B9** - The nav carries a prefix indicator, not a screen-wide footer: on the bottom
   row of a side column, and at the right end of the seam row in a top or bottom band. At
   rest it names the prefix alone; the states that outrank it (a refusal, scan progress,
-  an active filter) take its place while they apply. Arming the prefix opens the
-  cheatsheet from the indicator toward the terminal view while the indicator keeps the
-  prefix: across the terminal view's columns on a side column's indicator row, on the row
-  below a top band's seam, and on the row above a bottom band's seam. Only the PAINT
-  moves, floating over the live grid and leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
+  an active filter) take its place while they apply. Arming the prefix opens the key
+  list (FR-B36) from the indicator toward the terminal view while the indicator keeps the
+  prefix: beside a side column against the indicator's row, below a top band's seam, and
+  above a bottom band's seam. Only the PAINT moves, floating over the live grid and
+  leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
   prefix interaction brings the nav back for the moment it needs it (a jump reads the
   card numbers), and it hides again when the interaction ends.
 - **FR-B10** - Every unselected card carries a 1-based number in its address column, on
@@ -315,19 +315,19 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B18** - A prefix lasts as long as the FUNCTION it starts, not as long as the
   keystroke that names it. Most commands end with their key. A command that opens an
   input row ends when Enter or Esc closes the row. A resize ends when its repeat window
-  lapses, so a whole burst of arrows is one interaction. The cheatsheet and the
+  lapses, so a whole burst of arrows is one interaction. The key list and the
   auto-hidden nav show for exactly that span, so neither drops out from under an
   interaction still running.
 - **FR-B19** - A prefix waits for the next INPUT, and a mouse action is input: a click, a
   release, a wheel or a drag cancels the prefix chord (the ready wait) in either focus,
   because mouse bytes are scanned
   out of the stream before either focus path's key handling sees them and a chord left
-  half-open keeps its cheatsheet on screen and then eats the next key. Bare hover is not
+  half-open keeps its key list on screen and then eats the next key. Bare hover is not
   an action: the pointer drifting must not break a chord being typed.
 - **FR-B20** - Input is read as key presses only, because a terminal's byte stream
   carries no key-up. A held prefix is therefore indistinguishable from repeated taps and
   is treated as such: each repeat sends the doubled-prefix literal to the pane and blinks
-  the cheatsheet for as long as the key is down. Recovering the key-up would mean
+  the key list for as long as the key is down. Recovering the key-up would mean
   requiring the kitty keyboard protocol from the terminal and from every mux enclosing
   xmux, which would make behaviour depend on what that chain passes through; a uniform
   input path everywhere is worth more than this one case.
@@ -356,7 +356,7 @@ no function, and no test, so renaming code is never a documentation change.
   over the terminal view is not a move back, the move back into the nav shows the band
   again, and a selection that reaches a host card while the band is hidden shows it,
   since a selected card is never one nobody can see. While a prefix is live the band is
-  painted, because the hint bar offers a jump to any card by number, and it is hidden
+  painted, because the key list offers a jump to any card by number, and it is hidden
   again when the prefix ends. Hiding takes the cards off the screen, not off the list:
   their numbers and the keys that walk the list stay the same.
 - **FR-B22** - A host and its mux are SHOWN as one label, `{host}/{mux}`, wherever the pair
@@ -424,8 +424,8 @@ no function, and no test, so renaming code is never a documentation change.
   (it grows on a left or top nav and shrinks on a right or bottom one). A position change
   leaves the terminal view the remainder whole, with the selection and the focus kept, resizes the mux terminals
   for the new split, and repaints the whole screen, since the border jumps to the
-  opposite side. The focus arrow pairs follow the placement (FR-B14), and the cheatsheet
-  and help modal name the pair the current placement makes active.
+  opposite side. The focus arrow pairs follow the placement (FR-B14), and the key list
+  and the help name the pair the current placement makes active.
 - **FR-B26** - BLOCKED means ssh refused the host for a reason the submitted login
   answers. Two of ssh's own refusals enter this state: its final account-and-host
   authentication line, and a host-key verification failure for a host with no recorded
@@ -568,6 +568,26 @@ no function, and no test, so renaming code is never a documentation change.
   sessions ending. A re-scan that changed nothing says so with the host and session counts
   it found. The toast is made once every source and the roster have answered, and a host
   that stopped answering keeps it on screen until it is dismissed.
+- **FR-B35** - Every key xmux binds is listed ONCE, in one key table with the words that
+  name it. Both focus paths resolve a prefix command through that table, and the help,
+  the key list, and the selection hint are built from it, so a surface never names a key
+  that does something else, and no path binds a key the table leaves out.
+- **FR-B36** - Pressing the prefix opens the KEY LIST at once: a box titled with the
+  prefix, naming every key the prefix unlocks under its section title (navigate,
+  sessions, view, app), in as many columns as the room beside the indicator holds. When
+  the keys do not fit, the box shortens every description first and then gives up the
+  keys needed least, counting them as `+N more`; the jump, help, and quit keys are never
+  given up, and no key is ever shown without its name.
+- **FR-B37** - For three seconds after the user moves the selection, the hint bar names
+  the selected card's most relevant keys (one to three) and one fact about it: a
+  session's windows, or a host's state word with the reason behind it. Any key ends it,
+  the next move replaces it, and a selection xmux was told to make raises none. Afterwards
+  the resting prefix indicator returns.
+- **FR-B38** - The help lists every key in the key table section by section, then a
+  legend of every glyph the screen uses (the host states, the spinner, the selection
+  mark, the overflow cues, the auto-hide border, and the toast levels). Typing searches
+  it, ignoring case, and the arrows, `PgUp`/`PgDn`, and `Home`/`End` scroll it; `Esc` or
+  `prefix ?` closes it, and the search line says so whatever the search leaves.
 
 ## C. Switching (the keystone)
 

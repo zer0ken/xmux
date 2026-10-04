@@ -2067,7 +2067,7 @@ fn coalesced_nav_keys_observe_each_preceding_model_transition() {
     assert!(!quit, "the help modal owns the following q");
     assert!(matches!(
         rt.model.state.modal,
-        Some(crate::state::Modal::Help)
+        Some(crate::state::Modal::Help { .. })
     ));
 }
 
@@ -3149,7 +3149,7 @@ fn prefix_m_and_prefix_question_close_what_they_opened_in_either_focus() {
     assert!(rt.model.state.modal.is_none());
     assert!(!rt.prefix_active(), "the key consumed the prefix");
     rt.handle_stdin_bytes(b"\x07?", &Selection::default());
-    assert!(matches!(rt.model.state.modal, Some(Modal::Help)));
+    assert!(matches!(rt.model.state.modal, Some(Modal::Help { .. })));
     rt.handle_stdin_bytes(b"\x07?", &Selection::default());
     assert!(rt.model.state.modal.is_none(), "prefix ? closes the help");
 
@@ -3163,9 +3163,9 @@ fn prefix_m_and_prefix_question_close_what_they_opened_in_either_focus() {
 #[test]
 fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
     use crate::ui::switcher::{Scan, Switcher};
-    // The hint bar shows the prefix at rest and its keys once armed, so the bare prefix
-    // read is a VISIBLE change even though it moves no selection and runs no action. If
-    // it did not mark the frame dirty the cheatsheet would only appear on the next
+    // A live prefix opens the key list, so the bare prefix read is a VISIBLE change even
+    // though it moves no selection and runs no action. If it did not mark the frame dirty
+    // the key list would only appear on the next
     // unrelated redraw (a poll tick), which reads as the prefix doing nothing.
     let scan = Scan { groups: vec![] };
     let mut state = crate::state::State::from_scan(scan); // nav focus
@@ -3177,7 +3177,7 @@ fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
     assert!(!rt.prefix_active(), "starts unarmed");
     let out = rt.handle_stdin_bytes(b"\x07", &Selection::default());
     assert!(rt.prefix_active(), "the bare prefix arms");
-    assert!(out.dirty, "arming redraws, so the cheatsheet shows at once");
+    assert!(out.dirty, "arming redraws, so the key list shows at once");
     // The release is the key-up side of the press, a no-op: ready stays live, so the
     // bar stays up. A command key then consumes the chord and hides the bar.
     let _ = rt.handle_stdin_bytes(b"\x1b[7;5:3u", &Selection::default());
@@ -3376,7 +3376,7 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
     use crate::ui::switcher::{Scan, Switcher};
     // A prefix waits for the NEXT input, and a mouse action is input. Mouse bytes are
     // scanned out of the stream before either focus path's key handling sees them, so
-    // without an explicit disarm the chord stays half-open: its cheatsheet keeps floating
+    // without an explicit disarm the chord stays half-open: its key list keeps floating
     // over the window, and the next key it swallows is one meant for the pane.
     let ev = |cb: u16, pressed: bool| crate::display::mouse::MouseEvent {
         cb,
@@ -3404,7 +3404,7 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
             &mut false,
         );
         assert!(!rt.prefix_active(), "{what} disarms the prefix");
-        assert!(dirty, "{what} redraws, so the cheatsheet goes at once");
+        assert!(dirty, "{what} redraws, so the key list goes at once");
     }
     // Bare hover is the pointer sitting there, not an action: it must not break a chord
     // the user is still typing. cb 35 = motion bit with no button held.
@@ -5288,4 +5288,30 @@ fn a_click_anywhere_on_a_collapsed_nav_expands_it_at_every_position() {
             "{position:?}: the click is not a drag"
         );
     }
+}
+
+#[test]
+fn any_key_ends_the_selection_hint_in_either_focus() {
+    let raise = |rt: &mut Runtime| {
+        rt.model.state.chrome.show_selection_hint(
+            vec![(
+                "Enter".into(),
+                "focus the terminal".into(),
+                "terminal".into(),
+            )],
+            "1 window".into(),
+            std::time::Instant::now(),
+        );
+    };
+    // Terminal focus: the key goes to the pane, and the hint still comes down.
+    let mut rt = rt_terminal_focus_with_session();
+    raise(&mut rt);
+    let out = rt.handle_stdin_bytes(b"x", &Selection::default());
+    assert!(rt.model.state.chrome.selection_hint.is_none());
+    assert!(out.dirty, "the bar changed, so the frame repaints");
+    // Nav focus: a key that moves nothing ends it and raises nothing new.
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    raise(&mut rt);
+    rt.handle_stdin_bytes(b"x", &Selection::default());
+    assert!(rt.model.state.chrome.selection_hint.is_none());
 }

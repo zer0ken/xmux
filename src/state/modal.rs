@@ -149,7 +149,14 @@ impl Input {
 /// jump restore reference, a filter restore value), so it is boxed to keep the
 /// enum small; callers pattern-match through the box and never see the pointer.
 pub(crate) enum Modal {
-    Help,
+    /// The help `prefix ?` opens. `query` is what has been typed to search it, and
+    /// `scroll` counts the rows scrolled past from the top of what matches. `decoder`
+    /// lives as long as the help, so a key split across two reads is still one key.
+    Help {
+        query: String,
+        scroll: usize,
+        decoder: crate::display::decode::KeyDecoder,
+    },
     /// The history `prefix m` opens. `scroll` counts the records scrolled past from the
     /// newest, which the list starts at.
     History {
@@ -161,7 +168,7 @@ pub(crate) enum Modal {
 /// True while a read-only popup is open: the help or the history. Either one takes
 /// every key while it is open.
 pub(crate) fn is_reader(modal: &Option<Modal>) -> bool {
-    matches!(modal, Some(Modal::Help | Modal::History { .. }))
+    matches!(modal, Some(Modal::Help { .. } | Modal::History { .. }))
 }
 
 /// True while a centered modal popup is open. Every modal is one today, so this
@@ -184,12 +191,52 @@ pub(crate) fn modal_kind(modal: &Option<Modal>) -> Option<ModalKind> {
 
 /// Feeds a raw key read to a read-only popup (the help or the history), tmux view-mode
 /// style. While one is open every key is consumed (returns true, so nothing reaches the
-/// nav or the terminal view); `q` or a lone Esc closes it, and in the history `↑`/`↓`
-/// (or `k`/`j`) scroll one record and `PgUp`/`PgDn` ten. Every other key is swallowed.
-/// Returns false when neither is open, so the read falls through to normal routing.
+/// nav or the terminal view). A lone Esc closes either. In the history `q` closes it too,
+/// `↑`/`↓` (or `k`/`j`) scroll one record and `PgUp`/`PgDn` ten. The help is searched by
+/// typing: a printable key extends the query and Backspace shortens it, each returning the
+/// view to the top of what matches, and the arrows, `PgUp`/`PgDn`, and `Home`/`End`
+/// scroll. Every other key is swallowed. Returns false when neither is open, so the read
+/// falls through to normal routing.
 pub(crate) fn feed_reader(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
+    use ratatui::crossterm::event::KeyCode;
     if !is_reader(modal) {
         return false;
+    }
+    if let Some(Modal::Help {
+        query,
+        scroll,
+        decoder,
+    }) = modal
+    {
+        for key in decoder.feed(bytes) {
+            match key.code {
+                KeyCode::Esc => {
+                    *modal = None;
+                    return true;
+                }
+                KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                KeyCode::Down => *scroll = scroll.saturating_add(1),
+                KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                KeyCode::PageDown => *scroll = scroll.saturating_add(10),
+                KeyCode::Home => *scroll = 0,
+                KeyCode::End => *scroll = usize::MAX,
+                KeyCode::Backspace => {
+                    query.pop();
+                    *scroll = 0;
+                }
+                // Ctrl-U clears the query, as it clears an input row.
+                KeyCode::Char('\u{15}') => {
+                    query.clear();
+                    *scroll = 0;
+                }
+                KeyCode::Char(c) if !c.is_control() => {
+                    query.push(c);
+                    *scroll = 0;
+                }
+                _ => {}
+            }
+        }
+        return true;
     }
     // `q`, or a real Esc (a lone ESC, not the ESC `[` that starts an arrow/CSI).
     let esc = bytes.contains(&0x1b) && !bytes.windows(2).any(|w| w == [0x1b, b'[']);

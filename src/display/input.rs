@@ -15,6 +15,7 @@
 //! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
 //! bracketed paste is respected so a prefix pasted as data is never intercepted.
 use crate::display::dispatch::Action;
+use crate::model::keys::{prefix_command, Chord, KeyCommand};
 use crate::model::NavPosition;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -77,167 +78,81 @@ impl TermInput {
         let mut i = 0;
         while i < bytes.len() {
             if self.armed {
-                let b0 = bytes[i];
-                if b0 == self.prefix {
-                    // A doubled prefix sends one literal prefix byte to the pane and
-                    // ends the chord (tmux `send-prefix` parity). A terminal reports no
-                    // key-up, so a held prefix's autorepeat is byte-identical to a second
-                    // tap and takes this path too: holding the prefix streams literals and
-                    // blinks the hint bar. That is the accepted cost of keeping the input
-                    // path free of the kitty keyboard protocol.
-                    fwd.push(self.prefix);
-                    self.armed = false;
-                    i += 1;
-                    continue;
-                }
                 // Any key while ready CONSUMES the prefix (even a no-op like focusing
-                // the already-focused view): ready clears, the bar hides.
+                // the already-focused view): ready clears, the bar hides. What the key
+                // runs is read from the one key table, the same lookup the nav path makes.
                 self.armed = false;
-                // prefix ? / h / l keep terminal-view focus (help toggle, nav resize), so the
-                // rest of the read still forwards to the pane - flush, emit, continue.
-                if b0 == b'?' {
-                    if !fwd.is_empty() {
-                        out.push(Action::Forward(std::mem::take(&mut fwd)));
-                    }
-                    out.push(Action::ShowHelp);
-                    i += 1;
+                let (chord, len) = Chord::from_bytes(&bytes[i..], self.prefix);
+                let command = chord.and_then(|c| prefix_command(c, nav_position));
+                let Some(command) = command else {
+                    // An unrecognized follow-up: the chord swallows just this key and the
+                    // rest of the read resumes as normal input. A bare Esc lands here.
+                    i += len;
                     continue;
-                }
-                if b0 == b'h' || b0 == b'l' {
-                    if !fwd.is_empty() {
-                        out.push(Action::Forward(std::mem::take(&mut fwd)));
-                    }
-                    out.push(Action::Width(if b0 == b'l' { 1 } else { -1 }));
-                    i += 1;
-                    continue;
-                }
-                // prefix t → toggle auto-hide-nav; keeps terminal-view focus, so the rest of
-                // the read still forwards to the pane.
-                if b0 == b't' {
-                    if !fwd.is_empty() {
-                        out.push(Action::Forward(std::mem::take(&mut fwd)));
-                    }
-                    out.push(Action::ToggleAutoHide);
-                    i += 1;
-                    continue;
-                }
-                // prefix z → collapse or expand the nav; same shape as prefix t.
-                if b0 == b'z' {
-                    if !fwd.is_empty() {
-                        out.push(Action::Forward(std::mem::take(&mut fwd)));
-                    }
-                    out.push(Action::ToggleCollapse);
-                    i += 1;
-                    continue;
-                }
-                // prefix m → toggle the history; same shape as prefix ?.
-                if b0 == b'm' {
-                    if !fwd.is_empty() {
-                        out.push(Action::Forward(std::mem::take(&mut fwd)));
-                    }
-                    out.push(Action::ShowHistory);
-                    i += 1;
-                    continue;
-                }
-                // prefix p → cycle the nav position; same shape: applied on the input path,
-                // terminal-view focus kept, the rest of the read still forwards.
-                if b0 == b'p' {
-                    if !fwd.is_empty() {
-                        out.push(Action::Forward(std::mem::take(&mut fwd)));
-                    }
-                    out.push(Action::CycleNavPosition);
-                    i += 1;
-                    continue;
-                }
-                // prefix n, r, / and prefix <digit> → the nav actions (new session,
-                // re-scan, filter, card jump), so they are reachable from the terminal view
-                // too, not only nav focus. Emitted as a NavKey the caller hands to
-                // Switcher::handle_key: n opens the new-session input, r kicks a re-scan,
-                // / opens the filter input, a digit opens the jump popup. Focus stays on the terminal view (the modal
-                // draws over it and owns the NEXT read), so the rest of THIS read still
-                // forwards to the pane, same shape as prefix ?/t above.
-                if matches!(b0, b'n' | b'r' | b'/') || b0.is_ascii_digit() {
-                    if !fwd.is_empty() {
-                        out.push(Action::Forward(std::mem::take(&mut fwd)));
-                    }
-                    out.push(Action::NavKey(KeyEvent::new(
-                        KeyCode::Char(b0 as char),
+                };
+                // A command that keeps terminal focus emits its action and the rest of the
+                // read still forwards to the pane.
+                let keep = match command {
+                    KeyCommand::Help => Some(Action::ShowHelp),
+                    KeyCommand::History => Some(Action::ShowHistory),
+                    KeyCommand::Width(d) => Some(Action::Width(d)),
+                    KeyCommand::Height(d) => Some(Action::Height(d)),
+                    KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
+                    KeyCommand::Collapse => Some(Action::ToggleCollapse),
+                    KeyCommand::Position => Some(Action::CycleNavPosition),
+                    // The nav actions (new session, re-scan, filter, card jump) reach the
+                    // nav executor as the key itself. Focus stays on the terminal view: the
+                    // modal draws over it and owns the NEXT read.
+                    KeyCommand::Jump
+                    | KeyCommand::Filter
+                    | KeyCommand::NewSession
+                    | KeyCommand::Rescan => Some(Action::NavKey(KeyEvent::new(
+                        KeyCode::Char(bytes[i] as char),
                         KeyModifiers::NONE,
-                    )));
-                    i += 1;
-                    continue;
-                }
-                // prefix Ctrl-arrow (ESC [ 1 ; 5 A/B/C/D) → resize. ←/→ (D/C) the WIDTH,
-                // ↑/↓ (A/B) the HEIGHT. Matched before the plain ESC/arrow focus handling
-                // below so the Ctrl-arrow is not read as Esc.
-                if b0 == 0x1b
-                    && bytes[i..].len() >= 6
-                    && bytes[i + 1] == b'['
-                    && &bytes[i + 2..i + 5] == b"1;5"
-                    && matches!(bytes[i + 5], b'A' | b'B' | b'C' | b'D')
-                {
+                    ))),
+                    _ => None,
+                };
+                if let Some(action) = keep {
                     if !fwd.is_empty() {
                         out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
-                    out.push(match bytes[i + 5] {
-                        b'C' => Action::Width(1),
-                        b'D' => Action::Width(-1),
-                        b'B' => Action::Height(1),
-                        _ => Action::Height(-1), // b'A'
-                    });
-                    i += 6;
+                    out.push(action);
+                    i += len;
                     continue;
                 }
-                // Tab → leave the terminal for the nav. Focus is switching away, so the
-                // remainder of this read belongs to the new focus and is delivered on
-                // the next read; flush what was forwarded and stop here.
-                if b0 == b'\t' {
-                    if !fwd.is_empty() {
-                        out.push(Action::Forward(std::mem::take(&mut fwd)));
+                match command {
+                    // A doubled prefix sends one literal prefix byte to the pane and ends
+                    // the chord (tmux `send-prefix` parity). A terminal reports no key-up,
+                    // so a held prefix's autorepeat is byte-identical to a second tap and
+                    // takes this path too: holding the prefix streams literals and blinks
+                    // the hint bar. That is the accepted cost of keeping the input path
+                    // free of the kitty keyboard protocol.
+                    KeyCommand::LiteralPrefix => {
+                        fwd.push(self.prefix);
+                        i += len;
                     }
-                    out.push(Action::FocusNav(bytes[i + 1..].to_vec()));
-                    break;
-                }
-                // An ESC sequence (an arrow) → leave the terminal for the nav; a bare Esc
-                // is not a prefix command, so it falls through to the unrecognized-key
-                // arm below, which ends the chord and swallows the key.
-                if b0 == 0x1b {
-                    // Consume the WHOLE arrow (ESC [ A/B/C/D), so its tail isn't replayed
-                    // as stray nav input.
-                    let arrow = bytes[i..].len() >= 3
-                        && bytes[i + 1] == b'['
-                        && matches!(bytes[i + 2], b'A' | b'B' | b'C' | b'D');
-                    if arrow {
-                        // The arrow PAIR facing the terminal's side names the terminal, so
-                        // with the nav on the left or above (the default) →/↓ keep terminal
-                        // focus (swallowed; the rest of the read resumes as mux input) and
-                        // ←/↑ name the nav and fall through to the focus switch below. With
-                        // the nav on the right or below the whole pair flips.
-                        let forward = nav_position.forward_arrows_face_terminal();
-                        if matches!(bytes[i + 2], b'C' | b'B') == forward {
-                            i += 3;
-                            continue;
-                        }
+                    // The arrow pair naming the terminal names the view that already has
+                    // the focus: swallowed, and the rest of the read resumes as mux input.
+                    KeyCommand::FocusTerminal => i += len,
+                    // Leaving the terminal for the nav: the remainder of this read belongs
+                    // to the new focus and is delivered on the next read, so flush what was
+                    // forwarded and stop here.
+                    KeyCommand::FocusNav | KeyCommand::FocusToggle => {
                         if !fwd.is_empty() {
                             out.push(Action::Forward(std::mem::take(&mut fwd)));
                         }
-                        // Hand any bytes AFTER the command to the nav (focus switching).
-                        out.push(Action::FocusNav(bytes[i + 3..].to_vec()));
+                        out.push(Action::FocusNav(bytes[i + len..].to_vec()));
                         break;
                     }
-                    // A bare Esc falls through to the unrecognized-key arm below.
-                }
-                if b0 == b'q' {
-                    if !fwd.is_empty() {
-                        out.push(Action::Forward(std::mem::take(&mut fwd)));
+                    KeyCommand::Quit => {
+                        if !fwd.is_empty() {
+                            out.push(Action::Forward(std::mem::take(&mut fwd)));
+                        }
+                        out.push(Action::Quit);
+                        break;
                     }
-                    out.push(Action::Quit);
-                    break;
+                    _ => i += len,
                 }
-                // Unrecognized single-byte follow-up: command mode swallows just this
-                // key; the rest of the read resumes as normal input. Ready is already
-                // consumed.
-                i += 1;
                 continue;
             }
 
@@ -276,6 +191,108 @@ mod tests {
                 _ => vec![],
             })
             .collect()
+    }
+
+    const POSITIONS: [NavPosition; 4] = [
+        NavPosition::Left,
+        NavPosition::Top,
+        NavPosition::Right,
+        NavPosition::Bottom,
+    ];
+
+    /// The bytes a table chord arrives as on the terminal path.
+    fn bytes_of(chord: Chord) -> Vec<u8> {
+        match chord {
+            Chord::Char(c) => vec![c as u8],
+            Chord::Digit => b"5".to_vec(),
+            Chord::Tab => b"\t".to_vec(),
+            Chord::Arrow(a) => vec![0x1b, b'[', a.csi_final()],
+            Chord::CtrlArrow(a) => [b"\x1b[1;5".as_slice(), &[a.csi_final()]].concat(),
+            Chord::Prefix => vec![0x07],
+        }
+    }
+
+    /// What terminal focus must do for each table command after `prefix` + `seq`, stated
+    /// here rather than read from `feed` so the test checks `feed` against the table.
+    fn term_expected(command: KeyCommand, seq: &[u8]) -> Vec<Action> {
+        let key = || KeyEvent::new(KeyCode::Char(seq[0] as char), KeyModifiers::NONE);
+        match command {
+            KeyCommand::Quit => vec![Action::Quit],
+            KeyCommand::Help => vec![Action::ShowHelp],
+            KeyCommand::History => vec![Action::ShowHistory],
+            KeyCommand::AutoHide => vec![Action::ToggleAutoHide],
+            KeyCommand::Collapse => vec![Action::ToggleCollapse],
+            KeyCommand::Position => vec![Action::CycleNavPosition],
+            KeyCommand::Width(d) => vec![Action::Width(d)],
+            KeyCommand::Height(d) => vec![Action::Height(d)],
+            KeyCommand::Jump | KeyCommand::Filter | KeyCommand::NewSession | KeyCommand::Rescan => {
+                vec![Action::NavKey(key())]
+            }
+            KeyCommand::LiteralPrefix => vec![Action::Forward(vec![0x07])],
+            KeyCommand::FocusTerminal => vec![],
+            KeyCommand::FocusNav | KeyCommand::FocusToggle => vec![Action::FocusNav(vec![])],
+        }
+    }
+
+    #[test]
+    fn every_prefix_entry_in_the_key_table_dispatches_in_terminal_focus() {
+        for position in POSITIONS {
+            for entry in crate::model::keys::TABLE.iter().filter(|e| e.prefixed()) {
+                for chord in entry.chords(position) {
+                    let seq = bytes_of(chord);
+                    let command = entry.command_for(chord, position).unwrap();
+                    let mut t = m();
+                    let got = t.feed(&[&[0x07], seq.as_slice()].concat(), position);
+                    assert_eq!(
+                        got,
+                        term_expected(command, &seq),
+                        "{position:?} prefix {chord:?} ({:?})",
+                        entry.label
+                    );
+                    assert!(!t.is_armed(), "the command ends the chord");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_key_terminal_focus_dispatches_after_the_prefix_is_in_the_key_table() {
+        let mut seqs: Vec<Vec<u8>> = (0x00u8..=0x7f).map(|b| vec![b]).collect();
+        for fin in b'A'..=b'D' {
+            seqs.push(vec![0x1b, b'[', fin]);
+            seqs.push([b"\x1b[1;5".as_slice(), &[fin]].concat());
+            seqs.push([b"\x1b[1;2".as_slice(), &[fin]].concat());
+            seqs.push([b"\x1b[1;3".as_slice(), &[fin]].concat());
+        }
+        for extra in [b"\x1b[5~".as_slice(), b"\x1b[H", b"\x1bOP", b"\x1b[Z"] {
+            seqs.push(extra.to_vec());
+        }
+        for position in POSITIONS {
+            for seq in &seqs {
+                let mut t = m();
+                let got = t.feed(&[&[0x07], seq.as_slice()].concat(), position);
+                let handled = got.iter().any(|a| match a {
+                    Action::Forward(b) => b.first() == Some(&0x07),
+                    _ => true,
+                });
+                let (chord, len) = Chord::from_bytes(seq, 0x07);
+                let command = chord.and_then(|c| prefix_command(c, position));
+                match command {
+                    Some(command) => {
+                        let want = term_expected(command, seq);
+                        assert_eq!(got.first(), want.first(), "{position:?} prefix {seq:?}");
+                    }
+                    None => {
+                        assert!(
+                            !handled,
+                            "{position:?}: prefix {seq:?} dispatches {got:?} but no table entry binds it"
+                        );
+                        // An unbound key is swallowed alone; the rest resumes as input.
+                        assert_eq!(fwd(&got), seq[len..].to_vec(), "{position:?} {seq:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

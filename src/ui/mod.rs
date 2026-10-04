@@ -3,6 +3,7 @@
 //! rendering is layered on top separately.
 
 pub mod chrome;
+pub(crate) mod keylist;
 pub mod modal;
 pub mod ops;
 pub(crate) mod palette;

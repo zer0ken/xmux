@@ -205,12 +205,13 @@ and `[ui] prefix` replaces it. A chord is the prefix followed by one key:
 | Chord        | Action                                           |
 | ------------ | ------------------------------------------------ |
 | `prefix q`   | quit                                             |
-| `prefix ?`   | toggle the keybinding help                       |
+| `prefix ?`   | toggle the help (type to search keys and glyphs) |
 | `prefix m`   | toggle the history of results and events         |
 | `prefix Tab` | move focus between the nav and the terminal view |
 | `prefix p`   | move the nav to the next side of the view        |
 
-A click on a card selects it, and a click on the terminal view focuses it.
+Pressing the prefix opens a box beside the prefix indicator that lists every key it
+unlocks. A click on a card selects it, and a click on the terminal view focuses it.
 [`docs/keybind.md`](docs/keybind.md) lists the remaining keys.
 
 ## Hosts and sources

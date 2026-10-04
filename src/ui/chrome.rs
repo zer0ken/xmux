@@ -213,7 +213,7 @@ pub(crate) fn palette_overrides(
 /// The hint bar's refusal style: a solid error bar (the active palette's
 /// `error` as the background, the bar's own text slot on top) that breaks hard
 /// from the calm default so a refused action reads as an
-/// error at a glance, not as more of the key cheatsheet. Every flash paints
+/// error at a glance, not as more of the hint bar's keys. Every flash paints
 /// this. Fixed, not configurable: an error must stay legible regardless of any
 /// `[ui] hint-bar-style` override.
 pub(crate) fn error_flash_style(palette: &crate::ui::palette::Palette) -> Style {
@@ -223,11 +223,11 @@ pub(crate) fn error_flash_style(palette: &crate::ui::palette::Palette) -> Style 
 /// How much of its row the hint bar paints.
 ///
 /// At rest the bar is the prefix indicator, a label sized to what it says, so a column's
-/// bottom row and a band's seam keep the rest of their cells. Arming the prefix takes the
-/// whole row, because the cheatsheet has to be readable over whatever it covers.
+/// bottom row and a band's seam keep the rest of their cells. A floating bar takes the
+/// whole row, because it has to be readable over whatever it covers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BarFill {
-    /// The whole rect: a solid bar. What an armed or flashing bar always uses.
+    /// The whole rect: a solid bar. What a floating bar always uses.
     Row,
     /// The text plus a cell of padding, on its own background: the resting label.
     Content,
@@ -364,6 +364,7 @@ impl Default for Chrome {
         Chrome {
             flash: String::new(),
             flash_until: None,
+            selection_hint: None,
             auto_hide: false,
             view_border_hovered: false,
             spinner: HashSet::new(),
@@ -1162,12 +1163,13 @@ impl Chrome {
     }
 
     /// The hint bar's logical text, fit to `width`. At rest this text is only the prefix,
-    /// the nav's prefix indicator. Once the prefix
-    /// is armed, the text becomes the list of keys that prefix unlocks. An
-    /// open input outranks everything: the bar BECOMES the input line (feature name,
-    /// guide text, and the windowed buffer), so what is being typed is what the bar
-    /// says. The transient states outrank the rest, in order: a flash (a refusal),
-    /// the scan progress, then the active filter. A flash is returned raw - it may
+    /// the nav's prefix indicator, and it stays the prefix while the prefix is armed (the
+    /// key list beside it names the keys). An
+    /// open input outranks everything but a flash: the bar BECOMES the input line (feature
+    /// name, guide text, and the windowed buffer), so what is being typed is what the bar
+    /// says. The transient states outrank the rest, in order: a flash (a refusal), the
+    /// input, the armed prefix, the hint after a selection move, the scan progress, then
+    /// the active filter. A flash is returned raw - it may
     /// exceed `width`; [`Self::hint_bar_lines`] wraps it so it never clips.
     pub(crate) fn hint_bar_text(&self, width: u16, state: &crate::state::State) -> String {
         // Use the active prefix so the hint_bar matches the user's configured binding.
@@ -1179,27 +1181,11 @@ impl Chrome {
         } else if let Some(Modal::Input(input)) = &state.modal {
             crate::ui::modal::input_hint_text(input, width)
         } else if self.armed {
-            // The prefix is held: name what it unlocks. Longest-first so a narrow nav
-            // drops the rarer chords rather than clipping mid-word.
-            // Order: focus nav, focus terminal, jump, new, filter, hide, collapse, position,
-            // rescan, history, help, quit. The focus rows name the arrow PAIR the current placement makes
-            // active (the pair facing the terminal's side names the terminal), and the
-            // resize keys are left out (the help modal has them).
-            let focus = if self.nav_position.forward_arrows_face_terminal() {
-                "←/↑ focus nav · →/↓ focus terminal"
-            } else {
-                "→/↓ focus nav · ←/↑ focus terminal"
-            };
-            fit(
-                &[
-                    format!(" {p} · {focus} · 1-9 jump to a session · n new session · / filter · t hide nav · z collapse nav · p nav position · r rescan · m history · ? help · q quit"),
-                    format!(" {p} · {focus} · 1-9 jump to · n new · / filter · t hide · z collapse · p position · r rescan · m history · ? help · q quit"),
-                    format!(" {p} · {focus} · 1-9 · n · / · t · z · p · r · m · ? · q"),
-                    format!(" {p} · ←/↑ · →/↓ · 1-9 · n · / · t · z · p · r · m · ? · q"),
-                    format!(" {p}…"),
-                ],
-                width,
-            )
+            // A live prefix names its keys in the key list beside the indicator, so the
+            // indicator keeps the prefix alone.
+            fit(&[format!(" {p}"), p.to_string()], width)
+        } else if let Some(hint) = &self.selection_hint {
+            selection_hint_text(hint, p, width)
         } else if !state.scanning.is_empty() {
             // A subtle global indicator while host probes are in flight; clears
             // (falls through to the resting prefix) once every host has settled. It
@@ -1269,6 +1255,7 @@ impl Chrome {
         &self,
         line: String,
         palette: &crate::ui::palette::Palette,
+        fact: Option<&str>,
     ) -> Line<'static> {
         // The bar's OWN accent, not the card accent: the keys sit on `bar_bg`, a
         // surface the card accent may not read on (see `Palette::bar_accent`). The keys
@@ -1277,9 +1264,17 @@ impl Chrome {
         let accent = crate::ui::palette::interaction_key_style().fg(palette.bar_accent);
         let sep_style = Style::default().fg(palette.decoration);
         let mut spans: Vec<Span> = Vec::new();
-        for (i, seg) in line.split(" · ").enumerate() {
+        let segments: Vec<&str> = line.split(" · ").collect();
+        let last = segments.len().saturating_sub(1);
+        for (i, seg) in segments.into_iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled(" · ", sep_style));
+            }
+            // A selection hint ends on its fact, which is words about the card and holds
+            // no key.
+            if i == last && i > 0 && fact.is_some_and(|f| !f.is_empty() && seg.starts_with(f)) {
+                spans.push(Span::raw(seg.to_string()));
+                continue;
             }
             // The key = the first token, or the first two when the segment starts with
             // the prefix ("C-g n"). Leading spaces (the bar's left margin) stay raw.
@@ -1307,8 +1302,9 @@ impl Chrome {
         Line::from(spans)
     }
 
-    /// The version the expanded bar pins to its far right: `xmux v<version>`, built from the
-    /// crate's own name and version so it always matches what `xmux --version` reports.
+    /// The version the prefix key list writes on its bottom border: `xmux v<version>`,
+    /// built from the crate's own name and version so it always matches what
+    /// `xmux --version` reports.
     pub(crate) fn version_label(&self) -> String {
         format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
     }
@@ -1338,21 +1334,7 @@ impl Chrome {
                 return;
             }
         }
-        // While the prefix is HELD the bar is expanded, and it pins its name and version to
-        // the far right: a cheap build pointer that never crowds the cheatsheet, so it
-        // gives way whenever the cheatsheet would have to drop a key to make room for it. A
-        // flash is a refusal and must own the whole row, so it displaces the version. The
-        // version only appears on a solid (Row) bar, which is exactly what an armed bar
-        // always is.
-        let label = self.version_label();
-        let gap = 2; // a two-cell breathing room between the cheatsheet and the label
-        let right_margin = 1; // a one-cell margin between the label and the far right edge
-        let version_w = label.chars().count() as u16 + gap + right_margin;
-        let full = self.hint_bar_lines(area.width, state);
-        let beside = self.hint_bar_lines(area.width.saturating_sub(version_w), state);
-        let pinned = self.armed && self.flash.is_empty() && fill == BarFill::Row && beside == full;
-        let version = if pinned { label } else { String::new() };
-        let lines = full;
+        let lines = self.hint_bar_lines(area.width, state);
         // Key tokens get the accent only on the built-in default style with no flash
         // showing: a `[ui] hint-bar-style` override keeps its exact colours (uniform,
         // as configured), and a flash keeps the one solid style of its kind.
@@ -1363,11 +1345,15 @@ impl Chrome {
             .unwrap_or(0);
         let styled =
             self.flash.is_empty() && self.hint_bar_style == hint_bar_default_style(palette);
+        let fact = (!self.armed)
+            .then_some(self.selection_hint.as_ref())
+            .flatten()
+            .map(|h| h.fact.split(':').next().unwrap_or_default().to_string());
         let text = if styled {
             Text::from(
                 lines
                     .into_iter()
-                    .map(|l| self.hint_bar_line_spans(l, palette))
+                    .map(|l| self.hint_bar_line_spans(l, palette, fact.as_deref()))
                     .collect::<Vec<_>>(),
             )
         } else {
@@ -1380,7 +1366,7 @@ impl Chrome {
         // inherit the bar's fg/bg.
         //
         // `Clear` first, because a style only recolours cells - it does not blank them.
-        // An armed bar floats over the live grid, so without this the grid's own
+        // A floating bar covers the live grid, so without this the grid's own
         // characters survive in the columns the bar's text does not reach and the bar
         // reads as text spilled across the screen instead of a bar covering it.
         let painted = match fill {
@@ -1388,29 +1374,10 @@ impl Chrome {
             BarFill::Content => Self::bar_content_rect(area, width),
         };
         frame.render_widget(Clear, painted);
-        // The cheatsheet takes the left of the bar; the version the rightmost cells. The
-        // label is pinned only when the cheatsheet fits beside it, so painting the
-        // cheatsheet across the whole bar fills the gap with the status background while
-        // the label sits clear of the text at the right.
         frame.render_widget(
             Paragraph::new(text).style(self.hint_bar_render_style(palette)),
             painted,
         );
-        if !version.is_empty() {
-            let vw = version.chars().count() as u16;
-            let vrect = Rect {
-                x: painted.x + painted.width.saturating_sub(vw + right_margin),
-                y: painted.y,
-                width: vw,
-                height: painted.height,
-            };
-            let white = Style::default().fg(Color::White);
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(version, white)))
-                    .style(self.hint_bar_render_style(palette)),
-                vrect,
-            );
-        }
     }
 
     /// Paints the resting prefix across a collapsed nav's indicator. Transient bars are
@@ -1422,7 +1389,7 @@ impl Chrome {
         palette: &crate::ui::palette::Palette,
     ) {
         frame.render_widget(Clear, area);
-        let line = self.hint_bar_line_spans(format!(" {}", self.ui_prefix), palette);
+        let line = self.hint_bar_line_spans(format!(" {}", self.ui_prefix), palette, None);
         frame.render_widget(
             Paragraph::new(line).style(self.hint_bar_render_style(palette)),
             area,
@@ -1451,6 +1418,47 @@ impl Chrome {
             ..area
         }
     }
+}
+
+/// The hint after a selection move, fit to `width`: the card's keys and its fact. A
+/// narrow bar first shortens every key's description, then gives up the fact's tail, then
+/// the later keys; the first key always keeps its name.
+fn selection_hint_text(
+    hint: &crate::state::chrome::SelectionHint,
+    prefix: &str,
+    width: u16,
+) -> String {
+    let keys = |n: usize, long: bool| -> Vec<String> {
+        hint.keys
+            .iter()
+            .take(n)
+            .map(|(k, l, s)| format!("{} {}", k, if long { l } else { s }))
+            .collect()
+    };
+    let join = |parts: Vec<String>| format!(" {}", parts.join(" · "));
+    let with_fact = |mut parts: Vec<String>, fact: &str| {
+        if !fact.is_empty() {
+            parts.push(fact.to_string());
+        }
+        parts
+    };
+    // The fact is a state word, and after a colon the reason behind it: the reason is the
+    // part a narrow bar gives up first.
+    let word = hint.fact.split(':').next().unwrap_or_default().to_string();
+    let n = hint.keys.len();
+    let mut candidates = vec![
+        join(with_fact(keys(n, true), &hint.fact)),
+        join(with_fact(keys(n, false), &hint.fact)),
+        join(with_fact(keys(n, false), &word)),
+    ];
+    for k in (1..n).rev() {
+        candidates.push(join(with_fact(keys(k, false), &word)));
+    }
+    candidates.push(join(keys(1, false)));
+    if n == 0 {
+        candidates.push(format!(" {prefix}"));
+    }
+    crate::ui::switcher::fit(&candidates, width)
 }
 
 #[cfg(test)]
@@ -1578,81 +1586,78 @@ mod tests {
     }
 
     #[test]
-    fn hint_bar_shows_the_prefix_at_rest_and_its_keys_when_armed() {
+    fn hint_bar_keeps_the_prefix_alone_at_rest_and_while_armed() {
         let mut c = Chrome::default();
-        let state = crate::state::State::default();
+        let mut state = crate::state::State::default();
         // At rest the logical text is the prefix alone.
         assert_eq!(c.hint_bar_text(80, &state).trim(), "C-g");
-        // Armed: the keys the prefix unlocks. Wide enough for the full descriptions,
-        // the rows run in the bar's fixed order (focus nav, focus terminal, jump, new,
-        // filter, hide, collapse, position, rescan, help, quit) and the focus rows use arrow
-        // symbols that
-        // point at the view they focus.
+        // Armed, the key list beside the indicator names the keys, and the indicator
+        // keeps the prefix alone, over the scan progress it would otherwise show.
+        state.scanning.insert("local".into());
         c.set_armed(true);
-        let full = c.hint_bar_text(400, &state);
-        assert!(full.starts_with(" C-g "), "{full:?}");
-        let order = [
-            "←/↑ focus nav",
-            "→/↓ focus terminal",
-            "1-9 jump to a session",
-            "n new session",
-            "/ filter",
-            "t hide nav",
-            "z collapse nav",
-            "p nav position",
-            "r rescan",
-            "? help",
-            "q quit",
-        ];
-        let mut last = 0;
-        for seg in order {
-            let pos = full
-                .find(seg)
-                .unwrap_or_else(|| panic!("armed bar lists {seg:?}: {full:?}"));
-            assert!(
-                pos > last,
-                "armed bar order keeps {seg:?} after the previous: {full:?}"
-            );
-            last = pos;
-        }
-        // A narrower bar drops to short descriptions while keeping the focus guidance
-        // (the pair segment rides every rung). The full line is ~180 cells, so a 160-wide
-        // bar forces the middle rung, whose focus rows keep the full pair wording.
-        let armed = c.hint_bar_text(160, &state);
-        assert!(
-            armed.contains("→/↓ focus terminal"),
-            "short bar keeps focus-terminal: {armed:?}"
-        );
-        for key in [
-            "n new",
-            "/ filter",
-            "z collapse",
-            "r rescan",
-            "m history",
-            "? help",
-            "q quit",
-        ] {
-            assert!(armed.contains(key), "armed bar lists {key:?}: {armed:?}");
-        }
-        // A flash outranks the armed cheatsheet: a refusal must not be hidden by it.
+        assert_eq!(c.hint_bar_text(400, &state).trim(), "C-g");
+        // A flash outranks the armed prefix: a refusal must not be hidden by it.
         c.flash("host unreachable");
         assert!(c.hint_bar_text(120, &state).contains("host unreachable"));
     }
 
     #[test]
-    fn the_armed_cheatsheet_names_the_arrow_pair_the_placement_makes_active() {
+    fn the_selection_hint_names_its_keys_and_fact_and_shortens_to_fit() {
         let mut c = Chrome::default();
         let state = crate::state::State::default();
+        let now = std::time::Instant::now();
+        c.show_selection_hint(
+            vec![
+                (
+                    "Enter".into(),
+                    "focus the terminal".into(),
+                    "terminal".into(),
+                ),
+                ("C-g r".into(), "re-scan every host".into(), "rescan".into()),
+            ],
+            "unreachable: Connection refused".into(),
+            now,
+        );
+        let wide = c.hint_bar_text(200, &state);
+        assert_eq!(
+            wide,
+            " Enter focus the terminal · C-g r re-scan every host · unreachable: Connection refused"
+        );
+        // Shorter descriptions first, then the reason behind the state word, then keys.
+        let short = c.hint_bar_text(70, &state);
+        assert_eq!(
+            short,
+            " Enter terminal · C-g r rescan · unreachable: Connection refused"
+        );
+        let word = c.hint_bar_text(45, &state);
+        assert_eq!(word, " Enter terminal · C-g r rescan · unreachable");
+        let one = c.hint_bar_text(30, &state);
+        assert_eq!(one, " Enter terminal · unreachable");
+        let bare = c.hint_bar_text(16, &state);
+        assert_eq!(bare, " Enter terminal", "a key keeps its name to the last");
+        // It lasts three seconds, then the resting prefix returns.
+        assert!(!c.expire_selection_hint(now + std::time::Duration::from_millis(2999)));
+        assert!(c.selection_hint.is_some());
+        assert!(c.expire_selection_hint(now + std::time::Duration::from_secs(3)));
+        assert_eq!(c.hint_bar_text(200, &state).trim(), "C-g");
+    }
+
+    #[test]
+    fn an_armed_prefix_outranks_the_selection_hint() {
+        let mut c = Chrome::default();
+        let state = crate::state::State::default();
+        c.show_selection_hint(
+            vec![(
+                "Enter".into(),
+                "focus the terminal".into(),
+                "terminal".into(),
+            )],
+            "2 windows".into(),
+            std::time::Instant::now(),
+        );
+        assert!(c.hint_bar_text(200, &state).contains("2 windows"));
         c.set_armed(true);
-        // Default (left column): ←/↑ name the nav, →/↓ the terminal.
-        let left = c.hint_bar_text(400, &state);
-        assert!(left.contains("←/↑ focus nav"), "{left:?}");
-        assert!(left.contains("→/↓ focus terminal"), "{left:?}");
-        // Pinned right, the whole pair mirrors and the bar says so.
-        c.set_nav_position(crate::ui::switcher::NavPosition::Right);
-        let right = c.hint_bar_text(400, &state);
-        assert!(right.contains("→/↓ focus nav"), "{right:?}");
-        assert!(right.contains("←/↑ focus terminal"), "{right:?}");
+        assert_eq!(c.hint_bar_text(200, &state).trim(), "C-g");
     }
 
     #[test]
