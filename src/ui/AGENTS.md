@@ -14,13 +14,16 @@ render state. The runtime state owns the modal type and open-modal value; the
 switcher reads and writes it and owns only transient popup geometry.
 
 The chrome is the view border, the hint bar, and the host screens, plus its
-view-local state (flash, spinner, view border colours, prefix, ready). The hint
-bar is the nav's prefix indicator, not a full-width strip: a label on a side column's
-bottom row, and at the right end of the view border row in a band. It shows the prefix
-alone until a prefix interaction is live (the prefix ready), when it
-lists the keys that interaction unlocks, opening from the indicator toward the terminal
-view while the indicator keeps the prefix. The chrome instance
+view-local state (flash, spinner, view border colours, prefix, ready, the selection
+hint). The hint bar is the nav's prefix indicator, not a full-width strip: a label on a
+side column's bottom row, and at the right end of the view border row in a band. It shows
+the prefix alone at rest and while a prefix interaction is live. The chrome instance
 itself lives in the runtime state, fed by the app each frame and rendered from it.
+
+The key list module lays out and paints the box a live prefix opens from the indicator
+toward the terminal view. Its layout is pure: it takes the room beside the indicator and
+returns the columns, the description length, and which keys it gave up, so the render
+plan carries one answer that the paint and the tests both read.
 
 The toast module places and paints the toasts in the terminal view's corner farthest
 from the nav, and builds the history popup's lines. A toast never covers the prefix key
@@ -37,6 +40,9 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 ## Module Seams
 
 - Pure row and group transforms belong in the row model.
+- Every word a surface says about a key (the help, the key list, the selection hint)
+  is read from the model's one key table. A surface never spells a key or its
+  description itself, so it cannot drift from what the key does.
 - UI colours come from the semantic palette (the seven roles - primary, secondary,
   accent, decoration, warning, error, disabled - plus the hint bar's own pair and
   the selection style), so the theme changes in one place. A theme is a named
@@ -149,6 +155,15 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   While a login's steps run the facts stay folded, since they describe the probe failure
   that login is answering.
 - The dump should reflect the same split view the main draw path renders.
+- A live prefix opens the key list at once and the indicator keeps the prefix. The list
+  never shows a key without its name: when the room is short it shortens every
+  description first and then gives up the keys needed least behind `+N more`, and it
+  keeps the jump, help, and quit keys whatever it gives up.
+- The selection hint answers only a move the user made (a key, a click, a wheel), lasts
+  three seconds on the animation tick, and ends at the next key read. A selection xmux
+  was told to make raises none.
+- The help is searched by typing, so a printable key is part of the query and only Esc
+  or the prefix key that opened it closes it.
 - The nav's two bands are parted by the ROOM between them while the cards can spare a row
   for it, and by a rule once they cannot: a gap that scrolls out of view parts nothing a
   reader can see. The parting is measured as part of the run, so the bands never meet with

@@ -218,6 +218,9 @@ pub struct RenderPlan {
     /// Each toast on screen and the rect it floats in, newest first. A click inside one
     /// takes it down.
     pub(crate) toasts: Vec<(u64, Rect)>,
+    /// The prefix key list and where it opens, while a prefix is live and the room beside
+    /// the indicator holds it.
+    pub(crate) key_list: Option<(Rect, crate::ui::keylist::KeyList)>,
     /// The cells a click on a collapsed nav expands it from: the whole collapsed column
     /// with its seam, or a collapsed band's seam row. Empty while the nav is expanded.
     pub expand_area: Rect,
@@ -247,6 +250,7 @@ impl Default for RenderPlan {
             hint_bar_rect: Rect::default(),
             prefix_label: Rect::default(),
             toasts: Vec::new(),
+            key_list: None,
             expand_area: Rect::default(),
             overflow_marks: Vec::new(),
             title_repeats: Vec::new(),
@@ -339,6 +343,28 @@ impl Switcher {
             floating,
             nav.position,
         );
+        // A live prefix opens its key list from the indicator toward the terminal view,
+        // sized to the room there.
+        let key_list = if key_list_open(state) {
+            let room = crate::ui::keylist::room(resting_bar, regions.terminal, area, nav.position);
+            crate::ui::keylist::key_list(
+                &state.chrome.ui_prefix,
+                nav.position,
+                room.width,
+                room.height,
+            )
+            .map(|list| {
+                let rect = crate::ui::keylist::place(
+                    room,
+                    nav.position,
+                    resting_bar.height == 0,
+                    list.size(),
+                );
+                (rect, list)
+            })
+        } else {
+            None
+        };
         let seam = regions.view_border;
         let expand_area = if nav.collapsed && nav.width > 0 {
             match nav.position {
@@ -371,19 +397,20 @@ impl Switcher {
             popup_rect: self.modal_popup_rect(area, state),
             hint_bar_rect,
             prefix_label,
-            // A toast never covers the prefix key list: the list is what a live prefix
-            // reads its next key from.
+            // A toast never covers the prefix key list (the list is what a live prefix
+            // reads its next key from) or a floating hint bar.
             toasts: crate::ui::toast::place_toasts(
                 &state.notify,
                 regions.terminal,
                 area,
                 nav.position,
-                if floating {
-                    hint_bar_rect
-                } else {
-                    Rect::default()
+                match &key_list {
+                    Some((rect, _)) => *rect,
+                    None if floating => hint_bar_rect,
+                    None => Rect::default(),
                 },
             ),
+            key_list,
             expand_area,
             floating_hint_bar: floating,
             nav_hidden: nav.width == 0,
@@ -654,6 +681,7 @@ impl Switcher {
                     &palette,
                 );
             }
+            self.render_key_list(frame, state, plan, &palette);
             self.render_toasts(frame, state, plan, &palette);
             // The modal stacks above the bar: a popup is a stronger claim on the screen.
             self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
@@ -731,6 +759,7 @@ impl Switcher {
                 &palette,
             );
         }
+        self.render_key_list(frame, state, plan, &palette);
         self.render_toasts(frame, state, plan, &palette);
         // In the terminal view, place the real cursor at the grid's cursor so typing in the
         // mux is visible and tracks. Skipped when the child hid its cursor.
@@ -1117,15 +1146,12 @@ impl Switcher {
 
     fn modal_popup_rect(&self, area: Rect, state: &crate::state::State) -> Rect {
         match &state.modal {
-            Some(Modal::Help) => {
-                let (_, lines) = modal::help_lines(
-                    &state.chrome.ui_prefix,
-                    state.chrome.nav_position,
-                    &self.palette,
-                );
-                let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+            Some(Modal::Help { .. }) => {
+                // Sized for every row whatever the search, so typing never moves it.
+                let (inner_w, rows) =
+                    modal::help_size(&state.chrome.ui_prefix, state.chrome.nav_position);
                 let w = (inner_w + 3).max(24).min(area.width.max(1));
-                let h = (lines.len() as u16 + 2).min(area.height.max(1));
+                let h = (rows + 2).min(area.height.max(1));
                 modal::offset_centered(w, h, area, self.popup_geo.offset)
             }
             Some(Modal::History { scroll }) => {
@@ -1140,6 +1166,26 @@ impl Switcher {
                 modal::offset_centered(w, h, area, self.popup_geo.offset)
             }
             _ => Rect::default(),
+        }
+    }
+
+    /// Paints the prefix key list where the plan opened it.
+    fn render_key_list(
+        &self,
+        frame: &mut Frame,
+        state: &crate::state::State,
+        plan: &RenderPlan,
+        palette: &palette::Palette,
+    ) {
+        if let Some((rect, list)) = &plan.key_list {
+            crate::ui::keylist::render(
+                frame,
+                *rect,
+                list,
+                &state.chrome.ui_prefix,
+                &state.chrome.version_label(),
+                palette,
+            );
         }
     }
 
@@ -1175,9 +1221,14 @@ impl Switcher {
         palette: &palette::Palette,
     ) {
         let (title, lines) = match &state.modal {
-            Some(Modal::Help) => {
-                modal::help_lines(&state.chrome.ui_prefix, state.chrome.nav_position, palette)
-            }
+            Some(Modal::Help { query, scroll }) => modal::help_lines(
+                &state.chrome.ui_prefix,
+                state.chrome.nav_position,
+                palette,
+                query,
+                *scroll,
+                rect.height.saturating_sub(2),
+            ),
             Some(Modal::History { scroll }) => crate::ui::toast::history_lines(
                 &state.notify,
                 *scroll,

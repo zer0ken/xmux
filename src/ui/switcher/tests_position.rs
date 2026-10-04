@@ -451,16 +451,17 @@ fn hit_test_a_band_overflow_count_selects_the_nearest_hidden_card() {
 }
 
 #[test]
-fn pl9_the_armed_hint_and_the_help_name_prefix_z() {
-    let mut state = crate::state::State::from_scan(two_groups());
-    state.chrome.set_ui_prefix("C-g".into());
-    state.chrome.set_armed(true);
-    let text = state.chrome.hint_bar_text(400, &state);
+fn pl9_the_key_list_and_the_help_name_prefix_z() {
+    let list = crate::ui::keylist::key_list("C-g", NavPosition::Left, 160, 30).unwrap();
     assert!(
-        text.contains("· z collapse"),
-        "the armed hint names z: {text}"
+        list.columns.iter().flatten().any(|c| matches!(
+            c,
+            crate::ui::keylist::Cell::Key { key, desc } if key == "z" && desc.contains("collapse")
+        )),
+        "the key list names z: {list:?}"
     );
-    let (_, lines) = crate::ui::modal::help_lines("C-g", NavPosition::Left, &Default::default());
+    let (_, lines) =
+        crate::ui::modal::help_lines("C-g", NavPosition::Left, &Default::default(), "", 0, 200);
     let help: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     assert!(
         help.iter()
@@ -529,16 +530,18 @@ fn no_toast_covers_the_prefix_key_list() {
             )],
         );
         shot.draw(false);
-        let bar = shot.plan.hint_bar_rect;
+        let (list, _) = shot.plan.key_list.clone().expect("the key list is open");
         assert!(
-            shot.plan.toasts.iter().all(|(_, r)| !r.intersects(bar)),
-            "{position:?}: {:?} against the key list at {bar:?}",
+            shot.plan.toasts.iter().all(|(_, r)| !r.intersects(list)),
+            "{position:?}: {:?} against the key list at {list:?}",
             shot.plan.toasts
         );
-        let list = shot.row(bar.y, bar.x, bar.right());
+        let text: String = (list.y..list.bottom())
+            .map(|y| shot.row(y, list.x, list.right()))
+            .collect();
         assert!(
-            list.contains("· m"),
-            "{position:?}: the key list stays readable: {list:?}"
+            text.contains("history"),
+            "{position:?}: the key list stays readable: {text:?}"
         );
     }
 }
@@ -551,22 +554,78 @@ fn the_prefix_key_list_opens_toward_the_terminal_and_the_indicator_keeps_the_pre
         shot.state.chrome.set_nav_position(position);
         shot.draw(false);
         let r = shot.plan.regions;
-        let text = |y: u16, from: u16, to: u16| -> String {
-            (from..to).map(|x| shot.buf[(x, y)].symbol()).collect()
-        };
-        let (row, from, to) = match position {
-            NavPosition::Left | NavPosition::Right => {
-                (r.hint_bar.y, r.terminal.x, r.terminal.right())
+        let (list, _) = shot.plan.key_list.clone().expect("the key list is open");
+        // Against the indicator, on the terminal view's side of the seam.
+        match position {
+            NavPosition::Left => {
+                assert_eq!(list.x, r.terminal.x, "{position:?}: {list:?}");
+                assert_eq!(list.bottom(), r.hint_bar.bottom(), "{position:?}: {list:?}");
             }
-            NavPosition::Top => (r.view_border.y + 1, 0, W),
-            NavPosition::Bottom => (r.view_border.y - 1, 0, W),
-        };
-        let list = text(row, from, to);
+            NavPosition::Right => {
+                assert_eq!(list.right(), r.terminal.right(), "{position:?}: {list:?}");
+                assert_eq!(list.bottom(), r.hint_bar.bottom(), "{position:?}: {list:?}");
+            }
+            NavPosition::Top => {
+                assert_eq!(list.y, r.view_border.bottom(), "{position:?}: {list:?}");
+                assert_eq!(list.right(), W, "{position:?}: {list:?}");
+            }
+            NavPosition::Bottom => {
+                assert_eq!(list.bottom(), r.view_border.y, "{position:?}: {list:?}");
+                assert_eq!(list.right(), W, "{position:?}: {list:?}");
+            }
+        }
         assert!(
-            list.contains("· m"),
-            "{position:?}: the key list opens beside the indicator: {list:?}"
+            !list.intersects(r.tree) && !list.intersects(r.view_border),
+            "{position:?}: the list covers no card and no seam: {list:?}"
         );
-        let indicator = text(r.hint_bar.y, r.hint_bar.x, r.hint_bar.right());
+        // A boxed list titled with the prefix, its sections named.
+        assert_eq!(shot.buf[(list.x, list.y)].symbol(), "╭", "{position:?}");
+        let text: String = (list.y..list.bottom())
+            .map(|y| shot.row(y, list.x, list.right()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for word in ["C-g", "navigate", "sessions", "view", "app", "history"] {
+            assert!(text.contains(word), "{position:?}: {word} in {text}");
+        }
+        let indicator = shot.row(r.hint_bar.y, r.hint_bar.x, r.hint_bar.right());
+        assert!(
+            indicator.contains("C-g"),
+            "{position:?}: the indicator keeps the prefix: {indicator:?}"
+        );
+        // The prefix ends and the list closes.
+        shot.state.chrome.set_armed(false);
+        shot.draw(false);
+        assert!(shot.plan.key_list.is_none(), "{position:?}");
+    }
+}
+
+#[test]
+fn the_selection_hint_floats_from_the_indicator_at_every_position() {
+    for position in ALL {
+        let mut shot = Shot::new(two_groups(), nav_at(position), false);
+        shot.state.chrome.set_nav_position(position);
+        shot.state.chrome.show_selection_hint(
+            vec![(
+                "Enter".into(),
+                "focus the terminal".into(),
+                "terminal".into(),
+            )],
+            "3 windows".into(),
+            std::time::Instant::now(),
+        );
+        shot.draw(false);
+        let bar = shot.plan.hint_bar_rect;
+        let r = shot.plan.regions;
+        assert!(
+            !bar.intersects(r.tree),
+            "{position:?}: the hint covers no card: {bar:?}"
+        );
+        let text = shot.row(bar.y, bar.x, bar.right());
+        assert!(
+            text.contains("Enter focus the terminal · 3 windows"),
+            "{position:?}: {text:?}"
+        );
+        let indicator = shot.row(r.hint_bar.y, r.hint_bar.x, r.hint_bar.right());
         assert!(
             indicator.contains("C-g"),
             "{position:?}: the indicator keeps the prefix: {indicator:?}"

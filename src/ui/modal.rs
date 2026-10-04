@@ -139,140 +139,212 @@ pub(crate) fn wrap_text(text: &str, width: u16) -> Vec<String> {
     lines
 }
 
-/// The help modal's `(title, lines)`, built once and rendered through the
-/// shared modal-popup path. `prefix` is the configured `[ui] prefix` binding;
-/// `nav_position` decides which arrow pair the focus rows name.
+/// One row of the help: a section head, or a key (or glyph) cell with what it does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HelpRow {
+    Head(String),
+    Key(String, String),
+}
+
+/// The section head the glyph legend stands under.
+pub(crate) const GLYPH_SECTION: &str = "glyphs";
+
+/// What each glyph on screen means, in the order a reader meets them: the card states,
+/// the selection, the overflow cues, the border, and the toast levels. Every glyph is
+/// read from the constant the surface that paints it uses.
+fn glyph_legend() -> Vec<(String, String)> {
+    use crate::state::notify::Level;
+    use crate::ui::chrome::{BLOCK_MARK, LIST_FAILED_MARK, UNREACHABLE_MARK};
+    vec![
+        (BLOCK_MARK.into(), "a host that needs a login".into()),
+        (
+            UNREACHABLE_MARK.into(),
+            "an unreachable host; on a toast, a warning that stays until dismissed".into(),
+        ),
+        (
+            LIST_FAILED_MARK.into(),
+            "a host whose session list could not be read; on a toast, a failure that stays".into(),
+        ),
+        (
+            crate::ui::spinner_glyph(0).to_string(),
+            "the spinner: a host still scanning, or a login step still running".into(),
+        ),
+        (
+            crate::ui::switcher::SELECTED_MARK.into(),
+            "the selected card".into(),
+        ),
+        (
+            "‹ 5 · 7 ›".into(),
+            "cards off screen to each side of a band, on its view border".into(),
+        ),
+        (
+            "┃".into(),
+            "cards off screen in a column: the view border is thick beside the cards shown".into(),
+        ),
+        (
+            "║".into(),
+            "the view border while auto-hide-nav is on".into(),
+        ),
+        (
+            Level::Success.glyph().into(),
+            "a toast reporting success; it leaves after five seconds".into(),
+        ),
+        (
+            Level::Info.glyph().into(),
+            "a toast reporting a fact; it leaves after five seconds".into(),
+        ),
+    ]
+}
+
+/// Every help row, built from the one key table plus the glyph legend. `prefix` is the
+/// configured `[ui] prefix` binding; `nav_position` decides which arrow pair the focus
+/// rows name.
+pub(crate) fn help_rows(
+    prefix: &str,
+    nav_position: crate::ui::switcher::NavPosition,
+) -> Vec<HelpRow> {
+    use crate::model::keys::{Section, TABLE};
+    let mut rows = Vec::new();
+    for section in Section::ALL {
+        rows.push(HelpRow::Head(section.title().to_string()));
+        for entry in TABLE.iter().filter(|e| e.section == section) {
+            rows.push(HelpRow::Key(
+                entry.full_label(prefix, nav_position),
+                entry.help.to_string(),
+            ));
+        }
+    }
+    rows.push(HelpRow::Head(GLYPH_SECTION.to_string()));
+    rows.extend(
+        glyph_legend()
+            .into_iter()
+            .map(|(glyph, meaning)| HelpRow::Key(glyph, meaning)),
+    );
+    rows
+}
+
+/// The rows a search keeps. A key row is kept when its keys or its description contain
+/// the query, ignoring case; a section is kept whole when its head does, and otherwise
+/// keeps its head over the rows of it that matched. An empty query keeps every row.
+pub(crate) fn matching_help_rows(rows: &[HelpRow], query: &str) -> Vec<HelpRow> {
+    let q = query.to_lowercase();
+    if q.is_empty() {
+        return rows.to_vec();
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < rows.len() {
+        let head = &rows[i];
+        let end = rows[i + 1..]
+            .iter()
+            .position(|r| matches!(r, HelpRow::Head(_)))
+            .map_or(rows.len(), |p| i + 1 + p);
+        let body = &rows[i + 1..end];
+        let head_hit = matches!(head, HelpRow::Head(h) if h.to_lowercase().contains(&q));
+        let kept: Vec<HelpRow> = body
+            .iter()
+            .filter(|r| {
+                head_hit
+                    || matches!(r, HelpRow::Key(k, d)
+                        if k.to_lowercase().contains(&q) || d.to_lowercase().contains(&q))
+            })
+            .cloned()
+            .collect();
+        if !kept.is_empty() {
+            out.push(head.clone());
+            out.extend(kept);
+        }
+        i = end;
+    }
+    out
+}
+
+/// The help popup's inner size before any search: the widest row, and the rows plus the
+/// search line. The popup keeps this size while a search narrows what it shows, so typing
+/// never moves its border.
+pub(crate) fn help_size(
+    prefix: &str,
+    nav_position: crate::ui::switcher::NavPosition,
+) -> (u16, u16) {
+    let rows = help_rows(prefix, nav_position);
+    let kw = key_column_width(&rows);
+    let w = rows
+        .iter()
+        .map(|r| match r {
+            HelpRow::Head(h) => UnicodeWidthStr::width(h.as_str()) + 1,
+            HelpRow::Key(_, d) => kw + 4 + UnicodeWidthStr::width(d.as_str()),
+        })
+        .max()
+        .unwrap_or(0);
+    (w as u16, rows.len() as u16 + 1)
+}
+
+fn key_column_width(rows: &[HelpRow]) -> usize {
+    rows.iter()
+        .filter_map(|r| match r {
+            HelpRow::Key(k, _) => Some(UnicodeWidthStr::width(k.as_str())),
+            HelpRow::Head(_) => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// The help modal's `(title, lines)` for a popup with `visible` inner rows: the search
+/// line, then the window of matching rows that starts `scroll` rows down, held so the
+/// last page stays full. tmux mode-tree style: a right-aligned, bold key column, a `│`
+/// rule, then the description. The title says which rows are on screen whenever they
+/// are not all of them.
 pub(crate) fn help_lines(
     prefix: &str,
     nav_position: crate::ui::switcher::NavPosition,
     palette: &palette::Palette,
+    query: &str,
+    scroll: usize,
+    visible: u16,
 ) -> (String, Vec<Line<'static>>) {
-    // tmux mode-tree style: a right-aligned, bold key column, a `│` rule, then
-    // the description. `Head` breaks the flat list into navigation/focus/terminal sections;
-    // `Note` is a description-only row (the mux state has no keys of its own).
-    //
-    // The navigation and terminal sections have no configurable keys so they are static.
-    // The focus section uses `prefix` so the help modal matches the
-    // active binding from config.
-    enum HelpRow {
-        Head(String),
-        Key(String, String),
-        Note(&'static str),
-        Gap,
-    }
-
-    let p = prefix;
-
-    // The focus rows name the arrow PAIR the current placement makes active (the pair
-    // facing the terminal's side names the terminal, so the pair flips with the nav on
-    // the right or below).
-    let (terminal_pair, nav_pair) = if nav_position.forward_arrows_face_terminal() {
-        ("→/↓", "←/↑")
-    } else {
-        ("←/↑", "→/↓")
-    };
-
-    // Tree section - the mutating keys and the filter carry the prefix (bare presses
-    // are inert); navigation stays bare.
-    let rows: Vec<HelpRow> = vec![
-        HelpRow::Head("navigation".into()),
-        HelpRow::Key("↑/↓ · j/k".into(), "move one card".into()),
-        HelpRow::Key(
-            "←/→ · h/l".into(),
-            "previous / next host/mux (host cards as one)".into(),
-        ),
-        HelpRow::Key("PgUp/PgDn".into(), "jump by 10".into()),
-        HelpRow::Key("Home/End".into(), "first / last card".into()),
-        HelpRow::Key(
-            format!("{p} 1-9"),
-            "jump to a session by its number (keep typing for 10+)".into(),
-        ),
-        HelpRow::Key(format!("{p} n"), "new session on the selected host".into()),
-        HelpRow::Key(format!("{p} /"), "fuzzy filter <source>/<name>".into()),
-        HelpRow::Key(format!("{p} r"), "re-scan every host".into()),
-        HelpRow::Key(
-            format!("{p} m"),
-            "history of results and background events".into(),
-        ),
-        HelpRow::Gap,
-        // Focus section - prefix rows built from `prefix`.
-        HelpRow::Head(format!("focus ({p} = prefix)")),
-        HelpRow::Key(
-            format!("Enter · {p} {terminal_pair}"),
-            "focus the terminal".into(),
-        ),
-        HelpRow::Key(
-            format!("{p} Tab"),
-            "toggle focus between nav and terminal".into(),
-        ),
-        HelpRow::Key(format!("{p} {nav_pair}"), "focus the nav".into()),
-        HelpRow::Key(
-            format!("{p} C-←/→"),
-            "resize nav width (side); h/l too. repeats briefly".into(),
-        ),
-        HelpRow::Key(
-            format!("{p} C-↑/↓"),
-            "resize nav height (top/bottom); repeats briefly".into(),
-        ),
-        HelpRow::Key(
-            format!("{p} t"),
-            "toggle auto-hide-nav (║ view border = on)".into(),
-        ),
-        HelpRow::Key(format!("{p} z"), "collapse / expand the nav".into()),
-        HelpRow::Key(
-            format!("{p} p"),
-            "cycle the nav position (left · top · right · bottom · default)".into(),
-        ),
-        HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
-        HelpRow::Key("click a view".into(), "focus that view".into()),
-        HelpRow::Key("click a collapsed nav".into(), "expand the nav".into()),
-        HelpRow::Key(
-            "drag the view border".into(),
-            "resize the nav; past its minimum, collapse it".into(),
-        ),
-        HelpRow::Key(format!("{p} q"), "quit".into()),
-        HelpRow::Key(
-            format!("{p} {p}"),
-            format!("send a literal {p} to the mux (terminal focus)"),
-        ),
-        // Terminal section - no configurable keys; keep as literals.
-        HelpRow::Head("terminal (focused)".into()),
-        HelpRow::Note("keys, scroll & clicks go to the pane"),
-        HelpRow::Note("(the mux needs its own mouse mode on)"),
-    ];
-
-    let kw = rows
-        .iter()
-        .filter_map(|r| match r {
-            HelpRow::Key(k, _) => Some(k.chars().count()),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0);
+    let all = help_rows(prefix, nav_position);
+    let kw = key_column_width(&all);
+    let rows = matching_help_rows(&all, query);
     let bold = palette::interaction_key_style();
     let accent = Style::default().fg(palette.accent);
+    let dim = Style::default().fg(palette.disabled);
     let rule = Span::styled("│ ", Style::default().fg(palette.decoration));
-    let lines: Vec<Line> = rows
-        .into_iter()
-        .map(|r| match r {
-            HelpRow::Gap => Line::from(""),
-            HelpRow::Head(h) => Line::from(Span::styled(
-                format!(" {h}"),
-                accent.add_modifier(Modifier::BOLD),
-            )),
-            HelpRow::Key(k, d) => Line::from(vec![
-                Span::styled(format!(" {k:>kw$} "), bold),
+    let search = if query.is_empty() {
+        Line::from(Span::styled(" type to search", dim))
+    } else {
+        Line::from(vec![
+            Span::styled(" search ", dim),
+            Span::styled(query.to_string(), bold),
+            Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+        ])
+    };
+    let window = (visible as usize).saturating_sub(1);
+    let offset = scroll.min(rows.len().saturating_sub(window));
+    let mut lines = vec![search];
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(" no key or glyph matches", dim)));
+    }
+    lines.extend(rows.iter().skip(offset).take(window).map(|r| match r {
+        HelpRow::Head(h) => Line::from(Span::styled(
+            format!(" {h}"),
+            accent.add_modifier(Modifier::BOLD),
+        )),
+        HelpRow::Key(k, d) => {
+            let pad = kw.saturating_sub(UnicodeWidthStr::width(k.as_str()));
+            Line::from(vec![
+                Span::styled(format!(" {}{k} ", " ".repeat(pad)), bold),
                 rule.clone(),
-                Span::raw(d),
-            ]),
-            HelpRow::Note(n) => Line::from(vec![
-                Span::raw(format!(" {:>kw$} ", "")),
-                rule.clone(),
-                Span::raw(n),
-            ]),
-        })
-        .collect();
-    ("keys".to_string(), lines)
+                Span::raw(d.clone()),
+            ])
+        }
+    }));
+    let title = if rows.len() > window && window > 0 {
+        let last = (offset + window).min(rows.len());
+        format!("keys {}-{last} of {}", offset + 1, rows.len())
+    } else {
+        "keys".to_string()
+    };
+    (title, lines)
 }
 
 /// The hint-bar input line split into its parts: the feature head (the bracketed
@@ -580,49 +652,15 @@ mod tests {
         assert_eq!(k.buffer, "가나");
     }
 
-    #[test]
-    fn modal_help_variant_constructs() {
-        let m = Modal::Help;
-        assert!(matches!(m, Modal::Help));
+    fn help() -> Option<Modal> {
+        Some(Modal::Help {
+            query: String::new(),
+            scroll: 0,
+        })
     }
 
-    #[test]
-    fn help_focus_rows_name_the_arrow_pair_the_placement_makes_active() {
-        // The focus rows read the pair the current placement makes active: at the
-        // default (left) placement →/↓ name the terminal and ←/↑ the nav; pinned right
-        // the whole pair flips.
-        let flat = |lines: &[Line<'static>]| -> String {
-            lines
-                .iter()
-                .map(|l| {
-                    l.spans
-                        .iter()
-                        .map(|s| s.content.as_ref())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let palette = palette::Palette::default();
-        let (t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Left, &palette);
-        assert_eq!(t, "keys");
-        let left = flat(&lines);
-        assert!(left.contains("Enter · C-g →/↓"), "{left}");
-        assert!(left.contains("C-g →/↓"), "{left}");
-        assert!(left.contains("C-g ←/↑"), "{left}");
-        let (_t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Right, &palette);
-        let right = flat(&lines);
-        assert!(right.contains("Enter · C-g ←/↑"), "{right}");
-        assert!(right.contains("C-g ←/↑"), "{right}");
-        assert!(right.contains("C-g →/↓"), "{right}");
-    }
-
-    #[test]
-    fn help_lists_the_position_cycle() {
-        // The `prefix p` row: the cycle order, with "auto" as the fifth stop.
-        let palette = palette::Palette::default();
-        let (_t, lines) = help_lines("C-g", crate::ui::switcher::NavPosition::Left, &palette);
-        let all = lines
+    fn flat(lines: &[Line<'static>]) -> String {
+        lines
             .iter()
             .map(|l| {
                 l.spans
@@ -630,46 +668,184 @@ mod tests {
                     .map(|s| s.content.as_ref())
                     .collect::<String>()
             })
-            .collect::<String>();
-        assert!(all.contains("C-g p"), "{all}");
-        assert!(
-            all.contains("cycle the nav position"),
-            "the row says what the key does: {all}"
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn help_focus_rows_name_the_arrow_pair_the_placement_makes_active() {
+        // The focus rows read the pair the current placement makes active: at the
+        // default (left) placement →/↓ name the terminal and ←/↑ the nav; pinned right
+        // the whole pair flips.
+        let palette = palette::Palette::default();
+        let rows = |position| help_rows("C-g", position);
+        let row = |rows: &[HelpRow], what: &str| {
+            rows.iter()
+                .find_map(|r| match r {
+                    HelpRow::Key(k, d) if d.starts_with(what) => Some(k.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let left = rows(crate::ui::switcher::NavPosition::Left);
+        assert_eq!(row(&left, "focus the terminal ("), "C-g →/↓");
+        assert_eq!(row(&left, "focus the nav"), "C-g ←/↑");
+        let right = rows(crate::ui::switcher::NavPosition::Right);
+        assert_eq!(row(&right, "focus the terminal ("), "C-g ←/↑");
+        assert_eq!(row(&right, "focus the nav"), "C-g →/↓");
+        let (t, _) = help_lines(
+            "C-g",
+            crate::ui::switcher::NavPosition::Left,
+            &palette,
+            "",
+            0,
+            200,
         );
-        assert!(all.contains("auto"), "the cycle names its auto stop: {all}");
+        assert_eq!(t, "keys", "every row fits, so the title names no range");
+    }
+
+    #[test]
+    fn help_is_built_from_every_key_table_entry_and_the_glyph_legend() {
+        let rows = help_rows("C-b", crate::ui::switcher::NavPosition::Left);
+        for entry in crate::model::keys::TABLE {
+            let label = entry.full_label("C-b", crate::ui::switcher::NavPosition::Left);
+            assert!(
+                rows.contains(&HelpRow::Key(label.clone(), entry.help.to_string())),
+                "the help lists {label:?}"
+            );
+        }
+        assert!(
+            rows.contains(&HelpRow::Key(
+                "C-b C-b".into(),
+                crate::model::keys::TABLE
+                    .iter()
+                    .find(|e| e.label.is_empty()
+                        && !matches!(e.keys, crate::model::keys::Keys::PrefixArrows { .. }))
+                    .unwrap()
+                    .help
+                    .into()
+            )),
+            "the literal prefix row writes the configured prefix twice"
+        );
+        let glyphs: Vec<&str> = rows
+            .iter()
+            .skip_while(|r| **r != HelpRow::Head(GLYPH_SECTION.into()))
+            .filter_map(|r| match r {
+                HelpRow::Key(k, _) => Some(k.as_str()),
+                HelpRow::Head(_) => None,
+            })
+            .collect();
+        for glyph in ["?", "▲", "✗", "⠋", "❯", "‹ 5 · 7 ›", "┃", "║", "✓", "·"]
+        {
+            assert!(
+                glyphs.contains(&glyph),
+                "the legend explains {glyph}: {glyphs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_help_search_keeps_the_matching_rows_under_their_heads() {
+        let rows = help_rows("C-g", crate::ui::switcher::NavPosition::Left);
+        let hit = matching_help_rows(&rows, "QUIT");
+        assert_eq!(
+            hit,
+            vec![
+                HelpRow::Head("app".into()),
+                HelpRow::Key("C-g q".into(), "quit xmux".into())
+            ],
+            "case is ignored and only the matching row stays, under its head"
+        );
+        let glyphs = matching_help_rows(&rows, "glyph");
+        assert!(
+            glyphs.len() > 5 && glyphs[0] == HelpRow::Head("glyphs".into()),
+            "a matching head keeps its whole section: {glyphs:?}"
+        );
+        let toast = matching_help_rows(&rows, "toast");
+        assert!(
+            toast
+                .iter()
+                .any(|r| matches!(r, HelpRow::Key(k, _) if k == "✓"))
+                && toast
+                    .iter()
+                    .any(|r| matches!(r, HelpRow::Key(k, _) if k == "click a toast")),
+            "a search crosses sections: {toast:?}"
+        );
+        assert!(matching_help_rows(&rows, "zzzz").is_empty());
+        let palette = palette::Palette::default();
+        let (_, lines) = help_lines(
+            "C-g",
+            crate::ui::switcher::NavPosition::Left,
+            &palette,
+            "zzzz",
+            0,
+            20,
+        );
+        let text = flat(&lines);
+        assert!(text.contains("search zzzz"), "{text}");
+        assert!(text.contains("no key or glyph matches"), "{text}");
+    }
+
+    #[test]
+    fn the_help_scrolls_and_holds_its_last_page_full() {
+        let palette = palette::Palette::default();
+        let pos = crate::ui::switcher::NavPosition::Left;
+        let total = help_rows("C-g", pos).len();
+        let (title, lines) = help_lines("C-g", pos, &palette, "", 0, 11);
+        assert_eq!(lines.len(), 11, "the search line and ten rows");
+        assert_eq!(title, format!("keys 1-10 of {total}"));
+        assert!(flat(&lines).contains("move (nav focus)"));
+        let (title, lines) = help_lines("C-g", pos, &palette, "", 5, 11);
+        assert_eq!(title, format!("keys 6-15 of {total}"));
+        assert!(!flat(&lines).contains("move (nav focus)"), "scrolled past");
+        let (title, lines) = help_lines("C-g", pos, &palette, "", usize::MAX, 11);
+        assert_eq!(
+            title,
+            format!("keys {}-{total} of {total}", total - 9),
+            "a scroll past the end shows the last full page"
+        );
+        assert!(
+            flat(&lines).contains("five seconds"),
+            "the legend's last row"
+        );
     }
 
     #[test]
     fn modal_kind_classifies_every_modal_as_a_popup() {
         use crate::app::focus::ModalKind;
         assert_eq!(modal_kind(&None), None);
-        assert_eq!(modal_kind(&Some(Modal::Help)), Some(ModalKind::Popup));
-        assert!(is_popup_open(&Some(Modal::Help)));
+        assert_eq!(modal_kind(&help()), Some(ModalKind::Popup));
+        assert!(is_popup_open(&help()));
         assert!(!is_popup_open(&None));
     }
 
     #[test]
-    fn help_feed_consumes_and_closes_on_q_or_esc() {
-        // tmux view-mode style: while open, every key is consumed; q/Esc closes, the
-        // rest are swallowed; while closed, nothing is consumed (falls through).
+    fn help_feed_types_a_search_scrolls_and_closes_on_esc() {
         let mut m: Option<Modal> = None;
         assert!(!feed_reader(&mut m, b"q"), "closed → not consumed");
 
-        m = Some(Modal::Help);
-        assert!(feed_reader(&mut m, b"j"), "open → consumed");
+        m = help();
+        assert!(feed_reader(&mut m, b"qu"), "open → consumed");
         assert!(
-            matches!(m, Some(Modal::Help)),
-            "a non-close key is swallowed but keeps help open"
+            matches!(&m, Some(Modal::Help { query, .. }) if query == "qu"),
+            "printable keys type the search, q included"
         );
+        assert!(feed_reader(&mut m, b"\x7f"));
+        assert!(matches!(&m, Some(Modal::Help { query, .. }) if query == "q"));
+        assert!(feed_reader(&mut m, b"\x1b[B\x1b[B\x1b[6~"));
         assert!(
-            feed_reader(&mut m, b"\x1b[A"),
-            "an arrow (ESC [) is swallowed, not a close"
+            matches!(&m, Some(Modal::Help { scroll: 12, .. })),
+            "↓ scrolls one row and PgDn ten"
         );
-        assert!(matches!(m, Some(Modal::Help)), "arrow keeps help open");
-        assert!(feed_reader(&mut m, b"q"), "q → consumed");
-        assert!(m.is_none(), "q closes help");
-
-        m = Some(Modal::Help);
+        assert!(feed_reader(&mut m, b"\x1b[A"));
+        assert!(matches!(&m, Some(Modal::Help { scroll: 11, .. })));
+        assert!(feed_reader(&mut m, b"x"));
+        assert!(
+            matches!(&m, Some(Modal::Help { scroll: 0, .. })),
+            "a new search starts at the top of what it matches"
+        );
+        assert!(feed_reader(&mut m, b"\x15"));
+        assert!(matches!(&m, Some(Modal::Help { query, .. }) if query.is_empty()));
         assert!(feed_reader(&mut m, b"\x1b"), "lone Esc → consumed");
         assert!(m.is_none(), "Esc closes help");
     }

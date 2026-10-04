@@ -54,6 +54,23 @@ pub struct SourceReach {
 /// twice over.
 pub(crate) const FLASH_TTL: Duration = Duration::from_secs(10);
 
+/// How long the hint after a selection move stays up with nothing pressed. Long enough to
+/// read a key and a fact, short enough that the resting indicator is back before the next
+/// glance.
+pub(crate) const SELECTION_HINT_TTL: Duration = Duration::from_secs(3);
+
+/// One key a hint offers: its keys as written, its full description, and its short one.
+pub(crate) type HintKey = (String, String, String);
+
+/// What the hint bar says about the card the selection just moved to: its most relevant
+/// keys and one fact about it, each already in words, until `until`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SelectionHint {
+    pub(crate) keys: Vec<HintKey>,
+    pub(crate) fact: String,
+    pub(crate) until: Instant,
+}
+
 /// Runtime-owned chrome data read by border, hint bar, and host-screen rendering.
 pub struct Chrome {
     /// A refused key's reason, shown in the hint bar until the next key or its own life
@@ -61,6 +78,8 @@ pub struct Chrome {
     pub(crate) flash: String,
     /// When the flash stops showing itself, or `None` when nothing is flashing.
     pub(crate) flash_until: Option<Instant>,
+    /// The hint about the card the selection moved to, while it lasts.
+    pub(crate) selection_hint: Option<SelectionHint>,
     /// Auto-hide-tree mode (set by the app each frame). Drives the view border glyph:
     /// ║ (double) when on, │ (single) when off - the only on-screen cue, since while
     /// the mode is on but the tree is focused the tree still shows.
@@ -91,13 +110,13 @@ pub struct Chrome {
     pub(crate) ui_prefix: String,
     /// True while the prefix has been pressed and the app is waiting for the command
     /// key (set by the app each frame from the live input state, in either focus). The
-    /// resting hint bar shows the prefix alone until this flips, then the
-    /// floating bar shows the keys it unlocks. The cheatsheet appears exactly when it is
-    /// needed and never competes with the cards for room.
+    /// indicator shows the prefix alone either way; while this is set the prefix key list
+    /// opens beside it, so the keys appear exactly when they are needed and never compete
+    /// with the cards for room.
     pub(crate) armed: bool,
     /// The side the nav is attached to this frame (set by the app each frame from the
-    /// runtime's resolved position). The cheatsheet's focus segment names the arrow
-    /// pair the placement makes active.
+    /// runtime's resolved position). The key list's focus rows name the arrow pair the
+    /// placement makes active.
     pub(crate) nav_position: crate::model::NavPosition,
     /// The view border colours resolved from the active palette and configuration.
     pub(crate) colors: ViewBorderColors,
@@ -130,6 +149,30 @@ impl Chrome {
             }
             _ => false,
         }
+    }
+
+    /// Shows the hint about the card the selection just moved to, replacing any earlier
+    /// one, for [`SELECTION_HINT_TTL`] from `now`.
+    pub(crate) fn show_selection_hint(&mut self, keys: Vec<HintKey>, fact: String, now: Instant) {
+        self.selection_hint = Some(SelectionHint {
+            keys,
+            fact,
+            until: now + SELECTION_HINT_TTL,
+        });
+    }
+
+    /// Takes the selection hint down, however its life ended.
+    pub(crate) fn clear_selection_hint(&mut self) {
+        self.selection_hint = None;
+    }
+
+    /// Drops a selection hint whose time is up, and says whether the bar changed.
+    pub(crate) fn expire_selection_hint(&mut self, now: Instant) -> bool {
+        if self.selection_hint.as_ref().is_some_and(|h| now >= h.until) {
+            self.selection_hint = None;
+            return true;
+        }
+        false
     }
 
     /// Replaces the set of session addresses currently connecting / awaiting
@@ -169,14 +212,14 @@ impl Chrome {
     }
 
     /// Sets whether the prefix is armed (pressed, awaiting its command key). The app
-    /// calls this each frame from the live input state; the hint bar reads it to swap
-    /// between the resting prefix indicator and the unlocked-keys cheatsheet.
+    /// calls this each frame from the live input state; while it is set the prefix key
+    /// list opens beside the indicator.
     pub(crate) fn set_armed(&mut self, armed: bool) {
         self.armed = armed;
     }
 
     /// Sets the nav's attachment side. The app calls this each frame from the runtime's
-    /// resolved position; the cheatsheet reads it to name the active arrow pair.
+    /// resolved position; the key list and the help read it to name the active arrow pair.
     pub(crate) fn set_nav_position(&mut self, position: crate::model::NavPosition) {
         self.nav_position = position;
     }

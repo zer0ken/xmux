@@ -29,7 +29,7 @@ and exposes the transitions the app and the state fold through. It is UI state,
 not display mechanics: it decides where input is routed, not how a PTY is pumped
 or a grid is rendered.
 
-The input path keeps ONE prefix-interaction signal that both the hint bar and the
+The input path keeps ONE prefix-interaction signal that both the prefix key list and the
 auto-hide nav width read: ready, meaning a prefix interaction is live. A prefix key
 sets it; it clears when the FUNCTION the prefix started ends, or on a focus switch /
 mouse action (a cancel). Most functions end with their command key, so ready usually
@@ -75,7 +75,9 @@ the card numbers it needs.
   machine after a newer login.
 - Input routing has a pure, stateless core (key resolution, mouse chains, the
   predicates, the input outcome types); the stateful handlers are runtime methods
-  that call into it. The prefix is tracked as ready (an interaction is live): the end
+  that call into it. A prefix command in either focus is resolved through the model's
+  one key table, so neither path binds a key the table does not name and every key the
+  table names does what it says in both. The prefix is tracked as ready (an interaction is live): the end
   of the function it started, or a focus switch / mouse action (a cancel), clears it.
 - Domain state owns focus and modal values plus their reducers. The application
   update transition is the only caller that mutates them during a running app.
@@ -141,7 +143,7 @@ the card numbers it needs.
   is the only wake for a toast that leaves or counts down and for the open history's ages,
   so the loop repaints on it while either moves.
 - The effective nav width is reconciled at the loop top against the one prefix-interaction
-  signal the hint bar also reads, so a held prefix cannot make the nav and the bar
+  signal the key list also reads, so a held prefix cannot make the nav and the list
   disagree. The band height comes from the resize keys and border drags, and the nav's
   attachment side is resolved at the loop top from the settings and the `prefix p` pin;
   the loop-top reconcile resizes the mux terminals and repaints when any dimension moves.

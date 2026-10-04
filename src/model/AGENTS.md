@@ -40,6 +40,10 @@ source add) that remain after update folds an inbound source event into the mode
   keeps its allocation bounded, redacts debug output, and zeroes its storage.
 - The HOST axis lives in `src/transport`, not here; a source holds one transport
   from it.
+- The key table is the one list of every key xmux binds and the words that name it:
+  its section, its keys, a help description, a full and a short key list description,
+  and how readily the key list gives it up. It names what each prefix chord does
+  independent of focus; each focus path turns that into its own input action.
 - Source state and source collections store per-source domain state. A source
   carries no control client, no display-key derivation, and no attach or reap plan:
   the live control client belongs to the source manager, the live warm and reap to

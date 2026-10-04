@@ -62,9 +62,18 @@ pub(crate) fn collapsed_nav_width(ui_prefix: &str) -> u16 {
 }
 
 /// Whether the hint bar floats over the whole window instead of resting at the nav's
-/// prefix indicator.
+/// prefix indicator: for an input line, a refusal, and the hint after a selection move.
+/// A live prefix does not float the bar: its keys open in the key list instead.
 pub(crate) fn hint_bar_floats(state: &crate::state::State) -> bool {
-    state.is_inputting() || state.chrome.armed || !state.chrome.flash.is_empty()
+    state.is_inputting()
+        || !state.chrome.flash.is_empty()
+        || (state.chrome.selection_hint.is_some() && !state.chrome.armed)
+}
+
+/// Whether the prefix key list is open: a live prefix that no input line or refusal
+/// outranks.
+pub(crate) fn key_list_open(state: &crate::state::State) -> bool {
+    state.chrome.armed && !state.is_inputting() && state.chrome.flash.is_empty()
 }
 
 /// The auto band-layout tree height for a body of `body_rows` rows (before the hint bar row
@@ -328,7 +337,6 @@ mod mouse;
 mod render;
 #[cfg(test)]
 pub(crate) use render::MIDDLE_ELLIPSIS;
-#[cfg(test)]
 pub(crate) use render::SELECTED_MARK;
 mod side;
 
@@ -692,6 +700,90 @@ impl Switcher {
 
     fn current_ref(&self) -> Option<&RowRef> {
         self.rows.get(self.selected).map(|r| &r.reference)
+    }
+
+    /// The card the selection is on, as an identity a later look can compare with: the
+    /// same card across a rebuild that moved its row.
+    pub(crate) fn selected_card(&self) -> Option<RowRef> {
+        self.current_ref().cloned()
+    }
+
+    /// Whether the selection is on a different card than `before`.
+    pub(crate) fn selection_moved_from(&self, before: &Option<RowRef>) -> bool {
+        match (before, self.current_ref()) {
+            (Some(a), Some(b)) => !same_node(a, b),
+            (None, None) => false,
+            _ => true,
+        }
+    }
+
+    /// What the hint bar offers about the selected card after a selection move: its most
+    /// relevant keys, read from the key table, and one fact about it. A session offers its terminal and a sibling
+    /// session and states its windows; a settled host offers the screen that explains it
+    /// (or a new session when it is empty) and a re-scan, and states its state word with
+    /// the reason behind it; a host still scanning offers the filter and says so.
+    pub(crate) fn selection_hint(
+        &self,
+        state: &crate::state::State,
+    ) -> Option<(Vec<crate::state::chrome::HintKey>, String)> {
+        use crate::model::keys::{entry_for, KeyCommand};
+        let (commands, fact): (&[KeyCommand], String) = match self.current_ref()? {
+            RowRef::Section { .. } => return None,
+            RowRef::Session { sess } => {
+                let mut facts = Vec::new();
+                if sess.windows > 0 {
+                    let s = if sess.windows == 1 { "" } else { "s" };
+                    facts.push(format!("{} window{s}", sess.windows));
+                }
+                if sess.attached {
+                    facts.push("attached".to_string());
+                }
+                (
+                    &[KeyCommand::FocusTerminal, KeyCommand::NewSession],
+                    facts.join(", "),
+                )
+            }
+            RowRef::Host { scanning: true, .. } => (&[KeyCommand::Filter], "scanning".into()),
+            RowRef::Host {
+                source,
+                unreachable,
+                blocked,
+                list_failed,
+                ..
+            } => {
+                let word = tree::host_state_word(false, *blocked, *list_failed, *unreachable);
+                let reason = state
+                    .groups
+                    .iter()
+                    .find(|g| &g.source == source)
+                    .and_then(|g| g.err.as_deref())
+                    .and_then(|e| e.lines().map(str::trim).find(|l| !l.is_empty()))
+                    .unwrap_or_default();
+                let commands: &[KeyCommand] = if *unreachable || *blocked || *list_failed {
+                    &[KeyCommand::FocusTerminal, KeyCommand::Rescan]
+                } else {
+                    &[KeyCommand::NewSession, KeyCommand::Rescan]
+                };
+                let fact = if reason.is_empty() {
+                    word.to_string()
+                } else {
+                    format!("{word}: {reason}")
+                };
+                (commands, fact)
+            }
+        };
+        let keys = commands
+            .iter()
+            .filter_map(|c| entry_for(*c))
+            .map(|e| {
+                (
+                    e.full_label(&state.chrome.ui_prefix, state.chrome.nav_position),
+                    e.long.to_string(),
+                    e.short.to_string(),
+                )
+            })
+            .collect();
+        Some((keys, fact))
     }
 
     pub(crate) fn current_source(&self) -> Option<String> {

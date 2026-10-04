@@ -78,14 +78,32 @@ UI elements a user perceives as distinct things:
 - hint bar - the nav's prefix indicator: a label on the bottom row of a side column's
   nav region, and at the right end of the view border row in a band, so the terminal
   view keeps every row it owns and every band row holds cards. At rest it shows the
-  prefix alone; while a prefix interaction is
-  live (the prefix ready, or its key still held) it shows the keys that interaction
-  unlocks. A flash, the scan indicator, and the active filter outrank both, in that
-  order. A live prefix or a flash floats away from the indicator toward the terminal view
-  while the indicator keeps the prefix: across the terminal view's columns beside a side
-  column, below a top band's seam, above a bottom band's seam, and over the window's
-  bottom rows when the nav is hidden. It wraps instead of clipping. A flash paints the bar
-  in the error style with a `✗` mark.
+  prefix alone, and it keeps the prefix alone while a prefix interaction is live, since
+  the key list beside it names the keys. It shows one thing at a time, in order: a flash,
+  an input line, the prefix while the key list is open, the selection hint, the scan
+  indicator, the active filter, then the resting prefix. An input line, a flash, and the
+  selection hint float away from the indicator toward the terminal view while the
+  indicator keeps the prefix: across the terminal view's columns beside a side column,
+  below a top band's seam, above a bottom band's seam, and over the window's bottom rows
+  when the nav is hidden. It wraps instead of clipping. A flash paints the bar in the
+  error style with a `✗` mark.
+- key table - the one table of every key xmux binds, with the words that name each key.
+  Both focus paths resolve a prefix command through it, and the help, the key list, and
+  the selection hint are built from it, so what a surface says a key does and what the
+  key does cannot drift apart.
+- key list - the rounded box a live prefix opens at once from the prefix indicator
+  toward the terminal view (beside a side column against the indicator's row, under a
+  top band's seam or over a bottom band's seam at its right end, over the window's bottom
+  left when the nav is hidden; the window's whole width when the terminal view beside a
+  side column is too narrow for a box), titled with the prefix and naming every prefix key
+  under its section title, in as many columns as that room holds. When the keys do not fit it
+  first shortens every description, then gives up the keys needed least behind
+  `+N more`; it never shows a key without its name. The xmux version sits on its bottom
+  border.
+- selection hint - what the hint bar says for three seconds after the user moves the
+  selection: the selected card's most relevant keys and one fact about it (a session's
+  windows, a host's state word and the reason behind it). Any key ends it and the next
+  move replaces it. A selection xmux was told to make raises none.
 - view screen - what fills the terminal-view region in place of a mux, for a selection
   with no grid to show there. Where a card states the selection's STATE, the screen
   states WHY: it is the one surface with the room to hold a tool's diagnostic whole.
@@ -263,10 +281,11 @@ UI elements a user perceives as distinct things:
   screen: `‹ 5` at the left end and `7 ›` before the prefix at the right. Cards, not
   columns, because the reader is hunting a session, not a column. They cost no row and
   say what a thumb cannot: which way the cards went, and how many. A click on one selects
-  the hidden card nearest the visible ones. An ARMED bar covers the row, counts included,
-  since a cheatsheet has to be readable over what it covers.
-- status row fill - how much of its row the hint bar paints. A ready bar and a refusal
-  fill the ROW: a solid bar, legible over whatever it covers. The resting prefix
+  the hidden card nearest the visible ones. The key list opens off the seam row and
+  leaves the counts readable.
+- status row fill - how much of its row the hint bar paints. A floating bar (an input
+  line, a refusal, a selection hint) fills the ROW: a solid bar, legible over whatever it
+  covers. The resting prefix
   indicator paints its text plus a cell of padding and stops, leaving the rest of its row
   to the nav or the view border.
 - spinner - the braille activity glyph marking the work still in flight. One
@@ -505,13 +524,13 @@ UI elements a user perceives as distinct things:
   the already-focused view); an input row's function ends when Enter or Esc closes
   the row; a resize's function ends when its repeat window lapses. A second prefix
   is the doubled-prefix command (one literal prefix byte reaches the pane). The
-  hint bar reads ready to swap from the resting prefix to the cheatsheet, so
-  becoming ready is a visible change and redraws the frame; the bar hides the
-  moment ready clears.
+  key list reads ready to open beside the prefix indicator, so becoming ready is a
+  visible change and redraws the frame; the list closes the moment ready clears.
 - popup - the rounded-bordered, opaque, centered (draggable) dialog a popup modal
   draws, its accent title in the top border. The help and the history are popups; an
   input renders in the hint bar instead, reading `[feature] guide: <buffer>` with a
-  reversed-block caret at the edit position.
+  reversed-block caret at the edit position. The help lists the key table section by
+  section and then the glyph legend, searched by typing and scrolled by the arrows.
 
 A zellij TAB is a `window` and a zellij SESSION is a `session`: xmux uses
 one set of words for every mux, so a mux's own naming is translated at its implementation
@@ -531,13 +550,14 @@ the function it started ends:
 | a focus switch or a mouse action | clear (canceled) |
 | a second prefix (terminal view) | clear, one literal prefix byte to the pane |
 
-The hint bar and the auto-hide nav show for the whole time ready is set. Because
-ready spans the function rather than the keystroke, the bar stays up across a
-resize burst and across typing into an input row, and drops once by itself.
+The key list and the auto-hide nav show for the whole time ready is set, the key list
+giving way to the input line while an input row is open. Because ready spans the
+function rather than the keystroke, the list stays up across a resize burst, and it
+closes once by itself.
 
 A terminal reports no key-up, so a held prefix's autorepeat is byte-identical to
 repeated taps and takes the doubled-prefix path: it streams literals to the pane
-and blinks the hint bar. That is accepted rather than fixed; reading a key-up would
+and blinks the key list. That is accepted rather than fixed; reading a key-up would
 mean depending on the kitty keyboard protocol, which every terminal and every
 enclosing mux in the chain would have to pass through.
 
@@ -614,7 +634,9 @@ with a middle ellipsis rather than displacing state or navigation cells.
 An interaction surface spends the available space on state words, counts, the next
 key, and complete reasons or solutions. The selected card names its state, an open
 filter names total matches and matches from hidden hosts, and a host screen keeps the
-failure reason whole.
+failure reason whole. A live prefix names every key it unlocks, and a selection move names
+the selected card's next keys and its state for three seconds; both read the one key table,
+and the help adds the glyph legend.
 
 ### Four-Position Grammar
 

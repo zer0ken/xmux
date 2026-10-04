@@ -130,7 +130,7 @@ nav or the terminal view holds focus.
 | Chord | Action |
 |---|---|
 | `prefix q` | quit xmux (the only quit binding) |
-| `prefix ?` | toggle the keybinding help |
+| `prefix ?` | toggle the help: every key and glyph, searchable |
 | `prefix m` | toggle the history of results and background events |
 | `prefix t` | toggle auto-hide-nav (focusing the screen then gives it the full width) |
 | `prefix z` | collapse or expand the nav |
@@ -163,38 +163,56 @@ column) or the view border's (a band, where the offscreen-card counts share the 
 Cards off screen are shown on the view border too: a column thickens the stretch beside
 the cards on screen to `┃`, and a band writes `‹ 5` at its left end and `7 ›` before the
 prefix, counting the cards scrolled off each side.
-Press the prefix and the list of keys that prefix unlocks opens from the indicator toward
-the terminal view, while the indicator keeps the prefix: beside a left or right column it
-covers the terminal view's columns on the indicator's row, below a top band's seam it takes
-the row under the seam, and above a bottom band's seam the row over it. The list floats over
-the terminal view and closes when the function it started ends, or when the prefix is
-canceled (a focus switch or any mouse action: a click, a wheel, a drag - a prefix waits for
-the next input, whatever that turns out to be). The xmux version sits at the list's far
-end whenever the keys fit beside it.
+Press the prefix and the key list opens at once: a rounded box titled with the prefix,
+naming every key the prefix unlocks under four section titles (navigate, sessions, view,
+app), in as many columns as the room beside the indicator holds. It opens from the
+indicator toward the terminal view while the indicator keeps the prefix: beside a left
+column it rises from the indicator's row at the terminal view's left edge, beside a right
+column at the terminal view's right edge, below a top band's seam it hangs under the
+seam's right end, and above a bottom band's seam it stands over the seam's right end. A
+terminal view too narrow beside a side column for a box lends the box the window's whole
+width, against the same corner. When the keys do not fit, the box first shortens every description, then gives up the keys
+needed least and counts them as `+N more`; a key is never shown without its name, and the
+jump, help, and quit keys are never given up. The box floats over the terminal view and
+closes when the function the prefix started ends, or when the prefix is canceled (a focus
+switch or any mouse action: a click, a wheel, a drag - a prefix waits for the next input,
+whatever that turns out to be). The xmux version sits on its bottom border.
 
-Most keys end their function as they run, so the bar closes with the keystroke. Two
-kinds run longer and keep the bar up for as long as they last: a key that opens an
-input row holds it until Enter or Esc closes the row, and a resize holds it until the
-repeat window lapses, so a whole Ctrl+arrow burst reads as one interaction.
+Most keys end their function as they run, so the box closes with the keystroke. Two kinds
+run longer and keep it up for as long as they last: a key that opens an input row holds
+it until Enter or Esc closes the row (the input line takes the hint bar meanwhile), and a
+resize holds it until the repeat window lapses, so a whole Ctrl+arrow burst reads as one
+interaction.
 
 A second prefix is `prefix prefix` (above): one literal prefix byte reaches the pane.
 Holding the prefix down takes the same path, because a terminal sends no key-up and
 an autorepeat is byte-identical to repeated taps: the pane collects literals and the
-bar blinks until the key comes up.
+box blinks until the key comes up.
 
 Only the paint moves, never the layout, so arming the prefix never shifts a card.
+
+For three seconds after you move the selection, the hint bar opens from the indicator the
+same way and names the selected card's most relevant keys and one fact about it: a session
+offers `Enter` and `prefix n` and states its windows, a host that failed offers `Enter`
+(its screen) and `prefix r` and states its state word with the reason behind it, an empty
+host offers `prefix n` and `prefix r`, and a scanning host offers `prefix /`. Any key ends
+it at once, and the next move replaces it. A narrow bar shortens the descriptions first,
+then drops the reason, then the later keys. A selection xmux was told to make (a ctl
+`switch`, the nav following the mux) raises no hint.
 
 With the nav auto-hidden the mux owns every row, prefix indicator included, until a prefix
 interaction starts: then the nav comes back for the moment it is needed, so a jump can
 read the card numbers, and it hides again when the interaction ends. With no indicator on
-screen, the bar floats over the bottom of the window for the two things that must be seen
-the moment they happen: a live prefix, and a refusal. A refusal is the reason a key did
-nothing (a jump number no card carries, a new session on an unreachable host); it opens
-where the key list does, in the error colour, wraps instead of clipping, and goes away on
-the next key or after ten seconds. Scan progress and the active filter persist, so they
-stay in the nav and never take a row back from a hidden one. Four states outrank the
-prefix while they apply, in order: a refusal, the scan progress, the active filter, and
-then the resting prefix.
+screen, the key list opens over the window's bottom left, and the bar floats over the
+bottom of the window for what must be seen the moment it happens: an input line, a
+refusal, and the hint after a selection move. A refusal is the reason a key did nothing (a
+jump number no card carries, a new session on an unreachable host); it opens where the
+hint after a selection move does, in the error colour, wraps instead of clipping, and goes
+away on the next key or after ten seconds. Scan progress and the active filter persist,
+so they stay in the nav and never take a row back from a hidden one. The bar shows one
+thing at a time, in order: a refusal, an input line, the prefix alone while the key list
+is open, the hint after a selection move, the scan progress, the active filter, and then
+the resting prefix.
 
 ## Focus
 
@@ -221,8 +239,16 @@ forwarded raw to the session's active pane, so programs running inside the mux
 
 ## Modals
 
-- **Help** (`prefix ?`): a scrollless key reference. `q`, `Esc`, or `prefix ?` closes
-  it; any other key is swallowed while it is open.
+- **Help** (`prefix ?`): every key, section by section, from the same table the key list
+  and the hint after a selection move are built from, then a glyph legend: the host
+  states `?`, `▲`, and `✗`, the spinner, the selection mark `❯`, the overflow cues `‹ ›`
+  and `┃`, the auto-hide border `║`, and the toast levels. Typing searches it: each
+  printable key narrows the rows to those whose keys or description contain the query
+  (ignoring case), keeping each match under its section title, and a section title that
+  matches keeps its whole section. `Backspace` shortens the query and `Ctrl-U` clears it.
+  `↑`/`↓` scroll one row, `PgUp`/`PgDn` ten, and `Home`/`End` jump to either end; the
+  title names the rows on screen whenever they are not all of them. `Esc` or `prefix ?`
+  closes it, and any other key is swallowed while it is open.
 - **History** (`prefix m`): every result and background event, newest first, each with
   how long ago it happened. `↑`/`↓` (or `k`/`j`) scroll one record and `PgUp`/`PgDn`
   ten; `q`, `Esc`, or `prefix m` closes it, and any other key is swallowed while it is

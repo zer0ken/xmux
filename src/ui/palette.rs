@@ -66,7 +66,7 @@ pub(crate) struct Palette {
     /// The hint bar's text, and the text of the refusal bar. Paired with `bar_bg`, so
     /// the two are legible together in any theme that keeps its own slots legible.
     pub bar_fg: Color,
-    /// The hint bar's KEY accent - the prefix and each key token in the cheatsheet.
+    /// The hint bar's KEY accent - the prefix and each key token the bar names.
     /// Split from [`accent`](Self::accent) because the bar sits on `bar_bg` (a
     /// different surface than the cards), so the slot that reads on one may not read
     /// on the other: a light theme's dark `accent` is invisible on a dark bar.

@@ -7,10 +7,11 @@
 //! are unit-testable in isolation; the stateful handlers in `runtime.rs` thread the
 //! runtime's world and call into this core.
 
-use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::crossterm::event::KeyCode;
 
 use crate::app::model::{nav_width_min, NAV_HEIGHT_MAX, NAV_HEIGHT_MIN, NAV_WIDTH_MAX};
 use crate::display::dispatch::Action;
+use crate::model::keys::{prefix_command, Chord, KeyCommand};
 
 /// The nav width a view border drag to 1-based screen column `col` sets, capped at the
 /// max, or `None` when the drag is narrower than the expanded nav's minimum, which
@@ -173,51 +174,12 @@ pub(crate) fn resolve_nav_key(
     }
     if *armed {
         // Any key while ready CONSUMES the prefix (even a no-op like focusing the
-        // already-focused view): ready clears, the bar hides.
+        // already-focused view): ready clears, the bar hides. What the key runs is read
+        // from the one key table, so this path, the terminal path, and every surface that
+        // names a key cannot disagree.
         *armed = false;
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        return match key.code {
-            KeyCode::Char('q') => Some(Action::Quit),
-            KeyCode::Left if ctrl => Some(Action::Width(-1)),
-            KeyCode::Right if ctrl => Some(Action::Width(1)),
-            KeyCode::Char('h') => Some(Action::Width(-1)),
-            KeyCode::Char('l') => Some(Action::Width(1)),
-            // prefix Ctrl+↑/↓ step the nav HEIGHT (the vertical axis, band layout); the delta
-            // is the key's screen direction, and the placement turns it into grow or shrink.
-            KeyCode::Up if ctrl => Some(Action::Height(-1)),
-            KeyCode::Down if ctrl => Some(Action::Height(1)),
-            KeyCode::Char('t') => Some(Action::ToggleAutoHide),
-            KeyCode::Char('z') => Some(Action::ToggleCollapse),
-            KeyCode::Char('p') => Some(Action::CycleNavPosition),
-            KeyCode::Char('?') => Some(Action::ShowHelp),
-            KeyCode::Char('m') => Some(Action::ShowHistory),
-            // The arrow PAIR facing the terminal's side names the terminal: with the nav
-            // on the left or above, prefix → and prefix ↓ both focus the terminal; with
-            // the nav on the right or below the pair flips and ←/↑ name it. The other
-            // pair names the nav, which already has focus here, so it resolves to
-            // nothing. prefix Tab cycles regardless, mirroring the terminal side's
-            // prefix Tab → nav. The byte decoder yields Char('\t') for Tab, never
-            // KeyCode::Tab, so match both.
-            KeyCode::Tab | KeyCode::Char('\t') => Some(Action::FocusTerminal),
-            KeyCode::Right | KeyCode::Down if nav_position.forward_arrows_face_terminal() => {
-                Some(Action::FocusTerminal)
-            }
-            KeyCode::Left | KeyCode::Up if !nav_position.forward_arrows_face_terminal() => {
-                Some(Action::FocusTerminal)
-            }
-            KeyCode::Right | KeyCode::Down | KeyCode::Left | KeyCode::Up => None,
-            // Tier A: the state-changing nav actions and the filter are prefix-gated. The prefix arms
-            // them; they then resolve to the nav executor via the existing NavKey path.
-            // A digit joins them: `prefix <digit>` opens the card-jump popup seeded with
-            // it, so a bare digit stays free for the pane and cannot jump by accident.
-            KeyCode::Char('r') | KeyCode::Char('n') | KeyCode::Char('/') => {
-                Some(Action::NavKey(key))
-            }
-            KeyCode::Char(c) if c.is_ascii_digit() => Some(Action::NavKey(key)),
-            // An unrecognized key simply consumes the prefix like any other: ready is
-            // already cleared above.
-            _ => None,
-        };
+        let command = Chord::from_key(&key, prefix).and_then(|c| prefix_command(c, nav_position));
+        return command.and_then(|command| nav_action(command, key));
     }
     // Enter focuses the terminal view. ←/→ navigate the nav inside `handle_key`.
     if !is_inputting && is_focus_in(key.code) {
@@ -235,6 +197,30 @@ pub(crate) fn resolve_nav_key(
         return None;
     }
     Some(Action::NavKey(key))
+}
+
+/// What a table command does in nav focus. The nav has no pane, so the literal prefix
+/// has nothing to reach (a second prefix re-arms before the table is asked), and the
+/// arrow pair naming the nav names the view that already has the focus.
+fn nav_action(command: KeyCommand, key: ratatui::crossterm::event::KeyEvent) -> Option<Action> {
+    match command {
+        KeyCommand::Quit => Some(Action::Quit),
+        KeyCommand::Help => Some(Action::ShowHelp),
+        KeyCommand::History => Some(Action::ShowHistory),
+        KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
+        KeyCommand::Collapse => Some(Action::ToggleCollapse),
+        KeyCommand::Position => Some(Action::CycleNavPosition),
+        KeyCommand::Width(d) => Some(Action::Width(d)),
+        KeyCommand::Height(d) => Some(Action::Height(d)),
+        KeyCommand::FocusToggle | KeyCommand::FocusTerminal => Some(Action::FocusTerminal),
+        // The state-changing nav actions and the filter are prefix-gated, and a digit
+        // opens the card jump holding it, so a bare digit stays free for the pane. They
+        // reach the nav executor as the key itself.
+        KeyCommand::Jump | KeyCommand::Filter | KeyCommand::NewSession | KeyCommand::Rescan => {
+            Some(Action::NavKey(key))
+        }
+        KeyCommand::FocusNav | KeyCommand::LiteralPrefix => None,
+    }
 }
 
 /// The per-event mouse-gesture/input state the `stdin_rx` arm carries across reads,
@@ -272,6 +258,7 @@ pub(crate) struct StdinOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
 
     // --- resolve_nav_key: pure NAV-focus key resolution -------------------
     /// Resolve one read at the default prefix (C-g = 0x07), fresh decoder/armed,
@@ -372,6 +359,129 @@ mod tests {
             vec![Action::Height(-1)],
             "prefix Ctrl-Up shrinks height"
         );
+    }
+
+    const POSITIONS: [crate::ui::switcher::NavPosition; 4] = [
+        crate::ui::switcher::NavPosition::Left,
+        crate::ui::switcher::NavPosition::Top,
+        crate::ui::switcher::NavPosition::Right,
+        crate::ui::switcher::NavPosition::Bottom,
+    ];
+
+    /// The key a table chord arrives as from the nav's decoder.
+    fn key_of(chord: Chord) -> ratatui::crossterm::event::KeyEvent {
+        use crate::model::keys::Arrow;
+        use ratatui::crossterm::event::KeyEvent;
+        let arrow = |a: Arrow| match a {
+            Arrow::Up => KeyCode::Up,
+            Arrow::Down => KeyCode::Down,
+            Arrow::Left => KeyCode::Left,
+            Arrow::Right => KeyCode::Right,
+        };
+        match chord {
+            Chord::Char(c) => KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            Chord::Digit => KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE),
+            Chord::Tab => KeyEvent::new(KeyCode::Char('\t'), KeyModifiers::NONE),
+            Chord::Arrow(a) => KeyEvent::new(arrow(a), KeyModifiers::NONE),
+            Chord::CtrlArrow(a) => KeyEvent::new(arrow(a), KeyModifiers::CONTROL),
+            Chord::Prefix => KeyEvent::new(KeyCode::Char('\x07'), KeyModifiers::NONE),
+        }
+    }
+
+    /// What nav focus must do for each table command, stated here rather than read
+    /// from the resolver so the test checks the resolver against the table.
+    fn nav_expected(
+        command: KeyCommand,
+        key: ratatui::crossterm::event::KeyEvent,
+    ) -> Option<Action> {
+        match command {
+            KeyCommand::Quit => Some(Action::Quit),
+            KeyCommand::Help => Some(Action::ShowHelp),
+            KeyCommand::History => Some(Action::ShowHistory),
+            KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
+            KeyCommand::Collapse => Some(Action::ToggleCollapse),
+            KeyCommand::Position => Some(Action::CycleNavPosition),
+            KeyCommand::Width(d) => Some(Action::Width(d)),
+            KeyCommand::Height(d) => Some(Action::Height(d)),
+            KeyCommand::FocusToggle | KeyCommand::FocusTerminal => Some(Action::FocusTerminal),
+            KeyCommand::Jump | KeyCommand::Filter | KeyCommand::NewSession | KeyCommand::Rescan => {
+                Some(Action::NavKey(key))
+            }
+            KeyCommand::FocusNav | KeyCommand::LiteralPrefix => None,
+        }
+    }
+
+    #[test]
+    fn every_prefix_entry_in_the_key_table_dispatches_in_nav_focus() {
+        for position in POSITIONS {
+            for entry in crate::model::keys::TABLE.iter().filter(|e| e.prefixed()) {
+                for chord in entry.chords(position) {
+                    let key = key_of(chord);
+                    let command = entry.command_for(chord, position).unwrap();
+                    let mut armed = true;
+                    let got = resolve_nav_key(key, &mut armed, 0x07, false, position);
+                    assert_eq!(
+                        got,
+                        nav_expected(command, key),
+                        "{position:?} prefix {chord:?} ({:?})",
+                        entry.label
+                    );
+                    // A second prefix in nav focus has no pane to reach: it stays armed.
+                    assert_eq!(armed, command == KeyCommand::LiteralPrefix);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_key_nav_focus_dispatches_after_the_prefix_is_in_the_key_table() {
+        use ratatui::crossterm::event::KeyEvent;
+        let mut keys: Vec<KeyEvent> = (0x00u8..=0x7e)
+            .map(|b| KeyEvent::new(KeyCode::Char(b as char), KeyModifiers::NONE))
+            .collect();
+        for code in [
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Insert,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::F(1),
+            KeyCode::F(12),
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+        ] {
+            for modifiers in [
+                KeyModifiers::NONE,
+                KeyModifiers::CONTROL,
+                KeyModifiers::ALT,
+                KeyModifiers::SHIFT,
+            ] {
+                keys.push(KeyEvent::new(code, modifiers));
+            }
+        }
+        for position in POSITIONS {
+            for key in &keys {
+                let mut armed = true;
+                let got = resolve_nav_key(*key, &mut armed, 0x07, false, position);
+                if got.is_none() && !armed {
+                    continue;
+                }
+                let command = Chord::from_key(key, 0x07)
+                    .and_then(|c| prefix_command(c, position))
+                    .unwrap_or_else(|| {
+                        panic!("{position:?}: prefix {key:?} dispatches {got:?} but no table entry binds it")
+                    });
+                assert_eq!(got, nav_expected(command, *key), "{position:?} {key:?}");
+            }
+        }
     }
 
     #[test]

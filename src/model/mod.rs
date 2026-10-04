@@ -9,6 +9,7 @@ pub mod death;
 pub mod host;
 pub mod hosts;
 pub mod inventory;
+pub mod keys;
 pub mod login;
 pub mod nav;
 pub mod operation;

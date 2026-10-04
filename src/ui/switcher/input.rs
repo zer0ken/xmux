@@ -8,17 +8,19 @@ impl Switcher {
     /// `handle_key`); [`toggle_help`] is the focus-independent open/close entry point.
     pub fn show_help(&mut self, state: &mut crate::state::State) {
         self.dismiss_modals(state);
-        state.modal = Some(Modal::Help);
+        state.modal = Some(Modal::Help {
+            query: String::new(),
+            scroll: 0,
+        });
     }
 
     /// Toggle the keys help modal. Driven by `prefix ?` in EITHER focus so help opens
     /// and closes the same way regardless of which pane holds focus.
     pub fn toggle_help(&mut self, state: &mut crate::state::State) {
-        if matches!(state.modal, Some(Modal::Help)) {
+        if matches!(state.modal, Some(Modal::Help { .. })) {
             state.modal = None;
         } else {
-            self.dismiss_modals(state);
-            state.modal = Some(Modal::Help);
+            self.show_help(state);
         }
     }
 
@@ -67,8 +69,9 @@ impl Switcher {
 
     /// Read-only popup input (the help and the history), tmux view-mode style. While one
     /// is open it captures the whole key read (returns true ⇒ consumed - nothing reaches
-    /// the tree or the terminal view); `q` or Esc closes it, the history scrolls on its
-    /// arrows, and every other key is swallowed. The keys that open the two popups toggle
+    /// the tree or the terminal view); Esc closes either, `q` closes the history, the
+    /// history scrolls on its arrows, the help takes typing as its search and scrolls on
+    /// its arrows, and every other key is swallowed. The keys that open the two popups toggle
     /// them here too: `prefix` then `m` toggles the history and `prefix` then `?` the help,
     /// with `armed` carrying a prefix that ended one read into the next. After the prefix
     /// any other key reads as it would alone. Returns false when neither is open, so the
@@ -111,10 +114,19 @@ impl Switcher {
                 _ => break,
             }
         }
-        // The history scrolls no further than its oldest record.
+        // The history scrolls no further than its oldest record, and the help no further
+        // than the last row its search matches.
         let last = state.notify.history.len().saturating_sub(1);
-        if let Some(Modal::History { scroll }) = state.modal.as_mut() {
-            *scroll = (*scroll).min(last);
+        match state.modal.as_mut() {
+            Some(Modal::History { scroll }) => *scroll = (*scroll).min(last),
+            Some(Modal::Help { query, scroll }) => {
+                let rows = modal::matching_help_rows(
+                    &modal::help_rows(&state.chrome.ui_prefix, state.chrome.nav_position),
+                    query,
+                );
+                *scroll = (*scroll).min(rows.len().saturating_sub(1));
+            }
+            _ => {}
         }
         true
     }

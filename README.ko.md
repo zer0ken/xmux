@@ -204,12 +204,13 @@ xmux에는 tmux의 `set -g prefix`처럼 자체 prefix가 있다. 기본값은 `
 | 조합키       | 동작                                      |
 | ------------ | ----------------------------------------- |
 | `prefix q`   | 종료                                      |
-| `prefix ?`   | 키 도움말 토글                            |
+| `prefix ?`   | 키와 기호 도움말 토글 (입력으로 검색)     |
 | `prefix m`   | 작업 결과와 배경 사건 기록 토글           |
 | `prefix Tab` | nav와 terminal view 사이의 포커스 이동    |
 | `prefix p`   | nav를 terminal view의 다음 변으로 옮긴다  |
 
-마우스로 card를 클릭하면 그 card가 선택되고, terminal view를 클릭하면 포커스가
+prefix를 누르면 prefix 표시 옆에 그 prefix로 쓸 수 있는 키 전체를 나열한 상자가
+열린다. 마우스로 card를 클릭하면 그 card가 선택되고, terminal view를 클릭하면 포커스가
 terminal view로 옮겨진다. 나머지 키는 [`docs/keybind.md`](docs/keybind.md)에 있다.
 
 ## host와 source

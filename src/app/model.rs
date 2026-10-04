@@ -118,6 +118,9 @@ pub(crate) enum Msg {
     #[cfg(test)]
     Commands(Vec<Command>),
     SyncSelection,
+    /// A read that carried keys arrived. Any key ends the hint after a selection move; a
+    /// key that moves the selection again raises a new one as it is applied.
+    KeysRead,
     Key(KeyEvent),
     MouseSelect {
         col: u16,
@@ -754,21 +757,31 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             sync_selection(model);
             Vec::new()
         }
+        Msg::KeysRead => {
+            model.state.chrome.clear_selection_hint();
+            Vec::new()
+        }
         Msg::Key(key) => {
+            let before = model.switcher.selected_card();
             let commands = model.switcher.handle_key(key, &mut model.state);
+            hint_selection_move(model, &before);
             commands
                 .into_iter()
                 .filter_map(|command| command_effect(model, command))
                 .collect()
         }
         Msg::MouseSelect { col, row } => {
+            let before = model.switcher.selected_card();
             model
                 .switcher
                 .mouse_select(&model.render_plan, col, row, &model.state);
+            hint_selection_move(model, &before);
             Vec::new()
         }
         Msg::MouseScroll { down } => {
+            let before = model.switcher.selected_card();
             model.switcher.mouse_scroll(down, &model.state);
+            hint_selection_move(model, &before);
             Vec::new()
         }
         Msg::ToggleHelp => {
@@ -1161,6 +1174,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         }
         Msg::Tick { now, spinner } => {
             model.state.chrome.expire_flash(now);
+            model.state.chrome.expire_selection_hint(now);
             let history_open =
                 matches!(model.state.modal, Some(crate::state::Modal::History { .. }));
             model.state.notify.tick(now, history_open);
@@ -1209,6 +1223,23 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
     }
 }
 
+/// Raises the hint about the card the user just moved the selection to, replacing any
+/// earlier one. A selection that stayed on `before` raises nothing.
+fn hint_selection_move(model: &mut AppModel, before: &Option<crate::state::RowRef>) {
+    if !model.switcher.selection_moved_from(before) {
+        return;
+    }
+    match model.switcher.selection_hint(&model.state) {
+        Some((keys, fact)) => {
+            model
+                .state
+                .chrome
+                .show_selection_hint(keys, fact, std::time::Instant::now());
+        }
+        None => model.state.chrome.clear_selection_hint(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -1219,6 +1250,121 @@ mod tests {
 
     fn model() -> AppModel {
         AppModel::from_sources(vec!["local".to_owned()])
+    }
+
+    /// A model listing two sessions on `local` and an unreachable `prod`, with the
+    /// selection on the first session.
+    fn model_with_cards() -> AppModel {
+        let mut model = AppModel::from_sources(vec!["local".to_owned(), "prod".to_owned()]);
+        let session = |name: &str, windows: i64| crate::session::Session {
+            source: "local".to_owned(),
+            name: name.to_owned(),
+            windows,
+            ..Default::default()
+        };
+        update(
+            &mut model,
+            Msg::HostEvent {
+                event: crate::link::HostEvent::Sessions {
+                    source: "local".to_owned(),
+                    sessions: vec![session("build", 3), session("editor", 1)],
+                    err: None,
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        update(
+            &mut model,
+            Msg::HostEvent {
+                event: crate::link::HostEvent::Sessions {
+                    source: "prod".to_owned(),
+                    sessions: Vec::new(),
+                    err: Some("ssh: connect to host prod port 22: Connection refused".to_owned()),
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        model
+    }
+
+    fn down() -> Msg {
+        Msg::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+    }
+
+    fn hint_text(model: &AppModel) -> String {
+        model.state.chrome.hint_bar_text(200, &model.state)
+    }
+
+    #[test]
+    fn a_selection_move_raises_the_cards_keys_and_a_fact_for_three_seconds() {
+        let mut model = model_with_cards();
+        assert!(
+            model.state.chrome.selection_hint.is_none(),
+            "nothing moved yet"
+        );
+        let start = std::time::Instant::now();
+        update(&mut model, down());
+        let hint = model.state.chrome.selection_hint.clone().expect("a hint");
+        assert_eq!(
+            hint_text(&model),
+            " Enter focus the terminal · C-g n new session · 1 window",
+            "the session's keys, from the key table, and its windows"
+        );
+        assert!(hint.until >= start + std::time::Duration::from_secs(3));
+        assert!(hint.until <= std::time::Instant::now() + std::time::Duration::from_secs(3));
+        // Still up just before its three seconds, and gone at them.
+        let tick = |now| Msg::Tick {
+            now,
+            spinner: HashSet::new(),
+        };
+        update(
+            &mut model,
+            tick(hint.until - std::time::Duration::from_millis(1)),
+        );
+        assert!(model.state.chrome.selection_hint.is_some());
+        update(&mut model, tick(hint.until));
+        assert!(model.state.chrome.selection_hint.is_none());
+        assert_eq!(
+            hint_text(&model).trim(),
+            "C-g",
+            "back to the resting prefix"
+        );
+    }
+
+    #[test]
+    fn the_next_move_replaces_the_hint_and_any_key_ends_it() {
+        let mut model = model_with_cards();
+        update(&mut model, down());
+        assert!(hint_text(&model).contains("1 window"));
+        // The next move replaces it with the card it lands on: the unreachable host,
+        // with the reason behind its state.
+        update(&mut model, down());
+        assert_eq!(
+            hint_text(&model),
+            " Enter focus the terminal · C-g r re-scan every host · unreachable: ssh: connect to host prod port 22: Connection refused"
+        );
+        // Any key read ends it before the key is applied; a key that moves nothing
+        // raises nothing new.
+        update(&mut model, Msg::KeysRead);
+        assert!(model.state.chrome.selection_hint.is_none());
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        );
+        assert!(model.state.chrome.selection_hint.is_none());
+    }
+
+    #[test]
+    fn a_selection_xmux_was_told_to_make_raises_no_hint() {
+        let mut model = model_with_cards();
+        update(
+            &mut model,
+            Msg::FollowDisplay(crate::session::Address::new("local", "editor")),
+        );
+        assert!(
+            model.state.chrome.selection_hint.is_none(),
+            "only the user's own moves are answered with a hint"
+        );
     }
 
     #[test]

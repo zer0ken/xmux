@@ -130,7 +130,7 @@ impl Runtime {
         // A prefix is armed only until the next INPUT, and a mouse action is input. Mouse
         // bytes are scanned out of the stream before either focus path's key handling sees
         // them, so the disarm happens here or not at all - and a chord left half-open keeps
-        // its cheatsheet floating over the window, then eats the next key as a command the
+        // its key list floating over the window, then eats the next key as a command the
         // user meant for the pane. Bare hover is not an action: the pointer drifting across
         // the screen must not break a chord that is still being typed.
         let idle_motion = ev.pressed && (ev.cb & 0x23) == 0x23;
@@ -449,10 +449,10 @@ impl Runtime {
         selection: &Selection,
     ) -> StdinOutcome {
         use std::time::Duration;
-        // The hint bar swaps between the resting prefix and the armed cheatsheet, so an
-        // arm/disarm is a VISIBLE change even when the read moves nothing else. Snapshot
-        // it here and mark the frame dirty below if it flipped, or the cheatsheet would
-        // only appear on the next unrelated redraw (a poll tick).
+        // A live prefix opens the key list, so an arm/disarm is a VISIBLE change even when
+        // the read moves nothing else. Snapshot it here and mark the frame dirty below if
+        // it flipped, or the key list would only appear on the next unrelated redraw (a
+        // poll tick).
         let armed_before = self.prefix_active();
         let mut outcome = StdinOutcome::default();
         let StdinOutcome {
@@ -490,6 +490,13 @@ impl Runtime {
                     i += 1;
                 }
             }
+        }
+        // Any key ends the hint after a selection move, in either focus; a key below that
+        // moves the selection again raises the next one.
+        if !non_mouse.is_empty() && self.model.state.chrome.selection_hint.is_some() {
+            let effects = update(&mut self.model, Msg::KeysRead);
+            debug_assert!(effects.is_empty());
+            *dirty = true;
         }
         // Watchdog: a view border drag is normally ended by the button-up event, but a
         // release can be lost (split across reads, released off-window, or a terminal
