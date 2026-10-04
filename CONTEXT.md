@@ -721,12 +721,14 @@ frame it drew, and a card that is unreachable stays unreachable, each until the 
 for it again.
 
 A DETACH is not a drop. A mux that ends a control client which had already listed
-sessions says so over the open push stream, and keeps serving its other sessions: tmux
-detaches a control client whose attached session was destroyed. The host answered, so
-its card stands as the mux last reported it and the channel is opened once more. Only a
-reopened channel that lists sessions again earns another reopen on its next detach, so a
-reopen that fails ends like any other channel: an empty host when the mux reports no
-sessions, and unreachable otherwise.
+sessions, with a notice that names no reason, says so over the open push stream and
+keeps serving its other sessions: tmux detaches that way a control client whose attached
+session was destroyed. The host answered, so its card stands as the mux last reported it
+and the channel is opened once more. Only a reopened channel that lists sessions again
+earns another reopen on its next detach, so a reopen that fails ends like any other
+channel: an empty host when the mux says it has no sessions or no server, and unreachable
+otherwise. A notice that names a reason is an orderly end and reopens nothing; a server
+that exited leaves the host empty.
 
 Concurrency follows from the same fact. A machine counts the connections that have not
 authenticated yet, so work fans out ACROSS machines and never within one: a machine is

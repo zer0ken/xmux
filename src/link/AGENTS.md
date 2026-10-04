@@ -78,18 +78,22 @@ and the composed control argv.
   reader. The reader's exit reason carries only a protocol `%error` the mux sent on its
   own (a "no sessions" / "no server" empty mux), so a reachable-but-empty host is told
   from one that answered; a control channel opens only for a machine already known to
-  connect. An error answering a command xmux sent (a display-tty readback with no record
-  file, a client flag an older mux lacks) answers that command and never becomes an exit
-  reason.
+  connect. A stray line in which the mux client says no server is running names the
+  reason too, since a control child under a remote tty prints that complaint into the
+  stream outside any block. An error answering a command xmux sent (a display-tty readback
+  with no record file, a client flag an older mux lacks) answers that command and never
+  becomes an exit reason.
 - A control stream ends with exactly one exit: the mux's own exit notice, or the end of
   a stream that closed without one.
-- A mux that ends a control client which had already listed sessions has DETACHED it,
-  and the host still serves its other sessions: tmux does this to a control client
-  whose attached session was destroyed. The card stands as the mux last reported it and
-  the channel is opened once more, which attaches to another session. Only a reopened
-  channel that lists sessions again can be reopened on its next detach, so a reopen that
-  fails takes the ordinary exit: an empty host when the mux reports no sessions, and
-  unreachable otherwise.
+- A mux that ends a control client which had already listed sessions with an exit notice
+  naming no reason has DETACHED it: tmux sends that bare notice to a control client whose
+  attached session was destroyed. The card stands as the mux last reported it and the
+  channel is opened once more, which attaches to another session. Only a reopened channel
+  that lists sessions again can be reopened on its next detach, so a reopen that fails
+  takes the ordinary exit: an empty host when the mux says it has no sessions or no
+  server, and unreachable otherwise.
+- A notice that names a reason is an orderly end, never a detach, and reopens nothing. A
+  server that exited (tmux ends its server with its last session) leaves the host empty.
 - A login starts with one pending process-memory credential for the machine and runs an
   ordinary ssh command through the same execution shape every later command uses. Only a
   successful login promotes that exact credential only when askpass served it; a

@@ -66,10 +66,10 @@ pub enum HostEvent {
     Exited {
         host: String,
         reason: Option<String>,
-        /// The mux ended this client with its own `%exit` notice, so the far side was
-        /// still answering when the stream closed. tmux sends a bare notice to a control
-        /// client whose attached session was destroyed while the server keeps serving
-        /// its other sessions. `false` when the stream ended without a notice.
+        /// The mux detached this client while it keeps serving: tmux sends a bare `%exit`
+        /// notice, with no reason, to a control client whose attached session was
+        /// destroyed. `false` for a notice that names a reason (`server exited`, `too far
+        /// behind`, ...) and for a stream that ended without a notice.
         detached: bool,
     },
     /// `%client-detached <client>` - some client of this host detached. The reader

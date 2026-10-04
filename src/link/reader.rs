@@ -3,7 +3,7 @@
 
 use std::sync::atomic::Ordering;
 
-use crate::mux::{parse_sessions, ControlProtocol, Line, Notif};
+use crate::mux::{parse_sessions, reason_is_no_sessions, ControlProtocol, Line, Notif};
 
 use super::{HostEvent, InFlight, PendingReply, ReaderState};
 
@@ -103,8 +103,14 @@ pub fn run_reader<E: FnMut(HostEvent)>(
                 exited |= matches!(e, HostEvent::Exited { .. });
                 emit(e)
             }),
-            // Stray frame/body outside a block (a mux never speaks a reach failure here;
-            // that is the machine probe's word).
+            // A line outside a block that says the mux has nothing to serve is the reason
+            // the stream ends: a control child started under a remote tty prints the
+            // client's own "no server running" complaint into this stream, never inside
+            // a block. Any other stray line names no reason (a mux never speaks a reach
+            // failure here; that is the machine probe's word).
+            Line::Body(text) if reason_is_no_sessions(text) => {
+                last_error = Some(text.trim().to_string());
+            }
             Line::End { .. } | Line::Error { .. } | Line::Body(_) => {}
         }
     }
@@ -591,10 +597,30 @@ mod tests {
             &in_flight,
             |e| events.push(e),
         );
-        assert!(events.iter().any(|e| matches!(
-            e,
-            HostEvent::Exited { reason: Some(r), .. } if r == "too far behind"
-        )));
+        assert_eq!(
+            exits(&events),
+            vec![(Some("too far behind".to_string()), false)],
+            "a notice naming a reason is an orderly end, not a detach"
+        );
+    }
+
+    #[test]
+    fn a_server_exited_notice_is_not_a_detach() {
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        let mut events = Vec::new();
+        run_reader(
+            "gpu-01",
+            test_control_proto(),
+            vec!["%exit server exited".to_string()].into_iter(),
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
+        assert_eq!(
+            exits(&events),
+            vec![(Some("server exited".to_string()), false)]
+        );
     }
 
     #[test]
@@ -689,6 +715,34 @@ mod tests {
             |e| events.push(e),
         );
         assert_eq!(exits(&events), vec![(None, true)]);
+    }
+
+    #[test]
+    fn a_no_server_complaint_outside_a_block_is_the_exit_reason() {
+        // A reopened `ssh -tt <host> tmux -CC attach` whose tmux client finds no server:
+        // the client's complaint arrives through the tty as a plain line, and the stream
+        // ends with no notice.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        let mut events = Vec::new();
+        run_reader(
+            "gpu-01",
+            test_control_proto(),
+            vec!["no server running on /tmp/tmux-1000/default
+"
+            .to_string()]
+            .into_iter(),
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
+        assert_eq!(
+            exits(&events),
+            vec![(
+                Some("no server running on /tmp/tmux-1000/default".to_string()),
+                false
+            )]
+        );
     }
 
     #[test]

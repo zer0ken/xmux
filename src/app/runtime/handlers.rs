@@ -110,8 +110,10 @@ impl Runtime {
             }
             EventEffect::ReopenHost { host } => {
                 // The detached channel is reaped, so this opens exactly one new one. tmux
-                // attaches it to another of the host's sessions; with none left, the new
-                // stream's own exit settles the card as an empty host.
+                // attaches it to another of the host's sessions. With none left, the new
+                // stream ends with tmux's own word that it has nothing to serve (its "no
+                // sessions" error, or the client's "no server running" complaint through
+                // the tty), and that exit settles the card as an empty host.
                 tracing::info!(host, "control_reopen_after_detach");
                 let (vc, vr) = terminal_view_size(cols, rows, nav);
                 dispatch_detected_host(mgr, hosts, &host, vc, vr);
