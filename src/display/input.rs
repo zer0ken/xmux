@@ -7,8 +7,8 @@
 //! pair flips), `prefix q` quits, `prefix ?` toggles
 //! the keys help, `prefix h`/`l` and `prefix Ctrl+←/→` resize the nav width,
 //! `prefix Ctrl+↑/↓` the nav height, `prefix t`
-//! toggles auto-hide-nav mode, and `prefix n`/`r` and `prefix <digit>` run the nav
-//! actions (new session / re-scan / card jump) on the displayed session. A doubled
+//! toggles auto-hide-nav mode, and `prefix n`/`r`/`/` and `prefix <digit>` run the nav
+//! actions (new session / re-scan / filter / card jump) on the displayed session. A doubled
 //! prefix sends one literal prefix byte. The command set matches
 //! nav focus, so those commands behave identically regardless of which view holds
 //! focus. The prefix is a C0
@@ -131,14 +131,14 @@ impl TermInput {
                     i += 1;
                     continue;
                 }
-                // prefix n/r and prefix <digit> → the nav actions (new session, re-scan,
-                // card jump), so they are reachable from the terminal view too, not only
-                // nav focus. Emitted as a NavKey the caller hands to
+                // prefix n, r, / and prefix <digit> → the nav actions (new session,
+                // re-scan, filter, card jump), so they are reachable from the terminal view
+                // too, not only nav focus. Emitted as a NavKey the caller hands to
                 // Switcher::handle_key: n opens the new-session input, r kicks a re-scan,
-                // a digit opens the jump popup. Focus stays on the terminal view (the modal
+                // / opens the filter input, a digit opens the jump popup. Focus stays on the terminal view (the modal
                 // draws over it and owns the NEXT read), so the rest of THIS read still
                 // forwards to the pane, same shape as prefix ?/t above.
-                if matches!(b0, b'n' | b'r') || b0.is_ascii_digit() {
+                if matches!(b0, b'n' | b'r' | b'/') || b0.is_ascii_digit() {
                     if !fwd.is_empty() {
                         out.push(Action::Forward(std::mem::take(&mut fwd)));
                     }
@@ -486,9 +486,9 @@ mod tests {
 
     #[test]
     fn prefix_then_nav_action_emits_nav_key() {
-        // prefix n/r each emit a NavKey the caller routes to Switcher::handle_key,
+        // prefix n, r, / each emit a NavKey the caller routes to Switcher::handle_key,
         // so the nav actions work from terminal focus too.
-        for (b, c) in [(b'n', 'n'), (b'r', 'r')] {
+        for (b, c) in [(b'n', 'n'), (b'r', 'r'), (b'/', '/')] {
             let mut t = m();
             t.feed(&[0x07], NavPosition::Left);
             assert_eq!(

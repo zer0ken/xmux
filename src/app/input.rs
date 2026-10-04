@@ -199,11 +199,13 @@ pub(crate) fn resolve_nav_key(
                 Some(Action::FocusTerminal)
             }
             KeyCode::Right | KeyCode::Down | KeyCode::Left | KeyCode::Up => None,
-            // Tier A: the state-changing nav actions are prefix-gated. The prefix arms
+            // Tier A: the state-changing nav actions and the filter are prefix-gated. The prefix arms
             // them; they then resolve to the nav executor via the existing NavKey path.
             // A digit joins them: `prefix <digit>` opens the card-jump popup seeded with
             // it, so a bare digit stays free for the pane and cannot jump by accident.
-            KeyCode::Char('r') | KeyCode::Char('n') => Some(Action::NavKey(key)),
+            KeyCode::Char('r') | KeyCode::Char('n') | KeyCode::Char('/') => {
+                Some(Action::NavKey(key))
+            }
             KeyCode::Char(c) if c.is_ascii_digit() => Some(Action::NavKey(key)),
             // An unrecognized key simply consumes the prefix like any other: ready is
             // already cleared above.
@@ -214,12 +216,14 @@ pub(crate) fn resolve_nav_key(
     if !is_inputting && is_focus_in(key.code) {
         return Some(Action::FocusTerminal);
     }
-    // Tier A: bare (unprefixed) r/n and bare digits are inert - they require the prefix.
-    // Navigation, Enter, and `/` filter stay bare. Only applies when not inputting, so
+    // Tier A: bare (unprefixed) r/n, bare `/`, and bare digits are inert - they require
+    // the prefix. Navigation and Enter stay bare. Only applies when not inputting, so
     // every key is still literal text while an input row (filter / new / jump) is open.
     if !is_inputting
-        && (matches!(key.code, KeyCode::Char('r') | KeyCode::Char('n'))
-            || matches!(key.code, KeyCode::Char(c) if c.is_ascii_digit()))
+        && (matches!(
+            key.code,
+            KeyCode::Char('r') | KeyCode::Char('n') | KeyCode::Char('/')
+        ) || matches!(key.code, KeyCode::Char(c) if c.is_ascii_digit()))
     {
         return None;
     }
@@ -437,7 +441,7 @@ mod tests {
 
         // Bare state-changing keys are inert without the prefix. Digits are in that
         // tier too: a card jump is a deliberate chord, not a stray keystroke.
-        for k in [b"r" as &[u8], b"n", b"0", b"4", b"9"] {
+        for k in [b"r" as &[u8], b"n", b"/", b"0", b"4", b"9"] {
             assert_eq!(
                 rt(k, false),
                 Vec::<Action>::new(),
@@ -448,6 +452,11 @@ mod tests {
         assert_eq!(rt(b"\x07r", false), vec![tk('r')], "prefix r arms rescan");
         assert_eq!(rt(b"\x07n", false), vec![tk('n')], "prefix n arms new");
         assert_eq!(
+            rt(b"\x07/", false),
+            vec![tk('/')],
+            "prefix / opens the filter"
+        );
+        assert_eq!(
             rt(b"\x070", false),
             vec![tk('0')],
             "prefix 0 opens the jump popup"
@@ -457,8 +466,7 @@ mod tests {
             vec![tk('7')],
             "prefix 7 opens the jump popup"
         );
-        // Bare navigation and `/` filter stay bare (fast-switcher identity preserved).
-        assert_eq!(rt(b"/", false), vec![tk('/')], "/ filter stays bare");
+        // Bare navigation stays bare (fast-switcher identity preserved).
         assert_eq!(rt(b"j", false), vec![tk('j')], "navigation stays bare");
         // While an input row is open the keys are literal text again.
         assert_eq!(

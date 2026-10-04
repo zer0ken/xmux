@@ -931,7 +931,7 @@ impl Chrome {
         } else if self.armed {
             // The prefix is held: name what it unlocks. Longest-first so a narrow nav
             // drops the rarer chords rather than clipping mid-word.
-            // Order: focus nav, focus terminal, jump, new, hide, position, rescan, help,
+            // Order: focus nav, focus terminal, jump, new, filter, hide, position, rescan, help,
             // quit. The focus rows name the arrow PAIR the current placement makes
             // active (the pair facing the terminal's side names the terminal), and the
             // resize keys are left out (the help modal has them).
@@ -942,10 +942,10 @@ impl Chrome {
             };
             fit(
                 &[
-                    format!(" {p} · {focus} · 1-9 jump to a session · n new session · t hide nav · p nav position · r rescan · ? help · q quit"),
-                    format!(" {p} · {focus} · 1-9 jump to · n new · t hide · p position · r rescan · ? help · q quit"),
-                    format!(" {p} · {focus} · 1-9 · n · t · p · r · ? · q"),
-                    format!(" {p} · ←/↑ · →/↓ · 1-9 · n · t · p · r · ? · q"),
+                    format!(" {p} · {focus} · 1-9 jump to a session · n new session · / filter · t hide nav · p nav position · r rescan · ? help · q quit"),
+                    format!(" {p} · {focus} · 1-9 jump to · n new · / filter · t hide · p position · r rescan · ? help · q quit"),
+                    format!(" {p} · {focus} · 1-9 · n · / · t · p · r · ? · q"),
+                    format!(" {p} · ←/↑ · →/↓ · 1-9 · n · / · t · p · r · ? · q"),
                     format!(" {p}…"),
                 ],
                 width,
@@ -972,7 +972,7 @@ impl Chrome {
             // shows in the hint_bar (with how to clear it).
             fit(
                 &[
-                    format!(" filter: {} · / edit · Esc clear", state.filter),
+                    format!(" filter: {} · {p} / edit · Esc clear", state.filter),
                     format!(" filter: {}", state.filter),
                 ],
                 width,
@@ -1399,7 +1399,7 @@ mod tests {
         assert_eq!(c.hint_bar_text(80, &state).trim(), "C-g");
         // Armed: the keys the prefix unlocks. Wide enough for the full descriptions,
         // the rows run in the bar's fixed order (focus nav, focus terminal, jump, new,
-        // hide, rescan, filter, help, quit) and the focus rows use arrow symbols that
+        // filter, hide, position, rescan, help, quit) and the focus rows use arrow symbols that
         // point at the view they focus.
         c.set_armed(true);
         let full = c.hint_bar_text(400, &state);
@@ -1409,6 +1409,7 @@ mod tests {
             "→/↓ focus terminal",
             "1-9 jump to a session",
             "n new session",
+            "/ filter",
             "t hide nav",
             "p nav position",
             "r rescan",
@@ -1427,14 +1428,14 @@ mod tests {
             last = pos;
         }
         // A narrower bar drops to short descriptions while keeping the focus guidance
-        // (the pair segment rides every rung). The full line is ~141 cells, so a 120-wide
+        // (the pair segment rides every rung). The full line is ~151 cells, so a 130-wide
         // bar forces the middle rung, whose focus rows keep the full pair wording.
-        let armed = c.hint_bar_text(120, &state);
+        let armed = c.hint_bar_text(130, &state);
         assert!(
             armed.contains("→/↓ focus terminal"),
             "short bar keeps focus-terminal: {armed:?}"
         );
-        for key in ["n new", "r rescan", "? help", "q quit"] {
+        for key in ["n new", "/ filter", "r rescan", "? help", "q quit"] {
             assert!(armed.contains(key), "armed bar lists {key:?}: {armed:?}");
         }
         // A flash outranks the armed cheatsheet: a refusal must not be hidden by it.
