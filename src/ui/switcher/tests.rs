@@ -7471,7 +7471,7 @@ async fn enter_on_a_blocked_host_selects_it_and_hands_the_focus_to_its_login_pan
 }
 
 #[tokio::test]
-async fn enter_on_a_hidden_host_brings_its_card_back_through_the_filter() {
+async fn enter_on_a_hidden_host_opens_login_without_a_filter() {
     let mut h = Harness::new(problem_scan());
     h.sw.set_hide_unreachable(true, &mut h.state);
     h.sw.toggle_check(&mut h.state);
@@ -7479,10 +7479,53 @@ async fn enter_on_a_hidden_host_brings_its_card_back_through_the_filter() {
     h.sw.feed_reader_key(b"j", 0x07, &mut armed, 20, &mut h.state);
     h.sw.feed_reader_key(b"j", 0x07, &mut armed, 20, &mut h.state);
     h.sw.feed_reader_key(b"\r", 0x07, &mut armed, 20, &mut h.state);
-    assert!(!h.sw.open_checked_host(&mut h.state), "the focus stays");
-    assert_eq!(h.state.filter, "dead-2");
+    assert!(
+        h.sw.open_checked_host(&mut h.state),
+        "the login pane takes focus"
+    );
+    assert!(h.state.filter.is_empty());
+    assert_eq!(h.sw.scope(), crate::model::NavScope::AllHosts);
     assert_eq!(h.sw.current_source().as_deref(), Some("dead-2"));
     assert!(h.sw.current_host_unreachable());
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        Some(crate::model::ViewScreen::Login)
+    );
+}
+
+#[tokio::test]
+async fn command_palette_searches_commands_and_hidden_host_login() {
+    let mut h = Harness::new(problem_scan());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.sw.toggle_palette(&mut h.state);
+    h.draw();
+    let text = h.text();
+    assert!(text.contains("commands"), "{text}");
+    let mut armed = false;
+    h.sw.feed_reader_key(b"rescan", 0x07, &mut armed, 20, &mut h.state);
+    let crate::state::Modal::Palette { query, .. } = h.state.modal.as_ref().unwrap() else {
+        panic!("palette");
+    };
+    assert_eq!(query, "rescan");
+    assert!(h
+        .sw
+        .palette_entries(&h.state, query)
+        .iter()
+        .any(|(name, _)| name.contains("re-scan")));
+    h.sw.feed_reader_key(b"\x15login dead-2", 0x07, &mut armed, 20, &mut h.state);
+    h.draw();
+    assert!(h.text().contains("log in to dead-2"));
+    h.sw.feed_reader_key(b"\r", 0x07, &mut armed, 20, &mut h.state);
+    assert_eq!(
+        h.sw.take_palette_choice(&mut h.state),
+        Some(crate::state::PaletteChoice::Login("dead-2".into()))
+    );
+    assert!(h.sw.open_host("dead-2", &mut h.state));
+    assert!(h.state.filter.is_empty());
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        Some(crate::model::ViewScreen::Login)
+    );
 }
 
 #[tokio::test]
@@ -7541,15 +7584,15 @@ async fn the_key_list_border_states_the_scope_and_the_hidden_count() {
     h.sw.set_hide_unreachable(true, &mut h.state);
     h.state.chrome.armed = true;
     h.draw();
-    assert_eq!(h.plan.key_list_status, "nav: sessions · 1 hidden");
+    assert_eq!(h.plan.key_list_status, "showing sessions · 1 host hidden");
     assert!(
-        h.text().contains("nav: sessions · 1 hidden"),
+        h.text().contains("showing sessions · 1 host hidden"),
         "{}",
         h.text()
     );
     h.sw.set_scope(crate::model::NavScope::AllHosts, &mut h.state);
     h.draw();
-    assert_eq!(h.plan.key_list_status, "nav: all hosts");
+    assert_eq!(h.plan.key_list_status, "showing all hosts");
 }
 
 #[tokio::test]

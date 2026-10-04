@@ -98,6 +98,7 @@ The remaining actions all take the prefix and work from either focus:
 | `prefix r` | re-scan: refresh which machines exist, and every source's sessions |
 | `prefix R` | re-scan the selected card's host alone |
 | `prefix h` | open the table of the hosts to check |
+| `prefix :` | search commands by name; type to filter, use arrows to select, Enter to run, Esc to close |
 | `prefix s` | step the nav scope: sessions, all hosts, needs attention |
 
 `prefix n` starts the new session on the host/mux the selected card belongs to -
@@ -157,11 +158,16 @@ remembered in `~/.xmux/nav_scope`.
 ### Hidden hosts
 
 `[ui] hide-unreachable` (default true) keeps an unreachable host off the nav. How many
-hosts it hides shows on the key list's bottom border (`nav: sessions · 2 hidden`) and in
+hosts it hides shows on the key list's bottom border (`showing sessions · 2 hosts hidden`) and in
 the open filter's line, which counts the hidden hosts the filter matches. A nav left with
 no card at all writes one line in its body, how many hosts are hidden and the key that
 lists them (`2 hosts hidden · C-g h`), or, in the needs-attention scope, that nothing
 needs attention.
+
+The check table opens the login pane for a login-needed or unreachable host, including
+one hidden from the nav. The command palette also lists `log in to <host>` for those
+hosts. Opening a hidden host selects it in the `all hosts` scope without applying a
+filter.
 
 ## Prefix commands
 
@@ -217,7 +223,7 @@ jump, help, and quit keys are never given up. The box floats over the terminal v
 closes when the function the prefix started ends, or when the prefix is canceled (a focus
 switch or any mouse action: a click, a wheel, a drag - a prefix waits for the next input,
 whatever that turns out to be). Its bottom border names the nav scope and, while the
-hiding leaves any host without a card, how many (`nav: sessions · 2 hidden`), with the
+hiding leaves any host without a card, how many (`showing sessions · 2 hosts hidden`), with the
 xmux version at its right end where both fit.
 
 Most keys end their function as they run, so the box closes with the keystroke. Two kinds

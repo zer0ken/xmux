@@ -314,7 +314,7 @@ theme = "auto-dark"                  # built-in ANSI theme: "auto-dark" (default
                                       # or "auto-light" (for a light terminal)
 prefix = "C-g"                        # xmux's prefix (e.g. C-g, C-Space, C-b)
 auto-hide-nav = false                 # initial auto-hide-nav state
-hide-unreachable = true               # hide hosts no scan has reached (the filter names one to show its card)
+hide-unreachable = true               # hide hosts no scan has reached (the check table can open one)
 notifications = true                  # show results as toasts (the prefix m history keeps them either way)
 nav-position = "left"                 # the nav's default side (left|top|right|bottom)
 max-fps = 30                          # maximum xmux draws per second (10 to 120)

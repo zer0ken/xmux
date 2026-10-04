@@ -409,13 +409,12 @@ no function, and no test, so renaming code is never a documentation change.
   hosts the filter matches. `prefix h` opens the table of the hosts to check, which lists
   every host in a problem state grouped by cause (`?` login needed, `▲` unreachable, `✗`
   list failed), each with the reason its last answer gave and a mark on the ones the
-  hiding leaves without a card; `Enter` on a row selects that host's card, sets the
-  filter to the host's name when the host has no card on the list, and hands the focus to
-  the terminal view when the host's login pane answers it. A nav with no card at all
+  hiding leaves without a card; `Enter` on a row selects that host's card, switches to
+  `all hosts` when needed, and opens the login pane for a login-needed or unreachable
+  host. The command palette also opens these hosts by name. A nav with no card at all
   writes one line in its body instead: how many hosts are hidden and `prefix h`, or, in
   the needs-attention scope (FR-B39), that nothing needs attention and the scope key. The
-  filter naming a hidden host brings its card back, and that named card is the one entry
-  to its unreachable screen. An empty filter hides every unreachable host, and a filter
+  filter naming a hidden host brings its card back. An empty filter hides every unreachable host, and a filter
   matching nothing does not bring them back through the no-match fallback that shows the
   other hosts. A reachable host with no sessions keeps its card, and a host still scanning
   never hides, whatever stale failure it carries. A host that goes unreachable mid-run

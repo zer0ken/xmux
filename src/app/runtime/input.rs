@@ -66,6 +66,9 @@ impl Runtime {
                 Some(Action::ShowCheck) => {
                     effects.extend(update(&mut self.model, Msg::ToggleCheck));
                 }
+                Some(Action::ShowPalette) => {
+                    effects.extend(update(&mut self.model, Msg::TogglePalette));
+                }
                 Some(Action::CycleNavScope) => {
                     effects.extend(update(&mut self.model, Msg::CycleNavScope));
                 }
@@ -698,6 +701,11 @@ impl Runtime {
                     }
                     Action::ShowCheck => {
                         let effects = update(&mut self.model, Msg::ToggleCheck);
+                        debug_assert!(effects.is_empty());
+                        *dirty = true;
+                    }
+                    Action::ShowPalette => {
+                        let effects = update(&mut self.model, Msg::TogglePalette);
                         debug_assert!(effects.is_empty());
                         *dirty = true;
                     }

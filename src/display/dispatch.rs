@@ -33,6 +33,8 @@ pub enum Action {
     ShowHistory,
     /// `prefix h`: toggle the table of the hosts to check. Focus stays where it is.
     ShowCheck,
+    /// Open the searchable command palette.
+    ShowPalette,
     /// `prefix s`: step the nav scope. Key-driven only, no ctl verb.
     CycleNavScope,
     /// `prefix Ctrl+←/→`: the nav WIDTH step on the horizontal axis
@@ -77,6 +79,7 @@ impl Action {
             | Action::ShowHelp
             | Action::ShowHistory
             | Action::ShowCheck
+            | Action::ShowPalette
             | Action::CycleNavScope
             | Action::NavKey(_) => None,
         }
