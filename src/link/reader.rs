@@ -728,10 +728,7 @@ mod tests {
         run_reader(
             "gpu-01",
             test_control_proto(),
-            vec!["no server running on /tmp/tmux-1000/default
-"
-            .to_string()]
-            .into_iter(),
+            vec!["no server running on /tmp/tmux-1000/default\r\n".to_string()].into_iter(),
             &state,
             &in_flight,
             |e| events.push(e),
