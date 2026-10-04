@@ -1596,6 +1596,7 @@ async fn login_and_key_registration_results_are_one_toast_kept_for_the_host() {
         OpResult::Login {
             source: "pwbox".into(),
             login: crate::transport::Login::default(),
+            attempt: 0,
             outcome: LoginOutcome {
                 connect: UnlockOutcome::Ok,
                 registration: RegistrationOutcome::Registered,
@@ -1640,6 +1641,7 @@ async fn a_failed_login_and_a_skipped_key_are_a_toast_that_stays() {
         OpResult::Login {
             source: "pwbox".into(),
             login: crate::transport::Login::default(),
+            attempt: 0,
             outcome: LoginOutcome {
                 connect: UnlockOutcome::Failed {
                     kind: FailureKind::WrongPassword,
@@ -1665,6 +1667,7 @@ async fn a_failed_login_and_a_skipped_key_are_a_toast_that_stays() {
         OpResult::Login {
             source: "pwbox".into(),
             login: crate::transport::Login::default(),
+            attempt: 0,
             outcome: LoginOutcome {
                 connect: UnlockOutcome::Ok,
                 registration: RegistrationOutcome::Skipped("no key to send".into()),
@@ -1688,6 +1691,7 @@ async fn a_failed_login_and_a_skipped_key_are_a_toast_that_stays() {
         OpResult::Login {
             source: "pwbox".into(),
             login: crate::transport::Login::default(),
+            attempt: 0,
             outcome: LoginOutcome {
                 connect: UnlockOutcome::Failed {
                     kind: FailureKind::Cancelled,
@@ -1778,6 +1782,7 @@ async fn the_verdict_takes_the_login_screen_down() {
         OpResult::Login {
             source: "pwbox".into(),
             login: crate::transport::Login::default(),
+            attempt: 0,
             outcome: crate::ui::ops::LoginOutcome {
                 connect: UnlockOutcome::Failed {
                     kind: crate::link::unlock::FailureKind::WrongPassword,
@@ -1837,6 +1842,7 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
                 user: Some("alice".into()),
                 ..Default::default()
             },
+            attempt: 0,
             outcome: crate::ui::ops::LoginOutcome {
                 connect: UnlockOutcome::Ok,
                 registration: crate::ui::ops::RegistrationOutcome::NotRequested,
@@ -1875,6 +1881,7 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
         OpResult::Login {
             source: "pwbox".into(),
             login: crate::transport::Login::default(),
+            attempt: 0,
             outcome: crate::ui::ops::LoginOutcome {
                 connect: UnlockOutcome::Failed {
                     kind: crate::link::unlock::FailureKind::WrongPassword,
@@ -1911,6 +1918,7 @@ fn refused_login_harness() -> Harness {
         OpResult::Login {
             source: "pwbox".into(),
             login: crate::transport::Login::default(),
+            attempt: 0,
             outcome: LoginOutcome {
                 connect: UnlockOutcome::Failed {
                     kind: FailureKind::WrongPassword,
@@ -2020,7 +2028,7 @@ async fn login_steps_show_each_state_as_the_login_reports_it() {
     };
     h.state.login_progress.insert(
         "pwbox".into(),
-        crate::model::LoginProgress::start(&login, true, false, true),
+        crate::model::LoginProgress::start(1, &login, true, false, true),
     );
     h.state.login_run = Some(crate::link::unlock::RunningLogin::parked("pwbox"));
     h.draw();
@@ -2054,6 +2062,7 @@ async fn login_steps_show_each_state_as_the_login_reports_it() {
     h.sw.apply_op_result(
         OpResult::LoginProgress {
             source: "pwbox".into(),
+            attempt: 1,
             event: crate::model::LoginEvent::PasswordAsked,
         },
         &mut h.state,
@@ -2072,6 +2081,7 @@ async fn login_steps_show_each_state_as_the_login_reports_it() {
         OpResult::Login {
             source: "pwbox".into(),
             login,
+            attempt: 1,
             outcome: LoginOutcome {
                 connect: UnlockOutcome::Failed {
                     kind: FailureKind::WrongPassword,
@@ -2102,6 +2112,44 @@ async fn login_steps_show_each_state_as_the_login_reports_it() {
     let (steps_end, _) = h.view_cell_of("· find mux").unwrap();
     let (verdict, _) = h.view_cell_of("✗ the password was refused").unwrap();
     assert!(steps_end < verdict, "the steps lead to the verdict");
+}
+
+#[tokio::test]
+async fn a_step_note_over_several_lines_renders_one_line_each() {
+    use crate::link::unlock::UnlockOutcome;
+    use crate::ui::ops::{LoginOutcome, RegistrationOutcome};
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("alice@pwbox: Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    let mut progress = crate::model::LoginProgress::start(
+        1,
+        &crate::transport::Login::default(),
+        false,
+        false,
+        true,
+    );
+    progress.finish(&LoginOutcome {
+        connect: UnlockOutcome::Ok,
+        output: String::new(),
+        saved: None,
+        registration: RegistrationOutcome::Failed(
+            "the password was refused\nalice@pwbox: Permission denied".into(),
+        ),
+    });
+    h.state.login_progress.insert("pwbox".into(), progress);
+    h.draw();
+    let (summary, _) = h
+        .view_cell_of("register my public key: the password was refused")
+        .unwrap_or_else(|| panic!("the note's first line follows the step:\n{}", h.view_text()));
+    let (detail, _) = h
+        .view_cell_of("alice@pwbox: Permission denied")
+        .unwrap_or_else(|| panic!("the detail is its own line:\n{}", h.view_text()));
+    assert_eq!(detail, summary + 1, "{}", h.view_text());
+    assert_eq!(h.view_row(detail), "alice@pwbox: Permission denied");
 }
 
 #[tokio::test]

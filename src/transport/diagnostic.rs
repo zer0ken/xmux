@@ -154,39 +154,66 @@ pub fn requires_login(stderr: &str) -> bool {
     contains_auth_refusal(stderr) || host_key_unknown(stderr)
 }
 
+const BROKER_UNAVAILABLE: &str = "xmux could not provide the held password";
+const PASSWORD_REFUSED: &str = "the password was refused";
+const AUTH_REFUSED: &str = "authentication was refused";
+const HOST_KEY_CHANGED: &str = "the host key changed";
+const HOST_KEY_UNKNOWN: &str = "the host key is not known yet";
+const NAME_UNRESOLVED: &str = "the host name could not be resolved";
+const UNREACHED: &str = "the host could not be reached";
+const TIMED_OUT: &str = "timed out";
+const CLOSED_AFTER_PASSWORD: &str =
+    "the server accepted the password but closed the session before it started";
+
+/// Every summary [`explain`] writes, so its text can be parted again.
+const SUMMARIES: &[&str] = &[
+    BROKER_UNAVAILABLE,
+    PASSWORD_REFUSED,
+    AUTH_REFUSED,
+    HOST_KEY_CHANGED,
+    HOST_KEY_UNKNOWN,
+    NAME_UNRESOLVED,
+    UNREACHED,
+    TIMED_OUT,
+    CLOSED_AFTER_PASSWORD,
+];
+
+/// The summaries only a command that handed ssh the held password writes.
+const PASSWORD_SUMMARIES: &[&str] = &[BROKER_UNAVAILABLE, PASSWORD_REFUSED, CLOSED_AFTER_PASSWORD];
+
 pub fn explain(input: &str, password_supplied: bool) -> String {
     let detail = sanitize(input);
     let lower = detail.to_ascii_lowercase();
     let summary = if lower.contains("xmux credential broker unavailable") {
-        Some("xmux could not provide the held password")
+        Some(BROKER_UNAVAILABLE)
     } else if contains_auth_refusal(&detail) {
         Some(if password_supplied {
-            "the password was refused"
+            PASSWORD_REFUSED
         } else {
-            "authentication was refused"
+            AUTH_REFUSED
         })
     } else if host_key_changed(&detail) {
-        Some("the host key changed")
+        Some(HOST_KEY_CHANGED)
     } else if host_key_unknown(&detail) {
-        Some("the host key is not known yet")
+        Some(HOST_KEY_UNKNOWN)
     } else if lower.contains("could not resolve hostname") {
-        Some("the host name could not be resolved")
+        Some(NAME_UNRESOLVED)
     } else if lower.contains("connection refused")
         || lower.contains("no route to host")
         || lower.contains("network is unreachable")
     {
-        Some("the host could not be reached")
+        Some(UNREACHED)
     } else if lower.contains("connection timed out")
         || lower.contains("timed out")
         || lower.contains("did not answer within")
     {
-        Some("timed out")
+        Some(TIMED_OUT)
     } else if password_supplied
         && (lower.contains("connection closed")
             || lower.contains("connection reset")
             || lower.contains("connection was closed"))
     {
-        Some("the server accepted the password but closed the session before it started")
+        Some(CLOSED_AFTER_PASSWORD)
     } else {
         None
     };
@@ -195,6 +222,34 @@ pub fn explain(input: &str, password_supplied: bool) -> String {
         (Some(summary), false) => format!("{summary}\n{detail}"),
         (Some(summary), true) => summary.to_string(),
         (None, _) => detail,
+    }
+}
+
+/// Text [`explain`] wrote, parted again into xmux's summary and the detail under it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Explained<'a> {
+    pub summary: Option<&'static str>,
+    pub detail: &'a str,
+    /// Whether the summary is one only a command that handed ssh the held password
+    /// writes, so the detail's refusal is a refused password.
+    pub password_supplied: bool,
+}
+
+/// Parts text [`explain`] wrote. Text whose first line is no summary of its own is all
+/// detail.
+pub fn split_explained(text: &str) -> Explained<'_> {
+    let (first, rest) = text.split_once('\n').unwrap_or((text, ""));
+    match SUMMARIES.iter().find(|s| **s == first.trim_end()) {
+        Some(summary) => Explained {
+            summary: Some(summary),
+            detail: rest,
+            password_supplied: PASSWORD_SUMMARIES.contains(summary),
+        },
+        None => Explained {
+            summary: None,
+            detail: text,
+            password_supplied: false,
+        },
     }
 }
 

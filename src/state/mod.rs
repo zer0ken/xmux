@@ -105,10 +105,13 @@ pub struct State {
     /// while that validation runs, so its presence is what tells
     /// the pane to say a login is under way instead of offering one.
     pub login_run: Option<crate::link::unlock::RunningLogin>,
-    /// The steps of each machine's last login and where each stands. They outlive the
-    /// running handle, because the mux search a working login starts runs after the
-    /// verdict, and a failed login keeps the step it stopped at on screen.
+    /// The steps of each source's last login attempt and where each stands. They outlive
+    /// the running handle, because the mux search a working login starts runs after the
+    /// verdict, and a failed login keeps the step it stopped at on screen until the
+    /// machine is looked at again.
     pub login_progress: HashMap<String, crate::model::LoginProgress>,
+    /// The last login attempt number handed out, so each submission is told apart.
+    pub login_attempts: u64,
 }
 
 /// Which element of the login pane the keys drive. Every interactive element is one
@@ -638,14 +641,23 @@ impl State {
             OpResult::Login {
                 source,
                 login,
+                attempt,
                 outcome,
             } => {
                 // The validation is over however it ended, so the handle that would
-                // have ended it goes with it and the pane offers a login again.
-                self.login_run = None;
+                // have ended it goes with it and the pane offers a login again. A result
+                // from a replaced attempt leaves the newer handle and steps alone.
+                if self
+                    .login_run
+                    .as_ref()
+                    .is_some_and(|run| run.source == source && run.attempt == attempt)
+                {
+                    self.login_run = None;
+                }
                 if let Some(progress) = self
                     .login_progress
-                    .get_mut(crate::session::machine_of(&source))
+                    .get_mut(&source)
+                    .filter(|p| p.attempt == attempt)
                 {
                     progress.finish(&outcome);
                 }
@@ -655,16 +667,57 @@ impl State {
                     outcome,
                 }
             }
-            OpResult::LoginProgress { source, event } => {
+            OpResult::LoginProgress {
+                source,
+                attempt,
+                event,
+            } => {
                 if let Some(progress) = self
                     .login_progress
-                    .get_mut(crate::session::machine_of(&source))
+                    .get_mut(&source)
+                    .filter(|p| p.attempt == attempt)
                 {
                     progress.apply(&event);
                 }
                 OpFollow::Nothing
             }
         }
+    }
+
+    /// Takes a machine probe's answer into the login steps on that machine. The probe a
+    /// working login started settles or advances its mux search. Any other probe is a
+    /// newer look at the machine, so steps that already settled describe an older state
+    /// and go.
+    pub(crate) fn login_probe_answered(&mut self, machine: &str, probe: u64, err: Option<&str>) {
+        self.login_progress.retain(|source, progress| {
+            if crate::session::machine_of(source) != machine {
+                return true;
+            }
+            if probe != 0 && progress.probe_answered(probe, err) {
+                return true;
+            }
+            progress.running()
+        });
+    }
+
+    /// Takes the first mux answer after a working login's probe into its mux search. A
+    /// search that found a mux has handed the pane to the sessions, so its steps go.
+    /// Steps that settled earlier go too when the machine now answers with a mux, since
+    /// they no longer describe it.
+    pub(crate) fn login_mux_answered(&mut self, machine: &str, answer: &crate::model::MuxAnswer) {
+        self.login_progress.retain(|source, progress| {
+            if crate::session::machine_of(source) != machine {
+                return true;
+            }
+            let was_running = progress.running();
+            progress.found_mux(answer);
+            if progress.state_of(crate::model::LoginStep::FindMux)
+                == Some(crate::model::StepState::Done)
+            {
+                return false;
+            }
+            was_running || *answer != crate::model::MuxAnswer::Found
+        });
     }
 
     /// The failure the login pane for `source` states: the machine's last login when it
@@ -682,7 +735,7 @@ impl State {
         // question the login is answering, not a failure of its own.
         if self
             .login_progress
-            .get(machine)
+            .get(source)
             .is_some_and(crate::model::LoginProgress::running)
         {
             return None;

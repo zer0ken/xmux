@@ -742,7 +742,7 @@ impl Chrome {
         let steps_running = kind == ViewScreen::Login
             && state
                 .login_progress
-                .get(crate::session::machine_of(source))
+                .get(source)
                 .is_some_and(crate::model::LoginProgress::running);
         match &failure {
             Some(failure) if unfolded => {
@@ -1039,14 +1039,11 @@ impl Chrome {
                 format!(" {}", "─".repeat(width.saturating_sub(2) as usize)),
                 Style::default().fg(pal.decoration),
             )));
-            // The steps of the machine's last login, while they run and after one of them
+            // The steps of this source's last login, while they run and after one of them
             // failed. A login whose every step worked has handed the pane to its sessions,
             // so its steps say nothing more.
             let wrap_w = width.saturating_sub(4).max(1);
-            let progress = state
-                .login_progress
-                .get(crate::session::machine_of(source))
-                .filter(|p| !p.succeeded());
+            let progress = state.login_progress.get(source).filter(|p| !p.succeeded());
             if let Some(progress) = progress {
                 out.push(Line::from(""));
                 for row in &progress.steps {
@@ -1101,7 +1098,14 @@ impl Chrome {
                         Some(note) => format!("{name}: {note}"),
                         None => name,
                     };
-                    for (i, part) in wrap_text(&text, wrap_w).into_iter().enumerate() {
+                    // A note may run over several lines (a summary over its detail), so each
+                    // line wraps on its own, as the verdict's do.
+                    let parts: Vec<String> = text
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .flat_map(|l| wrap_text(l.trim(), wrap_w))
+                        .collect();
+                    for (i, part) in parts.into_iter().enumerate() {
                         let mark = if i == 0 { glyph } else { ' ' };
                         out.push(Line::from(vec![
                             Span::styled(format!(" {mark} "), glyph_style),

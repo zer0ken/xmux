@@ -29,8 +29,8 @@ pub use hosts::{host_for, Hosts, RosterDelta};
 pub use inventory::{add_session, sort_by_name, FailureKind, Group};
 pub(crate) use login::SECRET_INPUT_CAPACITY;
 pub use login::{
-    LoginEvent, LoginFailure, LoginField, LoginProgress, LoginStep, Remember, SecretInput, StepRow,
-    StepState,
+    LoginEvent, LoginFailure, LoginField, LoginProgress, LoginStep, MuxAnswer, Remember,
+    SecretInput, StepRow, StepState,
 };
 pub use nav::{step_nav_position, NavPosition, NavSize, ViewLayout};
 pub use operation::{KeyRegistration, LoginOutcome, OpResult, Ops, RegistrationOutcome};

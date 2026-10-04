@@ -71,11 +71,14 @@ pub enum OpResult {
     Login {
         source: String,
         login: crate::transport::Login,
+        /// The submission this result answers.
+        attempt: u64,
         outcome: LoginOutcome,
     },
     /// A step boundary a running login reported before its verdict.
     LoginProgress {
         source: String,
+        attempt: u64,
         event: crate::model::LoginEvent,
     },
 }

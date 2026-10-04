@@ -333,9 +333,12 @@ UI elements a user perceives as distinct things:
   recording and key registration, then find mux, the re-probe a working login starts. Each
   step is pending, running (the spinner), done (`✓`), failed (`✗`), or skipped (`·`), and
   moves only on what the login reports: askpass handing over the password ends the connect
-  step, the ssh child's verdict, each follow-up's own outcome, and the machine's first
-  answer after the verdict. A key login shows no boundary between connecting and
-  authenticating, so its connect step runs until the verdict. Its result keeps
+  step, the ssh child's verdict, each follow-up's own outcome, and the answer to the
+  re-probe the login itself started followed by the first mux answer after it: a mux
+  answering, no mux answering, or the search failing. The steps belong to one submission
+  on one host card; a report from a replaced submission changes nothing. A key login shows
+  no boundary between connecting and authenticating, so its connect step runs until the
+  verdict. Its result keeps
   ssh's own sanitized, bounded diagnostic and a failure category. A later probe cannot
   replace that login diagnosis. A refusal that did not receive the held password remains
   visible. A refused password, pending-login cancellation, roster removal, or

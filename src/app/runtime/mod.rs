@@ -164,12 +164,15 @@ impl Runtime {
                     self.hosts.for_each_transport_of(&machine, |transport| {
                         transport.set_login(login.clone())
                     });
+                    self.login_probes += 1;
+                    let probe = self.login_probes;
                     let effects = update(
                         &mut self.model,
                         Msg::LoginSettled {
                             source,
                             credential_held: self.env.credentials().contains(&machine),
                             machine_has_sources: self.hosts.serves_any(&machine),
+                            probe,
                         },
                     );
                     debug_assert!(effects.is_empty());
@@ -179,6 +182,7 @@ impl Runtime {
                         self.mgr.events(),
                         &self.scan_pool,
                         false,
+                        probe,
                     );
                     self.dirty = true;
                 }
@@ -188,13 +192,17 @@ impl Runtime {
                     password,
                     remember,
                     pubkey,
+                    attempt,
                     cancel,
                 } => start_login(
-                    source,
-                    login,
+                    LoginRun {
+                        source,
+                        login,
+                        attempt,
+                        write_config: remember == crate::state::Remember::SshConfig,
+                        register_key: pubkey,
+                    },
                     password,
-                    remember == crate::state::Remember::SshConfig,
-                    pubkey,
                     cancel,
                     (&self.ops, &self.op_tx),
                 ),
@@ -845,6 +853,7 @@ fn spawn_machine_probe(
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
     gate: std::sync::Arc<tokio::sync::Semaphore>,
     rescan: bool,
+    probe: u64,
 ) {
     use crate::model::source::Runner;
     tokio::spawn(async move {
@@ -885,19 +894,21 @@ fn spawn_machine_probe(
             credential_generation,
             current_credential_generation: transport.credential_generation(),
             rescan,
+            probe,
         });
     });
 }
 
 /// Probes ONE machine's reachability. A local or WSL machine is on this box, so it is
 /// reachable without an ssh round trip and connects inline; a remote machine is probed
-/// off the loop under `gate`.
+/// off the loop under `gate`. `probe` is the number a login gave this probe, or zero.
 fn probe_machine(
     machine: &str,
     hosts: &crate::model::Hosts,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
     gate: &std::sync::Arc<tokio::sync::Semaphore>,
     rescan: bool,
+    probe: u64,
 ) {
     let Some(transport) = hosts.host_transport(machine) else {
         return;
@@ -916,10 +927,18 @@ fn probe_machine(
             credential_generation: 0,
             current_credential_generation: 0,
             rescan,
+            probe,
         });
         return;
     }
-    spawn_machine_probe(machine, transport.clone_box(), tx, gate.clone(), rescan);
+    spawn_machine_probe(
+        machine,
+        transport.clone_box(),
+        tx,
+        gate.clone(),
+        rescan,
+        probe,
+    );
 }
 
 /// Probes the reachability of every MACHINE the roster serves, once each (deduped by
@@ -933,7 +952,7 @@ fn probe_machines(
     rescan: bool,
 ) {
     for machine in hosts.machines() {
-        probe_machine(&machine, hosts, tx.clone(), gate, rescan);
+        probe_machine(&machine, hosts, tx.clone(), gate, rescan, 0);
     }
 }
 
@@ -1368,6 +1387,8 @@ struct Runtime {
     prefix: u8,
     draw_observer: DrawObserver,
     spinner_start: std::time::Instant,
+    /// The last number given to a machine probe a login started.
+    login_probes: u64,
     dirty: bool,
     last_draw: std::time::Instant,
     rescan_pending: bool,
@@ -1415,15 +1436,29 @@ fn spawn_op(
 /// a PTY: its verdict is posted directly.
 ///
 /// [`State::login_run`]: crate::state::State::login_run
-fn start_login(
+/// One submitted login: what it reaches, which submission it is, and what follows a
+/// connection that worked.
+struct LoginRun {
     source: String,
     login: crate::transport::Login,
-    mut password: crate::state::SecretInput,
+    attempt: u64,
     write_config: bool,
     register_key: bool,
+}
+
+fn start_login(
+    run: LoginRun,
+    mut password: crate::state::SecretInput,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     op_sink: OpSink<'_>,
 ) {
+    let LoginRun {
+        source,
+        login,
+        attempt,
+        write_config,
+        register_key,
+    } = run;
     let ops = op_sink.0.clone();
     let tx = op_sink.1.clone();
     let password = password.take_plain();
@@ -1431,6 +1466,7 @@ fn start_login(
         let unavailable = |connect| crate::ui::switcher::OpResult::Login {
             source: source.clone(),
             login: login.clone(),
+            attempt,
             outcome: crate::ui::ops::LoginOutcome {
                 connect,
                 output: String::new(),
@@ -1460,6 +1496,7 @@ fn start_login(
             std::sync::Arc::new(move |event| {
                 let _ = tx.send(crate::ui::switcher::OpResult::LoginProgress {
                     source: source.clone(),
+                    attempt,
                     event,
                 });
             })
@@ -1488,7 +1525,7 @@ fn start_login(
         progress(crate::model::LoginEvent::Verdict(
             conversation.outcome.clone(),
         ));
-        let result = crate::ui::switcher::run_login_follow_ups(
+        let outcome = crate::ui::switcher::run_login_follow_ups(
             &source,
             &login,
             conversation,
@@ -1498,7 +1535,12 @@ fn start_login(
             progress.as_ref(),
         )
         .await;
-        let _ = tx.send(result);
+        let _ = tx.send(crate::ui::switcher::OpResult::Login {
+            source,
+            login,
+            attempt,
+            outcome,
+        });
     });
 }
 

@@ -19,9 +19,11 @@ preferences. It is seeded from either a scan or the configured source list.
 
 Login results are per-machine state separate from reachability and enumeration errors.
 A later probe cannot replace the login's own reason or its key-registration outcome.
-A login's steps are per-machine state too. They advance only on what the running login
-reports and on the first answer from that machine after a working login, and they outlive
-the running login's handle because the mux search runs after the verdict.
+A login's steps belong to one submission on one source. They advance only on reports
+carrying that submission, on the answer to the probe the working login started, and on
+the first mux answer after it. They outlive the running login's handle because the mux
+search runs after the verdict, and leave once a mux answers or a later probe of the
+machine makes settled steps describe an older state.
 
 Applying an ACTION is the domain reducer used by the app update transition. It
 folds one intent into state and returns effects for the application to unify with

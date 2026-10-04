@@ -465,8 +465,13 @@ no function, and no test, so renaming code is never a documentation change.
   step is pending, running with the spinner, done `✓`, failed `✗`, or skipped `·`, and
   changes only when the login reports it: the password handed to ssh ends the connect
   step, the ssh verdict settles both connection steps, each follow-up settles its own, and
-  the machine's first answer after a working login settles find mux. A failed step skips
-  every step after it, and the steps stay on screen with the failure.
+  find mux settles on the answer to the re-probe the working login started, then on the
+  first mux answer after it: a mux answering, no mux answering, or the search failing.
+  A failed connect or authenticate step marks every later step skipped. A failed
+  recording does not stop the key registration or find mux, and a key registration that
+  declines to run is itself skipped. The steps belong to one submission on one host
+  card, so a report from a replaced submission changes nothing. They stay on screen with
+  the failure until the machine is probed again, and leave once a mux answers.
 - **FR-B28** - Submitting creates a pending password in process memory and runs only the
   submitted login with it. Success promotes that exact credential for the machine only
   when that login actually requested the password;

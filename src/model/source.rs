@@ -75,6 +75,17 @@ pub enum RunError {
     Other(String),
 }
 
+/// The text of a failure with the exit line [`RunError::Exit`] appends taken off its end,
+/// leaving what the command itself wrote.
+pub fn without_exit_line(text: &str) -> &str {
+    let trimmed = text.trim_end();
+    match trimmed.rsplit_once('\n') {
+        Some((head, last)) if last.starts_with("command exited with status ") => head,
+        None if trimmed.starts_with("command exited with status ") => "",
+        _ => trimmed,
+    }
+}
+
 /// Runs an external command and returns its stdout. A trait so the source layer
 /// is testable without spawning processes.
 #[async_trait]

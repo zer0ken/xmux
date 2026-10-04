@@ -66,6 +66,8 @@ pub struct Conversation {
 #[derive(Clone)]
 pub struct RunningLogin {
     pub source: String,
+    /// The submission this handle runs, so a result from a replaced one is told apart.
+    pub attempt: u64,
     cancel: Arc<AtomicBool>,
 }
 
@@ -74,11 +76,12 @@ impl RunningLogin {
         self.cancel.store(true, Ordering::Release);
     }
 
-    pub(crate) fn pending(source: String) -> (Self, Arc<AtomicBool>) {
+    pub(crate) fn pending(source: String, attempt: u64) -> (Self, Arc<AtomicBool>) {
         let cancel = Arc::new(AtomicBool::new(false));
         (
             Self {
                 source,
+                attempt,
                 cancel: cancel.clone(),
             },
             cancel,
@@ -89,6 +92,7 @@ impl RunningLogin {
     pub(crate) fn parked(source: &str) -> Self {
         Self {
             source: source.to_string(),
+            attempt: 0,
             cancel: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -99,7 +103,7 @@ pub fn start_login(
     command: crate::transport::CommandSpec,
     timeout: Duration,
 ) -> (RunningLogin, tokio::sync::oneshot::Receiver<Conversation>) {
-    let (handle, cancel) = RunningLogin::pending(source.clone());
+    let (handle, cancel) = RunningLogin::pending(source.clone(), 0);
     let done_rx = start_login_with_cancel(source, command, timeout, cancel, Box::new(|| {}));
     (handle, done_rx)
 }
@@ -290,10 +294,11 @@ pub(crate) fn classify_failure(output: &str, password_supplied: bool) -> UnlockO
     classify_failure_with_host_key(output, password_supplied, None)
 }
 
-/// Categorizes a probe's ssh text the way a login failure is categorized. A probe never
-/// carries a password, so a refusal reads as a refused authentication.
-pub fn classify_probe(output: &str) -> UnlockOutcome {
-    classify_failure_with_host_key(output, false, None)
+/// Categorizes a probe's raw ssh text the way a login failure is categorized.
+/// `password_supplied` says whether the probe handed ssh the held password, which is
+/// what makes a refusal a refused password rather than a refused authentication.
+pub fn classify_probe(output: &str, password_supplied: bool) -> UnlockOutcome {
+    classify_failure_with_host_key(output, password_supplied, None)
 }
 
 fn classify_failure_with_host_key(

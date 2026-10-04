@@ -52,22 +52,44 @@ pub enum LoginEvent {
     Saved(Result<(), String>),
 }
 
-/// The steps of one login and where each stands, advanced only by what the login itself
-/// reports. ssh reports no boundary between connecting and authenticating unless it asks
-/// for a password, so a key login holds the connect step until its verdict.
+/// What a machine answered when asked for its muxes after a working login.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MuxAnswer {
+    /// A mux answered with its sessions.
+    Found,
+    /// The machine answered, and no mux xmux drives answered on it.
+    NoMux,
+    /// Asking failed, for this reason.
+    Failed(String),
+}
+
+/// The steps of one login attempt and where each stands, advanced only by what that
+/// attempt reports. ssh reports no boundary between connecting and authenticating unless
+/// it asks for a password, so a key login holds the connect step until its verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginProgress {
+    /// Which submission these steps belong to. An event carrying another attempt is from
+    /// a login this one replaced, and changes nothing here.
+    pub attempt: u64,
     pub steps: Vec<StepRow>,
     /// `address:port` as submitted, or `None` when ssh resolves the address itself.
     pub target: Option<String>,
     pub user: Option<String>,
     pub password: bool,
+    /// The machine probe a working login started. Only that probe's answer, and the mux
+    /// answers that follow it, settle the mux search: an answer to a probe already in
+    /// flight says nothing about what the login changed.
+    pub probe: Option<u64>,
+    /// Whether that probe found the machine answering, so a mux answer now settles the
+    /// mux search.
+    pub machine_answered: bool,
 }
 
 impl LoginProgress {
     /// The steps a submitted login will run: the two connection steps, the follow-ups the
     /// pane selected, and the mux search. Connecting starts at once.
     pub fn start(
+        attempt: u64,
         login: &crate::transport::Login,
         password: bool,
         save: bool,
@@ -94,10 +116,13 @@ impl LoginProgress {
             None => address.clone(),
         });
         Self {
+            attempt,
             steps,
             target,
             user: login.user.clone(),
             password,
+            probe: None,
+            machine_answered: false,
         }
     }
 
@@ -245,17 +270,58 @@ impl LoginProgress {
         self.advance();
     }
 
-    /// Settles the mux search when a source of the machine answers or fails.
-    pub fn found_mux(&mut self, ok: bool) {
+    /// Records the machine probe the working login started, while its mux search runs.
+    pub fn arm_probe(&mut self, probe: u64) {
         if self.state_of(LoginStep::FindMux) == Some(StepState::Running) {
-            let state = if ok {
-                StepState::Done
-            } else {
-                StepState::Failed
-            };
-            self.settle(LoginStep::FindMux, state, None);
+            self.probe = Some(probe);
         }
     }
+
+    /// Takes a machine probe's answer. Returns `false` when the probe is not the one
+    /// this login started, which leaves every step as it was.
+    pub fn probe_answered(&mut self, probe: u64, err: Option<&str>) -> bool {
+        if self.probe != Some(probe) {
+            return false;
+        }
+        match err {
+            Some(reason) => self.settle(
+                LoginStep::FindMux,
+                StepState::Failed,
+                Some(first_line(reason)),
+            ),
+            None => self.machine_answered = true,
+        }
+        true
+    }
+
+    /// True while the mux search waits for a mux answer it may take.
+    pub fn awaiting_mux(&self) -> bool {
+        self.machine_answered && self.state_of(LoginStep::FindMux) == Some(StepState::Running)
+    }
+
+    /// Settles the mux search from the first mux answer after the login's own probe.
+    pub fn found_mux(&mut self, answer: &MuxAnswer) {
+        if !self.awaiting_mux() {
+            return;
+        }
+        let (state, note) = match answer {
+            MuxAnswer::Found => (StepState::Done, None),
+            MuxAnswer::NoMux => (StepState::Failed, Some("no mux answered".to_string())),
+            MuxAnswer::Failed(reason) => (StepState::Failed, Some(first_line(reason))),
+        };
+        self.settle(LoginStep::FindMux, state, note);
+    }
+}
+
+/// The first non-empty line of a reason, which names the failure; the whole text stays
+/// on the host screen.
+fn first_line(reason: &str) -> String {
+    reason
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 /// A login pane input field a failure can be traced to.
@@ -293,16 +359,27 @@ impl LoginFailure {
         }
     }
 
-    /// The failure a probe reported, categorized the way a login failure is. A probe
-    /// never carries a password, so a refusal reads as a refused authentication.
+    /// The failure a probe reported, categorized the way a login failure is. The probe's
+    /// error is xmux's summary over ssh's text and the exit line xmux appends, so it is
+    /// parted first: the category is read from ssh's text alone, a probe that handed ssh
+    /// the held password keeps its refusal a refused password, and only ssh's text is
+    /// shown as ssh's.
     pub fn of_probe(err: &str) -> Self {
         use crate::link::unlock::UnlockOutcome;
-        match crate::link::unlock::classify_probe(err) {
-            UnlockOutcome::Failed { kind, reason } => Self::split(Some(kind), &reason, err),
+        let explained = crate::transport::diagnostic::split_explained(err.trim());
+        let raw = crate::model::source::without_exit_line(explained.detail).trim();
+        match crate::link::unlock::classify_probe(raw, explained.password_supplied) {
+            UnlockOutcome::Failed { kind, reason } => {
+                let mut failure = Self::split(Some(kind), &reason, raw);
+                if let Some(summary) = explained.summary {
+                    failure.verdict = summary.to_string();
+                }
+                failure
+            }
             other => Self {
                 kind: None,
                 verdict: other.reason().unwrap_or_default().to_string(),
-                raw: err.trim().to_string(),
+                raw: raw.to_string(),
             },
         }
     }
@@ -464,7 +541,7 @@ mod tests {
     fn each_reported_event_advances_exactly_the_step_it_names() {
         use LoginStep::*;
         use StepState::*;
-        let mut p = LoginProgress::start(&login(), true, true, true);
+        let mut p = LoginProgress::start(1, &login(), true, true, true);
         assert_eq!(p.target.as_deref(), Some("10.0.4.12:2222"));
         assert_eq!(
             states(&p),
@@ -487,7 +564,9 @@ mod tests {
         p.finish(&ok_outcome(RegistrationOutcome::Registered));
         assert_eq!(states(&p)[3..], [(RegisterKey, Done), (FindMux, Running)]);
         assert!(p.running());
-        p.found_mux(true);
+        p.arm_probe(7);
+        assert!(p.probe_answered(7, None));
+        p.found_mux(&MuxAnswer::Found);
         assert!(p.succeeded());
         assert!(!p.running());
     }
@@ -496,7 +575,8 @@ mod tests {
     fn a_key_login_settles_both_connection_steps_at_its_verdict() {
         use LoginStep::*;
         use StepState::*;
-        let mut p = LoginProgress::start(&crate::transport::Login::default(), false, false, false);
+        let mut p =
+            LoginProgress::start(1, &crate::transport::Login::default(), false, false, false);
         assert_eq!(p.target, None);
         p.apply(&LoginEvent::Verdict(UnlockOutcome::Ok));
         assert_eq!(
@@ -513,7 +593,7 @@ mod tests {
             kind,
             reason: String::new(),
         };
-        let mut p = LoginProgress::start(&login(), true, false, true);
+        let mut p = LoginProgress::start(1, &login(), true, false, true);
         p.apply(&LoginEvent::Verdict(failed(FailureKind::Unreachable)));
         assert_eq!(
             states(&p),
@@ -525,7 +605,7 @@ mod tests {
             ]
         );
 
-        let mut p = LoginProgress::start(&login(), true, false, false);
+        let mut p = LoginProgress::start(1, &login(), true, false, false);
         p.apply(&LoginEvent::Verdict(failed(FailureKind::WrongPassword)));
         assert_eq!(
             states(&p),
@@ -533,11 +613,11 @@ mod tests {
         );
 
         // A timeout has no step of its own: it fails whichever step was running.
-        let mut p = LoginProgress::start(&login(), true, false, false);
+        let mut p = LoginProgress::start(1, &login(), true, false, false);
         p.apply(&LoginEvent::PasswordAsked);
         p.apply(&LoginEvent::Verdict(failed(FailureKind::Timeout)));
         assert_eq!(states(&p)[1], (Authenticate, Failed));
-        let mut p = LoginProgress::start(&login(), false, false, false);
+        let mut p = LoginProgress::start(1, &login(), false, false, false);
         p.apply(&LoginEvent::Verdict(failed(FailureKind::Timeout)));
         assert_eq!(states(&p)[0], (Connect, Failed));
     }
@@ -546,7 +626,7 @@ mod tests {
     fn follow_ups_settle_with_their_own_outcome() {
         use LoginStep::*;
         use StepState::*;
-        let mut p = LoginProgress::start(&login(), false, true, true);
+        let mut p = LoginProgress::start(1, &login(), false, true, true);
         p.apply(&LoginEvent::Verdict(UnlockOutcome::Ok));
         p.apply(&LoginEvent::Saved(Err("permission denied".into())));
         p.finish(&LoginOutcome {
@@ -558,9 +638,61 @@ mod tests {
         assert_eq!(states(&p)[3], (RegisterKey, Skipped));
         assert_eq!(p.steps[3].note.as_deref(), Some("no shell"));
         assert_eq!(states(&p)[4], (FindMux, Running));
-        p.found_mux(false);
+        p.arm_probe(7);
+        p.probe_answered(7, None);
+        p.found_mux(&MuxAnswer::NoMux);
         assert_eq!(states(&p)[4], (FindMux, Failed));
+        assert_eq!(p.steps[4].note.as_deref(), Some("no mux answered"));
         assert!(!p.succeeded());
+    }
+
+    #[test]
+    fn a_probe_failure_is_read_from_ssh_text_and_keeps_a_refused_held_password() {
+        // The probe error is xmux's summary over ssh's text and xmux's exit line.
+        let err = crate::transport::diagnostic::explain(
+            "alice@box: Permission denied (publickey,password).\ncommand exited with status 255",
+            true,
+        );
+        let failure = LoginFailure::of_probe(&err);
+        assert_eq!(failure.kind, Some(FailureKind::WrongPassword));
+        assert_eq!(failure.verdict, "the password was refused");
+        assert_eq!(
+            failure.raw, "alice@box: Permission denied (publickey,password).",
+            "only ssh's own text reads as ssh's"
+        );
+        assert_eq!(failure.fields(), [LoginField::Password]);
+
+        let err = crate::transport::diagnostic::explain(
+            "alice@box: Permission denied (publickey).\ncommand exited with status 255",
+            false,
+        );
+        let failure = LoginFailure::of_probe(&err);
+        assert_eq!(failure.kind, Some(FailureKind::AuthenticationRefused));
+        assert_eq!(failure.raw, "alice@box: Permission denied (publickey).");
+    }
+
+    #[test]
+    fn only_the_logins_own_probe_and_what_follows_it_settle_the_mux_search() {
+        use LoginStep::*;
+        use StepState::*;
+        let mut p = LoginProgress::start(1, &login(), false, false, false);
+        p.apply(&LoginEvent::Verdict(UnlockOutcome::Ok));
+        assert_eq!(p.state_of(FindMux), Some(Running));
+        // An answer before the login armed its probe, and an answer to another probe,
+        // say nothing about what the login changed.
+        p.found_mux(&MuxAnswer::Found);
+        assert_eq!(p.state_of(FindMux), Some(Running));
+        p.arm_probe(4);
+        assert!(!p.probe_answered(3, None));
+        p.found_mux(&MuxAnswer::Found);
+        assert_eq!(p.state_of(FindMux), Some(Running));
+        // The login's own probe failing settles the search with its reason.
+        assert!(p.probe_answered(4, Some("the host could not be reached\nssh: connect")));
+        assert_eq!(p.state_of(FindMux), Some(Failed));
+        assert_eq!(
+            p.steps[2].note.as_deref(),
+            Some("the host could not be reached")
+        );
     }
 
     #[test]

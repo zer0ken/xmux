@@ -20,8 +20,8 @@ pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
 }
 
 /// Finishes a login the app already ran: takes the ssh child's conversation, runs the
-/// pane's two choices after a connection that worked, and returns the [`OpResult`] the
-/// switcher folds. Each follow-up reports through `progress` as it settles, so the pane's
+/// pane's two choices after a connection that worked, and returns the [`LoginOutcome`]
+/// the switcher folds. Each follow-up reports through `progress` as it settles, so the pane's
 /// steps advance with the work rather than all at once. Pure over `ops` (no switcher
 /// state), so it runs in a detached task off the event loop like [`run_op`].
 pub async fn run_login_follow_ups(
@@ -32,7 +32,7 @@ pub async fn run_login_follow_ups(
     register_key: bool,
     ops: &dyn Ops,
     progress: &(dyn Fn(crate::model::LoginEvent) + Send + Sync),
-) -> OpResult {
+) -> LoginOutcome {
     let connect = conversation.outcome;
     let mut saved = None;
     let mut registration = RegistrationOutcome::NotRequested;
@@ -49,14 +49,10 @@ pub async fn run_login_follow_ups(
             registration = ops.register_login_key(source, login, register).await;
         }
     }
-    OpResult::Login {
-        source: source.to_string(),
-        login: login.clone(),
-        outcome: LoginOutcome {
-            connect,
-            output: conversation.output,
-            saved,
-            registration,
-        },
+    LoginOutcome {
+        connect,
+        output: conversation.output,
+        saved,
+        registration,
     }
 }
