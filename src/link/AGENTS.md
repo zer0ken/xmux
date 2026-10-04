@@ -119,6 +119,9 @@ and the composed control argv.
   refused password, unreachable host, host-key mismatch, server close after
   authentication, timeout, cancellation, or other failure. That result is separate from
   later probe failures. A refusal that did not receive a held password remains visible.
+  The worker reports the moment askpass hands the held password to ssh, since a server
+  asks only after it accepted the connection; that is the one boundary between connecting
+  and authenticating ssh shows without raising its log level.
 - A command removes a credential only when that command received its token's password,
   exited with ssh's connection-failure status, and emitted ssh's own authentication
   refusal line. Removal is token-scoped, so a late result cannot remove a newer login.

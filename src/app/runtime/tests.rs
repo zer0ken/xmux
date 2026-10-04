@@ -1080,17 +1080,20 @@ impl crate::ui::switcher::Ops for CreateRecordingOps {
         Ok(None)
     }
 
-    async fn login_follow_ups(
+    fn write_login_stanza(
         &self,
         _source: &str,
         _login: &crate::transport::Login,
-        _write_config: bool,
-        _register: Option<crate::ui::ops::KeyRegistration>,
-    ) -> (crate::ui::ops::RegistrationOutcome, Vec<String>) {
-        (
-            crate::ui::ops::RegistrationOutcome::NotRequested,
-            Vec::new(),
-        )
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    async fn register_login_key(
+        &self,
+        _source: &str,
+        _login: &crate::transport::Login,
+        _register: crate::ui::ops::KeyRegistration,
+    ) -> crate::ui::ops::RegistrationOutcome {
+        crate::ui::ops::RegistrationOutcome::NotRequested
     }
 }
 
@@ -4647,12 +4650,12 @@ fn feed_login_offers_the_remember_choice_only_after_a_value_changes() {
     s.feed_login("prod", b"x");
     let d = s.login.as_ref().unwrap();
     assert!(d.changed(), "the address was edited");
-    assert!(d.stops().contains(&LoginFocus::RememberSshConfig));
+    assert!(d.stops(false).contains(&LoginFocus::RememberSshConfig));
     // Undoing the edit takes the choice away again.
     s.feed_login("prod", b"\x7f");
     let d = s.login.as_ref().unwrap();
     assert!(!d.changed());
-    assert!(!d.stops().contains(&LoginFocus::RememberSshConfig));
+    assert!(!d.stops(false).contains(&LoginFocus::RememberSshConfig));
 }
 
 #[test]

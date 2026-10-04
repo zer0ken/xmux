@@ -1303,6 +1303,12 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                 if rt.on_config_check()
                     || !rt.model.state.scanning.is_empty()
                     || !rt.model.state.chrome.spinner.is_empty()
+                    || rt
+                        .model
+                        .state
+                        .login_progress
+                        .values()
+                        .any(crate::model::LoginProgress::running)
                 {
                     rt.dirty = true;
                 }
@@ -1422,42 +1428,50 @@ fn start_login(
     let tx = op_sink.1.clone();
     let password = password.take_plain();
     tokio::spawn(async move {
+        let unavailable = |connect| crate::ui::switcher::OpResult::Login {
+            source: source.clone(),
+            login: login.clone(),
+            outcome: crate::ui::ops::LoginOutcome {
+                connect,
+                output: String::new(),
+                saved: None,
+                registration: crate::ui::ops::RegistrationOutcome::NotRequested,
+            },
+        };
         let command = match ops.login_command(&source, &login, password).await {
             Ok(Some(command)) => command,
             Ok(None) => {
-                let _ = tx.send(crate::ui::switcher::OpResult::Login {
-                    source,
-                    login,
-                    outcome: crate::ui::ops::LoginOutcome {
-                        connect: crate::link::unlock::UnlockOutcome::Unavailable,
-                        registration: crate::ui::ops::RegistrationOutcome::NotRequested,
-                        notes: Vec::new(),
-                    },
-                });
+                let _ = tx.send(unavailable(crate::link::unlock::UnlockOutcome::Unavailable));
                 return;
             }
             Err(error) => {
-                let _ = tx.send(crate::ui::switcher::OpResult::Login {
-                    source,
-                    login,
-                    outcome: crate::ui::ops::LoginOutcome {
-                        connect: crate::link::unlock::UnlockOutcome::Failed {
-                            kind: crate::link::unlock::FailureKind::Other,
-                            reason: error.to_string(),
-                        },
-                        registration: crate::ui::ops::RegistrationOutcome::NotRequested,
-                        notes: Vec::new(),
-                    },
-                });
+                let _ = tx.send(unavailable(crate::link::unlock::UnlockOutcome::Failed {
+                    kind: crate::link::unlock::FailureKind::Other,
+                    reason: error.to_string(),
+                }));
                 return;
             }
         };
+        // Every step boundary rides the same channel as the verdict, so the app sees them
+        // in the order they happened and before the result that ends the login.
+        let progress = {
+            let tx = tx.clone();
+            let source = source.clone();
+            std::sync::Arc::new(move |event| {
+                let _ = tx.send(crate::ui::switcher::OpResult::LoginProgress {
+                    source: source.clone(),
+                    event,
+                });
+            })
+        };
+        let asked = progress.clone();
         tracing::info!(source = %source, "login started");
         let done = crate::link::unlock::start_login_with_cancel(
             source.clone(),
             command,
             crate::link::unlock::LOGIN_IDLE,
             cancel,
+            Box::new(move || asked(crate::model::LoginEvent::PasswordAsked)),
         );
         let conversation = done
             .await
@@ -1470,18 +1484,18 @@ fn start_login(
                 shell: None,
                 password_supplied: false,
             });
-        let connect = conversation.outcome;
-        tracing::info!(source = %source, outcome = ?connect, "login finished");
-        let register = register_key.then_some(crate::ui::ops::KeyRegistration {
-            shell: conversation.shell,
-        });
+        tracing::info!(source = %source, outcome = ?conversation.outcome, "login finished");
+        progress(crate::model::LoginEvent::Verdict(
+            conversation.outcome.clone(),
+        ));
         let result = crate::ui::switcher::run_login_follow_ups(
             &source,
             &login,
-            connect,
+            conversation,
             write_config,
-            register,
+            register_key,
             ops.as_ref(),
+            progress.as_ref(),
         )
         .await;
         let _ = tx.send(result);

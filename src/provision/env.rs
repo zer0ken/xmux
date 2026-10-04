@@ -1068,28 +1068,27 @@ impl Ops for EnvOps {
         Ok(transport.login_argv(crate::transport::vocab::MARKED_SHELL_PROBE))
     }
 
-    async fn login_follow_ups(
+    fn write_login_stanza(
         &self,
         source: &str,
         login: &crate::transport::Login,
-        write_config: bool,
-        register: Option<KeyRegistration>,
-    ) -> (RegistrationOutcome, Vec<String>) {
-        let mut notes = Vec::new();
-        if write_config {
-            if let Err(e) = write_ssh_config_stanza(crate::session::machine_of(source), login) {
-                notes.push(format!("ssh config not written: {e}"));
+    ) -> Result<(), String> {
+        write_ssh_config_stanza(crate::session::machine_of(source), login)
+            .map_err(|e| e.to_string())
+    }
+
+    async fn register_login_key(
+        &self,
+        source: &str,
+        login: &crate::transport::Login,
+        register: KeyRegistration,
+    ) -> RegistrationOutcome {
+        let registration = match self.register_key(source, login, register).await {
+            Ok(()) => RegistrationOutcome::Registered,
+            Err(error) if error.starts_with("skipped: ") => {
+                RegistrationOutcome::Skipped(error.trim_start_matches("skipped: ").to_string())
             }
-        }
-        let registration = match register {
-            None => RegistrationOutcome::NotRequested,
-            Some(register) => match self.register_key(source, login, register).await {
-                Ok(()) => RegistrationOutcome::Registered,
-                Err(error) if error.starts_with("skipped: ") => {
-                    RegistrationOutcome::Skipped(error.trim_start_matches("skipped: ").to_string())
-                }
-                Err(error) => RegistrationOutcome::Failed(error),
-            },
+            Err(error) => RegistrationOutcome::Failed(error),
         };
         match &registration {
             RegistrationOutcome::Registered => {
@@ -1103,7 +1102,7 @@ impl Ops for EnvOps {
             }
             RegistrationOutcome::NotRequested => {}
         }
-        (registration, notes)
+        registration
     }
 }
 

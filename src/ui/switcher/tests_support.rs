@@ -24,13 +24,19 @@ impl Ops for NoopOps {
     ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
         unreachable!("noop_ops is only constructed, never called")
     }
-    async fn login_follow_ups(
+    fn write_login_stanza(
         &self,
         _source: &str,
         _login: &crate::transport::Login,
-        _write_config: bool,
-        _register: Option<crate::ui::ops::KeyRegistration>,
-    ) -> (crate::ui::ops::RegistrationOutcome, Vec<String>) {
+    ) -> Result<(), String> {
+        unreachable!("noop_ops is only constructed, never called")
+    }
+    async fn register_login_key(
+        &self,
+        _source: &str,
+        _login: &crate::transport::Login,
+        _register: crate::ui::ops::KeyRegistration,
+    ) -> crate::ui::ops::RegistrationOutcome {
         unreachable!("noop_ops is only constructed, never called")
     }
 }

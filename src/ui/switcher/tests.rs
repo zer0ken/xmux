@@ -50,17 +50,20 @@ impl Ops for RecordOps {
             "true".to_string()
         ])))
     }
-    async fn login_follow_ups(
+    fn write_login_stanza(
         &self,
         _source: &str,
         _login: &crate::transport::Login,
-        _write_config: bool,
-        _register: Option<crate::ui::ops::KeyRegistration>,
-    ) -> (crate::ui::ops::RegistrationOutcome, Vec<String>) {
-        (
-            crate::ui::ops::RegistrationOutcome::NotRequested,
-            Vec::new(),
-        )
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    async fn register_login_key(
+        &self,
+        _source: &str,
+        _login: &crate::transport::Login,
+        _register: crate::ui::ops::KeyRegistration,
+    ) -> crate::ui::ops::RegistrationOutcome {
+        crate::ui::ops::RegistrationOutcome::NotRequested
     }
 }
 
@@ -193,6 +196,54 @@ impl Harness {
             })
             .unwrap();
         self.plan = next.expect("draw produced a render plan");
+    }
+
+    /// Draws with the terminal view holding focus, the state in which the login pane
+    /// takes keys.
+    fn draw_terminal_focused(&mut self) {
+        let sw = &self.sw;
+        let state = &self.state;
+        let previous = self.plan.clone();
+        let mut next = None;
+        self.term
+            .draw(|f| {
+                let plan = sw.layout(f.area(), auto_nav(NAV_WIDTH, f.area()), state, &previous);
+                sw.render(f, None, true, state, &plan);
+                next = Some(plan);
+            })
+            .unwrap();
+        self.plan = next.expect("draw produced a render plan");
+    }
+
+    /// The terminal-view row holding `text`, with the style of its first cell.
+    fn view_cell_of(&self, text: &str) -> Option<(u16, ratatui::style::Style)> {
+        let buf = self.buf();
+        let first = NAV_WIDTH + 1;
+        let needle: Vec<char> = text.chars().collect();
+        for y in 0..buf.area.height {
+            let mut x = first;
+            while (x as usize) + needle.len() <= buf.area.width as usize {
+                if needle
+                    .iter()
+                    .enumerate()
+                    .all(|(i, &c)| buf[(x + i as u16, y)].symbol() == c.to_string())
+                {
+                    return Some((y, buf[(x, y)].style()));
+                }
+                x += 1;
+            }
+        }
+        None
+    }
+
+    /// The terminal-view text of row `y`, trimmed.
+    fn view_row(&self, y: u16) -> String {
+        let buf = self.buf();
+        (NAV_WIDTH + 1..buf.area.width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect::<String>()
+            .trim()
+            .to_string()
     }
 
     async fn key(&mut self, code: KeyCode) {
@@ -1548,7 +1599,8 @@ async fn login_and_key_registration_results_are_one_toast_kept_for_the_host() {
             outcome: LoginOutcome {
                 connect: UnlockOutcome::Ok,
                 registration: RegistrationOutcome::Registered,
-                notes: Vec::new(),
+                output: String::new(),
+                saved: None,
             },
         },
         &mut h.state,
@@ -1594,7 +1646,8 @@ async fn a_failed_login_and_a_skipped_key_are_a_toast_that_stays() {
                     reason: "the password was refused\nalice@pwbox: Permission denied".into(),
                 },
                 registration: RegistrationOutcome::NotRequested,
-                notes: Vec::new(),
+                output: String::new(),
+                saved: None,
             },
         },
         &mut h.state,
@@ -1615,7 +1668,8 @@ async fn a_failed_login_and_a_skipped_key_are_a_toast_that_stays() {
             outcome: LoginOutcome {
                 connect: UnlockOutcome::Ok,
                 registration: RegistrationOutcome::Skipped("no key to send".into()),
-                notes: Vec::new(),
+                output: String::new(),
+                saved: None,
             },
         },
         &mut h.state,
@@ -1640,7 +1694,8 @@ async fn a_failed_login_and_a_skipped_key_are_a_toast_that_stays() {
                     reason: "cancelled".into(),
                 },
                 registration: RegistrationOutcome::NotRequested,
-                notes: Vec::new(),
+                output: String::new(),
+                saved: None,
             },
         },
         &mut h.state,
@@ -1729,7 +1784,8 @@ async fn the_verdict_takes_the_login_screen_down() {
                     reason: "the password was refused\nalice@pwbox: Permission denied (publickey,password).".into(),
                 },
                 registration: crate::ui::ops::RegistrationOutcome::NotRequested,
-                notes: Vec::new(),
+                output: String::new(),
+                saved: None,
             },
         },
         &mut h.state,
@@ -1784,7 +1840,8 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
             outcome: crate::ui::ops::LoginOutcome {
                 connect: UnlockOutcome::Ok,
                 registration: crate::ui::ops::RegistrationOutcome::NotRequested,
-                notes: Vec::new(),
+                output: String::new(),
+                saved: None,
             },
         },
         &mut h.state,
@@ -1824,7 +1881,8 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
                     reason: "the password was refused\nalice@pwbox: Permission denied (publickey,password).".into(),
                 },
                 registration: crate::ui::ops::RegistrationOutcome::NotRequested,
-                notes: Vec::new(),
+                output: String::new(),
+                saved: None,
             },
         },
         &mut h.state,
@@ -1834,6 +1892,272 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
         h.sw.current_host_blocked(),
         "auth failure keeps the card locked"
     );
+}
+
+/// A blocked `pwbox` whose last login ssh refused the password, with ssh's own text
+/// carrying a line before the refusal so the folded and unfolded forms differ.
+fn refused_login_harness() -> Harness {
+    use crate::link::unlock::{FailureKind, UnlockOutcome};
+    use crate::ui::ops::{LoginOutcome, OpResult, RegistrationOutcome};
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("alice@pwbox: Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    let raw = "Warning: Permanently added 'pwbox' to the list of known hosts.\nalice@pwbox: Permission denied (publickey,password).";
+    h.sw.apply_op_result(
+        OpResult::Login {
+            source: "pwbox".into(),
+            login: crate::transport::Login::default(),
+            outcome: LoginOutcome {
+                connect: UnlockOutcome::Failed {
+                    kind: FailureKind::WrongPassword,
+                    reason: format!("the password was refused\n{raw}"),
+                },
+                output: raw.into(),
+                saved: None,
+                registration: RegistrationOutcome::NotRequested,
+            },
+        },
+        &mut h.state,
+    );
+    h.state.notify.dismiss_all();
+    h
+}
+
+#[tokio::test]
+async fn a_login_failure_reads_verdict_marked_field_dim_ssh_line_then_details() {
+    let mut h = refused_login_harness();
+    h.draw();
+    let out = h.view_text();
+    let pal = crate::ui::palette::Palette::default();
+
+    let (verdict_row, verdict_style) = h
+        .view_cell_of("✗ the password was refused")
+        .unwrap_or_else(|| panic!("the verdict leads with the failure mark:\n{out}"));
+    assert_eq!(verdict_style.fg, Some(pal.error));
+    let (ssh_row, ssh_style) = h
+        .view_cell_of("alice@pwbox: Permission denied (publickey,password).")
+        .unwrap_or_else(|| panic!("ssh's own last line follows:\n{out}"));
+    assert_eq!(ssh_style.fg, Some(pal.decoration), "ssh's text is dimmed");
+    let (details_row, _) = h
+        .view_cell_of("[ ] details")
+        .unwrap_or_else(|| panic!("the details choice follows:\n{out}"));
+    assert!(verdict_row < ssh_row && ssh_row < details_row, "{out}");
+
+    // The field the failure concerns carries the mark; the others do not.
+    let (password_row, password_style) = h.view_cell_of("password").unwrap();
+    assert_eq!(password_style.fg, Some(pal.error), "{out}");
+    assert!(h.view_row(password_row).ends_with('✗'), "{out}");
+    let (address_row, address_style) = h.view_cell_of("address*").unwrap();
+    assert_eq!(address_style.fg, Some(pal.decoration));
+    assert!(!h.view_row(address_row).contains('✗'), "{out}");
+
+    // Folded: ssh's earlier lines and the host facts wait behind the choice, and the
+    // keys stay.
+    for folded in ["Warning: Permanently added", "ssh config", "ssh output"] {
+        assert!(!out.contains(folded), "{folded:?} is folded:\n{out}");
+    }
+    assert!(out.contains("re-scan every host"), "{out}");
+    assert!(
+        !out.contains(" reason "),
+        "the verdict replaces the reason row:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn the_details_choice_unfolds_ssh_text_and_host_facts() {
+    let mut h = refused_login_harness();
+    // Back-tab from the first stop wraps to the last one, which is the details choice
+    // while the pane states a failure, and Space picks it like any other choice.
+    h.state.feed_login("pwbox", b"\x1b[Z");
+    assert_eq!(
+        h.state.login.as_ref().unwrap().focus,
+        crate::state::LoginFocus::Details
+    );
+    h.state.feed_login("pwbox", b" ");
+    assert!(h.state.login.as_ref().unwrap().details);
+    h.draw();
+    let out = h.view_text();
+    assert!(out.contains("[x] details"), "{out}");
+    for unfolded in ["ssh output", "Warning: Permanently added", "ssh config"] {
+        assert!(out.contains(unfolded), "{unfolded:?} is unfolded:\n{out}");
+    }
+    h.state.feed_login("pwbox", b" ");
+    h.draw();
+    assert!(
+        !h.view_text().contains("ssh output"),
+        "Space folds it again"
+    );
+
+    // Without a failure there is nothing to unfold, so the choice is no stop.
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result("pwbox".into(), vec![], None, &mut h.state);
+    h.state.feed_login("pwbox", b"\x1b[Z");
+    assert_eq!(
+        h.state.login.as_ref().unwrap().focus,
+        crate::state::LoginFocus::Submit
+    );
+}
+
+#[tokio::test]
+async fn login_steps_show_each_state_as_the_login_reports_it() {
+    use crate::link::unlock::{FailureKind, UnlockOutcome};
+    use crate::ui::ops::{LoginOutcome, OpResult, RegistrationOutcome};
+    let mut h = Harness::from_sources(&["pwbox"]);
+    h.sw.apply_source_result(
+        "pwbox".into(),
+        vec![],
+        Some("alice@pwbox: Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    let login = crate::transport::Login {
+        address: Some("10.0.4.12".into()),
+        port: Some(2222),
+        user: Some("alice".into()),
+    };
+    h.state.login_progress.insert(
+        "pwbox".into(),
+        crate::model::LoginProgress::start(&login, true, false, true),
+    );
+    h.state.login_run = Some(crate::link::unlock::RunningLogin::parked("pwbox"));
+    h.draw();
+    let spin = crate::ui::spinner_glyph(h.state.chrome.spinner_frame);
+    let row = |h: &Harness, text: &str| {
+        let (y, _) = h
+            .view_cell_of(text)
+            .unwrap_or_else(|| panic!("{text:?} is a step:\n{}", h.view_text()));
+        h.view_row(y)
+    };
+    assert_eq!(
+        row(&h, "connect 10.0.4.12:2222"),
+        format!("{spin} connect 10.0.4.12:2222")
+    );
+    assert_eq!(
+        row(&h, "authenticate as alice"),
+        "authenticate as alice with the password",
+        "a pending step has a blank mark"
+    );
+    assert!(
+        !h.view_text().contains("✗"),
+        "the probe failure the login answers is no failure of its own:\n{}",
+        h.view_text()
+    );
+    assert!(
+        !h.view_text().contains("ssh config"),
+        "nor are its host facts:\n{}",
+        h.view_text()
+    );
+
+    h.sw.apply_op_result(
+        OpResult::LoginProgress {
+            source: "pwbox".into(),
+            event: crate::model::LoginEvent::PasswordAsked,
+        },
+        &mut h.state,
+    );
+    h.draw();
+    assert_eq!(
+        row(&h, "connect 10.0.4.12:2222"),
+        "✓ connect 10.0.4.12:2222"
+    );
+    assert_eq!(
+        row(&h, "authenticate as alice"),
+        format!("{spin} authenticate as alice with the password")
+    );
+
+    h.sw.apply_op_result(
+        OpResult::Login {
+            source: "pwbox".into(),
+            login,
+            outcome: LoginOutcome {
+                connect: UnlockOutcome::Failed {
+                    kind: FailureKind::WrongPassword,
+                    reason: "the password was refused\nalice@pwbox: Permission denied".into(),
+                },
+                output: "alice@pwbox: Permission denied".into(),
+                saved: None,
+                registration: RegistrationOutcome::NotRequested,
+            },
+        },
+        &mut h.state,
+    );
+    h.state.notify.dismiss_all();
+    h.draw();
+    assert_eq!(
+        row(&h, "connect 10.0.4.12:2222"),
+        "✓ connect 10.0.4.12:2222"
+    );
+    assert_eq!(
+        row(&h, "authenticate as alice"),
+        "✗ authenticate as alice with the password"
+    );
+    assert_eq!(
+        row(&h, "· register my public key"),
+        "· register my public key"
+    );
+    assert_eq!(row(&h, "find mux"), "· find mux");
+    let (steps_end, _) = h.view_cell_of("· find mux").unwrap();
+    let (verdict, _) = h.view_cell_of("✗ the password was refused").unwrap();
+    assert!(steps_end < verdict, "the steps lead to the verdict");
+}
+
+#[tokio::test]
+async fn login_inputs_are_grouped_parted_by_a_rule_and_the_focused_name_inverts() {
+    let mut h = refused_login_harness();
+    h.state.login = Some(crate::state::LoginDraft {
+        source: "pwbox".into(),
+        address: "10.0.4.12".into(),
+        port: "22".into(),
+        username: "alice".into(),
+        focus: crate::state::LoginFocus::Username,
+        ..Default::default()
+    });
+    h.draw_terminal_focused();
+    let out = h.view_text();
+    let at = |text: &str| {
+        h.view_cell_of(text)
+            .unwrap_or_else(|| panic!("{text:?}:\n{out}"))
+            .0
+    };
+    let connection = at("connection");
+    let after = at("after login");
+    let rule = at("──────────");
+    assert!(
+        connection < at("address*") && at("password") < after,
+        "{out}"
+    );
+    assert!(after < at("pubkey") && at("[ login ]") < rule, "{out}");
+    assert!(rule < at("the password was refused"), "{out}");
+
+    let reversed = |h: &Harness, text: &str| {
+        h.view_cell_of(text)
+            .unwrap()
+            .1
+            .add_modifier
+            .contains(Modifier::REVERSED)
+    };
+    assert!(
+        reversed(&h, "username*"),
+        "the focused name inverts:\n{out}"
+    );
+    assert!(!reversed(&h, "address*"), "other names do not");
+    assert!(
+        !reversed(&h, " username*"),
+        "the padding before the name stays plain"
+    );
+
+    // A stop without a name inverts its own text.
+    h.state.login.as_mut().unwrap().focus = crate::state::LoginFocus::Submit;
+    h.draw_terminal_focused();
+    assert!(reversed(&h, "[ login ]"));
+    assert!(!reversed(&h, "username*"));
+
+    // The pane takes keys only while the terminal view is focused, and says so.
+    h.draw();
+    assert!(!reversed(&h, "[ login ]"));
 }
 
 #[tokio::test]

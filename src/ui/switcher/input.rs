@@ -563,6 +563,7 @@ impl Switcher {
                     .toast("new session", vec![Note::new(Level::Error, message)]);
                 None
             }
+            OpFollow::Nothing => None,
             // A successful unlock promoted this machine's credential. Only this
             // machine's reach changed, so the app re-probes just it. Either way one toast
             // reports the login and the follow-ups it ran; the user retypes the password
@@ -603,7 +604,7 @@ impl Switcher {
 }
 
 /// The report lines a finished login makes: the connection's verdict, then the public-key
-/// registration it ran, then any follow-up that failed. A cancelled login reports nothing
+/// registration it ran, then an ssh config recording that failed. A cancelled login reports nothing
 /// about the connection, because the user ended it and knows how it ended.
 pub(crate) fn login_notes(outcome: &crate::ui::ops::LoginOutcome) -> Vec<Note> {
     use crate::link::unlock::{FailureKind, UnlockOutcome};
@@ -639,11 +640,11 @@ pub(crate) fn login_notes(outcome: &crate::ui::ops::LoginOutcome) -> Vec<Note> {
         )),
         RegistrationOutcome::NotRequested => {}
     }
-    notes.extend(
-        outcome
-            .notes
-            .iter()
-            .map(|note| Note::new(Level::Error, note.clone())),
-    );
+    if let Some(Err(reason)) = &outcome.saved {
+        notes.push(Note::new(
+            Level::Error,
+            format!("ssh config not written: {reason}"),
+        ));
+    }
     notes
 }

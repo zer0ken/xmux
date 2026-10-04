@@ -60,4 +60,6 @@ pub enum OpFollow {
         login: crate::transport::Login,
         outcome: LoginOutcome,
     },
+    /// The state took the result in whole; the rows and the cursor stay as they are.
+    Nothing,
 }

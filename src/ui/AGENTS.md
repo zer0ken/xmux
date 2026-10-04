@@ -135,6 +135,19 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   retyped. The pane shows the login's own categorized ssh reason separately from later
   probe errors. Key registration reports through the login's toast and remains in the
   host information after the pane gives way to sessions. A success re-probes that host.
+- The pane's inputs come in two groups, the connection values and what happens after a
+  login worked, and a rule parts them from what the pane reports back. The focused stop's
+  name is reversed (a stop with no name reverses its own text), only while the pane takes
+  keys. Below the rule, a login's steps (connect, authenticate, the selected follow-ups,
+  find mux) each carry one state mark: blank for pending, the spinner for running, `✓`,
+  `✗`, or `·` for skipped. A step moves only on an event the login itself reported, never
+  on a timer, and the steps stay on screen after one of them failed.
+- A failure on the pane reads in one order: the verdict in plain words, the `✗` mark on
+  the field it concerns, ssh's own last line dimmed, and a details choice that unfolds
+  ssh's whole text with the host facts the other screens state. The details choice is a
+  stop only while the pane states a failure, and Space picks it like any other choice.
+  While a login's steps run the facts stay folded, since they describe the probe failure
+  that login is answering.
 - The dump should reflect the same split view the main draw path renders.
 - The nav's two bands are parted by the ROOM between them while the cards can spare a row
   for it, and by a rule once they cannot: a gap that scrolls out of view parts nothing a

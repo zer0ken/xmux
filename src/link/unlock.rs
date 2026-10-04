@@ -100,19 +100,23 @@ pub fn start_login(
     timeout: Duration,
 ) -> (RunningLogin, tokio::sync::oneshot::Receiver<Conversation>) {
     let (handle, cancel) = RunningLogin::pending(source.clone());
-    let done_rx = start_login_with_cancel(source, command, timeout, cancel);
+    let done_rx = start_login_with_cancel(source, command, timeout, cancel, Box::new(|| {}));
     (handle, done_rx)
 }
 
+/// Runs the login off the calling thread. `password_asked` runs once, the moment askpass
+/// hands the held password to ssh: a server asks only after it accepted the connection,
+/// so that moment is the one boundary between connecting and authenticating ssh shows.
 pub(crate) fn start_login_with_cancel(
     source: String,
     command: crate::transport::CommandSpec,
     timeout: Duration,
     cancel: Arc<AtomicBool>,
+    password_asked: Box<dyn FnOnce() + Send>,
 ) -> tokio::sync::oneshot::Receiver<Conversation> {
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
-        let _ = done_tx.send(run(source, command, timeout, cancel));
+        let _ = done_tx.send(run(source, command, timeout, cancel, password_asked));
     });
     done_rx
 }
@@ -122,7 +126,9 @@ fn run(
     command: crate::transport::CommandSpec,
     timeout: Duration,
     cancel: Arc<AtomicBool>,
+    password_asked: Box<dyn FnOnce() + Send>,
 ) -> Conversation {
+    let mut password_asked = Some(password_asked);
     let mut process = std::process::Command::new(command.program());
     process
         .args(command.args())
@@ -162,6 +168,11 @@ fn run(
         if started.elapsed() >= timeout {
             let _ = child.kill();
             break Err(FailureKind::Timeout);
+        }
+        if command.password_was_supplied() {
+            if let Some(asked) = password_asked.take() {
+                asked();
+            }
         }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
@@ -277,6 +288,12 @@ fn read_bounded(mut reader: impl Read) -> Vec<u8> {
 #[cfg(test)]
 pub(crate) fn classify_failure(output: &str, password_supplied: bool) -> UnlockOutcome {
     classify_failure_with_host_key(output, password_supplied, None)
+}
+
+/// Categorizes a probe's ssh text the way a login failure is categorized. A probe never
+/// carries a password, so a refusal reads as a refused authentication.
+pub fn classify_probe(output: &str) -> UnlockOutcome {
+    classify_failure_with_host_key(output, false, None)
 }
 
 fn classify_failure_with_host_key(

@@ -374,6 +374,15 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             let machine = crate::session::machine_of(&source);
             model.state.logged_in.remove(machine);
             model.state.login_reports.remove(machine);
+            model.state.login_progress.insert(
+                machine.to_owned(),
+                crate::model::LoginProgress::start(
+                    &login,
+                    !password.is_empty(),
+                    remember == crate::state::Remember::SshConfig,
+                    pubkey,
+                ),
+            );
             let (running, cancel) = crate::link::unlock::RunningLogin::pending(source.clone());
             model.state.login_run = Some(running);
             Some(Effect::StartLogin {
@@ -521,6 +530,11 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                             .state
                             .scanning
                             .retain(|source| crate::session::machine_of(source) != machine);
+                        // The held password was refused before any mux answered, so the
+                        // search a login started ends here; no source result follows.
+                        if let Some(progress) = model.state.login_progress.get_mut(&machine) {
+                            progress.found_mux(false);
+                        }
                         if let Some(rescan) = model.rescan.as_mut() {
                             rescan.locked.insert(machine);
                         }
@@ -1879,5 +1893,77 @@ mod tests {
         assert_eq!(failed.notes[0].text, "create failed: boom");
         assert!(failed.until.is_none(), "a failure waits to be dismissed");
         assert!(m.state.chrome.flash.is_empty(), "a result is no flash");
+    }
+
+    #[test]
+    fn login_steps_advance_from_the_events_the_login_reports() {
+        use crate::model::{LoginEvent, LoginStep, StepState};
+        let step = |m: &AppModel, step| {
+            m.state.login_progress["pwbox"]
+                .state_of(step)
+                .expect("the step is listed")
+        };
+        let mut m = AppModel::from_sources(vec!["pwbox".to_owned()]);
+        update(
+            &mut m,
+            Msg::ApplySourceResult {
+                source: "pwbox".to_owned(),
+                sessions: Vec::new(),
+                err: Some("alice@pwbox: Permission denied (publickey,password).".to_owned()),
+            },
+        );
+        // Enter walks every stop to the button and submits there.
+        let effects = update(
+            &mut m,
+            Msg::FeedLogin {
+                source: "pwbox".to_owned(),
+                bytes: b"\r\r\r\r\r\r".to_vec(),
+            },
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::StartLogin { .. })),
+            "the button submits"
+        );
+        assert_eq!(step(&m, LoginStep::Connect), StepState::Running);
+        assert_eq!(step(&m, LoginStep::Authenticate), StepState::Pending);
+
+        let progress = |event| Msg::OpResult {
+            result: crate::ui::switcher::OpResult::LoginProgress {
+                source: "pwbox".to_owned(),
+                event,
+            },
+            logged_in: HashSet::new(),
+        };
+        update(&mut m, progress(LoginEvent::PasswordAsked));
+        assert_eq!(step(&m, LoginStep::Connect), StepState::Done);
+        assert_eq!(step(&m, LoginStep::Authenticate), StepState::Running);
+
+        let effects = update(
+            &mut m,
+            Msg::OpResult {
+                result: crate::ui::switcher::OpResult::Login {
+                    source: "pwbox".to_owned(),
+                    login: crate::transport::Login::default(),
+                    outcome: crate::ui::ops::LoginOutcome {
+                        connect: crate::link::unlock::UnlockOutcome::Ok,
+                        output: String::new(),
+                        saved: None,
+                        registration: crate::ui::ops::RegistrationOutcome::NotRequested,
+                    },
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::LoginApplied { .. })));
+        assert_eq!(step(&m, LoginStep::Authenticate), StepState::Done);
+        assert_eq!(step(&m, LoginStep::FindMux), StepState::Running);
+
+        answer(&mut m, "pwbox", &["work"], None);
+        assert_eq!(step(&m, LoginStep::FindMux), StepState::Done);
+        assert!(m.state.login_progress["pwbox"].succeeded());
     }
 }

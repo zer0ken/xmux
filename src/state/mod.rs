@@ -105,6 +105,10 @@ pub struct State {
     /// while that validation runs, so its presence is what tells
     /// the pane to say a login is under way instead of offering one.
     pub login_run: Option<crate::link::unlock::RunningLogin>,
+    /// The steps of each machine's last login and where each stands. They outlive the
+    /// running handle, because the mux search a working login starts runs after the
+    /// verdict, and a failed login keeps the step it stopped at on screen.
+    pub login_progress: HashMap<String, crate::model::LoginProgress>,
 }
 
 /// Which element of the login pane the keys drive. Every interactive element is one
@@ -120,6 +124,9 @@ pub enum LoginFocus {
     RememberSshConfig,
     Pubkey,
     Submit,
+    /// The choice that unfolds the failure's full ssh text and host facts. A stop only
+    /// while the pane states a failure.
+    Details,
 }
 
 /// The login pane's draft: what the user is entering for a host that would not answer
@@ -141,6 +148,8 @@ pub struct LoginDraft {
     pub remember: Remember,
     pub pubkey: bool,
     pub focus: LoginFocus,
+    /// Whether the failure's full ssh text and host facts are unfolded.
+    pub details: bool,
     pub default_address: String,
     pub default_port: String,
     pub default_username: String,
@@ -157,6 +166,7 @@ impl std::fmt::Debug for LoginDraft {
             .field("remember", &self.remember)
             .field("pubkey", &self.pubkey)
             .field("focus", &self.focus)
+            .field("details", &self.details)
             .field("default_address", &self.default_address)
             .field("default_port", &self.default_port)
             .field("default_username", &self.default_username)
@@ -174,8 +184,9 @@ impl LoginDraft {
     }
 
     /// The pane's focus stops in reading order. The remember choice is absent until the
-    /// user changes a value, and a stop that is not drawn is not one the keys land on.
-    pub fn stops(&self) -> Vec<LoginFocus> {
+    /// user changes a value, the details choice until the pane states a failure, and a
+    /// stop that is not drawn is not one the keys land on.
+    pub fn stops(&self, details: bool) -> Vec<LoginFocus> {
         let mut v = vec![
             LoginFocus::Address,
             LoginFocus::Port,
@@ -188,13 +199,16 @@ impl LoginDraft {
         }
         v.push(LoginFocus::Pubkey);
         v.push(LoginFocus::Submit);
+        if details {
+            v.push(LoginFocus::Details);
+        }
         v
     }
 
     /// Moves the focus `delta` stops, wrapping. A focus left on a stop that is no longer
     /// drawn (the user undid their edit) lands on the first stop rather than nowhere.
-    fn move_focus(&mut self, delta: isize) {
-        let stops = self.stops();
+    fn move_focus(&mut self, delta: isize, details: bool) {
+        let stops = self.stops(details);
         let at = stops.iter().position(|s| *s == self.focus).unwrap_or(0) as isize;
         let n = stops.len() as isize;
         self.focus = stops[(at + delta).rem_euclid(n) as usize];
@@ -214,11 +228,11 @@ impl LoginDraft {
     /// What Enter does: submit from the button, and pass the focus on from anywhere
     /// else. One meaning for the whole pane, so filling it top to bottom with Enter alone
     /// ends on the button and never toggles something on the way past.
-    fn enter(&mut self) -> bool {
+    fn enter(&mut self, details: bool) -> bool {
         if self.focus == LoginFocus::Submit {
             return true;
         }
-        self.move_focus(1);
+        self.move_focus(1, details);
         false
     }
 
@@ -229,6 +243,7 @@ impl LoginDraft {
             LoginFocus::RememberNothing => self.remember = Remember::Nothing,
             LoginFocus::RememberSshConfig => self.remember = Remember::SshConfig,
             LoginFocus::Pubkey => self.pubkey = !self.pubkey,
+            LoginFocus::Details => self.details = !self.details,
             _ => {}
         }
     }
@@ -335,6 +350,7 @@ impl State {
     /// the password leaves the rendered draft and enters the process-only credential
     /// broker. A failed or replaced login removes that exact credential.
     pub fn feed_login(&mut self, source: &str, bytes: &[u8]) -> Option<crate::model::Command> {
+        let details = self.login_failure(source).is_some();
         let defaults = self.chrome.login_defaults(source);
         let address = defaults.address.value;
         let port = defaults.port.value;
@@ -358,10 +374,10 @@ impl State {
         let mut submit = false;
         for key in decode_keys(bytes) {
             match key {
-                Key::Tab => draft.move_focus(1),
-                Key::BackTab | Key::Up => draft.move_focus(-1),
-                Key::Down => draft.move_focus(1),
-                Key::Enter => submit |= draft.enter(),
+                Key::Tab => draft.move_focus(1, details),
+                Key::BackTab | Key::Up => draft.move_focus(-1, details),
+                Key::Down => draft.move_focus(1, details),
+                Key::Enter => submit |= draft.enter(details),
                 Key::Backspace => {
                     draft.field_mut().map(String::pop);
                 }
@@ -627,13 +643,55 @@ impl State {
                 // The validation is over however it ended, so the handle that would
                 // have ended it goes with it and the pane offers a login again.
                 self.login_run = None;
+                if let Some(progress) = self
+                    .login_progress
+                    .get_mut(crate::session::machine_of(&source))
+                {
+                    progress.finish(&outcome);
+                }
                 OpFollow::LoginResult {
                     source,
                     login,
                     outcome,
                 }
             }
+            OpResult::LoginProgress { source, event } => {
+                if let Some(progress) = self
+                    .login_progress
+                    .get_mut(crate::session::machine_of(&source))
+                {
+                    progress.apply(&event);
+                }
+                OpFollow::Nothing
+            }
         }
+    }
+
+    /// The failure the login pane for `source` states: the machine's last login when it
+    /// failed, else the probe failure that blocked the host. `None` when neither failed.
+    pub(crate) fn login_failure(&self, source: &str) -> Option<crate::model::LoginFailure> {
+        let machine = crate::session::machine_of(source);
+        if let Some(failure) = self
+            .login_reports
+            .get(machine)
+            .and_then(crate::model::LoginFailure::of_login)
+        {
+            return Some(failure);
+        }
+        // While a login's steps still run, the probe failure that blocked the host is the
+        // question the login is answering, not a failure of its own.
+        if self
+            .login_progress
+            .get(machine)
+            .is_some_and(crate::model::LoginProgress::running)
+        {
+            return None;
+        }
+        self.groups
+            .iter()
+            .find(|g| g.source == source)
+            .and_then(|g| g.err.as_deref())
+            .map(crate::model::LoginFailure::of_probe)
     }
 
     /// Flashes a refused key's reason in the tree-column hint bar.
