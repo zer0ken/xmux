@@ -327,7 +327,15 @@ impl Runtime {
         {
             self.discovery_runs += 1;
         }
-        run_discovery(&self.env, &self.hosts, &self.mgr, &self.scan_pool, true);
+        let skip_machine = self.model.take_rescan_skip_machine();
+        run_discovery(
+            &self.env,
+            &self.hosts,
+            &self.mgr,
+            &self.scan_pool,
+            true,
+            skip_machine.as_deref(),
+        );
     }
 }
 
@@ -968,8 +976,12 @@ fn probe_machines(
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
     gate: &std::sync::Arc<tokio::sync::Semaphore>,
     rescan: bool,
+    skip_machine: Option<&str>,
 ) {
     for machine in hosts.machines() {
+        if skip_machine == Some(machine.as_str()) {
+            continue;
+        }
         probe_machine(&machine, hosts, tx.clone(), gate, rescan, 0);
     }
 }
@@ -1045,12 +1057,15 @@ fn apply_scan_result(
 /// the freshly ADDED machines are probed, so a machine that just came online turns into a
 /// card without a restart. The machines standing right now are probed here regardless, so
 /// a slow provider delays no card already on screen.
+/// When a one-machine re-scan is already asking a machine, its probe supplies that
+/// machine's answer to the full re-scan; discovery does not ask it again.
 fn run_discovery(
     env: &Env,
     hosts: &crate::model::Hosts,
     mgr: &HostManager,
     gate: &std::sync::Arc<tokio::sync::Semaphore>,
     rescan: bool,
+    skip_machine: Option<&str>,
 ) {
     if rescan {
         spawn_roster_resolve(
@@ -1060,7 +1075,7 @@ fn run_discovery(
             gate.clone(),
         );
     }
-    probe_machines(hosts, mgr.events(), gate, rescan);
+    probe_machines(hosts, mgr.events(), gate, rescan, skip_machine);
 }
 
 /// Refetches a host's inventory after a `%`-change notification: re-runs

@@ -67,9 +67,16 @@ pub(crate) struct RescanInFlight {
     /// The one machine a `prefix R` re-scan asked, or `None` for a full re-scan. The
     /// summary of a one-machine re-scan compares that machine's sources alone.
     machine: Option<String>,
+    /// A full re-scan can use an already running one-machine probe instead of asking
+    /// that machine twice. The runtime consumes this when it starts discovery.
+    skip_machine: Option<String>,
 }
 
 impl AppModel {
+    pub(crate) fn take_rescan_skip_machine(&mut self) -> Option<String> {
+        self.rescan.as_mut().and_then(|r| r.skip_machine.take())
+    }
+
     #[cfg(test)]
     pub(crate) fn from_sources(sources: Vec<String>) -> Self {
         let mut state = crate::state::State::from_sources(sources);
@@ -349,6 +356,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             // re-resolves the roster, so the summary waits for that answer again.
             // A one-machine re-scan in flight gives way to the full one, whose summary
             // covers that machine too.
+            let skip_machine = model.rescan.as_ref().and_then(|r| r.machine.clone());
             match model.rescan.as_mut() {
                 Some(rescan) if rescan.machine.is_none() => rescan.roster = true,
                 _ => {
@@ -360,6 +368,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                         roster: true,
                         locked: HashSet::new(),
                         machine: None,
+                        skip_machine,
                     })
                 }
             }
@@ -384,6 +393,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                 roster: false,
                 locked: HashSet::new(),
                 machine: Some(machine.clone()),
+                skip_machine: None,
             });
             model
                 .switcher
@@ -2560,6 +2570,8 @@ mod tests {
         assert!(!m.state.scanning.contains("b"));
 
         update(&mut m, Msg::Action(crate::model::Action::Rescan));
+        assert_eq!(m.take_rescan_skip_machine(), Some("a".to_owned()));
+        assert_eq!(m.take_rescan_skip_machine(), None);
         update(&mut m, Msg::RescanRosterApplied);
         answer(&mut m, "a", &["x"], None);
         answer(&mut m, "b", &["y"], None);

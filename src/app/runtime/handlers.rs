@@ -362,7 +362,7 @@ impl Runtime {
                 if launching {
                     let effects = update(model, Msg::LaunchRosterApplied);
                     debug_assert!(effects.is_empty());
-                    probe_machines(hosts, mgr.events(), scan_pool, false);
+                    probe_machines(hosts, mgr.events(), scan_pool, false, None);
                     return (false, Vec::new());
                 }
                 // Probe each ADDED machine's reachability (deduped by machine): a machine

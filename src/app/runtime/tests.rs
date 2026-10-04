@@ -2102,6 +2102,19 @@ async fn rescan_discovery_waits_for_the_batch_boundary() {
     assert_eq!(rt.discovery_runs, 1);
 }
 
+#[tokio::test]
+async fn full_scan_uses_the_probe_already_running_for_a_selected_machine() {
+    let rt = test_rt(fake_env_with_sources(&["local"]));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    probe_machines(&rt.hosts, tx.clone(), &rt.scan_pool, true, Some("local"));
+    assert!(rx.try_recv().is_err(), "the machine is not probed twice");
+    probe_machines(&rt.hosts, tx, &rt.scan_pool, true, None);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(HostEvent::MachineProbed { machine, .. }) if machine == "local"
+    ));
+}
+
 #[test]
 fn coalesced_nav_keys_observe_each_preceding_model_transition() {
     let mut rt = test_rt(fake_env_with_sources(&["local"]));
