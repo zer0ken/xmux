@@ -96,6 +96,12 @@ impl Switcher {
             KeyCode::PageDown => self.move_selection(10, state),
             KeyCode::Home => self.move_to(0, state),
             KeyCode::End => self.move_to(-1, state),
+            // An applied filter is cleared by Esc (the hint bar advertises it); with no
+            // filter there is nothing to clear and Esc does nothing.
+            KeyCode::Esc if !state.filter.is_empty() => {
+                state.filter.clear();
+                self.rebuild(state);
+            }
             KeyCode::Char(c) => match c {
                 '/' => self.open_input(InputMode::Filter, state),
                 'n' => self.open_new(state),

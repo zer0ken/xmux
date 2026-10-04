@@ -2421,6 +2421,28 @@ async fn filter_esc_restores_the_opening_filter() {
 }
 
 #[tokio::test]
+async fn nav_esc_clears_an_applied_filter() {
+    let mut h = Harness::new(sample());
+    let all_rows = h.sw.rows.len();
+    h.ch('/').await;
+    for c in "infer".chars() {
+        h.ch(c).await;
+    }
+    h.key(KeyCode::Enter).await;
+    assert_eq!(h.state.filter, "infer", "the filter is applied");
+    assert!(h.sw.rows.len() < all_rows, "the filter narrows the list");
+    h.key(KeyCode::Esc).await;
+    assert!(
+        h.state.filter.is_empty(),
+        "Esc in the nav clears the filter"
+    );
+    assert_eq!(h.sw.rows.len(), all_rows, "the full list returns");
+    h.key(KeyCode::Esc).await;
+    assert!(h.state.filter.is_empty(), "Esc with no filter is a no-op");
+    assert_eq!(h.sw.rows.len(), all_rows);
+}
+
+#[tokio::test]
 async fn filter_keeps_the_selection_on_a_surviving_card_while_typing() {
     // As the live filter shrinks the list, the selection never sits on a card that
     // just filtered out: it holds its session while that survives, then lands on the

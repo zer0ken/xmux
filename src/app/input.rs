@@ -460,6 +460,14 @@ mod tests {
         // Bare navigation and `/` filter stay bare (fast-switcher identity preserved).
         assert_eq!(rt(b"/", false), vec![tk('/')], "/ filter stays bare");
         assert_eq!(rt(b"j", false), vec![tk('j')], "navigation stays bare");
+        assert_eq!(
+            rt(b"", false),
+            vec![Action::NavKey(KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Esc,
+                KeyModifiers::NONE
+            ))],
+            "a bare Esc reaches the nav"
+        );
         // While an input row is open the keys are literal text again.
         assert_eq!(
             rt(b"4", true),
