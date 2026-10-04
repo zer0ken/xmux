@@ -566,11 +566,11 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B32** - The result of work the user started is a TOAST: a login with the
   public-key registration and ssh-config recording it ran, a new session, and a re-scan.
   The newest recorded release is announced the same way at launch. A toast floats in the
-  terminal view's top corner farthest from the nav, or its bottom right corner when the
-  nav rides on top, is at most 40% of the window wide, and wraps a long reason inside that
-  width. A toast of successes and facts leaves after five seconds and shows the time it has
-  left as an underline under its first line that shrinks with it, which needs no extra
-  row and no colour the view border already uses. A toast carrying a warning or a failure
+  terminal view's corner nearest the hint, avoids the prefix key list and floating hint,
+  is at most 40% of the window wide, and wraps a long reason inside that width. A toast
+  of successes and facts leaves after five seconds and shows the time it has left as a
+  bold accent line on its bottom border, with the elapsed share as a normal line.
+  The history key appears inside the card when it fits. A toast carrying a warning or a failure
   stays until a click on it or opening the history dismisses it. Three toasts stand at
   most, the newest in the corner. `[ui] notifications` (default true) turns toasts off;
   the history still records every result.

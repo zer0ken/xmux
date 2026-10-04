@@ -339,18 +339,19 @@ place of the split interface.
 
 ## Toasts
 
-The result of work you started floats as a toast in the terminal view's top corner
-farthest from the nav (the bottom right corner when the nav rides on top): a login and
-the public-key registration it ran, a new session, and a re-scan, which reports in one
+The result of work you started floats as a toast in the terminal view's corner
+nearest the hint: a login and the public-key registration it ran, a new session,
+and a re-scan, which reports in one
 toast what changed (hosts added or removed, sessions started or ended, hosts that stopped
 or started answering) or that nothing did; `prefix R` reports the same way for its one
 host. Stepping the nav scope names the new scope in a toast. The newest release, when one is recorded, is
 announced the same way at launch. A toast is at most 40% of the window wide and names its
-subject on its top border and `prefix m history` on its bottom one.
+subject on its top border and the history key inside the card when it fits.
 
-A toast that reports only successes and facts leaves after five seconds, and an underline
-under its first line shrinks with the time it has left. A toast carrying a warning (`▲`)
-or a failure (`✗`) stays until it is dismissed: a click on it takes it down, and opening
+A toast that reports only successes and facts leaves after five seconds. Its bottom
+border shows the time left as a bold accent line that gives way to a normal line.
+A toast carrying a warning (`▲`) or a failure (`✗`) stays until it is dismissed:
+a click on it takes it down, and opening
 the history takes every toast down. Up to three toasts stand at once, the newest in the
 corner.
 
