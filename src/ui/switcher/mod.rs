@@ -78,7 +78,7 @@ pub(crate) fn key_list_open(state: &crate::state::State) -> bool {
 
 /// The auto band-layout tree height for a body of `body_rows` rows (before the hint bar row
 /// is removed the caller passes `full_height - 1`). This is the seed a RELATIVE height resize
-/// (prefix h/l in a band) starts from while `nav_height` is still 0 (auto), so the first key
+/// (prefix Ctrl-↑/↓ in a band) starts from while `nav_height` is still 0 (auto), so the first key
 /// adjusts the height the user actually sees.
 pub fn default_nav_height(body_rows: u16) -> u16 {
     top_nav_height(body_rows)
@@ -307,6 +307,20 @@ pub struct Switcher {
     /// toggle. The filter naming a hidden host keeps its card, which is the
     /// unreachable screen's one entry point.
     hide_unreachable: bool,
+    /// Which cards the nav lists. The app restores the persisted scope at construction and
+    /// the scope key steps it.
+    scope: crate::model::NavScope,
+    /// Each card's number, keyed by the card it names. A card keeps the number it was
+    /// given for the whole run, an ended card's number stays vacant, and the next new
+    /// card takes `next_number`. The numbers are dealt again in list order only while a
+    /// full scan is in flight (the launch scan and every `prefix r`), and they are fixed
+    /// the moment that scan has heard from every source.
+    numbers: std::collections::HashMap<CardId, usize>,
+    next_number: usize,
+    numbers_fixed: bool,
+    /// Whether the full scan still waits on its roster answer, which can add hosts after
+    /// every source on the list has answered. The numbers are not fixed while it does.
+    numbers_held: bool,
     /// Whether the terminal view held the focus at the last [`Switcher::sync_view_focus`],
     /// so the move from the nav into the terminal view is seen as the one edge it is.
     terminal_view: bool,
@@ -356,6 +370,11 @@ impl Switcher {
             terminal_view_target: TerminalViewTarget::default(),
             own_session: None,
             hide_unreachable: false,
+            scope: crate::model::NavScope::Sessions,
+            numbers: std::collections::HashMap::new(),
+            next_number: 1,
+            numbers_fixed: false,
+            numbers_held: false,
             terminal_view: false,
             host_band_hidden: false,
             prefix_active: false,
@@ -413,6 +432,43 @@ impl Switcher {
         }
         self.hide_unreachable = on;
         self.rebuild(state);
+    }
+
+    /// The nav scope in effect.
+    pub(crate) fn scope(&self) -> crate::model::NavScope {
+        self.scope
+    }
+
+    /// Sets the nav scope, rebuilding the rows since the scope decides which groups
+    /// render. A no-op when the value is unchanged.
+    pub fn set_scope(&mut self, scope: crate::model::NavScope, state: &mut crate::state::State) {
+        if self.scope == scope {
+            return;
+        }
+        let prior = self.capture_focus();
+        self.scope = scope;
+        // A scope change does not deal the cards again, even during a full scan.
+        let scanning_numbers = !self.numbers_fixed;
+        self.numbers_fixed = true;
+        self.rebuild(state);
+        if scanning_numbers {
+            self.numbers_fixed = false;
+        }
+        self.restore_focus(prior, state);
+    }
+
+    /// Whether the unreachable hiding applies: the configured hiding, in the scope that
+    /// hides.
+    fn hides(&self) -> bool {
+        self.hide_unreachable && self.scope == crate::model::NavScope::Sessions
+    }
+
+    /// The sources the hiding leaves without a card right now.
+    pub(crate) fn hidden_sources(&self, state: &crate::state::State) -> Vec<String> {
+        if !self.hides() {
+            return Vec::new();
+        }
+        tree::hidden_sources(&state.groups, &state.scanning, &state.logged_in)
     }
 
     /// Tells the nav which view holds the focus, the one behind a modal included. The
@@ -497,16 +553,32 @@ impl Switcher {
         // The mux each card NAMES comes from one resolver, so a session card, its host's
         // card and the screen behind either cannot spell one mux three ways.
         let named_mux = |source: &str| state.chrome.source_mux(source).to_string();
+        let scoped = tree::scoped_groups(&state.groups, &state.scanning, self.scope);
         let rows = tree::flatten(
-            &state.groups,
+            &scoped,
             &state.scanning,
             &state.logged_in,
             &state.filter,
-            self.hide_unreachable,
+            self.hides(),
             &named_mux,
         );
+        // While the numbers are dealt in list order, they are dealt over the list the
+        // filter does not narrow, so a filter typed during a scan cannot renumber the cards
+        // it hides.
+        let unfiltered = (!self.numbers_fixed && !state.filter.is_empty()).then(|| {
+            tree::flatten(
+                &scoped,
+                &state.scanning,
+                &state.logged_in,
+                "",
+                self.hides(),
+                &named_mux,
+            )
+        });
+        drop(scoped);
 
         self.rows = rows;
+        self.number_cards(unfiltered.as_deref(), state.scanning.is_empty());
         let target = keep
             .as_ref()
             .and_then(|k| self.rows.iter().position(|r| same_node(&r.reference, k)))
@@ -537,19 +609,73 @@ impl Switcher {
         )
     }
 
-    /// The selectable count: the number of cards the numbering and the jump address,
-    /// section titles excepted. The cards are numbered by their rank among the
-    /// selectable rows, so a section title never takes a number from the cards under
-    /// it.
-    fn selectable_count(&self) -> usize {
-        self.rows.iter().filter(|r| r.selectable()).count()
+    /// Gives every card on the list its number. While a full scan is in flight the
+    /// numbers are dealt again from 1 in list order (over `unfiltered` when a filter
+    /// narrows the rows); once `settled` says every source has answered, the numbers are
+    /// fixed and only a card that has none yet takes the next one. A card that leaves the
+    /// list keeps its number, so the number stays vacant and no other card shifts.
+    fn number_cards(&mut self, unfiltered: Option<&[Row]>, settled: bool) {
+        if !self.numbers_fixed {
+            self.numbers.clear();
+            self.next_number = 1;
+            let order: Vec<CardId> = unfiltered
+                .unwrap_or(&self.rows)
+                .iter()
+                .filter_map(|r| card_id(&r.reference))
+                .collect();
+            for id in order {
+                self.numbers.entry(id).or_insert_with(|| {
+                    self.next_number += 1;
+                    self.next_number - 1
+                });
+            }
+            self.numbers_fixed = settled && !self.numbers_held;
+        }
+        let missing: Vec<CardId> = self
+            .rows
+            .iter()
+            .filter_map(|r| card_id(&r.reference))
+            .filter(|id| !self.numbers.contains_key(id))
+            .collect();
+        for id in missing {
+            self.numbers.insert(id, self.next_number);
+            self.next_number += 1;
+        }
     }
 
-    /// The number card `i` addresses: its 1-based position among the selectable
-    /// cards, the first card being 1 and the last the selectable count. A section
-    /// title has no number; it is never the selection and never a jump target.
+    /// Opens the numbering to be dealt again in list order, for a full scan.
+    fn reopen_numbers(&mut self) {
+        self.numbers_fixed = false;
+    }
+
+    /// Holds the numbering open until the full scan's roster has answered (`true`), or
+    /// releases it (`false`). A release fixes the numbers at once when every source has
+    /// already answered, since the last rebuild dealt them in list order.
+    pub fn hold_numbers(&mut self, held: bool, state: &crate::state::State) {
+        self.numbers_held = held;
+        if held {
+            self.reopen_numbers();
+        } else if state.scanning.is_empty() {
+            self.numbers_fixed = true;
+        }
+    }
+
+    /// The highest number a card on the list carries, 0 for an empty list.
+    fn highest_number(&self) -> usize {
+        (0..self.rows.len())
+            .filter(|&i| self.rows[i].selectable())
+            .map(|i| self.card_number(i))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The number card `i` carries: the number it was given when it first appeared, kept
+    /// for the whole run. A section title has no number; it is never the selection and
+    /// never a jump target.
     fn card_number(&self, i: usize) -> usize {
-        self.rows[..i].iter().filter(|r| r.selectable()).count() + 1
+        card_id(&self.rows[i].reference)
+            .and_then(|id| self.numbers.get(&id).copied())
+            .unwrap_or(0)
     }
 
     /// Where the nav's two bands meet: the first host-state card, the flatten having sunk
@@ -720,7 +846,7 @@ impl Switcher {
     /// What the hint bar offers about the selected card after a selection move: its most
     /// relevant keys, read from the key table, and one fact about it. A session offers its terminal and a sibling
     /// session and states its windows; a settled host offers the screen that explains it
-    /// (or a new session when it is empty) and a re-scan, and states its state word with
+    /// (or a new session when it is empty) and a re-scan of that host, and states its state word with
     /// the reason behind it; a host still scanning offers the filter and says so. With
     /// `nav_focused` false the terminal view holds the focus, where a bare key goes to the
     /// pane, so only the prefix keys are offered.
@@ -763,9 +889,9 @@ impl Switcher {
                     .and_then(|e| e.lines().map(str::trim).find(|l| !l.is_empty()))
                     .unwrap_or_default();
                 let commands: &[KeyCommand] = if *unreachable || *blocked || *list_failed {
-                    &[KeyCommand::FocusTerminal, KeyCommand::Rescan]
+                    &[KeyCommand::FocusTerminal, KeyCommand::RescanHost]
                 } else {
-                    &[KeyCommand::NewSession, KeyCommand::Rescan]
+                    &[KeyCommand::NewSession, KeyCommand::RescanHost]
                 };
                 let fact = if reason.is_empty() {
                     word.to_string()
@@ -932,6 +1058,7 @@ impl Switcher {
             None => (None, None),
         };
         self.rescan_reselect = reselect;
+        self.reopen_numbers();
         state.scanning = state.groups.iter().map(|g| g.source.clone()).collect();
         for g in state.groups.iter_mut() {
             g.err = None;
@@ -977,6 +1104,12 @@ impl Switcher {
             .filter(|_| err.is_none())
             .and_then(|g| tree::renamed_session(&g.sessions, &sessions));
         if let Some((from, to)) = &renamed {
+            // The card is the same card under its new name, so it keeps its number.
+            let old = CardId::Session(source.clone(), from.clone());
+            if let Some(n) = self.numbers.remove(&old) {
+                self.numbers
+                    .insert(CardId::Session(source.clone(), to.clone()), n);
+            }
             for row in self.rows.iter_mut() {
                 if let RowRef::Session { sess } = &mut row.reference {
                     if sess.source == source && sess.name == *from {
@@ -1059,6 +1192,21 @@ impl Switcher {
         let prior = self.capture_focus();
         g.err = None;
         state.scanning.insert(source.to_string());
+        self.rebuild(state);
+        self.restore_focus(prior, state);
+    }
+
+    /// Puts every source `machine` serves in flight for a re-scan of that machine alone.
+    /// Each card spins or keeps the sessions it lists until its answer lands, so the
+    /// list and its numbers hold still while the machine is asked again.
+    pub fn mark_machine_scanning(&mut self, machine: &str, state: &mut crate::state::State) {
+        let prior = self.capture_focus();
+        for g in state.groups.iter_mut() {
+            if crate::session::machine_of(&g.source) == machine {
+                g.err = None;
+                state.scanning.insert(g.source.clone());
+            }
+        }
         self.rebuild(state);
         self.restore_focus(prior, state);
     }
@@ -1160,6 +1308,36 @@ impl Switcher {
         self.rows
             .iter()
             .position(|r| same_node(&r.reference, focus))
+    }
+}
+
+/// One row of the table of the hosts to check: a host in a problem state, the cause, the
+/// reason its last answer gave, and whether the hiding leaves it without a card.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CheckEntry {
+    pub(crate) source: String,
+    /// The host as its card names it.
+    pub(crate) label: String,
+    pub(crate) kind: crate::model::FailureKind,
+    pub(crate) reason: String,
+    pub(crate) hidden: bool,
+}
+
+/// The card a number is kept for: a session by its address, a host-state card by its
+/// source. A session that ends and later returns under the same address is the same card
+/// and takes its number back.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum CardId {
+    Session(String, String),
+    Host(String),
+}
+
+/// The card `reference` names, or `None` for a section title, which carries no number.
+fn card_id(reference: &RowRef) -> Option<CardId> {
+    match reference {
+        RowRef::Session { sess } => Some(CardId::Session(sess.source.clone(), sess.name.clone())),
+        RowRef::Host { source, .. } => Some(CardId::Host(source.clone())),
+        RowRef::Section { .. } => None,
     }
 }
 

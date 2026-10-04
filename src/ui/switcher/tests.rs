@@ -2388,10 +2388,10 @@ async fn a_selected_host_own_failure_leaving_no_cards_does_not_panic_the_fallbac
         &mut h.state,
     );
     h.draw();
-    assert!(
-        h.nav_cards_text().trim().is_empty(),
-        "the nav renders empty:\n{:?}",
-        h.nav_cards_text()
+    assert_eq!(
+        h.nav_cards_text().trim(),
+        "2 hosts hidden · C-g h",
+        "the empty nav says only how many hosts are hidden and the key that lists them"
     );
     assert!(
         h.sw.current_ref().is_none(),
@@ -2433,10 +2433,10 @@ async fn hiding_every_host_leaves_a_tidy_empty_nav() {
         &mut h.state,
     );
     h.draw();
-    assert!(
-        h.nav_cards_text().trim().is_empty(),
-        "only empty lines in the nav:\n{:?}",
-        h.nav_cards_text()
+    assert_eq!(
+        h.nav_cards_text().trim(),
+        "1 host hidden · C-g h",
+        "one guidance line and nothing else in the nav"
     );
     assert!(
         h.hint_bar_text().contains("C-g"),
@@ -4919,7 +4919,7 @@ fn every_unselected_card_carries_its_1_based_number_beside_its_session() {
     // a number: it is the address you would type to get where you already are. A section
     // title carries no number at all - it is not a card, and it is never the selection.
     let selected = sw.selected;
-    let num_w = sw.selectable_count().to_string().len().max(1) as u16;
+    let num_w = sw.highest_number().to_string().len().max(1) as u16;
     let read =
         |x: u16, y: u16, w: u16| -> String { (x..x + w).map(|c| buf[(c, y)].symbol()).collect() };
     // Read each card where the PLAN put it: the side list parts its two bands, so a card
@@ -7165,4 +7165,378 @@ fn an_empty_row_list_shows_the_host_band_again() {
         !sw.host_band_hidden,
         "with no session row selected the host band shows again"
     );
+}
+
+/// One host serving `names`, every one a session.
+fn host_with(source: &str, names: &[&str]) -> Vec<Session> {
+    names.iter().map(|n| sess_mux(source, n, "tmux")).collect()
+}
+
+/// The number the card naming `name` carries.
+fn number_of(sw: &Switcher, name: &str) -> Option<usize> {
+    (0..sw.rows.len())
+        .find(|&i| match &sw.rows[i].reference {
+            RowRef::Session { sess } => sess.name == name,
+            RowRef::Host { source, .. } => source == name,
+            RowRef::Section { .. } => false,
+        })
+        .map(|i| sw.card_number(i))
+}
+
+#[tokio::test]
+async fn a_card_keeps_its_number_and_an_ended_cards_number_stays_vacant() {
+    let mut h = Harness::new(one_host_scan("h", host_with("h", &["a", "b", "c"])));
+    assert_eq!(
+        [
+            number_of(&h.sw, "a"),
+            number_of(&h.sw, "b"),
+            number_of(&h.sw, "c")
+        ],
+        [Some(1), Some(2), Some(3)]
+    );
+    // b ends: c keeps 3 and 2 stays vacant; the screen writes the same number.
+    h.sw.apply_source_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
+    h.draw();
+    assert_eq!(number_of(&h.sw, "c"), Some(3), "no card shifts");
+    assert!(
+        h.nav_cards_text()
+            .lines()
+            .any(|l| l.trim_start().starts_with("3 c")),
+        "c is still drawn as 3:\n{}",
+        h.nav_cards_text()
+    );
+    // A new card takes the next number, never the vacant one.
+    h.sw.apply_source_result(
+        "h".into(),
+        host_with("h", &["a", "c", "d"]),
+        None,
+        &mut h.state,
+    );
+    assert_eq!(number_of(&h.sw, "d"), Some(4));
+    // The same session returning under its name takes its number back.
+    h.sw.apply_source_result(
+        "h".into(),
+        host_with("h", &["a", "b", "c", "d"]),
+        None,
+        &mut h.state,
+    );
+    assert_eq!(number_of(&h.sw, "b"), Some(2));
+}
+
+#[tokio::test]
+async fn a_jump_lands_by_the_fixed_number_and_refuses_a_vacant_one() {
+    let mut h = Harness::new(one_host_scan("h", host_with("h", &["a", "b", "c"])));
+    h.sw.apply_source_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
+    h.draw();
+    let start = h.sw.selected;
+    h.key(KeyCode::Char('2')).await;
+    assert_eq!(h.sw.selected, start, "no card carries 2, so nothing moves");
+    h.key(KeyCode::Enter).await;
+    assert!(
+        h.state.is_inputting(),
+        "Enter on a vacant number keeps the input"
+    );
+    assert!(
+        h.state.chrome.flash.contains("no session 2 (1 - 3)"),
+        "{}",
+        h.state.chrome.flash
+    );
+    h.key(KeyCode::Esc).await;
+    h.key(KeyCode::Char('3')).await;
+    h.key(KeyCode::Enter).await;
+    assert!(!h.state.is_inputting());
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "c"),
+        "3 is c, as it was before b ended"
+    );
+}
+
+#[tokio::test]
+async fn a_full_rescan_deals_the_numbers_again_in_list_order() {
+    let mut h = Harness::new(one_host_scan("h", host_with("h", &["a", "b", "c"])));
+    h.sw.apply_source_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
+    assert_eq!(number_of(&h.sw, "c"), Some(3));
+    h.sw.request_rescan(&mut h.state);
+    h.sw.apply_source_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
+    assert_eq!(
+        [number_of(&h.sw, "a"), number_of(&h.sw, "c")],
+        [Some(1), Some(2)],
+        "the re-scan closes the vacancy"
+    );
+    // Once that scan has heard from every source the numbers are fixed again.
+    h.sw.apply_source_result("h".into(), host_with("h", &["c"]), None, &mut h.state);
+    assert_eq!(number_of(&h.sw, "c"), Some(2));
+}
+
+#[tokio::test]
+async fn numbers_are_dealt_in_list_order_while_the_launch_scan_runs() {
+    let mut h = Harness::from_sources(&["alpha", "beta"]);
+    h.sw.apply_source_result("beta".into(), host_with("beta", &["x"]), None, &mut h.state);
+    h.sw.apply_source_result(
+        "alpha".into(),
+        host_with("alpha", &["y"]),
+        None,
+        &mut h.state,
+    );
+    assert_eq!(
+        [number_of(&h.sw, "y"), number_of(&h.sw, "x")],
+        [Some(1), Some(2)],
+        "the launch scan ends with the numbers in list order"
+    );
+    h.sw.apply_source_result(
+        "beta".into(),
+        host_with("beta", &["w", "x"]),
+        None,
+        &mut h.state,
+    );
+    assert_eq!(number_of(&h.sw, "x"), Some(2), "and from then on they hold");
+    assert_eq!(number_of(&h.sw, "w"), Some(3));
+}
+
+#[tokio::test]
+async fn scope_change_during_a_scan_keeps_existing_card_numbers() {
+    use crate::model::NavScope;
+    let mut h = Harness::from_sources(&["alpha", "beta", "gamma"]);
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.sw.apply_source_result(
+        "alpha".into(),
+        host_with("alpha", &["work"]),
+        None,
+        &mut h.state,
+    );
+    h.sw.apply_source_result(
+        "beta".into(),
+        Vec::new(),
+        Some("connection refused".into()),
+        &mut h.state,
+    );
+    h.sw.set_scope(NavScope::AllHosts, &mut h.state);
+    let gamma = number_of(&h.sw, "gamma");
+    h.sw.set_scope(NavScope::Sessions, &mut h.state);
+    assert_eq!(number_of(&h.sw, "gamma"), gamma);
+    h.sw.set_scope(NavScope::AllHosts, &mut h.state);
+    assert_eq!(number_of(&h.sw, "gamma"), gamma);
+}
+
+#[tokio::test]
+async fn each_scope_lists_what_it_names_and_numbers_follow_their_cards() {
+    use crate::model::NavScope;
+    let mut h = Harness::new(sample());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.draw();
+    assert!(!h.nav_cards_text().contains("db-2"), "sessions hides db-2");
+    assert_eq!(h.sw.hidden_sources(&h.state), ["db-2"]);
+    let editor = number_of(&h.sw, "editor");
+
+    h.sw.set_scope(NavScope::AllHosts, &mut h.state);
+    h.draw();
+    let nav = h.nav_cards_text();
+    assert!(nav.contains("db-2") && nav.contains("editor"), "{nav}");
+    assert!(h.sw.hidden_sources(&h.state).is_empty());
+    let db2 = number_of(&h.sw, "db-2");
+    assert!(db2.is_some());
+
+    h.sw.set_scope(NavScope::NeedsAttention, &mut h.state);
+    h.draw();
+    let nav = h.nav_cards_text();
+    assert!(nav.contains("db-2"), "{nav}");
+    assert!(
+        !nav.contains("editor") && !nav.contains("inference"),
+        "needs attention lists no session:\n{nav}"
+    );
+    assert_eq!(number_of(&h.sw, "db-2"), db2, "the card keeps its number");
+
+    h.sw.set_scope(NavScope::Sessions, &mut h.state);
+    assert_eq!(number_of(&h.sw, "editor"), editor);
+}
+
+#[tokio::test]
+async fn an_empty_needs_attention_scope_says_so_and_names_the_scope_key() {
+    let mut h = Harness::new(one_host_scan("h", host_with("h", &["a"])));
+    h.sw.set_scope(crate::model::NavScope::NeedsAttention, &mut h.state);
+    h.draw();
+    assert_eq!(h.nav_cards_text().trim(), "nothing needs attention · C-g s");
+}
+
+/// A host with a session, a blocked host, two unreachable ones, and a host whose listing
+/// failed.
+fn problem_scan() -> Scan {
+    let failed = |source: &str, err: &str| Group {
+        source: source.into(),
+        err: Some(err.into()),
+        sessions: vec![],
+    };
+    Scan {
+        groups: vec![
+            Group {
+                source: "aaa".into(),
+                err: None,
+                sessions: vec![sess_mux("aaa", "work", "tmux")],
+            },
+            failed(
+                "login-box",
+                "alice@login-box: Permission denied (publickey,password).",
+            ),
+            failed("dead-1", "connection refused"),
+            failed("dead-2", "connection timed out"),
+            failed("list-box", "invalid tuios session listing: expected value"),
+        ],
+    }
+}
+
+#[tokio::test]
+async fn the_check_table_groups_problem_hosts_by_cause_and_marks_the_hidden() {
+    use crate::model::FailureKind;
+    let mut h = Harness::new(problem_scan());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    let entries = h.sw.check_entries(&h.state);
+    let rows: Vec<(&str, FailureKind, bool)> = entries
+        .iter()
+        .map(|e| (e.source.as_str(), e.kind, e.hidden))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("login-box", FailureKind::Blocked, false),
+            ("dead-1", FailureKind::Unreachable, true),
+            ("dead-2", FailureKind::Unreachable, true),
+            ("list-box", FailureKind::ListFailed, false),
+        ]
+    );
+    assert_eq!(entries[1].reason, "connection refused");
+    h.sw.toggle_check(&mut h.state);
+    h.draw();
+    let text = h.text();
+    assert!(text.contains("hosts to check · 2 hidden"), "{text}");
+    assert!(text.contains("? login needed · 1"), "{text}");
+    assert!(text.contains("▲ unreachable · 2"), "{text}");
+    assert!(text.contains("✗ list failed · 1"), "{text}");
+    assert!(text.contains("dead-1  hidden"), "{text}");
+}
+
+#[tokio::test]
+async fn enter_on_a_blocked_host_selects_it_and_hands_the_focus_to_its_login_pane() {
+    let mut h = Harness::new(problem_scan());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.sw.toggle_check(&mut h.state);
+    let mut armed = false;
+    h.sw.feed_reader_key(b"\r", 0x07, &mut armed, 20, &mut h.state);
+    assert!(
+        h.sw.open_checked_host(&mut h.state),
+        "the login pane takes the keys"
+    );
+    assert!(h.state.modal.is_none(), "the table closes");
+    assert!(h.sw.current_host_blocked());
+    assert_eq!(h.sw.current_source().as_deref(), Some("login-box"));
+}
+
+#[tokio::test]
+async fn enter_on_a_hidden_host_brings_its_card_back_through_the_filter() {
+    let mut h = Harness::new(problem_scan());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.sw.toggle_check(&mut h.state);
+    let mut armed = false;
+    h.sw.feed_reader_key(b"j", 0x07, &mut armed, 20, &mut h.state);
+    h.sw.feed_reader_key(b"j", 0x07, &mut armed, 20, &mut h.state);
+    h.sw.feed_reader_key(b"\r", 0x07, &mut armed, 20, &mut h.state);
+    assert!(!h.sw.open_checked_host(&mut h.state), "the focus stays");
+    assert_eq!(h.state.filter, "dead-2");
+    assert_eq!(h.sw.current_source().as_deref(), Some("dead-2"));
+    assert!(h.sw.current_host_unreachable());
+}
+
+#[tokio::test]
+async fn the_check_table_closes_on_esc_and_its_selection_stays_on_a_row() {
+    let mut h = Harness::new(problem_scan());
+    h.sw.toggle_check(&mut h.state);
+    let mut armed = false;
+    for _ in 0..10 {
+        h.sw.feed_reader_key(b"j", 0x07, &mut armed, 20, &mut h.state);
+    }
+    assert!(matches!(
+        h.state.modal,
+        Some(crate::state::Modal::Check { selected: 3, .. })
+    ));
+    h.sw.feed_reader_key(b"\x1b", 0x07, &mut armed, 20, &mut h.state);
+    assert!(h.state.modal.is_none());
+    // prefix h opens it and prefix h closes it again.
+    h.sw.toggle_check(&mut h.state);
+    h.sw.feed_reader_key(b"\x07h", 0x07, &mut armed, 20, &mut h.state);
+    assert!(h.state.modal.is_none());
+}
+
+#[tokio::test]
+async fn prefix_capital_r_asks_for_the_selected_host_alone_unless_it_is_scanning() {
+    let mut h = Harness::new(sources_scan(vec![
+        ("alpha", host_with("alpha", &["a"])),
+        ("beta", host_with("beta", &["b"])),
+    ]));
+    let cmds = h.sw.handle_key(
+        KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
+        &mut h.state,
+    );
+    let machine = crate::session::machine_of(&h.sw.current_source().unwrap()).to_string();
+    assert!(matches!(&cmds[..], [Command::RescanHost(m)] if *m == machine));
+    h.sw.mark_machine_scanning(&machine, &mut h.state);
+    assert_eq!(
+        h.state.scanning.len(),
+        1,
+        "only that machine's source is in flight"
+    );
+    assert!(
+        number_of(&h.sw, "a").is_some() && number_of(&h.sw, "b").is_some(),
+        "and the cards stay on the list"
+    );
+    let cmds = h.sw.handle_key(
+        KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
+        &mut h.state,
+    );
+    assert!(cmds.is_empty(), "a machine is asked one thing at a time");
+    assert!(h.state.chrome.flash.contains("still being scanned"));
+}
+
+#[tokio::test]
+async fn the_key_list_border_states_the_scope_and_the_hidden_count() {
+    let mut h = Harness::new(sample());
+    h.sw.set_hide_unreachable(true, &mut h.state);
+    h.state.chrome.armed = true;
+    h.draw();
+    assert_eq!(h.plan.key_list_status, "nav: sessions · 1 hidden");
+    assert!(
+        h.text().contains("nav: sessions · 1 hidden"),
+        "{}",
+        h.text()
+    );
+    h.sw.set_scope(crate::model::NavScope::AllHosts, &mut h.state);
+    h.draw();
+    assert_eq!(h.plan.key_list_status, "nav: all hosts");
+}
+
+#[tokio::test]
+async fn numbers_stay_open_until_a_held_roster_answers() {
+    // The launch roster names the remote hosts after the first source already answered:
+    // the numbers are dealt in list order until that roster is in.
+    let mut h = Harness::from_sources(&["beta"]);
+    h.sw.hold_numbers(true, &h.state);
+    h.sw.apply_source_result("beta".into(), host_with("beta", &["x"]), None, &mut h.state);
+    h.sw.add_source("alpha".into(), &mut h.state);
+    h.sw.apply_source_result(
+        "alpha".into(),
+        host_with("alpha", &["y"]),
+        None,
+        &mut h.state,
+    );
+    assert_eq!(
+        [number_of(&h.sw, "y"), number_of(&h.sw, "x")],
+        [Some(1), Some(2)]
+    );
+    h.sw.hold_numbers(false, &h.state);
+    h.sw.apply_source_result(
+        "beta".into(),
+        host_with("beta", &["w", "x"]),
+        None,
+        &mut h.state,
+    );
+    assert_eq!(number_of(&h.sw, "x"), Some(2), "released, the numbers hold");
+    assert_eq!(number_of(&h.sw, "w"), Some(3));
 }

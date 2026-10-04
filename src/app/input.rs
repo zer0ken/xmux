@@ -185,13 +185,13 @@ pub(crate) fn resolve_nav_key(
     if !is_inputting && is_focus_in(key.code) {
         return Some(Action::FocusTerminal);
     }
-    // Tier A: bare (unprefixed) r/n, bare `/`, and bare digits are inert - they require
+    // Tier A: bare (unprefixed) r/R/n, bare `/`, and bare digits are inert - they require
     // the prefix. Navigation and Enter stay bare. Only applies when not inputting, so
     // every key is still literal text while an input row (filter / new / jump) is open.
     if !is_inputting
         && (matches!(
             key.code,
-            KeyCode::Char('r') | KeyCode::Char('n') | KeyCode::Char('/')
+            KeyCode::Char('r') | KeyCode::Char('R') | KeyCode::Char('n') | KeyCode::Char('/')
         ) || matches!(key.code, KeyCode::Char(c) if c.is_ascii_digit()))
     {
         return None;
@@ -207,6 +207,8 @@ fn nav_action(command: KeyCommand, key: ratatui::crossterm::event::KeyEvent) -> 
         KeyCommand::Quit => Some(Action::Quit),
         KeyCommand::Help => Some(Action::ShowHelp),
         KeyCommand::History => Some(Action::ShowHistory),
+        KeyCommand::Check => Some(Action::ShowCheck),
+        KeyCommand::Scope => Some(Action::CycleNavScope),
         KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
         KeyCommand::Collapse => Some(Action::ToggleCollapse),
         KeyCommand::Position => Some(Action::CycleNavPosition),
@@ -216,9 +218,11 @@ fn nav_action(command: KeyCommand, key: ratatui::crossterm::event::KeyEvent) -> 
         // The state-changing nav actions and the filter are prefix-gated, and a digit
         // opens the card jump holding it, so a bare digit stays free for the pane. They
         // reach the nav executor as the key itself.
-        KeyCommand::Jump | KeyCommand::Filter | KeyCommand::NewSession | KeyCommand::Rescan => {
-            Some(Action::NavKey(key))
-        }
+        KeyCommand::Jump
+        | KeyCommand::Filter
+        | KeyCommand::NewSession
+        | KeyCommand::Rescan
+        | KeyCommand::RescanHost => Some(Action::NavKey(key)),
         KeyCommand::FocusNav | KeyCommand::LiteralPrefix => None,
     }
 }
@@ -285,15 +289,21 @@ mod tests {
     fn resolve_nav_prefix_commands() {
         assert_eq!(rt(b"\x07q", false), vec![Action::Quit], "prefix q quits");
         assert_eq!(
-            rt(b"\x07l", false),
-            vec![Action::Width(1)],
-            "prefix l widens"
+            rt(b"\x07h", false),
+            vec![Action::ShowCheck],
+            "prefix h opens the hosts to check"
         );
         assert_eq!(
-            rt(b"\x07h", false),
-            vec![Action::Width(-1)],
-            "prefix h narrows"
+            rt(b"\x07s", false),
+            vec![Action::CycleNavScope],
+            "prefix s steps the nav scope"
         );
+        assert_eq!(
+            rt(b"\x07l", false),
+            Vec::<Action>::new(),
+            "prefix l is unbound"
+        );
+        assert_eq!(rt(b"R", false), Vec::<Action>::new(), "a bare R is inert");
         assert_eq!(
             rt(b"\x07t", false),
             vec![Action::ToggleAutoHide],
@@ -398,15 +408,19 @@ mod tests {
             KeyCommand::Quit => Some(Action::Quit),
             KeyCommand::Help => Some(Action::ShowHelp),
             KeyCommand::History => Some(Action::ShowHistory),
+            KeyCommand::Check => Some(Action::ShowCheck),
+            KeyCommand::Scope => Some(Action::CycleNavScope),
             KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
             KeyCommand::Collapse => Some(Action::ToggleCollapse),
             KeyCommand::Position => Some(Action::CycleNavPosition),
             KeyCommand::Width(d) => Some(Action::Width(d)),
             KeyCommand::Height(d) => Some(Action::Height(d)),
             KeyCommand::FocusToggle | KeyCommand::FocusTerminal => Some(Action::FocusTerminal),
-            KeyCommand::Jump | KeyCommand::Filter | KeyCommand::NewSession | KeyCommand::Rescan => {
-                Some(Action::NavKey(key))
-            }
+            KeyCommand::Jump
+            | KeyCommand::Filter
+            | KeyCommand::NewSession
+            | KeyCommand::Rescan
+            | KeyCommand::RescanHost => Some(Action::NavKey(key)),
             KeyCommand::FocusNav | KeyCommand::LiteralPrefix => None,
         }
     }
@@ -855,8 +869,8 @@ mod tests {
                 false,
                 crate::ui::switcher::NavPosition::Left
             ),
-            Some(Action::Width(-1)),
-            "the key resizes"
+            Some(Action::ShowCheck),
+            "the key opens the hosts to check"
         );
         assert!(!armed, "a key while ready consumes ready");
         assert!(

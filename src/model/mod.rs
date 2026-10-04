@@ -33,7 +33,7 @@ pub use login::{
     LoginEvent, LoginFailure, LoginField, LoginProgress, LoginStep, MuxAnswer, Remember,
     SecretInput, StepRow, StepState,
 };
-pub use nav::{step_nav_position, NavPosition, NavSize, ViewLayout};
+pub use nav::{step_nav_position, NavPosition, NavScope, NavSize, ViewLayout};
 pub use operation::{KeyRegistration, LoginOutcome, OpResult, Ops, RegistrationOutcome};
 pub use plan::{DeathSignal, DisplayTty, EventSource};
 pub use selection::Selection;

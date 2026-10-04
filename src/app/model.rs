@@ -47,8 +47,8 @@ pub(crate) struct AppModel {
     pub(crate) config_last_mtime: Option<std::time::SystemTime>,
     pub(crate) width_dirty: bool,
     pub(crate) width_flush_at: Option<std::time::Instant>,
-    /// The re-scan whose summary toast is still owed, held until every source and the
-    /// roster have answered.
+    /// The re-scan whose summary toast is still owed, held until every source it asked
+    /// and, for a full re-scan, the roster have answered.
     pub(crate) rescan: Option<RescanInFlight>,
 }
 
@@ -64,6 +64,9 @@ pub(crate) struct RescanInFlight {
     /// The machines whose held password ssh refused during this re-scan. Their cards keep
     /// no failure of their own, so the summary is told here.
     locked: HashSet<String>,
+    /// The one machine a `prefix R` re-scan asked, or `None` for a full re-scan. The
+    /// summary of a one-machine re-scan compares that machine's sources alone.
+    machine: Option<String>,
 }
 
 impl AppModel {
@@ -131,6 +134,8 @@ pub(crate) enum Msg {
     },
     ToggleHelp,
     ToggleHistory,
+    ToggleCheck,
+    CycleNavScope,
     DismissToast(u64),
     /// A key read while the help or the history is open, with the configured prefix byte
     /// so the prefix keys that open them can close them.
@@ -170,6 +175,8 @@ pub(crate) enum Msg {
     },
     /// The re-scan's roster answer has been reconciled into the registries and the nav.
     RescanRosterApplied,
+    /// The launch roster has been reconciled into the registries and the nav.
+    LaunchRosterApplied,
     DetectionFinished {
         source: String,
     },
@@ -280,6 +287,7 @@ pub(crate) enum Effect {
     PersistNavHeight(u16),
     PersistNavCollapsed(bool),
     PersistNavPosition(Option<NavPosition>),
+    PersistNavScope(crate::model::NavScope),
     ReattachDisplay(Selection),
     CancelLogin(crate::link::unlock::RunningLogin),
 }
@@ -320,6 +328,7 @@ impl std::fmt::Debug for Effect {
             Self::PersistNavPosition(position) => {
                 f.debug_tuple("PersistNavPosition").field(position).finish()
             }
+            Self::PersistNavScope(scope) => f.debug_tuple("PersistNavScope").field(scope).finish(),
             Self::ReattachDisplay(selection) => {
                 f.debug_tuple("ReattachDisplay").field(selection).finish()
             }
@@ -338,9 +347,11 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             // A re-scan asked for while one is still running keeps the first snapshot, so
             // its summary compares against what the user saw before any of them. Each one
             // re-resolves the roster, so the summary waits for that answer again.
+            // A one-machine re-scan in flight gives way to the full one, whose summary
+            // covers that machine too.
             match model.rescan.as_mut() {
-                Some(rescan) => rescan.roster = true,
-                None => {
+                Some(rescan) if rescan.machine.is_none() => rescan.roster = true,
+                _ => {
                     model.rescan = Some(RescanInFlight {
                         before: crate::state::notify::ScanSnapshot::of(
                             &model.state,
@@ -348,13 +359,36 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                         ),
                         roster: true,
                         locked: HashSet::new(),
+                        machine: None,
                     })
                 }
             }
             model.switcher.request_rescan(&mut model.state);
+            // The roster answer can add hosts after every listed source has answered, so
+            // the numbers stay open until it is in.
+            model.switcher.hold_numbers(true, &model.state);
             let armed = model.switcher.take_rescan_kick();
             debug_assert!(armed);
             Some(Effect::Command(Command::Rescan))
+        }
+        Command::RescanHost(machine) => {
+            // One re-scan reports at a time: a second one waits for the first one's
+            // summary, so each summary says what its own re-scan found.
+            if model.rescan.is_some() {
+                model.state.flash("a re-scan is still running");
+                return None;
+            }
+            model.rescan = Some(RescanInFlight {
+                before: crate::state::notify::ScanSnapshot::of(&model.state, &HashSet::new())
+                    .only_machine(&machine),
+                roster: false,
+                locked: HashSet::new(),
+                machine: Some(machine.clone()),
+            });
+            model
+                .switcher
+                .mark_machine_scanning(&machine, &mut model.state);
+            Some(Effect::Command(Command::RescanHost(machine)))
         }
         Command::AdjustNavWidth(delta) => {
             let min = nav_width_min(&model.state.chrome.ui_prefix) as i32;
@@ -666,14 +700,20 @@ fn answering_sources(state: &crate::state::State) -> HashSet<String> {
 /// says so. A re-scan in flight is left to its own summary, which reports the same change
 /// as the result of the re-scan.
 fn record_lost_sources(model: &mut AppModel, before: &HashSet<String>) {
-    if model.rescan.is_some() {
-        return;
-    }
+    let reported = |source: &str| match &model.rescan {
+        Some(RescanInFlight {
+            machine: Some(machine),
+            ..
+        }) => crate::session::machine_of(source) == machine,
+        Some(_) => true,
+        None => false,
+    };
     let lost: Vec<(String, String)> = model
         .state
         .groups
         .iter()
         .filter(|g| before.contains(&g.source) && !model.state.scanning.contains(&g.source))
+        .filter(|g| !reported(&g.source))
         .filter_map(|g| {
             let reason = g.err.as_deref()?.lines().next().unwrap_or_default();
             Some((
@@ -699,17 +739,41 @@ fn settle_rescan_roster(model: &mut AppModel) {
     if let Some(rescan) = model.rescan.as_mut() {
         rescan.roster = false;
     }
+    model.switcher.hold_numbers(false, &model.state);
 }
 
-/// Makes the re-scan's summary toast once every source and the roster have answered.
+/// Makes the re-scan's summary toast once every source it asked and the roster have
+/// answered. A one-machine re-scan waits for that machine's sources alone and reports
+/// them alone, under a title naming the machine.
 fn settle_rescan(model: &mut AppModel) {
-    if !model.state.scanning.is_empty() || model.rescan.as_ref().is_none_or(|r| r.roster) {
+    let Some(rescan) = model.rescan.as_ref() else {
+        return;
+    };
+    let waiting = match &rescan.machine {
+        Some(machine) => model
+            .state
+            .scanning
+            .iter()
+            .any(|s| crate::session::machine_of(s) == machine),
+        None => !model.state.scanning.is_empty() || rescan.roster,
+    };
+    if waiting {
         return;
     }
-    let Some(RescanInFlight { before, locked, .. }) = model.rescan.take() else {
+    let Some(RescanInFlight {
+        before,
+        locked,
+        machine,
+        ..
+    }) = model.rescan.take()
+    else {
         return;
     };
     let after = crate::state::notify::ScanSnapshot::of(&model.state, &locked);
+    let after = match &machine {
+        Some(machine) => after.only_machine(machine),
+        None => after,
+    };
     // A source names its mux only when it answered, as its card does.
     let state = &model.state;
     let notes = before.summary(&after, |source| {
@@ -719,7 +783,11 @@ fn settle_rescan(model: &mut AppModel) {
             .any(|g| g.source == source && g.err.is_none());
         state.chrome.source_label_when(source, answered)
     });
-    model.state.notify.toast("re-scan", notes);
+    let title = match &machine {
+        Some(machine) => format!("re-scan {machine}"),
+        None => "re-scan".to_string(),
+    };
+    model.state.notify.toast(title, notes);
 }
 
 /// The application update transition: one message in, the effects it asks for out. Every
@@ -792,6 +860,22 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.switcher.toggle_history(&mut model.state);
             Vec::new()
         }
+        Msg::ToggleCheck => {
+            model.switcher.toggle_check(&mut model.state);
+            Vec::new()
+        }
+        Msg::CycleNavScope => {
+            let scope = model.switcher.scope().next();
+            model.switcher.set_scope(scope, &mut model.state);
+            model.state.notify.toast(
+                "nav scope",
+                vec![crate::state::notify::Note::new(
+                    crate::state::notify::Level::Info,
+                    scope.word(),
+                )],
+            );
+            vec![Effect::PersistNavScope(scope)]
+        }
         Msg::DismissToast(id) => {
             model.state.notify.dismiss(id);
             Vec::new()
@@ -805,6 +889,9 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 help_visible,
                 &mut model.state,
             );
+            if model.switcher.open_checked_host(&mut model.state) {
+                return update(model, Msg::Focus(crate::model::FocusTarget::Terminal));
+            }
             Vec::new()
         }
         Msg::OpResult { result, logged_in } => {
@@ -894,6 +981,10 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         }
         Msg::RescanRosterApplied => {
             settle_rescan_roster(model);
+            Vec::new()
+        }
+        Msg::LaunchRosterApplied => {
+            model.switcher.hold_numbers(false, &model.state);
             Vec::new()
         }
         Msg::DetectionFinished { source } => {
@@ -1346,7 +1437,7 @@ mod tests {
         update(&mut model, down());
         assert_eq!(
             hint_text(&model),
-            " Enter focus the terminal · C-g r re-scan every host · unreachable: ssh: connect to host prod port 22: Connection refused"
+            " Enter focus the terminal · C-g R re-scan this host · unreachable: ssh: connect to host prod port 22: Connection refused"
         );
         // Any key read ends it before the key is applied; a key that moves nothing
         // raises nothing new.
@@ -1375,7 +1466,7 @@ mod tests {
         );
         assert!(!model.state.focus.view_is_nav());
         let text = hint_text(&model);
-        assert!(text.contains("C-g r"), "{text}");
+        assert!(text.contains("C-g R"), "{text}");
         assert!(
             !text.contains("Enter"),
             "Enter would reach the pane, so it is not offered: {text}"
@@ -2411,5 +2502,124 @@ mod tests {
             ),
         );
         assert!(!m.state.login_progress.contains_key("pwbox"));
+    }
+
+    fn capital_r() -> Msg {
+        Msg::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn prefix_capital_r_rescans_the_selected_machine_and_reports_it_alone() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned(), "b".to_owned()]);
+        answer(&mut m, "a", &["x"], None);
+        answer(&mut m, "b", &["y"], None);
+        assert_eq!(m.switcher.current_source().as_deref(), Some("a"));
+
+        let effects = update(&mut m, capital_r());
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::Command(crate::model::Command::RescanHost(machine))] if machine == "a"
+            ),
+            "{effects:?}"
+        );
+        assert_eq!(
+            m.state.scanning,
+            HashSet::from(["a".to_owned()]),
+            "only the selected machine is asked"
+        );
+        // Another machine changing meanwhile is not this re-scan's to report.
+        answer(&mut m, "b", &["y", "z"], None);
+        assert!(m.state.notify.toasts.is_empty());
+        answer(&mut m, "a", &["w", "x"], None);
+        assert_eq!(m.state.notify.toasts.len(), 1);
+        assert_eq!(m.state.notify.toasts[0].title, "re-scan a");
+        assert_eq!(note_texts(&m), ["1 session started: a/w"]);
+
+        // Nothing changed is said for that machine alone.
+        update(&mut m, capital_r());
+        answer(&mut m, "a", &["w", "x"], None);
+        assert_eq!(
+            m.state.notify.toasts[1].notes[0].text,
+            "no changes · 1 host, 2 sessions"
+        );
+    }
+
+    #[test]
+    fn a_second_rescan_waits_for_the_first_and_a_full_one_takes_over() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned(), "b".to_owned()]);
+        answer(&mut m, "a", &["x"], None);
+        answer(&mut m, "b", &["y"], None);
+        update(&mut m, capital_r());
+        let effects = update(
+            &mut m,
+            Msg::Commands(vec![crate::model::Command::RescanHost("b".to_owned())]),
+        );
+        assert!(effects.is_empty(), "{effects:?}");
+        assert!(m.state.chrome.flash.contains("still running"));
+        assert!(!m.state.scanning.contains("b"));
+
+        update(&mut m, Msg::Action(crate::model::Action::Rescan));
+        update(&mut m, Msg::RescanRosterApplied);
+        answer(&mut m, "a", &["x"], None);
+        answer(&mut m, "b", &["y"], None);
+        assert_eq!(m.state.notify.toasts.len(), 1);
+        assert_eq!(
+            m.state.notify.toasts[0].title, "re-scan",
+            "the full summary"
+        );
+    }
+
+    #[test]
+    fn the_scope_key_steps_the_scope_says_so_and_persists_it() {
+        use crate::model::NavScope;
+        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        answer(&mut m, "a", &["x"], None);
+        let effects = update(&mut m, Msg::CycleNavScope);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::PersistNavScope(NavScope::AllHosts)]
+        ));
+        assert_eq!(m.switcher.scope(), NavScope::AllHosts);
+        assert_eq!(m.state.notify.toasts[0].title, "nav scope");
+        assert_eq!(note_texts(&m), ["all hosts"]);
+        update(&mut m, Msg::CycleNavScope);
+        update(&mut m, Msg::CycleNavScope);
+        assert_eq!(
+            m.switcher.scope(),
+            NavScope::Sessions,
+            "three steps go round"
+        );
+    }
+
+    #[test]
+    fn enter_in_the_check_table_on_a_blocked_host_focuses_its_login_pane() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned(), "lock".to_owned()]);
+        answer(&mut m, "a", &["x"], None);
+        answer(
+            &mut m,
+            "lock",
+            &[],
+            Some("alice@lock: Permission denied (publickey,password)."),
+        );
+        assert!(m.state.focus.view_is_nav());
+        update(&mut m, Msg::ToggleCheck);
+        assert!(matches!(
+            m.state.modal,
+            Some(crate::state::Modal::Check { .. })
+        ));
+        update(
+            &mut m,
+            Msg::ReaderBytes {
+                bytes: b"\r".to_vec(),
+                prefix: 0x07,
+            },
+        );
+        assert!(m.state.modal.is_none());
+        assert!(
+            !m.state.focus.view_is_nav(),
+            "the login pane takes the keys"
+        );
+        assert_eq!(m.switcher.current_source().as_deref(), Some("lock"));
     }
 }

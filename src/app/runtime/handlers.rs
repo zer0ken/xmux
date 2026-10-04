@@ -360,6 +360,8 @@ impl Runtime {
                     debug_assert!(effects.is_empty());
                 }
                 if launching {
+                    let effects = update(model, Msg::LaunchRosterApplied);
+                    debug_assert!(effects.is_empty());
                     probe_machines(hosts, mgr.events(), scan_pool, false);
                     return (false, Vec::new());
                 }
@@ -626,6 +628,13 @@ impl Runtime {
         // [ui] hide-unreachable: the nav drops the settled unreachable hosts' cards. The
         // filter naming one brings its card, and its unreachable screen, back.
         switcher.set_hide_unreachable(roster.cfg.ui_hide_unreachable(), &mut state);
+        // The launch roster can add hosts after the first sources answer, so the card
+        // numbers stay open until it is in.
+        if env.startup_pending {
+            switcher.hold_numbers(true, &state);
+        }
+        // The nav scope the user last chose with the scope key.
+        switcher.set_scope(crate::app::prefs::load_nav_scope(&env.xmux_dir), &mut state);
         // [ui] notifications: whether results show as toasts; the history keeps them either
         // way.
         state.notify.set_toasts_enabled(roster.cfg.ui.notifications);
@@ -732,6 +741,8 @@ impl Runtime {
             rescan_pending: false,
             #[cfg(test)]
             discovery_runs: 0,
+            #[cfg(test)]
+            host_rescans: Vec::new(),
             // The live config watch records a baseline on its first frame tick, so the
             // startup settings are not re-applied. `None` means no baseline yet.
         };
@@ -806,7 +817,7 @@ impl Runtime {
             .nav_position_pinned
             .unwrap_or(self.model.nav_default);
         // Resize when ANY dimension of the split moved: the width (focus / hide / prefix
-        // h·l in a column), the band height (border drag / resize keys), or the side the
+        // Ctrl-←/→ in a column), the band height (border drag / resize keys), or the side the
         // nav is attached to. All change the mux terminal region, so all must resize the
         // PTYs or the grid mismatches the draw.
         if want_nav_width != self.model.nav_width

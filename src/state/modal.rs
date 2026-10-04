@@ -162,13 +162,22 @@ pub(crate) enum Modal {
     History {
         scroll: usize,
     },
+    /// The table of the hosts to check `prefix h` opens. `selected` is the row the keys
+    /// are on, and `open` records an Enter the switcher has yet to act on.
+    Check {
+        selected: usize,
+        open: bool,
+    },
     Input(Box<Input>),
 }
 
-/// True while a read-only popup is open: the help or the history. Either one takes
-/// every key while it is open.
+/// True while a popup that takes every key is open: the help, the history, or the table
+/// of the hosts to check.
 pub(crate) fn is_reader(modal: &Option<Modal>) -> bool {
-    matches!(modal, Some(Modal::Help { .. } | Modal::History { .. }))
+    matches!(
+        modal,
+        Some(Modal::Help { .. } | Modal::History { .. } | Modal::Check { .. })
+    )
 }
 
 /// True while a centered modal popup is open. Every modal is one today, so this
@@ -240,6 +249,19 @@ pub(crate) fn feed_reader(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
     }
     // `q`, or a real Esc (a lone ESC, not the ESC `[` that starts an arrow/CSI).
     let esc = bytes.contains(&0x1b) && !bytes.windows(2).any(|w| w == [0x1b, b'[']);
+    if let Some(Modal::Check { selected, open }) = modal {
+        if bytes.contains(&b'q') || esc {
+            *modal = None;
+            return true;
+        }
+        match bytes {
+            b"k" | b"\x1b[A" => *selected = selected.saturating_sub(1),
+            b"j" | b"\x1b[B" => *selected = selected.saturating_add(1),
+            b"\r" | b"\n" => *open = true,
+            _ => {}
+        }
+        return true;
+    }
     if bytes.contains(&b'q') || esc {
         *modal = None;
         return true;

@@ -301,16 +301,30 @@ pub(crate) fn place(room: Rect, position: NavPosition, nav_hidden: bool, size: (
     }
 }
 
-/// Paints the list in `rect`: a rounded box titled with the prefix, the xmux version on
-/// its bottom border where it fits, and the columns inside.
+/// What the key list's borders say: the prefix it is titled with, the nav's scope and
+/// hidden host count on the bottom border's left, and the xmux version on its right.
+pub(crate) struct Border<'a> {
+    pub(crate) prefix: &'a str,
+    pub(crate) status: &'a str,
+    pub(crate) version: &'a str,
+}
+
+/// Paints the list in `rect`: a rounded box titled with the prefix, the nav status and the
+/// xmux version on its bottom border where they fit, and the columns inside. The status
+/// is said first: the version takes the border only where both leave a corner's worth of
+/// rule on each side.
 pub(crate) fn render(
     frame: &mut Frame,
     rect: Rect,
     list: &KeyList,
-    prefix: &str,
-    version: &str,
+    border: Border<'_>,
     palette: &palette::Palette,
 ) {
+    let Border {
+        prefix,
+        status,
+        version,
+    } = border;
     frame.render_widget(Clear, rect);
     let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -322,9 +336,28 @@ pub(crate) fn render(
                 .add_modifier(Modifier::BOLD),
         ))
         .style(Style::reset());
+    let status_w = if status.is_empty() {
+        0
+    } else {
+        status.width() as u16 + 2
+    };
+    let status_w = if status_w + 4 <= rect.width {
+        status_w
+    } else {
+        0
+    };
+    if status_w > 0 {
+        block = block.title_bottom(
+            Line::from(Span::styled(
+                format!(" {status} "),
+                Style::default().fg(palette.decoration),
+            ))
+            .left_aligned(),
+        );
+    }
     // The version is a build pointer, so it takes the bottom border only where it leaves a
     // corner's worth of rule on each side.
-    if (version.width() as u16) + 4 <= rect.width {
+    if status_w + (version.width() as u16) + 2 + 6 <= rect.width {
         block = block.title_bottom(
             Line::from(Span::styled(
                 format!(" {version} "),
@@ -413,7 +446,7 @@ mod tests {
         let long = key_list("C-g", NavPosition::Left, 160, 30).unwrap();
         let (long_w, _) = long.size();
         // Narrower than the long rung needs at the height the room leaves.
-        let list = key_list("C-g", NavPosition::Left, 60, 12).unwrap();
+        let list = key_list("C-g", NavPosition::Left, 60, 13).unwrap();
         assert!(long_w > 60);
         assert_eq!(list.rung, Rung::Short, "{list:?}");
         assert_eq!(list.keys().len(), prefixed_count(), "no key given up");

@@ -98,6 +98,7 @@ impl Switcher {
                 match rest[0] {
                     b'm' => self.toggle_history(state),
                     b'?' => self.toggle_help(state),
+                    b'h' => self.toggle_check(state),
                     _ => continue,
                 }
                 rest = &rest[1..];
@@ -122,8 +123,15 @@ impl Switcher {
         // than the offset that shows the last page of what its search matches, the same
         // limit its paint holds, so a scroll back up moves the view at once.
         let last = state.notify.history.len().saturating_sub(1);
+        let checks = match state.modal {
+            Some(Modal::Check { .. }) => self.check_entries(state).len(),
+            _ => 0,
+        };
         match state.modal.as_mut() {
             Some(Modal::History { scroll }) => *scroll = (*scroll).min(last),
+            Some(Modal::Check { selected, .. }) => {
+                *selected = (*selected).min(checks.saturating_sub(1))
+            }
             Some(Modal::Help { query, scroll, .. }) => {
                 let rows = modal::matching_help_rows(
                     &modal::help_rows(&state.chrome.ui_prefix, state.chrome.nav_position),
@@ -180,6 +188,7 @@ impl Switcher {
                 '/' => self.open_input(InputMode::Filter, state),
                 'n' => self.open_new(state),
                 'r' => return vec![Command::Rescan],
+                'R' => return self.rescan_host(state),
                 // Jump: the digit opens the jump popup already holding it, so the
                 // number can be extended (4 → 41) without a second keystroke.
                 '0'..='9' => self.open_jump(c, state),
@@ -188,6 +197,112 @@ impl Switcher {
             _ => {}
         }
         Vec::new()
+    }
+
+    /// The `prefix R` re-scan of the selected card's host alone. Refused while any source
+    /// of that machine is still scanning, since a machine is asked one thing at a time.
+    fn rescan_host(&mut self, state: &mut crate::state::State) -> Vec<Command> {
+        let Some(source) = self.current_source() else {
+            return Vec::new();
+        };
+        let machine = crate::session::machine_of(&source).to_string();
+        let busy = state
+            .scanning
+            .iter()
+            .any(|s| crate::session::machine_of(s) == machine);
+        if busy {
+            state.flash(format!("{machine} is still being scanned"));
+            return Vec::new();
+        }
+        vec![Command::RescanHost(machine)]
+    }
+
+    // --- the hosts to check -------------------------------------------------
+
+    /// Toggles the table of the hosts to check (`prefix h`) in either focus.
+    pub fn toggle_check(&mut self, state: &mut crate::state::State) {
+        if matches!(state.modal, Some(Modal::Check { .. })) {
+            state.modal = None;
+        } else {
+            self.dismiss_modals(state);
+            state.modal = Some(Modal::Check {
+                selected: 0,
+                open: false,
+            });
+        }
+    }
+
+    /// Every host in a problem state, grouped by cause in the order the table reads them
+    /// (login needed, unreachable, list failed) and by list order inside a cause. A host
+    /// still scanning is in no state yet and is left out.
+    pub(crate) fn check_entries(&self, state: &crate::state::State) -> Vec<CheckEntry> {
+        use crate::model::FailureKind;
+        let hidden = self.hidden_sources(state);
+        let mut entries = Vec::new();
+        for kind in [
+            FailureKind::Blocked,
+            FailureKind::Unreachable,
+            FailureKind::ListFailed,
+        ] {
+            for g in &state.groups {
+                if state.scanning.contains(&g.source) || g.failure() != Some(kind) {
+                    continue;
+                }
+                let reason = g
+                    .err
+                    .as_deref()
+                    .and_then(|e| e.lines().map(str::trim).find(|l| !l.is_empty()))
+                    .unwrap_or_default()
+                    .to_string();
+                entries.push(CheckEntry {
+                    label: state.chrome.source_label_when(&g.source, false),
+                    source: g.source.clone(),
+                    kind,
+                    reason,
+                    hidden: hidden.contains(&g.source),
+                });
+            }
+        }
+        entries
+    }
+
+    /// Acts on an Enter the check table took: closes the table and selects the chosen
+    /// host's card. A host with no card on the list is brought back by setting the filter
+    /// to its name, which is how a hidden host's card is reached. A host whose login pane
+    /// answers it hands the focus to the terminal view, where the pane takes the keys.
+    /// Returns whether the focus goes to the terminal view.
+    pub fn open_checked_host(&mut self, state: &mut crate::state::State) -> bool {
+        let Some(Modal::Check {
+            selected,
+            open: true,
+        }) = state.modal
+        else {
+            return false;
+        };
+        let Some(entry) = self.check_entries(state).into_iter().nth(selected) else {
+            state.modal = None;
+            return false;
+        };
+        state.modal = None;
+        let host_row = |sw: &Switcher| {
+            sw.rows.iter().position(
+                |r| matches!(&r.reference, RowRef::Host { source, .. } if *source == entry.source),
+            )
+        };
+        let row = match host_row(self) {
+            Some(i) => Some(i),
+            None => {
+                state.filter = entry.source.clone();
+                self.rebuild(state);
+                host_row(self)
+            }
+        };
+        let Some(i) = row else {
+            return false;
+        };
+        self.user_moved = true;
+        self.set_selected(i, state);
+        entry.kind == crate::model::FailureKind::Blocked
     }
 
     // --- input row ----------------------------------------------------------
@@ -242,20 +357,15 @@ impl Switcher {
         ))));
     }
 
-    /// The row `number` addresses, or `None` when no card carries it: the number-th
-    /// SELECTABLE card, section titles excepted, counting from 1. The buffer is read
-    /// as its value, spelling included, so 01 is 1: the values no card carries are 0
-    /// alone and everything past the last card. The jump reads it on every edit to
-    /// move the selection while the number names a card, and at Enter to decide
-    /// whether to land or flash: see [`Switcher::jump_accepts`].
+    /// The row of the card carrying `number`, or `None` when no card on the list carries
+    /// it. The buffer is read as its value, spelling included, so 01 is 1: the values no
+    /// card carries are 0, a vacant number (its card ended or is not on the list), and
+    /// everything past the highest. The jump reads it on every edit to move the selection
+    /// while the number names a card, and at Enter to decide whether to land or flash: see
+    /// [`Switcher::jump_accepts`].
     fn jump_row(&self, number: &str) -> Option<usize> {
         let n = number.trim().parse::<usize>().ok()?;
-        self.rows
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| r.selectable())
-            .nth(n.checked_sub(1)?)
-            .map(|(i, _)| i)
+        (0..self.rows.len()).find(|&i| self.rows[i].selectable() && self.card_number(i) == n)
     }
 
     /// Whether the jump would land on `number`, i.e. some card carries it. Read at
@@ -276,7 +386,7 @@ impl Switcher {
     pub(super) fn open_jump(&mut self, digit: char, state: &mut crate::state::State) {
         state.chrome.clear_flash();
         let seed = digit.to_string();
-        let last = self.selectable_count();
+        let last = self.highest_number();
         let restore = self.current_ref().cloned();
         self.dismiss_modals(state);
         let mut input = Input::new(
@@ -324,25 +434,21 @@ impl Switcher {
     }
 
     pub(super) fn update_filter_label(&self, state: &mut crate::state::State) {
-        let normally_visible = if self.hide_unreachable {
-            crate::ui::tree::drop_hidden_unreachable(
-                &state.groups,
-                &state.scanning,
-                &state.logged_in,
-                "",
-            )
+        let scoped = crate::ui::tree::scoped_groups(&state.groups, &state.scanning, self.scope);
+        let normally_visible = if self.hides() {
+            crate::ui::tree::drop_hidden_unreachable(&scoped, &state.scanning, &state.logged_in, "")
         } else {
-            state.groups.clone()
+            scoped.to_vec()
         };
-        let filter_visible = if self.hide_unreachable {
+        let filter_visible = if self.hides() {
             crate::ui::tree::drop_hidden_unreachable(
-                &state.groups,
+                &scoped,
                 &state.scanning,
                 &state.logged_in,
                 &state.filter,
             )
         } else {
-            state.groups.clone()
+            scoped.to_vec()
         };
         let filtered = crate::ui::tree::filter_groups(&filter_visible, &state.filter);
         let matches = filtered
@@ -355,7 +461,7 @@ impl Switcher {
                 }
             })
             .sum::<usize>();
-        let hidden = if self.hide_unreachable {
+        let hidden = if self.hides() {
             filtered
                 .iter()
                 .filter(|group| !normally_visible.iter().any(|g| g.source == group.source))
@@ -417,7 +523,7 @@ impl Switcher {
                         if !val.is_empty() && self.jump_accepts(&val) {
                             self.close_input(state);
                         } else {
-                            let last = self.selectable_count();
+                            let last = self.highest_number();
                             if !val.is_empty() {
                                 state.flash(format!("no session {val} (1 - {last})"));
                             }

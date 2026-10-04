@@ -96,6 +96,9 @@ pub enum Command {
     SelectAddress(Address),
     /// Re-enumerate every host (the `r` re-scan), via the switcher.
     Rescan,
+    /// Re-scan one machine alone (the `R` re-scan): its reachability probe, then every
+    /// source it serves.
+    RescanHost(String),
     /// Adjust the natural nav width by this signed delta and schedule the debounced
     /// persist.
     AdjustNavWidth(i32),
@@ -128,6 +131,7 @@ impl std::fmt::Debug for Command {
         match self {
             Self::SelectAddress(address) => f.debug_tuple("SelectAddress").field(address).finish(),
             Self::Rescan => f.write_str("Rescan"),
+            Self::RescanHost(machine) => f.debug_tuple("RescanHost").field(machine).finish(),
             Self::AdjustNavWidth(delta) => f.debug_tuple("AdjustNavWidth").field(delta).finish(),
             Self::ToggleAutoHide => f.write_str("ToggleAutoHide"),
             Self::PersistLastSession(address) => {

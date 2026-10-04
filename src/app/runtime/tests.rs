@@ -985,6 +985,50 @@ fn inventory_rename_precedes_display_session_sync() {
 }
 
 #[tokio::test]
+async fn prefix_capital_r_probes_the_selected_machine_without_a_discovery_pass() {
+    // The one-machine re-scan asks that machine alone: one reachability probe, no roster
+    // resolution and no probe of any other machine.
+    use crate::session::Session;
+    use crate::ui::switcher::{Scan, Switcher};
+    use crate::ui::tree::Group;
+
+    let group = |source: &str| Group {
+        source: source.into(),
+        err: None,
+        sessions: vec![Session {
+            mux: String::new(),
+            source: source.into(),
+            name: "api".into(),
+            windows: 1,
+            attached: false,
+        }],
+    };
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![group("jup"), group("sat")],
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    let selected = rt.model.switcher.current_source().unwrap();
+
+    let mut width_changed = false;
+    let _ = rt.handle_nav_bytes(b"\x07R", &mut width_changed);
+
+    assert_eq!(rt.host_rescans, std::slice::from_ref(&selected));
+    assert_eq!(rt.discovery_runs, 0, "no full discovery pass");
+    assert!(
+        rt.model.state.scanning.len() == 1 && rt.model.state.scanning.contains(&selected),
+        "only the selected machine is in flight: {:?}",
+        rt.model.state.scanning
+    );
+    assert!(
+        rt.model.state.groups.iter().all(|g| !g.sessions.is_empty()),
+        "its cards stay while it is asked"
+    );
+}
+
+#[tokio::test]
 async fn r_rescan_rebuilds_nav_and_kicks_discovery() {
     // The client-initiated `r` re-scan resets the nav to its scanning skeleton and
     // re-lists each host. Repeated `r` keys in one stdin read still form one pass.
@@ -1972,6 +2016,7 @@ fn test_rt(env: Env) -> Runtime {
         last_draw: std::time::Instant::now(),
         rescan_pending: false,
         discovery_runs: 0,
+        host_rescans: Vec::new(),
     };
     sync_test_render_plan(&mut rt);
     rt

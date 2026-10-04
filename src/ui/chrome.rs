@@ -723,6 +723,10 @@ impl Chrome {
         }
         if kind != ViewScreen::SelfSession {
             rows.push((
+                ScreenCell::Key(format!("{p} R")),
+                "re-scan this host".into(),
+            ));
+            rows.push((
                 ScreenCell::Key(format!("{p} r")),
                 "re-scan every host".into(),
             ));

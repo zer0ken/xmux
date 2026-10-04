@@ -95,18 +95,21 @@ impl TermInput {
                 let keep = match command {
                     KeyCommand::Help => Some(Action::ShowHelp),
                     KeyCommand::History => Some(Action::ShowHistory),
+                    KeyCommand::Check => Some(Action::ShowCheck),
+                    KeyCommand::Scope => Some(Action::CycleNavScope),
                     KeyCommand::Width(d) => Some(Action::Width(d)),
                     KeyCommand::Height(d) => Some(Action::Height(d)),
                     KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
                     KeyCommand::Collapse => Some(Action::ToggleCollapse),
                     KeyCommand::Position => Some(Action::CycleNavPosition),
-                    // The nav actions (new session, re-scan, filter, card jump) reach the
-                    // nav executor as the key itself. Focus stays on the terminal view: the
-                    // modal draws over it and owns the NEXT read.
+                    // The nav actions (new session, both re-scans, filter, card jump)
+                    // reach the nav executor as the key itself. Focus stays on the
+                    // terminal view: the modal draws over it and owns the NEXT read.
                     KeyCommand::Jump
                     | KeyCommand::Filter
                     | KeyCommand::NewSession
-                    | KeyCommand::Rescan => Some(Action::NavKey(KeyEvent::new(
+                    | KeyCommand::Rescan
+                    | KeyCommand::RescanHost => Some(Action::NavKey(KeyEvent::new(
                         KeyCode::Char(bytes[i] as char),
                         KeyModifiers::NONE,
                     ))),
@@ -220,14 +223,18 @@ mod tests {
             KeyCommand::Quit => vec![Action::Quit],
             KeyCommand::Help => vec![Action::ShowHelp],
             KeyCommand::History => vec![Action::ShowHistory],
+            KeyCommand::Check => vec![Action::ShowCheck],
+            KeyCommand::Scope => vec![Action::CycleNavScope],
             KeyCommand::AutoHide => vec![Action::ToggleAutoHide],
             KeyCommand::Collapse => vec![Action::ToggleCollapse],
             KeyCommand::Position => vec![Action::CycleNavPosition],
             KeyCommand::Width(d) => vec![Action::Width(d)],
             KeyCommand::Height(d) => vec![Action::Height(d)],
-            KeyCommand::Jump | KeyCommand::Filter | KeyCommand::NewSession | KeyCommand::Rescan => {
-                vec![Action::NavKey(key())]
-            }
+            KeyCommand::Jump
+            | KeyCommand::Filter
+            | KeyCommand::NewSession
+            | KeyCommand::Rescan
+            | KeyCommand::RescanHost => vec![Action::NavKey(key())],
             KeyCommand::LiteralPrefix => vec![Action::Forward(vec![0x07])],
             KeyCommand::FocusTerminal => vec![],
             KeyCommand::FocusNav | KeyCommand::FocusToggle => vec![Action::FocusNav(vec![])],
@@ -334,8 +341,8 @@ mod tests {
         assert!(t.is_armed());
         assert_eq!(
             t.feed(b"h", NavPosition::Left),
-            vec![Action::Width(-1)],
-            "the key resizes"
+            vec![Action::ShowCheck],
+            "the key opens the hosts to check"
         );
         assert!(!t.is_armed(), "a key while ready consumes ready");
         assert_eq!(
@@ -556,20 +563,24 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_h_or_l_resizes() {
+    fn prefix_then_h_opens_the_check_table_and_s_steps_the_scope() {
         let mut t = m();
         t.feed(&[0x07], NavPosition::Left);
-        assert_eq!(
-            t.feed(b"h", NavPosition::Left),
-            vec![Action::Width(-1)],
-            "h narrows"
-        );
+        assert_eq!(t.feed(b"h", NavPosition::Left), vec![Action::ShowCheck]);
         let mut t2 = m();
         t2.feed(&[0x07], NavPosition::Left);
         assert_eq!(
-            t2.feed(b"l", NavPosition::Left),
-            vec![Action::Width(1)],
-            "l widens"
+            t2.feed(b"s", NavPosition::Left),
+            vec![Action::CycleNavScope]
+        );
+        let mut t3 = m();
+        t3.feed(&[0x07], NavPosition::Left);
+        assert_eq!(
+            t3.feed(b"R", NavPosition::Left),
+            vec![Action::NavKey(KeyEvent::new(
+                KeyCode::Char('R'),
+                KeyModifiers::NONE
+            ))]
         );
     }
 
@@ -617,10 +628,10 @@ mod tests {
         // Bytes before the prefix flush first, preserving order around the command.
         let mut t2 = m();
         assert_eq!(
-            t2.feed(b"ab\x07lcd", NavPosition::Left),
+            t2.feed(b"ab\x07hcd", NavPosition::Left),
             vec![
                 Action::Forward(b"ab".to_vec()),
-                Action::Width(1),
+                Action::ShowCheck,
                 Action::Forward(b"cd".to_vec()),
             ]
         );

@@ -302,6 +302,14 @@ impl ScanSnapshot {
         ScanSnapshot { sources }
     }
 
+    /// The same snapshot narrowed to the sources `machine` serves, for a re-scan that
+    /// asked that machine alone.
+    pub(crate) fn only_machine(mut self, machine: &str) -> Self {
+        self.sources
+            .retain(|source, _| crate::session::machine_of(source) == machine);
+        self
+    }
+
     /// One report of what changed between this snapshot and `after`: sources added and
     /// removed, sessions started and ended, and sources that stopped or started
     /// answering. `label` names a source the way its card does. A session is named under

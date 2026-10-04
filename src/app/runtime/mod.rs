@@ -218,6 +218,9 @@ impl Runtime {
                 Effect::PersistNavPosition(position) => {
                     crate::app::prefs::save_nav_position(&self.env.xmux_dir, position);
                 }
+                Effect::PersistNavScope(scope) => {
+                    crate::app::prefs::save_nav_scope(&self.env.xmux_dir, scope);
+                }
                 Effect::ReattachDisplay(selection) => {
                     let key = display_key(&self.hosts, &selection);
                     self.registry.remove(&key);
@@ -232,6 +235,21 @@ impl Runtime {
                     }
                     Command::Rescan => {
                         self.rescan_pending = true;
+                    }
+                    // The machine's reachability probe, marked as a re-scan so a machine
+                    // that answers re-enumerates every source it serves; nothing else is
+                    // asked, and the roster is not re-resolved.
+                    Command::RescanHost(machine) => {
+                        #[cfg(test)]
+                        self.host_rescans.push(machine.clone());
+                        probe_machine(
+                            &machine,
+                            &self.hosts,
+                            self.mgr.events(),
+                            &self.scan_pool,
+                            true,
+                            0,
+                        );
                     }
                     Command::AdjustNavWidth(_) => {
                         width_changed = true;
@@ -1394,6 +1412,9 @@ struct Runtime {
     rescan_pending: bool,
     #[cfg(test)]
     discovery_runs: usize,
+    /// The machines a one-machine re-scan probed, in order, for tests.
+    #[cfg(test)]
+    host_rescans: Vec<String>,
 }
 
 /// The loop's receiver halves, whose send halves `Runtime::new` wired into the world

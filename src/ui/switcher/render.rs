@@ -221,6 +221,11 @@ pub struct RenderPlan {
     /// The prefix key list and where it opens, while a prefix is live and the room beside
     /// the indicator holds it.
     pub(crate) key_list: Option<(Rect, crate::ui::keylist::KeyList)>,
+    /// What the key list's bottom border says about the nav: its scope, and how many
+    /// hosts the hiding leaves without a card.
+    pub(crate) key_list_status: String,
+    /// The one line the nav body says when it lists no card at all, and where.
+    pub(crate) nav_guidance: Option<(Rect, String)>,
     /// The cells a click on a collapsed nav expands it from: the whole collapsed column
     /// with its seam, or a collapsed band's seam row. Empty while the nav is expanded.
     pub expand_area: Rect,
@@ -251,6 +256,8 @@ impl Default for RenderPlan {
             prefix_label: Rect::default(),
             toasts: Vec::new(),
             key_list: None,
+            key_list_status: String::new(),
+            nav_guidance: None,
             expand_area: Rect::default(),
             overflow_marks: Vec::new(),
             title_repeats: Vec::new(),
@@ -410,6 +417,7 @@ impl Switcher {
                     None => Rect::default(),
                 },
             ),
+            key_list_status: self.key_list_status(state),
             key_list,
             expand_area,
             floating_hint_bar: floating,
@@ -429,8 +437,46 @@ impl Switcher {
                 Rect::default()
             };
             self.layout_nav(&mut plan, state, track);
+            if self.rows.is_empty() {
+                let body = plan.nav_inner;
+                plan.nav_guidance = Some((Rect { height: 1, ..body }, self.nav_guidance(state)));
+            }
         }
         plan
+    }
+
+    /// The key list's word about the nav: the scope, and the hidden host count when the
+    /// hiding leaves any host without a card.
+    fn key_list_status(&self, state: &crate::state::State) -> String {
+        let hidden = self.hidden_sources(state).len();
+        let scope = self.scope().word();
+        if hidden == 0 {
+            format!("nav: {scope}")
+        } else {
+            format!("nav: {scope} · {hidden} hidden")
+        }
+    }
+
+    /// The one line an empty nav body says: how many hosts are hidden and the key that
+    /// lists them, or that the scope has nothing to show and the key that changes it.
+    fn nav_guidance(&self, state: &crate::state::State) -> String {
+        use crate::model::keys::{entry_for, KeyCommand};
+        let key = |command| {
+            entry_for(command)
+                .map(|e| e.full_label(&state.chrome.ui_prefix, state.chrome.nav_position))
+                .unwrap_or_default()
+        };
+        let hidden = self.hidden_sources(state).len();
+        if hidden > 0 {
+            let hosts = if hidden == 1 { "host" } else { "hosts" };
+            return format!("{hidden} {hosts} hidden · {}", key(KeyCommand::Check));
+        }
+        match self.scope() {
+            crate::model::NavScope::NeedsAttention => {
+                format!("nothing needs attention · {}", key(KeyCommand::Scope))
+            }
+            _ => format!("no hosts · {}", key(KeyCommand::Rescan)),
+        }
     }
 
     fn layout_nav(&self, plan: &mut RenderPlan, state: &crate::state::State, track: Rect) {
@@ -644,7 +690,7 @@ impl Switcher {
         // Reset the buffer before painting. The widgets below do not all fill every cell
         // they own - the mux grid only paints its top-left clip (cells past the grid size
         // are skipped), the view border rule sets fg only, and the nav list leaves blank
-        // rows - so when the tree width changes (drag / prefix h·l) cells that switched
+        // rows - so when the tree width changes (drag / prefix Ctrl-←/→) cells that switched
         // panes would otherwise keep stale content (the residue seen while resizing).
         // Clearing first makes every unpainted cell default; ratatui still diffs against
         // the last frame, so static content writes nothing (no flicker).
@@ -837,6 +883,12 @@ impl Switcher {
             Some(NavRule::Vertical(rect)) => Self::render_column_rule(frame, rect, palette),
             None => {}
         }
+        if let Some((rect, text)) = &plan.nav_guidance {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(text.clone(), dim))),
+                *rect,
+            );
+        }
     }
 
     /// The rule parting the side list's two bands once they scroll as one run. A single
@@ -888,13 +940,12 @@ impl Switcher {
             format!("{host}/{mux}")
         }
     }
-    /// How many columns the card numbers need: the digit count of the highest card
-    /// number. One width for the whole frame, so the names stay aligned with each
-    /// other instead of stepping right as the numbers gain a digit, and the numbers
-    /// themselves line up by units place. Section titles carry no number, so the width
-    /// counts the SELECTABLE cards only.
+    /// How many columns the card numbers need: the digit count of the highest number a
+    /// card on the list carries. One width for the whole frame, so the names stay aligned
+    /// with each other instead of stepping right as the numbers gain a digit, and the
+    /// numbers themselves line up by units place.
     fn number_width(&self) -> usize {
-        self.selectable_count().to_string().len().max(1)
+        self.highest_number().to_string().len().max(1)
     }
 
     /// One row measured for the column flow: whether it opens a unit, how wide its
@@ -1154,6 +1205,13 @@ impl Switcher {
                 let h = (rows + 2).min(area.height.max(1));
                 modal::offset_centered(w, h, area, self.popup_geo.offset)
             }
+            Some(Modal::Check { selected, .. }) => {
+                let w = history_popup_width(area);
+                let (_, lines) =
+                    self.check_table(state, *selected, w.saturating_sub(2), usize::MAX);
+                let h = (lines.len() as u16 + 2).min(area.height.max(1));
+                modal::offset_centered(w, h, area, self.popup_geo.offset)
+            }
             Some(Modal::History { scroll }) => {
                 let w = history_popup_width(area);
                 let (_, lines) = crate::ui::toast::history_lines(
@@ -1169,6 +1227,26 @@ impl Switcher {
         }
     }
 
+    /// The check table's title and lines at `width` inner cells.
+    fn check_table(
+        &self,
+        state: &crate::state::State,
+        selected: usize,
+        width: u16,
+        visible_rows: usize,
+    ) -> (String, Vec<Line<'static>>) {
+        let keys = crate::model::keys::entry_for(crate::model::keys::KeyCommand::Check)
+            .map_or("", |e| e.help);
+        crate::ui::check::check_lines(
+            &self.check_entries(state),
+            selected,
+            width,
+            visible_rows,
+            keys,
+            &self.palette,
+        )
+    }
+
     /// Paints the prefix key list where the plan opened it.
     fn render_key_list(
         &self,
@@ -1182,8 +1260,11 @@ impl Switcher {
                 frame,
                 *rect,
                 list,
-                &state.chrome.ui_prefix,
-                &state.chrome.version_label(),
+                crate::ui::keylist::Border {
+                    prefix: &state.chrome.ui_prefix,
+                    status: &plan.key_list_status,
+                    version: &state.chrome.version_label(),
+                },
                 palette,
             );
         }
@@ -1234,6 +1315,12 @@ impl Switcher {
                 *scroll,
                 rect.width.saturating_sub(2),
                 palette,
+            ),
+            Some(Modal::Check { selected, .. }) => self.check_table(
+                state,
+                *selected,
+                rect.width.saturating_sub(2),
+                rect.height.saturating_sub(2) as usize,
             ),
             _ => return,
         };

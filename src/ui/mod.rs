@@ -2,6 +2,7 @@
 //! ratatui application (`switcher`). The model layer is side-effect-free; the
 //! rendering is layered on top separately.
 
+pub(crate) mod check;
 pub mod chrome;
 pub(crate) mod keylist;
 pub mod modal;
