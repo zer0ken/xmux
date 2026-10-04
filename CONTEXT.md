@@ -253,7 +253,9 @@ UI elements a user perceives as distinct things:
   and a listing failure uses `✗` in the primary role. The scanning spinner stays in
   the pending role. Every host-state card reserves one cell for its glyph. Only the
   selected host shows its state word; unselected cards retain the glyph alone. In a
-  band, the state word floats over neighboring cells and does not set the column width.
+  band, the state word floats over neighboring cells with one blank cell on each side
+  and does not set the column width. Those blanks join its reverse-video highlight
+  while the nav holds focus.
   A host-state card claims a mux only when the mux is CONFIRMED - a settled reachable
   host's enumeration answered through its mux, and a source id that names its own mux
   was resolved from what the machine actually serves; a section title's mux is
