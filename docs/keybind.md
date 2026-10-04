@@ -244,6 +244,10 @@ it at once, and the next move replaces it. A narrow bar shortens the description
 then drops the reason, then the later keys. A selection xmux was told to make (a ctl
 `switch`, the nav following the mux) raises no hint.
 
+In a top or bottom band the selection hint occupies the view border row beside the
+prefix. Offscreen card counts return when the hint closes. An input or refusal still
+opens into the terminal view next to the border so its text has room to wrap.
+
 With the nav auto-hidden the mux owns every row, prefix indicator included, until a prefix
 interaction starts: then the nav comes back for the moment it is needed, so a jump can
 read the card numbers, and it hides again when the interaction ends. With no indicator on

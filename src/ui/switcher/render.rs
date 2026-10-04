@@ -9,8 +9,9 @@ use crate::ui::palette;
 /// column's bottom row, or the right end of a band's view border row (empty when the nav
 /// is hidden, so the mux keeps every row).
 ///
-/// Floating, it spans the full bottom row of a side layout, opens below a top band's
-/// seam, or opens above a bottom band's seam. A multi-row bar grows away from the
+/// Floating, it spans the full bottom row of a side layout. A selection hint in a band
+/// shares the seam with the prefix; an input or flash opens below a top band's seam
+/// or above a bottom band's seam. A multi-row bar grows away from the
 /// indicator. With the nav hidden there is no
 /// indicator, so it borrows the window's bottom rows. Only the paint moves; the layout is
 /// untouched, so nothing reflows.
@@ -309,12 +310,24 @@ impl Switcher {
         // The resting indicator is one row, so the layout is cut for one row whatever the
         // bar says: a floating bar only paints further, it never takes a row from the nav.
         let regions = compute_regions(area, nav, 1);
-        let bar_w = if floating { area.width } else { nav.width };
+        let seam_hint = band
+            && !regions.hint_bar.is_empty()
+            && floating
+            && state.chrome.flash.is_empty()
+            && !state.is_inputting()
+            && !state.chrome.armed;
+        let prefix_w = collapsed_nav_width(&state.chrome.ui_prefix);
+        let bar_w = if seam_hint {
+            area.width.saturating_sub(prefix_w)
+        } else if floating {
+            area.width
+        } else {
+            nav.width
+        };
         let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
         // At rest the prefix indicator is a label on the column's bottom row, and the right
-        // end of the seam row in a band. While the bar floats away from it, the indicator
-        // keeps the prefix alone.
-        let prefix_w = collapsed_nav_width(&state.chrome.ui_prefix);
+        // end of the seam row in a band. While the bar floats, the indicator keeps the
+        // prefix alone.
         let resting_bar = if band && !regions.hint_bar.is_empty() {
             let chip = if nav.collapsed || floating {
                 prefix_w
@@ -340,7 +353,16 @@ impl Switcher {
         } else {
             Rect::default()
         };
-        let hint_bar_rect = hint_bar_rect(resting_bar, area, hint_bar_h, floating, nav.position);
+        let hint_bar_rect = if seam_hint && !resting_bar.is_empty() {
+            Rect {
+                x: area.x,
+                y: resting_bar.y,
+                width: resting_bar.x.saturating_sub(area.x),
+                height: 1,
+            }
+        } else {
+            hint_bar_rect(resting_bar, area, hint_bar_h, floating, nav.position)
+        };
         // A live prefix opens its key list from the indicator toward the terminal view,
         // sized to the room there.
         let key_list = if key_list_open(state) {
@@ -420,8 +442,8 @@ impl Switcher {
         };
         if !plan.nav_inner.is_empty() {
             // The band's overflow counts share the seam row with the prefix, so they get
-            // what the prefix leaves. A floating bar opens off the seam and leaves them be.
-            let track = if band {
+            // what the prefix leaves. A selection hint occupies that track temporarily.
+            let track = if band && !seam_hint {
                 Rect {
                     width: resting_bar.x.saturating_sub(seam.x),
                     ..seam
@@ -789,16 +811,13 @@ impl Switcher {
         // The hint bar paints LAST of the two views, so a floating bar can cover the
         // terminal view. At rest it is the prefix indicator, a label sized to what it says
         // on the column's bottom row or at the right end of a band's seam. A floating
-        // bar spans the whole width in a side layout, or opens across the terminal view
-        // beside a band while its seam indicator keeps the prefix. The layout never
-        // reflows. A band's overflow counts share the seam with the indicator.
+        // bar spans the whole width in a side layout. In a band, a selection hint shares
+        // the seam with the prefix; an input or flash opens beside it. The layout never
+        // reflows. A band's overflow counts share the seam with the indicator at rest.
         for mark in &plan.overflow_marks {
             Self::render_overflow_mark(frame, *mark, &palette);
         }
         if plan.floating_hint_bar {
-            state
-                .chrome
-                .render_collapsed_hint_bar(frame, plan.prefix_label, &palette);
             state.chrome.render_hint_bar(
                 frame,
                 plan.hint_bar_rect,
@@ -806,6 +825,9 @@ impl Switcher {
                 crate::ui::chrome::BarFill::Row,
                 &palette,
             );
+            state
+                .chrome
+                .render_collapsed_hint_bar(frame, plan.prefix_label, &palette);
         } else if plan.nav_collapsed {
             state
                 .chrome

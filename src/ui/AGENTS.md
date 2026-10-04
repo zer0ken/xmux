@@ -17,7 +17,9 @@ The chrome is the view border, the hint bar, and the host screens, plus its
 view-local state (flash, spinner, view border colours, prefix, ready, the selection
 hint). The hint bar rests as the nav's prefix indicator: a label on a side column's
 bottom row, and at the right end of the view border row in a band. A floating bar
-spans the full width in a side layout. The indicator shows the prefix alone at rest
+spans the full width in a side layout. A band's selection hint shares the view border
+with the prefix and temporarily takes the place of offscreen counts. The indicator
+shows the prefix alone at rest
 and while a prefix interaction is live. The chrome instance
 itself lives in the runtime state, fed by the app each frame and rendered from it.
 
