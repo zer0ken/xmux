@@ -44,9 +44,13 @@ pub fn dump_screen(
     };
     if term
         .draw(|f| {
-            let nav = crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH);
+            let nav = if previous.screen_area.is_empty() {
+                crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH)
+            } else {
+                previous.nav_size
+            };
             let plan = switcher.layout(f.area(), nav, state, previous);
-            switcher.render(f, grid, false, state, &plan)
+            switcher.render(f, grid, state.focus.is_terminal_focused(), state, &plan)
         })
         .is_err()
     {
@@ -75,6 +79,143 @@ mod tests {
     use crate::session::Session;
     use crate::state::Scan;
     use crate::ui::tree::Group;
+
+    #[test]
+    fn scanning_dump_uses_the_same_braille_frame_as_live_render() {
+        let mut state = crate::state::State::from_sources(vec!["pending".into()]);
+        let switcher = Switcher::from_sources(&mut state);
+        state.chrome.animation_ms = 1_066;
+        for (width, height, expected_columns) in [(90, 24, 32), (130, 40, 64)] {
+            let previous = crate::ui::switcher::RenderPlan::default();
+            let dumped = dump_screen(&switcher, None, width, height, &state, &previous);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let nav = crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH);
+                    let plan = switcher.layout(frame.area(), nav, &state, &previous);
+                    assert_eq!(plan.view_screen, Some(crate::model::ViewScreen::Scanning));
+                    switcher.render(frame, None, false, &state, &plan);
+                })
+                .unwrap();
+            assert_eq!(dumped, flatten_buffer(terminal.backend().buffer()));
+            assert!(dumped.lines().any(|line| {
+                line.chars()
+                    .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c))
+                    .count()
+                    >= expected_columns
+            }));
+        }
+    }
+
+    #[test]
+    fn scanning_dump_advances_and_small_view_clips_safely() {
+        let mut state = crate::state::State::from_sources(vec!["pending".into()]);
+        let switcher = Switcher::from_sources(&mut state);
+        let previous = crate::ui::switcher::RenderPlan::default();
+        let first = dump_screen(&switcher, None, 70, 24, &state, &previous);
+        state.chrome.animation_ms = 1_132;
+        let turned = dump_screen(&switcher, None, 70, 24, &state, &previous);
+        assert_ne!(first, turned);
+        state.chrome.animation_ms = 0;
+        let small = dump_screen(&switcher, None, 55, 8, &state, &previous);
+        assert_eq!(small.lines().count(), 8);
+        assert!(small
+            .chars()
+            .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)));
+    }
+
+    #[test]
+    fn another_hosts_scan_does_not_cover_the_selected_session() {
+        let mut state = crate::state::State::from_scan(sample());
+        let switcher = Switcher::new(&mut state);
+        state.scanning.insert("other".into());
+        let previous = crate::ui::switcher::RenderPlan::default();
+        let plan = switcher.layout(
+            ratatui::layout::Rect::new(0, 0, 100, 30),
+            crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            &state,
+            &previous,
+        );
+        assert_eq!(plan.view_screen, None);
+    }
+
+    #[test]
+    fn scanning_screen_does_not_inherit_a_stale_grid_cursor() {
+        let mut state = crate::state::State::from_sources(vec!["pending".into()]);
+        let switcher = Switcher::from_sources(&mut state);
+        let mut grid = crate::display::grid::Grid::new(50, 30);
+        grid.feed(b"old session");
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                let plan = switcher.layout(
+                    frame.area(),
+                    crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+                    &state,
+                    &crate::ui::switcher::RenderPlan::default(),
+                );
+                assert_eq!(plan.view_screen, Some(crate::model::ViewScreen::Scanning));
+                switcher.render(frame, Some(&grid), true, &state, &plan);
+            })
+            .unwrap();
+        assert!(!terminal.backend().cursor_visible());
+    }
+
+    #[test]
+    fn scanning_dump_matches_a_hidden_nav_frame() {
+        let mut state = crate::state::State::from_sources(vec!["pending".into()]);
+        let switcher = Switcher::from_sources(&mut state);
+        state.chrome.animation_ms = 1_099;
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let nav = crate::ui::switcher::NavSize::hidden(crate::ui::switcher::NAV_WIDTH);
+        let previous = switcher.layout(area, nav, &state, &Default::default());
+        let dumped = dump_screen(&switcher, None, area.width, area.height, &state, &previous);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| {
+                let plan = switcher.layout(frame.area(), nav, &state, &previous);
+                switcher.render(frame, None, false, &state, &plan);
+            })
+            .unwrap();
+        assert_eq!(dumped, flatten_buffer(terminal.backend().buffer()));
+        assert!(dumped
+            .chars()
+            .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)));
+    }
+
+    #[test]
+    fn full_rescan_keeps_the_confirmed_grid_visible() {
+        let mut state = crate::state::State::from_scan(sample());
+        let mut switcher = Switcher::new(&mut state);
+        state.displayed = crate::model::Selection {
+            source: "local".into(),
+            session: "editor".into(),
+        };
+        switcher.request_rescan(&mut state);
+        assert!(state.scanning.contains("local"));
+        assert_eq!(state.displayed.session, "editor");
+
+        let mut grid = crate::display::grid::Grid::new(50, 30);
+        grid.feed(b"PRESERVED-GRID");
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let previous = crate::ui::switcher::RenderPlan::default();
+        terminal
+            .draw(|frame| {
+                let nav = crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH);
+                let plan = switcher.layout(frame.area(), nav, &state, &previous);
+                assert_eq!(plan.view_screen, None);
+                switcher.render(frame, Some(&grid), false, &state, &plan);
+            })
+            .unwrap();
+        let painted = flatten_buffer(terminal.backend().buffer());
+        assert!(painted.contains("PRESERVED-GRID"));
+        assert!(painted.lines().all(|line| {
+            line.chars()
+                .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c))
+                .count()
+                < 32
+        }));
+    }
 
     fn sample() -> Scan {
         Scan {

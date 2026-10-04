@@ -140,12 +140,16 @@ no function, and no test, so renaming code is never a documentation change.
   shows a visible frame and its output then settles for 50 ms, continuous output after
   that frame reaches 400 ms, or 3 s pass without a visible frame
   (stale-while-revalidate). Input targets the fresh attachment during that wait, and
-  resize reaches both attachments. Only the first launch, before any grid exists, shows
-  a blank view. An attachment a host warms on a session of its own choosing is kept
+  resize reaches both attachments. A selected scanning host without a confirmed grid,
+  and the initial scan before a card is selected, show the monochrome Braille X
+  animation in the terminal view. A full re-scan keeps the confirmed grid visible;
+  settled host screens and confirmed sessions replace the animation immediately. An
+  attachment a host warms on a session of its own choosing is kept
   live, because that is what makes its host instant to reach, but it is never
   confirmed and so cannot take the view. Whenever the confirmed session is not the
   one the cursor names, the view is carried back to the cursor for as long as the two
-  differ. The waiting and unreachable state hints live in the nav, not here.
+  differ. Connection and unreachable state hints remain in the nav; the scanning
+  animation states only that the selected host has not answered yet.
 - **FR-B4** - Navigation: up/down/home/end/pgup/pgdn; fuzzy filter over
   `<source>/<name>`; manual `prefix r` rescan. Up/down and left/right name the two
   things the list is made of: up/down step one card, left/right step one CATEGORY,

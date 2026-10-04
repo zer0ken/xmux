@@ -934,11 +934,7 @@ impl Switcher {
         matches!(self.current_ref(), Some(RowRef::Host { blocked, .. }) if *blocked)
     }
 
-    /// Which host screen the terminal view shows in place of the grid, or `None` when it
-    /// shows the grid. Only a selected HOST card earns one, and only once it has settled:
-    /// unreachable names why it failed, empty names what to press. A host still scanning
-    /// gets neither, because an in-flight state is the nav's to show (its card spins) and
-    /// the view keeps the grid it already has.
+    /// Which screen the terminal view shows in place of the grid, or `None` for a session.
     fn current_view_screen(&self, state: &crate::state::State) -> Option<ViewScreen> {
         let selected_address = self.current_screen_address(state);
         let selected_source = match self.current_ref() {
@@ -947,13 +943,19 @@ impl Switcher {
         };
         let group = selected_source
             .and_then(|source| state.groups.iter().find(|group| group.source == source));
+        let scanning = match self.current_ref() {
+            Some(RowRef::Host { source, .. }) => state.scanning.contains(source),
+            None => !state.scanning.is_empty(),
+            _ => false,
+        };
         crate::model::choose_view_screen(
             selected_source,
             selected_address.as_ref(),
             group.and_then(crate::model::Group::failure),
-            selected_source.is_some_and(|source| state.scanning.contains(source)),
+            scanning,
             group.is_some_and(|group| group.sessions.is_empty()),
             self.own_session.as_ref(),
+            !state.displayed.source.is_empty() && !state.displayed.session.is_empty(),
         )
     }
 

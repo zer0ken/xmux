@@ -235,6 +235,7 @@ pub(crate) enum Msg {
     PersistNavSize,
     SyncFrame {
         spinner_frame: usize,
+        animation_ms: u64,
         view_border_hovered: bool,
         prefix_active: bool,
     },
@@ -1210,10 +1211,12 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         ],
         Msg::SyncFrame {
             spinner_frame,
+            animation_ms,
             view_border_hovered,
             prefix_active,
         } => {
             model.state.chrome.set_spinner_frame(spinner_frame);
+            model.state.chrome.animation_ms = animation_ms;
             model
                 .state
                 .chrome

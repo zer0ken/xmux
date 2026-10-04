@@ -5360,7 +5360,8 @@ fn a_hidden_nav_keeps_no_status_line_until_it_has_something_to_say() {
     );
     state.chrome.clear_flash();
 
-    // Scan progress does NOT float: it persists, and the user asked for the whole screen.
+    // Another host's scan does NOT float over a selected session. The user asked
+    // for the whole live grid and the hidden nav contributes no persistent line.
     state.scanning.insert("local".to_string());
     draw(&mut term, &mut sw, &state);
     assert!(
@@ -6175,11 +6176,11 @@ fn selection_survives_a_rebuild() {
 #[test]
 fn render_nav_width_zero_gives_terminal_full_width() {
     use crate::display::grid::Grid;
-    // A two-source skeleton is enough. With nav_width == 0 the tree column and
+    // A settled selection is enough. With nav_width == 0 the tree column and
     // its view border are gone, so the terminal view owns the left edge (x=0): the
     // live grid's content begins at column 0.
-    let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
-    let sw = Switcher::from_sources(&mut state);
+    let mut state = crate::state::State::from_scan(sample());
+    let sw = Switcher::new(&mut state);
     // 60 wide keeps the 20-wide nav in its column (39 against 20 rows counted double).
     let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
     let mut g = Grid::new(10, 60);

@@ -32,8 +32,9 @@ source add) that remain after update folds an inbound source event into the mode
   diagnostic owned by the transport layer. Presentation filtering and row construction
   consume the typed result without owning the classification.
 - View screen selection is pure domain policy over the selected source and address,
-  typed failure, scanning state, empty state, and own-session address. Rendering consumes
-  the selected screen without choosing it.
+  typed failure, scanning state, empty state, own-session address, and confirmed
+  display. Rendering consumes the selected screen without choosing it. A scan
+  cannot replace a previously confirmed session grid.
 - The operation port carries slow host operations and their plain results.
   Execution policy and user-facing completion messages stay in the UI layer.
 - Login input values carry the remember choice and bounded secret. The secret

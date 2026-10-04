@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Braille X / 64</title>
+<style>
+@font-face{font-family:BrailleGrid;src:url(data:font/woff2;base64,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) format('woff2');font-display:block}
+/* Black and white, 12px monospace, a centered stage and 16px control rhythm. */
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;background:#000;color:#fff}html{filter:grayscale(1)}
+body{font:12px Consolas,monospace;word-break:keep-all;overflow:hidden}
+main{height:100%;width:100%;max-width:100vw;margin-inline:auto;display:grid;grid-template-rows:1fr auto}
+#stage{min-height:0;display:grid;place-items:center;overflow:hidden}
+pre{margin:0;font-family:BrailleGrid,monospace;font-weight:400;font-variant-ligatures:none;letter-spacing:0;white-space:pre;line-height:1;user-select:text;filter:grayscale(1)}
+footer{padding:12px 20px 18px;display:grid;gap:12px;background:#000}
+.controls{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+button,select,#source{font:inherit;background:#000;color:#fff;border:1px solid #fff;padding:8px 12px;min-height:40px;cursor:pointer;border-radius:0}
+button[aria-pressed="true"]{background:#fff;color:#000}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #fff;outline-offset:4px}
+#source{width:100%;max-width:100%;background:#000;color:#fff;border:1px solid #fff;padding:10px 12px;border-radius:0;text-align:center;filter:grayscale(1)}
+#seek{width:100%;margin:0;accent-color:#fff;cursor:pointer;filter:grayscale(1)}
+#label{text-align:center;min-height:16px}
+body.clean footer{display:none}
+body.clean main{grid-template-rows:1fr}
+body.clean{cursor:none}
+@media(max-width:500px){footer{padding:8px 12px 12px}.controls{gap:6px}button,select{min-height:44px;padding:6px 9px}}
+</style>
+</head>
+<body>
+<main>
+<div id="stage"><pre id="art" role="img" aria-label="점자로 표현한 X 모양의 입체 회전 애니메이션"></pre></div>
+<footer>
+<input id="source" type="text" value="X⚔️χ✂️Ж⚒️×❌Х❎✕🛠️ж🦋✗🤞x☒Χ╳х⨯✖Ⅹ✘ⅹ" aria-label="회전시킬 문자열" placeholder="문자열 입력" autocomplete="off" spellcheck="false">
+<div id="label"></div>
+<input id="seek" type="range" min="0" step="0.01" value="0" aria-label="애니메이션 재생 위치">
+<div class="controls">
+<button data-mode="32">32글자</button><button data-mode="64">64글자</button>
+<button id="play">일시 정지</button>
+<button id="next">다음 모양</button>
+<button id="clean" title="H 키로 조작부 표시">점자만 보기</button>
+</div>
+</footer>
+</main>
+<script>
+"use strict";
+const DEFAULT_MODE="64";
+const art=document.querySelector("#art"),stage=document.querySelector("#stage");
+const label=document.querySelector("#label"),seek=document.querySelector("#seek"),play=document.querySelector("#play");
+const N=128, DEPTH=.15, OUTLINE=2.75, HOLD=1, TURN=.4, PERIOD=HOLD+TURN;
+let definitions=[];
+const maskCanvas=document.createElement("canvas");maskCanvas.width=maskCanvas.height=N;
+const mc=maskCanvas.getContext("2d",{willReadFrequently:true});
+const styles=["900 150px Arial","bold 150px Georgia","italic 150px Georgia","150px Segoe UI Symbol"];
+function drawSymbol(def){
+ const [character,style]=def;
+ mc.clearRect(0,0,N,N);mc.fillStyle="#fff";
+ mc.font=character==="☒"?"150px Segoe UI Symbol":style;
+ const m=mc.measureText(character);
+ const w=m.actualBoundingBoxLeft+m.actualBoundingBoxRight;
+ const h=m.actualBoundingBoxAscent+m.actualBoundingBoxDescent;
+ if(w>0&&h>0){
+  const scale=Math.min((N-16)/w,(N-16)/h,2);
+  mc.save();mc.translate((N-w*scale)/2,(N-h*scale)/2);mc.scale(scale,scale);
+  mc.fillText(character,m.actualBoundingBoxLeft,m.actualBoundingBoxAscent);mc.restore();
+ }
+ const pixels=mc.getImageData(0,0,N,N).data;
+ return Uint8Array.from({length:N*N},(_,i)=>pixels[i*4+3]>100?1:0);
+}
+function mesh(mask){
+ const faces=[],at=(x,y)=>x>=0&&y>=0&&x<N&&y<N&&mask[y*N+x];
+ const coord=v=>(v-N/2)/(N/2);
+ function face(points,normal){
+  faces.push({points:points.map(([x,y,z])=>[coord(x),coord(y),z]),normal});
+ }
+ for(let y=0;y<N;y++){
+  for(let x=0;x<N;){
+   if(!at(x,y)){x++;continue}
+   const a=x;while(x<N&&at(x,y))x++;
+   face([[a,y,DEPTH],[x,y,DEPTH],[x,y+1,DEPTH],[a,y+1,DEPTH]],[0,0,1]);
+   face([[a,y,-DEPTH],[a,y+1,-DEPTH],[x,y+1,-DEPTH],[x,y,-DEPTH]],[0,0,-1]);
+  }
+ }
+ for(let y=0;y<=N;y++){
+  for(let x=0;x<N;){
+   const sign=at(x,y)?(at(x,y-1)?0:-1):(at(x,y-1)?1:0);
+   if(!sign){x++;continue}
+   const a=x;while(x<N&&(at(x,y)?(at(x,y-1)?0:-1):(at(x,y-1)?1:0))===sign)x++;
+   face([[a,y,-DEPTH],[x,y,-DEPTH],[x,y,DEPTH],[a,y,DEPTH]],[0,sign,0]);
+  }
+ }
+ for(let x=0;x<=N;x++){
+  for(let y=0;y<N;){
+   const sign=at(x,y)?(at(x-1,y)?0:-1):(at(x-1,y)?1:0);
+   if(!sign){y++;continue}
+   const a=y;while(y<N&&(at(x,y)?(at(x-1,y)?0:-1):(at(x-1,y)?1:0))===sign)y++;
+   face([[x,a,-DEPTH],[x,y,-DEPTH],[x,y,DEPTH],[x,a,DEPTH]],[sign,0,0]);
+  }
+ }
+ return faces;
+}
+function verticalBounds(mask){
+ let top=N,bottom=0;
+ for(let y=0;y<N;y++)for(let x=0;x<N;x++)if(mask[y*N+x]){
+  top=Math.min(top,y);bottom=Math.max(bottom,y+1);
+ }
+ return [top,bottom];
+}
+function distanceTo(mask,value){
+ const d=Float32Array.from(mask,v=>v===value?0:N*2),diagonal=Math.SQRT2;
+ for(let y=0;y<N;y++)for(let x=0;x<N;x++){
+  const i=y*N+x;
+  if(x)d[i]=Math.min(d[i],d[i-1]+1);
+  if(y)d[i]=Math.min(d[i],d[i-N]+1);
+  if(x&&y)d[i]=Math.min(d[i],d[i-N-1]+diagonal);
+  if(x+1<N&&y)d[i]=Math.min(d[i],d[i-N+1]+diagonal);
+ }
+ for(let y=N-1;y>=0;y--)for(let x=N-1;x>=0;x--){
+  const i=y*N+x;
+  if(x+1<N)d[i]=Math.min(d[i],d[i+1]+1);
+  if(y+1<N)d[i]=Math.min(d[i],d[i+N]+1);
+  if(x+1<N&&y+1<N)d[i]=Math.min(d[i],d[i+N+1]+diagonal);
+  if(x&&y+1<N)d[i]=Math.min(d[i],d[i+N-1]+diagonal);
+ }
+ return d;
+}
+function outline(mask){
+ const distance=distanceTo(mask,0);
+ return Uint8Array.from(mask,(pixel,i)=>pixel&&distance[i]<=OUTLINE?1:0);
+}
+let masks=[],shapes=[],bounds=[],fields=[];
+function buildFields(mask){
+ const inside=distanceTo(mask,1),outside=distanceTo(mask,0);
+ return inside.map((d,i)=>d-outside[i]);
+}
+let cachedIndex=-1,cachedAmount=-1,cachedFaces;
+function transitionMesh(index,amount){
+ if(amount===0)return shapes[index];
+ if(cachedIndex===index&&cachedAmount===amount)return cachedFaces;
+ const next=(index+1)%shapes.length,a=fields[index],b=fields[next];
+ const mask=new Uint8Array(N*N);
+ // The back face arrives with the next symbol in its readable orientation.
+ for(let y=0;y<N;y++)for(let x=0;x<N;x++){
+  const i=y*N+x;
+  mask[i]=(1-amount)*a[i]+amount*b[y*N+N-1-x]<=0?1:0;
+ }
+ const faces=mesh(outline(mask)),[top,bottom]=verticalBounds(mask);
+ const targetTop=bounds[index][0]*(1-amount)+bounds[next][0]*amount;
+ const targetBottom=bounds[index][1]*(1-amount)+bounds[next][1]*amount;
+ // Both silhouette limits follow the easing continuously through edge-on.
+ for(const face of faces)for(const point of face.points){
+  const pixelY=(point[1]+1)*N/2;
+  point[1]=(targetTop+(pixelY-top)/(bottom-top)*(targetBottom-targetTop))*2/N-1;
+ }
+ cachedIndex=index;cachedAmount=amount;cachedFaces=faces;
+ return faces;
+}
+const canvas=document.createElement("canvas"),ctx=canvas.getContext("2d",{willReadFrequently:true});
+const bits=[[1,8],[2,16],[4,32],[64,128]];
+let mode=DEFAULT_MODE,cols=100,rows=40,time=0,playing=true,last=0,lastDraw=0;
+seek.max=definitions.length*PERIOD;
+function fit(){
+ art.style.fontSize="12px";
+ art.textContent="⣿".repeat(100);
+ const cell=art.getBoundingClientRect().width/100;
+ const line=12;
+ cols=Number(mode);
+ rows=Math.max(4,Math.round(cols*cell/line*.85));
+ const scale=Math.min(1,(stage.clientWidth-16)/(cols*cell),(stage.clientHeight-12)/(rows*line));
+ art.style.fontSize=(12*scale)+"px";
+ canvas.width=cols*2;canvas.height=rows*4;
+ document.querySelectorAll("[data-mode]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.mode===mode)));
+ render();
+}
+function render(){
+ if(!definitions.length){
+  art.textContent=Array.from({length:rows},()=>String.fromCharCode(0x2800).repeat(cols)).join("\n");
+  label.textContent="문자 입력";
+  return;
+ }
+ const index=Math.floor(time/PERIOD)%shapes.length;
+ const progress=Math.max(0,Math.min(1,(time%PERIOD-HOLD)/TURN));
+ const eased=(1-Math.cos(Math.PI*progress))/2;
+ const incoming=eased>=.5;
+ const shapeIndex=(index+(incoming?1:0))%shapes.length;
+ const angle=-Math.PI*eased,c=Math.cos(angle),s=Math.sin(angle);
+ const side=Math.max(0,Math.min(1,(eased-.3)/.4));
+ const morphAmount=side*side*(3-2*side);
+ const w=canvas.width,h=canvas.height;
+ ctx.fillStyle="#000";ctx.fillRect(0,0,w,h);
+ const projected=[];
+ for(const face of transitionMesh(index,morphAmount)){
+  const [nx,ny,nz]=face.normal;
+  const normal=[c*nx+s*nz,ny,-s*nx+c*nz];
+  if(normal[2]<-.01)continue;
+  const vertices=face.points.map(([x,y,z])=>{
+   const rx=c*x+s*z,rz=-s*x+c*z;
+   const perspective=5/(5-rz);
+   return [w/2+rx*w*.48*perspective,h/2+y*h*.44*perspective,rz];
+  });
+  const facing=Math.max(0,normal[2]);
+  const light=Math.max(0,normal[0]*-.6+normal[1]*-.5);
+  const shade=face.normal[2]===0
+   ? Math.round(120+75*light)
+   : Math.round(190+65*facing);
+  projected.push({vertices,shade,z:vertices.reduce((sum,v)=>sum+v[2],0)/4});
+ }
+ projected.sort((a,b)=>a.z-b.z);
+ for(const f of projected){
+  ctx.fillStyle=ctx.strokeStyle="rgb("+f.shade+","+f.shade+","+f.shade+")";
+  ctx.beginPath();f.vertices.forEach((v,i)=>i?ctx.lineTo(v[0],v[1]):ctx.moveTo(v[0],v[1]));ctx.closePath();
+  ctx.fill();ctx.lineWidth=.45;ctx.stroke();
+ }
+ const pixels=ctx.getImageData(0,0,w,h).data,lines=[];
+ for(let row=0;row<rows;row++){
+  let line="";
+  for(let col=0;col<cols;col++){
+   let code=0;
+   for(let dy=0;dy<4;dy++)for(let dx=0;dx<2;dx++){
+    const x=col*2+dx,y=row*4+dy;
+    if(pixels[(y*w+x)*4]>64)code|=bits[dy][dx];
+   }
+   line+=String.fromCharCode(0x2800+code);
+  }
+  lines.push(line);
+ }
+ art.textContent=lines.join("\n");
+ label.textContent=definitions[shapeIndex][0]+" / "+cols+" × "+rows+" / "+Math.round(eased*180)+"°";
+ art.setAttribute("aria-label",definitions[shapeIndex][0]+" 입체 회전");
+ seek.value=time;
+}
+function toggle(){playing=!playing;play.textContent=playing?"일시 정지":"재생"}
+function clean(){document.body.classList.toggle("clean");fit()}
+document.querySelectorAll("[data-mode]").forEach(b=>b.onclick=()=>{mode=b.dataset.mode;fit()});
+play.onclick=toggle;
+document.querySelector("#next").onclick=()=>{if(!definitions.length)return;time=((Math.floor(time/PERIOD)+1)%shapes.length)*PERIOD;render()};
+document.querySelector("#clean").onclick=clean;
+seek.oninput=()=>{playing=false;play.textContent="재생";time=Number(seek.value)%Number(seek.max);render()};
+seek.onchange=()=>{try{localStorage.setItem("braille-x-time",String(time))}catch{}};
+document.addEventListener("keydown",e=>{
+ if(e.key.toLowerCase()==="h"||e.key==="Escape"){clean();return}
+ if(e.target.matches("input,button,select"))return;
+ if(e.code==="Space"){e.preventDefault();toggle()}
+ if(e.key==="ArrowRight")document.querySelector("#next").click();
+});
+document.querySelector("#stage").ondblclick=clean;
+addEventListener("resize",fit);
+try{const saved=Number(localStorage.getItem("braille-x-time"));if(Number.isFinite(saved)&&saved>=0)time=saved%Number(seek.max)}catch{}
+function tick(now){
+ if(last&&playing&&definitions.length&&!document.hidden)time=(time+Math.min((now-last)/1000,.1))%Number(seek.max);
+ last=now;
+ if(now-lastDraw>=33){if(playing)render();lastDraw=now-(now-lastDraw)%33}
+ requestAnimationFrame(tick);
+}
+document.fonts.load("12px BrailleGrid").then(()=>{fit();requestAnimationFrame(tick)});
+function setText(value){
+ const chars=[...new Intl.Segmenter(undefined,{granularity:"grapheme"}).segment(value.normalize("NFC"))]
+  .map(item=>item.segment).filter(character=>!/^\\s+$/u.test(character));
+ definitions=chars.map((character,i)=>[character,styles[i%styles.length]]);
+ masks=definitions.map(drawSymbol);
+ shapes=masks.map(mask=>mesh(outline(mask)));
+ bounds=masks.map(verticalBounds);
+ fields=masks.map(buildFields);
+ cachedIndex=-1;cachedAmount=-1;
+ time=0;seek.max=Math.max(1,definitions.length*PERIOD);
+ if(art.style.fontSize)render();
+}
+document.querySelector("#source").oninput=e=>setText(e.target.value);
+setText(document.querySelector("#source").value);
+window.brailleAnimation={setText,renderAt(seconds){time=seconds%Number(seek.max);playing=false;play.textContent="재생";render()},get columns(){return cols},get rows(){return rows},get duration(){return Number(seek.max)}};
+</script>
+</body>
+</html>

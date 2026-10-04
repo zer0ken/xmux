@@ -62,7 +62,7 @@ pub struct State {
     /// prior session until the new one is confirmed (stale-while-revalidate), then
     /// advances. Set only at confirmation (a synchronous in-place switch, or an
     /// attachment whose paint gate opened). Empty before the first confirmation means
-    /// the view is blank.
+    /// the view can show the initial scan animation.
     pub displayed: Selection,
     /// When set, a settled selection is attached once this instant passes.
     pub attach_deadline: Option<Instant>,
