@@ -83,7 +83,8 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   application owns its clock, the render plan records the domain-selected screen,
   and both the live frame and off-screen dump paint from that same immutable choice.
   Its monochrome frame atlas is sampled from the approved outline prototype so font
-  rasterization and emoji fallback never run on the terminal event loop.
+  rasterization and emoji fallback never run on the terminal event loop. A confirmed
+  session grid remains visible through a scan, including a full re-scan.
 - The terminal view refuses exactly one address, the session xmux is running in, and it
   refuses it by emptying the view TARGET rather than at each place that would attach.
   The target is what the display reconcile, the attach and the mux-side switch all read,

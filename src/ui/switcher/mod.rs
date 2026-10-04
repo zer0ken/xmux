@@ -955,6 +955,7 @@ impl Switcher {
             scanning,
             group.is_some_and(|group| group.sessions.is_empty()),
             self.own_session.as_ref(),
+            !state.displayed.source.is_empty() && !state.displayed.session.is_empty(),
         )
     }
 

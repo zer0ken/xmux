@@ -126,9 +126,11 @@ UI elements a user perceives as distinct things:
   the full history - then the rescan key. The BLOCKED state states the same failure
   facts and adds the login pane above them; the host stays blocked on any failed login
   and re-probes only itself on a successful one. The EMPTY state's rows are the keys that start a session or rescan. A host
-  still scanning shows a monochrome Braille X rotation in the terminal view while its
-  card keeps the in-flight spinner. The same animation fills the view during an initial
-  scan before a card can be selected. Its fixed 32- or 64-column frame is centered and
+  still scanning shows a monochrome Braille X rotation in the terminal view only when
+  no session grid has been confirmed; its card keeps the in-flight spinner. A full
+  re-scan preserves the confirmed grid while session cards temporarily become host
+  cards. The same animation fills the view during an initial scan before a card can
+  be selected. Its fixed 32- or 64-column frame is centered and
   clipped in smaller views; one symbol holds for one second and turns in 0.4 seconds.
   It yields immediately to a confirmed session or settled host state. The
   `own session` state's rows are why it is refused, and no key, because nothing pressed

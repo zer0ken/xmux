@@ -183,6 +183,40 @@ mod tests {
             .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)));
     }
 
+    #[test]
+    fn full_rescan_keeps_the_confirmed_grid_visible() {
+        let mut state = crate::state::State::from_scan(sample());
+        let mut switcher = Switcher::new(&mut state);
+        state.displayed = crate::model::Selection {
+            source: "local".into(),
+            session: "editor".into(),
+        };
+        switcher.request_rescan(&mut state);
+        assert!(state.scanning.contains("local"));
+        assert_eq!(state.displayed.session, "editor");
+
+        let mut grid = crate::display::grid::Grid::new(50, 30);
+        grid.feed(b"PRESERVED-GRID");
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let previous = crate::ui::switcher::RenderPlan::default();
+        terminal
+            .draw(|frame| {
+                let nav = crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH);
+                let plan = switcher.layout(frame.area(), nav, &state, &previous);
+                assert_eq!(plan.view_screen, None);
+                switcher.render(frame, Some(&grid), false, &state, &plan);
+            })
+            .unwrap();
+        let painted = flatten_buffer(terminal.backend().buffer());
+        assert!(painted.contains("PRESERVED-GRID"));
+        assert!(painted.lines().all(|line| {
+            line.chars()
+                .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c))
+                .count()
+                < 32
+        }));
+    }
+
     fn sample() -> Scan {
         Scan {
             groups: vec![Group {

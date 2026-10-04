@@ -140,9 +140,10 @@ no function, and no test, so renaming code is never a documentation change.
   shows a visible frame and its output then settles for 50 ms, continuous output after
   that frame reaches 400 ms, or 3 s pass without a visible frame
   (stale-while-revalidate). Input targets the fresh attachment during that wait, and
-  resize reaches both attachments. A selected scanning host, and the initial scan
-  before a card is selected, show the monochrome Braille X animation in the terminal
-  view; settled host screens and confirmed sessions replace it immediately. An
+  resize reaches both attachments. A selected scanning host without a confirmed grid,
+  and the initial scan before a card is selected, show the monochrome Braille X
+  animation in the terminal view. A full re-scan keeps the confirmed grid visible;
+  settled host screens and confirmed sessions replace the animation immediately. An
   attachment a host warms on a session of its own choosing is kept
   live, because that is what makes its host instant to reach, but it is never
   confirmed and so cannot take the view. Whenever the confirmed session is not the

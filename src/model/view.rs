@@ -19,7 +19,8 @@ pub enum ViewScreen {
     Empty,
 }
 
-/// Chooses the terminal view screen from domain facts.
+/// Chooses the terminal view screen from domain facts. A confirmed display keeps
+/// its grid during a scan; only a scan without one receives the animation.
 pub fn choose_view_screen(
     selected_source: Option<&str>,
     selected_address: Option<&Address>,
@@ -27,12 +28,14 @@ pub fn choose_view_screen(
     scanning: bool,
     empty: bool,
     own_session: Option<&Address>,
+    // Whether a session has already been confirmed into the terminal view.
+    confirmed_display: bool,
 ) -> Option<ViewScreen> {
     if selected_address.is_some() && selected_address == own_session {
         return Some(ViewScreen::SelfSession);
     }
     if selected_source.is_none() {
-        return scanning.then_some(ViewScreen::Scanning);
+        return (scanning && !confirmed_display).then_some(ViewScreen::Scanning);
     }
     match failure {
         Some(FailureKind::Blocked) => return Some(ViewScreen::Login),
@@ -40,8 +43,11 @@ pub fn choose_view_screen(
         Some(FailureKind::Unreachable) => return Some(ViewScreen::Unreachable),
         None => {}
     }
+    if selected_address.is_some() {
+        return None;
+    }
     if scanning {
-        return Some(ViewScreen::Scanning);
+        return (!confirmed_display).then_some(ViewScreen::Scanning);
     }
     empty.then_some(ViewScreen::Empty)
 }
@@ -61,7 +67,7 @@ mod tests {
         let selected = address("prod", "work");
 
         assert_eq!(
-            choose_view_screen(None, None, None, false, false, None),
+            choose_view_screen(None, None, None, false, false, None, false),
             None
         );
         assert_eq!(
@@ -72,6 +78,7 @@ mod tests {
                 false,
                 false,
                 None,
+                false,
             ),
             Some(ViewScreen::Login)
         );
@@ -83,11 +90,12 @@ mod tests {
                 false,
                 false,
                 None,
+                false,
             ),
             Some(ViewScreen::Unreachable)
         );
         assert_eq!(
-            choose_view_screen(Some("prod"), None, None, false, true, None),
+            choose_view_screen(Some("prod"), None, None, false, true, None, false),
             Some(ViewScreen::Empty)
         );
         assert_eq!(
@@ -98,6 +106,7 @@ mod tests {
                 false,
                 false,
                 Some(&selected),
+                false,
             ),
             Some(ViewScreen::SelfSession)
         );
@@ -115,6 +124,7 @@ mod tests {
                 true,
                 true,
                 Some(&selected),
+                false,
             ),
             Some(ViewScreen::SelfSession)
         );
@@ -126,24 +136,43 @@ mod tests {
                 true,
                 true,
                 None,
+                false,
             ),
             Some(ViewScreen::Unreachable)
         );
         assert_eq!(
-            choose_view_screen(Some("prod"), None, None, true, true, None),
+            choose_view_screen(Some("prod"), None, None, true, true, None, false),
             Some(ViewScreen::Scanning)
         );
         assert_eq!(
-            choose_view_screen(None, None, None, true, false, None),
+            choose_view_screen(None, None, None, true, false, None, false),
             Some(ViewScreen::Scanning)
         );
         assert_eq!(
-            choose_view_screen(Some("prod"), None, None, false, true, None),
+            choose_view_screen(Some("prod"), None, None, false, true, None, false),
             Some(ViewScreen::Empty)
         );
         assert_eq!(
-            choose_view_screen(Some("prod"), Some(&selected), None, false, false, None),
+            choose_view_screen(
+                Some("prod"),
+                Some(&selected),
+                None,
+                false,
+                false,
+                None,
+                false
+            ),
             None
+        );
+        assert_eq!(
+            choose_view_screen(Some("prod"), Some(&selected), None, true, true, None, false),
+            None,
+            "a scanning host must not replace a selected session"
+        );
+        assert_eq!(
+            choose_view_screen(Some("prod"), None, None, true, true, None, true),
+            None,
+            "a full rescan keeps the confirmed display"
         );
     }
 }
