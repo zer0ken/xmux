@@ -312,6 +312,7 @@ prefix = "C-g"                        # xmux의 prefix (예: C-g, C-Space, C-b)
 auto-hide-nav = false                 # auto-hide-nav의 초기 상태
 hide-unreachable = true               # 도달하지 못한 호스트는 nav에서 숨긴다 (필터에 이름을 입력하면 카드가 나타난다)
 notifications = true                  # 작업 결과를 toast로 띄운다 (끄더라도 prefix m 기록에는 남는다)
+braille-animation = true             # 스캔 화면과 호스트 화면의 중앙 점자 X 표시
 nav-position = "left"                 # nav의 기본 위치 (left|top|right|bottom)
 max-fps = 30                          # xmux의 초당 최대 화면 갱신 횟수 (10~120)
 view-active-border-style = "green"    # 포커스된 view border의 색
@@ -336,6 +337,9 @@ mux = "tmux"          # 생략하거나 "auto"이면 호스트가 답한 mux 전
   - hint-bar-style
   - max-fps
   - view-border 스타일
+  - notifications
+  - braille-animation
+  - nav-position
 
   host와 roster 변경은 `prefix r`로 다시 스캔해야 반영된다.
 - **nav 위치.** nav는 terminal view의 네 변 중 한 곳에 붙는다(왼쪽이나 오른쪽의

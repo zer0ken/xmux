@@ -206,6 +206,10 @@ pub struct UiConfig {
     /// edit applies it live.
     #[serde(rename = "notifications", default = "default_notifications")]
     pub notifications: bool,
+    /// Whether the central Braille X animation appears while scanning and beneath
+    /// settled host content (default true). A config edit applies it live.
+    #[serde(rename = "braille-animation", default = "default_braille_animation")]
+    pub braille_animation: bool,
     /// The nav placement when nothing is pinned by `prefix p`: `left` | `top` | `right`
     /// | `bottom`. An unknown word falls back to `left`. The nav never moves on its own;
     /// `prefix p` pins a side (persisted to `~/.xmux/nav_position`) and this default
@@ -290,6 +294,10 @@ fn default_notifications() -> bool {
     true
 }
 
+fn default_braille_animation() -> bool {
+    true
+}
+
 fn default_nav_position() -> String {
     "left".to_string()
 }
@@ -318,6 +326,7 @@ impl Default for UiConfig {
             auto_hide_nav: false,
             hide_unreachable: default_hide_unreachable(),
             notifications: default_notifications(),
+            braille_animation: default_braille_animation(),
             nav_position: default_nav_position(),
             // Empty leaves the view border at its theme role.
             view_active_border_style: String::new(),
@@ -2133,6 +2142,14 @@ bogus = "nope"
         assert!(load(&path).unwrap().ui.notifications);
         let path = write_temp("[ui]\nnotifications = false\n", "notifications-false.toml");
         assert!(!load(&path).unwrap().ui.notifications);
+    }
+
+    #[test]
+    fn ui_braille_animation_defaults_true_and_accepts_false() {
+        let config: Config = toml::from_str("[ui]").unwrap();
+        assert!(config.ui.braille_animation);
+        let config: Config = toml::from_str("[ui]\nbraille-animation = false").unwrap();
+        assert!(!config.ui.braille_animation);
     }
 
     #[test]

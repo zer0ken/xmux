@@ -727,7 +727,9 @@ impl Switcher {
         if plan.nav_hidden {
             match plan.view_screen {
                 Some(crate::model::ViewScreen::Scanning) => {
-                    crate::ui::braille_x::render(frame, area, state.chrome.animation_ms);
+                    if state.chrome.braille_animation {
+                        crate::ui::braille_x::render(frame, area, state.chrome.animation_ms);
+                    }
                 }
                 Some(kind) => {
                     let address = self.view_screen_address(state, kind);
@@ -791,7 +793,9 @@ impl Switcher {
         // settled host and own-session states share the factual chrome grammar.
         if let Some(kind) = plan.view_screen {
             if kind == crate::model::ViewScreen::Scanning {
-                crate::ui::braille_x::render(frame, term_area, state.chrome.animation_ms);
+                if state.chrome.braille_animation {
+                    crate::ui::braille_x::render(frame, term_area, state.chrome.animation_ms);
+                }
             } else {
                 let address = self.view_screen_address(state, kind);
                 state.chrome.render_view_screen(

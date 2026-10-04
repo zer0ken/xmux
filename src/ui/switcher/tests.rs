@@ -3514,6 +3514,11 @@ fn an_empty_host_animates_only_below_its_screen_content_when_it_fits() {
     tall.draw();
     assert_ne!(tall.view_text(), before, "the frame advances");
 
+    tall.state.chrome.braille_animation = false;
+    tall.draw();
+    assert!(braille_rows(&tall).is_empty());
+    assert!(tall.view_text().contains("re-scan every host"));
+
     let short = Harness::new_sized(scan, 100, 20);
     assert!(
         braille_rows(&short).is_empty(),

@@ -143,14 +143,18 @@ no function, and no test, so renaming code is never a documentation change.
   resize reaches both attachments. A selected scanning host without a confirmed grid,
   and the initial scan before a card is selected, show the monochrome Braille X
   animation in the terminal view with a centered 32-column, 16-row frame. A full
-  re-scan keeps the confirmed grid visible;
-  settled host screens and confirmed sessions replace the animation immediately. An
+  re-scan keeps the confirmed grid visible. A settled host screen keeps its content
+  and centers the animation in the remaining rows when a complete frame fits;
+  a confirmed session shows its grid. An
   attachment a host warms on a session of its own choosing is kept
   live, because that is what makes its host instant to reach, but it is never
   confirmed and so cannot take the view. Whenever the confirmed session is not the
   one the cursor names, the view is carried back to the cursor for as long as the two
-  differ. Connection and unreachable state hints remain in the nav; the scanning
-  animation states only that the selected host has not answered yet.
+  differ. Connection and unreachable state hints remain in the nav; on a scanning
+  screen the animation states only that the selected host has not answered yet. `[ui]
+  braille-animation` defaults to true; false hides the central animation in both
+  scanning and settled host screens while preserving nav activity spinners. Config
+  changes apply live.
 - **FR-B4** - Navigation: up/down/home/end/pgup/pgdn; fuzzy filter over
   `<source>/<name>`; manual `prefix r` rescan. Up/down and left/right name the two
   things the list is made of: up/down step one card, left/right step one CATEGORY,

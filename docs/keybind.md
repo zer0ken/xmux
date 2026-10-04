@@ -275,6 +275,19 @@ thing at a time, in order: a refusal, an input line, the prefix alone while the 
 is open, the hint after a selection move, the scan progress, the active filter, and then
 the resting prefix.
 
+## Braille animation
+
+The scanning view and the space below a settled host screen show a centered Braille
+X by default. The animation can be hidden in `~/.config/xmux/config.toml`:
+
+```toml
+[ui]
+braille-animation = false
+```
+
+The setting applies to a running xmux when the file changes. Nav activity spinners
+remain visible.
+
 ## Focus
 
 | Key | Action |

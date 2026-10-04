@@ -136,7 +136,9 @@ UI elements a user perceives as distinct things:
   be selected. Its fixed 32-column frame is centered and
   clipped in smaller views; one symbol holds for one second and turns in 0.4 seconds.
   A settled screen retains its text and centers the animation in the rows below it
-  only when at least a 32-column, 16-row frame fits. A confirmed session shows its grid. The
+  only when at least a 32-column, 16-row frame fits. `[ui] braille-animation = false`
+  hides the central animation on both screens while nav activity spinners remain.
+  A confirmed session shows its grid. The
   `own session` state's rows are why it is refused, and no key, because nothing pressed
   here would make it showable.
 - nesting - xmux running inside a mux session. Allowed: the app attaches mux clients as
@@ -836,7 +838,7 @@ not pick colours: the theme IS the slot mapping, and both ends (the accent on th
 cards, the `bar_accent` on the hint bar) stay within the slots.
 
 The `[ui]` presentation settings - theme / selection-style / hint-bar-style /
-view-border styles - are re-applied LIVE when `config.toml` changes: the redraw
+view-border styles / notifications / braille-animation - are re-applied LIVE when `config.toml` changes: the redraw
 cadence stats the file (a cheap poll, no watch dependency) and a changed mtime
 reloads just that section, keeping the previous settings on a malformed edit. The
 roster and hosts are not part of it - re-scanning sources is the `rescan` key's job
