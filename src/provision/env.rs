@@ -385,7 +385,6 @@ pub async fn resolve_roster_with(
         local_socket.clone(),
     );
     let roster_providers = roster_providers(&cfg, &offered, &wsl_distros);
-    let local_user = crate::transport::auth::local_user().unwrap_or_default();
     let login_defaults = roster_providers
         .keys()
         .map(|host| {
@@ -397,7 +396,6 @@ pub async fn resolve_roster_with(
                     host_addresses.get(host).map(String::as_str),
                     effective,
                     &ssh_config_text,
-                    &local_user,
                 ),
             )
         })

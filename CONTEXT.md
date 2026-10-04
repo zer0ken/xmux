@@ -324,10 +324,11 @@ UI elements a user perceives as distinct things:
 - login pane - the form a blocked host's panel opens, holding the three values ssh will
   not ask for and must know before it dials: the address, the port, and the username. A
   masked password field is optional beside them. Every value starts at what ssh WOULD
-  use. Address, port, and user come from OpenSSH's effective configuration when present,
-  and each field states that provenance beside its value. Missing values use a provider
-  address or host name, port 22, and this machine's account
-  name. Provisioning resolves those values and the matching ssh stanza before the app
+  use. Address and port come from OpenSSH's effective configuration when present,
+  and each states that provenance beside its value. Missing values use a provider
+  address or host name and port 22. The username comes from an exact host stanza if
+  one names it; otherwise it starts empty and must be entered.
+  Provisioning resolves those values and the matching ssh stanza before the app
   supplies them to the chrome. A required field is marked in its label; an empty optional one says so in
   the space its value would occupy. Two choices follow: whether to record the values, and
   whether to register this machine's public key on the host. The record choice appears
