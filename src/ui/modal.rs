@@ -279,6 +279,13 @@ pub(crate) fn help_size(
     (w as u16, rows.len() as u16 + 1)
 }
 
+/// The furthest the help scrolls: the offset that shows the last page of `rows` rows in a
+/// popup with `visible` inner rows, one of which is the search line. The paint and the
+/// scroll keys both hold to it.
+pub(crate) fn help_max_scroll(rows: usize, visible: u16) -> usize {
+    rows.saturating_sub((visible as usize).saturating_sub(1))
+}
+
 fn key_column_width(rows: &[HelpRow]) -> usize {
     rows.iter()
         .filter_map(|r| match r {
@@ -309,17 +316,22 @@ pub(crate) fn help_lines(
     let accent = Style::default().fg(palette.accent);
     let dim = Style::default().fg(palette.disabled);
     let rule = Span::styled("│ ", Style::default().fg(palette.decoration));
-    let search = if query.is_empty() {
-        Line::from(Span::styled(" type to search", dim))
+    // The search line is never scrolled or filtered away, so the way out stays on it.
+    let mut search = if query.is_empty() {
+        vec![Span::styled(" type to search", dim)]
     } else {
-        Line::from(vec![
+        vec![
             Span::styled(" search ", dim),
             Span::styled(query.to_string(), bold),
             Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
-        ])
+        ]
     };
+    search.push(Span::styled(" · ", dim));
+    search.push(Span::styled("Esc", bold));
+    search.push(Span::styled(" closes", dim));
+    let search = Line::from(search);
     let window = (visible as usize).saturating_sub(1);
-    let offset = scroll.min(rows.len().saturating_sub(window));
+    let offset = scroll.min(help_max_scroll(rows.len(), visible));
     let mut lines = vec![search];
     if rows.is_empty() {
         lines.push(Line::from(Span::styled(" no key or glyph matches", dim)));
@@ -656,6 +668,7 @@ mod tests {
         Some(Modal::Help {
             query: String::new(),
             scroll: 0,
+            decoder: crate::display::decode::KeyDecoder::new(),
         })
     }
 
@@ -807,6 +820,28 @@ mod tests {
         assert!(
             flat(&lines).contains("five seconds"),
             "the legend's last row"
+        );
+    }
+
+    #[test]
+    fn the_search_line_says_esc_closes_however_the_rows_are_filtered() {
+        let palette = palette::Palette::default();
+        let pos = crate::ui::switcher::NavPosition::Left;
+        for (query, scroll) in [("", 0), ("quit", 0), ("zzzz", 0), ("", usize::MAX)] {
+            let (_, lines) = help_lines("C-g", pos, &palette, query, scroll, 6);
+            let first = flat(&lines[..1]);
+            assert!(first.contains("Esc closes"), "{query:?}: {first}");
+        }
+    }
+
+    #[test]
+    fn an_arrow_split_across_two_reads_scrolls_and_types_nothing() {
+        let mut m = help();
+        assert!(feed_reader(&mut m, b"\x1b["));
+        assert!(feed_reader(&mut m, b"B"));
+        assert!(
+            matches!(&m, Some(Modal::Help { query, scroll: 1, .. }) if query.is_empty()),
+            "the arrow's last byte is not typed into the search"
         );
     }
 

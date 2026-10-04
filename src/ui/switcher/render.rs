@@ -1221,7 +1221,7 @@ impl Switcher {
         palette: &palette::Palette,
     ) {
         let (title, lines) = match &state.modal {
-            Some(Modal::Help { query, scroll }) => modal::help_lines(
+            Some(Modal::Help { query, scroll, .. }) => modal::help_lines(
                 &state.chrome.ui_prefix,
                 state.chrome.nav_position,
                 palette,

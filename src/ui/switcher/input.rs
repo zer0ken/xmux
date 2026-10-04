@@ -11,6 +11,7 @@ impl Switcher {
         state.modal = Some(Modal::Help {
             query: String::new(),
             scroll: 0,
+            decoder: crate::display::decode::KeyDecoder::new(),
         });
     }
 
@@ -78,11 +79,14 @@ impl Switcher {
     /// read falls through to normal routing. The single owner of their dismissal - the
     /// app calls it above the tree/terminal split, so the behavior is identical in both
     /// focuses.
+    /// `help_visible` is the help popup's inner height as last painted, so the help
+    /// scrolls no further than the offset its paint can show.
     pub fn feed_reader_key(
         &mut self,
         bytes: &[u8],
         prefix: u8,
         armed: &mut bool,
+        help_visible: u16,
         state: &mut crate::state::State,
     ) -> bool {
         if !crate::state::is_reader(&state.modal) {
@@ -115,16 +119,17 @@ impl Switcher {
             }
         }
         // The history scrolls no further than its oldest record, and the help no further
-        // than the last row its search matches.
+        // than the offset that shows the last page of what its search matches, the same
+        // limit its paint holds, so a scroll back up moves the view at once.
         let last = state.notify.history.len().saturating_sub(1);
         match state.modal.as_mut() {
             Some(Modal::History { scroll }) => *scroll = (*scroll).min(last),
-            Some(Modal::Help { query, scroll }) => {
+            Some(Modal::Help { query, scroll, .. }) => {
                 let rows = modal::matching_help_rows(
                     &modal::help_rows(&state.chrome.ui_prefix, state.chrome.nav_position),
                     query,
                 );
-                *scroll = (*scroll).min(rows.len().saturating_sub(1));
+                *scroll = (*scroll).min(modal::help_max_scroll(rows.len(), help_visible));
             }
             _ => {}
         }

@@ -4324,9 +4324,9 @@ fn row_index<F: Fn(&RowRef) -> bool>(h: &Harness, pred: F) -> usize {
 }
 
 #[tokio::test]
-async fn help_overlay_renders_and_closes_on_q() {
+async fn help_overlay_renders_takes_q_as_search_and_closes_on_esc_or_prefix_help() {
     let mut h = Harness::new(sample());
-    assert!(!h.text().contains("keys"), "help hidden initially");
+    assert!(!h.text().contains("fuzzy filter"), "help hidden initially");
     h.sw.show_help(&mut h.state); // driven by the app's `prefix ?`
     h.draw();
     let out = h.text();
@@ -4335,16 +4335,66 @@ async fn help_overlay_renders_and_closes_on_q() {
         "show_help opens the help modal:\n{out}"
     );
     assert!(out.contains("fuzzy filter"), "help should list keybindings");
-    // Modal dismissal (tmux view-mode): the app routes keys to feed_reader_key
-    // above the tree/terminal split - q closes it; other keys are swallowed (no nav).
-    assert!(
-        h.sw.feed_reader_key(b"q", 0x07, &mut false, &mut h.state),
-        "q is consumed while help is open"
-    );
+    // q is a search character: it narrows the rows and keeps the help open.
+    assert!(h
+        .sw
+        .feed_reader_key(b"q", 0x07, &mut false, 200, &mut h.state));
     h.draw();
+    let out = h.text();
+    assert!(out.contains("search q"), "q types into the search:\n{out}");
+    assert!(out.contains("quit xmux"), "the match stays:\n{out}");
     assert!(
-        !h.text().contains("fuzzy filter"),
-        "q closes the help modal"
+        !out.contains("fuzzy filter"),
+        "the rest is filtered out:\n{out}"
+    );
+    // Esc closes it.
+    assert!(h
+        .sw
+        .feed_reader_key(b"\x1b", 0x07, &mut false, 200, &mut h.state));
+    h.draw();
+    assert!(!h.text().contains("quit xmux"), "Esc closes the help");
+    // prefix ? closes it too.
+    h.sw.show_help(&mut h.state);
+    assert!(h
+        .sw
+        .feed_reader_key(b"\x07?", 0x07, &mut false, 200, &mut h.state));
+    assert!(
+        !matches!(h.state.modal, Some(Modal::Help { .. })),
+        "prefix ? closes the help"
+    );
+}
+
+#[test]
+fn the_help_scrolls_back_up_at_once_from_its_end() {
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    sw.show_help(&mut state);
+    let visible = 11u16;
+    let rows = modal::help_rows(&state.chrome.ui_prefix, state.chrome.nav_position).len();
+    let max = modal::help_max_scroll(rows, visible);
+    let scroll = |state: &crate::state::State| match &state.modal {
+        Some(Modal::Help { scroll, .. }) => *scroll,
+        _ => panic!("help closed"),
+    };
+    sw.feed_reader_key(b"\x1b[F", 0x07, &mut false, visible, &mut state);
+    assert_eq!(
+        scroll(&state),
+        max,
+        "End lands on the last page the paint shows"
+    );
+    sw.feed_reader_key(b"\x1b[A", 0x07, &mut false, visible, &mut state);
+    assert_eq!(scroll(&state), max - 1, "one ↑ moves the view at once");
+    sw.feed_reader_key(
+        b"\x1b[6~\x1b[6~\x1b[6~",
+        0x07,
+        &mut false,
+        visible,
+        &mut state,
+    );
+    assert_eq!(
+        scroll(&state),
+        max,
+        "a PgDn past the end stops at the last page"
     );
 }
 
@@ -5987,13 +6037,13 @@ fn feed_reader_key_is_modal_searches_and_closes_on_esc() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     assert!(
-        !sw.feed_reader_key(b"q", 0x07, &mut false, &mut state),
+        !sw.feed_reader_key(b"q", 0x07, &mut false, 200, &mut state),
         "closed → not consumed, routes normally"
     );
 
     sw.toggle_help(&mut state);
     assert!(
-        sw.feed_reader_key(b"q", 0x07, &mut false, &mut state),
+        sw.feed_reader_key(b"q", 0x07, &mut false, 200, &mut state),
         "open → consumed"
     );
     assert!(
@@ -6001,7 +6051,7 @@ fn feed_reader_key_is_modal_searches_and_closes_on_esc() {
         "q types into the search and keeps help open"
     );
     assert!(
-        sw.feed_reader_key(b"\x1b[6~\x1b[6~\x1b[6~", 0x07, &mut false, &mut state),
+        sw.feed_reader_key(b"\x1b[6~\x1b[6~\x1b[6~", 0x07, &mut false, 200, &mut state),
         "a scroll (ESC [) is swallowed, not a close"
     );
     assert!(
@@ -6010,7 +6060,7 @@ fn feed_reader_key_is_modal_searches_and_closes_on_esc() {
     );
 
     assert!(
-        sw.feed_reader_key(b"\x1b", 0x07, &mut false, &mut state),
+        sw.feed_reader_key(b"\x1b", 0x07, &mut false, 200, &mut state),
         "lone Esc → consumed"
     );
     assert!(

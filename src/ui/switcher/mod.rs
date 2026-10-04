@@ -721,10 +721,13 @@ impl Switcher {
     /// relevant keys, read from the key table, and one fact about it. A session offers its terminal and a sibling
     /// session and states its windows; a settled host offers the screen that explains it
     /// (or a new session when it is empty) and a re-scan, and states its state word with
-    /// the reason behind it; a host still scanning offers the filter and says so.
+    /// the reason behind it; a host still scanning offers the filter and says so. With
+    /// `nav_focused` false the terminal view holds the focus, where a bare key goes to the
+    /// pane, so only the prefix keys are offered.
     pub(crate) fn selection_hint(
         &self,
         state: &crate::state::State,
+        nav_focused: bool,
     ) -> Option<(Vec<crate::state::chrome::HintKey>, String)> {
         use crate::model::keys::{entry_for, KeyCommand};
         let (commands, fact): (&[KeyCommand], String) = match self.current_ref()? {
@@ -775,6 +778,7 @@ impl Switcher {
         let keys = commands
             .iter()
             .filter_map(|c| entry_for(*c))
+            .filter(|e| nav_focused || e.prefixed())
             .map(|e| {
                 (
                     e.full_label(&state.chrome.ui_prefix, state.chrome.nav_position),

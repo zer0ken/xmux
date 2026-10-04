@@ -587,7 +587,7 @@ no function, and no test, so renaming code is never a documentation change.
   legend of every glyph the screen uses (the host states, the spinner, the selection
   mark, the overflow cues, the auto-hide border, and the toast levels). Typing searches
   it, ignoring case, and the arrows, `PgUp`/`PgDn`, and `Home`/`End` scroll it; `Esc` or
-  the prefix key that opened it closes it.
+  `prefix ?` closes it, and the search line says so whatever the search leaves.
 
 ## C. Switching (the keystone)
 

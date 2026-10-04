@@ -163,7 +163,7 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   three seconds on the animation tick, and ends at the next key read. A selection xmux
   was told to make raises none.
 - The help is searched by typing, so a printable key is part of the query and only Esc
-  or the prefix key that opened it closes it.
+  or prefix ? closes it.
 - The nav's two bands are parted by the ROOM between them while the cards can spare a row
   for it, and by a rule once they cannot: a gap that scrolls out of view parts nothing a
   reader can see. The parting is measured as part of the run, so the bands never meet with

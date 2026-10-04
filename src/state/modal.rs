@@ -150,10 +150,12 @@ impl Input {
 /// enum small; callers pattern-match through the box and never see the pointer.
 pub(crate) enum Modal {
     /// The help `prefix ?` opens. `query` is what has been typed to search it, and
-    /// `scroll` counts the rows scrolled past from the top of what matches.
+    /// `scroll` counts the rows scrolled past from the top of what matches. `decoder`
+    /// lives as long as the help, so a key split across two reads is still one key.
     Help {
         query: String,
         scroll: usize,
+        decoder: crate::display::decode::KeyDecoder,
     },
     /// The history `prefix m` opens. `scroll` counts the records scrolled past from the
     /// newest, which the list starts at.
@@ -200,8 +202,13 @@ pub(crate) fn feed_reader(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
     if !is_reader(modal) {
         return false;
     }
-    if let Some(Modal::Help { query, scroll }) = modal {
-        for key in crate::display::decode::KeyDecoder::new().feed(bytes) {
+    if let Some(Modal::Help {
+        query,
+        scroll,
+        decoder,
+    }) = modal
+    {
+        for key in decoder.feed(bytes) {
             match key.code {
                 KeyCode::Esc => {
                     *modal = None;

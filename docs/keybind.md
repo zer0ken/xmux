@@ -195,7 +195,9 @@ For three seconds after you move the selection, the hint bar opens from the indi
 same way and names the selected card's most relevant keys and one fact about it: a session
 offers `Enter` and `prefix n` and states its windows, a host that failed offers `Enter`
 (its screen) and `prefix r` and states its state word with the reason behind it, an empty
-host offers `prefix n` and `prefix r`, and a scanning host offers `prefix /`. Any key ends
+host offers `prefix n` and `prefix r`, and a scanning host offers `prefix /`. When the
+terminal view holds the focus after the move (a jump typed from it, a click on a band's
+count), a bare key would reach the pane, so only the prefix keys are offered. Any key ends
 it at once, and the next move replaces it. A narrow bar shortens the descriptions first,
 then drops the reason, then the later keys. A selection xmux was told to make (a ctl
 `switch`, the nav following the mux) raises no hint.
@@ -248,7 +250,8 @@ forwarded raw to the session's active pane, so programs running inside the mux
   matches keeps its whole section. `Backspace` shortens the query and `Ctrl-U` clears it.
   `↑`/`↓` scroll one row, `PgUp`/`PgDn` ten, and `Home`/`End` jump to either end; the
   title names the rows on screen whenever they are not all of them. `Esc` or `prefix ?`
-  closes it, and any other key is swallowed while it is open.
+  closes it, as the search line says whatever the search leaves, and any other key is
+  swallowed while it is open.
 - **History** (`prefix m`): every result and background event, newest first, each with
   how long ago it happened. `↑`/`↓` (or `k`/`j`) scroll one record and `PgUp`/`PgDn`
   ten; `q`, `Esc`, or `prefix m` closes it, and any other key is swallowed while it is

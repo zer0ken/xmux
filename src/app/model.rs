@@ -797,10 +797,12 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::ReaderBytes { bytes, prefix } => {
+            let help_visible = model.render_plan.popup_rect.height.saturating_sub(2);
             model.switcher.feed_reader_key(
                 &bytes,
                 prefix,
                 &mut model.mouse_state.nav_armed,
+                help_visible,
                 &mut model.state,
             );
             Vec::new()
@@ -1229,7 +1231,10 @@ fn hint_selection_move(model: &mut AppModel, before: &Option<crate::state::RowRe
     if !model.switcher.selection_moved_from(before) {
         return;
     }
-    match model.switcher.selection_hint(&model.state) {
+    // The hint names keys for the view that holds the focus once the move is done (the
+    // one behind a modal included), so it never offers a key the pane would receive.
+    let nav_focused = model.state.focus.view_is_nav();
+    match model.switcher.selection_hint(&model.state, nav_focused) {
         Some((keys, fact)) => {
             model
                 .state
@@ -1352,6 +1357,29 @@ mod tests {
             Msg::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
         );
         assert!(model.state.chrome.selection_hint.is_none());
+    }
+
+    #[test]
+    fn a_move_that_leaves_the_terminal_focused_offers_no_key_for_the_pane() {
+        let mut model = model_with_cards();
+        update(&mut model, Msg::Focus(crate::model::FocusTarget::Terminal));
+        // prefix 3 from the terminal view opens the jump on the unreachable host card,
+        // and Enter closes it with the focus back on the terminal view.
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE)),
+        );
+        update(
+            &mut model,
+            Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert!(!model.state.focus.view_is_nav());
+        let text = hint_text(&model);
+        assert!(text.contains("C-g r"), "{text}");
+        assert!(
+            !text.contains("Enter"),
+            "Enter would reach the pane, so it is not offered: {text}"
+        );
     }
 
     #[test]
