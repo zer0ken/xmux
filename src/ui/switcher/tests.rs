@@ -7441,8 +7441,59 @@ fn number_of(sw: &Switcher, name: &str) -> Option<usize> {
 }
 
 #[tokio::test]
+async fn default_numbers_follow_the_sorted_current_list_and_jump() {
+    let mut h = Harness::new(one_host_scan("h", host_with("h", &["a", "b", "c"])));
+    h.sw.apply_source_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
+    assert_eq!(
+        [number_of(&h.sw, "a"), number_of(&h.sw, "c")],
+        [Some(1), Some(2)]
+    );
+    h.sw.apply_source_result(
+        "h".into(),
+        host_with("h", &["a", "aa", "c"]),
+        None,
+        &mut h.state,
+    );
+    assert_eq!(
+        [
+            number_of(&h.sw, "a"),
+            number_of(&h.sw, "aa"),
+            number_of(&h.sw, "c")
+        ],
+        [Some(1), Some(2), Some(3)]
+    );
+    h.state.filter = "c".into();
+    h.sw.rebuild(&mut h.state);
+    assert_eq!(number_of(&h.sw, "c"), Some(1));
+    h.key(KeyCode::Char('1')).await;
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "c"));
+    h.state.filter.clear();
+    h.sw.rebuild(&mut h.state);
+    assert_eq!(number_of(&h.sw, "c"), Some(3));
+}
+
+#[test]
+fn default_numbers_follow_scope_changes() {
+    use crate::model::NavScope;
+    let mut h = Harness::new(sample());
+    for scope in [
+        NavScope::AllHosts,
+        NavScope::NeedsAttention,
+        NavScope::Sessions,
+    ] {
+        h.sw.set_scope(scope, &mut h.state);
+        let numbers: Vec<usize> = (0..h.sw.rows.len())
+            .filter(|&i| h.sw.rows[i].selectable())
+            .map(|i| h.sw.card_number(i))
+            .collect();
+        assert_eq!(numbers, (1..=numbers.len()).collect::<Vec<_>>());
+    }
+}
+
+#[tokio::test]
 async fn a_card_keeps_its_number_and_an_ended_cards_number_stays_vacant() {
     let mut h = Harness::new(one_host_scan("h", host_with("h", &["a", "b", "c"])));
+    h.sw.set_renumbering(false, &mut h.state);
     assert_eq!(
         [
             number_of(&h.sw, "a"),
@@ -7483,6 +7534,7 @@ async fn a_card_keeps_its_number_and_an_ended_cards_number_stays_vacant() {
 #[tokio::test]
 async fn a_jump_lands_by_the_fixed_number_and_refuses_a_vacant_one() {
     let mut h = Harness::new(one_host_scan("h", host_with("h", &["a", "b", "c"])));
+    h.sw.set_renumbering(false, &mut h.state);
     h.sw.apply_source_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
     h.draw();
     let start = h.sw.selected;
@@ -7511,6 +7563,7 @@ async fn a_jump_lands_by_the_fixed_number_and_refuses_a_vacant_one() {
 #[tokio::test]
 async fn a_full_rescan_deals_the_numbers_again_in_list_order() {
     let mut h = Harness::new(one_host_scan("h", host_with("h", &["a", "b", "c"])));
+    h.sw.set_renumbering(false, &mut h.state);
     h.sw.apply_source_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
     assert_eq!(number_of(&h.sw, "c"), Some(3));
     h.sw.request_rescan(&mut h.state);
@@ -7528,6 +7581,7 @@ async fn a_full_rescan_deals_the_numbers_again_in_list_order() {
 #[tokio::test]
 async fn numbers_are_dealt_in_list_order_while_the_launch_scan_runs() {
     let mut h = Harness::from_sources(&["alpha", "beta"]);
+    h.sw.set_renumbering(false, &mut h.state);
     h.sw.apply_source_result("beta".into(), host_with("beta", &["x"]), None, &mut h.state);
     h.sw.apply_source_result(
         "alpha".into(),
@@ -7554,6 +7608,7 @@ async fn numbers_are_dealt_in_list_order_while_the_launch_scan_runs() {
 async fn scope_change_during_a_scan_keeps_existing_card_numbers() {
     use crate::model::NavScope;
     let mut h = Harness::from_sources(&["alpha", "beta", "gamma"]);
+    h.sw.set_renumbering(false, &mut h.state);
     h.sw.set_hide_unreachable(true, &mut h.state);
     h.sw.apply_source_result(
         "alpha".into(),
@@ -7579,6 +7634,7 @@ async fn scope_change_during_a_scan_keeps_existing_card_numbers() {
 async fn each_scope_lists_what_it_names_and_numbers_follow_their_cards() {
     use crate::model::NavScope;
     let mut h = Harness::new(sample());
+    h.sw.set_renumbering(false, &mut h.state);
     h.sw.set_hide_unreachable(true, &mut h.state);
     h.draw();
     assert!(!h.nav_cards_text().contains("db-2"), "sessions hides db-2");
@@ -7817,6 +7873,7 @@ async fn numbers_stay_open_until_a_held_roster_answers() {
     // The launch roster names the remote hosts after the first source already answered:
     // the numbers are dealt in list order until that roster is in.
     let mut h = Harness::from_sources(&["beta"]);
+    h.sw.set_renumbering(false, &mut h.state);
     h.sw.hold_numbers(true, &h.state);
     h.sw.apply_source_result("beta".into(), host_with("beta", &["x"]), None, &mut h.state);
     h.sw.add_source("alpha".into(), &mut h.state);

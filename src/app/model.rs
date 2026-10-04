@@ -1380,6 +1380,9 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 model.nav_default = ui.nav_position();
                 model.max_fps = ui.max_fps;
                 model.state.notify.set_toasts_enabled(ui.notifications);
+                model
+                    .switcher
+                    .set_renumbering(ui.renumbering, &mut model.state);
                 model.state.chrome.braille_animation = ui.braille_animation;
             }
             Vec::new()
