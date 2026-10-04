@@ -1,4 +1,4 @@
-// Regenerate the fixed Braille frame atlas from the final, user-approved prototype.
+// Regenerate the fixed Braille frame atlas from the HTML source in this repository.
 // Usage: node scripts/generate_braille_x.cjs [prototype-directory]
 const fs = require('node:fs');
 const path = require('node:path');
