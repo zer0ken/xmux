@@ -635,6 +635,7 @@ impl Runtime {
         // [ui] hide-unreachable: the nav drops the settled unreachable hosts' cards. The
         // filter naming one brings its card, and its unreachable screen, back.
         switcher.set_hide_unreachable(roster.cfg.ui_hide_unreachable(), &mut state);
+        switcher.set_renumbering(roster.cfg.ui.renumbering, &mut state);
         // The launch roster can add hosts after the first sources answer, so the card
         // numbers stay open until it is in.
         if env.startup_pending {

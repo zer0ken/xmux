@@ -128,10 +128,11 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   `sessions` scope only; the scope narrows the groups before the prune, and the hidden
   count, the check table's hidden mark, and the empty-nav line all read the one set of
   hidden sources the prune leaves out.
-- A card's number belongs to the CARD, not to its row: it is kept by the card's identity
-  (a session by its address, a host card by its source), so a rebuild, a filter, or a
-  scope change never renumbers a card, and the jump resolves a number by that identity.
-  Only a full scan deals the numbers again in list order, and only while it runs.
+- With `[ui] renumbering` on, each card's number is its position in the current sorted
+  list, and a rebuild assigns contiguous numbers. With it off, a card keeps its number
+  by identity (a session by its address, a host card by its source); only a full scan
+  deals those numbers again. Under either policy the jump resolves the number painted
+  on the card.
 - A BLOCKED host, whose authentication ssh refused or whose first-seen host key needs
   login-time approval under an effective `ask` policy, never hides, whatever
   hide-unreachable says: its card is the one entry to that pane, so the prune keeps it

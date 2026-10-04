@@ -209,14 +209,12 @@ no function, and no test, so renaming code is never a documentation change.
   prefix interaction brings the nav back for the moment it needs it (a jump reads the
   card numbers), and it hides again when the interaction ends.
 - **FR-B10** - Every unselected card carries a number in its address column, on the row
-  of the session it addresses, and `prefix <digit>` jumps to it. A card takes its number
-  the first time it appears and keeps it for the whole run: a card that ends leaves its
-  number vacant, no other card's number shifts, and a new card takes the next number past
-  the highest one given. A session that returns under its own name takes its number back.
-  While a full scan is in flight (the launch scan and every `prefix r`) the numbers are
-  dealt again from 1 in list order, so that scan ends with numbers that read in list
-  order; a one-host re-scan, a filter, and a nav scope change leave every number where it
-  is. The order of the cards on screen is the list order whatever their numbers say. The
+  of the session it addresses, and `prefix <digit>` jumps to it. With `[ui]
+  renumbering = true` (the default), the current sorted nav list receives contiguous
+  numbers from 1 whenever it changes, including filtering, nav scope changes, and
+  scans. With `renumbering = false`, cards keep their numbers until a full scan deals
+  them again in list order; ended cards leave vacant numbers and new cards take the
+  next number. The order of the cards on screen is the list order under either setting. The
   selected card holds the selection mark in that same column instead. Selecting a card
   changes nothing else on the card (the address column keeps its width), so a name holds
   its column as the selection passes over it. The input stays open in the hint bar so

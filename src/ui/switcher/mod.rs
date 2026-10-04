@@ -309,14 +309,13 @@ pub struct Switcher {
     /// toggle. The filter naming a hidden host keeps its card; the check table and
     /// command palette can also select it directly.
     hide_unreachable: bool,
+    /// Whether the current sorted list receives contiguous numbers on each rebuild.
+    renumbering: bool,
     /// Which cards the nav lists. The app restores the persisted scope at construction and
     /// the scope key steps it.
     scope: crate::model::NavScope,
-    /// Each card's number, keyed by the card it names. A card keeps the number it was
-    /// given for the whole run, an ended card's number stays vacant, and the next new
-    /// card takes `next_number`. The numbers are dealt again in list order only while a
-    /// full scan is in flight (the launch scan and every `prefix r`), and they are fixed
-    /// the moment that scan has heard from every source.
+    /// Card numbers keyed by identity. The configured policy either deals them in the
+    /// current sorted list order or keeps each card's number until the next full scan.
     numbers: std::collections::HashMap<CardId, usize>,
     next_number: usize,
     numbers_fixed: bool,
@@ -373,6 +372,7 @@ impl Switcher {
             terminal_view_target: TerminalViewTarget::default(),
             own_session: None,
             hide_unreachable: false,
+            renumbering: true,
             scope: crate::model::NavScope::Sessions,
             numbers: std::collections::HashMap::new(),
             next_number: 1,
@@ -437,6 +437,15 @@ impl Switcher {
         self.rebuild(state);
     }
 
+    /// Applies the card-number policy to the current list and subsequent rebuilds.
+    pub fn set_renumbering(&mut self, on: bool, state: &mut crate::state::State) {
+        if self.renumbering == on {
+            return;
+        }
+        self.renumbering = on;
+        self.rebuild(state);
+    }
+
     /// The nav scope in effect.
     pub(crate) fn scope(&self) -> crate::model::NavScope {
         self.scope
@@ -450,7 +459,8 @@ impl Switcher {
         }
         let prior = self.capture_focus();
         self.scope = scope;
-        // A scope change does not deal the cards again, even during a full scan.
+        // Stable numbering keeps cards' identities across scope changes, including
+        // during a full scan. Sorted numbering is dealt by `number_cards` regardless.
         let scanning_numbers = !self.numbers_fixed;
         self.numbers_fixed = true;
         self.rebuild(state);
@@ -579,16 +589,17 @@ impl Switcher {
         // While the numbers are dealt in list order, they are dealt over the list the
         // filter does not narrow, so a filter typed during a scan cannot renumber the cards
         // it hides.
-        let unfiltered = (!self.numbers_fixed && !state.filter.is_empty()).then(|| {
-            tree::flatten(
-                &scoped,
-                &state.scanning,
-                &state.logged_in,
-                "",
-                self.hides(),
-                &named_mux,
-            )
-        });
+        let unfiltered = (!self.renumbering && !self.numbers_fixed && !state.filter.is_empty())
+            .then(|| {
+                tree::flatten(
+                    &scoped,
+                    &state.scanning,
+                    &state.logged_in,
+                    "",
+                    self.hides(),
+                    &named_mux,
+                )
+            });
         drop(scoped);
 
         self.rows = rows;
@@ -623,12 +634,22 @@ impl Switcher {
         )
     }
 
-    /// Gives every card on the list its number. While a full scan is in flight the
-    /// numbers are dealt again from 1 in list order (over `unfiltered` when a filter
-    /// narrows the rows); once `settled` says every source has answered, the numbers are
-    /// fixed and only a card that has none yet takes the next one. A card that leaves the
-    /// list keeps its number, so the number stays vacant and no other card shifts.
+    /// Gives every card on the current list its number. Sorted numbering follows the
+    /// visible list on every rebuild. Stable numbering holds identities until a full
+    /// scan deals the cards again, including filtered-out cards during that scan.
     fn number_cards(&mut self, unfiltered: Option<&[Row]>, settled: bool) {
+        if self.renumbering {
+            self.numbers.clear();
+            self.next_number = 1;
+            for id in self.rows.iter().filter_map(|r| card_id(&r.reference)) {
+                self.numbers.entry(id).or_insert_with(|| {
+                    self.next_number += 1;
+                    self.next_number - 1
+                });
+            }
+            self.numbers_fixed = settled && !self.numbers_held;
+            return;
+        }
         if !self.numbers_fixed {
             self.numbers.clear();
             self.next_number = 1;
@@ -683,8 +704,8 @@ impl Switcher {
             .unwrap_or(0)
     }
 
-    /// The number card `i` carries: the number it was given when it first appeared, kept
-    /// for the whole run. A section title has no number and is never a jump target.
+    /// The number card `i` carries under the configured policy. A section title has no
+    /// number and is never a jump target.
     fn card_number(&self, i: usize) -> usize {
         card_id(&self.rows[i].reference)
             .and_then(|id| self.numbers.get(&id).copied())
