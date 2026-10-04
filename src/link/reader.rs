@@ -3,7 +3,7 @@
 
 use std::sync::atomic::Ordering;
 
-use crate::mux::{parse_sessions, ControlProtocol, Line, Notif};
+use crate::mux::{parse_sessions, reason_is_no_sessions, ControlProtocol, Line, Notif};
 
 use super::{HostEvent, InFlight, PendingReply, ReaderState};
 
@@ -19,8 +19,9 @@ pub fn run_reader<E: FnMut(HostEvent)>(
     in_flight: &InFlight,
     mut emit: E,
 ) {
-    // num, kind, body - the open `%begin` block, if any.
-    let mut block: Option<(u64, PendingReply, Vec<String>)> = None;
+    // num, kind, body, and whether it replies to a command xmux sent - the open
+    // `%begin` block, if any.
+    let mut block: Option<(u64, PendingReply, Vec<String>, bool)> = None;
     // The last %error block's text, so a never-connected exit carries a meaningful
     // reason (notably "no sessions" / "no server running" → reachable-but-empty). A
     // remote host's REACHABILITY (locked / unreachable) is classified upstream by the
@@ -28,6 +29,10 @@ pub fn run_reader<E: FnMut(HostEvent)>(
     // known to connect, and ssh's own auth-failure line goes to the drained stderr, not
     // this stdout stream.
     let mut last_error: Option<String> = None;
+    // A stream ends with one exit: the mux's own `%exit` notice, or the EOF that
+    // follows a stream that ended without one. An EOF after a notice would reach the
+    // app after it already acted on the notice, possibly against a channel it reopened.
+    let mut exited = false;
     for line in lines {
         // The entry DCS `\x1bP1000p` ([research §1]) introduces control mode. It may
         // arrive on its own line or glued to the first `%begin`. Strip it; a lone DCS
@@ -40,7 +45,7 @@ pub fn run_reader<E: FnMut(HostEvent)>(
             .unwrap_or(line);
         // Inside a block, only the matching %end/%error closes it; everything
         // else is body (notifications never appear inside a block).
-        if let Some((num, _, _)) = block.as_ref() {
+        if let Some((num, _, _, _)) = block.as_ref() {
             let num = *num;
             let (close, is_err) = match proto.classify(&line) {
                 Line::End { num: n } if n == num => (true, false),
@@ -48,11 +53,15 @@ pub fn run_reader<E: FnMut(HostEvent)>(
                 _ => (false, false),
             };
             if close {
-                let (_, kind, body) = block.take().unwrap();
+                let (_, kind, body, control) = block.take().unwrap();
                 // Remember an error block's text ("no sessions" / "no server running"
                 // / …) so a control client that dies before connecting carries it -
-                // the app then tells a reachable-but-empty mux from a dead host.
-                if is_err {
+                // the app then tells a reachable-but-empty mux from a dead host. Only a
+                // block the server sent on its own counts: an error replying to a command
+                // xmux sent (a display-tty readback with no record file, a client flag an
+                // older server lacks) answers that command and says nothing about why the
+                // stream ends.
+                if is_err && !control {
                     let t = body.join(" ").trim().to_string();
                     if !t.is_empty() {
                         last_error = Some(t);
@@ -82,7 +91,7 @@ pub fn run_reader<E: FnMut(HostEvent)>(
                 } else {
                     PendingReply::Ignore
                 };
-                block = Some((num, kind, Vec::new()));
+                block = Some((num, kind, Vec::new(), control));
             }
             // %output is the per-pane PIXEL stream; the per-session PTY attachments
             // own pixels now, and the control client runs with `refresh-client -f
@@ -90,17 +99,29 @@ pub fn run_reader<E: FnMut(HostEvent)>(
             // flag sends it anyway, discard it (just note the channel is live) - the
             // control client is metadata-only.
             Line::Output { .. } | Line::ExtendedOutput { .. } => clear_connecting(state),
-            Line::Notification(n) => dispatch_notif(host, proto, n, &last_error, &mut emit),
-            // Stray frame/body outside a block (a mux never speaks a reach failure here;
-            // that is the machine probe's word).
+            Line::Notification(n) => dispatch_notif(host, proto, n, &last_error, &mut |e| {
+                exited |= matches!(e, HostEvent::Exited { .. });
+                emit(e)
+            }),
+            // A line outside a block that says the mux has nothing to serve is the reason
+            // the stream ends: a control child started under a remote tty prints the
+            // client's own "no server running" complaint into this stream, never inside
+            // a block. Any other stray line names no reason (a mux never speaks a reach
+            // failure here; that is the machine probe's word).
+            Line::Body(text) if reason_is_no_sessions(text) => {
+                last_error = Some(text.trim().to_string());
+            }
             Line::End { .. } | Line::Error { .. } | Line::Body(_) => {}
         }
     }
     // Iterator ended = child stdout EOF.
-    emit(HostEvent::Exited {
-        host: host.to_string(),
-        reason: last_error,
-    });
+    if !exited {
+        emit(HostEvent::Exited {
+            host: host.to_string(),
+            reason: last_error,
+            detached: false,
+        });
+    }
 }
 
 /// Resolves a closed `%begin…%end` block by parsing its body and carrying the result
@@ -576,10 +597,30 @@ mod tests {
             &in_flight,
             |e| events.push(e),
         );
-        assert!(events.iter().any(|e| matches!(
-            e,
-            HostEvent::Exited { reason: Some(r), .. } if r == "too far behind"
-        )));
+        assert_eq!(
+            exits(&events),
+            vec![(Some("too far behind".to_string()), false)],
+            "a notice naming a reason is an orderly end, not a detach"
+        );
+    }
+
+    #[test]
+    fn a_server_exited_notice_is_not_a_detach() {
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        let mut events = Vec::new();
+        run_reader(
+            "gpu-01",
+            test_control_proto(),
+            vec!["%exit server exited".to_string()].into_iter(),
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
+        assert_eq!(
+            exits(&events),
+            vec![(Some("server exited".to_string()), false)]
+        );
     }
 
     #[test]
@@ -612,6 +653,109 @@ mod tests {
             )),
             "the exit reason carries the no-sessions error"
         );
+        assert_eq!(
+            exits(&events).len(),
+            1,
+            "the notice is the stream's one exit; its EOF adds none"
+        );
+    }
+
+    /// Every `Exited` the reader emitted, as (reason, detached).
+    fn exits(events: &[HostEvent]) -> Vec<(Option<String>, bool)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                HostEvent::Exited {
+                    reason, detached, ..
+                } => Some((reason.clone(), *detached)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reply_errors_never_become_the_exit_reason_of_a_detach() {
+        // A tmux 3.3a host whose display-tty readback found no record file: the replies
+        // to xmux's own commands are error blocks (flags 1). The control client's session
+        // is then destroyed and tmux detaches the client with a bare notice. The exit is
+        // one detach that names no reason.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        in_flight.lock().unwrap().extend([
+            PendingReply::ListSessions,
+            PendingReply::Ignore,
+            PendingReply::DisplayClientTty,
+            PendingReply::Ignore,
+        ]);
+        let lines = [
+            "%begin 1 1 1",
+            "1:1:keep",
+            "2:1:train",
+            "%end 1 1 1",
+            "%begin 1 2 1",
+            "%end 1 2 1",
+            "%begin 1 3 1",
+            "unknown buffer: xmux-cli-gpu-01-e2e-83-1-2",
+            "%error 1 3 1",
+            "%begin 1 4 1",
+            "unknown buffer: xmux-cli-gpu-01-e2e-83-1-2",
+            "%error 1 4 1",
+            "%sessions-changed",
+            "%exit",
+        ]
+        .map(str::to_string)
+        .into_iter();
+        let mut events = Vec::new();
+        run_reader(
+            "gpu-01",
+            test_control_proto(),
+            lines,
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
+        assert_eq!(exits(&events), vec![(None, true)]);
+    }
+
+    #[test]
+    fn a_no_server_complaint_outside_a_block_is_the_exit_reason() {
+        // A reopened `ssh -tt <host> tmux -CC attach` whose tmux client finds no server:
+        // the client's complaint arrives through the tty as a plain line, and the stream
+        // ends with no notice.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        let mut events = Vec::new();
+        run_reader(
+            "gpu-01",
+            test_control_proto(),
+            vec!["no server running on /tmp/tmux-1000/default\r\n".to_string()].into_iter(),
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
+        assert_eq!(
+            exits(&events),
+            vec![(
+                Some("no server running on /tmp/tmux-1000/default".to_string()),
+                false
+            )]
+        );
+    }
+
+    #[test]
+    fn a_stream_that_ends_without_a_notice_exits_once_and_not_as_a_detach() {
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        let mut events = Vec::new();
+        run_reader(
+            "gpu-01",
+            test_control_proto(),
+            vec!["%sessions-changed".to_string()].into_iter(),
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
+        assert_eq!(exits(&events), vec![(None, false)]);
     }
 
     #[test]

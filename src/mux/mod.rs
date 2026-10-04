@@ -92,6 +92,10 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
         let line = line.trim();
         line.starts_with("no server running")
             || line.starts_with("no sessions")
+            // tmux's `%exit` reason when its server ends, which it does on its own once
+            // the last session is gone. Exact, so "server exited unexpectedly" (a crash)
+            // is not read as an idle mux.
+            || line == "server exited"
             // zellij's idle message, on stderr with a plain non-zero exit.
             || line.starts_with("no active zellij sessions")
     })
@@ -1374,6 +1378,8 @@ Usage: zellij [OPTIONS]",
     #[test]
     fn reason_is_no_sessions_matches_line_prefix_markers() {
         assert!(reason_is_no_sessions("no sessions"));
+        assert!(reason_is_no_sessions("server exited"));
+        assert!(!reason_is_no_sessions("server exited unexpectedly"));
         assert!(reason_is_no_sessions(
             "no server running on /tmp/tmux-1000/default"
         ));

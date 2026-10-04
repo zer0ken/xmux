@@ -112,6 +112,8 @@ only direct input path and go to the selected terminal display.
   when something asked for it - the launch scan or an explicit re-scan. No failure raises its
   own retry and nothing repeats against a host that stops answering - a request that
   answers a failed request is a retry loop a machine's own defences read as an attack.
+  A control client the mux itself detaches while it keeps serving is not a dropped
+  channel: the far side spoke over the open stream, and the channel is reopened once.
   So a dropped channel stays dropped, a dead display keeps its last frame, and an
   unreachable card stays unreachable, each until the user asks.
 - A machine is asked ONE THING AT A TIME. Concurrent connections to a single machine

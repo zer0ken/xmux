@@ -772,6 +772,7 @@ mod tests {
         hosts.apply_host_event(&HostEvent::Exited {
             host: "jup".into(),
             reason: None,
+            detached: false,
         });
         let h = hosts.get("jup").unwrap();
         assert!(

@@ -287,9 +287,13 @@ impl ControlProtocol for TmuxControl {
             Notif::Exit { reason } => {
                 // `%exit` may carry its own reason; otherwise fall back to the last error
                 // block ("no sessions" / "no server running") so an empty mux is not
-                // mistaken for a dead host.
+                // mistaken for a dead host. tmux names a reason for every orderly end of
+                // a client (`server exited`, `detached`, `too far behind`, ...) and sends
+                // a bare notice only to a client whose attached session was destroyed
+                // while the server keeps running, which is the one exit flagged a detach.
                 Some(HostEvent::Exited {
                     host: host.to_string(),
+                    detached: reason.is_none(),
                     reason: reason.map(str::to_string).or_else(|| last_error.clone()),
                 })
             }
