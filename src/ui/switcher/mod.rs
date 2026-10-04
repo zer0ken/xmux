@@ -1,7 +1,7 @@
 //! The interactive session switcher: a two-region navigator (a flat nav list of
 //! session cards in deterministic local→WSL→remote, name-sorted order on one side,
-//! the selected session's live terminal view on the other), the nav carrying its own
-//! status line along its bottom. ratatui is
+//! the selected session's live terminal view on the other), parted by one seam that
+//! also carries the nav's overflow cues. ratatui is
 //! immediate-mode, so this owns
 //! its state machine, the flattened card model, key/mouse handling, and a render pass
 //! that draws to either the live terminal or a headless `TestBackend` (the control
@@ -37,58 +37,32 @@ pub(super) const COL_GUTTER: u16 = 1;
 /// box-drawing line, so it parts the bands without reading as a border around either.
 pub(super) const BAND_RULE: &str = "\u{2500}";
 
-/// The connector running down the left of a session card in the band's column flow,
-/// saying which title owns it. The band's columns stand side by side, so a card's place
-/// in the reading order does not on its own say where one group ends and the next
-/// begins; the side list, one full-width run, needs no such mark and draws none.
-///
-/// Furniture the section title owns, NOT part of the card: it is painted in the strip
-/// left of the card rect, so the selection's inversion of that rect leaves it alone and
-/// the line runs unbroken past the selected card. A click on the strip is a click on no
-/// card, exactly as on the rule parting the bands.
-pub(super) const CARD_CONNECTOR: &str = "\u{2502}";
+/// The columns a session card is indented by under its section title, at every nav
+/// position. The indent and the dim title are the whole of what marks a group: no rule
+/// and no connector is painted for it. The indent lies outside the card's rect, so the
+/// selection's inversion of that rect starts where the card does. A band one row tall
+/// runs its titles and cards along one line, where an indent would mark nothing, so it
+/// indents nothing.
+pub(super) const CARD_INDENT: u16 = 2;
 
-/// The columns a session card's connector strip takes from the left of its column: the
-/// glyph and the space parting it from the card. Reserved on every session card the
-/// band flows, even in a column where no glyph is painted, so a card reads at one
-/// offset inside its column wherever the flow put it.
-pub(super) const CONNECTOR_W: u16 = 2;
+/// What a band column that continues a section writes after the repeated title on its
+/// top row, saying the cards under it belong to a section begun in an earlier column.
+pub(super) const CONTINUED: &str = " \u{2026}";
 
 pub use crate::ui::chrome::ViewBorderColors;
 
 pub use crate::model::{NavSize, ViewLayout};
 
-/// The token painted at the far end of the resting hint bar. In the expanded state it
-/// points toward the nav's edge; in the collapsed state it points back into the screen.
-pub(crate) fn collapse_button_token(position: NavPosition, collapsed: bool) -> &'static str {
-    match (position, collapsed) {
-        (NavPosition::Left, false) | (NavPosition::Right, true) => "<<",
-        (NavPosition::Right, false) | (NavPosition::Left, true) => ">>",
-        (NavPosition::Top, false) | (NavPosition::Bottom, true) => "▲",
-        (NavPosition::Bottom, false) | (NavPosition::Top, true) => "▼",
-    }
-}
-
-/// The collapsed width of a side nav: its resting prefix hint, one separating space,
-/// and the two-cell button token.
+/// The collapsed width of a side nav: the resting prefix with one cell either side,
+/// which is the prefix indicator the collapsed column keeps on its bottom line.
 pub(crate) fn collapsed_nav_width(ui_prefix: &str) -> u16 {
     UnicodeWidthStr::width(ui_prefix)
-        .saturating_add(4)
+        .saturating_add(2)
         .min(u16::MAX as usize) as u16
 }
 
-/// The clickable button rect at the far end of a nav-local hint bar.
-pub(crate) fn collapse_button_rect(hint_bar: Rect, position: NavPosition, collapsed: bool) -> Rect {
-    let width = UnicodeWidthStr::width(collapse_button_token(position, collapsed)) as u16;
-    if hint_bar.height == 0 || hint_bar.width < width {
-        return Rect::default();
-    }
-    Rect::new(hint_bar.x + hint_bar.width - width, hint_bar.y, width, 1)
-}
-
-/// Whether the hint bar floats over the whole window instead of resting inside the nav.
-/// The same policy gates collapse-button rendering and hit testing, so an invisible
-/// button can never consume a click.
+/// Whether the hint bar floats over the whole window instead of resting at the nav's
+/// prefix indicator.
 pub(crate) fn hint_bar_floats(state: &crate::state::State) -> bool {
     state.is_inputting() || state.chrome.armed || !state.chrome.flash.is_empty()
 }
@@ -114,14 +88,15 @@ fn top_nav_height(body_h: u16) -> u16 {
 /// The screen regions the switcher draws into, derived ONCE per frame so the renderer,
 /// the PTY sizing, and mouse hit-testing all agree (one geometry, no divergence). The
 /// tree and terminal split the whole area side by side (`Column`, sized by `nav_width`)
-/// or stacked (`Band`, sized by `nav_height`), parted by the one-cell view border;
-/// the hint bar is the BOTTOM of the nav region, not a full-width strip, so it reads
-/// as the nav's own status line and the terminal view keeps every row it owns.
-/// A collapsed nav gives the cards no region and keeps only the hint bar. A side nav
-/// arrives with its collapsed width already resolved; a top or bottom nav takes one row.
-/// `nav_width == 0` is the tree-hidden sentinel: the terminal owns the whole area (and
-/// there is no nav to carry a hint bar). `nav_height == 0` means the band height is
-/// auto (~40% of the area).
+/// or stacked (`Band`, sized by `nav_height`), parted by the one-cell view border, the
+/// seam. The hint bar is where the prefix indicator rests: the BOTTOM row of a column's
+/// nav region, and the seam row itself in a band, so every row a band takes holds cards
+/// and the terminal view keeps every row it owns.
+/// A collapsed nav gives the cards no region: a side nav keeps a column as wide as its
+/// collapsed width with the prefix on its bottom row, a top or bottom nav keeps the seam
+/// row alone. `nav_width == 0` is the tree-hidden sentinel: the terminal owns the whole
+/// area (and there is no nav to carry a hint bar). `nav_height == 0` means the band height
+/// is auto (~40% of the area).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Regions {
     pub layout: ViewLayout,
@@ -235,7 +210,7 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
         }
         NavPosition::Top => {
             let th = if nav.collapsed {
-                1
+                0
             } else {
                 top_nav_height_for(area.height, nav_height)
             };
@@ -245,21 +220,19 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
                 Constraint::Min(0),
             ])
             .split(area);
-            let (tree, hint_bar) = split_nav_for_state(r[0], hint_bar_h, nav.collapsed);
             Regions {
                 layout,
-                tree,
+                tree: r[0],
                 view_border: r[1],
                 terminal: r[2],
-                hint_bar,
+                hint_bar: r[1],
             }
         }
         NavPosition::Bottom => {
-            // The top band mirrored, down to the split order: the tree region is the top
-            // band's shape and `split_nav` keeps the status line on the region's bottom
-            // row, which with a bottom attachment is the bottom row of the screen.
+            // The top band mirrored: the seam is the row ABOVE the band, and the prefix
+            // rests on it as it does above the top band's cards.
             let th = if nav.collapsed {
-                1
+                0
             } else {
                 top_nav_height_for(area.height, nav_height)
             };
@@ -269,13 +242,12 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
                 Constraint::Length(th),
             ])
             .split(area);
-            let (tree, hint_bar) = split_nav_for_state(r[2], hint_bar_h, nav.collapsed);
             Regions {
                 layout,
-                tree,
+                tree: r[2],
                 view_border: r[1],
                 terminal: r[0],
-                hint_bar,
+                hint_bar: r[1],
             }
         }
     }
@@ -1170,6 +1142,9 @@ fn terminal_cursor_pos(area: Rect, cursor: (u16, u16)) -> ratatui::layout::Posit
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_position;
 
 #[cfg(test)]
 pub(crate) mod tests_support;

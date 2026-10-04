@@ -98,7 +98,7 @@ mod tests {
         let sw = Switcher::new(&mut state);
         let out = dump_switcher(&sw, &state, 100, 30);
         // The dump renders the full screen (tree and hint bar); at rest the bar shows the
-        // prefix and collapse button.
+        // prefix alone.
         assert!(out.contains("editor"));
         assert!(out.contains("C-g"), "hint bar prefix present:\n{out}");
     }

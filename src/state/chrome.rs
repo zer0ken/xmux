@@ -101,7 +101,7 @@ pub struct Chrome {
     pub(crate) ui_prefix: String,
     /// True while the prefix has been pressed and the app is waiting for the command
     /// key (set by the app each frame from the live input state, in either focus). The
-    /// resting hint bar shows the prefix and collapse button until this flips, then the
+    /// resting hint bar shows the prefix alone until this flips, then the
     /// floating bar shows the keys it unlocks. The cheatsheet appears exactly when it is
     /// needed and never competes with the cards for room.
     pub(crate) armed: bool,

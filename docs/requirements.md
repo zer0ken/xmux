@@ -189,9 +189,10 @@ no function, and no test, so renaming code is never a documentation change.
   DIFFERENT xmux is not refused - it mirrors like any other session, showing that xmux's
   screen. A session xmux cannot name (the mux does not say, and cannot be asked) is not
   refused either, because a refusal keyed to a guess would hide a session at random.
-- **FR-B9** - The nav's bottom row is a status line, not a screen-wide footer. At
-  rest it names the prefix and collapse button; the states that outrank it (a refusal, scan progress,
-  an active filter) take the row while they apply. Arming the prefix widens the PAINT
+- **FR-B9** - The nav carries a prefix indicator, not a screen-wide footer: on the bottom
+  row of a side column, and at the right end of the seam row in a top or bottom band. At
+  rest it names the prefix alone; the states that outrank it (a refusal, scan progress,
+  an active filter) take its place while they apply. Arming the prefix widens the PAINT
   to the whole window so the cheatsheet floats over the view border and the live grid,
   leaving the layout alone so no card shifts. When the nav is auto-hidden, a live
   prefix interaction brings the nav back for the moment it needs it (a jump reads the
@@ -215,9 +216,13 @@ no function, and no test, so renaming code is never a documentation change.
   user actually picks stands off the text parts of the same line; the
   hint bar keys read its own `bar_accent` slot, because a slot that reads on the cards
   may not read on the bar's own background. Every interaction screen renders key tokens
-  in the same bold shape. What the
-  sixteen slots cannot say is said with an attribute: the selected card is REVERSE VIDEO,
-  the terminal swapping its own pair, which is what a theme itself means by "selected".
+  in the same bold shape. A section title reads in the dim `decoration` slot, the same
+  quiet role as the card numbers, so the group label stays below the sessions it names.
+  What the sixteen slots cannot say is said with an attribute: the selected card is
+  REVERSE VIDEO while the nav holds focus, the terminal swapping its own pair, which is
+  what a theme itself means by "selected"; while the terminal holds focus the selected
+  card keeps only its mark, so the selection and the view border say the same thing
+  about the focus.
   A background xmux picked instead would be wrong on every theme it was not picked for,
   and it cannot be computed from the terminal's own background either, since a terminal
   is free to answer no colour query at all. `[ui] selection-style` names a background
@@ -227,43 +232,38 @@ no function, and no test, so renaming code is never a documentation change.
   `disabled` while the terminal holds focus. What the border states is which VIEW holds
   focus, a fact about xmux, so no host and no mux may recolour it and a selection moving
   between hosts leaves it exactly as it was.
-- **FR-B12** - On a portrait screen the nav is a wide, short band, and its rows flow
-  into COLUMNS: down a column, then right. A column takes whole SECTIONS (a
-  `{host}/{mux}` title over its session cards), so a source's rows stay together under
-  the one title naming them and the section that does not fit opens the next column
-  rather than splitting across the break; only a section taller than the whole column
-  splits, having nowhere else to go, and the continuation picks it up at the TOP of the
-  next column, naming nothing: the title stands once, over the column the section starts
-  in, and the reading order is what says the continuation is the same section. Card order
-  does not change, so the numbers still count in
-  reading order. The paint records each card's rect and the hit-test reads it back, so a
-  click cannot land on a card the renderer put elsewhere. A title in the band is the
-  `{host}/{mux}` label alone: the rule the side column trails after that label underlines
-  a group across one full-width run, and a column standing beside another has no such
-  width to underline - the rule would reach the gutter and read as a bar parting the
-  columns instead. A column is as wide as the widest thing standing in it and the title is
-  one of those things, so sessions named in one character do not shrink the column under
-  the `{host}/{mux}` above them: a label with more name than room is answered in the
-  column's WIDTH, never by carrying the name onto a second row.
-  What draws the group in the band is a CONNECTOR down the left of each
-  session card, since columns standing side by side leave a card's place in the reading
-  order saying nothing about which title owns it. It marks the title that owns the group,
-  so a section that splits keeps it in that title's own column and the continuation
-  columns carry none. The connector is the title's furniture and NOT part of the card: it
-  stands in a strip left of the card's rect, so the selection - which paints a card by
-  inverting that rect - leaves it alone rather than notching the line at the one row the
-  eye is on, and a click on the strip is a click on no card. Every session card is pushed
-  right by the strip whether or not a glyph is painted in it, so a card reads at one
-  offset inside its column wherever the flow put it. The side list draws no connector:
-  one full-width run under one title needs nothing to say where the group ends.
-- **FR-B13** - The nav says what is off screen without spending a row on furniture. The
-  side list's scrollbar takes a COLUMN of its own from the nav region, never painted over
-  the cards, because the selected card is painted by inverting its whole rect and a thumb
-  inside that rect inverts with it into a hole in the bar. The portrait flow scrolls
-  sideways instead and says so in words on its status row: `<< 5 more` at the left end and
-  `7 more >>` at the right, counting CARDS behind the columns the window does not reach.
-  That row is the band's own last row, never a card's. Nothing is drawn while everything
-  fits.
+- **FR-B12** - A group is drawn the same way at every nav position: a dim
+  `{host}/{mux}` title over its session cards, each card indented two cells under it.
+  The indent is the
+  title's and NOT part of the card: it stands left of the card's rect, so the selection,
+  which paints a card by inverting that rect, leaves it blank, and a click on it is a
+  click on no card.
+  On a portrait screen the nav is a wide, short band, and its rows flow into COLUMNS:
+  down a column, then right. A column takes whole SECTIONS, so a source's rows stay
+  together under the one title naming them and the section that does not fit opens the
+  next column rather than splitting across the break; only a section taller than the
+  whole column splits, having nowhere else to go, and the continuation column repeats the
+  title on its top row, dim and followed by `…`, with the section's cards under it, so a
+  column read alone still says whose cards it holds. Card order does not change, so the
+  numbers still count in reading order. The paint records each card's rect and the
+  hit-test reads it back, so a click cannot land on a card the renderer put elsewhere. A
+  column is as wide as the widest thing standing in it and the title, repeated or not,
+  is one of those things, so sessions named in one character do not shrink the column
+  under the `{host}/{mux}` above them: a label with more name than room is answered in
+  the column's WIDTH, never by carrying the name onto a second row.
+  A band one row tall has no row to spare for a title over its cards, so it writes each
+  title and its cards along the one row, with no indent, and scrolls sideways to keep the
+  selected card in view.
+- **FR-B13** - The nav says what is off screen on the seam, the one line it draws
+  between itself and the terminal view, so no row or column of the nav is spent on it.
+  A side list that overflows thickens the stretch of the seam beside the cards on screen
+  to `┃`, placed where those cards sit in the whole list, and the cards keep the nav's
+  full width. A band scrolls sideways and writes its counts on the seam row: `‹ 5` at the
+  left end and `7 ›` at the right end before the prefix, counting CARDS behind the
+  columns the window does not reach. A click on a count selects the hidden card nearest
+  the visible ones, so the band scrolls to it. Every band row holds cards. Nothing is
+  drawn while everything fits, and a floating bar covering the seam row hides the counts
+  while it is up.
 - **FR-B14** - The arrow PAIR facing the terminal's side names the terminal, and the
   other pair names the nav, identically on both focus paths. With the nav on the left or
   above, `prefix right` and `prefix down` focus the terminal while `prefix left` and
@@ -281,27 +281,31 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B16** - The nav's width, the band's height, and the side it rides on are all
   live: the saved prefs seed them, the resize keys and `prefix p` step them, a border drag
   sets the size, and auto-hide takes
-  the width away while no prefix interaction is live (a live one brings the nav back). The
-  width has a floor at the resting prefix label, a separating cell, and the collapse
-  button, so the whole resting control stays visible and a wider configured prefix
-  raises the floor. The values therefore travel as ONE value carrying
+  the width away while no prefix interaction is live (a live one brings the nav back). An
+  expanded side nav is never narrower than a card's indent, a two-digit number, and eight
+  cells of name, and never narrower than the collapsed nav, so a wider configured prefix
+  can raise that floor; a band is never less than one row. The values therefore travel as
+  ONE value carrying
   the width the user set, the width on screen, the band height, the attachment side, and
   the collapsed state,
   so the renderer, the PTY sizing and mouse hit-testing cannot read different answers,
   and the effective width keeps its single owner. Hiding the nav does not move the
   layout: the side travels with the hidden nav, so the nav returns the shape it left.
-  The far end of the resting nav status line carries one collapse button. Its token
-  follows the nav side and whether clicking it will collapse or expand:
-  `<<`/`>>` for left and right, and `▲`/`▼` for top and bottom. A collapsed side nav is
-  exactly wide enough for the resting prefix hint, one space, and the button; a collapsed
-  band is one row. It renders no cards, keeps the view border, and preserves the natural
-  width and height for expansion. Focusing the nav by keyboard expands it. Auto-hide wins
-  while active and restores the prior collapsed state when the nav returns. The collapsed
-  state is persisted, and its view border cannot be drag-resized.
-- **FR-B17** - The status row is a bar where it owns its row and a label where it does not:
-  the side column's bar fills its row, and so does any ready or flashing bar, which has to
-  be readable over what it covers; the portrait band's resting bar paints its text plus a
-  cell of padding, leaving the rest of the row to the offscreen counts. A flash comes down
+  `prefix z` collapses and expands it from either view,
+  and dragging the view border past the nav's minimum width or height collapses it;
+  dragging back out within the same drag expands it at the size the pointer reached. A
+  collapsed side nav is a column exactly as wide as the resting prefix with a cell either
+  side, the prefix on its bottom row; a collapsed band is the seam row alone, the prefix at
+  its right end. A collapsed nav renders no cards, keeps the view border, and preserves the
+  natural width and height for expansion. A click anywhere on it, the view border
+  included, expands it without moving the focus or starting a drag, and focusing the nav
+  by keyboard expands it too. Auto-hide wins while active and restores the prior
+  collapsed state when the nav returns. The collapsed state is persisted.
+- **FR-B17** - The resting prefix indicator is a label, not a bar: it paints its text plus
+  a cell of padding on the bar's background and leaves the rest of its row to the nav (a
+  side column's bottom row) or to the seam and its offscreen counts (a band's seam row). A
+  ready or flashing bar fills its whole row, because it has to be readable over what it
+  covers. A flash comes down
   on the next tree key and, for a user who presses nothing, after ten seconds of its own:
   it reports something that already happened, so holding one indefinitely would keep the
   nav's own help text off screen over a message that has stopped being news.
@@ -409,8 +413,8 @@ no function, and no test, so renaming code is never a documentation change.
   mirror symmetry is shape-only: the layout INSIDE the
   nav region is identical at all four placements (a right column is the left column's
   list, a bottom band the top band's down-then-right flow), only what sits on which side
-  of the view border flips, and the status line stays the nav region's bottom row in all
-  four - with a bottom attachment that is the bottom row of the screen. The view border
+  of the view border flips, and the prefix indicator sits on the bottom row of a side
+  column and on the seam row of a top or bottom band. The view border
   drag mirrors its math per side (a right border measures the width from the right edge,
   a bottom border the height from the bottom edge), and the resize keys follow the same
   rule: the key moves the border the way it points, so the nav size follows the placement

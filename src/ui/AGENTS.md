@@ -15,8 +15,9 @@ switcher reads and writes it and owns only transient popup geometry.
 
 The chrome is the view border, the hint bar, and the host screens, plus its
 view-local state (flash, spinner, view border colours, prefix, ready). The hint
-bar is the NAV's bottom row or rows, not a full-width strip, and shows the prefix
-and collapse button until a prefix interaction is live (the prefix ready), when it
+bar is the nav's prefix indicator, not a full-width strip: a label on a side column's
+bottom row, and at the right end of the view border row in a band. It shows the prefix
+alone until a prefix interaction is live (the prefix ready), when it
 lists the keys that interaction unlocks. The chrome instance
 itself lives in the runtime state, fed by the app each frame and rendered from it.
 
@@ -135,7 +136,7 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   nothing between them and the list scrolls a row before the cards alone would fill it.
   Which parting applies is decided in the side list's placement, and the boundary itself is
   one question asked once (the first host-state card), so the paint, the hit-test and the
-  scrollbar cannot part the list in three places.
+  seam thumb cannot part the list in three places.
 - A list with NOTHING but host-state cards (no session has a session to show) is the host
   band alone, and it still takes its side of the split: anchored to the BOTTOM in a
   column, to the RIGHT edge in a band, with the blank rows/columns opposite being
@@ -154,17 +155,25 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   layout puts cards on a fixed pitch the paint ignores (a column parts its bands, a
   band runs columns), so a hit-test that measured its own pitch would land clicks
   on cards the renderer put elsewhere.
-- Nav FURNITURE is never inside a card's rect. The selected card is painted by inverting
-  that rect, so anything drawn inside one inverts with it; a band's connector
-  therefore stands in a strip the column reserves left of the card, and the rect the paint
-  records - what the selection inverts and what the hit-test reads - starts past it. The
-  strip is reserved on every session card the band flows, painted or not, because the card
-  widths are measured before the flow decides columns.
-- A scrollbar is RESERVED a column of the nav region, never overlaid on the cards: the
-  selected card is painted by inverting its rect, so a thumb drawn inside one inverts with
-  it and reads as a hole in the bar. A band scrolls sideways and puts its cue on
-  the status row instead, which is the band's own last row and never a card's, so the flow
-  keeps every row of the band.
+- A group reads the same at every nav position: a dim section title with its session
+  cards indented under it, and nothing else. The indent is never inside a card's rect: the
+  selected card is painted by inverting that rect, so the rect the paint records - what
+  the selection inverts and what the hit-test reads - starts past the indent. A band
+  column that continues a split section repeats the title on its top row; a band one row
+  tall indents nothing and runs titles and cards along its row.
+- The view border is the ONE line between the nav and the terminal view, and what the nav
+  says about overflow is said on it, never in a row or column of the nav: a side column's
+  overflow thickens the stretch beside the cards on screen, and a band writes its counts
+  on the border row beside the prefix, so the cards keep every row and column the nav
+  has and no inverted card runs under a cue. A count is a hit target for the hidden card
+  nearest the visible ones, read back from the same plan the paint used.
+- The focus is said twice and the two always agree: the view border's colour, and the
+  selected card's shape, reverse video under nav focus and the mark alone under terminal
+  focus.
+- A collapsed nav expands from the prefix or from a click anywhere on it, and a view border
+  drag past the minimum collapses it, so the
+  collapsed shape is the prefix indicator alone and the whole of it is one hit target.
+
 - No card's height or shape moves with the selection: focus changes only the address
   column (the number becomes the mark), so a row that gained a line under the cursor
   would reflow the list and the columns as the cursor passed. A section title is a

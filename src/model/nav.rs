@@ -27,7 +27,7 @@ pub struct NavSize {
     pub height: u16,
     /// Which side of the terminal view the nav is attached to this frame.
     pub position: NavPosition,
-    /// Whether the nav shows only its resting hint bar and collapse button.
+    /// Whether the nav shows only its prefix indicator.
     pub collapsed: bool,
 }
 

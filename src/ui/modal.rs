@@ -214,17 +214,18 @@ pub(crate) fn help_lines(
             format!("{p} t"),
             "toggle auto-hide-nav (║ view border = on)".into(),
         ),
+        HelpRow::Key(format!("{p} z"), "collapse / expand the nav".into()),
         HelpRow::Key(
             format!("{p} p"),
             "cycle the nav position (left · top · right · bottom · default)".into(),
         ),
         HelpRow::Key(format!("{p} ?"), "show this help (q / Esc closes)".into()),
         HelpRow::Key("click a view".into(), "focus that view".into()),
+        HelpRow::Key("click a collapsed nav".into(), "expand the nav".into()),
         HelpRow::Key(
-            "click << / >> / ▲ / ▼".into(),
-            "collapse / expand the nav".into(),
+            "drag the view border".into(),
+            "resize the nav; past its minimum, collapse it".into(),
         ),
-        HelpRow::Key("drag the view border".into(), "resize the nav".into()),
         HelpRow::Key(format!("{p} q"), "quit".into()),
         HelpRow::Key(
             format!("{p} {p}"),

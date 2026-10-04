@@ -8,15 +8,18 @@ use crate::ui::switcher::{NavPosition, NavSize, RenderPlan, Switcher};
 
 pub(crate) const NAV_WIDTH_MAX: u16 = 100;
 
-/// The nav's floor width: its resting prefix, a separating cell, and the collapse
-/// button. A wider configured prefix raises the floor.
+/// The narrowest expanded side nav: a card's indent, a two-digit number with the cells
+/// around it, and eight cells of name. Never narrower than the collapsed nav, so a wide
+/// configured prefix raises it. A seam dragged narrower than this collapses the nav.
 pub(crate) fn nav_width_min(ui_prefix: &str) -> u16 {
-    crate::ui::switcher::collapsed_nav_width(ui_prefix)
+    const CARD_FLOOR: u16 = 14;
+    CARD_FLOOR.max(crate::ui::switcher::collapsed_nav_width(ui_prefix) + 1)
 }
 
-/// The band-layout nav height drag range. The min keeps a few nav rows; compute_regions
-/// clamps the max down to the body so the terminal always keeps room.
-pub(crate) const NAV_HEIGHT_MIN: u16 = 3;
+/// The band-layout nav height drag range. A band one row tall still lists its cards
+/// along that row, so the min is one row, and a seam dragged past it collapses the band;
+/// compute_regions clamps the max down to the body so the terminal always keeps room.
+pub(crate) const NAV_HEIGHT_MIN: u16 = 1;
 pub(crate) const NAV_HEIGHT_MAX: u16 = 100;
 
 pub(crate) fn adjust_nav_width(w: u16, delta: i32, ui_prefix: &str) -> u16 {
@@ -171,6 +174,7 @@ pub(crate) enum Msg {
         row: u16,
     },
     ToggleNavCollapsed,
+    SetNavCollapsed(bool),
     SetNavNaturalWidth(u16),
     SetNavHeight(u16),
     ResizeNav {
@@ -783,6 +787,13 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.nav_collapsed = !model.nav_collapsed;
             model.mouse_state.hovered_view_border = false;
             vec![Effect::PersistNavCollapsed(model.nav_collapsed)]
+        }
+        Msg::SetNavCollapsed(collapsed) => {
+            if model.nav_collapsed == collapsed {
+                Vec::new()
+            } else {
+                update(model, Msg::ToggleNavCollapsed)
+            }
         }
         Msg::SetNavNaturalWidth(width) => {
             model.nav_width_natural = width;

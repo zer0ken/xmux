@@ -20,9 +20,9 @@ pub(super) struct Flow {
     pub rule_y: Option<u16>,
     /// The first card drawn: the scroll position, counted in cards.
     pub offset: usize,
-    /// How many cards are drawn WHOLE, which is the scrollbar's viewport length.
+    /// How many cards are drawn WHOLE, which is the seam thumb's viewport length.
     pub visible: usize,
-    /// Whether the list is a scrolling run, which is what earns the scrollbar its strip.
+    /// Whether the list is a scrolling run, which is what thickens the seam beside it.
     pub scrolls: bool,
 }
 

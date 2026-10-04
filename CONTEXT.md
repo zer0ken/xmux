@@ -71,12 +71,14 @@ UI elements a user perceives as distinct things:
   with the inactive color.
 - view border lines - the view border's line-drawing style (tmux
   `pane-border-lines`): `single │` (default), `double ║` (auto-hide-nav on),
-  `heavy ┃` (hover - the drag-resize grab cue).
+  `heavy ┃` (hover - the drag-resize grab cue; the seam thumb of an overflowing side nav
+  also draws `┃` at rest, in the normal border color).
 - chrome - the furniture around the two views: the view border, the hint bar, and
   the view screens.
-- hint bar - the nav's own status line: the bottom row(s) of the nav region, ending
-  at the view border rather than spanning the screen, so the terminal view keeps
-  every row it owns. At rest it shows the prefix and collapse button; while a prefix interaction is
+- hint bar - the nav's prefix indicator: a label on the bottom row of a side column's
+  nav region, and at the right end of the view border row in a band, so the terminal
+  view keeps every row it owns and every band row holds cards. At rest it shows the
+  prefix alone; while a prefix interaction is
   live (the prefix ready, or its key still held) it shows the keys that interaction
   unlocks. A flash, the scan indicator, and the active filter outrank both, in that
   order. A flash floats across the whole window and wraps instead of clipping. An error
@@ -130,10 +132,12 @@ UI elements a user perceives as distinct things:
   host stay distinguishable. The loading card is gone: a session is a plain session
   card from the moment its host resolves.
 - section title - the non-selectable `{host}/{mux}` header row a source's session
-  cards hang under, shown in the quiet header role with a rule filling the rest of the
-  row. It is not a card: it carries no number, the selection can never land on it, and
-  a click on it selects nothing. `n` on one of its session cards creates a sibling in
-  the same section.
+  cards hang under, dim (the decoration role) with nothing after it, its cards
+  indented two cells under it at every nav position. A band column that continues a
+  split section repeats it on its top row followed by `…`. It is not a card: it carries
+  no number, the selection can never land on it, and a click on it or on the indent
+  selects nothing. `n` on one of its session cards creates a sibling in the same
+  section.
 - card focus - the one thing a card's rendering changes when it gains the selection:
   the number in its address column becomes the `❯` mark. It does not grow a context
   line, it does not change height, and its session name keeps the same column - a name
@@ -150,20 +154,23 @@ UI elements a user perceives as distinct things:
   width and the on-screen width differ while the nav is hidden or a side nav is collapsed,
   and that is exactly why both travel: the regions are cut from what is on screen, while
   the set width is the one the nav returns to when shown and expanded.
-- collapsed nav - the nav reduced by its resting hint-bar button while retaining its
-  natural width and height. A left or right nav keeps the prefix hint, one space, and
-  the two-cell button; a top or bottom nav keeps one row. Cards do not render, the view
-  border remains, and keyboard focus into the nav expands it. Auto-hide still removes
-  the nav completely and returns it to the collapsed state. A collapsed view border is
-  not draggable.
+- collapsed nav - the nav reduced to its prefix indicator while retaining its natural
+  width and height. A left or right nav keeps a column as wide as the prefix with a cell
+  either side; a top or bottom nav keeps only its view border row, the prefix at its
+  right end. Cards do not render and the view border remains. `prefix z` collapses and
+  expands it, a view border drag past the nav's minimum collapses it, and a click
+  anywhere on the collapsed nav or keyboard focus into the nav expands it. Auto-hide
+  still removes the nav completely and returns it to the collapsed state.
 - column flow - how a band lays its rows out: down a column, then right, identical for a
   top and a bottom band. A
   column takes whole SECTIONS (a `{host}/{mux}` title over its session cards), so a
   source's rows stay together under the one title naming them, and the section that
   does not fit opens the next column instead of splitting across the break. A section
   taller than the whole column is the one exception, having nowhere else to go: it
-  splits, and the continuation picks it up at the top of the next column, naming nothing.
-  A column is as wide as its widest row - the section title counted among them, so short
+  splits, and the continuation column repeats the title on its top row, followed by `…`,
+  with the section's cards under it. A band one row tall runs titles and cards along
+  that row instead, unindented, and scrolls sideways.
+  A column is as wide as its widest row - the section title, repeated or not, counted among them, so short
   session names cannot narrow a column under the title over it - columns are parted by
   one blank, and the flow is pure geometry, so the paint, the hit-test and the tests read
   one answer. A list would
@@ -207,8 +214,8 @@ UI elements a user perceives as distinct things:
   neutral line with a single highlighted element - the session name, which takes the
   accent and stays bold. The accent belongs to the LOWEST level the card displays:
   the session name on a session card, the mux on a host-state card that has a mux to
-  name. A section title reads in the quiet header role (its `{host}/{mux}` and its
-  trailing rule), one step below the cards. Each state glyph keeps its own colour:
+  name. A section title reads dim, in the decoration role, one step below the cards.
+  Each state glyph keeps its own colour:
   login needed uses `?` in the warning role, unreachable uses `▲` in the error role,
   and a listing failure uses `✗` in the primary role. The scanning spinner stays in
   the pending role. Every host-state card reserves one cell for its glyph. Only the
@@ -235,33 +242,32 @@ UI elements a user perceives as distinct things:
   answering late can take it. The preselect and the
   reselect are the launch and post-rescan selections.
 - selection highlight - the selected card's rendering: reverse video filling the whole
-  card, the terminal theme's own selected look,
+  card, the terminal theme's own selected look, while the nav holds focus,
   plus a `❯` mark standing in the address column of the card's row, where
-  every other card carries its number. The inversion is uniform because the highlight
+  every other card carries its number. While the terminal holds focus the card keeps the
+  mark alone, so the selection and the view border colour say the same thing about the
+  focus. The inversion is uniform because the highlight
   pins both foreground and background to the terminal's defaults: inverting per span
   would turn each level color into a background and stripe the card. That same pinning
   is why the mark is an open shape and
   never a solid block: it draws inverted too, so a block fills its cell and disappears
   into the band while an outline keeps a readable silhouette.
   `[ui] selection-style` paints a named background instead.
-- scrollbar strip - the COLUMN the side list's scrollbar takes from the nav region when
-  the cards overflow it. Reserved, never overlaid, because the selected card is painted by
-  inverting its whole rect and a thumb inside that rect inverts with it into a hole in the
-  bar. Nothing is drawn at all while everything fits, so a nav that fits spends no cell on
-  furniture. A band has no strip: it scrolls sideways, and says so in words on
-  its status row (see "offscreen counts").
-- offscreen counts - what a band puts on its status row when columns are off
-  screen: `<< 5 more` at the left end, `7 more >>` at the right, in the cells the status
-  label does not take. Cards, not columns, because the reader is hunting a session, not a
-  column. They cost no row (the status row is the band's own last row, never a card's) and
-  say what a thumb cannot: which way the cards went, and how many. An ARMED bar takes the
-  whole row back, counts included, since a cheatsheet has to be readable over what it
-  covers.
-- status row fill - how much of its row the hint bar paints. A column's bar, a
-  ready bar and a refusal fill the ROW: a solid bar, legible over whatever it covers. A
-  band's resting bar paints its text plus a cell of padding and stops, because it
-  shares that row with the offscreen counts and a full-width slab of bar colour across a
-  wide window is a lot of paint for one word.
+- seam thumb - the stretch of a side column's view border drawn heavy (`┃`) beside the
+  cards on screen when the list overflows, placed where those cards sit in the whole list.
+  It is drawn on the view border rather than in a column of the nav, so the cards keep
+  the nav's full width and the selected card's inverted rect never runs under a thumb.
+  Nothing is drawn while everything fits.
+- offscreen counts - what a band writes on its view border row when columns are off
+  screen: `‹ 5` at the left end and `7 ›` before the prefix at the right. Cards, not
+  columns, because the reader is hunting a session, not a column. They cost no row and
+  say what a thumb cannot: which way the cards went, and how many. A click on one selects
+  the hidden card nearest the visible ones. An ARMED bar covers the row, counts included,
+  since a cheatsheet has to be readable over what it covers.
+- status row fill - how much of its row the hint bar paints. A ready bar and a refusal
+  fill the ROW: a solid bar, legible over whatever it covers. The resting prefix
+  indicator paints its text plus a cell of padding and stops, leaving the rest of its row
+  to the nav or the view border.
 - spinner - the braille activity glyph marking the work still in flight. One
   glyph and one frame counter for the whole UI, so every marker on screen turns
   together. It stands on a SCANNING host's card, trailing the line in the same place

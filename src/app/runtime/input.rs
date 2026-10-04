@@ -54,6 +54,9 @@ impl Runtime {
                 Some(Action::Height(d)) => height_delta = d,
                 Some(Action::ToggleAutoHide) => toggle_auto_hide = true,
                 Some(Action::CycleNavPosition) => cycle_position = true,
+                Some(Action::ToggleCollapse) => {
+                    effects.extend(update(&mut self.model, Msg::ToggleNavCollapsed));
+                }
                 Some(Action::ShowHelp) => {
                     effects.extend(update(&mut self.model, Msg::ToggleHelp));
                 }
@@ -169,32 +172,41 @@ impl Runtime {
                 // The DRAG measures from the near edge: a band drags the height (from the
                 // top edge, or the bottom edge when pinned there), a column the width (from
                 // the left edge, or the right one) - the same per-side math the resize keys
-                // follow (their direction is the border's movement).
-                if top_layout {
-                    let target = view_border_drag_height(
+                // follow (their direction is the border's movement). A drag past the
+                // minimum collapses the nav, and coming back out within the same drag
+                // expands it at the width or height the pointer reached.
+                let position = self.model.render_plan.nav_position;
+                let target = if top_layout {
+                    view_border_drag_height(
                         ev.row,
                         full.height,
-                        self.model.render_plan.nav_position
-                            == crate::ui::switcher::NavPosition::Bottom,
-                    );
-                    if target != self.model.nav_height {
+                        position == crate::ui::switcher::NavPosition::Bottom,
+                    )
+                } else {
+                    view_border_drag_width(
+                        ev.col,
+                        &self.env.ui_prefix,
+                        full.width,
+                        position == crate::ui::switcher::NavPosition::Right,
+                    )
+                };
+                if target.is_none() != self.model.nav_collapsed {
+                    let effects = update(&mut self.model, Msg::SetNavCollapsed(target.is_none()));
+                    let _ = self.execute_effects(effects);
+                    dirty = true;
+                }
+                match target {
+                    Some(target) if top_layout && target != self.model.nav_height => {
                         let effects = update(&mut self.model, Msg::SetNavHeight(target));
                         debug_assert!(effects.is_empty());
                         dirty = true;
                     }
-                } else {
-                    let target = view_border_drag_width(
-                        ev.col,
-                        &self.env.ui_prefix,
-                        full.width,
-                        self.model.render_plan.nav_position
-                            == crate::ui::switcher::NavPosition::Right,
-                    );
-                    if target != self.model.nav_width_natural {
+                    Some(target) if !top_layout && target != self.model.nav_width_natural => {
                         let effects = update(&mut self.model, Msg::SetNavNaturalWidth(target));
                         debug_assert!(effects.is_empty());
                         dirty = true;
                     }
+                    _ => {}
                 }
             }
             return dirty;
@@ -241,10 +253,36 @@ impl Runtime {
         if self.model.state.is_modal_popup_open() {
             return dirty;
         }
-        let button = self.model.render_plan.collapse_button;
-        if is_left_press && button.contains(ratatui::layout::Position { x: col0, y: row0 }) {
-            let effects = update(&mut self.model, Msg::ToggleNavCollapsed);
+        // A collapsed nav is one target: a click anywhere on it, its seam included,
+        // expands it, and is neither a focus move nor a drag.
+        let at = ratatui::layout::Position { x: col0, y: row0 };
+        if is_left_press
+            && self.model.render_plan.nav_collapsed
+            && self.model.render_plan.expand_area.contains(at)
+        {
+            let effects = update(&mut self.model, Msg::SetNavCollapsed(false));
             let _ = self.execute_effects(effects);
+            return true;
+        }
+        // A band's overflow count stands on the seam for the hidden card nearest the
+        // visible ones: a click selects that card, so the band scrolls to it.
+        if is_left_press && self.model.render_plan.overflow_target(col0, row0).is_some() {
+            let effects = update(
+                &mut self.model,
+                Msg::MouseSelect {
+                    col: col0,
+                    row: row0,
+                },
+            );
+            let _ = self.execute_effects(effects);
+            ensure_current_host(
+                &mut self.mgr,
+                &self.hosts,
+                &self.model.switcher,
+                cols,
+                body_rows,
+                nav_width,
+            );
             return true;
         }
         if is_left_press && on_view_border {
@@ -638,6 +676,11 @@ impl Runtime {
                     }
                     Action::CycleNavPosition => {
                         let effects = update(&mut self.model, Msg::CycleNavPosition);
+                        let _ = self.execute_effects(effects);
+                        *dirty = true;
+                    }
+                    Action::ToggleCollapse => {
+                        let effects = update(&mut self.model, Msg::ToggleNavCollapsed);
                         let _ = self.execute_effects(effects);
                         *dirty = true;
                     }
