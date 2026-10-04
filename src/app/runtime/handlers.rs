@@ -645,6 +645,7 @@ impl Runtime {
         // [ui] notifications: whether results show as toasts; the history keeps them either
         // way.
         state.notify.set_toasts_enabled(roster.cfg.ui.notifications);
+        state.chrome.braille_animation = roster.cfg.ui.braille_animation;
         // And what offered each host, so an unreachable one can name the provider that
         // put it on the roster. Reduced to words here: the screen prints them and
         // nothing branches on which provider it was.

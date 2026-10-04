@@ -188,6 +188,39 @@ mod tests {
     }
 
     #[test]
+    fn disabling_braille_hides_scanning_frames_with_visible_or_hidden_nav() {
+        let mut state = crate::state::State::from_sources(vec!["pending".into()]);
+        let switcher = Switcher::from_sources(&mut state);
+        state.chrome.braille_animation = false;
+        for nav in [
+            crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            crate::ui::switcher::NavSize::hidden(crate::ui::switcher::NAV_WIDTH),
+        ] {
+            let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+            let plan = switcher.layout(area, nav, &state, &Default::default());
+            assert_eq!(plan.view_screen, Some(crate::model::ViewScreen::Scanning));
+            let view = if plan.nav_hidden {
+                area
+            } else {
+                plan.regions.terminal
+            };
+            let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+            terminal
+                .draw(|frame| switcher.render(frame, None, false, &state, &plan))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            assert!(
+                (view.y..view.bottom()).all(|y| (view.x..view.right()).all(|x| {
+                    !buffer[(x, y)]
+                        .symbol()
+                        .chars()
+                        .any(|c| ('\u{2800}'..='\u{28ff}').contains(&c))
+                }))
+            );
+        }
+    }
+
+    #[test]
     fn an_empty_screen_keeps_its_content_and_animation_with_the_nav_hidden() {
         let mut state = crate::state::State::from_scan(Scan {
             groups: vec![crate::ui::tree::Group {

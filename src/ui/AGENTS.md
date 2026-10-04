@@ -84,7 +84,8 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   The domain model chooses the state; this layer renders the result.
 - Scanning uses a Braille-only animation instead of the settled-state grammar. A
   settled screen centers the same animation below its content when the remaining
-  rectangle fits a complete frame. The
+  rectangle fits a complete frame. `[ui] braille-animation` controls both placements;
+  disabling it leaves nav activity spinners visible. The
   application owns its clock, the render plan records the domain-selected screen,
   and both the live frame and off-screen dump paint from that same immutable choice.
   Its 32-column monochrome frame atlas is sampled from the approved outline prototype

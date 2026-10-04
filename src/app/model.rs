@@ -1380,6 +1380,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 model.nav_default = ui.nav_position();
                 model.max_fps = ui.max_fps;
                 model.state.notify.set_toasts_enabled(ui.notifications);
+                model.state.chrome.braille_animation = ui.braille_animation;
             }
             Vec::new()
         }
@@ -2153,6 +2154,24 @@ mod tests {
         );
         assert!(m.state.notify.toasts.is_empty());
         assert_eq!(m.state.notify.history.len(), 1, "the history keeps it");
+    }
+
+    #[test]
+    fn config_observation_updates_braille_animation() {
+        let mut m = model();
+        assert!(m.state.chrome.braille_animation);
+        let ui = crate::provision::config::UiConfig {
+            braille_animation: false,
+            ..Default::default()
+        };
+        update(
+            &mut m,
+            Msg::ConfigObserved {
+                mtime: None,
+                ui: Some(Box::new((ui, crate::ui::palette::Palette::default()))),
+            },
+        );
+        assert!(!m.state.chrome.braille_animation);
     }
 
     #[test]

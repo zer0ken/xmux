@@ -427,6 +427,7 @@ impl Default for Chrome {
             spinner: HashSet::new(),
             spinner_frame: 0,
             animation_ms: 0,
+            braille_animation: true,
             login_defaults: HashMap::new(),
             ssh_stanzas: HashMap::new(),
             roster_providers: HashMap::new(),
@@ -576,7 +577,7 @@ impl Chrome {
             height: area.height - content_rows,
             ..area
         };
-        if crate::ui::braille_x::fits(blank) {
+        if self.braille_animation && crate::ui::braille_x::fits(blank) {
             crate::ui::braille_x::render(frame, blank, self.animation_ms);
         }
     }

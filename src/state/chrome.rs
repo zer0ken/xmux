@@ -98,6 +98,8 @@ pub struct Chrome {
     pub(crate) spinner_frame: usize,
     /// Milliseconds since this run's animation origin, supplied by the app update.
     pub(crate) animation_ms: u64,
+    /// Whether the central Braille X animation is painted on view screens.
+    pub(crate) braille_animation: bool,
     pub(crate) login_defaults: HashMap<String, crate::provision::env::LoginDefaults>,
     pub(crate) ssh_stanzas: HashMap<String, String>,
     /// What offered each host to the roster, keyed by HOST name and already reduced to
