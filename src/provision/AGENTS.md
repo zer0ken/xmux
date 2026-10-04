@@ -21,9 +21,11 @@ sources exist.
 The resolved environment owns the process-memory credential store for the run. Every
 configured, discovered, and freshly reconciled source receives that same store, keyed by
 machine, so off-loop operations cannot miss a login or copy its password.
-OpenSSH's effective local configuration supplies each ssh host's login defaults, prompt
-identity, and host-key policy. Provisioning applies the provider, port, and local-user
-fallbacks and extracts the matching stanza before the app supplies both to the chrome.
+OpenSSH's effective local configuration supplies each ssh host's address and port defaults,
+prompt identity, and host-key policy. The login pane takes a username only from an exact
+host stanza; otherwise its username starts empty.
+Provisioning applies the provider and port fallbacks and extracts the matching stanza
+before the app supplies both to the chrome.
 
 ## Module Seams
 

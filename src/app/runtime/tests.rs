@@ -4655,17 +4655,23 @@ fn feed_login_fills_the_pane_and_submits_from_the_button() {
     // with Enter alone ends on the button, where Enter submits. The password is taken
     // out of the draft on submit so the draft keeps no second copy.
     let mut s = State::default();
-    // address, port, username come prefilled; Enter walks past them.
-    for _ in 0..3 {
+    // Address and port are prefilled; username is entered before continuing.
+    for _ in 0..2 {
         assert!(
             s.feed_login("prod", b"\r").is_none(),
             "a field passes focus on"
         );
     }
+    assert!(s.feed_login("prod", b"alice").is_none());
+    assert!(s.feed_login("prod", b"\r").is_none());
     assert!(s.feed_login("prod", b"hunter2").is_none(), "typing waits");
     assert!(
         s.feed_login("prod", b"\r").is_none(),
         "the password field passes focus on too"
+    );
+    assert!(
+        s.feed_login("prod", b"\r\r").is_none(),
+        "remember choices pass focus on"
     );
     // The focus is on the pubkey checkbox: Space picks it, Enter walks past.
     assert!(

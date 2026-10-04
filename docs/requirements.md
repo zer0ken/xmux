@@ -464,12 +464,13 @@ no function, and no test, so renaming code is never a documentation change.
   together with the failure facts, which stay folded until it is picked.
 - **FR-B27** - The LOGIN PANE holds the three values ssh will not ask for and must know
   before it dials - the address, the port, and the username - with an optional masked
-  password beside them. Every value starts at what ssh WOULD use. An address, port, or
-  user from OpenSSH's effective configuration wins; the matching stanza is the fallback
-  when OpenSSH cannot report it. Missing values use the address a provider
-  reported else the host's own name, port 22, and this machine's account name. Each
-  field shows whether its value came from ssh configuration, discovery, a default, the
-  host name, the local account, or an edit. A required field is marked in its
+  password beside them. Address and port start at what ssh WOULD use, while the
+  username comes from an exact host stanza when it names one, otherwise starts empty
+  for the user to enter. An address or port from OpenSSH's
+  effective configuration wins; the matching stanza is the fallback when OpenSSH
+  cannot report it. Missing values use the address a provider reported else the
+  host's own name and port 22. Each prefilled field shows whether its value came
+  from ssh configuration, discovery, a default, or the host name. A required field is marked in its
   label and an empty optional one says so in the space its value would occupy. It is not
   a modal and nothing in the nav drives it. Enter means one thing throughout: submit from
   the button, pass the focus on from anywhere else. Space picks a choice, Tab and the
