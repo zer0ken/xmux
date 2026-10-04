@@ -203,6 +203,10 @@ impl OverflowMark {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RenderPlan {
     pub screen_area: Rect,
+    /// Nav geometry used to produce this frame, reused for an off-screen dump.
+    pub(crate) nav_size: NavSize,
+    /// Domain-selected replacement for the live grid on this frame.
+    pub(crate) view_screen: Option<crate::model::ViewScreen>,
     pub layout: ViewLayout,
     pub nav_position: NavPosition,
     pub regions: Regions,
@@ -244,6 +248,8 @@ impl Default for RenderPlan {
     fn default() -> Self {
         Self {
             screen_area: Rect::default(),
+            nav_size: NavSize::visible(NAV_WIDTH),
+            view_screen: None,
             layout: ViewLayout::Column,
             nav_position: NavPosition::Left,
             regions: Regions::default(),
@@ -391,6 +397,8 @@ impl Switcher {
         };
         let mut plan = RenderPlan {
             screen_area: area,
+            nav_size: nav,
+            view_screen: self.current_view_screen(state),
             layout: regions.layout,
             nav_position: nav.position,
             regions,
@@ -707,10 +715,14 @@ impl Switcher {
         }
         // nav_width == 0 is the "nav hidden" sentinel (terminal view focused + auto-hide):
         // the terminal view owns the whole area - no nav list, no view border, and no
-        // prefix indicator of its own, since the user asked for the whole screen to be the mux.
+        // prefix indicator of its own. A selected scan still owns that terminal view.
         if plan.nav_hidden {
-            self.render_terminal_view(frame, area, grid);
-            if let Some(g) = grid {
+            if plan.view_screen == Some(crate::model::ViewScreen::Scanning) {
+                crate::ui::braille_x::render(frame, area, state.chrome.animation_ms);
+            } else {
+                self.render_terminal_view(frame, area, grid);
+            }
+            if let Some(g) = grid.filter(|_| plan.view_screen.is_none()) {
                 if !g.hide_cursor() {
                     frame.set_cursor_position(terminal_cursor_pos(area, g.cursor()));
                 }
@@ -752,22 +764,25 @@ impl Switcher {
             .chrome
             .render_seam_thumb(frame, plan.seam_thumb, terminal_focused);
         let term_area = plan.regions.terminal;
-        // A selected host with no session to show has no live grid to mirror: its host
-        // screen fills the region instead, so neither state is ever a blank view with no
-        // next step. One call for both, because they are one screen in two states.
-        if let Some(kind) = self.current_view_screen(state) {
-            let address = self.view_screen_address(state, kind);
-            state.chrome.render_view_screen(
-                frame,
-                term_area,
-                state,
-                crate::ui::chrome::ViewScreenRender {
-                    address: &address,
-                    kind,
-                    focused: terminal_focused,
-                },
-                &palette,
-            );
+        // A domain-selected view screen replaces the grid. Scanning paints Braille;
+        // settled host and own-session states share the factual chrome grammar.
+        if let Some(kind) = plan.view_screen {
+            if kind == crate::model::ViewScreen::Scanning {
+                crate::ui::braille_x::render(frame, term_area, state.chrome.animation_ms);
+            } else {
+                let address = self.view_screen_address(state, kind);
+                state.chrome.render_view_screen(
+                    frame,
+                    term_area,
+                    state,
+                    crate::ui::chrome::ViewScreenRender {
+                        address: &address,
+                        kind,
+                        focused: terminal_focused,
+                    },
+                    &palette,
+                );
+            }
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }
@@ -809,7 +824,7 @@ impl Switcher {
         self.render_toasts(frame, state, plan, &palette);
         // In the terminal view, place the real cursor at the grid's cursor so typing in the
         // mux is visible and tracks. Skipped when the child hid its cursor.
-        if terminal_focused {
+        if terminal_focused && plan.view_screen.is_none() {
             if let Some(g) = grid {
                 if !g.hide_cursor() {
                     frame.set_cursor_position(terminal_cursor_pos(term_area, g.cursor()));
@@ -1186,10 +1201,9 @@ impl Switcher {
                 g.render_into(buf, area);
             }
             None => {
-                // No confirmed grid yet (only at first launch). Blank, never a
-                // placeholder: a session switch keeps the prior grid until the new
-                // one is ready (stale-while-revalidate), so nothing transitional is
-                // ever shown here.
+                // No confirmed grid yet and no domain screen selected. A session
+                // switch keeps the prior grid until the new one is ready
+                // (stale-while-revalidate), so no attachment placeholder is painted.
                 frame.render_widget(Clear, area);
             }
         }

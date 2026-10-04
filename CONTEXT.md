@@ -104,14 +104,15 @@ UI elements a user perceives as distinct things:
   selection: the selected card's most relevant keys and one fact about it (a session's
   windows, a host's state word and the reason behind it). Any key ends it and the next
   move replaces it. A selection xmux was told to make raises none.
-- view screen - what fills the terminal-view region in place of a mux, for a selection
-  with no grid to show there. Where a card states the selection's STATE, the screen
-  states WHY: it is the one surface with the room to hold a tool's diagnostic whole.
+- view screen - what fills the terminal-view region in place of a mux while a selected
+  host scans or has settled without a session to show, or when xmux would mirror its
+  own session. A settled-state card names the STATE; its screen has room to state WHY.
   The domain model chooses the screen from the selected address, typed host failure,
   scanning state, empty state, and own-session address. The UI renders that choice.
-  One screen in four states, so a reader of any of them reads the others: the subject
-  as the headline (a host for the three host states, the session address for
-  `own session`), under it the state word, then the rows that apply. A row is the key-column row the help also uses - a
+  The settled host and own-session states share one factual screen grammar, so a reader
+  of any of them reads the others: the subject as the headline (a host for the settled
+  host states, the session address for `own session`), under it the state word, then
+  the rows that apply. A row is the key-column row the help also uses - a
   right-aligned cell, the `│` rule, the value - where a bold cell is a key that can be
   pressed here and a muted cell names a datum. No value on a screen is shortened to fit
   its column: one too wide hangs under the same rule, a multi-line one keeps its lines,
@@ -125,7 +126,11 @@ UI elements a user perceives as distinct things:
   the full history - then the rescan key. The BLOCKED state states the same failure
   facts and adds the login pane above them; the host stays blocked on any failed login
   and re-probes only itself on a successful one. The EMPTY state's rows are the keys that start a session or rescan. A host
-  still scanning gets no screen: an in-flight state is the nav's to show. The
+  still scanning shows a monochrome Braille X rotation in the terminal view while its
+  card keeps the in-flight spinner. The same animation fills the view during an initial
+  scan before a card can be selected. Its fixed 32- or 64-column frame is centered and
+  clipped in smaller views; one symbol holds for one second and turns in 0.4 seconds.
+  It yields immediately to a confirmed session or settled host state. The
   `own session` state's rows are why it is refused, and no key, because nothing pressed
   here would make it showable.
 - nesting - xmux running inside a mux session. Allowed: the app attaches mux clients as

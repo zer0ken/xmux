@@ -1,0 +1,8 @@
+{
+  "name": "xmux-braille-x-atlas",
+  "private": true,
+  "description": "Developer-only browser dependency for regenerating the checked-in Braille atlas",
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

@@ -791,6 +791,7 @@ impl Runtime {
             &mut self.model,
             Msg::SyncFrame {
                 spinner_frame,
+                animation_ms: self.spinner_start.elapsed().as_millis() as u64,
                 view_border_hovered,
                 prefix_active,
             },

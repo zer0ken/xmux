@@ -91,6 +91,8 @@ pub struct Chrome {
     /// spinner glyph renders right of their name in the tree.
     pub(crate) spinner: HashSet<String>,
     pub(crate) spinner_frame: usize,
+    /// Milliseconds since this run's animation origin, supplied by the app update.
+    pub(crate) animation_ms: u64,
     pub(crate) login_defaults: HashMap<String, crate::provision::env::LoginDefaults>,
     pub(crate) ssh_stanzas: HashMap<String, String>,
     /// What offered each host to the roster, keyed by HOST name and already reduced to

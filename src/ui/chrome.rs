@@ -256,6 +256,7 @@ impl ViewScreen {
     /// names itself.
     fn word(self) -> &'static str {
         match self {
+            ViewScreen::Scanning => "scanning",
             ViewScreen::SelfSession => "running xmux",
             ViewScreen::Login => crate::ui::tree::host_state_word(false, true, false, true),
             ViewScreen::ListFailed => crate::ui::tree::host_state_word(false, false, true, true),
@@ -369,6 +370,7 @@ impl Default for Chrome {
             view_border_hovered: false,
             spinner: HashSet::new(),
             spinner_frame: 0,
+            animation_ms: 0,
             login_defaults: HashMap::new(),
             ssh_stanzas: HashMap::new(),
             roster_providers: HashMap::new(),
@@ -519,6 +521,7 @@ impl Chrome {
             return String::new();
         }
         match kind {
+            ViewScreen::Scanning => self.source_label(&address.source),
             ViewScreen::SelfSession => {
                 if address.session.is_empty() {
                     self.source_label(&address.source)
@@ -804,6 +807,7 @@ impl Chrome {
 
         let rule = Span::styled("│ ", Style::default().fg(pal.decoration));
         let state_style = Style::default().fg(match kind {
+            ViewScreen::Scanning => pal.decoration,
             ViewScreen::Unreachable => pal.error,
             ViewScreen::Login => pal.warning,
             ViewScreen::ListFailed => pal.primary,

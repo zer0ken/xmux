@@ -75,10 +75,15 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   background with no slot for it is an attribute instead: the selected card is
   reverse video, not a computed surface. See "Colour ownership" in `CONTEXT.md`;
   the palette is guarded so a stray RGB colour cannot reach it.
-- The view screens are ONE screen in several states, not a panel each: one builder lays
-  them all out, so the headline, the state word, and the key rows cannot drift apart. A
-  state added later joins that grammar rather than bringing its own. The domain model
-  chooses the state; this layer renders the result.
+- The settled host and own-session view screens are ONE factual screen in several
+  states, not a panel each: one builder lays them all out, so the headline, the state
+  word, and the key rows cannot drift apart. A later settled state joins that grammar.
+  The domain model chooses the state; this layer renders the result.
+- Scanning uses a Braille-only animation instead of the settled-state grammar. The
+  application owns its clock, the render plan records the domain-selected screen,
+  and both the live frame and off-screen dump paint from that same immutable choice.
+  Its monochrome frame atlas is sampled from the approved outline prototype so font
+  rasterization and emoji fallback never run on the terminal event loop.
 - The terminal view refuses exactly one address, the session xmux is running in, and it
   refuses it by emptying the view TARGET rather than at each place that would attach.
   The target is what the display reconcile, the attach and the mux-side switch all read,
