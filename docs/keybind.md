@@ -283,9 +283,8 @@ and `prefix ←` / `prefix ↑` for the nav; with the nav on the right or below 
 flips (`prefix ←` / `prefix ↑` name the terminal, `prefix →` / `prefix ↓` the nav). An
 arrow naming the view that already has focus does nothing.
 
-The view border's colour shows which view holds focus, and the selected card agrees: it is
-reverse video while the nav holds focus and keeps only its `❯` mark while the terminal view
-does.
+The view border's colour shows which view holds focus. The selected card keeps its `❯` mark
+and reverse video in both focus states.
 
 When the terminal view has focus, every key that is not a prefix chord is
 forwarded raw to the session's active pane, so programs running inside the mux
