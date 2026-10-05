@@ -151,3 +151,7 @@ the target stands for. A binding that selects and executes at once is a delibera
 shortcut that names its target directly, such as a digit jump or a prefix chord, never
 an arrow key or a hover. Gestures that are neither keep their own meaning: a drag moves
 or resizes, the wheel scrolls, and typing edits a text field.
+
+The landing screen is the one surface on which a selection shows nothing: from launch
+until the first execution the hard selection only highlights and a hover previews
+nothing, so nothing attaches before the user has chosen.

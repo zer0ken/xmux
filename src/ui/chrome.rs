@@ -266,15 +266,16 @@ pub(crate) struct ViewScreenRender<'a> {
     pub(crate) link_hover: Option<usize>,
 }
 
-/// One link a host's or a source's screen offers: the node it opens, the name it is
-/// written as, and what the screen states beside it. In terminal focus a link is a
-/// selection target: the arrow keys move its hard selection, the pointer its soft one,
-/// and Enter or a click opens it.
+/// One link a screen offers: the node it opens, the name it is written as, what the
+/// screen states beside it, and the card number it carries on the landing screen. In
+/// terminal focus a link is a selection target: the arrow keys move its hard selection,
+/// the pointer its soft one, and Enter or a click opens it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ScreenLink {
     pub(crate) node: crate::model::Node,
     pub(crate) label: String,
     pub(crate) value: String,
+    pub(crate) number: Option<usize>,
 }
 
 /// Where a screen painted one of its links: the link, the line, the first column and the
@@ -309,6 +310,7 @@ impl ViewScreen {
             ViewScreen::Empty => crate::ui::tree::host_state_word(false, false, false, false),
             ViewScreen::HostInfo => "sessions",
             ViewScreen::Host => crate::ui::tree::HOST_REACHABLE,
+            ViewScreen::Landing => "",
         }
     }
 }
@@ -440,15 +442,17 @@ enum ScreenCell {
     /// No row at all - the blank line parting two blocks of them.
     Gap,
     /// A row whose value opens with link `link`: the name of the list in the cell on the
-    /// list's first row, no cell on the rows after it.
-    Link(Option<&'static str>, usize),
+    /// list's first row, no cell on the rows after it, or the card number on every row of
+    /// the landing screen's list.
+    Link(Option<String>, usize),
 }
 
 impl ScreenCell {
     fn text(&self) -> &str {
         match self {
             ScreenCell::Key(k) => k,
-            ScreenCell::Label(l) | ScreenCell::Link(Some(l), _) => l,
+            ScreenCell::Label(l) => l,
+            ScreenCell::Link(Some(l), _) => l,
             ScreenCell::Continued | ScreenCell::Gap | ScreenCell::Link(None, _) => "",
         }
     }
@@ -651,6 +655,20 @@ impl Chrome {
             })
     }
 
+    /// How far the scan has come, as the landing screen states it under its headline: how
+    /// many hosts answered out of all of them, turning the spinner the cards turn while
+    /// any is still scanning.
+    fn scan_progress(&self, state: &crate::state::State) -> String {
+        let total = state.groups.len();
+        let done = total.saturating_sub(state.scanning.len());
+        if state.scanning.is_empty() {
+            format!("{done} of {total} hosts scanned")
+        } else {
+            let sp = crate::ui::spinner_glyph(self.spinner_frame);
+            format!("{sp} {done} of {total} hosts scanned")
+        }
+    }
+
     /// Where `view` paints its links inside `area`, read from the same lines the paint
     /// draws and scrolled the same way, so a click is hit-tested against what is on
     /// screen.
@@ -687,13 +705,15 @@ impl Chrome {
     /// the screen was reached by, which is the source id and, for the session screen, its
     /// session name - the two halves are already separate, so nothing is re-split.
     fn headline(&self, address: &crate::session::Address, kind: ViewScreen, host: bool) -> String {
-        if address.source.is_empty() {
+        if address.source.is_empty() && kind != ViewScreen::Landing {
             return String::new();
         }
         if host {
             return crate::session::machine_of(&address.source).to_string();
         }
         match kind {
+            // The root of the hierarchy, above every host.
+            ViewScreen::Landing => "xmux".into(),
             ViewScreen::Scanning => self.source_label(&address.source),
             ViewScreen::SelfSession => {
                 if address.session.is_empty() {
@@ -958,6 +978,8 @@ impl Chrome {
                 ScreenCell::Key(format!("{p} n")),
                 "start a new session".into(),
             ));
+        } else if kind == ViewScreen::Landing {
+            // The landing screen is its list of cards and nothing else.
         } else if kind == ViewScreen::Scanning {
             // A scan has no answer yet, so the screen states only what earlier answers
             // observed. A key is not offered: the re-scan it would start is under way.
@@ -988,7 +1010,10 @@ impl Chrome {
                 "start a new session".into(),
             ));
         }
-        if !matches!(kind, ViewScreen::SelfSession | ViewScreen::Scanning) {
+        if !matches!(
+            kind,
+            ViewScreen::SelfSession | ViewScreen::Scanning | ViewScreen::Landing
+        ) {
             rows.push((
                 ScreenCell::Key(format!("{p} R")),
                 "re-scan this host".into(),
@@ -1093,10 +1118,20 @@ impl Chrome {
             None => {}
         }
 
-        // The level below, as links: a host's sources, a source's sessions. A source's
-        // first link is its host, which the headline carries.
-        let listed = if host { 0 } else { 1 };
+        // The level below, as links: a host's sources, a source's sessions, and on the
+        // landing screen every card under its number. A source's first link is its host,
+        // which the headline carries.
+        let landing = kind == ViewScreen::Landing;
+        let listed = if host || landing { 0 } else { 1 };
         let name = if host { "sources" } else { "sessions" };
+        // Card numbers line up by units place, as they do in the nav's address column.
+        let number_w = view
+            .links
+            .iter()
+            .filter_map(|l| l.number)
+            .map(|n| n.to_string().len())
+            .max()
+            .unwrap_or(0);
         if view.links.len() > listed && kind != ViewScreen::SelfSession {
             rows.push((ScreenCell::Gap, String::new()));
             for (i, link) in view.links.iter().enumerate().skip(listed) {
@@ -1105,7 +1140,11 @@ impl Chrome {
                 } else {
                     format!("{}  {}", link.label, link.value)
                 };
-                rows.push((ScreenCell::Link((i == listed).then_some(name), i), value));
+                let cell = match link.number {
+                    Some(n) => Some(format!("{n:>number_w$}")),
+                    None => (i == listed && !landing).then(|| name.to_string()),
+                };
+                rows.push((ScreenCell::Link(cell, i), value));
             }
         }
 
@@ -1155,7 +1194,8 @@ impl Chrome {
             ViewScreen::Empty
             | ViewScreen::SelfSession
             | ViewScreen::HostInfo
-            | ViewScreen::Host => pal.decoration,
+            | ViewScreen::Host
+            | ViewScreen::Landing => pal.decoration,
         });
         let headline = self.headline(address, kind, host);
         let bold = Style::default()
@@ -1166,7 +1206,9 @@ impl Chrome {
         // to the host's screen.
         let headline_line = match view.links.first() {
             Some(up)
-                if !host && kind != ViewScreen::SelfSession && headline.starts_with(&up.label) =>
+                if !host
+                    && !matches!(kind, ViewScreen::SelfSession | ViewScreen::Landing)
+                    && headline.starts_with(&up.label) =>
             {
                 let rest = headline[up.label.len()..].to_string();
                 links.push((
@@ -1189,7 +1231,17 @@ impl Chrome {
         let mut out = vec![
             Line::from(""),
             headline_line,
-            Line::from(Span::styled(format!(" {}", kind.word()), state_style)),
+            Line::from(Span::styled(
+                format!(
+                    " {}",
+                    if landing {
+                        self.scan_progress(state)
+                    } else {
+                        kind.word().to_string()
+                    }
+                ),
+                state_style,
+            )),
         ];
         // The login pane OWNS the connection values: they sit at the panel's top,
         // edited in place from the terminal view (no modal, no nav). The inputs come in

@@ -494,19 +494,17 @@ impl Switcher {
             } else {
                 plan.regions.terminal
             };
-            if let Some((node, address)) = self.view_subject(kind) {
-                let links = self.screen_links(&node, state);
-                let (link, link_hover) = self.link_marks();
+            if let Some(parts) = self.screen_parts(kind, state) {
                 plan.view_links = state.chrome.view_link_rects(
                     state,
                     &crate::ui::chrome::ViewScreenRender {
-                        address: &address,
+                        address: &parts.address,
                         kind,
                         focused: self.terminal_view,
-                        host: matches!(node, Node::Host(_)),
-                        links: &links,
-                        link,
-                        link_hover,
+                        host: parts.host,
+                        links: &parts.links,
+                        link: parts.marks.0,
+                        link_hover: parts.marks.1,
                     },
                     area,
                     &self.palette,
@@ -973,29 +971,24 @@ impl Switcher {
         kind: crate::model::ViewScreen,
         focused: bool,
     ) -> Option<Position> {
-        let Some((node, address)) = self
-            .view_subject(kind)
-            .filter(|(_, address)| !address.source.is_empty())
-        else {
+        let Some(parts) = self.screen_parts(kind, state) else {
             if kind == crate::model::ViewScreen::Scanning && state.chrome.braille_animation {
                 crate::ui::braille_x::render(frame, area, state.chrome.animation_ms);
             }
             return None;
         };
-        let links = self.screen_links(&node, state);
-        let (link, link_hover) = self.link_marks();
         state.chrome.render_view_screen(
             frame,
             area,
             state,
             crate::ui::chrome::ViewScreenRender {
-                address: &address,
+                address: &parts.address,
                 kind,
                 focused,
-                host: matches!(node, Node::Host(_)),
-                links: &links,
-                link,
-                link_hover,
+                host: parts.host,
+                links: &parts.links,
+                link: parts.marks.0,
+                link_hover: parts.marks.1,
             },
             &self.palette,
         )

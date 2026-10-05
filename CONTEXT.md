@@ -156,7 +156,9 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **command palette** - the searchable list of named actions (`prefix :`).
 - **one-host re-scan** - `prefix R`: the selected card's machine asked again alone.
 - **view screen** - what the terminal view shows in place of a grid: a host screen, a
-  source screen, a scanning or settled state, or the own session.
+  source screen, a scanning or settled state, the own session, or the landing screen.
+- **landing screen** - the view screen from launch until the first execution: the scan
+  progress and every nav card as a link, sharing the one hard selection.
 - **screen link** - a selectable link on a host or source screen that opens another
   node's screen.
 - **switcher screen** - the rendered split view as a whole. Never an "overlay".

@@ -690,6 +690,9 @@ impl Runtime {
         // The one session the terminal view refuses: the one xmux is running in. Named
         // once here, because the environment that names it cannot change under a run.
         switcher.set_own_session(env.own_session.clone());
+        // Nothing is chosen at launch, so the terminal view lands on the landing screen
+        // rather than on whichever session answers first.
+        switcher.open_landing();
         switcher.set_renumbering(roster.cfg.ui.renumbering, &mut state);
         // The launch roster can add hosts after the first sources answer, so the card
         // numbers stay open until it is in.

@@ -22,6 +22,10 @@ pub enum ViewScreen {
     /// A host that answered through at least one of its sources: how it is reached and
     /// which sources it serves.
     Host,
+    /// The root of the hierarchy, shown from launch until the user first executes a
+    /// target: the scan progress and every card in nav order. The selection highlights on
+    /// it and attaches nothing.
+    Landing,
 }
 
 /// The session confirmed into the terminal view, as the screen choice reads it.

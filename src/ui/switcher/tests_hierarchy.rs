@@ -1,7 +1,7 @@
 //! The host / source / session hierarchy in the nav and the terminal view: the two halves
 //! of a section title, the card step and the level step, the host's and the source's
 //! screens and their links, the soft selection under the pointer, and a host none of
-//! whose sources connected standing as one card.
+//! whose sources connected standing as one card, and the landing screen above them all.
 
 use super::*;
 use crate::model::Node;
@@ -754,4 +754,190 @@ fn the_section_step_from_a_title_part_goes_to_the_neighbouring_section() {
         source("idle"),
         "→ reaches the host cards' section"
     );
+}
+
+/// The fleet as it stands at launch: the landing screen up, nothing executed yet.
+fn landed() -> H {
+    let mut h = fleet();
+    h.sw.open_landing();
+    h.draw();
+    h
+}
+
+/// Where the landing list painted the link for `node`.
+fn landing_link(h: &H, node: Option<Node>) -> Rect {
+    let i =
+        h.sw.landing_links()
+            .iter()
+            .position(|l| Some(&l.node) == node.as_ref())
+            .expect("the landing lists the node");
+    h.link_rect(i)
+}
+
+#[test]
+fn the_landing_lists_every_card_in_nav_order_under_its_number() {
+    let h = landed();
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        Some(ViewScreen::Landing)
+    );
+    let cards: Vec<(usize, Node)> = (0..h.sw.rows.len())
+        .filter(|&i| h.sw.rows[i].selectable())
+        .map(|i| {
+            (
+                h.sw.card_number(i),
+                node_of(&h.sw.rows[i].reference, Part::Card),
+            )
+        })
+        .collect();
+    let links = h.sw.landing_links();
+    assert_eq!(
+        links
+            .iter()
+            .map(|l| (l.number.unwrap(), l.node.clone()))
+            .collect::<Vec<_>>(),
+        cards,
+        "the same cards, order and numbers as the nav"
+    );
+    assert_eq!(
+        links.iter().map(|l| l.label.as_str()).collect::<Vec<_>>(),
+        [
+            "gpu/tmux/train",
+            "web/tmux/api",
+            "web/tmux/deploy",
+            "idle/tmux",
+            "db"
+        ],
+        "each card is written as its path, parted by `/` alone"
+    );
+    let view = h.view();
+    assert!(view.contains(" xmux"), "{view}");
+    assert!(view.contains("4 of 4 hosts scanned"), "{view}");
+    assert!(view.contains("1  gpu/tmux/train"), "{view}");
+    assert!(view.contains("5  db  login needed"), "{view}");
+}
+
+#[test]
+fn the_landing_states_the_scan_progress_with_the_spinner() {
+    let mut h = landed();
+    h.sw.mark_scanning("idle", &mut h.state);
+    h.draw();
+    let spinner = crate::ui::spinner_glyph(h.state.chrome.spinner_frame);
+    assert!(
+        h.view()
+            .contains(&format!("{spinner} 3 of 4 hosts scanned")),
+        "{}",
+        h.view()
+    );
+}
+
+#[test]
+fn the_landing_and_the_nav_share_one_selection_that_attaches_nothing() {
+    let mut h = landed();
+    assert_eq!(h.node(), session("gpu", "train"));
+    assert!(h.reversed(landing_link(&h, session("gpu", "train"))));
+    assert_eq!(h.sw.terminal_view_target().target, "");
+
+    h.key(KeyCode::Down);
+    assert_eq!(h.node(), session("web", "api"));
+    assert!(
+        h.reversed(landing_link(&h, session("web", "api"))),
+        "the landing marks the card the nav moved to"
+    );
+    assert!(!h.reversed(landing_link(&h, session("gpu", "train"))));
+    assert_eq!(
+        h.sw.terminal_view_target().target,
+        "",
+        "the selection highlights and attaches nothing"
+    );
+
+    // A nav hover does not preview while the landing is up either.
+    let deploy = h.card_row(|r| matches!(r, RowRef::Session { sess } if sess.name == "deploy"));
+    let rect = h.card(deploy);
+    h.sw.mouse_hover(&h.plan.clone(), rect.x, rect.y);
+    h.draw();
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        Some(ViewScreen::Landing)
+    );
+    assert_eq!(h.sw.terminal_view_target().target, "");
+}
+
+#[test]
+fn a_landing_link_takes_the_pointer_from_the_navs_focus() {
+    let mut h = landed();
+    let rect = landing_link(&h, session("web", "deploy"));
+    assert!(h.sw.link_hover_at(&h.plan.clone(), rect.x, rect.y));
+    h.draw();
+    assert!(
+        h.underlined(landing_link(&h, session("web", "deploy"))),
+        "the soft selection is underlined and survives the frame's focus sync"
+    );
+    assert_eq!(
+        h.node(),
+        session("gpu", "train"),
+        "hovering selects nothing"
+    );
+}
+
+#[test]
+fn opening_a_landing_link_executes_it_and_the_landing_never_returns() {
+    let mut h = landed();
+    let i =
+        h.sw.landing_links()
+            .iter()
+            .position(|l| l.node == Node::Session(Address::new("web", "deploy")))
+            .unwrap();
+    assert!(h.sw.open_link(i, &h.state));
+    h.draw();
+    assert!(!h.sw.landing_open());
+    assert_eq!(h.node(), session("web", "deploy"));
+    assert_eq!(h.sw.terminal_view_target().target, "deploy");
+
+    h.key(KeyCode::Up);
+    h.sw.request_rescan(&mut h.state);
+    h.draw();
+    assert_ne!(
+        h.sw.current_view_screen(&h.state),
+        Some(ViewScreen::Landing)
+    );
+}
+
+#[test]
+fn a_landing_link_to_a_host_that_needs_a_login_opens_its_login_screen() {
+    let mut h = landed();
+    let i =
+        h.sw.landing_links()
+            .iter()
+            .position(|l| l.node == Node::Host("db".into()))
+            .unwrap();
+    assert!(h.sw.open_link(i, &h.state));
+    h.draw();
+    assert_eq!(h.node(), host("db"));
+    assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Login));
+}
+
+#[test]
+fn a_landed_jump_closes_the_landing_and_a_cancelled_one_does_not() {
+    let mut h = landed();
+    h.key(KeyCode::Char('3'));
+    assert_eq!(h.node(), session("web", "deploy"));
+    h.key(KeyCode::Esc);
+    assert!(h.sw.landing_open(), "a cancelled jump executes nothing");
+
+    h.key(KeyCode::Char('3'));
+    h.key(KeyCode::Enter);
+    assert!(!h.sw.landing_open());
+    assert_eq!(h.sw.terminal_view_target().target, "deploy");
+}
+
+#[test]
+fn a_switch_closes_the_landing_even_onto_the_card_already_selected() {
+    let mut h = landed();
+    assert_eq!(h.node(), session("gpu", "train"));
+    h.sw.select_address(&Address::new("nowhere", "x"));
+    assert!(h.sw.landing_open(), "a switch to no card executes nothing");
+    h.select("gpu", "train");
+    assert!(!h.sw.landing_open());
+    assert_eq!(h.sw.terminal_view_target().target, "train");
 }

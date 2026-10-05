@@ -782,6 +782,8 @@ impl Switcher {
                     InputMode::Jump => {
                         if !val.is_empty() && self.jump_accepts(&val) {
                             self.close_input(state);
+                            // A landed jump executes the card it names.
+                            self.close_landing();
                         } else if !val.is_empty() {
                             if let Some(Modal::Input(input)) = state.modal.as_mut() {
                                 input.refused = Some(val);
