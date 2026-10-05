@@ -542,6 +542,9 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             }
             model.state.logged_in.remove(machine);
             model.state.login_reports.remove(machine);
+            // The key report describes the latest login's follow-up, so a login that does
+            // not register clears what an earlier one reported.
+            model.state.registration_reports.remove(machine);
             model.state.login_attempts += 1;
             let attempt = model.state.login_attempts;
             model.state.login_progress.insert(
@@ -745,6 +748,7 @@ fn finish_logout(model: &mut AppModel, notes: Vec<crate::state::notify::Note>) -
     clear_display_auth(&mut model.state, &machine);
     model.state.invalid_auth.insert(machine.clone());
     model.state.logged_in.remove(&machine);
+    model.state.registration_reports.remove(&machine);
     model
         .state
         .live_sources
@@ -3263,6 +3267,36 @@ mod tests {
             "the other machine's login keeps running"
         );
         assert_eq!(m.running_logins.len(), 1);
+    }
+
+    /// The info view shows the key report of the machine's latest login, so neither a
+    /// later login that registers nothing nor a logout keeps an earlier "registered".
+    #[test]
+    fn a_login_without_registration_and_a_logout_clear_the_key_report() {
+        let mut m = logged_in_box();
+        m.state.registration_reports.insert(
+            "box".into(),
+            crate::ui::ops::RegistrationOutcome::Registered,
+        );
+        update(
+            &mut m,
+            Msg::Commands(vec![crate::model::Command::RunLogin {
+                source: "box:tmux".into(),
+                login: crate::transport::Login::default(),
+                password: Default::default(),
+                after_login: crate::model::AfterLogin::SshConfig,
+            }]),
+        );
+        assert!(m.state.registration_reports.is_empty());
+
+        let mut m = logged_in_box();
+        m.state.registration_reports.insert(
+            "box".into(),
+            crate::ui::ops::RegistrationOutcome::Registered,
+        );
+        start_logout(&mut m);
+        update(&mut m, keys_found(Ok(Vec::new())));
+        assert!(m.state.registration_reports.is_empty());
     }
 
     #[test]
