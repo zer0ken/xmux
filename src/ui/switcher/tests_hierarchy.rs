@@ -732,3 +732,26 @@ fn a_screen_scrolls_to_keep_the_selected_link_in_view() {
     assert!(h.reversed(last), "the selected link is on screen");
     assert_eq!(h.cells(last).trim_end(), "s39");
 }
+
+#[test]
+fn the_section_step_from_a_title_part_goes_to_the_neighbouring_section() {
+    let mut h = fleet();
+    h.select("web", "api");
+    h.ctrl(KeyCode::Up);
+    h.ctrl(KeyCode::Up);
+    assert_eq!(h.node(), host("web"));
+    h.key(KeyCode::Left);
+    assert_eq!(
+        h.node(),
+        session("gpu", "train"),
+        "← reaches the section above"
+    );
+    h.select("web", "api");
+    h.ctrl(KeyCode::Up);
+    h.key(KeyCode::Right);
+    assert_eq!(
+        h.node(),
+        source("idle"),
+        "→ reaches the host cards' section"
+    );
+}

@@ -654,9 +654,9 @@ no function, and no test, so renaming code is never a documentation change.
   (`docs/adr/0007-context-follows-the-users-interest.md`). When the selected card leaves
   the list, by a scan, a re-scan, a poll, a logout, a session ending, mux discovery, or
   the filter, the selection moves to the nearest node up its lineage that still has a
-  target: a session to its source (the source half of its section title, or the
+  target: a session to its source (the `{mux}` part of its section title, or the
   source's host-state card when it has no session left), a source to its host (the
-  host's card while the host is down, else the host half of a row of that host), and a
+  host's card while the host is down, else the `{host}` part of a row of that host), and a
   host with nothing left to the card that now holds its place in card order (the next
   one, else the previous). A host card that resolves into sources hands the selection
   to the first of them by name. A new card takes the selection only when it is what the user asked for (the
@@ -672,9 +672,12 @@ no function, and no test, so renaming code is never a documentation change.
   The source screen names `{host}/{mux}` with the host segment linking to the host
   screen, states how its list updates and when it was last listed, offers the key that
   creates a session there, and links each of its sessions. A section title has a host
-  half and a source half, and only the half the selection names is highlighted. `↑`/`↓`
-  step between numbered cards and never stop on a title; `Ctrl-↑` walks session, source,
-  host, and `Ctrl-↓` returns to the child the walk came from, else the first child. A
+  part and a source part, and only the part the selection names is highlighted. The nav
+  stays a list of numbered cards in sections: `↑`/`↓` step between cards and never stop
+  on a title, `←`/`→` step between sections, and a title part takes no number. The
+  hierarchy is reached through `Ctrl-↑`, which walks session, source, host, and
+  `Ctrl-↓`, which returns to the child the walk came from, else the first child; through
+  the title parts; and through the screen links. A
   host none of whose sources connected is one card, and a logout or an unreachable host
   gathers the selection onto it. Pointing at a nav target previews it in the terminal
   view without moving the selection; a click opens it, selects it, and focuses the

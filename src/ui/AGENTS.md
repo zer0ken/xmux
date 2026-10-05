@@ -84,8 +84,10 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   come from the render plan, so the paint and the click read one geometry. A nav hover
   hides the link marks, since the view then previews another node.
 - The selection is a node (host, source, session), not a row: a row is only where the
-  node stands. A section title's host half and source half are separate targets, and
-  only the selected half inverts. A node with no nav target of its own (a source of a
+  node stands. The nav stays a list of numbered cards in sections: the card step and the
+  section step never stop on a title, and a title part never takes a number. A section
+  title's host part and source part are targets of the hierarchy only (`Ctrl+↑/↓`, the
+  pointer, a click), and only the selected part inverts. A node with no nav target of its own (a source of a
   down host opened from a link) stays the selection while the nav stands on its
   nearest ancestor's target.
 - A host none of whose sources connected is one card (`RowRef::Machine`), placed where
