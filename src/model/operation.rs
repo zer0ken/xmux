@@ -52,6 +52,7 @@ pub enum RegistrationOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginOutcome {
     pub connect: crate::link::unlock::UnlockOutcome,
+    pub auth_method: Option<crate::model::AuthMethod>,
     /// ssh's own sanitized text from the login command, empty when no ssh ran.
     pub output: String,
     /// The ssh config recording, `None` when the pane did not ask for it.

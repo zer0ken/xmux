@@ -17,6 +17,11 @@ use crate::display::grid::Grid;
 
 /// An event a kept attachment's pump emits to the app's `select!` loop.
 pub enum PtyEvent {
+    /// OpenSSH reported the authentication used by this exact display client.
+    AuthObserved {
+        id: u64,
+        method: crate::model::AuthMethod,
+    },
     /// The pump fed `id`'s grid with a chunk of child output - the app redraws
     /// (coalescing a burst into one redraw, like the control-mode `%output` drain).
     Output { id: u64 },
@@ -411,6 +416,7 @@ pub struct Attachment {
     /// The OS name this attachment's own PTY carries, read when the PTY was opened.
     /// `None` where the platform's PTY has no name (a Windows ConPTY has none).
     child_tty: Option<String>,
+    auth_log: Option<crate::transport::auth_log::AuthLog>,
     #[cfg(test)]
     input_log: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
     /// The one variable a headless attachment answers for, standing in for the live
@@ -421,6 +427,30 @@ pub struct Attachment {
 }
 
 impl Attachment {
+    /// Observe the display client's SSH log off the runtime thread.
+    pub fn watch_auth(&mut self, events: tokio::sync::mpsc::UnboundedSender<PtyEvent>) {
+        let Some(auth_log) = self.auth_log.take() else {
+            return;
+        };
+        let id = self.id;
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while std::time::Instant::now() < deadline {
+                let log = auth_log.read();
+                if let Some(method) = crate::model::AuthMethod::from_ssh_stderr(&log) {
+                    let _ = events.send(PtyEvent::AuthObserved { id, method });
+                    break;
+                }
+                if log.contains("Entering interactive session")
+                    || log.contains("mux_client_request_session")
+                {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+    }
+
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -529,6 +559,11 @@ pub fn spawn_attachment(
     #[cfg(not(unix))]
     let child_tty: Option<String> = None;
     let mut cmd = CommandBuilder::new(command.program());
+    let auth_log = (command.observe_auth() && command.auth_trace_allowed())
+        .then(crate::transport::auth_log::AuthLog::new);
+    if let Some(log) = &auth_log {
+        cmd.args(log.args());
+    }
     for arg in command.args() {
         cmd.arg(arg);
     }
@@ -672,6 +707,7 @@ pub fn spawn_attachment(
         _auth: command.auth_guard().map(Box::new),
         id,
         child_tty,
+        auth_log,
         #[cfg(test)]
         input_log: None,
         #[cfg(test)]
@@ -743,6 +779,7 @@ fn fake_attachment_with_child(id: u64, child: DummyChild) -> Attachment {
         _auth: None,
         id,
         child_tty: None,
+        auth_log: None,
         input_log: None,
         env_answer: None,
     }
@@ -790,6 +827,38 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn attach_auth_watch_reports_its_own_method() {
+        let auth_log = crate::transport::auth_log::AuthLog::new();
+        let path = auth_log.path().to_path_buf();
+        std::fs::write(&path, "debug1: Authenticated to box using \"password\".\n").unwrap();
+        let mut attachment = fake_attachment(42);
+        attachment.auth_log = Some(auth_log);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        attachment.watch_auth(tx);
+        let event = (0..100).find_map(|_| {
+            let event = rx.try_recv().ok();
+            if event.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            event
+        });
+        assert!(matches!(
+            event,
+            Some(PtyEvent::AuthObserved {
+                id: 42,
+                method: crate::model::AuthMethod::Password
+            })
+        ));
+        for _ in 0..20 {
+            if !path.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("authentication log was not cleaned up");
+    }
 
     // The async runtime is single-threaded, so a blocking write to a slow child (or
     // a blocking ConPTY resize) on the event loop freezes rendering, output

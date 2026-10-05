@@ -195,12 +195,6 @@ pub struct UiConfig {
     /// (`prefix Tab`/`←`). Default false keeps the tree shown in both focus states.
     #[serde(rename = "auto-hide-nav", default)]
     pub auto_hide_nav: bool,
-    /// Whether the nav hides the cards of hosts no scan has reached (default true).
-    /// Typing a hidden host's name into the filter brings its card back, which is the
-    /// one entry to that host's unreachable screen. Config-only: the value applies at
-    /// startup, like `auto-hide-nav`'s initial state, and there is no live toggle.
-    #[serde(rename = "hide-unreachable", default = "default_hide_unreachable")]
-    pub hide_unreachable: bool,
     /// Whether card numbers follow the current sorted list (default true). When off,
     /// cards keep their numbers until a full scan deals them again.
     #[serde(rename = "renumbering", default = "default_renumbering")]
@@ -290,10 +284,6 @@ fn deserialize_max_fps<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Res
     }
 }
 
-fn default_hide_unreachable() -> bool {
-    true
-}
-
 fn default_notifications() -> bool {
     true
 }
@@ -332,7 +322,6 @@ impl Default for UiConfig {
             theme: default_theme(),
             prefix: default_prefix(),
             auto_hide_nav: false,
-            hide_unreachable: default_hide_unreachable(),
             renumbering: default_renumbering(),
             notifications: default_notifications(),
             braille_animation: default_braille_animation(),
@@ -523,12 +512,6 @@ impl Config {
     /// persisted state, when present, overrides this - see `state::load_auto_hide_nav`.
     pub fn ui_auto_hide_nav(&self) -> bool {
         self.ui.auto_hide_nav
-    }
-
-    /// Whether the nav hides unreachable hosts' cards (default true). Config-only:
-    /// no persisted or live-toggle state overrides it.
-    pub fn ui_hide_unreachable(&self) -> bool {
-        self.ui.hide_unreachable
     }
 
     /// The sources of the ssh hosts whose muxes are WRITTEN: a matching `hosts` entry
@@ -993,6 +976,49 @@ pub fn upsert_managed_stanza(
     out.push('\n');
     out.push_str(strip_managed(config_text, &marker).trim_start_matches('\n'));
     out
+}
+
+/// Removes only the stanza xmux marked for `alias`. A user-written stanza and a
+/// marker without the expected `Host` header are left intact.
+pub fn remove_managed_stanza(config_text: &str, alias: &str) -> Option<String> {
+    let marker = managed_marker(alias);
+    let lines: Vec<_> = config_text.lines().collect();
+    let is_header = |line: &str| {
+        line.split_whitespace().next().is_some_and(|word| {
+            word.eq_ignore_ascii_case("Host") || word.eq_ignore_ascii_case("Match")
+        })
+    };
+    let mut kept = Vec::new();
+    let mut removed = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let valid = lines[i].trim() == marker
+            && lines.get(i + 1).is_some_and(|header| {
+                let mut parts = header.split_whitespace();
+                parts
+                    .next()
+                    .is_some_and(|word| word.eq_ignore_ascii_case("Host"))
+                    && parts.next() == Some(alias)
+                    && parts.next().is_none()
+            });
+        if valid {
+            removed = true;
+            i += 2;
+            while i < lines.len() && !is_header(lines[i]) {
+                i += 1;
+            }
+        } else {
+            kept.push(lines[i]);
+            i += 1;
+        }
+    }
+    removed.then(|| {
+        let mut text = kept.join("\n");
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text
+    })
 }
 
 /// `config_text` without the stanza `marker` opens: the marker line, the `Host` line
@@ -2170,33 +2196,6 @@ bogus = "nope"
     }
 
     #[test]
-    fn ui_hide_unreachable_defaults_true_and_round_trips() {
-        // Missing file → true.
-        let missing = std::env::temp_dir().join("xmux-hideunreachable-absent-xyz.toml");
-        assert!(load(&missing).unwrap().ui_hide_unreachable());
-
-        // [ui] present but key missing → true; prefix still loads.
-        let path = write_temp("[ui]\nprefix = \"C-g\"\n", "hideunreachable-missing.toml");
-        let cfg = load(&path).unwrap();
-        assert!(cfg.ui_hide_unreachable());
-        assert_eq!(cfg.ui_prefix(), "C-g");
-
-        // Explicit false: the unreachable hosts show as before.
-        let path = write_temp(
-            "[ui]\nhide-unreachable = false\n",
-            "hideunreachable-false.toml",
-        );
-        assert!(!load(&path).unwrap().ui_hide_unreachable());
-
-        // Explicit true.
-        let path = write_temp(
-            "[ui]\nhide-unreachable = true\n",
-            "hideunreachable-true.toml",
-        );
-        assert!(load(&path).unwrap().ui_hide_unreachable());
-    }
-
-    #[test]
     fn host_stanza_extracts_matching_blocks() {
         let cfg = "Match originalhost jupiter00 exec \"probe 1.2.3.4\"\n    HostName 1.2.3.4\n\nHost jupiter00\n    HostName 143.248.140.120\n    User hrlee\n\nHost other\n    HostName 9.9.9.9\n";
         let s = host_stanza(cfg, "jupiter00");
@@ -2213,6 +2212,18 @@ bogus = "nope"
         // Empty config / unknown alias → empty.
         assert!(host_stanza("", "jupiter00").is_empty());
         assert!(host_stanza(cfg, "nope").is_empty());
+    }
+
+    #[test]
+    fn removing_a_managed_stanza_preserves_user_entries() {
+        let config = "Host other\n    User bob\n# xmux: prod\nHost prod\n    HostName 192.0.2.8\n\nHost prod\n    User alice\n";
+        assert_eq!(
+            remove_managed_stanza(config, "prod").as_deref(),
+            Some("Host other\n    User bob\nHost prod\n    User alice\n")
+        );
+        assert!(remove_managed_stanza(config, "other").is_none());
+        let orphan = "# xmux: prod\nHost other\n    User bob\n";
+        assert!(remove_managed_stanza(orphan, "prod").is_none());
     }
 
     #[test]

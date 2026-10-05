@@ -100,7 +100,6 @@ The remaining actions all take the prefix and work from either focus:
 | `prefix R` | re-scan the selected card's host alone |
 | `prefix h` | open the table of the hosts to check |
 | `prefix :` | search commands by name; type to filter, use arrows to select, Enter to run, Esc to close |
-| `prefix s` | step the nav scope: sessions, all hosts, needs attention |
 
 While the nav holds focus, bare `i` selects the current source title too. Click the
 title for the same screen. Titles do not take card numbers or interrupt card stepping.
@@ -125,7 +124,7 @@ reported; a `prefix r` pressed meanwhile takes over.
 
 Every card carries a dim number in its left column, on the same row as the session it
 names. With `[ui] renumbering = true` (the default), cards are numbered from 1 in
-the current sorted nav list. Adding or removing a card, filtering, changing nav scope,
+the current sorted nav list. Adding or removing a card, filtering,
 and scanning can change a card's number. With `renumbering = false`, a card keeps
 its number until a full scan; an ended card leaves a vacant number and a new card
 takes the next one. A full scan deals numbers again in list order. The cards stay in
@@ -145,34 +144,21 @@ vacant number or one past the highest, flashes the range (1 to the highest numbe
 the list) while leaving it open; `Esc` cancels it and returns to where you started.
 Digits are prefix-gated, so a bare digit never jumps by accident.
 
-### Nav scope
+### Card groups and focus
 
-`prefix s` steps the nav through three scopes, from either focus:
+The nav lists actual session cards, reachable hosts with no sessions, and hosts
+whose connection or inventory is unresolved, in that order. One blank row in a
+side column or one blank column in a top or bottom band separates adjacent groups.
+The first visible boundary can carry a horizontal rule while a side list scrolls.
 
-| Scope | What the nav lists |
-|---|---|
-| `sessions` | every session, and a card for each host with none to show, except the hidden hosts (the default) |
-| `all hosts` | the same list with nothing hidden: every unreachable host takes a card |
-| `needs attention` | only the hosts in a problem state (`?`, `▲`, `✗`), and no session |
+Leaving nav focus from a session card paints only the session group. Leaving from
+either host group keeps every group visible. Returning focus to the nav shows
+every group. Prefix and modal interactions preserve the focus decision. Card
+numbers and selection identity stay the same.
 
-The scope shows only while you interact with the nav: on the key list's bottom border,
-and in a toast when `prefix s` steps it. The resting nav says nothing about it. The
-filter, the order, and the card numbers work the same in every scope. The scope is
-remembered in `~/.xmux/nav_scope`.
-
-### Hidden hosts
-
-`[ui] hide-unreachable` (default true) keeps an unreachable host off the nav. How many
-hosts it hides shows on the key list's bottom border (`showing sessions · 2 hosts hidden`) and in
-the open filter's line, which counts the hidden hosts the filter matches. A nav left with
-no card at all writes one line in its body, how many hosts are hidden and the key that
-lists them (`2 hosts hidden · C-g h`), or, in the needs-attention scope, that nothing
-needs attention.
-
-The check table opens the login pane for a login-needed or unreachable host, including
-one hidden from the nav. The command palette also lists `log in to <host>` for those
-hosts. Opening a hidden host selects it in the `all hosts` scope without applying a
-filter.
+`prefix h` lists hosts with a problem, grouped by cause and carrying their reasons.
+Enter selects the host and opens its login pane when needed. The command palette
+also lists `log in to <host>` for these hosts.
 
 ## Prefix commands
 
@@ -227,9 +213,7 @@ needed least and counts them as `+N more`; a key is never shown without its name
 jump, help, and quit keys are never given up. The box floats over the terminal view and
 closes when the function the prefix started ends, or when the prefix is canceled (a focus
 switch or any mouse action: a click, a wheel, a drag - a prefix waits for the next input,
-whatever that turns out to be). Its bottom border names the nav scope and, while the
-hiding leaves any host without a card, how many (`showing sessions · 2 hosts hidden`), with the
-xmux version at its right end where both fit.
+whatever that turns out to be). Its bottom border names the xmux version where it fits.
 
 Most keys end their function as they run, so the box closes with the keystroke. Two kinds
 run longer and keep it up for as long as they last: a key that opens an input row holds
@@ -355,7 +339,7 @@ nearest the hint: a login and the public-key registration it ran, a new session,
 and a re-scan, which reports in one
 toast what changed (hosts added or removed, sessions started or ended, hosts that stopped
 or started answering) or that nothing did; `prefix R` reports the same way for its one
-host. Stepping the nav scope names the new scope in a toast. The newest release, when one is recorded, is
+host. The newest release, when one is recorded, is
 announced the same way at launch. A toast is at most 40% of the window wide and names its
 subject on its top border and the history key inside the card when it fits.
 

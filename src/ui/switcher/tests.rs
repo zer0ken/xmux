@@ -1222,7 +1222,7 @@ async fn long_card_names_are_middle_ellipsized() {
 }
 
 #[tokio::test]
-async fn open_filter_reports_matches_hidden_hosts_and_bolds_matching_cells() {
+async fn open_filter_reports_matches_and_bolds_matching_cells() {
     let mut h = Harness::new(Scan {
         groups: vec![
             Group {
@@ -1241,14 +1241,13 @@ async fn open_filter_reports_matches_hidden_hosts_and_bolds_matching_cells() {
             },
         ],
     });
-    h.sw.hide_unreachable = true;
     h.sw.rebuild(&mut h.state);
     h.key(KeyCode::Char('/')).await;
     h.ch('l').await;
     h.ch('p').await;
     let hint = h.hint_bar_text();
     assert!(hint.contains("2 matches"), "match count:\n{hint}");
-    assert!(hint.contains("1 hidden host"), "hidden-host count:\n{hint}");
+    assert!(!hint.contains("hidden"), "{hint}");
     assert!(
         h.nav_mod_of("l")
             .is_some_and(|m| m.contains(Modifier::BOLD)),
@@ -1310,7 +1309,7 @@ async fn filter_input_keeps_typed_text_visible_at_supported_widths() {
 }
 
 #[tokio::test]
-async fn empty_filter_counts_only_visible_cards_and_no_logged_in_host_as_hidden() {
+async fn empty_filter_counts_every_card() {
     let mut h = Harness::new(Scan {
         groups: vec![
             Group {
@@ -1335,12 +1334,11 @@ async fn empty_filter_counts_only_visible_cards_and_no_logged_in_host_as_hidden(
         ],
     });
     h.state.logged_in.insert("kept".into());
-    h.sw.hide_unreachable = true;
     h.sw.rebuild(&mut h.state);
     h.key(KeyCode::Char('/')).await;
     let hint = h.hint_bar_text();
-    assert!(hint.contains("2 matches"), "visible-card count: {hint}");
-    assert!(hint.contains("0 hidden hosts"), "hidden-host count: {hint}");
+    assert!(hint.contains("3 matches"), "card count: {hint}");
+    assert!(!hint.contains("hidden"), "{hint}");
 }
 
 #[tokio::test]
@@ -1490,7 +1488,7 @@ async fn login_pane_draws_its_fields_with_the_password_masked() {
 }
 
 #[tokio::test]
-async fn login_pane_lists_recent_successful_connection_values() {
+async fn login_pane_shows_one_selected_after_login_choice() {
     let mut h = Harness::from_sources(&["pwbox"]);
     h.sw.apply_source_result(
         "pwbox".into(),
@@ -1498,18 +1496,16 @@ async fn login_pane_lists_recent_successful_connection_values() {
         Some("alice@pwbox: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
-    h.state.recent_logins.push(crate::state::RecentLogin {
-        source: "other".into(),
-        login: crate::transport::Login {
-            address: Some("10.0.0.8".into()),
-            port: Some(2222),
-            user: Some("alice".into()),
-        },
-    });
     h.draw();
     let screen = h.text();
-    assert!(screen.contains("recent logins"), "{screen}");
-    assert!(screen.contains("alice@10.0.0.8:2222"), "{screen}");
+    assert!(screen.contains("(*) do nothing"), "{screen}");
+    assert!(
+        screen.contains("( ) save connection to ssh config"),
+        "{screen}"
+    );
+    assert!(screen.contains("( ) register my public key"), "{screen}");
+    assert!(screen.contains("save connection to ssh config"), "{screen}");
+    assert!(screen.contains("register my public key"), "{screen}");
 }
 
 #[tokio::test]
@@ -1539,7 +1535,7 @@ async fn login_pane_marks_required_fields_and_hints_the_optional_one() {
 }
 
 #[tokio::test]
-async fn login_pane_offers_the_remember_choice_only_after_a_value_changes() {
+async fn login_pane_always_offers_the_ssh_config_choice() {
     let mut h = Harness::from_sources(&["pwbox"]);
     h.sw.apply_source_result(
         "pwbox".into(),
@@ -1549,16 +1545,8 @@ async fn login_pane_offers_the_remember_choice_only_after_a_value_changes() {
     );
     h.draw();
     assert!(
-        !h.text().contains("write address, port, username"),
-        "nothing to record yet:\n{}",
-        h.text()
-    );
-    h.state.feed_login("pwbox", b"x");
-    h.draw();
-    assert!(
-        h.text()
-            .contains("write address, port, username to ssh config"),
-        "an edited value is worth recording:\n{}",
+        h.text().contains("save connection to ssh config"),
+        "the choice is present before editing:\n{}",
         h.text()
     );
 }
@@ -1620,6 +1608,7 @@ async fn login_and_key_registration_results_are_one_toast_kept_for_the_host() {
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: LoginOutcome {
+                auth_method: None,
                 connect: UnlockOutcome::Ok,
                 registration: RegistrationOutcome::Registered,
                 output: String::new(),
@@ -1665,6 +1654,7 @@ async fn a_failed_login_and_a_skipped_key_have_timed_toasts() {
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: LoginOutcome {
+                auth_method: None,
                 connect: UnlockOutcome::Failed {
                     kind: FailureKind::WrongPassword,
                     reason: "the password was refused\nalice@pwbox: Permission denied".into(),
@@ -1691,6 +1681,7 @@ async fn a_failed_login_and_a_skipped_key_have_timed_toasts() {
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: LoginOutcome {
+                auth_method: None,
                 connect: UnlockOutcome::Ok,
                 registration: RegistrationOutcome::Skipped("no key to send".into()),
                 output: String::new(),
@@ -1715,6 +1706,7 @@ async fn a_failed_login_and_a_skipped_key_have_timed_toasts() {
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: LoginOutcome {
+                auth_method: None,
                 connect: UnlockOutcome::Failed {
                     kind: FailureKind::Cancelled,
                     reason: "cancelled".into(),
@@ -1750,7 +1742,7 @@ async fn a_running_login_says_so_in_place_of_the_submit_button() {
     });
     h.draw();
     assert!(
-        h.text().contains("[ login ]"),
+        h.text().contains(" Log in "),
         "the pane offers the login before one runs:\n{}",
         h.text()
     );
@@ -1767,7 +1759,7 @@ async fn a_running_login_says_so_in_place_of_the_submit_button() {
         "the values the login is using stay on screen:\n{screen}"
     );
     assert!(
-        !screen.contains("[ login ]"),
+        !screen.contains(" Log in "),
         "there is nothing left to submit:\n{screen}"
     );
 
@@ -1775,7 +1767,7 @@ async fn a_running_login_says_so_in_place_of_the_submit_button() {
     h.state.login_run = Some(crate::link::unlock::RunningLogin::parked("elsewhere"));
     h.draw();
     assert!(
-        h.text().contains("[ login ]"),
+        h.text().contains(" Log in "),
         "another host's login leaves this pane alone:\n{}",
         h.text()
     );
@@ -1806,6 +1798,7 @@ async fn the_verdict_takes_the_login_screen_down() {
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: crate::ui::ops::LoginOutcome {
+                auth_method: None,
                 connect: UnlockOutcome::Failed {
                     kind: crate::link::unlock::FailureKind::WrongPassword,
                     reason: "the password was refused\nalice@pwbox: Permission denied (publickey,password).".into(),
@@ -1866,6 +1859,7 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
             },
             attempt: 0,
             outcome: crate::ui::ops::LoginOutcome {
+                auth_method: None,
                 connect: UnlockOutcome::Ok,
                 registration: crate::ui::ops::RegistrationOutcome::NotRequested,
                 output: String::new(),
@@ -1905,6 +1899,7 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: crate::ui::ops::LoginOutcome {
+                auth_method: None,
                 connect: UnlockOutcome::Failed {
                     kind: crate::link::unlock::FailureKind::WrongPassword,
                     reason: "the password was refused\nalice@pwbox: Permission denied (publickey,password).".into(),
@@ -1942,6 +1937,7 @@ fn refused_login_harness() -> Harness {
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: LoginOutcome {
+                auth_method: None,
                 connect: UnlockOutcome::Failed {
                     kind: FailureKind::WrongPassword,
                     reason: format!("the password was refused\n{raw}"),
@@ -1955,6 +1951,26 @@ fn refused_login_harness() -> Harness {
     );
     h.state.notify.dismiss_all();
     h
+}
+
+#[test]
+fn login_hint_is_visible_on_first_focus_before_any_field_is_edited() {
+    let mut h = refused_login_harness();
+    assert!(h.state.login.is_none());
+    h.state
+        .focus
+        .set_view_focus(crate::state::ViewFocus::Terminal);
+    h.draw_terminal_focused();
+    assert_eq!(h.plan.view_screen, Some(crate::model::ViewScreen::Login));
+    assert_eq!(h.plan.hint_bar_rect.width, h.buf().area.width);
+    let bar = h.plan.hint_bar_rect;
+    let row = (bar.x..bar.right())
+        .map(|x| h.buf()[(x, bar.y)].symbol().to_string())
+        .collect::<String>();
+    assert!(
+        row.contains("Tab next") && row.contains("Esc nav"),
+        "the keyboard guide is visible when the login pane first takes focus: {row:?}"
+    );
 }
 
 #[tokio::test]
@@ -1987,7 +2003,7 @@ async fn a_login_failure_reads_verdict_marked_field_dim_ssh_line_then_details() 
 
     // Folded: ssh's earlier lines and the host facts wait behind the choice, and the
     // keys stay.
-    for folded in ["Warning: Permanently added", "ssh config", "ssh output"] {
+    for folded in ["Warning: Permanently added", "ssh output"] {
         assert!(!out.contains(folded), "{folded:?} is folded:\n{out}");
     }
     assert!(out.contains("re-scan every host"), "{out}");
@@ -2075,11 +2091,7 @@ async fn login_steps_show_each_state_as_the_login_reports_it() {
         "the probe failure the login answers is no failure of its own:\n{}",
         h.view_text()
     );
-    assert!(
-        !h.view_text().contains("ssh config"),
-        "nor are its host facts:\n{}",
-        h.view_text()
-    );
+    assert!(!h.view_text().contains("ssh output"), "{}", h.view_text());
 
     h.sw.apply_op_result(
         OpResult::LoginProgress {
@@ -2105,6 +2117,7 @@ async fn login_steps_show_each_state_as_the_login_reports_it() {
             login,
             attempt: 1,
             outcome: LoginOutcome {
+                auth_method: None,
                 connect: UnlockOutcome::Failed {
                     kind: FailureKind::WrongPassword,
                     reason: "the password was refused\nalice@pwbox: Permission denied".into(),
@@ -2155,6 +2168,7 @@ async fn a_step_note_over_several_lines_renders_one_line_each() {
         true,
     );
     progress.finish(&LoginOutcome {
+        auth_method: None,
         connect: UnlockOutcome::Ok,
         output: String::new(),
         saved: None,
@@ -2175,7 +2189,7 @@ async fn a_step_note_over_several_lines_renders_one_line_each() {
 }
 
 #[tokio::test]
-async fn login_inputs_are_grouped_parted_by_a_rule_and_the_focused_name_inverts() {
+async fn login_inputs_are_grouped_and_the_focused_value_inverts() {
     let mut h = refused_login_harness();
     h.state.login = Some(crate::state::LoginDraft {
         source: "pwbox".into(),
@@ -2192,15 +2206,16 @@ async fn login_inputs_are_grouped_parted_by_a_rule_and_the_focused_name_inverts(
             .unwrap_or_else(|| panic!("{text:?}:\n{out}"))
             .0
     };
-    let connection = at("connection");
-    let after = at("after login");
-    let rule = at("──────────");
+    let connection = at("Connection");
+    let after = at("After login");
     assert!(
         connection < at("address*") && at("password") < after,
         "{out}"
     );
-    assert!(after < at("pubkey") && at("[ login ]") < rule, "{out}");
-    assert!(rule < at("the password was refused"), "{out}");
+    assert!(
+        after < at("register my public key") && at("Log in") < at("the password was refused"),
+        "{out}"
+    );
 
     let reversed = |h: &Harness, text: &str| {
         h.view_cell_of(text)
@@ -2209,25 +2224,30 @@ async fn login_inputs_are_grouped_parted_by_a_rule_and_the_focused_name_inverts(
             .add_modifier
             .contains(Modifier::REVERSED)
     };
-    assert!(
-        reversed(&h, "username*"),
-        "the focused name inverts:\n{out}"
-    );
+    assert!(reversed(&h, "alice"), "the focused value inverts:\n{out}");
+    assert!(!reversed(&h, "username*"), "the label stays plain");
     assert!(!reversed(&h, "address*"), "other names do not");
     assert!(
         !reversed(&h, " username*"),
         "the padding before the name stays plain"
     );
 
+    h.state.login.as_mut().unwrap().focus = crate::state::LoginFocus::AfterSshConfig;
+    h.draw_terminal_focused();
+    assert!(reversed(&h, "( ) save connection"));
+    assert!(h
+        .view_text()
+        .contains(" ( ) save connection to ssh config "));
+
     // A stop without a name inverts its own text.
     h.state.login.as_mut().unwrap().focus = crate::state::LoginFocus::Submit;
     h.draw_terminal_focused();
-    assert!(reversed(&h, "[ login ]"));
+    assert!(reversed(&h, "Log in"));
     assert!(!reversed(&h, "username*"));
 
     // The pane takes keys only while the terminal view is focused, and says so.
     h.draw();
-    assert!(!reversed(&h, "[ login ]"));
+    assert!(!reversed(&h, "Log in"));
 }
 
 #[tokio::test]
@@ -2272,199 +2292,6 @@ async fn a_card_claims_a_mux_only_when_it_is_confirmed() {
     assert!(
         out.contains("fresh/psmux"),
         "a settled reachable host shows the mux its enumeration answered through:\n{out}"
-    );
-}
-
-#[tokio::test]
-async fn hide_unreachable_leaves_no_card_for_the_unreachable_host() {
-    // With `[ui] hide-unreachable` on, the settled unreachable host takes no card;
-    // the reachable hosts keep theirs.
-    let mut h = Harness::new(sample());
-    h.sw.set_hide_unreachable(true, &mut h.state);
-    h.draw();
-    let out = h.nav_text();
-    assert!(
-        !out.contains("db-2"),
-        "the unreachable host takes no card:\n{out}"
-    );
-    assert!(
-        out.contains("jupiter00"),
-        "the reachable hosts keep their cards:\n{out}"
-    );
-}
-
-#[tokio::test]
-async fn the_filter_names_a_hidden_unreachable_host_and_its_card_returns() {
-    // The named card is the one entry to the unreachable screen: the filter naming
-    // the hidden host brings its card back, and Enter lands the selection on it.
-    let mut h = Harness::new(sample());
-    h.sw.set_hide_unreachable(true, &mut h.state);
-    h.draw();
-    h.ch('/').await;
-    h.ch('d').await;
-    h.ch('b').await;
-    assert!(
-        h.nav_cards_text().contains("db-2"),
-        "the filter naming the host brings its card back:\n{}",
-        h.nav_cards_text()
-    );
-    h.key(KeyCode::Enter).await;
-    assert!(
-        matches!(
-            h.sw.current_ref(),
-            Some(RowRef::Host { source, unreachable: true, .. }) if source == "db-2"
-        ),
-        "the selection lands on the named host's card"
-    );
-    let out = h.view_text();
-    assert!(
-        out.contains("unreachable"),
-        "the unreachable screen is reachable:\n{out}"
-    );
-}
-
-#[tokio::test]
-async fn hide_unreachable_off_brings_the_card_back() {
-    // The setter rebuilds the rows whichever way it flips: off undoes the hiding.
-    let mut h = Harness::new(sample());
-    h.sw.set_hide_unreachable(true, &mut h.state);
-    h.draw();
-    assert!(!h.nav_text().contains("db-2"));
-    h.sw.set_hide_unreachable(false, &mut h.state);
-    h.draw();
-    assert!(
-        h.nav_text().contains("db-2"),
-        "setting it back to false brings the card back:\n{}",
-        h.nav_text()
-    );
-}
-
-#[tokio::test]
-async fn a_selected_host_going_unreachable_hides_and_the_selection_lands_on_a_remaining_card() {
-    // A host going unreachable mid-run hides from that result on; the selection
-    // sitting on its card falls to a remaining card instead of vanishing.
-    let mut h = Harness::from_sources(&["local", "db-2"]);
-    h.sw.set_hide_unreachable(true, &mut h.state);
-    h.sw.apply_source_result(
-        "local".into(),
-        vec![sess_mux("local", "editor", "tmux")],
-        None,
-        &mut h.state,
-    );
-    h.sw.move_to(-1, &h.state); // the user parked the selection on db-2's card
-    assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"),
-        "the selection starts on the db-2 card"
-    );
-    h.sw.apply_source_result(
-        "db-2".into(),
-        Vec::new(),
-        Some("connection timed out".into()),
-        &mut h.state,
-    );
-    h.draw();
-    let out = h.nav_text();
-    assert!(!out.contains("db-2"), "hidden the moment it fails:\n{out}");
-    assert!(
-        matches!(
-            h.sw.current_ref(),
-            Some(RowRef::Session { sess }) if sess.source == "local" && sess.name == "editor"
-        ),
-        "the selection lands on a remaining card"
-    );
-}
-
-#[tokio::test]
-async fn a_selected_host_own_failure_leaving_no_cards_does_not_panic_the_fallback() {
-    // A poll failure for the one host still holding cards empties the nav in one
-    // result (hiding on prunes the settled unreachable group whole). The selection
-    // sat on that host's session card, so the removal fallback runs with a previous
-    // index past the now-empty rows: it lands nowhere and nothing panics.
-    let mut h = Harness::from_sources(&["local", "db-2"]);
-    h.sw.set_hide_unreachable(true, &mut h.state);
-    // db-2 settles unreachable first and hides, leaving local the only cards.
-    h.sw.apply_source_result(
-        "db-2".into(),
-        Vec::new(),
-        Some("connection timed out".into()),
-        &mut h.state,
-    );
-    h.sw.apply_source_result(
-        "local".into(),
-        vec![sess_mux("local", "editor", "tmux")],
-        None,
-        &mut h.state,
-    );
-    h.sw.move_to(0, &h.state); // the user parked the selection on local's session card
-    assert!(
-        matches!(
-            h.sw.current_ref(),
-            Some(RowRef::Session { sess }) if sess.source == "local" && sess.name == "editor"
-        ),
-        "the selection starts on local's session card"
-    );
-    // local's poll fails: every card vanishes and the fallback runs on an empty list.
-    h.sw.apply_source_result(
-        "local".into(),
-        Vec::new(),
-        Some("connection timed out".into()),
-        &mut h.state,
-    );
-    h.draw();
-    assert_eq!(
-        h.nav_cards_text().trim(),
-        "2 hosts hidden · C-g h",
-        "the empty nav says only how many hosts are hidden and the key that lists them"
-    );
-    assert!(
-        h.sw.current_ref().is_none(),
-        "with no card left, the fallback lands nowhere"
-    );
-}
-
-#[tokio::test]
-async fn a_hidden_unreachable_host_returns_when_its_scan_answers() {
-    // Hiding is a view state, not a removal: a successful scan revives the card.
-    let mut h = Harness::new(sample());
-    h.sw.set_hide_unreachable(true, &mut h.state);
-    h.draw();
-    assert!(!h.nav_text().contains("db-2"));
-    h.sw.apply_source_result(
-        "db-2".into(),
-        vec![sess_mux("db-2", "reports", "tmux")],
-        None,
-        &mut h.state,
-    );
-    h.draw();
-    assert!(
-        h.nav_text().contains("db-2"),
-        "a successful scan revives the host:\n{}",
-        h.nav_text()
-    );
-}
-
-#[tokio::test]
-async fn hiding_every_host_leaves_a_tidy_empty_nav() {
-    // Every host unreachable and hiding on: the nav holds no card, and the hint bar
-    // keeps its prefix so the session is still operable.
-    let mut h = Harness::from_sources(&["db-2"]);
-    h.sw.set_hide_unreachable(true, &mut h.state);
-    h.sw.apply_source_result(
-        "db-2".into(),
-        Vec::new(),
-        Some("connection timed out".into()),
-        &mut h.state,
-    );
-    h.draw();
-    assert_eq!(
-        h.nav_cards_text().trim(),
-        "1 host hidden · C-g h",
-        "one guidance line and nothing else in the nav"
-    );
-    assert!(
-        h.hint_bar_text().contains("C-g"),
-        "the hint bar still shows the prefix:\n{}",
-        h.hint_bar_text()
     );
 }
 
@@ -3022,7 +2849,12 @@ async fn selected_host_card_stays_reversed_with_terminal_focus() {
         .find(|(i, _)| *i == h.sw.selected)
         .expect("selected host card");
     assert!(
-        (rect.x..rect.right()).all(|x| h.buf()[(x, rect.y)].modifier.contains(Modifier::REVERSED))
+        (rect.x..rect.right()).all(|x| h.buf()[(x, rect.y)].modifier.contains(Modifier::REVERSED)),
+        "rect={rect:?} row={:?} modifiers={:?}",
+        nav_line(&h, rect.y),
+        (rect.x..rect.right())
+            .map(|x| h.buf()[(x, rect.y)].modifier)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -3142,6 +2974,54 @@ async fn n_on_a_session_card_opens_new_for_its_host() {
         h.ops.created.lock().unwrap().is_empty(),
         "nothing is created yet"
     );
+}
+
+#[test]
+fn logout_confirms_the_selected_ssh_session_and_machine() {
+    let mut h = Harness::from_sources(&["box"]);
+    h.state.chrome.source_reach.insert(
+        "box".into(),
+        crate::state::SourceReach {
+            ssh: true,
+            ..Default::default()
+        },
+    );
+    h.sw.apply_source_result(
+        "box".into(),
+        vec![sess("box", "api", 1, true)],
+        None,
+        &mut h.state,
+    );
+    h.state
+        .display_auth_methods
+        .insert("box".into(), crate::model::AuthMethod::Password);
+    h.draw();
+    assert!(h
+        .sw
+        .handle_key(
+            KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE),
+            &mut h.state
+        )
+        .is_empty());
+    let Some(Modal::Input(input)) = &h.state.modal else {
+        panic!("logout confirmation")
+    };
+    assert!(input.label.contains("box/api"));
+    assert!(input.label.contains("username and password"));
+    assert!(input.label.contains("held password cleared"));
+    assert!(h
+        .sw
+        .handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut h.state
+        )
+        .is_empty());
+    h.sw.set_input_text("logout", &mut h.state);
+    let commands = h.sw.handle_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut h.state,
+    );
+    assert!(matches!(commands.as_slice(), [Command::Logout(machine)] if machine == "box"));
 }
 
 #[tokio::test]
@@ -3412,6 +3292,41 @@ async fn a_section_opens_host_freshness_by_key_and_click_without_numbering_it() 
 }
 
 #[tokio::test]
+async fn ssh_session_info_shows_the_observed_login_method() {
+    let mut h = Harness::from_sources(&["box"]);
+    h.state.chrome.source_reach.insert(
+        "box".into(),
+        crate::state::SourceReach {
+            ssh: true,
+            ..Default::default()
+        },
+    );
+    h.sw.apply_source_result(
+        "box".into(),
+        vec![sess("box", "api", 1, false)],
+        None,
+        &mut h.state,
+    );
+    h.state
+        .auth_methods
+        .insert("box".into(), crate::model::AuthMethod::Password);
+    h.state
+        .display_auth_methods
+        .insert("box".into(), crate::model::AuthMethod::PublicKey);
+    h.key(KeyCode::Char('i')).await;
+    let row = h.view_cell_of("SSH login").unwrap().0;
+    assert!(h.view_row(row).contains("public key"));
+    h.state.display_auth_methods.remove("box");
+    h.draw();
+    assert!(h.view_row(row).contains("not observed"));
+    h.state
+        .display_auth_methods
+        .insert("box".into(), crate::model::AuthMethod::Password);
+    h.draw();
+    assert!(h.view_row(row).contains("username and password"));
+}
+
+#[tokio::test]
 async fn both_host_screens_share_one_grammar() {
     // The unreachable screen and the empty screen are ONE screen in two states, so what
     // is pinned here is the SHAPE both hold to, not either one's words: the name as the
@@ -3460,16 +3375,27 @@ async fn both_host_screens_share_one_grammar() {
             "",
             "{label}: a blank row parts the header from the rows"
         );
-        let rules: Vec<usize> = lines.iter().filter_map(|l| l.find('│')).collect();
         assert!(
-            !rules.is_empty() && rules.iter().all(|c| *c == rules[0]),
-            "{label}: every row meets one rule column, got {rules:?}"
+            !view.contains('│'),
+            "{label}: the rows use whitespace: {view}"
         );
         assert!(
             view.contains("re-scan every host"),
             "{label}: both screens offer the rescan key:\n{view}"
         );
     }
+    let empty_lines = empty.view_text();
+    let lines: Vec<_> = empty_lines.lines().collect();
+    let action = lines
+        .iter()
+        .position(|line| line.contains("start a new session"));
+    let fact = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("sessions"));
+    assert!(
+        action < fact,
+        "empty-host actions precede facts: {empty_lines}"
+    );
 }
 
 #[test]
@@ -4003,17 +3929,15 @@ async fn every_host_state_card_sits_below_every_session_card() {
 
 #[tokio::test]
 async fn the_bands_part_with_the_rows_left_over() {
-    // Both bands fit, so the parting is the blank rows between them: the session cards
-    // hold the top edge and the host-state card is pushed to the bottom.
+    // Both bands start at the top with one blank row between them.
     let h = Harness::new(sample());
     let boundary = h.sw.band_boundary().expect("the list has a host card");
     let host = card_rect(&h, boundary);
     let last_session = card_rect(&h, boundary - 1);
-    let region = h.plan.nav_inner;
     assert_eq!(
-        host.y + host.height,
-        region.y + region.height,
-        "the host-state band ends on the region's bottom edge"
+        host.y,
+        last_session.y + last_session.height + 1,
+        "the host-state band follows one blank row"
     );
     assert!(
         host.y > last_session.y + last_session.height,
@@ -4086,25 +4010,21 @@ async fn the_bands_never_touch_on_screen() {
         rule.chars().all(|c| c.to_string() == BAND_RULE),
         "and that row is the rule: {rule:?}"
     );
-    // The list scrolls a row before the cards themselves would need it, so the seam
-    // carries the thumb.
+    // The gap remains empty even when the list scrolls.
     let seam_x = h.plan.regions.view_border.x;
     assert!(
         (h.plan.nav_inner.y..h.plan.nav_inner.y + h.plan.nav_inner.height)
-            .any(|y| h.buf()[(seam_x, y)].symbol() == "┃"),
-        "the seam thumb is drawn"
+            .all(|y| h.buf()[(seam_x, y)].symbol() == " "),
+        "the side gap stays empty"
     );
 }
 
 #[tokio::test]
-async fn scanning_hosts_anchor_to_the_bottom_until_found() {
-    // Before ANY session is found, every host is a scanning card and the nav is the
-    // host band ALONE: it anchors to the BOTTOM, the blank rows above it being where
-    // the sessions that will be found land.
+async fn scanning_hosts_start_at_the_top_until_found() {
+    // Host cards use the first available rows even before sessions are found.
     let h = Harness::from_sources(&["local", "jupiter00"]);
     let txt = h.nav_cards_text();
     let rows: Vec<&str> = txt.lines().collect();
-    let region_bottom = (h.plan.nav_inner.y + h.plan.nav_inner.height) as usize;
     let card_rows: Vec<usize> = rows
         .iter()
         .enumerate()
@@ -4113,14 +4033,10 @@ async fn scanning_hosts_anchor_to_the_bottom_until_found() {
         .collect();
     assert_eq!(
         card_rows,
-        vec![region_bottom - 2, region_bottom - 1],
-        "both scanning hosts sit on the bottom edge:\n{card_rows:?}"
+        vec![0, 1],
+        "both scanning hosts start at the top:\n{card_rows:?}"
     );
-    assert!(
-        card_rows[0] > 0,
-        "blank rows stand above them, where found sessions will land"
-    );
-    // One source resolves: its section and cards MOVE to the top, the other stays below.
+    // One source resolves: its section and cards lead, and the other follows.
     let mut h = Harness::from_sources(&["local", "jupiter00"]);
     h.sw.apply_source_result(
         "local".into(),
@@ -5172,7 +5088,7 @@ async fn the_input_hint_bar_floats_across_the_whole_window() {
         .map(|x| term.backend().buffer()[(x, y)].symbol())
         .collect();
     assert!(
-        row.contains("[filter] filter sessions · 4 matches · 0 hidden hosts:"),
+        row.contains("filter  sessions:") && row.contains("4 matches"),
         "the input bar floats onto the hidden-nav bottom row: {row:?}"
     );
     assert!(
@@ -5581,21 +5497,21 @@ async fn view_border_uses_configured_colors() {
     let buf = term.backend().buffer().clone();
     assert_eq!(
         fg(&buf, top),
-        Color::Blue,
-        "configured active across the rule"
+        Color::Reset,
+        "the side gap carries no colour"
     );
     assert_eq!(
         fg(&buf, bottom),
-        Color::Blue,
-        "configured active across the rule"
+        Color::Reset,
+        "the side gap carries no colour"
     );
 
     // Terminal focused: the whole rule is inactive.
     term.draw(|f| sw.render_test(f, None, true, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(fg(&buf, top), Color::Gray);
-    assert_eq!(fg(&buf, bottom), Color::Gray);
+    assert_eq!(fg(&buf, top), Color::Reset);
+    assert_eq!(fg(&buf, bottom), Color::Reset);
 
     // Hovering the rule overrides with the configured hover colour.
     state.chrome.set_view_border_hovered(true);
@@ -5604,14 +5520,13 @@ async fn view_border_uses_configured_colors() {
     let buf = term.backend().buffer().clone();
     assert_eq!(
         fg(&buf, top),
-        Color::Red,
-        "configured hover colour while hovered"
+        Color::Reset,
+        "hover does not draw a vertical divider"
     );
 }
 
 #[tokio::test]
 async fn view_border_uses_one_color_for_both_focus_states() {
-    let pal = crate::ui::palette::Palette::default();
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
@@ -5624,27 +5539,31 @@ async fn view_border_uses_one_color_for_both_focus_states() {
     term.draw(|f| sw.render_test(f, None, true, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(buf[(x, top)].symbol(), "│", "view border still drawn");
+    assert_eq!(buf[(x, top)].symbol(), " ", "the side gap is blank");
     assert_eq!(
         fg(&buf, bottom),
-        pal.disabled,
-        "terminal focus: whole rule inactive"
+        Color::Reset,
+        "terminal focus: the side gap is blank"
     );
     assert_eq!(
         fg(&buf, top),
-        pal.disabled,
-        "terminal focus: whole rule inactive"
+        Color::Reset,
+        "terminal focus: the side gap is blank"
     );
 
     // Nav focused: every cell uses the active colour.
     term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(fg(&buf, top), pal.primary, "nav focus: whole rule active");
+    assert_eq!(
+        fg(&buf, top),
+        Color::Reset,
+        "nav focus: the side gap is blank"
+    );
     assert_eq!(
         fg(&buf, bottom),
-        pal.primary,
-        "nav focus: whole rule active"
+        Color::Reset,
+        "nav focus: the side gap is blank"
     );
 }
 
@@ -5772,28 +5691,20 @@ async fn view_border_color_is_independent_of_nav_position() {
     let buf = term.backend().buffer().clone();
     assert_eq!(
         fg(&buf, x, bottom),
-        pal.primary,
-        "right nav focus: whole rule active"
+        Color::Reset,
+        "right side gap stays blank"
     );
-    assert_eq!(
-        fg(&buf, x, top),
-        pal.primary,
-        "right nav focus: whole rule active"
-    );
+    assert_eq!(fg(&buf, x, top), Color::Reset, "right side gap stays blank");
 
     // Terminal focused: both ends use the inactive colour.
     term.draw(|f| sw.render_test(f, None, true, right, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(
-        fg(&buf, x, top),
-        pal.disabled,
-        "right terminal focus: whole rule inactive"
-    );
+    assert_eq!(fg(&buf, x, top), Color::Reset, "right side gap stays blank");
     assert_eq!(
         fg(&buf, x, bottom),
-        pal.disabled,
-        "right terminal focus: whole rule inactive"
+        Color::Reset,
+        "right side gap stays blank"
     );
 
     // Band with the nav pinned bottom: the 1-row border at y=59 across 40 columns.
@@ -5851,15 +5762,11 @@ async fn view_border_highlights_on_hover() {
     let buf = term.backend().buffer().clone();
     for y in [2u16, 27u16] {
         let cell = &buf[(x, y)];
-        assert_eq!(
-            cell.symbol(),
-            "┃",
-            "hover: heavy (thick) rule glyph at row {y}"
-        );
+        assert_eq!(cell.symbol(), " ", "hover keeps the gap blank at row {y}");
         assert_eq!(
             cell.fg,
-            crate::ui::palette::Palette::default().accent,
-            "hover: the border-hover cue reads in the accent role at row {y}"
+            Color::Reset,
+            "hover keeps the gap uncoloured at row {y}"
         );
         assert!(
             !cell.modifier.contains(Modifier::REVERSED),
@@ -5883,8 +5790,8 @@ async fn view_border_glyph_reflects_auto_hide_mode() {
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
-        "│",
-        "mode off → single line"
+        " ",
+        "mode off keeps the gap blank"
     );
 
     state.chrome.set_auto_hide(true);
@@ -5892,8 +5799,8 @@ async fn view_border_glyph_reflects_auto_hide_mode() {
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
-        "║",
-        "mode on → double line"
+        " ",
+        "mode on keeps the gap blank"
     );
 }
 
@@ -6181,7 +6088,7 @@ async fn input_renders_in_the_hint_bar() {
     let last = h.buf().area.height - 1;
     let bottom: String = (0..w).map(|x| h.buf()[(x, last)].symbol()).collect();
     assert!(
-        bottom.contains("[filter] filter sessions · 4 matches · 0 hidden hosts:"),
+        bottom.contains("filter  sessions:") && bottom.contains("4 matches"),
         "the bar shows the feature head and guide: {bottom:?}"
     );
     let whole: String = (0..h.buf().area.height)
@@ -6308,8 +6215,8 @@ fn render_nav_width_zero_gives_terminal_full_width() {
     let buf = term.backend().buffer().clone();
     assert_eq!(
         buf[(20, 0)].symbol(),
-        "│",
-        "view border present at x=nav_width when shown"
+        " ",
+        "the side gap is empty when the nav is shown"
     );
 }
 
@@ -6610,20 +6517,15 @@ fn the_portrait_band_parts_sessions_left_and_hosts_right() {
         host.x > sess.x,
         "the host card is in a column of its own, right of the sessions"
     );
-    // The gap parting pushes the host against the band's right edge.
+    // The host follows the session columns with one blank column between them.
     let band_w = term.backend().buffer().area.width;
-    assert_eq!(
-        host.x + host.width,
-        band_w,
-        "the host band sits flush against the right edge (gap parting)"
-    );
+    assert!(host.right() < band_w, "unused room remains on the right");
     assert!(host.x > sess.x + sess.width, "blank columns part the bands");
 }
 
 #[test]
-fn portrait_scanning_hosts_anchor_to_the_right_until_found() {
-    // Before ANY session is found, the portrait band is the host band ALONE: it anchors
-    // to the RIGHT edge, the blank columns left of it being where found sessions land.
+fn portrait_scanning_hosts_start_at_the_left_until_found() {
+    // Host cards begin at the left edge before any session is found.
     let scan = Scan {
         groups: vec![
             Group {
@@ -6647,15 +6549,7 @@ fn portrait_scanning_hosts_anchor_to_the_right_until_found() {
     let cells = cells_of(&plan);
     let band_w = term.backend().buffer().area.width;
     let x0 = cells[&0].x;
-    assert!(
-        x0 > 0,
-        "the host band leaves blank columns on the left:\n{cells:?}"
-    );
-    assert_eq!(
-        cells[&0].x + cells[&0].width,
-        band_w,
-        "and sits flush against the right edge"
-    );
+    assert!(x0 == 0, "the host band begins at the left:\n{cells:?}");
     for i in 1..3 {
         assert_eq!(cells[&i].x, x0, "every scanning host shares that column");
     }
@@ -6873,23 +6767,9 @@ fn the_side_lists_overflow_thickens_the_seam_and_spares_every_card() {
     let seam: String = (0..buf.area.height)
         .map(|y| buf[(NAV_WIDTH, y)].symbol())
         .collect();
-    assert!(seam.contains('┃'), "the seam thickens: {seam:?}");
-    let thumb = plan.seam_thumb;
-    let thick_rows: Vec<u16> = (0..buf.area.height)
-        .filter(|&y| buf[(NAV_WIDTH, y)].symbol() == "┃")
-        .collect();
-    assert_eq!(
-        thick_rows,
-        (thumb.y..thumb.bottom()).collect::<Vec<_>>(),
-        "the thick segment covers exactly the thumb's rows: {seam:?}"
-    );
     assert!(
-        thick_rows.len() < plan.nav_inner.height as usize,
-        "the thumb is a proportion of the card rows, not all of them: {seam:?}"
-    );
-    assert!(
-        seam.contains('│'),
-        "only where the cards on screen are: {seam:?}"
+        seam.chars().all(|c| c == ' '),
+        "the gap stays empty: {seam:?}"
     );
     let selected = sw.selected;
     let sel_rect = plan
@@ -7057,6 +6937,7 @@ async fn a_host_that_answered_headlines_with_its_mux() {
 
 fn reach(mux: &str, machine: &str, socket: &str, probe: &str) -> crate::ui::chrome::SourceReach {
     crate::ui::chrome::SourceReach {
+        ssh: false,
         probe: probe.into(),
         machine: machine.into(),
         mux: mux.into(),
@@ -7311,37 +7192,6 @@ async fn moving_into_the_terminal_view_from_a_session_card_hides_the_host_band()
 }
 
 #[tokio::test]
-async fn all_hosts_scope_paints_host_band_with_terminal_focus() {
-    let mut h = Harness::new(scan_with_a_host_band());
-    h.sw.set_hide_unreachable(true, &mut h.state);
-    h.sw.sync_view_focus(true);
-    h.draw_terminal_focused();
-    assert!(!h.nav_cards_text().contains("db-2"));
-
-    h.sw.set_scope(crate::model::NavScope::AllHosts, &mut h.state);
-    h.draw_terminal_focused();
-    let nav = h.nav_cards_text();
-    assert!(nav.contains("db-2") && nav.contains("db-3"), "{nav}");
-    let boundary = h.sw.band_boundary().expect("host band exists");
-    assert!(h.plan.nav_cells.iter().any(|(i, _)| *i >= boundary));
-
-    h.sw.set_scope(crate::model::NavScope::Sessions, &mut h.state);
-    h.draw_terminal_focused();
-    assert!(!h.nav_cards_text().contains("db-2"));
-}
-
-#[tokio::test]
-async fn needs_attention_scope_paints_host_cards_with_terminal_focus() {
-    let mut h = Harness::new(problem_scan());
-    h.sw.sync_view_focus(true);
-    h.sw.set_scope(crate::model::NavScope::NeedsAttention, &mut h.state);
-    h.draw_terminal_focused();
-    let nav = h.nav_cards_text();
-    assert!(nav.contains("dead-1") && nav.contains("list-box"), "{nav}");
-    assert!(!nav.contains("work"), "{nav}");
-}
-
-#[tokio::test]
 async fn moving_into_the_terminal_view_from_a_host_card_keeps_the_host_band() {
     let mut h = Harness::new(scan_with_a_host_band());
     h.key(KeyCode::Right).await; // local → jupiter00
@@ -7371,23 +7221,20 @@ async fn the_decision_holds_while_the_terminal_view_keeps_the_focus() {
 }
 
 #[tokio::test]
-async fn a_live_prefix_paints_the_hidden_host_band_until_it_ends() {
-    // The hint bar offers a jump to any card by number, so the cards it can reach are on
-    // screen while the prefix lasts; the band stays hidden underneath and returns to
-    // hidden once the prefix ends.
+async fn a_live_prefix_keeps_the_host_band_hidden_after_leaving_nav_from_a_session() {
     let mut h = Harness::new(scan_with_a_host_band());
     h.sw.sync_view_focus(true);
     h.draw();
     assert!(!h.nav_cards_text().contains("db-2"));
-    h.sw.sync_prefix(true);
+    h.state.chrome.armed = true;
     h.draw();
     let nav = h.nav_cards_text();
     assert!(
-        nav.contains("db-2") && nav.contains("db-3"),
-        "the prefix paints the host band:
+        !nav.contains("db-2") && !nav.contains("db-3"),
+        "the prefix keeps the host band hidden:
 {nav}"
     );
-    h.sw.sync_prefix(false);
+    h.state.chrome.armed = false;
     h.draw();
     assert!(
         !h.nav_cards_text().contains("db-2"),
@@ -7396,7 +7243,7 @@ async fn a_live_prefix_paints_the_hidden_host_band_until_it_ends() {
 }
 
 #[tokio::test]
-async fn a_hidden_band_shows_again_once_the_selection_lands_in_it() {
+async fn a_hidden_band_stays_hidden_until_nav_regains_focus() {
     let mut h = Harness::new(scan_with_a_host_band());
     h.sw.sync_view_focus(true);
     h.draw();
@@ -7405,23 +7252,7 @@ async fn a_hidden_band_shows_again_once_the_selection_lands_in_it() {
     h.key(KeyCode::Right).await; // the selection reaches the band
     assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { .. })));
     let nav = h.nav_cards_text();
-    assert!(
-        nav.contains("db-2"),
-        "a selected card is never hidden:\n{nav}"
-    );
-}
-
-#[test]
-fn an_empty_row_list_shows_the_host_band_again() {
-    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
-    let mut sw = Switcher::new(&mut state);
-    assert!(sw.rows.is_empty(), "no group yields no row");
-    sw.host_band_hidden = true;
-    sw.set_selected(0, &state);
-    assert!(
-        !sw.host_band_hidden,
-        "with no session row selected the host band shows again"
-    );
+    assert!(!nav.contains("db-2"), "the focus decision holds:\n{nav}");
 }
 
 /// One host serving `names`, every one a session.
@@ -7470,24 +7301,6 @@ async fn default_numbers_follow_the_sorted_current_list_and_jump() {
     h.state.filter.clear();
     h.sw.rebuild(&mut h.state);
     assert_eq!(number_of(&h.sw, "c"), Some(3));
-}
-
-#[test]
-fn default_numbers_follow_scope_changes() {
-    use crate::model::NavScope;
-    let mut h = Harness::new(sample());
-    for scope in [
-        NavScope::AllHosts,
-        NavScope::NeedsAttention,
-        NavScope::Sessions,
-    ] {
-        h.sw.set_scope(scope, &mut h.state);
-        let numbers: Vec<usize> = (0..h.sw.rows.len())
-            .filter(|&i| h.sw.rows[i].selectable())
-            .map(|i| h.sw.card_number(i))
-            .collect();
-        assert_eq!(numbers, (1..=numbers.len()).collect::<Vec<_>>());
-    }
 }
 
 #[tokio::test]
@@ -7604,73 +7417,6 @@ async fn numbers_are_dealt_in_list_order_while_the_launch_scan_runs() {
     assert_eq!(number_of(&h.sw, "w"), Some(3));
 }
 
-#[tokio::test]
-async fn scope_change_during_a_scan_keeps_existing_card_numbers() {
-    use crate::model::NavScope;
-    let mut h = Harness::from_sources(&["alpha", "beta", "gamma"]);
-    h.sw.set_renumbering(false, &mut h.state);
-    h.sw.set_hide_unreachable(true, &mut h.state);
-    h.sw.apply_source_result(
-        "alpha".into(),
-        host_with("alpha", &["work"]),
-        None,
-        &mut h.state,
-    );
-    h.sw.apply_source_result(
-        "beta".into(),
-        Vec::new(),
-        Some("connection refused".into()),
-        &mut h.state,
-    );
-    h.sw.set_scope(NavScope::AllHosts, &mut h.state);
-    let gamma = number_of(&h.sw, "gamma");
-    h.sw.set_scope(NavScope::Sessions, &mut h.state);
-    assert_eq!(number_of(&h.sw, "gamma"), gamma);
-    h.sw.set_scope(NavScope::AllHosts, &mut h.state);
-    assert_eq!(number_of(&h.sw, "gamma"), gamma);
-}
-
-#[tokio::test]
-async fn each_scope_lists_what_it_names_and_numbers_follow_their_cards() {
-    use crate::model::NavScope;
-    let mut h = Harness::new(sample());
-    h.sw.set_renumbering(false, &mut h.state);
-    h.sw.set_hide_unreachable(true, &mut h.state);
-    h.draw();
-    assert!(!h.nav_cards_text().contains("db-2"), "sessions hides db-2");
-    assert_eq!(h.sw.hidden_sources(&h.state), ["db-2"]);
-    let editor = number_of(&h.sw, "editor");
-
-    h.sw.set_scope(NavScope::AllHosts, &mut h.state);
-    h.draw();
-    let nav = h.nav_cards_text();
-    assert!(nav.contains("db-2") && nav.contains("editor"), "{nav}");
-    assert!(h.sw.hidden_sources(&h.state).is_empty());
-    let db2 = number_of(&h.sw, "db-2");
-    assert!(db2.is_some());
-
-    h.sw.set_scope(NavScope::NeedsAttention, &mut h.state);
-    h.draw();
-    let nav = h.nav_cards_text();
-    assert!(nav.contains("db-2"), "{nav}");
-    assert!(
-        !nav.contains("editor") && !nav.contains("inference"),
-        "needs attention lists no session:\n{nav}"
-    );
-    assert_eq!(number_of(&h.sw, "db-2"), db2, "the card keeps its number");
-
-    h.sw.set_scope(NavScope::Sessions, &mut h.state);
-    assert_eq!(number_of(&h.sw, "editor"), editor);
-}
-
-#[tokio::test]
-async fn an_empty_needs_attention_scope_says_so_and_names_the_scope_key() {
-    let mut h = Harness::new(one_host_scan("h", host_with("h", &["a"])));
-    h.sw.set_scope(crate::model::NavScope::NeedsAttention, &mut h.state);
-    h.draw();
-    assert_eq!(h.nav_cards_text().trim(), "nothing needs attention · C-g s");
-}
-
 /// A host with a session, a blocked host, two unreachable ones, and a host whose listing
 /// failed.
 fn problem_scan() -> Scan {
@@ -7698,39 +7444,37 @@ fn problem_scan() -> Scan {
 }
 
 #[tokio::test]
-async fn the_check_table_groups_problem_hosts_by_cause_and_marks_the_hidden() {
+async fn the_check_table_groups_problem_hosts_by_cause() {
     use crate::model::FailureKind;
     let mut h = Harness::new(problem_scan());
-    h.sw.set_hide_unreachable(true, &mut h.state);
     let entries = h.sw.check_entries(&h.state);
-    let rows: Vec<(&str, FailureKind, bool)> = entries
+    let rows: Vec<(&str, FailureKind)> = entries
         .iter()
-        .map(|e| (e.source.as_str(), e.kind, e.hidden))
+        .map(|e| (e.source.as_str(), e.kind))
         .collect();
     assert_eq!(
         rows,
         [
-            ("login-box", FailureKind::Blocked, false),
-            ("dead-1", FailureKind::Unreachable, true),
-            ("dead-2", FailureKind::Unreachable, true),
-            ("list-box", FailureKind::ListFailed, false),
+            ("login-box", FailureKind::Blocked),
+            ("dead-1", FailureKind::Unreachable),
+            ("dead-2", FailureKind::Unreachable),
+            ("list-box", FailureKind::ListFailed),
         ]
     );
     assert_eq!(entries[1].reason, "connection refused");
     h.sw.toggle_check(&mut h.state);
     h.draw();
     let text = h.text();
-    assert!(text.contains("hosts to check · 2 hidden"), "{text}");
+    assert!(text.contains("hosts to check"), "{text}");
     assert!(text.contains("? login needed · 1"), "{text}");
     assert!(text.contains("▲ unreachable · 2"), "{text}");
     assert!(text.contains("✗ list failed · 1"), "{text}");
-    assert!(text.contains("dead-1  hidden"), "{text}");
+    assert!(!text.contains("hidden"), "{text}");
 }
 
 #[tokio::test]
 async fn enter_on_a_blocked_host_selects_it_and_hands_the_focus_to_its_login_pane() {
     let mut h = Harness::new(problem_scan());
-    h.sw.set_hide_unreachable(true, &mut h.state);
     h.sw.toggle_check(&mut h.state);
     let mut armed = false;
     h.sw.feed_reader_key(b"\r", 0x07, &mut armed, 20, &mut h.state);
@@ -7744,9 +7488,8 @@ async fn enter_on_a_blocked_host_selects_it_and_hands_the_focus_to_its_login_pan
 }
 
 #[tokio::test]
-async fn enter_on_a_hidden_host_opens_login_without_a_filter() {
+async fn enter_on_a_disconnected_host_opens_login() {
     let mut h = Harness::new(problem_scan());
-    h.sw.set_hide_unreachable(true, &mut h.state);
     h.sw.toggle_check(&mut h.state);
     let mut armed = false;
     h.sw.feed_reader_key(b"j", 0x07, &mut armed, 20, &mut h.state);
@@ -7757,7 +7500,6 @@ async fn enter_on_a_hidden_host_opens_login_without_a_filter() {
         "the login pane takes focus"
     );
     assert!(h.state.filter.is_empty());
-    assert_eq!(h.sw.scope(), crate::model::NavScope::AllHosts);
     assert_eq!(h.sw.current_source().as_deref(), Some("dead-2"));
     assert!(h.sw.current_host_unreachable());
     assert_eq!(
@@ -7767,9 +7509,8 @@ async fn enter_on_a_hidden_host_opens_login_without_a_filter() {
 }
 
 #[tokio::test]
-async fn command_palette_searches_commands_and_hidden_host_login() {
+async fn command_palette_searches_commands_and_host_login() {
     let mut h = Harness::new(problem_scan());
-    h.sw.set_hide_unreachable(true, &mut h.state);
     h.sw.toggle_palette(&mut h.state);
     h.draw();
     let text = h.text();
@@ -7852,20 +7593,12 @@ async fn prefix_capital_r_asks_for_the_selected_host_alone_unless_it_is_scanning
 }
 
 #[tokio::test]
-async fn the_key_list_border_states_the_scope_and_the_hidden_count() {
+async fn the_key_list_carries_no_scope_or_hidden_host_status() {
     let mut h = Harness::new(sample());
-    h.sw.set_hide_unreachable(true, &mut h.state);
     h.state.chrome.armed = true;
     h.draw();
-    assert_eq!(h.plan.key_list_status, "showing sessions · 1 host hidden");
-    assert!(
-        h.text().contains("showing sessions · 1 host hidden"),
-        "{}",
-        h.text()
-    );
-    h.sw.set_scope(crate::model::NavScope::AllHosts, &mut h.state);
-    h.draw();
-    assert_eq!(h.plan.key_list_status, "showing all hosts");
+    assert!(!h.text().contains("hidden"), "{}", h.text());
+    assert!(!h.text().contains("scope"), "{}", h.text());
 }
 
 #[tokio::test]

@@ -301,8 +301,8 @@ pub(crate) fn place(room: Rect, position: NavPosition, nav_hidden: bool, size: (
     }
 }
 
-/// What the key list's borders say: the prefix it is titled with, the nav's scope and
-/// hidden host count on the bottom border's left, and the xmux version on its right.
+/// What the key list's borders say: the prefix it is titled with, the hidden
+/// host count on the bottom border's left, and the xmux version on its right.
 pub(crate) struct Border<'a> {
     pub(crate) prefix: &'a str,
     pub(crate) status: &'a str,

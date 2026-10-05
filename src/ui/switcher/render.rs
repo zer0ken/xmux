@@ -10,8 +10,9 @@ use crate::ui::palette;
 /// is hidden, so the mux keeps every row).
 ///
 /// Floating, it spans the full bottom row of a side layout. A selection hint in a band
-/// shares the seam with the prefix; an input or flash opens below a top band's seam
-/// or above a bottom band's seam. A multi-row bar grows away from the
+/// shares the seam with the prefix; an input uses the seam and an adjacent guide row
+/// when needed. A flash opens below a top band's seam or above a bottom band's seam.
+/// A multi-row bar grows away from the
 /// indicator. With the nav hidden there is no
 /// indicator, so it borrows the window's bottom rows. Only the paint moves; the layout is
 /// untouched, so nothing reflows.
@@ -152,28 +153,6 @@ fn highlighted(text: String, filter: &str, style: Style) -> Vec<Span<'static>> {
         .collect()
 }
 
-/// The thick segment of a side nav's seam: where the cards on screen sit in the whole
-/// list, as a scrollbar thumb would, drawn on the seam rather than in a column of its own,
-/// so the cards keep the nav's full width. Counted in cards over the placement the cards
-/// were painted with. Empty when everything fits.
-fn seam_thumb(track: Rect, total: usize, offset: usize, visible: usize) -> Rect {
-    if track.height == 0 || total == 0 || visible >= total {
-        return Rect::default();
-    }
-    let t = track.height as usize;
-    let len = (t * visible / total).clamp(1, t);
-    let y = if offset + visible >= total {
-        t - len
-    } else {
-        (t * offset / total).min(t - len)
-    };
-    Rect {
-        y: track.y + y as u16,
-        height: len as u16,
-        ..track
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NavRule {
     Horizontal(Rect),
@@ -215,6 +194,7 @@ pub struct RenderPlan {
     pub nav_col_offset: usize,
     pub popup_rect: Rect,
     pub(super) hint_bar_rect: Rect,
+    login_guide: bool,
     /// Where the prefix indicator keeps the prefix while the bar floats away from it;
     /// empty while the bar rests or the nav is hidden.
     prefix_label: Rect,
@@ -224,9 +204,6 @@ pub struct RenderPlan {
     /// The prefix key list and where it opens, while a prefix is live and the room beside
     /// the indicator holds it.
     pub(crate) key_list: Option<(Rect, crate::ui::keylist::KeyList)>,
-    /// What the key list's bottom border says about the nav: its scope, and how many
-    /// hosts the hiding leaves without a card.
-    pub(crate) key_list_status: String,
     /// The one line the nav body says when it lists no card at all, and where.
     pub(crate) nav_guidance: Option<(Rect, String)>,
     /// The cells a click on a collapsed nav expands it from: the whole collapsed column
@@ -237,7 +214,6 @@ pub struct RenderPlan {
     /// paired with the title's row index.
     title_repeats: Vec<(usize, Rect)>,
     nav_rule: Option<NavRule>,
-    pub(super) seam_thumb: Rect,
     floating_hint_bar: bool,
     pub nav_hidden: bool,
     pub nav_collapsed: bool,
@@ -258,16 +234,15 @@ impl Default for RenderPlan {
             nav_col_offset: 0,
             popup_rect: Rect::default(),
             hint_bar_rect: Rect::default(),
+            login_guide: false,
             prefix_label: Rect::default(),
             toasts: Vec::new(),
             key_list: None,
-            key_list_status: String::new(),
             nav_guidance: None,
             expand_area: Rect::default(),
             overflow_marks: Vec::new(),
             title_repeats: Vec::new(),
             nav_rule: None,
-            seam_thumb: Rect::default(),
             floating_hint_bar: false,
             nav_hidden: true,
             nav_collapsed: false,
@@ -305,26 +280,35 @@ impl Switcher {
         state: &crate::state::State,
         previous: &RenderPlan,
     ) -> RenderPlan {
-        let floating = hint_bar_floats(state);
+        let login_guide = self.current_view_screen(state) == Some(crate::model::ViewScreen::Login)
+            && state.focus.is_terminal_focused()
+            && state.chrome.flash.is_empty()
+            && !state.chrome.armed;
+        let floating = hint_bar_floats(state) || login_guide;
         let band = nav.position.layout() == ViewLayout::Band;
         // The resting indicator is one row, so the layout is cut for one row whatever the
         // bar says: a floating bar only paints further, it never takes a row from the nav.
         let regions = compute_regions(area, nav, 1);
+        let inputting = state.is_inputting() && state.chrome.flash.is_empty();
         let seam_hint = band
             && !regions.hint_bar.is_empty()
             && floating
             && state.chrome.flash.is_empty()
-            && !state.is_inputting()
-            && !state.chrome.armed;
+            && (!state.chrome.armed || inputting);
         let prefix_w = collapsed_nav_width(&state.chrome.ui_prefix);
-        let bar_w = if seam_hint {
+        let bar_w = if seam_hint && !inputting && !login_guide {
             area.width.saturating_sub(prefix_w)
         } else if floating {
             area.width
         } else {
             nav.width
         };
-        let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
+        let hint_bar_h = if login_guide {
+            crate::state::Chrome::login_hint_lines(bar_w).len()
+        } else {
+            state.chrome.hint_bar_lines(bar_w, state).len()
+        }
+        .max(1) as u16;
         // At rest the prefix indicator is a label on the column's bottom row, and the right
         // end of the seam row in a band. While the bar floats, the indicator keeps the
         // prefix alone.
@@ -345,15 +329,28 @@ impl Switcher {
         } else {
             regions.hint_bar
         };
-        let prefix_label = if floating && band && !regions.hint_bar.is_empty() {
+        let prefix_label =
+            if floating && band && !inputting && !login_guide && !regions.hint_bar.is_empty() {
+                Rect {
+                    width: prefix_w.min(resting_bar.width),
+                    ..resting_bar
+                }
+            } else {
+                Rect::default()
+            };
+        let hint_bar_rect = if (inputting || login_guide) && band && !resting_bar.is_empty() {
+            let h = hint_bar_h.min(area.height);
             Rect {
-                width: prefix_w.min(resting_bar.width),
-                ..resting_bar
+                x: area.x,
+                y: if nav.position == NavPosition::Top {
+                    resting_bar.y
+                } else {
+                    resting_bar.bottom().saturating_sub(h)
+                },
+                width: area.width,
+                height: h,
             }
-        } else {
-            Rect::default()
-        };
-        let hint_bar_rect = if seam_hint && !resting_bar.is_empty() {
+        } else if seam_hint && !resting_bar.is_empty() {
             Rect {
                 x: area.x,
                 y: resting_bar.y,
@@ -418,6 +415,7 @@ impl Switcher {
             nav_col_offset: previous.nav_col_offset,
             popup_rect: self.modal_popup_rect(area, state),
             hint_bar_rect,
+            login_guide,
             prefix_label,
             // A toast never covers the prefix key list (the list is what a live prefix
             // reads its next key from) or a floating hint bar.
@@ -432,7 +430,6 @@ impl Switcher {
                     None => Rect::default(),
                 },
             ),
-            key_list_status: self.key_list_status(state),
             key_list,
             expand_area,
             floating_hint_bar: floating,
@@ -460,21 +457,8 @@ impl Switcher {
         plan
     }
 
-    /// The key list's word about the nav: the scope, and the hidden host count when the
-    /// hiding leaves any host without a card.
-    fn key_list_status(&self, state: &crate::state::State) -> String {
-        let hidden = self.hidden_sources(state).len();
-        let scope = self.scope().word();
-        if hidden == 0 {
-            format!("showing {scope}")
-        } else {
-            let hosts = if hidden == 1 { "host" } else { "hosts" };
-            format!("showing {scope} · {hidden} {hosts} hidden")
-        }
-    }
-
     /// The one line an empty nav body says: how many hosts are hidden and the key that
-    /// lists them, or that the scope has nothing to show and the key that changes it.
+    /// lists them, or a re-scan when there are no hosts.
     fn nav_guidance(&self, state: &crate::state::State) -> String {
         use crate::model::keys::{entry_for, KeyCommand};
         let key = |command| {
@@ -482,17 +466,7 @@ impl Switcher {
                 .map(|e| e.full_label(&state.chrome.ui_prefix, state.chrome.nav_position))
                 .unwrap_or_default()
         };
-        let hidden = self.hidden_sources(state).len();
-        if hidden > 0 {
-            let hosts = if hidden == 1 { "host" } else { "hosts" };
-            return format!("{hidden} {hosts} hidden · {}", key(KeyCommand::Check));
-        }
-        match self.scope() {
-            crate::model::NavScope::NeedsAttention => {
-                format!("nothing needs attention · {}", key(KeyCommand::Scope))
-            }
-            _ => format!("no hosts · {}", key(KeyCommand::Rescan)),
-        }
+        format!("no hosts · {}", key(KeyCommand::Rescan))
     }
 
     fn layout_nav(&self, plan: &mut RenderPlan, state: &crate::state::State, track: Rect) {
@@ -508,7 +482,7 @@ impl Switcher {
         let heights = vec![1u16; self.painted_rows()];
         let flow = side::place(
             &heights,
-            self.painted_boundary(),
+            self.painted_boundaries(),
             plan.nav_inner.height,
             plan.nav_row_offset,
             self.selected,
@@ -544,20 +518,6 @@ impl Switcher {
                 height: 1,
             })
         });
-        if flow.scrolls {
-            let seam = plan.regions.view_border;
-            plan.seam_thumb = seam_thumb(
-                Rect {
-                    x: seam.x,
-                    y: cards.y,
-                    width: 1,
-                    height: cards.height,
-                },
-                self.painted_rows(),
-                flow.offset,
-                flow.visible,
-            );
-        }
     }
 
     fn layout_nav_columns(
@@ -570,8 +530,18 @@ impl Switcher {
         let palette = self.palette;
         let band = plan.nav_inner;
         let indent = if band.height == 1 { 0 } else { CARD_INDENT };
+        let boundaries = self.painted_boundaries();
         let cards: Vec<columns::Card> = (0..self.painted_rows())
-            .map(|i| self.flow_card(i, num_w, spinner_glyph, &palette, indent))
+            .map(|i| {
+                self.flow_card(
+                    i,
+                    num_w,
+                    spinner_glyph,
+                    &palette,
+                    indent,
+                    boundaries.get(1).copied() == Some(i),
+                )
+            })
             .collect();
         let boundary = self.painted_boundary().unwrap_or(cards.len());
         let placed = columns::place(&cards, band.height, boundary);
@@ -762,6 +732,7 @@ impl Switcher {
                     state,
                     crate::ui::chrome::BarFill::Row,
                     &palette,
+                    plan.login_guide,
                 );
             }
             self.render_key_list(frame, state, plan, &palette);
@@ -779,15 +750,11 @@ impl Switcher {
         // nav column at rest in a column, and the whole window once the bar floats
         // (see `hint_bar_floats` /
         // `hint_bar_rect`).
-        self.render_nav(frame, state, plan, &palette, terminal_focused);
-        // The seam is the one line the nav draws: its colour says which view holds the
-        // focus, and a side nav's overflow thickens the stretch beside the cards on screen.
+        self.render_nav(frame, state, plan, &palette);
+        // The horizontal seam states focus; a side layout keeps its resize gap blank.
         state
             .chrome
             .render_view_border(frame, plan.regions.view_border, terminal_focused);
-        state
-            .chrome
-            .render_seam_thumb(frame, plan.seam_thumb, terminal_focused);
         let term_area = plan.regions.terminal;
         // A domain-selected view screen replaces the grid. Scanning paints Braille;
         // settled host and own-session states share the factual chrome grammar.
@@ -817,7 +784,7 @@ impl Switcher {
         // terminal view. At rest it is the prefix indicator, a label sized to what it says
         // on the column's bottom row or at the right end of a band's seam. A floating
         // bar spans the whole width in a side layout. In a band, a selection hint shares
-        // the seam with the prefix; an input or flash opens beside it. The layout never
+        // the seam with the prefix; input uses the seam, while a flash opens beside it. The layout never
         // reflows. A band's overflow counts share the seam with the indicator at rest.
         for mark in &plan.overflow_marks {
             Self::render_overflow_mark(frame, *mark, &palette);
@@ -829,6 +796,7 @@ impl Switcher {
                 state,
                 crate::ui::chrome::BarFill::Row,
                 &palette,
+                plan.login_guide,
             );
             state
                 .chrome
@@ -844,6 +812,7 @@ impl Switcher {
                 state,
                 crate::ui::chrome::BarFill::Content,
                 &palette,
+                plan.login_guide,
             );
         }
         self.render_key_list(frame, state, plan, &palette);
@@ -878,15 +847,14 @@ impl Switcher {
     /// short region shows three cards as a list and twenty as a grid.
     ///
     /// Nothing but cards, titles and the band parting is painted inside the nav: what is
-    /// off screen is said on the seam. The selected card stays in reverse video when
-    /// focus moves between views; the seam colour identifies the focused view.
+    /// off screen is said on a band's seam. The selected card stays in reverse video
+    /// when focus moves between views.
     fn render_nav(
         &self,
         frame: &mut Frame,
         state: &crate::state::State,
         plan: &RenderPlan,
         palette: &palette::Palette,
-        terminal_focused: bool,
     ) {
         let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
         let num_w = self.number_width();
@@ -920,7 +888,7 @@ impl Switcher {
         }
         match plan.nav_rule {
             Some(NavRule::Horizontal(rect)) => Self::render_band_rule(frame, rect, palette),
-            Some(NavRule::Vertical(rect)) => Self::render_column_rule(frame, rect, palette),
+            Some(NavRule::Vertical(_)) => {}
             None => {}
         }
         if let Some((rect, text)) = &plan.nav_guidance {
@@ -930,7 +898,7 @@ impl Switcher {
             );
         }
         if plan.layout == ViewLayout::Band {
-            self.render_selected_host_word(frame, plan, palette, terminal_focused);
+            self.render_selected_host_word(frame, plan, palette);
         }
     }
 
@@ -939,7 +907,6 @@ impl Switcher {
         frame: &mut Frame,
         plan: &RenderPlan,
         palette: &palette::Palette,
-        terminal_focused: bool,
     ) {
         let Some(&(_, card)) = plan.nav_cells.iter().find(|(i, _)| *i == self.selected) else {
             return;
@@ -962,24 +929,49 @@ impl Switcher {
         let label = format!(" {word} ");
         let width = label.len() as u16;
         let room_right = plan.nav_inner.right().saturating_sub(card.right());
-        let x = if room_right >= width.saturating_sub(1) {
+        let fallback = if room_right >= width.saturating_sub(1) {
             card.right().saturating_sub(1)
         } else if card.x.saturating_sub(plan.nav_inner.x) >= width {
             card.x - width
         } else {
             plan.nav_inner.right().saturating_sub(width)
         };
+        let preferred = card.right().saturating_sub(1);
+        let occupied: Vec<Rect> = plan
+            .nav_cells
+            .iter()
+            .map(|&(idx, mut rect)| {
+                if idx == self.selected {
+                    rect.width = rect.width.saturating_sub(1);
+                }
+                rect
+            })
+            .chain(plan.title_repeats.iter().map(|&(_, rect)| rect))
+            .filter(|rect| rect.y <= card.y && card.y < rect.bottom())
+            .collect();
+        let x = [preferred, plan.nav_inner.x]
+            .into_iter()
+            .chain(
+                occupied
+                    .iter()
+                    .flat_map(|rect| [rect.right(), rect.x.saturating_sub(width)]),
+            )
+            .filter(|&x| {
+                x >= plan.nav_inner.x
+                    && x.saturating_add(width) <= plan.nav_inner.right()
+                    && occupied
+                        .iter()
+                        .all(|rect| !rect.intersects(Rect::new(x, card.y, width, 1)))
+            })
+            .min_by_key(|&x| x.abs_diff(preferred))
+            .unwrap_or(fallback);
         let rect = Rect {
             x,
             y: card.y,
             width: width.min(plan.nav_inner.right().saturating_sub(x)),
             height: 1,
         };
-        let style = if terminal_focused {
-            Style::default().fg(palette.secondary)
-        } else {
-            palette::selection_style(palette)
-        };
+        let style = palette::selection_style(palette);
         frame.render_widget(Clear, rect);
         frame.render_widget(Paragraph::new(label).style(style), rect);
     }
@@ -995,19 +987,6 @@ impl Switcher {
             ))),
             rect,
         );
-    }
-
-    /// The vertical rule parting the two bands in the portrait flow once they cannot
-    /// stay apart by a gap. A single light vertical line across the band, the same
-    /// statement the side list's horizontal rule makes.
-    fn render_column_rule(frame: &mut Frame, rect: Rect, palette: &palette::Palette) {
-        let style = Style::default().fg(palette.decoration);
-        let buf = frame.buffer_mut();
-        for y in rect.y..rect.y + rect.height {
-            let cell = &mut buf[(rect.x, y)];
-            cell.set_symbol("│");
-            cell.set_style(style);
-        }
     }
 
     /// Writes one overflow count on the band's seam: `‹ 5` or `7 ›`, the angle pointing
@@ -1052,6 +1031,7 @@ impl Switcher {
         spinner_glyph: char,
         palette: &palette::Palette,
         indent: u16,
+        separates_group: bool,
     ) -> columns::Card {
         let lines = self.nav_row_lines(
             i,
@@ -1070,6 +1050,7 @@ impl Switcher {
         // enough for both.
         let indent = if starts_run { 0 } else { indent };
         columns::Card {
+            separates_group,
             starts_run,
             width: w(0) + indent,
             lines: 1,
@@ -1375,7 +1356,7 @@ impl Switcher {
                 list,
                 crate::ui::keylist::Border {
                     prefix: &state.chrome.ui_prefix,
-                    status: &plan.key_list_status,
+                    status: "",
                     version: &state.chrome.version_label(),
                 },
                 palette,

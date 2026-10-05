@@ -17,8 +17,8 @@ pub(crate) use view::RowRef;
 pub use view::{OpFollow, Scan};
 
 use crate::model::SECRET_INPUT_CAPACITY;
+pub use crate::model::{AfterLogin, SecretInput};
 use crate::model::{Group, LoginOutcome, OpResult, RegistrationOutcome, Selection};
-pub use crate::model::{Remember, SecretInput};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -32,6 +32,8 @@ pub struct State {
     pub groups: Vec<Group>,
     /// Sources whose `list-sessions` has not yet returned (host shows scanning…).
     pub scanning: HashSet<String>,
+    /// The time each outstanding source scan must have answered by.
+    pub(crate) scan_deadlines: HashMap<String, std::time::Instant>,
     /// MACHINES the user has logged in to successfully in this run, which hiding never
     /// drops however they answer afterwards.
     ///
@@ -42,6 +44,14 @@ pub struct State {
     /// vanish - the login stops being blocked, so nothing keeps it any more. Keyed by
     /// machine because a login authenticates the machine, not the one mux that carried it.
     pub logged_in: HashSet<String>,
+    /// SSH authentication reported by the connection that last reached each machine.
+    pub auth_methods: HashMap<String, crate::model::AuthMethod>,
+    /// Authentication reported by the current live display attachment of each source.
+    pub display_auth_methods: HashMap<String, crate::model::AuthMethod>,
+    /// The session whose information opened the current host section.
+    pub info_session: Option<crate::session::Address>,
+    /// Machines whose known authentication was invalidated until the user asks again.
+    pub invalid_auth: HashSet<String>,
     /// The last login attempt for each machine. It is separate from probe failures so a
     /// follow-up probe cannot replace the authentication diagnosis the user needs.
     pub login_reports: HashMap<String, LoginOutcome>,
@@ -107,8 +117,6 @@ pub struct State {
     /// starts a fresh draft. The password moves from here into the process-memory
     /// credential store; it is drawn masked and never logged or serialized.
     pub login: Option<LoginDraft>,
-    /// Successful connection values from this run, newest first. No secret enters this list.
-    pub recent_logins: Vec<RecentLogin>,
     /// The login that is RUNNING: once the pane is submitted, ssh validates the held
     /// credential on its own thread, and this is the handle that ends it. Present only
     /// while that validation runs, so its presence is what tells
@@ -132,20 +140,13 @@ pub enum LoginFocus {
     Port,
     Username,
     Password,
-    Recent(usize),
-    RememberNothing,
-    RememberSshConfig,
-    Pubkey,
+    AfterNothing,
+    AfterSshConfig,
+    AfterPublicKey,
     Submit,
     /// The choice that unfolds the failure's full ssh text and host facts. A stop only
     /// while the pane states a failure.
     Details,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecentLogin {
-    pub source: String,
-    pub login: crate::transport::Login,
 }
 
 /// The login pane's draft: what the user is entering for a host that would not answer
@@ -154,8 +155,8 @@ pub struct RecentLogin {
 /// drives it.
 ///
 /// Address and port start at what ssh would use; username comes from an exact host
-/// stanza or starts empty. The starting values stay beside the fields so the remember
-/// choice appears after an edit.
+/// stanza or starts empty. The starting values stay beside the fields so the pane can
+/// show where each value came from.
 #[derive(Clone, Default)]
 pub struct LoginDraft {
     /// The blocked source this draft belongs to; a different current source resets it.
@@ -164,8 +165,7 @@ pub struct LoginDraft {
     pub port: String,
     pub username: String,
     pub password: SecretInput,
-    pub remember: Remember,
-    pub pubkey: bool,
+    pub after_login: AfterLogin,
     pub focus: LoginFocus,
     /// Whether the failure's full ssh text and host facts are unfolded.
     pub details: bool,
@@ -182,8 +182,7 @@ impl std::fmt::Debug for LoginDraft {
             .field("port", &self.port)
             .field("username", &self.username)
             .field("password", &"[redacted]")
-            .field("remember", &self.remember)
-            .field("pubkey", &self.pubkey)
+            .field("after_login", &self.after_login)
             .field("focus", &self.focus)
             .field("details", &self.details)
             .field("default_address", &self.default_address)
@@ -194,30 +193,20 @@ impl std::fmt::Debug for LoginDraft {
 }
 
 impl LoginDraft {
-    /// True once a connection value differs from what ssh would have used. Only then is
-    /// there anything a stanza could record.
-    pub fn changed(&self) -> bool {
-        self.address != self.default_address
-            || self.port != self.default_port
-            || self.username != self.default_username
-    }
-
-    /// The pane's focus stops in reading order. The remember choice is absent until the
-    /// user changes a value, the details choice until the pane states a failure, and a
-    /// stop that is not drawn is not one the keys land on.
-    pub fn stops(&self, details: bool, recent: usize) -> Vec<LoginFocus> {
+    /// The pane's focus stops in reading order. The details choice appears only while
+    /// the pane states a failure.
+    pub fn stops(&self, details: bool) -> Vec<LoginFocus> {
         let mut v = vec![
             LoginFocus::Address,
             LoginFocus::Port,
             LoginFocus::Username,
             LoginFocus::Password,
         ];
-        v.extend((0..recent).map(LoginFocus::Recent));
-        if self.changed() {
-            v.push(LoginFocus::RememberNothing);
-            v.push(LoginFocus::RememberSshConfig);
-        }
-        v.push(LoginFocus::Pubkey);
+        v.extend([
+            LoginFocus::AfterNothing,
+            LoginFocus::AfterSshConfig,
+            LoginFocus::AfterPublicKey,
+        ]);
         v.push(LoginFocus::Submit);
         if details {
             v.push(LoginFocus::Details);
@@ -225,10 +214,9 @@ impl LoginDraft {
         v
     }
 
-    /// Moves the focus `delta` stops, wrapping. A focus left on a stop that is no longer
-    /// drawn (the user undid their edit) lands on the first stop rather than nowhere.
-    fn move_focus(&mut self, delta: isize, details: bool, recent: usize) {
-        let stops = self.stops(details, recent);
+    /// Moves the focus `delta` stops, wrapping.
+    fn move_focus(&mut self, delta: isize, details: bool) {
+        let stops = self.stops(details);
         let at = stops.iter().position(|s| *s == self.focus).unwrap_or(0) as isize;
         let n = stops.len() as isize;
         self.focus = stops[(at + delta).rem_euclid(n) as usize];
@@ -248,11 +236,11 @@ impl LoginDraft {
     /// What Enter does: submit from the button, and pass the focus on from anywhere
     /// else. One meaning for the whole pane, so filling it top to bottom with Enter alone
     /// ends on the button and never toggles something on the way past.
-    fn enter(&mut self, details: bool, recent: usize) -> bool {
+    fn enter(&mut self, details: bool) -> bool {
         if self.focus == LoginFocus::Submit {
             return true;
         }
-        self.move_focus(1, details, recent);
+        self.move_focus(1, details);
         false
     }
 
@@ -260,9 +248,9 @@ impl LoginDraft {
     /// user can see what they picked. A text field takes it as the character it is.
     fn pick(&mut self) {
         match self.focus {
-            LoginFocus::RememberNothing => self.remember = Remember::Nothing,
-            LoginFocus::RememberSshConfig => self.remember = Remember::SshConfig,
-            LoginFocus::Pubkey => self.pubkey = !self.pubkey,
+            LoginFocus::AfterNothing => self.after_login = AfterLogin::Nothing,
+            LoginFocus::AfterSshConfig => self.after_login = AfterLogin::SshConfig,
+            LoginFocus::AfterPublicKey => self.after_login = AfterLogin::RegisterKey,
             LoginFocus::Details => self.details = !self.details,
             _ => {}
         }
@@ -384,7 +372,6 @@ impl State {
     /// credential.
     pub fn feed_login(&mut self, source: &str, bytes: &[u8]) -> Option<crate::model::Command> {
         let details = self.login_failure(source).is_some();
-        let recent = self.recent_logins.clone();
         let defaults = self.chrome.login_defaults(source);
         let address = defaults.address.value;
         let port = defaults.port.value;
@@ -408,21 +395,10 @@ impl State {
         let mut submit = false;
         for key in decode_keys(bytes) {
             match key {
-                Key::Tab => draft.move_focus(1, details, recent.len()),
-                Key::BackTab | Key::Up => draft.move_focus(-1, details, recent.len()),
-                Key::Down => draft.move_focus(1, details, recent.len()),
-                Key::Enter => {
-                    if let LoginFocus::Recent(i) = draft.focus {
-                        if let Some(item) = recent.get(i) {
-                            draft.address = item.login.address.clone().unwrap_or_default();
-                            draft.port = item.login.port.map(|p| p.to_string()).unwrap_or_default();
-                            draft.username = item.login.user.clone().unwrap_or_default();
-                            draft.focus = LoginFocus::Password;
-                        }
-                    } else {
-                        submit |= draft.enter(details, recent.len());
-                    }
-                }
+                Key::Tab => draft.move_focus(1, details),
+                Key::BackTab | Key::Up => draft.move_focus(-1, details),
+                Key::Down => draft.move_focus(1, details),
+                Key::Enter => submit |= draft.enter(details),
                 Key::Backspace => {
                     draft.field_mut().map(String::pop);
                 }
@@ -454,8 +430,7 @@ impl State {
                 user: (!draft.username.trim().is_empty()).then(|| draft.username.trim().into()),
             },
             password: std::mem::take(&mut draft.password),
-            remember: draft.remember,
-            pubkey: draft.pubkey,
+            after_login: draft.after_login,
         })
     }
 
@@ -767,7 +742,8 @@ impl State {
     }
 
     /// The failure the login pane for `source` states: the machine's last login when it
-    /// failed, else the probe failure that blocked the host. `None` when neither failed.
+    /// failed, else the probe failure that blocked the host. A first-seen key is a
+    /// condition the form can answer, not a failed login. `None` when neither failed.
     pub(crate) fn login_failure(&self, source: &str) -> Option<crate::model::LoginFailure> {
         let machine = crate::session::machine_of(source);
         if let Some(failure) = self
@@ -791,6 +767,11 @@ impl State {
             .find(|g| g.source == source)
             .and_then(|g| g.err.as_deref())
             .map(crate::model::LoginFailure::of_probe)
+            // The probe cannot ask about a first-seen key. The login form can answer
+            // that condition, so it is not displayed as a failed login attempt.
+            .filter(|failure| {
+                failure.kind != Some(crate::link::unlock::FailureKind::HostKeyUnverified)
+            })
     }
 
     /// Flashes a refused key's reason in the tree-column hint bar.
@@ -841,6 +822,34 @@ mod tests {
         assert!(
             matches!(command, Command::RunLogin { login, .. } if login.user.as_deref() == Some("alice"))
         );
+    }
+
+    #[test]
+    fn first_seen_host_key_is_not_a_failed_login() {
+        let unknown = crate::transport::diagnostic::explain("Host key verification failed.", false);
+        let mut state = State::from_scan(Scan {
+            groups: vec![Group {
+                source: "prod".into(),
+                err: Some(unknown),
+                sessions: vec![],
+            }],
+        });
+        assert!(state.login_failure("prod").is_none());
+
+        state.login_reports.insert(
+            "prod".into(),
+            crate::model::LoginOutcome {
+                auth_method: None,
+                connect: crate::link::unlock::UnlockOutcome::Failed {
+                    kind: crate::link::unlock::FailureKind::HostKeyUnverified,
+                    reason: "the host key could not be verified".into(),
+                },
+                output: "Host key verification failed.".into(),
+                saved: None,
+                registration: crate::model::RegistrationOutcome::NotRequested,
+            },
+        );
+        assert!(state.login_failure("prod").is_some());
     }
 
     #[test]
