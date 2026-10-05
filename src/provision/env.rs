@@ -1106,8 +1106,7 @@ impl Ops for EnvOps {
 
 impl EnvOps {
     /// Puts this machine's public key on the host the login just reached, with an ssh of
-    /// its own answered the way the login was. Its verdict is the registration's exit
-    /// code, so a key that did not land says why.
+    /// its own answered the way the login was, then checks that the key logs in alone.
     async fn register_key(
         &self,
         source: &str,
@@ -1119,7 +1118,7 @@ impl EnvOps {
             .ok_or("skipped: the login did not identify the remote shell")?;
         // Reading the key may have to make this machine a key pair, and a spawn is the
         // one thing an async task must never wait on.
-        let command = tokio::task::spawn_blocking(move || key_command(shell))
+        let key = tokio::task::spawn_blocking(public_key_line)
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
@@ -1136,15 +1135,144 @@ impl EnvOps {
         transport.set_login(login.clone());
         transport.set_remote_shell(shell);
         transport.set_credentials(self.env.credentials.clone());
-        let command = transport
-            .raw_shell_argv(&command)
-            .ok_or("skipped: this machine has no remote shell")?;
-        source::ExecRunner
-            .run_spec(&command)
-            .await
-            .map(|_| ())
-            .map_err(|error| crate::link::unlock::sanitize_output(&error.to_string()))
+        register_and_verify(&source::ExecRunner, &*transport, shell, &key).await
     }
+}
+
+/// The remote command the key-only login runs. It does nothing, in a form every shell
+/// family accepts, so its exit status reports only whether a session opened.
+const KEY_LOGIN_CHECK: &str = "exit 0";
+
+/// Registers `key` over `transport`, whose commands authenticate the way the login did,
+/// then logs in with nothing but a key.
+///
+/// Only a key login that runs its command makes the registration a success. A host that
+/// accepts the key and then cannot open a session would refuse every later command from
+/// this client, which offers the key first, so the line this registration added is
+/// removed again. A key login that failed before authentication finished proves nothing
+/// about the key, and the line stays.
+async fn register_and_verify(
+    runner: &dyn Runner,
+    transport: &dyn Transport,
+    shell: crate::transport::vocab::RemoteShell,
+    key: &str,
+) -> Result<(), String> {
+    let sanitize =
+        |error: source::RunError| crate::link::unlock::sanitize_output(&error.to_string());
+    let command = key_command(shell, key).map_err(|e| e.to_string())?;
+    let command = transport
+        .raw_shell_argv(&command)
+        .ok_or("skipped: this machine has no remote shell")?;
+    let out = runner.run_spec(&command).await.map_err(sanitize)?;
+    let added = added_key_files(&out);
+    let Some(check) = transport.key_only_argv(KEY_LOGIN_CHECK) else {
+        return Ok(());
+    };
+    match key_login_verdict(runner.run_spec(&check).await) {
+        KeyLogin::Works => Ok(()),
+        KeyLogin::NotVerified(reason) => Err(format!("not verified: {reason}")),
+        KeyLogin::NoSession(reason) => {
+            let kept = if added.is_empty() {
+                "the key line was there before this registration and was kept".to_string()
+            } else {
+                let removal = remove_key_command(shell, key, &added)
+                    .map_err(|e| e.to_string())
+                    .and_then(|command| {
+                        transport
+                            .raw_shell_argv(&command)
+                            .ok_or_else(|| "this machine has no remote shell".to_string())
+                    });
+                let removed = match removal {
+                    Ok(command) => runner.run_spec(&command).await.map_err(sanitize),
+                    Err(error) => Err(error),
+                };
+                match removed {
+                    Ok(_) => "the key line this registration added was removed".to_string(),
+                    Err(error) => format!("removing the key line failed: {error}"),
+                }
+            };
+            Err(format!(
+                "the host accepted the key but could not open a session: {reason}\n{kept}"
+            ))
+        }
+    }
+}
+
+/// What a key-only login found.
+#[derive(Debug, PartialEq, Eq)]
+enum KeyLogin {
+    /// The remote command ran.
+    Works,
+    /// Authentication succeeded and no session followed. Carries what ssh reported after
+    /// authenticating.
+    NoSession(String),
+    /// The login failed before authentication finished: the host was unreachable, timed
+    /// out, or refused the key.
+    NotVerified(String),
+}
+
+/// Reads a key-only login's result. ssh at `LogLevel=VERBOSE` writes `Authenticated to`
+/// when authentication succeeds, so a failure after that line happened while opening the
+/// session, and the lines after it are how the server's refusal looked from this side.
+fn key_login_verdict(result: Result<Vec<u8>, source::RunError>) -> KeyLogin {
+    let error = match result {
+        Ok(_) => return KeyLogin::Works,
+        Err(error) => error.to_string(),
+    };
+    let text = source::without_exit_line(&error);
+    let mut lines = text.lines();
+    if lines.any(|line| line.contains("Authenticated to ")) {
+        let after: Vec<&str> = lines
+            .filter(|line| {
+                !line.starts_with("Transferred: ") && !line.starts_with("Bytes per second")
+            })
+            .collect();
+        let reason = crate::link::unlock::sanitize_output(&after.join("\n"));
+        KeyLogin::NoSession(if reason.is_empty() {
+            "the server closed the connection".to_string()
+        } else {
+            reason
+        })
+    } else {
+        KeyLogin::NotVerified(crate::link::unlock::sanitize_output(text))
+    }
+}
+
+/// A file the key registration appends this machine's key to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyFile {
+    /// `~/.ssh/authorized_keys`.
+    User,
+    /// Windows OpenSSH's `administrators_authorized_keys`.
+    Administrators,
+}
+
+impl KeyFile {
+    /// The word the registration prints after [`KEY_ADDED`] when it appends to this file.
+    fn label(self) -> &'static str {
+        match self {
+            Self::User => "authorized_keys",
+            Self::Administrators => "administrators_authorized_keys",
+        }
+    }
+}
+
+/// The prefix of the line the registration prints for each file it appends to. A file
+/// that already held the line gets no such line, so what is printed is exactly what the
+/// registration may take back.
+const KEY_ADDED: &str = "xmux-key-added:";
+
+/// The files a registration's output says it appended to.
+fn added_key_files(out: &[u8]) -> Vec<KeyFile> {
+    let text = String::from_utf8_lossy(out);
+    [KeyFile::User, KeyFile::Administrators]
+        .into_iter()
+        .filter(|file| {
+            text.lines()
+                .filter_map(|line| line.trim().strip_prefix(KEY_ADDED))
+                .any(|label| label == file.label())
+        })
+        .collect()
 }
 
 /// Writes the xmux-managed stanza for `machine` into `~/.ssh/config`.
@@ -1165,27 +1293,69 @@ fn write_ssh_config_stanza(
     std::fs::write(&path, next)
 }
 
-/// The remote command that puts this machine's public key where the host's sshd reads it,
-/// written for the shell family the login read. Both forms are idempotent: the key is
-/// added only when that exact line is absent, so a second login changes nothing.
-fn key_command(shell: crate::transport::vocab::RemoteShell) -> Result<String, std::io::Error> {
-    let key = public_key_line()?;
+/// The remote command that puts `key` where the host's sshd reads it, written for the
+/// shell family the login read. Both forms are idempotent: the key is added only when
+/// that exact line is absent, so a second login changes nothing. Each prints a
+/// [`KEY_ADDED`] line naming every file it appended to.
+fn key_command(
+    shell: crate::transport::vocab::RemoteShell,
+    key: &str,
+) -> Result<String, std::io::Error> {
     match shell {
-        crate::transport::vocab::RemoteShell::Posix => authorized_keys_command(&key),
-        crate::transport::vocab::RemoteShell::Other => windows_key_command(&key),
+        crate::transport::vocab::RemoteShell::Posix => authorized_keys_command(key),
+        crate::transport::vocab::RemoteShell::Other => windows_key_command(key),
     }
+}
+
+/// The remote command that takes `key` out of the files a registration appended it to.
+/// Every line equal to the key goes, which in a file the registration appended to is the
+/// one line it added. A POSIX host has only the one file.
+fn remove_key_command(
+    shell: crate::transport::vocab::RemoteShell,
+    key: &str,
+    files: &[KeyFile],
+) -> Result<String, std::io::Error> {
+    plain_key_line(key)?;
+    match shell {
+        // Written back through the same file, so its mode and any link to it stay. grep
+        // exits 1 when no line is left, which is still a complete result.
+        crate::transport::vocab::RemoteShell::Posix => Ok(format!(
+            "umask 077; f=~/.ssh/authorized_keys; t=\"$f.xmux-$$\"; \
+             grep -vxF '{key}' \"$f\" > \"$t\"; [ $? -le 1 ] && cat \"$t\" > \"$f\"; \
+             s=$?; rm -f \"$t\"; exit $s"
+        )),
+        crate::transport::vocab::RemoteShell::Other => {
+            let mut script = WINDOWS_REMOVE_KEY_SCRIPT.replace("{key}", key);
+            for file in files {
+                script.push_str(match file {
+                    KeyFile::User => "Remove-Key (Join-Path $HOME '.ssh\\authorized_keys')\n",
+                    KeyFile::Administrators => {
+                        "Remove-Key (Join-Path $env:ProgramData 'ssh\\administrators_authorized_keys')\n"
+                    }
+                });
+            }
+            Ok(encoded_powershell(&script))
+        }
+    }
+}
+
+/// Rejects a key that could end the single quotes every form puts it in.
+fn plain_key_line(key: &str) -> Result<(), std::io::Error> {
+    if key.contains('\'') || key.contains('\n') || key.contains('\r') {
+        return Err(std::io::Error::other("the public key is not a plain line"));
+    }
+    Ok(())
 }
 
 /// The POSIX form: the key appended to `~/.ssh/authorized_keys`.
 pub fn authorized_keys_command(key: &str) -> Result<String, std::io::Error> {
     // Single-quoted for the remote shell, with the key's own quotes made impossible by
-    // the reject below, so nothing in it can end the quoting.
-    if key.contains('\'') || key.contains('\n') {
-        return Err(std::io::Error::other("the public key is not a plain line"));
-    }
+    // the reject, so nothing in it can end the quoting.
+    plain_key_line(key)?;
     Ok(format!(
         "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; \
-         grep -qxF '{key}' ~/.ssh/authorized_keys || printf '%s\\n' '{key}' >> ~/.ssh/authorized_keys"
+         grep -qxF '{key}' ~/.ssh/authorized_keys || \
+         {{ printf '%s\\n' '{key}' >> ~/.ssh/authorized_keys && echo {KEY_ADDED}authorized_keys; }}"
     ))
 }
 
@@ -1202,23 +1372,28 @@ pub fn authorized_keys_command(key: &str) -> Result<String, std::io::Error> {
 /// script creates is given exactly that access. An error stops the script with a nonzero
 /// exit, so a key that did not land is a failed registration.
 fn windows_key_command(key: &str) -> Result<String, std::io::Error> {
-    if key.contains('\'') || key.contains('\n') {
-        return Err(std::io::Error::other("the public key is not a plain line"));
-    }
-    let script = WINDOWS_KEY_SCRIPT.replace("{key}", key);
-    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    Ok(format!(
-        "powershell -NoProfile -NonInteractive -EncodedCommand {}",
-        base64(&utf16)
+    plain_key_line(key)?;
+    Ok(encoded_powershell(
+        &WINDOWS_KEY_SCRIPT.replace("{key}", key),
     ))
 }
 
+/// `script` as a Windows PowerShell command line that `cmd.exe` and PowerShell run alike.
+fn encoded_powershell(script: &str) -> String {
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    format!(
+        "powershell -NoProfile -NonInteractive -EncodedCommand {}",
+        base64(&utf16)
+    )
+}
+
 /// The script [`windows_key_command`] encodes. `{key}` is the public key line, inside a
-/// single-quoted string the key cannot end.
+/// single-quoted string the key cannot end. `Add-Key` prints the [`KEY_ADDED`] line for
+/// the file it appends to.
 const WINDOWS_KEY_SCRIPT: &str = r#"$ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 $k='{key}'
-function Add-Key($f){
+function Add-Key($f,$l){
 $d=Split-Path $f
 if(-not(Test-Path $d)){New-Item -ItemType Directory $d|Out-Null}
 $a="$k`r`n"
@@ -1228,15 +1403,27 @@ $t=[IO.File]::ReadAllText($f)
 if($t.Length -gt 0 -and -not $t.EndsWith("`n")){$a="`r`n$a"}
 }
 [IO.File]::AppendAllText($f,$a)
+"xmux-key-added:$l"
 }
-Add-Key (Join-Path $HOME '.ssh\authorized_keys')
+Add-Key (Join-Path $HOME '.ssh\authorized_keys') authorized_keys
 $c=Join-Path $env:ProgramData 'ssh\sshd_config'
 if((Test-Path $c) -and (Select-String -Path $c -Pattern '^\s*Match\s+Group\s+administrators\b' -Quiet) -and ((& "$env:SystemRoot\System32\whoami.exe" /groups) -match 'S-1-5-32-544')){
 $f=Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
 $n=-not(Test-Path $f)
-Add-Key $f
+Add-Key $f administrators_authorized_keys
 if($n){icacls $f /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F'|Out-Null
 if($LASTEXITCODE){throw 'icacls failed'}}
+}
+"#;
+
+/// The head of the script [`remove_key_command`] encodes, which calls `Remove-Key` once
+/// per file the registration appended to. `{key}` is the public key line. The file is
+/// rewritten in place, so the access sshd demands of it stays as it was.
+const WINDOWS_REMOVE_KEY_SCRIPT: &str = r#"$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+$k='{key}'
+function Remove-Key($f){
+if(Test-Path $f){[IO.File]::WriteAllLines($f,[string[]]@([IO.File]::ReadAllLines($f)|Where-Object{$_ -ne $k}))}
 }
 "#;
 
@@ -1351,27 +1538,309 @@ mod tests {
         std::fs::create_dir_all(&program_data).unwrap();
         let keys = profile.join(".ssh").join("authorized_keys");
         std::fs::write(&keys, "ssh-ed25519 AAAAexisting other@host").unwrap();
-        let cmd = windows_key_command(KNOWN_PUBLIC_KEY).unwrap();
-        for _ in 0..2 {
-            let status = std::process::Command::new("cmd.exe")
+        let run = |cmd: &str| {
+            let out = std::process::Command::new("cmd.exe")
                 .arg("/c")
-                .arg(&cmd)
+                .arg(cmd)
                 .env("USERPROFILE", &profile)
                 .env("ProgramData", &program_data)
                 .stdin(std::process::Stdio::null())
-                .status()
+                .output()
                 .unwrap();
-            assert!(
-                status.success(),
-                "the registration reports success: {status}"
-            );
-        }
+            assert!(out.status.success(), "the command reports success: {out:?}");
+            added_key_files(&out.stdout)
+        };
+        let cmd = windows_key_command(KNOWN_PUBLIC_KEY).unwrap();
+        assert_eq!(run(&cmd), vec![KeyFile::User], "the first run appends");
+        assert_eq!(run(&cmd), vec![], "the second run appends nothing");
         let text = std::fs::read_to_string(&keys).unwrap();
-        std::fs::remove_dir_all(&root).ok();
         assert_eq!(
             text.lines().collect::<Vec<_>>(),
             vec!["ssh-ed25519 AAAAexisting other@host", KNOWN_PUBLIC_KEY],
             "{text:?}"
+        );
+        let remove = remove_key_command(
+            crate::transport::vocab::RemoteShell::Other,
+            KNOWN_PUBLIC_KEY,
+            &[KeyFile::User],
+        )
+        .unwrap();
+        run(&remove);
+        let text = std::fs::read_to_string(&keys).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            vec!["ssh-ed25519 AAAAexisting other@host"],
+            "the removal takes only the registered line: {text:?}"
+        );
+    }
+
+    /// The POSIX key command, run by `sh`, reports the append only when it made one, and
+    /// the removal takes back that line and nothing else.
+    #[cfg(unix)]
+    #[test]
+    fn the_posix_key_command_reports_its_append_and_the_removal_keeps_other_lines() {
+        let home = std::env::temp_dir().join(format!("xmux-env-posix-key-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        let keys = home.join(".ssh").join("authorized_keys");
+        std::fs::write(&keys, "ssh-ed25519 AAAAexisting other@host\n").unwrap();
+        let run = |cmd: &str| {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .env("HOME", &home)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "the command reports success: {out:?}");
+            added_key_files(&out.stdout)
+        };
+        let cmd = authorized_keys_command(KNOWN_PUBLIC_KEY).unwrap();
+        assert_eq!(run(&cmd), vec![KeyFile::User], "the first run appends");
+        assert_eq!(run(&cmd), vec![], "the second run appends nothing");
+        let remove = remove_key_command(
+            crate::transport::vocab::RemoteShell::Posix,
+            KNOWN_PUBLIC_KEY,
+            &[KeyFile::User],
+        )
+        .unwrap();
+        run(&remove);
+        let text = std::fs::read_to_string(&keys).unwrap();
+        std::fs::remove_dir_all(&home).ok();
+        assert_eq!(text, "ssh-ed25519 AAAAexisting other@host\n");
+    }
+
+    /// Answers each command with the next scripted result and records the argv.
+    struct ScriptedRunner {
+        answers: std::sync::Mutex<std::collections::VecDeque<Result<Vec<u8>, RunError>>>,
+        commands: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl ScriptedRunner {
+        fn new(answers: Vec<Result<&str, RunError>>) -> Self {
+            Self {
+                answers: std::sync::Mutex::new(
+                    answers
+                        .into_iter()
+                        .map(|answer| answer.map(|out| out.as_bytes().to_vec()))
+                        .collect(),
+                ),
+                commands: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn commands(&self) -> Vec<Vec<String>> {
+            self.commands.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Runner for ScriptedRunner {
+        crate::model::source::runner_spec_via_argv!();
+        async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+            self.commands.lock().unwrap().push(args.to_vec());
+            self.answers
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(Vec::new()))
+        }
+    }
+
+    /// An ssh machine that multiplexes, so a check that reused its master would show.
+    fn multiplexing_ssh() -> crate::transport::Ssh {
+        crate::transport::Ssh {
+            id: "prod".into(),
+            alias: "prod".into(),
+            control_path: "/tmp/cm-%C".into(),
+            os: "linux".into(),
+            login: Default::default(),
+            credentials: Default::default(),
+            shell: crate::transport::vocab::RemoteShell::Posix,
+        }
+    }
+
+    const ADDED_USER_FILE: &str = "xmux-key-added:authorized_keys\n";
+
+    fn no_session() -> RunError {
+        RunError::Exit {
+            stderr: "Authenticated to prod ([10.0.0.2]:22) using \"publickey\".\n\
+                     Connection closed by 10.0.0.2 port 22\n"
+                .into(),
+            code: 255,
+        }
+    }
+
+    fn is_key_check(args: &[String]) -> bool {
+        args.iter().any(|arg| arg == "PasswordAuthentication=no")
+    }
+
+    #[tokio::test]
+    async fn a_key_that_logs_in_alone_is_registered() {
+        let runner = ScriptedRunner::new(vec![Ok(ADDED_USER_FILE), Ok("")]);
+        let result = register_and_verify(
+            &runner,
+            &multiplexing_ssh(),
+            crate::transport::vocab::RemoteShell::Posix,
+            KNOWN_PUBLIC_KEY,
+        )
+        .await;
+        assert_eq!(result, Ok(()));
+        let commands = runner.commands();
+        assert_eq!(commands.len(), 2, "{commands:?}");
+        assert!(is_key_check(&commands[1]), "{commands:?}");
+    }
+
+    #[tokio::test]
+    async fn a_host_that_opens_no_session_for_the_key_loses_the_line_this_registration_added() {
+        let runner = ScriptedRunner::new(vec![Ok(ADDED_USER_FILE), Err(no_session()), Ok("")]);
+        let error = register_and_verify(
+            &runner,
+            &multiplexing_ssh(),
+            crate::transport::vocab::RemoteShell::Posix,
+            KNOWN_PUBLIC_KEY,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("could not open a session")
+                && error.contains("Connection closed by 10.0.0.2 port 22")
+                && error.contains("was removed"),
+            "{error}"
+        );
+        assert!(!error.contains("Authenticated to"), "{error}");
+        let commands = runner.commands();
+        assert_eq!(commands.len(), 3, "{commands:?}");
+        let removal = commands[2].last().unwrap();
+        assert!(
+            removal.contains("grep -vxF") && removal.contains(KNOWN_PUBLIC_KEY),
+            "{removal}"
+        );
+        assert!(
+            !is_key_check(&commands[2]),
+            "the removal rides the login's authentication"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_line_that_was_there_before_the_registration_is_kept() {
+        let runner = ScriptedRunner::new(vec![Ok(""), Err(no_session())]);
+        let error = register_and_verify(
+            &runner,
+            &multiplexing_ssh(),
+            crate::transport::vocab::RemoteShell::Posix,
+            KNOWN_PUBLIC_KEY,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("could not open a session") && error.contains("was kept"),
+            "{error}"
+        );
+        assert_eq!(runner.commands().len(), 2, "nothing is removed");
+    }
+
+    #[tokio::test]
+    async fn a_key_login_that_never_authenticated_keeps_the_line() {
+        for failure in [
+            RunError::Exit {
+                stderr: "alice@prod: Permission denied (publickey).\n".into(),
+                code: 255,
+            },
+            RunError::Exit {
+                stderr: "ssh: connect to host prod port 22: Connection timed out\n".into(),
+                code: 255,
+            },
+            RunError::Other("spawn failed".into()),
+        ] {
+            let runner = ScriptedRunner::new(vec![Ok(ADDED_USER_FILE), Err(failure)]);
+            let error = register_and_verify(
+                &runner,
+                &multiplexing_ssh(),
+                crate::transport::vocab::RemoteShell::Posix,
+                KNOWN_PUBLIC_KEY,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.starts_with("not verified: "), "{error}");
+            assert_eq!(runner.commands().len(), 2, "nothing is removed: {error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_windows_host_loses_the_line_in_every_file_this_registration_added() {
+        let runner = ScriptedRunner::new(vec![
+            Ok("xmux-key-added:authorized_keys\r\nxmux-key-added:administrators_authorized_keys\r\n"),
+            Err(no_session()),
+            Ok(""),
+        ]);
+        let mut ssh = multiplexing_ssh();
+        ssh.shell = crate::transport::vocab::RemoteShell::Other;
+        register_and_verify(
+            &runner,
+            &ssh,
+            crate::transport::vocab::RemoteShell::Other,
+            KNOWN_PUBLIC_KEY,
+        )
+        .await
+        .unwrap_err();
+        let commands = runner.commands();
+        let expected = remove_key_command(
+            crate::transport::vocab::RemoteShell::Other,
+            KNOWN_PUBLIC_KEY,
+            &[KeyFile::User, KeyFile::Administrators],
+        )
+        .unwrap();
+        assert_eq!(commands.len(), 3, "{commands:?}");
+        assert_eq!(commands[2].last(), Some(&expected));
+    }
+
+    /// The check authenticates with a key alone, never prompts, and opens a connection
+    /// of its own, so a master a password login opened cannot answer for it. It still
+    /// goes where the login went.
+    #[test]
+    fn the_key_login_check_uses_a_key_and_a_connection_of_its_own() {
+        let mut ssh = multiplexing_ssh();
+        ssh.login.user = Some("alice".into());
+        let check = crate::transport::Transport::key_only_argv(&ssh, KEY_LOGIN_CHECK).unwrap();
+        let args = check.args();
+        let options: Vec<&str> = args
+            .iter()
+            .zip(args.iter().skip(1))
+            .filter(|(flag, _)| *flag == "-o")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        for option in [
+            "BatchMode=yes",
+            "PubkeyAuthentication=yes",
+            "PasswordAuthentication=no",
+            "ControlMaster=no",
+            "ControlPath=none",
+            "User=alice",
+        ] {
+            assert!(options.contains(&option), "{option} in {args:?}");
+        }
+        assert!(
+            !options
+                .iter()
+                .any(|option| option.starts_with("ControlPersist")
+                    || option.starts_with("ControlPath=/")),
+            "{args:?}"
+        );
+        assert!(check.env().is_empty(), "no askpass: {:?}", check.env());
+        assert_eq!(&args[args.len() - 3..], ["--", "prod", "exit 0"]);
+    }
+
+    #[test]
+    fn the_registration_output_names_the_files_it_appended_to() {
+        assert_eq!(added_key_files(b""), vec![]);
+        assert_eq!(
+            added_key_files(b"xmux-key-added:authorized_keys\n"),
+            vec![KeyFile::User]
+        );
+        assert_eq!(
+            added_key_files(b"noise\r\nxmux-key-added:administrators_authorized_keys\r\n"),
+            vec![KeyFile::Administrators]
         );
     }
 

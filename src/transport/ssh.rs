@@ -400,6 +400,36 @@ impl Transport for Ssh {
             ..self.clone()
         })
     }
+
+    /// No held credential and no master: a master that a password login opened would
+    /// answer for a key that cannot log in. `LogLevel=VERBOSE` makes ssh report when
+    /// authentication succeeded, which separates a host that refuses the key from one
+    /// that accepts it and then cannot open a session.
+    fn key_only_argv(&self, remote_cmd: &str) -> Option<crate::transport::CommandSpec> {
+        let mut args = Vec::new();
+        for option in [
+            "BatchMode=yes",
+            "PubkeyAuthentication=yes",
+            "PasswordAuthentication=no",
+            "KbdInteractiveAuthentication=no",
+            "PreferredAuthentications=publickey",
+            "ControlMaster=no",
+            "ControlPath=none",
+            "LogLevel=VERBOSE",
+            &format!("ConnectTimeout={CONNECT_TIMEOUT}"),
+        ] {
+            args.push("-o".to_string());
+            args.push(option.to_string());
+        }
+        for option in self.login.options() {
+            args.push("-o".to_string());
+            args.push(option);
+        }
+        args.push("--".to_string());
+        args.push(self.alias.clone());
+        args.push(remote_cmd.to_string());
+        Some(crate::transport::CommandSpec::new("ssh", args))
+    }
 }
 
 fn shell_quote(value: &str) -> String {

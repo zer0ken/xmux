@@ -255,6 +255,12 @@ checkboxes decide what a working login leaves behind:
 - the user's public key, registered on the host so it stops asking for a
   password
 
+After registering the key, xmux runs one separate login that may use only that key,
+and reports the key registered only when that login runs a command. When the host
+accepts the key but cannot open a session, xmux reports the server's error and removes
+the line this registration added, so the host stays reachable by password. When that
+login cannot be tried at all, xmux keeps the key and reports it as not verified.
+
 ## Roster
 
 The roster assembles the machines xmux offers as hosts. It gathers ssh target

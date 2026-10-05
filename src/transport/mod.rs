@@ -338,6 +338,12 @@ pub trait Transport: Send + Sync {
         self.raw_shell_argv(remote_cmd)
     }
 
+    /// A connection of its own that may authenticate with a key and nothing else, running
+    /// `remote_cmd` directly. `None` when the machine is not reached by logging in.
+    fn key_only_argv(&self, _remote_cmd: &str) -> Option<CommandSpec> {
+        None
+    }
+
     /// Clones into a fresh box — a spawned poll task needs an owned transport, and a
     /// trait object cannot derive `Clone`.
     fn clone_box(&self) -> Box<dyn Transport>;
@@ -415,6 +421,9 @@ impl Transport for Box<dyn Transport> {
     }
     fn login_argv(&self, remote_cmd: &str) -> Option<CommandSpec> {
         (**self).login_argv(remote_cmd)
+    }
+    fn key_only_argv(&self, remote_cmd: &str) -> Option<CommandSpec> {
+        (**self).key_only_argv(remote_cmd)
     }
     fn clone_box(&self) -> Box<dyn Transport> {
         (**self).clone_box()
