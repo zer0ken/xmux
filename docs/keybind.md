@@ -197,7 +197,9 @@ number, and eight cells of name; a band is at least one row.
 
 `prefix z` collapses or expands the nav, and dragging the view border past the nav's
 minimum collapses it (dragging back out in the same drag expands it again). A collapsed
-left or right nav keeps a column just wide enough for the prefix; a collapsed top or bottom
+left or right nav keeps a column exactly as wide as the prefix, with the prefix on its
+bottom row and the view border running down the column's edge beside the terminal view
+on every row above the prefix; a collapsed top or bottom
 nav keeps only its view border row, with the prefix at its right end. Cards are not shown
 while collapsed. A click anywhere on the collapsed nav expands it, and so does focusing
 the nav by keyboard. Auto-hide still takes the whole nav away and restores the same

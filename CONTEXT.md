@@ -190,9 +190,12 @@ UI elements a user perceives as distinct things:
   and that is exactly why both travel: the regions are cut from what is on screen, while
   the set width is the one the nav returns to when shown and expanded.
 - collapsed nav - the nav reduced to its prefix indicator while retaining its natural
-  width and height. A left or right nav keeps a column as wide as the prefix with a cell
-  either side; a top or bottom nav keeps only its view border row, the prefix at its
-  right end. Cards do not render and the view border remains. `prefix z` collapses and
+  width and height. A left or right nav keeps a column exactly as wide as the prefix, the
+  prefix unpadded on its bottom row. Its view border takes no column of its own: it runs
+  down the column's terminal-side edge on every row above the prefix, so the prefix keeps
+  every character and the terminal view takes every other column. A top or bottom nav
+  keeps only its view border row, the prefix at its right end. Cards do not render and
+  the view border remains. `prefix z` collapses and
   expands it, a view border drag past the nav's minimum collapses it, and a click
   anywhere on the collapsed nav or keyboard focus into the nav expands it. Auto-hide
   still removes the nav completely and returns it to the collapsed state.

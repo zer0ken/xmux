@@ -5795,10 +5795,15 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
         },
         1,
     );
+    assert_eq!(width, 3, "exactly the prefix wide");
     assert_eq!(left.tree, Rect::default());
     assert_eq!(left.hint_bar, Rect::new(0, 29, width, 1));
-    assert_eq!(left.view_border, Rect::new(width, 0, 1, 30));
-    assert_eq!(left.terminal, Rect::new(width + 1, 0, 140 - width - 1, 30));
+    assert_eq!(
+        left.view_border,
+        Rect::new(width - 1, 0, 1, 29),
+        "on the prefix's last column, above the prefix row"
+    );
+    assert_eq!(left.terminal, Rect::new(width, 0, 140 - width, 30));
 
     let right = compute_regions(
         area,
@@ -5813,8 +5818,12 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
     );
     assert_eq!(right.tree, Rect::default());
     assert_eq!(right.hint_bar, Rect::new(140 - width, 29, width, 1));
-    assert_eq!(right.view_border, Rect::new(139 - width, 0, 1, 30));
-    assert_eq!(right.terminal, Rect::new(0, 0, 139 - width, 30));
+    assert_eq!(
+        right.view_border,
+        Rect::new(140 - width, 0, 1, 29),
+        "on the prefix's terminal-side column, above the prefix row"
+    );
+    assert_eq!(right.terminal, Rect::new(0, 0, 140 - width, 30));
 
     let top = compute_regions(
         area,

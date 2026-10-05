@@ -10,11 +10,11 @@ use crate::ui::switcher::{NavPosition, NavSize, RenderPlan, Switcher};
 pub(crate) const NAV_WIDTH_MAX: u16 = 100;
 
 /// The narrowest expanded side nav: a card's indent, a two-digit number with the cells
-/// around it, and eight cells of name. Never narrower than the collapsed nav, so a wide
-/// configured prefix raises it. A seam dragged narrower than this collapses the nav.
+/// around it, and eight cells of name. Always wider than the padded prefix indicator, so
+/// a wide configured prefix raises it. A seam dragged narrower than this collapses the nav.
 pub(crate) fn nav_width_min(ui_prefix: &str) -> u16 {
     const CARD_FLOOR: u16 = 14;
-    CARD_FLOOR.max(crate::ui::switcher::collapsed_nav_width(ui_prefix) + 1)
+    CARD_FLOOR.max(crate::ui::switcher::prefix_chip_width(ui_prefix) + 1)
 }
 
 /// The band-layout nav height drag range. A band one row tall still lists its cards

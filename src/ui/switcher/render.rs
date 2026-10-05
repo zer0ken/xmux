@@ -316,7 +316,7 @@ impl Switcher {
             && floating
             && state.chrome.flash.is_empty()
             && !state.chrome.armed;
-        let prefix_w = collapsed_nav_width(&state.chrome.ui_prefix);
+        let prefix_w = prefix_chip_width(&state.chrome.ui_prefix);
         let bar_w = if seam_hint {
             area.width.saturating_sub(prefix_w)
         } else if floating {
@@ -386,15 +386,13 @@ impl Switcher {
             None
         };
         let seam = regions.view_border;
+        // A collapsed side nav's border lies inside its column, so the column alone is
+        // the whole target.
         let expand_area = if nav.collapsed && nav.width > 0 {
             match nav.position {
-                NavPosition::Left => Rect {
-                    width: seam.right().saturating_sub(area.x),
-                    ..area
-                },
-                NavPosition::Right => Rect {
-                    x: seam.x,
-                    width: area.right().saturating_sub(seam.x),
+                NavPosition::Left | NavPosition::Right => Rect {
+                    x: regions.hint_bar.x,
+                    width: regions.hint_bar.width,
                     ..area
                 },
                 NavPosition::Top | NavPosition::Bottom => seam,
@@ -956,11 +954,16 @@ impl Switcher {
             );
             state
                 .chrome
-                .render_collapsed_hint_bar(frame, plan.prefix_label, &palette);
+                .render_collapsed_hint_bar(frame, plan.prefix_label, true, &palette);
         } else if plan.nav_collapsed {
-            state
-                .chrome
-                .render_collapsed_hint_bar(frame, plan.hint_bar_rect, &palette);
+            // A band's chip pads the prefix on its seam row; a side column is the prefix
+            // alone.
+            state.chrome.render_collapsed_hint_bar(
+                frame,
+                plan.hint_bar_rect,
+                plan.layout == ViewLayout::Band,
+                &palette,
+            );
         } else {
             state.chrome.render_hint_bar(
                 frame,
