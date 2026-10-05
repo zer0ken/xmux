@@ -19,25 +19,36 @@ appear in the terminal view.
 
 ## Decision
 
-The selection names a card the user is interested in, never a position in the
-list. xmux keeps that interest as one value and resolves the selection from it on
-every rebuild, by two rules.
+The selection names what the user is interested in, never a position in the
+list: a host, a source, or a session. On the nav it stands on that node's target: a
+session's card, a source's card or the source half of its section title, and a host's
+card or the host half of a title or source card. xmux keeps that interest as one value
+and resolves the selection from it on every rebuild, by two rules.
 
-**A card disappears.** When the selected card leaves the list, the selection moves
-to the nearest surviving card related to it, along the card's own lineage:
+**A card disappears.** When the selected node loses its target, the selection moves
+to the nearest node up its lineage that has one:
 
-- a session card goes to its source's card: the section title, or the source's
-  host-state card once the source has no session to show;
-- a source card goes to its machine's own card, else to the machine's first
-  surviving source card in card order;
-- when nothing of the machine survives, the selection goes to the card that now
-  holds the vanished card's place: the first card after it in the prior card order
-  that survived, else the last surviving card before it.
+- a session goes to its source: the section title, or the source's host-state card
+  once the source has no session to show;
+- a source goes to its host: the host's card while the host is down, else the host
+  half of the row the source stood on, else of the host's first row;
+- a card that stood for the whole host (the host's card while it was down, or the
+  card of the source named by the host alone) that resolved into sources hands the
+  selection to the first of them by name;
+- when nothing of the host survives, the selection goes to the card that now holds
+  the vanished card's place: the first card after it in the prior card order that
+  survived, else the last surviving card before it.
 
 A source keeps one identity whether it shows as a section title or as a host-state
 card, so a host-state card that resolves into sessions hands the selection to its
-own section title, and a machine's card that resolves into several sources hands it
-to the first of them.
+own section title. A host none of whose sources connected shows as one card, so a
+logout or an unreachable host gathers a selection on any of its sources or sessions
+onto that card.
+
+A node a screen link or a step down opened with no nav target of its own, such as a
+source of a host that is down, stays selected while the inventory still lists it. The
+nav then stands on the target of its nearest ancestor, and the rules above apply once
+the node itself leaves the inventory.
 
 **A card appears.** A new card takes the selection only when the interest names it:
 
@@ -62,8 +73,9 @@ discovery, a filter) resolves the selection through these two rules. A path does
 choose a fallback of its own. The first card of the list is taken only when the
 selection names no card of the prior list or no card of the prior list survives.
 
-The display follows the selection, so the terminal view never shows a session the
-user neither chose nor was led to by these rules.
+The display follows the selection, or the soft selection while the pointer rests on a
+nav target (ADR 0008), so the terminal view never shows a session the user neither
+chose, pointed at, nor was led to by these rules.
 
 A change to how the selection moves is a change to the lineage or to what counts as
 interest, made here and in the selection entry of `CONTEXT.md`, never as a special

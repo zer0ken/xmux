@@ -1646,7 +1646,7 @@ mod tests {
         assert!(kw <= HELP_KEY_CAP && kw < "click a card".len(), "{kw}");
         assert!(
             text[at + 1].starts_with(&" ".repeat(1 + kw + 2))
-                && text[at + 1].trim_start().starts_with("select it"),
+                && text[at + 1].trim_start().starts_with("open it"),
             "the description under the description column: {:?}",
             text[at + 1]
         );

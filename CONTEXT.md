@@ -103,11 +103,24 @@ UI elements a user perceives as distinct things:
   The first interactive key before the help-seen preference is recorded briefly names
   the configured prefix and its help key; later runs keep the resting indicator.
 - view screen - what fills the terminal-view region in place of a mux while a selected
-  host scans or has settled without a session to show, or when xmux would mirror its
-  own session. A settled-state card names the STATE; its screen has room to state WHY.
-  The domain model chooses the screen from the selected address, typed host failure,
+  host or source is shown, while a selected source scans or has settled without a
+  session to show, or when xmux would mirror its own session. A settled-state card names
+  the STATE; its screen has room to state WHY.
+  The domain model chooses the screen from the selected node, typed host failure,
   scanning state, empty state, own-session address, and confirmed display. The UI
   renders that choice.
+  Each level of the hierarchy has its own screen, whether or not the nav has a card for
+  it. The HOST screen carries what belongs to the machine: how it is addressed (address,
+  port, user), its reach state, the SSH login method, the public key, its last
+  successful reach, the login form while a login is needed, the keys that re-scan it or
+  log out of it, and one link per source with that source's session count or state. The
+  SOURCE screen carries what belongs to one mux: a `{host}/{mux}` path whose host
+  segment links to the host screen, how its list updates and when it was last listed,
+  the key that creates a session there, and one link per session.
+  A screen link is selectable: in terminal focus `↑`/`↓` (and `Tab`) step through the
+  links, and `Enter` or a click opens the linked node's screen. Opening a link selects
+  that node; a node with no nav target of its own leaves the nav on its nearest
+  ancestor's target (see selection lineage).
   The scanning, settled host, and own-session states share one factual screen grammar,
   so a reader of any of them reads the others: the subject as the headline (a host for
   the host states, the session address for `own session`), under it the state word, then
@@ -159,7 +172,9 @@ UI elements a user perceives as distinct things:
 - card - one nav entry: a session card is a single row carrying the session name,
   with the `{host}/{mux}` label living on the SECTION TITLE above its group, never on
   the card itself. A host-state card (scanning / unreachable / empty host) is its own
-  row naming the host. A card states WHAT something is; WHY it is that way is the
+  row naming the host. A host none of whose sources connected (every source is
+  unreachable or needs a login, and none is scanning) shows as ONE host card naming the
+  machine, at the place of its first source, however many sources it has. A card states WHAT something is; WHY it is that way is the
   screen's, never a card's. One card per SESSION; the mux a source's cards share is
   named once, on the section title, resolved at enumeration so several muxes on one
   host stay distinguishable. The loading card is gone: a session is a plain session
@@ -168,17 +183,18 @@ UI elements a user perceives as distinct things:
   cards hang under, bold in the decoration role with nothing after it, its cards
   indented one cell under it at every nav position. A band column that continues a
   split section repeats it on its top row followed by `…`. It is not a card: it carries
-  no number and stays outside ordinary card stepping and number jumps. A click on
-  the title or `i` from one of its sessions selects it and opens the host information
-  screen; the indent selects nothing. The screen states the session count, how the
-  list updates, and its last successful reach. `n` on one of the session cards
+  no number and stays outside ordinary card stepping and number jumps. It has two
+  halves: the `{host}` half stands for the host and the `{mux}` half for the source,
+  and only the half the selection names takes the highlight. A click on a half opens
+  that node's screen; the indent selects nothing. `n` on one of the session cards
   creates a sibling in the same section.
 - card focus - the one thing a card's rendering changes when it gains the selection:
   the number in its address column becomes the `❯` mark. It does not grow a context
   line, it does not change height, and its session name keeps the same column - a name
   that shifts as the cursor passes is what makes a list twitch. The selected look is
   the inverted rect (see selection highlight) plus the mark, nothing more. A section
-  title takes the selected mark and inversion when selected, but no number.
+  title takes the selected mark when selected, but no number, and inverts only the half
+  the selection names.
 - nav size - the nav's live geometry as one value: the width the user SET, the width ON
   SCREEN this frame (0 while auto-hide has taken it and no prefix interaction is live),
   the band height the user set (0 = auto), the side the nav is attached to, and whether
@@ -267,22 +283,36 @@ UI elements a user perceives as distinct things:
   contiguous and the nav never names a source twice. `rebuild` applies the order on
   every pass, and a re-enumeration reproduces the same order exactly, so the list never
   reshuffles under the user.
-- selection - the nav's current pick, advanced by navigation. It names a card by
-  identity, never a row position: a session by its address, a source by its id whether
-  it shows as its section title or as its host-state card. A re-enumeration or restream
+- selection - the current pick, the HARD selection: arrows and execution move it, and
+  the terminal view shows it. It names a node of the hierarchy by identity, never a row
+  position: a host by its machine name, a source by its id, a session by its address.
+  On the nav it stands on that node's target: a session's card; a source's host-state
+  card or the `{mux}` half of its section title; a host's card or the `{host}` half of a
+  section title or host-state card. `↑`/`↓` step between numbered cards and never stop on
+  a section title; from a title half they go to the adjacent card. `Ctrl+↑` walks up
+  session, source, host; `Ctrl+↓` returns to the child the walk came from, else the
+  first child (sources by name, sessions in card order). A re-enumeration or restream
   never moves it, so neither a re-sort nor a host answering late can take it.
+- soft selection - what the pointer rests on: a nav target in nav focus, a screen link
+  in terminal focus. It previews (the terminal view shows the hovered node's screen or
+  grid) without moving the hard selection, and ends when the pointer leaves or focus
+  moves to the other region. It paints as an underline, an attribute the terminal theme
+  resolves. A click is the same execution as `Enter`: it opens the target's screen,
+  focuses the terminal view, and makes the target the hard selection.
 - interest - what the user is on or asked for, the one value the selection is resolved
   from on every rebuild (see `docs/adr/0007-context-follows-the-users-interest.md`).
   Before anything is chosen it is the first session to appear (the launch preselect);
   then it is the selected card; while a session the user asked for has no card yet (the
   session `n` created, the session under the selection when a full re-scan cleared every
   session) it is that session.
-- selection lineage - the invariant every path that changes the list obeys. A card
-  that DISAPPEARS moves the selection to the nearest surviving card of its lineage: a
-  session to its source's card, a source to its machine's own card and else to the
-  machine's first source card in card order, and when nothing of the machine survives,
-  to the first card after it in the prior card order that survived, else the last one
-  before it. A card that APPEARS takes the selection only when it is the interest.
+- selection lineage - the invariant every path that changes the list obeys. A node
+  that loses its target moves the selection to the nearest node up its lineage that
+  has one: a session to its source's target, a source to its host's target, a host card
+  that resolved into sources to the first source by name, and when nothing of the host
+  survives, to the first card after it in the prior card order that survived, else the
+  last one before it. A logout or an unreachable host therefore gathers a selection on
+  any of its sources or sessions onto its one host card. A node opened from a screen
+  link with no target of its own stays selected while the inventory lists it. A card that APPEARS takes the selection only when it is the interest.
   Scans, re-scans, polls, logouts, a session ending, mux discovery, and the filter all
   resolve the selection through this one rule, and none picks a fallback of its own; the
   first card is taken only when no card of the prior list survives.
@@ -298,7 +328,8 @@ UI elements a user perceives as distinct things:
   is why the mark is an open shape and
   never a solid block: it draws inverted too, so a block fills its cell and disappears
   into the band while an outline keeps a readable silhouette.
-  `[ui] selection-style` paints a named background instead.
+  `[ui] selection-style` paints a named background instead. On a section title the
+  inversion covers only the selected half.
 - offscreen counts - what a band writes on its view border row when columns are off
   screen: `‹ 5` at the left end and `7 ›` before the prefix at the right. Cards, not
   columns, because the reader is hunting a session, not a column. They cost no row and

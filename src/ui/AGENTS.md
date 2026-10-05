@@ -79,6 +79,18 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   target (a hovered nav card shows its screen) but never moves the focus or runs
   anything. The soft selection never moves the hard selection, and the hard selection
   shows again when the pointer leaves.
+- A screen link is a selection target in terminal focus: `↑`/`↓` move its hard
+  selection, the pointer its soft one, and Enter or a click opens it. The link rects
+  come from the render plan, so the paint and the click read one geometry. A nav hover
+  hides the link marks, since the view then previews another node.
+- The selection is a node (host, source, session), not a row: a row is only where the
+  node stands. A section title's host half and source half are separate targets, and
+  only the selected half inverts. A node with no nav target of its own (a source of a
+  down host opened from a link) stays the selection while the nav stands on its
+  nearest ancestor's target.
+- A host none of whose sources connected is one card (`RowRef::Machine`), placed where
+  its first source would stand. Its screen is the host screen, and its sources are
+  reached through that screen's links.
 - Every colour xmux itself paints is an ANSI-16 slot or an attribute (reverse
   video, bold, dim), so the terminal theme resolves it, never an RGB value. A
   background with no slot for it is an attribute instead: the selected card is
