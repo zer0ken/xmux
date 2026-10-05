@@ -267,11 +267,26 @@ UI elements a user perceives as distinct things:
   contiguous and the nav never names a source twice. `rebuild` applies the order on
   every pass, and a re-enumeration reproduces the same order exactly, so the list never
   reshuffles under the user.
-- selection - the nav's current pick, advanced by navigation; a re-enumeration or
-  restream never moves it: the order is identical on every rebuild, and the session
-  under the cursor is held by identity across one, so neither a re-sort nor a host
-  answering late can take it. The preselect and the
-  reselect are the launch and post-rescan selections.
+- selection - the nav's current pick, advanced by navigation. It names a card by
+  identity, never a row position: a session by its address, a source by its id whether
+  it shows as its section title or as its host-state card. A re-enumeration or restream
+  never moves it, so neither a re-sort nor a host answering late can take it.
+- interest - what the user is on or asked for, the one value the selection is resolved
+  from on every rebuild (see `docs/adr/0007-context-follows-the-users-interest.md`).
+  Before anything is chosen it is the first session to appear (the launch preselect);
+  then it is the selected card; while a session the user asked for has no card yet (the
+  session `n` created, the session under the selection when a full re-scan cleared every
+  session) it is that session.
+- selection lineage - the invariant every path that changes the list obeys. A card
+  that DISAPPEARS moves the selection to the nearest surviving card of its lineage: a
+  session to its source's card, a source to its machine's own card and else to the
+  machine's first source card in card order, and when nothing of the machine survives,
+  to the first card after it in the prior card order that survived, else the last one
+  before it. A card that APPEARS takes the selection only when it is the interest.
+  Scans, re-scans, polls, logouts, a session ending, mux discovery, and the filter all
+  resolve the selection through this one rule, and none falls back to the first card.
+  A selection that lands on a source card shows that card's screen (information, login,
+  unreachable, empty), never another session's grid.
 - selection highlight - the selected card's rendering: reverse video filling the whole
   card, the terminal theme's own selected look, in both focus states,
   plus a `❯` mark standing in the address column of the card's row, where
@@ -551,7 +566,7 @@ UI elements a user perceives as distinct things:
   which scans a source for sessions, and from the host axis, which reaches one.
 - filter - the type-to-filter input over the nav list. It applies as you type: each
   edit re-filters the cards, the selection holds its card while that survives and
-  lands on the first remaining card otherwise. Its popup's top border counts the cards
+  moves along its selection lineage within the visible cards otherwise. Its popup's top border counts the cards
   kept of the cards listed, and matching characters are bold.
   Esc restores the filter the input opened with; with the input closed, Esc clears an
   active filter. The hosts-to-check table and command palette can select a host by name.

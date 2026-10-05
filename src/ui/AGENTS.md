@@ -251,11 +251,14 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 - This layer branches on nothing mux-specific: the switcher renders rows and emits
   domain intents, never a match on mux kind. Per-mux behavior lives behind the mux
   and driver seam, reached through the operations trait, not decided here.
-- A rebuild holds the selection on its session whenever that session survives the
-  rebuild, whoever put the selection there. The rows are re-derived on every answer
-  of the scan, so a selection re-picked from the top would walk from host to host as
-  they arrive; it lands on the first session to appear and stays until the user or
-  the mux moves it.
+- A rebuild resolves the selection from the interest alone, by the selection lineage
+  (`CONTEXT.md`, `docs/adr/0007-context-follows-the-users-interest.md`): the selected
+  card holds by identity while it survives, a vanished card hands the selection to the
+  nearest surviving card of its lineage, and an appearing card takes it only when it is
+  the interest. No path picks a fallback row of its own. The rows are re-derived on
+  every answer of the scan, so a selection re-picked from the top would walk from host
+  to host as they arrive; the launch interest is the first session to appear, and once
+  it lands it stays until the user or the mux moves it.
 - The nav's two navigation steps name the two things its list is made of: one walks the
   cards, the other walks the categories, landing on a category's first card. A category
   is a source with sessions to show, or the whole host band at once. Neither step is

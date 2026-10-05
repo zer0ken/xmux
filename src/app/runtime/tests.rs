@@ -1671,6 +1671,23 @@ async fn a_host_answering_several_muxes_has_a_card_for_each() {
 }
 
 #[tokio::test]
+async fn a_selected_host_card_that_resolves_hands_the_selection_to_its_first_source() {
+    // The card that stood for the host goes only after the sources it resolved into are
+    // on the list, so the selection on it follows its lineage to the host's first source
+    // card instead of passing to another host.
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    rt.model.switcher.open_host("win", &mut rt.model.state);
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(vec!["zellij".into(), "psmux".into()]),
+    });
+    assert!(matches!(
+        rt.model.switcher.selected_card(),
+        Some(crate::state::RowRef::Host { source, .. }) if source == "win:psmux"
+    ));
+}
+
+#[tokio::test]
 async fn a_host_where_no_mux_answers_has_no_card() {
     // The host connected and answered nothing, so there is nothing to show: it has no
     // card, exactly as this box has no local card when nothing is installed here.

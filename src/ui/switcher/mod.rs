@@ -299,11 +299,24 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
 
 pub use crate::state::Scan;
 
-/// Snapshot of the selection taken before a rebuild so `restore_focus` can
-/// recover or gracefully redirect it afterward.
-struct PriorFocus {
-    reference: Option<RowRef>,
-    selected: usize,
+/// What the user is interested in: the one value both selection rules read
+/// (docs/adr/0007-context-follows-the-users-interest.md). A card that DISAPPEARS moves
+/// the selection along its lineage; a card that APPEARS takes the selection only when
+/// it is what this value names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Interest {
+    /// Nothing is chosen yet: the launch asks to show a session, so the first session
+    /// card to appear is the interest. Until one does, the selection rests on the first
+    /// card, which is a placeholder rather than a choice.
+    FirstSession,
+    /// The card the selection is on, held by identity across every rebuild.
+    Selected,
+    /// A session the user asked for whose card is not on the list yet: the session
+    /// `prefix n` created, or the session under the selection when a full re-scan
+    /// cleared every session. The selection waits on that session's lineage card and
+    /// moves to the session when its card appears. The interest ends when the user
+    /// moves the selection or the session's source answers without it.
+    Awaiting(Address),
 }
 
 /// The terminal-view target whose active pane attaching here would land on.
@@ -316,11 +329,9 @@ pub struct TerminalViewTarget {
 /// The switcher state machine.
 pub struct Switcher {
     palette: crate::ui::palette::Palette,
-    /// Set once the selection has been moved deliberately: a key, a click, or an
-    /// address the app was told to select. [`Switcher::restore_focus`] reads it to
-    /// decide whether a vanished card falls back to its neighbour or to the rebuild's
-    /// own preselect.
-    user_moved: bool,
+    /// What the user is on or asked for. [`Switcher::rebuild`] resolves the selection
+    /// from it on every pass.
+    interest: Interest,
     /// Set by [`Switcher::request_rescan`] (the `r` key and the ctl `rescan` verb) and
     /// taken by the update step that turns the rescan command into a runtime effect, so
     /// the runtime starts discovery only for a rescan that cleared the nav.
@@ -353,11 +364,6 @@ pub struct Switcher {
     /// Whether host cards are omitted after leaving nav from a session card.
     host_band_hidden: bool,
 
-    /// A pending re-scan reselect: the session the selection was on when `r`
-    /// was pressed. A re-scan clears every session, so the row briefly vanishes; this
-    /// returns the selection to it the instant its host re-streams. Cleared once matched,
-    /// or when the user navigates off the parked parent host during the skeleton phase.
-    rescan_reselect: Option<Address>,
     /// The session whose card a full re-scan turned into its host card, held until the
     /// selection moves. While it holds, the scanning host card keeps that session's
     /// confirmed grid instead of its scanning screen.
@@ -384,7 +390,7 @@ impl Switcher {
     fn blank() -> Self {
         Switcher {
             palette: crate::ui::palette::Palette::default(),
-            user_moved: false,
+            interest: Interest::FirstSession,
             rescan_kick: false,
             reattach_kick: false,
             rows: Vec::new(),
@@ -399,7 +405,6 @@ impl Switcher {
             numbers_held: false,
             terminal_view: false,
             host_band_hidden: false,
-            rescan_reselect: None,
             rescan_collapse: None,
             popup_geo: PopupGeometry::default(),
         }
@@ -508,32 +513,14 @@ impl Switcher {
         }) {
             self.login_target = None;
         }
-        // Hold the selection on its session across this rebuild whenever that session
-        // survives (matched by identity) - a rebuild re-derives the whole row list, so a
-        // routine one (local poll, remote %-event refetch) must NOT snap the selection
-        // back to the top row, which would yank the displayed session out from under
-        // whoever is watching (the selection thrash).
-        //
-        // It holds from the FIRST session the selection ever lands on, the user having
-        // moved it or not. During the scan the hosts answer in whatever order they
-        // happen to and each answer re-derives the rows, so a preselect that re-picked
-        // the top card would walk from host to host as they arrive, attaching a session
-        // per step. The session that answered first is the one already on screen, and it
-        // keeps the selection until the user or the mux moves it.
-        let keep = self
-            .rows
-            .get(self.selected)
-            .and_then(|r| match &r.reference {
-                RowRef::Session { .. } => Some(r.reference.clone()),
-                RowRef::Section { .. } if self.user_moved => Some(r.reference.clone()),
-                RowRef::Host { .. } | RowRef::Section { .. } => None,
-            });
+        let prior = self.current_ref().cloned();
+        let prior_index = self.selected;
 
         // The deterministic display order (groups local→WSL→remote then by source name,
         // sessions by name) is applied here, once, so every mutation path lands on it and
         // a routine poll reproduces the same order exactly - there is nothing to freeze.
         // Pure row generation lives in `tree::flatten`; rebuild orchestrates order →
-        // flatten → preselect → restore around it.
+        // flatten → the selection resolved from the interest around it.
         for g in state.groups.iter_mut() {
             tree::sort_by_name(&mut g.sessions);
         }
@@ -548,14 +535,118 @@ impl Switcher {
         let unfiltered = (!self.renumbering && !self.numbers_fixed && !state.filter.is_empty())
             .then(|| tree::flatten(&state.groups, &state.scanning, "", &named_mux));
 
-        self.rows = rows;
+        let old_rows = std::mem::replace(&mut self.rows, rows);
         self.number_cards(unfiltered.as_deref(), state.scanning.is_empty());
-        let target = keep
-            .as_ref()
-            .and_then(|k| self.rows.iter().position(|r| same_node(&r.reference, k)))
-            .or_else(|| self.rows.iter().position(Row::selectable))
-            .unwrap_or(0);
+        let target = self.resolve_selection(prior.as_ref(), &old_rows, prior_index, state);
         self.set_selected(target, state);
+    }
+
+    /// The row the selection takes after a rebuild, read from [`Interest`].
+    ///
+    /// A card that APPEARS takes the selection only when the interest names it: the first
+    /// session card while nothing is chosen yet, or the awaited session. Anything else
+    /// holds the prior card by identity, and a prior card that DISAPPEARED moves along
+    /// its lineage ([`Switcher::lineage_row`]). No path picks a position of its own.
+    fn resolve_selection(
+        &mut self,
+        prior: Option<&RowRef>,
+        old_rows: &[Row],
+        prior_index: usize,
+        state: &crate::state::State,
+    ) -> usize {
+        let first_selectable = || self.rows.iter().position(Row::selectable).unwrap_or(0);
+        match self.interest.clone() {
+            Interest::FirstSession => {
+                // A session answering later than the first one does not take the cursor:
+                // the interest is settled by the first, so the launch attaches one session
+                // rather than one per answer.
+                match self
+                    .rows
+                    .iter()
+                    .position(|r| matches!(r.reference, RowRef::Session { .. }))
+                {
+                    Some(i) => {
+                        self.interest = Interest::Selected;
+                        i
+                    }
+                    None => first_selectable(),
+                }
+            }
+            Interest::Awaiting(address) => {
+                if let Some(i) = self.row_of_session(&address) {
+                    self.interest = Interest::Selected;
+                    self.rescan_collapse = None;
+                    return i;
+                }
+                if !state.scanning.contains(&address.source) {
+                    self.interest = Interest::Selected;
+                }
+                self.lineage_row(prior, old_rows, prior_index)
+                    .unwrap_or_else(first_selectable)
+            }
+            Interest::Selected => self
+                .lineage_row(prior, old_rows, prior_index)
+                .unwrap_or_else(first_selectable),
+        }
+    }
+
+    /// Where the selection on `prior` goes on the rebuilt rows: `prior` itself when it
+    /// survives, otherwise the nearest surviving card of its lineage.
+    ///
+    /// - a session goes to its source's card (the section title, or the source's
+    ///   host-state card once it has no session to show);
+    /// - a source goes to its machine's own card (the source named by the machine
+    ///   alone), else to the machine's first source card in card order;
+    /// - when nothing of the machine survives, to the card that now holds the vanished
+    ///   card's place: the first card after it in the prior card order that survived,
+    ///   else the last surviving card before it.
+    ///
+    /// A source keeps one identity whether it shows as a section title or as a
+    /// host-state card, so a source that gains or loses its sessions is the same card.
+    /// `None` only when `prior` is `None` or no prior card survives at all.
+    fn lineage_row(
+        &self,
+        prior: Option<&RowRef>,
+        old_rows: &[Row],
+        prior_index: usize,
+    ) -> Option<usize> {
+        let prior = prior?;
+        let source_row = |source: &str| {
+            self.rows
+                .iter()
+                .position(|r| card_source(&r.reference) == Some(source))
+        };
+        if let Some(i) = self.row_matching(prior) {
+            return Some(i);
+        }
+        let source = match prior {
+            RowRef::Session { sess } => sess.source.as_str(),
+            RowRef::Host { source, .. } | RowRef::Section { source } => source.as_str(),
+        };
+        let machine = crate::session::machine_of(source);
+        if let Some(i) = source_row(source)
+            .or_else(|| source_row(machine))
+            .or_else(|| {
+                self.rows.iter().position(|r| {
+                    card_source(&r.reference)
+                        .is_some_and(|s| crate::session::machine_of(s) == machine)
+                })
+            })
+        {
+            return Some(i);
+        }
+        let survivor = |r: &Row| {
+            r.selectable()
+                .then(|| self.row_matching(&r.reference))
+                .flatten()
+        };
+        let at = prior_index.min(old_rows.len());
+        old_rows
+            .get(at + 1..)
+            .unwrap_or_default()
+            .iter()
+            .find_map(survivor)
+            .or_else(|| old_rows[..at].iter().rev().find_map(survivor))
     }
 
     // --- selection / navigation --------------------------------------------
@@ -752,7 +843,7 @@ impl Switcher {
     /// rebuild made. Such a move ends a full re-scan's collapse, so the scanning host
     /// card it lands on shows its own screen.
     fn note_user_move(&mut self) {
-        self.user_moved = true;
+        self.interest = Interest::Selected;
         self.rescan_collapse = None;
     }
 
@@ -762,7 +853,20 @@ impl Switcher {
             return;
         }
         self.note_user_move();
-        let cur = sel.iter().position(|&i| i == self.selected).unwrap_or(0) as isize;
+        // A selected section title is not a card of the step, so the step starts between
+        // the cards around it: forward reaches the first card under it, backward the last
+        // card above it.
+        let cur = match sel.iter().position(|&i| i == self.selected) {
+            Some(p) => p as isize,
+            None => {
+                let before = sel.iter().filter(|&&i| i < self.selected).count() as isize;
+                if delta > 0 {
+                    before - 1
+                } else {
+                    before
+                }
+            }
+        };
         let n = sel.len() as isize;
         let next = ((cur + delta) % n + n) % n;
         self.set_selected(sel[next as usize], state);
@@ -1106,20 +1210,19 @@ impl Switcher {
 
     /// Resets every host to its scanning skeleton and signals the event loop to
     /// re-kick the streaming probes (the `r` re-scan) - sessions and panes stream
-    /// back in exactly as on first launch. The selection does not drift: the selection
-    /// parks on the focused node's parent host for the skeleton phase (every session
-    /// row just vanished) and `rescan_reselect` returns it to the exact session the
-    /// instant that host re-streams.
+    /// back in exactly as on first launch. The selection does not drift: the session
+    /// under it becomes the awaited [`Interest`], so the selection rests on that
+    /// session's source card through the skeleton phase (the lineage of a vanished
+    /// session) and returns to the session the instant its source re-streams it.
     pub fn request_rescan(&mut self, state: &mut crate::state::State) {
-        let (reselect, parent) = match self.current_ref() {
-            Some(RowRef::Session { sess }) => (Some(sess.address()), Some(sess.source.clone())),
-            Some(RowRef::Host { source, .. }) | Some(RowRef::Section { source, .. }) => {
-                (None, Some(source.clone()))
-            }
-            None => (None, None),
+        let selected = match self.current_ref() {
+            Some(RowRef::Session { sess }) => Some(sess.address()),
+            _ => None,
         };
-        self.rescan_collapse = reselect.clone();
-        self.rescan_reselect = reselect;
+        self.rescan_collapse = selected.clone();
+        if let Some(address) = selected {
+            self.interest = Interest::Awaiting(address);
+        }
         self.reopen_numbers();
         state.scanning = state.groups.iter().map(|g| g.source.clone()).collect();
         for g in state.groups.iter_mut() {
@@ -1129,17 +1232,6 @@ impl Switcher {
         self.rescan_kick = true;
         self.reattach_kick = true;
         self.rebuild(state);
-        // Park on the parent host, whose row survives the clear - not the last-host
-        // landing a removal-fallback would pick when every session vanishes at once.
-        if let Some(src) = parent {
-            if let Some(i) = self
-                .rows
-                .iter()
-                .position(|r| matches!(&r.reference, RowRef::Host { source, .. } if *source == src))
-            {
-                self.set_selected(i, state);
-            }
-        }
     }
 
     /// Streams in one source's `list-sessions` outcome: clears its scanning
@@ -1185,7 +1277,6 @@ impl Switcher {
                 }
             }
         }
-        let prior = self.capture_focus();
         state.scanning.remove(&source);
         state.scan_deadlines.remove(&source);
         // The failure run, counted where every result lands so no path can skip it: a
@@ -1220,7 +1311,6 @@ impl Switcher {
             }),
         }
         self.rebuild(state);
-        self.restore_focus(prior, state);
         renamed
     }
 
@@ -1234,7 +1324,6 @@ impl Switcher {
         if state.groups.iter().any(|g| g.source == source) {
             return;
         }
-        let prior = self.capture_focus();
         state.scanning.insert(source.clone());
         state.scan_deadlines.remove(&source);
         state.groups.push(Group {
@@ -1243,7 +1332,6 @@ impl Switcher {
             sessions: Vec::new(),
         });
         self.rebuild(state);
-        self.restore_focus(prior, state);
     }
 
     /// Puts the card of `source` back in flight: it spins and carries no failure, for an
@@ -1256,19 +1344,16 @@ impl Switcher {
         if g.err.is_none() && state.scanning.contains(source) {
             return;
         }
-        let prior = self.capture_focus();
         g.err = None;
         state.scanning.insert(source.to_string());
         state.scan_deadlines.remove(source);
         self.rebuild(state);
-        self.restore_focus(prior, state);
     }
 
     /// Puts every source `machine` serves in flight for a re-scan of that machine alone.
     /// Each card spins or keeps the sessions it lists until its answer lands, so the
     /// list and its numbers hold still while the machine is asked again.
     pub fn mark_machine_scanning(&mut self, machine: &str, state: &mut crate::state::State) {
-        let prior = self.capture_focus();
         for g in state.groups.iter_mut() {
             if crate::session::machine_of(&g.source) == machine {
                 g.err = None;
@@ -1277,19 +1362,16 @@ impl Switcher {
             }
         }
         self.rebuild(state);
-        self.restore_focus(prior, state);
     }
 
     /// Drops a source whose MACHINE the roster no longer names, and everything the nav
     /// held for it. Idempotent: a source the nav does not show is left alone.
     ///
-    /// Focus is restored exactly as a streamed rebuild restores it, so a selection
-    /// sitting on the dropped card lands on the previous card instead of vanishing.
+    /// A selection on the dropped card moves along its lineage, as on every rebuild.
     pub fn remove_source(&mut self, source: &str, state: &mut crate::state::State) {
         if !state.groups.iter().any(|g| g.source == source) {
             return;
         }
-        let prior = self.capture_focus();
         state.groups.retain(|g| g.source != source);
         state.scanning.remove(source);
         state.scan_deadlines.remove(source);
@@ -1298,81 +1380,6 @@ impl Switcher {
         state.live_sources.remove(source);
         state.host_details.remove(source);
         self.rebuild(state);
-        self.restore_focus(prior, state);
-    }
-
-    /// Captures the selection state needed to restore or gracefully redirect focus
-    /// after a rebuild.
-    fn capture_focus(&self) -> PriorFocus {
-        PriorFocus {
-            reference: self.current_ref().cloned(),
-            selected: self.selected,
-        }
-    }
-
-    /// After a streamed update rebuilds the cards: if the user has driven the
-    /// selection, keep it on the focused card when it survives; if the card
-    /// vanished (killed/removed), land on the previous card. An untouched selection is
-    /// left exactly where the rebuild put it - on its own session where that survived,
-    /// on the first card otherwise.
-    fn restore_focus(&mut self, prior: PriorFocus, state: &crate::state::State) {
-        // A pending re-scan reselect returns the selection to its session the instant that
-        // session re-streams - but only while the selection still sits where the re-scan
-        // parked it (that session or its parent host). If the user has navigated
-        // elsewhere in the skeleton meanwhile, the pending reselect is dropped so it
-        // never yanks them back.
-        if let Some(addr) = self.rescan_reselect.clone() {
-            let parked = match prior.reference.as_ref() {
-                Some(RowRef::Host { source, .. }) => addr.source == *source,
-                Some(RowRef::Session { sess }) => sess.address() == addr,
-                // A re-scan parks on the host-state card rather than its section title.
-                Some(RowRef::Section { .. }) => false,
-                None => false,
-            };
-            if parked {
-                if let Some(i) = self
-                    .rows
-                    .iter()
-                    .position(|r| session_addr_of(&r.reference).as_ref() == Some(&addr))
-                {
-                    self.rescan_reselect = None;
-                    self.rescan_collapse = None;
-                    self.set_selected(i, state);
-                    return;
-                }
-            } else {
-                self.rescan_reselect = None;
-                self.rescan_collapse = None;
-            }
-        }
-        if !self.user_moved {
-            return;
-        }
-        let Some(focus) = prior.reference.as_ref() else {
-            return;
-        };
-        if let Some(i) = self.row_matching(focus) {
-            self.set_selected(i, state);
-            return;
-        }
-        // The focused card vanished (killed/removed): land on the previous card.
-        if let Some(i) = self.fallback_after_removal(prior.selected) {
-            self.set_selected(i, state);
-        }
-    }
-
-    /// The card to land on after the selected card vanished (killed/removed): the
-    /// previous selectable card, or the first selectable when none precedes it.
-    /// Section titles are never landed on - they are not cards, so the fallback walks
-    /// past them to the nearest card. Operates on the freshly rebuilt `self.rows`.
-    fn fallback_after_removal(&self, prior_selected: usize) -> Option<usize> {
-        self.rows[..prior_selected.min(self.rows.len())]
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, r)| r.selectable())
-            .map(|(i, _)| i)
-            .or_else(|| self.rows.iter().position(Row::selectable))
     }
 
     /// The row index targeting the same node as `focus`, if it survives a
@@ -1479,16 +1486,25 @@ fn session_addr_of(reference: &RowRef) -> Option<Address> {
     }
 }
 
-/// Whether two row references target the same row across a rebuild (host by source,
-/// section by source, session by address), so the selection stays put on a poll /
-/// re-scan. A section title is a source's header and matches only itself.
+/// The source a source card names: a section title or a host-state card. A source shows
+/// as exactly one of the two on any list, the title while it has sessions to show and
+/// the host-state card otherwise, so both are the one card of that source.
+fn card_source(reference: &RowRef) -> Option<&str> {
+    match reference {
+        RowRef::Host { source, .. } | RowRef::Section { source } => Some(source),
+        RowRef::Session { .. } => None,
+    }
+}
+
+/// Whether two row references name the same card across a rebuild: a session by its
+/// address, a source by its id whether it shows as its section title or its host-state
+/// card. The selection holds on that identity, so a source gaining or losing its
+/// sessions keeps it.
 fn same_node(a: &RowRef, b: &RowRef) -> bool {
-    match (a, b) {
-        (RowRef::Host { source: x, .. }, RowRef::Host { source: y, .. }) => x == y,
-        (RowRef::Section { source: x, .. }, RowRef::Section { source: y, .. }) => x == y,
-        (RowRef::Host { .. }, _) | (_, RowRef::Host { .. }) => false,
-        (RowRef::Section { .. }, _) | (_, RowRef::Section { .. }) => false,
-        _ => session_addr_of(a) == session_addr_of(b),
+    match (card_source(a), card_source(b)) {
+        (Some(x), Some(y)) => x == y,
+        (None, None) => session_addr_of(a) == session_addr_of(b),
+        _ => false,
     }
 }
 
@@ -1502,6 +1518,9 @@ fn terminal_cursor_pos(area: Rect, cursor: (u16, u16)) -> ratatui::layout::Posit
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_lineage;
 
 #[cfg(test)]
 mod tests_position;

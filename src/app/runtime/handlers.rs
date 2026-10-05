@@ -260,19 +260,7 @@ impl Runtime {
                         })
                         .collect()
                 };
-                // The card that stood for the machine goes when no source takes its name:
-                // nothing answered, so there is nothing to show, or several muxes did and
-                // each has a card of its own.
-                if first && !specs.iter().any(|(_, id)| *id == machine) {
-                    let effects = update(
-                        model,
-                        Msg::RemoveSource {
-                            source: machine.clone(),
-                            clear_tracking: false,
-                        },
-                    );
-                    debug_assert!(effects.is_empty());
-                }
+                let machine_card_goes = first && !specs.iter().any(|(_, id)| *id == machine);
                 for (bin, id) in specs {
                     if hosts.get(&id).is_some() {
                         continue;
@@ -307,6 +295,21 @@ impl Runtime {
                     );
                     debug_assert!(effects.is_empty());
                     scan_or_dispatch_host(mgr, hosts, model, &id, vc, vr, scan_pool);
+                }
+                // The card that stood for the machine goes when no source takes its name:
+                // nothing answered, so there is nothing to show, or several muxes did and
+                // each has a card of its own. It goes AFTER the sources it resolved into
+                // are on the list, so a selection on it moves to the machine's first source
+                // card rather than past a machine that has no card yet.
+                if machine_card_goes {
+                    let effects = update(
+                        model,
+                        Msg::RemoveSource {
+                            source: machine.clone(),
+                            clear_tracking: false,
+                        },
+                    );
+                    debug_assert!(effects.is_empty());
                 }
             }
             EventEffect::ApplyRoster {

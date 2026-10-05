@@ -361,7 +361,9 @@ field.
   `remove` and `Enter` removes those lines too; `Esc` keeps them.
 - **Filter** (`prefix /`): the list re-filters as you type, so which cards survive is
   visible before you press anything else; the selection holds its card while that
-  survives and lands on the first remaining card otherwise. `Enter` closes it and
+  survives and otherwise moves to the nearest visible card related to it: a hidden
+  session goes to its section title, and a hidden source to the card that takes its
+  place. `Enter` closes it and
   keeps the filter; `Esc` restores the filter you opened with. With the filter
   applied and the input closed, `Esc` in the nav clears it. The top border counts
   the cards kept of the cards listed.

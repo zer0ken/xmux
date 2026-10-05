@@ -632,6 +632,21 @@ no function, and no test, so renaming code is never a documentation change.
   the held password, the metadata and display connections, and the shared SSH master go.
   SSH config is not changed. The key steps run off the event loop, and a second logout
   is refused while one is running.
+- **FR-B40** - The selection follows the user's interest
+  (`docs/adr/0007-context-follows-the-users-interest.md`). When the selected card leaves
+  the list, by a scan, a re-scan, a poll, a logout, a session ending, mux discovery, or
+  the filter, the selection moves to the nearest surviving card of its lineage: a
+  session to its source's card (the section title, or the source's host-state card when
+  it has no session left), a source to its machine's own card and else to the machine's
+  first source card in card order, and a machine with nothing left to the card that now
+  holds its place in card order (the next one, else the previous). A host-state card
+  that resolves into several sources therefore hands the selection to the first of
+  them. A new card takes the selection only when it is what the user asked for (the
+  session `prefix n` created, the session under the selection when a full re-scan
+  returns it) or, at launch, the first session to appear (FR-D5); any other new card
+  leaves the selection where it is. A selection that lands on a source card shows that
+  card's screen, never another session's grid.
+
 ## C. Switching (the keystone)
 
 - **FR-C1** - A same-server pick lands on the picked session. Each mux's driver owns
