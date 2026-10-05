@@ -1,8 +1,9 @@
 //! Hosts to check, grouped by cause with the reason each host last reported.
 //! Lines are built from the entries the switcher derives.
 
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use crate::model::FailureKind;
 use crate::ui::palette::{self, Palette};
@@ -29,60 +30,77 @@ fn cause(kind: FailureKind, palette: &Palette) -> (&'static str, Style, &'static
     }
 }
 
-/// The table's title and lines at `width` inner cells. The selected entry is painted in
-/// the selection style; its reason and every other reason wrap under it rather than being
-/// cut. The last line names the table's keys, read from the key table.
+/// The table's top-border meta and lines at `width` inner cells. Each cause is a group
+/// title with its glyph in the state's colour, and each host under it a row in the
+/// key-column grammar: the host bold, then its reason muted, wrapped under the reason
+/// column rather than cut. The selected row is reversed across the whole width with `❯`.
 pub(crate) fn check_lines(
     entries: &[CheckEntry],
     selected: usize,
     width: u16,
     visible_rows: usize,
-    keys: &str,
     palette: &Palette,
 ) -> (String, Vec<Line<'static>>) {
     let dim = Style::default().fg(palette.decoration);
-    let title = "hosts to check".to_string();
     if entries.is_empty() {
         return (
-            title,
+            String::new(),
             vec![Line::from(Span::styled(
                 " nothing to check: every host answered",
                 dim,
             ))],
         );
     }
-    let indent = 5usize;
-    let words = (width as usize).saturating_sub(indent + 1).max(1) as u16;
+    let lw = entries
+        .iter()
+        .map(|e| UnicodeWidthStr::width(e.label.as_str()))
+        .max()
+        .unwrap_or(0);
+    let lead = 3 + lw + 2;
+    let words = (width as usize).saturating_sub(lead + 1).max(1) as u16;
+    let bold = palette::interaction_key_style();
     let mut lines = Vec::new();
     let mut last: Option<FailureKind> = None;
     let mut selected_line = 0;
     for (i, entry) in entries.iter().enumerate() {
         if last != Some(entry.kind) {
             let (glyph, style, word) = cause(entry.kind, palette);
-            let count = entries.iter().filter(|e| e.kind == entry.kind).count();
             lines.push(Line::from(vec![
                 Span::styled(format!(" {glyph} "), style),
-                Span::styled(format!("{word} · {count}"), dim),
+                Span::styled(word.to_string(), dim.add_modifier(Modifier::BOLD)),
             ]));
             last = Some(entry.kind);
         }
-        let mut line = Line::from(Span::raw(format!("   {}", entry.label)));
-        if i == selected {
-            selected_line = lines.len();
-            line = line.style(palette::selection_style(palette));
+        let chosen = i == selected;
+        let pad = lw.saturating_sub(UnicodeWidthStr::width(entry.label.as_str()));
+        let reason = crate::ui::modal::wrap_text(&entry.reason, words);
+        // The selected row is reversed as one surface, so its spans keep no colour that
+        // the reversal would turn into a second background.
+        let dim = if chosen { Style::default() } else { dim };
+        for (n, chunk) in reason.into_iter().enumerate() {
+            let mut spans = if n == 0 {
+                vec![
+                    Span::raw(if chosen {
+                        format!(" {} ", crate::ui::switcher::SELECTED_MARK)
+                    } else {
+                        "   ".to_string()
+                    }),
+                    Span::styled(entry.label.clone(), bold),
+                    Span::raw(" ".repeat(pad + 2)),
+                    Span::styled(chunk, dim),
+                ]
+            } else {
+                vec![Span::raw(" ".repeat(lead)), Span::styled(chunk, dim)]
+            };
+            if n == 0 && chosen {
+                selected_line = lines.len();
+                let used: usize = spans.iter().map(|s| s.width()).sum();
+                spans.push(Span::raw(" ".repeat((width as usize).saturating_sub(used))));
+                lines.push(Line::from(spans).style(palette::selection_style(palette)));
+            } else {
+                lines.push(Line::from(spans));
+            }
         }
-        lines.push(line);
-        for chunk in crate::ui::modal::wrap_text(&entry.reason, words) {
-            lines.push(Line::from(Span::styled(
-                format!("{:indent$}{chunk}", ""),
-                dim,
-            )));
-        }
-    }
-    lines.push(Line::from(""));
-    for chunk in crate::ui::modal::wrap_text(keys, (width as usize).saturating_sub(2).max(1) as u16)
-    {
-        lines.push(Line::from(Span::styled(format!(" {chunk}"), dim)));
     }
     if lines.len() > visible_rows && visible_rows > 0 {
         let start = selected_line
@@ -90,7 +108,7 @@ pub(crate) fn check_lines(
             .min(lines.len() - visible_rows);
         lines = lines.into_iter().skip(start).take(visible_rows).collect();
     }
-    (title, lines)
+    (entries.len().to_string(), lines)
 }
 
 #[cfg(test)]
@@ -119,29 +137,26 @@ mod tests {
             entry("db-01", FailureKind::ListFailed),
         ];
         let p = Palette::default();
-        let (title, lines) = check_lines(&entries, 1, 60, usize::MAX, "keys", &p);
-        assert_eq!(title, "hosts to check");
-        let texts: Vec<String> = lines.iter().map(text).collect();
+        let (meta, lines) = check_lines(&entries, 1, 40, usize::MAX, &p);
+        assert_eq!(meta, "4");
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| text(l).trim_end().to_string())
+            .collect();
         assert_eq!(
             texts,
             [
-                " ? login needed · 1",
-                "   gpu-02",
-                "     gpu-02 said no",
-                " ▲ unreachable · 2",
-                "   web-03",
-                "     web-03 said no",
-                "   web-04",
-                "     web-04 said no",
-                " ✗ list failed · 1",
-                "   db-01",
-                "     db-01 said no",
-                "",
-                " keys",
+                " ? login needed",
+                "   gpu-02  gpu-02 said no",
+                " ▲ unreachable",
+                " ❯ web-03  web-03 said no",
+                "   web-04  web-04 said no",
+                " ✗ list failed",
+                "   db-01   db-01 said no",
             ]
         );
         assert_eq!(
-            lines[4].style,
+            lines[3].style,
             palette::selection_style(&p),
             "the selected row"
         );
@@ -150,8 +165,8 @@ mod tests {
 
     #[test]
     fn an_empty_table_says_every_host_answered() {
-        let (title, lines) = check_lines(&[], 0, 40, usize::MAX, "keys", &Palette::default());
-        assert_eq!(title, "hosts to check");
+        let (meta, lines) = check_lines(&[], 0, 40, usize::MAX, &Palette::default());
+        assert_eq!(meta, "");
         assert_eq!(lines.len(), 1);
         assert!(text(&lines[0]).contains("every host answered"));
     }
@@ -161,7 +176,7 @@ mod tests {
         let entries: Vec<_> = (0..20)
             .map(|i| entry(&format!("host-{i:02}"), FailureKind::Unreachable))
             .collect();
-        let (_, lines) = check_lines(&entries, 19, 50, 8, "keys", &Palette::default());
+        let (_, lines) = check_lines(&entries, 19, 50, 8, &Palette::default());
         assert_eq!(lines.len(), 8);
         assert!(lines.iter().any(|line| text(line).contains("host-19")));
         assert!(lines

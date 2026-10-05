@@ -6,9 +6,9 @@
 //! without its name.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -301,6 +301,17 @@ pub(crate) fn place(room: Rect, position: NavPosition, nav_hidden: bool, size: (
     }
 }
 
+/// A key cell's style: bold in the accent. Every surface that lists keys in rows (the key
+/// list, the command palette, the help) paints its key column with it.
+pub(crate) fn key_cell_style(palette: &palette::Palette) -> Style {
+    palette::interaction_key_style().fg(palette.accent)
+}
+
+/// A section title's style in a key listing: muted.
+pub(crate) fn title_style(palette: &palette::Palette) -> Style {
+    Style::default().fg(palette.disabled)
+}
+
 /// What the key list's borders say: the prefix it is titled with, the hidden
 /// host count on the bottom border's left, and the xmux version on its right.
 pub(crate) struct Border<'a> {
@@ -326,16 +337,7 @@ pub(crate) fn render(
         version,
     } = border;
     frame.render_widget(Clear, rect);
-    let mut block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette.decoration))
-        .title(Span::styled(
-            format!(" {prefix} "),
-            Style::default()
-                .fg(palette.accent)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::reset());
+    let mut block = crate::ui::modal::popup_block(prefix, "", rect.width, palette);
     let status_w = if status.is_empty() {
         0
     } else {
@@ -367,8 +369,8 @@ pub(crate) fn render(
         );
     }
     frame.render_widget(block, rect);
-    let key_style = palette::interaction_key_style().fg(palette.accent);
-    let title_style = Style::default().fg(palette.disabled);
+    let key_style = key_cell_style(palette);
+    let title_style = title_style(palette);
     let x0 = rect.x + 1 + PAD;
     for (c, column) in list.columns.iter().enumerate() {
         let x = x0 + c as u16 * (list.column_width + GAP);

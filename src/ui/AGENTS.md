@@ -18,11 +18,9 @@ view-local state (flash, spinner, view border colours, prefix, ready, the select
 hint). The hint bar rests as the nav's prefix indicator: a label on a side column's
 bottom row, and at the right end of the view border row in a band. A floating bar
 spans the full width in a side layout. A band's selection hint shares the view border
-with the prefix and temporarily takes the place of offscreen counts. An input uses
-the band's seam row, with an adjacent guide row when the complete text needs more
-space. The indicator
-shows the prefix alone at rest
-and while a prefix interaction is live. The chrome instance
+with the prefix and temporarily takes the place of offscreen counts. The indicator
+shows the prefix alone at rest,
+while a prefix interaction is live, and while a modal is open. The chrome instance
 itself lives in the runtime state, fed by the app each frame and rendered from it.
 
 The key list module lays out and paints the box a live prefix opens from the indicator

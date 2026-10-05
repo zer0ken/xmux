@@ -22,12 +22,12 @@ struct PopupDrag {
 }
 
 /// The transient geometry of the active modal popup, owned by the switcher: the
-/// drag `offset` from the centered position, the `rect` it was last drawn at (for
+/// drag `offset` from its anchored position, the `rect` it was last drawn at (for
 /// border hit-testing), and the in-flight border `drag`. The drag behavior is
 /// self-contained here so the switcher only forwards mouse events.
 #[derive(Default)]
 pub(crate) struct PopupGeometry {
-    /// Drag offset (cells) applied to a modal popup's centered position. Reset
+    /// Drag offset (cells) applied to a modal popup's anchored position. Reset
     /// to (0,0) when a popup opens; updated while its border is dragged.
     pub(crate) offset: (i16, i16),
     /// The drawn rect of the active modal popup (help/input/confirm), copied from the
@@ -87,7 +87,7 @@ impl PopupGeometry {
         self.drag = None;
     }
 
-    /// Resets a modal popup to its centered position (called when one opens).
+    /// Resets a modal popup to its anchored position (called when one opens).
     pub(crate) fn reset(&mut self) {
         self.offset = (0, 0);
         self.drag = None;
@@ -272,35 +272,68 @@ pub(crate) fn help_size(
         .iter()
         .map(|r| match r {
             HelpRow::Head(h) => UnicodeWidthStr::width(h.as_str()) + 1,
-            HelpRow::Key(_, d) => kw + 4 + UnicodeWidthStr::width(d.as_str()),
+            HelpRow::Key(k, d) => (1 + kw + 2 + UnicodeWidthStr::width(d.as_str()))
+                .max(1 + UnicodeWidthStr::width(k.as_str())),
         })
         .max()
         .unwrap_or(0);
-    (w as u16, rows.len() as u16 + 1)
+    (w as u16, help_line_count(&rows, kw) as u16 + 1)
 }
 
-/// The furthest the help scrolls: the offset that shows the last page of `rows` rows in a
-/// popup with `visible` inner rows, one of which is the search line. The paint and the
+/// The furthest the help scrolls: the offset that shows the last page of `lines` lines in
+/// a popup with `visible` inner rows, one of which is the search line. The paint and the
 /// scroll keys both hold to it.
-pub(crate) fn help_max_scroll(rows: usize, visible: u16) -> usize {
-    rows.saturating_sub((visible as usize).saturating_sub(1))
+pub(crate) fn help_max_scroll(lines: usize, visible: u16) -> usize {
+    lines.saturating_sub((visible as usize).saturating_sub(1))
 }
 
+/// The widest a help key cell is. A key wider than the column takes a row of its own,
+/// with its description on the next row under the description column.
+const HELP_KEY_CAP: usize = 14;
+
+/// The help's key column: the widest key among the rows of the key sections, capped at
+/// [`HELP_KEY_CAP`]. The mouse and glyph rows name gestures and glyphs rather than keys,
+/// so they do not widen it.
 fn key_column_width(rows: &[HelpRow]) -> usize {
-    rows.iter()
-        .filter_map(|r| match r {
-            HelpRow::Key(k, _) => Some(UnicodeWidthStr::width(k.as_str())),
-            HelpRow::Head(_) => None,
-        })
-        .max()
-        .unwrap_or(0)
+    let mut section = "";
+    let mut widest = 0;
+    for r in rows {
+        match r {
+            HelpRow::Head(h) => section = h.as_str(),
+            HelpRow::Key(k, _) if !matches!(section, "mouse" | GLYPH_SECTION) => {
+                widest = widest.max(UnicodeWidthStr::width(k.as_str()));
+            }
+            HelpRow::Key(..) => {}
+        }
+    }
+    widest.min(HELP_KEY_CAP)
 }
 
-/// The help modal's `(title, lines)` for a popup with `visible` inner rows: the search
-/// line, then the window of matching rows that starts `scroll` rows down, held so the
-/// last page stays full. tmux mode-tree style: a right-aligned, bold key column, a `│`
-/// rule, then the description. The title says which rows are on screen whenever they
-/// are not all of them.
+fn help_line_count(rows: &[HelpRow], kw: usize) -> usize {
+    rows.iter()
+        .map(|r| match r {
+            HelpRow::Key(k, _) if UnicodeWidthStr::width(k.as_str()) > kw => 2,
+            _ => 1,
+        })
+        .sum()
+}
+
+/// How many lines the help paints for `query`, the count its scroll is held to.
+pub(crate) fn help_display_len(
+    prefix: &str,
+    nav_position: crate::ui::switcher::NavPosition,
+    query: &str,
+) -> usize {
+    let all = help_rows(prefix, nav_position);
+    let kw = key_column_width(&all);
+    help_line_count(&matching_help_rows(&all, query), kw)
+}
+
+/// The help modal's `(meta, lines)` for a popup with `visible` inner rows: the search
+/// field, then the window of matching lines that starts `scroll` lines down, held so the
+/// last page stays full. The rows read like the key list: a left-aligned bold key cell,
+/// whitespace, then the muted description. The meta says which lines are on screen
+/// whenever they are not all of them.
 pub(crate) fn help_lines(
     prefix: &str,
     nav_position: crate::ui::switcher::NavPosition,
@@ -312,80 +345,113 @@ pub(crate) fn help_lines(
     let all = help_rows(prefix, nav_position);
     let kw = key_column_width(&all);
     let rows = matching_help_rows(&all, query);
-    let bold = palette::interaction_key_style();
-    let accent = Style::default().fg(palette.accent);
-    let dim = Style::default().fg(palette.disabled);
-    let rule = Span::styled("│ ", Style::default().fg(palette.decoration));
-    // The search line is never scrolled or filtered away, so the way out stays on it.
-    let mut search = if query.is_empty() {
-        vec![Span::styled(" type to search", dim)]
-    } else {
-        vec![
-            Span::styled(" search ", dim),
-            Span::styled(query.to_string(), bold),
-            Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
-        ]
-    };
-    search.push(Span::styled(" · ", dim));
-    search.push(Span::styled("Esc", bold));
-    search.push(Span::styled(" closes", dim));
-    let search = Line::from(search);
+    let key = crate::ui::keylist::key_cell_style(palette);
+    let muted = Style::default().fg(palette.decoration);
+    let head = crate::ui::keylist::title_style(palette).add_modifier(Modifier::BOLD);
+    // The search field is never scrolled or filtered away.
+    let mut search = vec![Span::styled(" / ", muted)];
+    search.extend(text_field(
+        query,
+        query.chars().count(),
+        true,
+        "type to search",
+        palette,
+    ));
+    let body: Vec<Line<'static>> = rows
+        .iter()
+        .flat_map(|r| match r {
+            HelpRow::Head(h) => vec![Line::from(Span::styled(format!(" {h}"), head))],
+            HelpRow::Key(k, d) if UnicodeWidthStr::width(k.as_str()) > kw => vec![
+                Line::from(vec![Span::raw(" "), Span::styled(k.clone(), key)]),
+                Line::from(vec![
+                    Span::raw(" ".repeat(1 + kw + 2)),
+                    Span::styled(d.clone(), muted),
+                ]),
+            ],
+            HelpRow::Key(k, d) => {
+                let pad = kw.saturating_sub(UnicodeWidthStr::width(k.as_str()));
+                vec![Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(k.clone(), key),
+                    Span::raw(" ".repeat(pad + 2)),
+                    Span::styled(d.clone(), muted),
+                ])]
+            }
+        })
+        .collect();
     let window = (visible as usize).saturating_sub(1);
-    let offset = scroll.min(help_max_scroll(rows.len(), visible));
-    let mut lines = vec![search];
+    let offset = scroll.min(help_max_scroll(body.len(), visible));
+    let total = body.len();
+    let mut lines = vec![Line::from(search)];
     if rows.is_empty() {
-        lines.push(Line::from(Span::styled(" no key or glyph matches", dim)));
+        lines.push(Line::from(Span::styled(" no key or glyph matches", muted)));
     }
-    lines.extend(rows.iter().skip(offset).take(window).map(|r| match r {
-        HelpRow::Head(h) => Line::from(Span::styled(
-            format!(" {h}"),
-            accent.add_modifier(Modifier::BOLD),
-        )),
-        HelpRow::Key(k, d) => {
-            let pad = kw.saturating_sub(UnicodeWidthStr::width(k.as_str()));
-            Line::from(vec![
-                Span::styled(format!(" {}{k} ", " ".repeat(pad)), bold),
-                rule.clone(),
-                Span::raw(d.clone()),
-            ])
-        }
-    }));
-    let title = if rows.len() > window && window > 0 {
-        let last = (offset + window).min(rows.len());
-        format!("keys {}-{last} of {}", offset + 1, rows.len())
+    lines.extend(body.into_iter().skip(offset).take(window));
+    let meta = if total > window && window > 0 {
+        let last = (offset + window).min(total);
+        format!("{}-{last} of {total}", offset + 1)
     } else {
-        "keys".to_string()
+        String::new()
     };
-    (title, lines)
+    (meta, lines)
 }
 
-/// Splits the input prompt at the caret. The buffer uses a cell-width window when
-/// it grows past the row, and a narrow row keeps the typed value ahead of its label.
-fn input_segments(input: &Input, width: u16) -> (String, String, String, String, String) {
-    let mut title = input_title(input.mode).to_string();
-    let mut guide = match input.mode {
-        InputMode::New => "  name: ",
-        InputMode::Filter => "  sessions: ",
-        InputMode::Jump => "  card: ",
-        InputMode::Logout => "  confirm: ",
+/// The help popup's title on its top border.
+pub(crate) const HELP_TITLE: &str = "help";
+
+/// One key a surface offers in its hint grammar: the key token and the words after it.
+/// The words may be empty, for a key whose meaning the surface around it already says.
+pub(crate) type Hint = (&'static str, &'static str);
+
+fn hint_width(h: &Hint) -> usize {
+    UnicodeWidthStr::width(h.0)
+        + if h.1.is_empty() {
+            0
+        } else {
+            1 + UnicodeWidthStr::width(h.1)
+        }
+}
+
+/// The cells `hints` take on one line, ` · ` between them.
+pub(crate) fn hints_width(hints: &[Hint]) -> usize {
+    hints.iter().map(hint_width).sum::<usize>() + 3 * hints.len().saturating_sub(1)
+}
+
+/// The hints that fit `width` cells. A hint line never wraps: the hints before the last
+/// one are given up from the end, and the last one (the way out) is always kept.
+pub(crate) fn fit_hints(hints: &[Hint], width: usize) -> Vec<Hint> {
+    let mut kept = hints.to_vec();
+    while kept.len() > 1 && hints_width(&kept) > width {
+        kept.remove(kept.len() - 2);
     }
-    .to_string();
-    if title.len() + guide.len() + UnicodeWidthStr::width(input.buffer.as_str()) + 1
-        > width as usize
-        && title.len() + 2 + UnicodeWidthStr::width(input.buffer.as_str()) < width as usize
-    {
-        guide = ": ".into();
+    kept
+}
+
+/// `hints` as styled spans: the key token bold, its words and the separators muted.
+pub(crate) fn hint_spans(hints: &[Hint], palette: &palette::Palette) -> Vec<Span<'static>> {
+    let key = palette::interaction_key_style();
+    let muted = Style::default().fg(palette.decoration);
+    let mut spans = Vec::new();
+    for (i, (k, words)) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", muted));
+        }
+        spans.push(Span::styled(k.to_string(), key));
+        if !words.is_empty() {
+            spans.push(Span::styled(format!(" {words}"), muted));
+        }
     }
-    if title.len() + guide.len() + 1 >= width as usize {
-        title.clear();
-        guide.clear();
-    }
-    let head_w = title.len() + guide.len();
-    // The cursor reserves one cell at the end; other characters use their terminal width.
-    let avail = (width as i32 - head_w as i32).max(1) as usize;
-    let chars: Vec<char> = input.buffer.chars().collect();
+    spans
+}
+
+/// The cells of a text value around the caret, windowed so the caret stays in view when
+/// the value is wider than `avail` cells: `(before, at, after)`, where `at` is the cell
+/// the caret covers (a space past the end).
+fn caret_window(value: &str, cursor: usize, avail: usize) -> (String, String, String) {
+    let avail = avail.max(1);
+    let chars: Vec<char> = value.chars().collect();
     let len = chars.len();
-    let cur = input.cursor.min(len);
+    let cur = cursor.min(len);
     let glyph_width = |c: char| UnicodeWidthChar::width(c).unwrap_or(0);
     let mut start = cur;
     let mut end = if cur == len { len } else { cur + 1 };
@@ -413,98 +479,436 @@ fn input_segments(input: &Input, width: u16) -> (String, String, String, String,
     } else {
         (" ".to_string(), String::new())
     };
-    (title, guide, before, at, after)
+    (before, at, after)
 }
 
-/// The active input as the plain hint-bar text (no caret styling): the feature head
-/// followed by the windowed buffer. Lets the hint bar size itself and tests read the
-/// exact line without a backend.
-pub(crate) fn input_hint_text(input: &Input, width: u16) -> String {
-    let (title, guide, before, at, after) = input_segments(input, width);
-    format!("{title}{guide}{before}{at}{after}")
+/// A text field's value cells: the value in the default foreground with one reversed
+/// caret cell at the edit position, windowed to `avail` cells. An empty value shows the
+/// dim `placeholder` under the caret.
+fn text_field(
+    value: &str,
+    cursor: usize,
+    caret: bool,
+    placeholder: &str,
+    palette: &palette::Palette,
+) -> Vec<Span<'static>> {
+    text_field_in(value, cursor, caret, placeholder, usize::MAX, palette)
 }
 
-fn input_guide(input: &Input) -> String {
-    match input.mode {
-        InputMode::New => "Enter create · Esc cancel · empty = auto".into(),
-        InputMode::Filter => format!(
-            "{} · Enter apply · Esc cancel",
-            input
-                .label
-                .trim()
-                .strip_prefix("filter sessions · ")
-                .unwrap_or(input.label.trim())
-        ),
-        InputMode::Jump => format!("{} · Enter select · Esc cancel", input.label.trim()),
-        InputMode::Logout => format!(
-            "{} · type logout, Enter confirm · Esc cancel",
-            input.label.trim()
-        ),
+fn text_field_in(
+    value: &str,
+    cursor: usize,
+    caret: bool,
+    placeholder: &str,
+    avail: usize,
+    palette: &palette::Palette,
+) -> Vec<Span<'static>> {
+    let reversed = Style::default().add_modifier(Modifier::REVERSED);
+    let dim = Style::default().fg(palette.disabled);
+    if value.is_empty() {
+        let mut chars = placeholder.chars();
+        return match (caret, chars.next()) {
+            (true, Some(first)) => vec![
+                Span::styled(first.to_string(), dim.add_modifier(Modifier::REVERSED)),
+                Span::styled(chars.collect::<String>(), dim),
+            ],
+            (true, None) => vec![Span::styled(" ", reversed)],
+            (false, _) => vec![Span::styled(placeholder.to_string(), dim)],
+        };
     }
+    if !caret {
+        return vec![Span::raw(value.to_string())];
+    }
+    let (before, at, after) = caret_window(value, cursor, avail);
+    vec![
+        Span::raw(before),
+        Span::styled(at, reversed),
+        Span::raw(after),
+    ]
 }
 
-pub(crate) fn input_hint_lines(input: &Input, width: u16) -> Vec<String> {
-    let prompt = input_hint_text(input, width);
-    let guide = input_guide(input);
-    if UnicodeWidthStr::width(prompt.as_str()) + 2 + UnicodeWidthStr::width(guide.as_str())
-        <= width as usize
-    {
-        vec![format!("{prompt}  {guide}")]
+/// The cell offset of a text field's caret in `line`: the last reversed span, which is
+/// the caret cell every field paints. The terminal's own cursor is placed there, because
+/// an input method draws what it is composing at that cursor.
+pub(crate) fn caret_offset(line: &Line) -> Option<u16> {
+    let mut x = 0usize;
+    let mut found = None;
+    for span in &line.spans {
+        let w = span.width();
+        if w > 0 && span.style.add_modifier.contains(Modifier::REVERSED) {
+            found = Some(x);
+        }
+        x += w;
+    }
+    found.map(|x| x as u16)
+}
+
+/// An input's value as a text field `avail` cells wide.
+pub(crate) fn input_field(
+    input: &Input,
+    avail: usize,
+    placeholder: &str,
+    palette: &palette::Palette,
+) -> Vec<Span<'static>> {
+    text_field_in(
+        &input.buffer,
+        input.cursor,
+        true,
+        placeholder,
+        avail,
+        palette,
+    )
+}
+
+/// `text` cut in the middle with `…` to at most `width` cells.
+pub(crate) fn middle_cut(text: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    if width <= 1 {
+        return "…".repeat(width);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let front_budget = (width - 1).div_ceil(2);
+    let back_budget = width - 1 - front_budget;
+    let take = |iter: &mut dyn Iterator<Item = &char>, budget: usize| {
+        let mut out = Vec::new();
+        let mut used = 0;
+        for &ch in iter {
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + cw > budget {
+                break;
+            }
+            out.push(ch);
+            used += cw;
+        }
+        out
+    };
+    let front: String = take(&mut chars.iter(), front_budget).into_iter().collect();
+    let back: String = take(&mut chars.iter().rev(), back_budget)
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{front}…{back}")
+}
+
+/// The filter popup at `width` outer cells: `/` and the query, with the cards kept of the
+/// cards listed as the meta.
+pub(crate) fn filter_popup(
+    input: &Input,
+    matches: usize,
+    total: usize,
+    width: u16,
+    palette: &palette::Palette,
+) -> (PopupFrame, Vec<Line<'static>>) {
+    let room = (width as usize).saturating_sub(2 + 3 + 1).max(1);
+    let mut row = vec![Span::styled(" / ", Style::default().fg(palette.decoration))];
+    row.extend(input_field(input, room, "", palette));
+    (
+        PopupFrame {
+            title: "filter".into(),
+            meta: format!("{matches} of {total}"),
+            hints: FILTER_HINTS.to_vec(),
+        },
+        vec![Line::from(row)],
+    )
+}
+
+/// The jump popup at `width` outer cells: `card 4▌` and, muted, the card the number names
+/// now, with the numbers there are as the meta. `refused` is a number Enter found no card
+/// for: the row then states that in the error colour.
+pub(crate) fn jump_popup(
+    input: &Input,
+    target: Option<&str>,
+    refused: bool,
+    last: usize,
+    width: u16,
+    palette: &palette::Palette,
+) -> (PopupFrame, Vec<Line<'static>>) {
+    let muted = Style::default().fg(palette.decoration);
+    let row = if refused {
+        Line::from(Span::styled(
+            format!(" ✗ no card {}", input.buffer.trim()),
+            Style::default().fg(palette.error),
+        ))
     } else {
-        let mut lines = vec![prompt];
-        lines.extend(wrap_text(&guide, width));
-        lines
-    }
+        let mut spans = vec![Span::styled(" card ", muted)];
+        spans.extend(input_field(input, 6, "", palette));
+        let used: usize = spans.iter().map(|s| s.width()).sum();
+        if let Some(name) = target {
+            let room = (width as usize).saturating_sub(2 + used + 2 + 1);
+            if room > 0 {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(middle_cut(name, room), muted));
+            }
+        }
+        Line::from(spans)
+    };
+    (
+        PopupFrame {
+            title: "jump".into(),
+            meta: format!("1-{last}"),
+            hints: JUMP_HINTS.to_vec(),
+        },
+        vec![row],
+    )
 }
 
-/// The active input prompt, with a reversed caret and its full action guide when
-/// both fit. Otherwise the guide occupies following rows.
-pub(crate) fn input_hint_line(
+const JUMP_HINTS: &[Hint] = &[("Enter", "select"), ("Esc", "cancel")];
+
+/// The filter's keys on its bottom border.
+pub(crate) const FILTER_HINTS: &[Hint] = &[("Enter", "apply"), ("Esc", "cancel")];
+
+/// A popover's rows and the inner width they need: the label column muted, two cells of
+/// whitespace, then the value. The widest label sets the column.
+fn label_rows(
+    rows: Vec<(&'static str, Vec<Span<'static>>)>,
+    palette: &palette::Palette,
+) -> Vec<Line<'static>> {
+    let muted = Style::default().fg(palette.decoration);
+    let lw = rows
+        .iter()
+        .map(|(l, _)| UnicodeWidthStr::width(*l))
+        .max()
+        .unwrap_or(0);
+    rows.into_iter()
+        .map(|(label, value)| {
+            if label.is_empty() && value.is_empty() {
+                return Line::from("");
+            }
+            let mut spans = vec![Span::styled(format!(" {label:<lw$}  "), muted)];
+            spans.extend(value);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// The cells a row's label column takes, padding and gap included.
+fn label_lead(labels: &[&str]) -> usize {
+    1 + labels
+        .iter()
+        .map(|l| UnicodeWidthStr::width(*l))
+        .max()
+        .unwrap_or(0)
+        + 2
+}
+
+/// The narrowest a prompt popover is drawn.
+pub(crate) const POPOVER_MIN_WIDTH: u16 = 40;
+
+/// The new-session popover at `width` outer cells: its frame and rows. `host` is the
+/// `{host}/{mux}` the session lands on.
+pub(crate) fn new_session_popover(
+    host: &str,
     input: &Input,
     width: u16,
     palette: &palette::Palette,
-) -> Line<'static> {
-    let (title, guide, before, at, after) = input_segments(input, width);
-    let accent = Style::default()
-        .fg(palette.bar_accent)
-        .add_modifier(Modifier::BOLD);
-    let caret = Style::default().add_modifier(Modifier::REVERSED);
-    let mut spans = vec![
-        Span::styled(title, accent),
-        Span::raw(guide),
-        Span::raw(before),
-        Span::styled(at, caret),
-        Span::raw(after),
-    ];
-    if input_hint_lines(input, width).len() == 1 {
-        spans.push(Span::raw("  "));
-        spans.extend(input_guide_spans(&input_guide(input), palette));
-    }
-    Line::from(spans)
+) -> (PopupFrame, Vec<Line<'static>>) {
+    let lead = label_lead(&["host", "name"]);
+    let room = (width as usize).saturating_sub(2 + lead + 1).max(1);
+    let lines = label_rows(
+        vec![
+            ("host", vec![Span::raw(middle_cut(host, room))]),
+            ("name", input_field(input, room, "auto", palette)),
+        ],
+        palette,
+    );
+    (
+        PopupFrame {
+            title: "new session".into(),
+            meta: String::new(),
+            hints: NEW_SESSION_HINTS.to_vec(),
+        },
+        lines,
+    )
 }
 
-fn input_guide_spans(text: &str, palette: &palette::Palette) -> Vec<Span<'static>> {
-    let accent = Style::default()
-        .fg(palette.bar_accent)
-        .add_modifier(Modifier::BOLD);
-    let mut spans = Vec::new();
-    for (i, part) in text.split(" · ").enumerate() {
-        if i > 0 {
-            spans.push(Span::raw(" · "));
-        }
-        let (key, rest) = part.split_once(' ').unwrap_or((part, ""));
-        if matches!(key, "Enter" | "Esc") {
-            spans.push(Span::styled(key.to_string(), accent));
-            spans.push(Span::raw(format!(" {rest}")));
+const NEW_SESSION_HINTS: &[Hint] = &[("Enter", "create"), ("Esc", "cancel")];
+const LOGOUT_HINTS: &[Hint] = &[("Enter", "log out"), ("Esc", "cancel")];
+
+/// The new-session popover's outer size for `host`.
+pub(crate) fn new_session_size(host: &str) -> (u16, u16) {
+    let lead = label_lead(&["host", "name"]);
+    let w = (lead + UnicodeWidthStr::width(host) + 1 + 2) as u16;
+    let hints = (hints_width(NEW_SESSION_HINTS) + 6) as u16;
+    (w.max(hints).max(POPOVER_MIN_WIDTH), 4)
+}
+
+/// The label the logout confirm's field sits under.
+const LOGOUT_FIELD: &str = "type logout";
+
+/// The machine whose connections a logout closes: the popover's meta.
+fn logout_machine(input: &Input) -> String {
+    input
+        .source
+        .as_deref()
+        .map(|s| crate::session::machine_of(s).to_string())
+        .unwrap_or_default()
+}
+
+/// The cells the logout confirm's label column takes.
+fn logout_lead(input: &Input) -> usize {
+    let mut labels: Vec<&str> = input.facts.iter().map(|(l, _)| *l).collect();
+    labels.push(LOGOUT_FIELD);
+    label_lead(&labels)
+}
+
+/// The logout confirm popover's outer size, at most `max_w` wide.
+pub(crate) fn logout_size(input: &Input, max_w: u16) -> (u16, u16) {
+    let widest = input
+        .facts
+        .iter()
+        .map(|(_, v)| UnicodeWidthStr::width(v.as_str()))
+        .max()
+        .unwrap_or(0);
+    let w = ((logout_lead(input) + widest + 1 + 2) as u16)
+        .max((hints_width(LOGOUT_HINTS) + 6) as u16)
+        .max((logout_machine(input).len() + 16) as u16)
+        .max(POPOVER_MIN_WIDTH)
+        .min(max_w);
+    (w, input.facts.len() as u16 + 2 + 2)
+}
+
+/// The logout confirm popover at `width` outer cells: the facts as rows, a blank row, and
+/// the field the word `logout` is typed in.
+pub(crate) fn logout_popover(
+    input: &Input,
+    width: u16,
+    palette: &palette::Palette,
+) -> (PopupFrame, Vec<Line<'static>>) {
+    let room = (width as usize)
+        .saturating_sub(2 + logout_lead(input) + 1)
+        .max(1);
+    let mut rows: Vec<(&'static str, Vec<Span<'static>>)> = input
+        .facts
+        .iter()
+        .map(|(l, v)| (*l, vec![Span::raw(middle_cut(v, room))]))
+        .collect();
+    rows.push(("", Vec::new()));
+    rows.push((LOGOUT_FIELD, input_field(input, room, "logout", palette)));
+    (
+        PopupFrame {
+            title: "log out".into(),
+            meta: logout_machine(input),
+            hints: LOGOUT_HINTS.to_vec(),
+        },
+        label_rows(rows, palette),
+    )
+}
+
+/// The command palette's rows for a popup `inner` cells wide: the query field, then one
+/// row per command in the key list's grammar, the key cell bold in a column as wide as the
+/// widest key, then the description. The selected row is reversed across the whole width
+/// with `❯` in its first column. `entries` pairs each key cell with its description; an
+/// empty key is a login the palette offers, marked with the login-needed glyph.
+pub(crate) fn palette_lines(
+    query: &str,
+    entries: &[(String, String)],
+    key_w: usize,
+    selected: usize,
+    visible: usize,
+    inner: u16,
+    palette: &palette::Palette,
+) -> Vec<Line<'static>> {
+    let muted = Style::default().fg(palette.decoration);
+    let key = crate::ui::keylist::key_cell_style(palette);
+    let mut q = vec![Span::styled(" : ", muted)];
+    q.extend(text_field(query, query.chars().count(), true, "", palette));
+    let mut lines = vec![Line::from(q)];
+    if entries.is_empty() {
+        lines.push(Line::from(Span::styled(" no matching commands", muted)));
+        return lines;
+    }
+    let start = selected.saturating_sub(visible.saturating_sub(1));
+    for (i, (k, desc)) in entries.iter().enumerate().skip(start).take(visible) {
+        let chosen = i == selected;
+        // The selected row is reversed as one surface, so its key cell keeps its weight
+        // and no colour the reversal would turn into a second background.
+        let (cell, cell_style) = if k.is_empty() {
+            (
+                crate::ui::chrome::BLOCK_MARK.to_string(),
+                if chosen {
+                    Style::default()
+                } else {
+                    Style::default().fg(palette.warning)
+                },
+            )
+        } else if chosen {
+            (k.clone(), palette::interaction_key_style())
         } else {
-            spans.push(Span::raw(part.to_string()));
-        }
+            (k.clone(), key)
+        };
+        let pad = key_w.saturating_sub(UnicodeWidthStr::width(cell.as_str()));
+        let mut spans = vec![
+            Span::raw(if chosen {
+                format!(" {} ", crate::ui::switcher::SELECTED_MARK)
+            } else {
+                "   ".to_string()
+            }),
+            Span::styled(cell, cell_style),
+            Span::raw(" ".repeat(pad + 2)),
+            Span::raw(desc.clone()),
+        ];
+        let used: usize = spans.iter().map(|s| s.width()).sum();
+        spans.push(Span::raw(" ".repeat((inner as usize).saturating_sub(used))));
+        let line = Line::from(spans);
+        lines.push(if chosen {
+            line.style(palette::selection_style(palette))
+        } else {
+            line
+        });
     }
-    spans
+    lines
 }
 
-pub(crate) fn input_guide_line(text: &str, palette: &palette::Palette) -> Line<'static> {
-    Line::from(input_guide_spans(text, palette))
+/// The palette's keys on its bottom border.
+pub(crate) const PALETTE_HINTS: &[Hint] = &[("↑↓", "select"), ("Enter", "run"), ("Esc", "close")];
+/// The help's keys on its bottom border.
+pub(crate) const HELP_HINTS: &[Hint] = &[("↑↓", "scroll"), ("Esc", "close")];
+/// The hosts-to-check table's keys on its bottom border.
+pub(crate) const CHECK_HINTS: &[Hint] = &[("↑↓", "select"), ("Enter", "open"), ("Esc", "close")];
+/// The history's keys on its bottom border.
+pub(crate) const HISTORY_HINTS: &[Hint] = &[("Esc", "close")];
+
+/// What a popup's frame says: the accent title at the left of its top border, the muted
+/// meta at the right of it, and the keys at the right of its bottom border.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PopupFrame {
+    pub(crate) title: String,
+    pub(crate) meta: String,
+    pub(crate) hints: Vec<Hint>,
+}
+
+/// The rounded, opaque box every popup and the key list share: muted rule, the accent bold
+/// title in the top border's left end, and the muted `meta` at its right end where both fit
+/// with a corner's worth of rule between them.
+pub(crate) fn popup_block(
+    title: &str,
+    meta: &str,
+    width: u16,
+    palette: &palette::Palette,
+) -> Block<'static> {
+    let mut block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette.decoration))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default()
+                .fg(palette.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::reset());
+    let used = UnicodeWidthStr::width(title) + UnicodeWidthStr::width(meta) + 4 + 4;
+    if !meta.is_empty() && used <= width as usize {
+        block = block.title_top(
+            Line::from(Span::styled(
+                format!(" {meta} "),
+                Style::default().fg(palette.decoration),
+            ))
+            .right_aligned(),
+        );
+    }
+    block
 }
 
 /// Renders an opaque bordered popup at `rect` (titled, content `lines`), in tmux's
@@ -524,24 +928,23 @@ pub(crate) fn render_popup(
     frame: &mut Frame,
     area: Rect,
     rect: Rect,
-    title: &str,
+    chrome: &PopupFrame,
     lines: Vec<Line>,
     palette: &palette::Palette,
 ) {
     frame.render_widget(Clear, rect);
     // Rounded corners + a muted border + an accent bold title: the popup reads as a
     // floating panel over the content rather than a boxed region of it. The reset
-    // base style keeps the interior opaque (see the doc comment above).
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette.decoration))
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::default()
-                .fg(palette.accent)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::reset());
+    // base style keeps the interior opaque (see the doc comment above). The keys sit on
+    // the bottom border's right end and never wrap: what does not fit is given up.
+    let mut block = popup_block(&chrome.title, &chrome.meta, rect.width, palette);
+    let hints = fit_hints(&chrome.hints, (rect.width as usize).saturating_sub(6));
+    if !hints.is_empty() {
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(hint_spans(&hints, palette));
+        spans.push(Span::raw(" "));
+        block = block.title_bottom(Line::from(spans).right_aligned());
+    }
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), rect);
     if rect.x > area.x {
         let x = rect.x - 1;
@@ -555,44 +958,6 @@ pub(crate) fn render_popup(
     }
 }
 
-fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
-    let w = w.min(area.width);
-    let h = h.min(area.height);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect {
-        x,
-        y,
-        width: w,
-        height: h,
-    }
-}
-
-/// `centered_rect` shifted by `offset` (cells) and clamped fully inside `area`.
-pub(crate) fn offset_centered(w: u16, h: u16, area: Rect, offset: (i16, i16)) -> Rect {
-    let base = centered_rect(w, h, area);
-    let max_x = area.x + area.width.saturating_sub(base.width);
-    let max_y = area.y + area.height.saturating_sub(base.height);
-    let x = (base.x as i32 + offset.0 as i32).clamp(area.x as i32, max_x as i32) as u16;
-    let y = (base.y as i32 + offset.1 as i32).clamp(area.y as i32, max_y as i32) as u16;
-    Rect {
-        x,
-        y,
-        width: base.width,
-        height: base.height,
-    }
-}
-
-/// A short popup title for an input mode (shown on the box's top border).
-fn input_title(mode: InputMode) -> &'static str {
-    match mode {
-        InputMode::Filter => "filter",
-        InputMode::New => "new session",
-        InputMode::Jump => "jump",
-        InputMode::Logout => "logout",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,7 +966,7 @@ mod tests {
     use ratatui::Terminal;
 
     fn edit_input(buffer: &str) -> Input {
-        Input::new(InputMode::New, "t".into(), buffer.to_string(), None)
+        Input::new(InputMode::New, buffer.to_string(), None)
     }
 
     #[test]
@@ -626,78 +991,81 @@ mod tests {
     }
 
     #[test]
-    fn input_hint_windows_the_buffer_so_the_caret_stays_visible() {
-        // The input name and field label stay visible while there is room. A short
-        // buffer fits whole; a long one shows its tail with
-        // the caret at the right edge; a mid-buffer caret keeps the char under it in
-        // view. The line never exceeds `width`.
-        let mk = |buffer: &str, cursor: usize| {
-            let mut i = Input::new(
-                InputMode::Filter,
-                " filter sessions".into(),
-                buffer.into(),
-                None,
-            );
-            i.cursor = cursor;
-            i
-        };
-        // A short buffer fits whole, caret as the trailing cell.
-        assert_eq!(input_hint_text(&mk("ab", 2), 60), "filter  sessions: ab ");
-        // A buffer exactly the window shows its head, caret over the last shown char.
-        assert_eq!(
-            input_hint_text(&mk("0123456789", 5), 60),
-            "filter  sessions: 0123456789"
-        );
-        // A long buffer at the end: the head stays for context, the buffer's own head
-        // scrolls off, its tail shows, and the caret (a trailing cell) rides the right
-        // edge; the line is exactly `width`.
-        let long = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"; // 52 chars
-        let t = input_hint_text(&mk(long, 52), 60);
-        assert_eq!(
-            t.chars().count(),
-            60,
-            "line fills but never exceeds the bar: {t:?}"
-        );
-        assert!(
-            t.starts_with("filter  sessions: "),
-            "the feature head stays for context: {t:?}"
-        );
+    fn the_caret_window_keeps_the_caret_in_view() {
+        // A short value fits whole with the caret as the trailing cell; a long one shows
+        // its tail with the caret at the right edge; a mid-value caret keeps the char under
+        // it in view. The window never exceeds its cells.
+        let join = |(a, b, c): (String, String, String)| format!("{a}{b}{c}");
+        assert_eq!(join(caret_window("ab", 2, 40)), "ab ");
+        let long = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let t = join(caret_window(long, 52, 20));
+        assert_eq!(t.chars().count(), 20, "{t:?}");
         assert!(t.ends_with("XYZ "), "the tail survives: {t:?}");
-        // The BUFFER's own head scrolls off, not the guide.
-        let window: String = t
-            .chars()
-            .skip("filter  sessions: ".chars().count())
-            .collect();
-        assert!(
-            long.ends_with(window.trim_end()),
-            "the buffer window starts at its tail: {window:?}"
-        );
-        // A mid-buffer caret keeps the char it points at visible.
-        let alpha: String = ('a'..='z').chain('A'..='Z').collect(); // 52 chars, like `long`
-        let t2 = input_hint_text(&mk(&alpha, 45), 60);
-        let buf: Vec<char> = alpha.chars().collect();
-        assert!(
-            t2.ends_with(&format!("{}{}", buf[44], buf[45])),
-            "the char under a mid-buffer caret stays in view: {t2:?}"
-        );
-        assert_eq!(t2.chars().count(), 60, "still fits: {t2:?}");
-        // A width narrower than the head still shows the caret (never zero cells).
-        let narrow = input_hint_text(&mk("abc", 1), 8);
-        assert!(
-            !narrow.is_empty() && narrow.contains('b'),
-            "caret survives: {narrow:?}"
-        );
+        let (before, at, _) = caret_window(long, 45, 20);
+        assert_eq!(at, "T", "the char under a mid-value caret stays in view");
+        assert!(before.ends_with('S'));
+        let (_, at, _) = caret_window("abc", 1, 1);
+        assert_eq!(at, "b", "a one-cell window still shows the caret");
     }
 
     #[test]
-    fn input_rows_measure_terminal_cells_for_wide_text() {
-        let input = Input::new(InputMode::New, String::new(), "한".repeat(20), None);
-        let lines = input_hint_lines(&input, 60);
-        assert_eq!(lines.len(), 2);
-        assert!(lines
-            .iter()
-            .all(|line| UnicodeWidthStr::width(line.as_str()) <= 60));
-        assert!(lines[0].contains('한'));
+    fn the_caret_window_measures_terminal_cells_for_wide_text() {
+        let (before, at, after) = caret_window(&"한".repeat(20), 20, 11);
+        let w = UnicodeWidthStr::width(format!("{before}{at}{after}").as_str());
+        assert!(w <= 11, "{w}");
+        assert!(before.contains('한'));
+    }
+
+    #[test]
+    fn a_hint_line_gives_up_hints_from_the_end_and_keeps_the_way_out() {
+        let hints: &[Hint] = &[("↑↓", "select"), ("Enter", "run"), ("Esc", "close")];
+        assert_eq!(hints_width(hints), 33);
+        assert_eq!(fit_hints(hints, 100), hints.to_vec());
+        assert_eq!(
+            fit_hints(hints, 21),
+            vec![("↑↓", "select"), ("Esc", "close")]
+        );
+        assert_eq!(fit_hints(hints, 3), vec![("Esc", "close")]);
+    }
+
+    #[test]
+    fn an_empty_field_shows_its_placeholder_under_the_caret() {
+        let p = palette::Palette::default();
+        let input = Input::new(InputMode::New, String::new(), None);
+        let spans = input_field(&input, 20, "auto", &p);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "auto");
+        assert!(spans[0].style.add_modifier.contains(Modifier::REVERSED));
+        assert!(!spans[1].style.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn the_logout_popover_states_its_facts_as_rows() {
+        let p = palette::Palette::default();
+        let mut input = Input::new(InputMode::Logout, "logo".into(), Some("gpu-01".into()));
+        input.facts = vec![
+            ("session", "gpu-01/train".into()),
+            ("SSH login", "not observed".into()),
+            ("password", "held password is cleared".into()),
+            ("key", "may stay on the host".into()),
+            ("connections", "closes gpu-01 connections".into()),
+        ];
+        let (w, h) = logout_size(&input, 140);
+        let (chrome, lines) = logout_popover(&input, w, &p);
+        assert_eq!(chrome.title, "log out");
+        assert_eq!(chrome.meta, "gpu-01");
+        assert_eq!(lines.len() as u16 + 2, h);
+        let text = flat(&lines);
+        for row in [
+            "session      gpu-01/train",
+            "SSH login    not observed",
+            "password     held password is cleared",
+            "key          may stay on the host",
+            "connections  closes gpu-01 connections",
+            "type logout  logo",
+        ] {
+            assert!(text.contains(row), "{row:?} in {text}");
+        }
     }
 
     #[test]
@@ -769,7 +1137,7 @@ mod tests {
             0,
             200,
         );
-        assert_eq!(t, "keys", "every row fits, so the title names no range");
+        assert_eq!(t, "", "every row fits, so the meta names no range");
     }
 
     #[test]
@@ -850,26 +1218,46 @@ mod tests {
             20,
         );
         let text = flat(&lines);
-        assert!(text.contains("search zzzz"), "{text}");
+        assert!(text.contains(" / zzzz"), "{text}");
         assert!(text.contains("no key or glyph matches"), "{text}");
+    }
+
+    #[test]
+    fn a_key_wider_than_the_help_key_column_takes_its_own_row() {
+        let palette = palette::Palette::default();
+        let pos = crate::ui::switcher::NavPosition::Left;
+        let (_, lines) = help_lines("C-g", pos, &palette, "click a card", 0, 50);
+        let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        let at = text
+            .iter()
+            .position(|l| l.trim_end() == " click a card")
+            .unwrap_or_else(|| panic!("the key alone on its row: {text:?}"));
+        let kw = key_column_width(&help_rows("C-g", pos));
+        assert!(kw <= HELP_KEY_CAP && kw < "click a card".len(), "{kw}");
+        assert!(
+            text[at + 1].starts_with(&" ".repeat(1 + kw + 2))
+                && text[at + 1].trim_start().starts_with("select it"),
+            "the description under the description column: {:?}",
+            text[at + 1]
+        );
     }
 
     #[test]
     fn the_help_scrolls_and_holds_its_last_page_full() {
         let palette = palette::Palette::default();
         let pos = crate::ui::switcher::NavPosition::Left;
-        let total = help_rows("C-g", pos).len();
+        let total = help_display_len("C-g", pos, "");
         let (title, lines) = help_lines("C-g", pos, &palette, "", 0, 11);
         assert_eq!(lines.len(), 11, "the search line and ten rows");
-        assert_eq!(title, format!("keys 1-10 of {total}"));
+        assert_eq!(title, format!("1-10 of {total}"));
         assert!(flat(&lines).contains("move (nav focus)"));
         let (title, lines) = help_lines("C-g", pos, &palette, "", 5, 11);
-        assert_eq!(title, format!("keys 6-15 of {total}"));
+        assert_eq!(title, format!("6-15 of {total}"));
         assert!(!flat(&lines).contains("move (nav focus)"), "scrolled past");
         let (title, lines) = help_lines("C-g", pos, &palette, "", usize::MAX, 11);
         assert_eq!(
             title,
-            format!("keys {}-{total} of {total}", total - 9),
+            format!("{}-{total} of {total}", total - 9),
             "a scroll past the end shows the last full page"
         );
         assert!(
@@ -879,14 +1267,15 @@ mod tests {
     }
 
     #[test]
-    fn the_search_line_says_esc_closes_however_the_rows_are_filtered() {
+    fn the_search_field_stays_on_the_first_row_however_the_rows_are_filtered() {
         let palette = palette::Palette::default();
         let pos = crate::ui::switcher::NavPosition::Left;
         for (query, scroll) in [("", 0), ("quit", 0), ("zzzz", 0), ("", usize::MAX)] {
             let (_, lines) = help_lines("C-g", pos, &palette, query, scroll, 6);
             let first = flat(&lines[..1]);
-            assert!(first.contains("Esc closes"), "{query:?}: {first}");
+            assert!(first.starts_with(" / "), "{query:?}: {first}");
         }
+        assert_eq!(HELP_HINTS.last().map(|h| h.0), Some("Esc"));
     }
 
     #[test]
@@ -984,7 +1373,10 @@ mod tests {
                 f,
                 area,
                 rect,
-                "t",
+                &PopupFrame {
+                    title: "t".into(),
+                    ..Default::default()
+                },
                 vec![Line::from("focus"), Line::from("kill"), Line::from("x")],
                 &palette::Palette::default(),
             );

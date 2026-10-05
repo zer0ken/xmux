@@ -220,7 +220,7 @@ fn age(now: Option<Instant>, at: Instant) -> String {
     }
 }
 
-/// The history popup's `(title, lines)` at `width` cells inside the border: the newest
+/// The history popup's `(meta, lines)` at `width` cells inside the border: the newest
 /// record first, `scroll` records down. Each record is its age, its glyph, what it was
 /// about, and its words, wrapped under the words.
 pub(crate) fn history_lines(
@@ -231,7 +231,7 @@ pub(crate) fn history_lines(
 ) -> (String, Vec<Line<'static>>) {
     if notify.history.is_empty() {
         return (
-            "history".to_string(),
+            String::new(),
             vec![Line::from(Span::styled(
                 " nothing yet: results and background events land here",
                 Style::default().fg(palette.decoration),
@@ -275,7 +275,7 @@ pub(crate) fn history_lines(
                 .collect::<Vec<_>>()
         })
         .collect();
-    (format!("history · {}", notify.history.len()), lines)
+    (notify.history.len().to_string(), lines)
 }
 
 #[cfg(test)]

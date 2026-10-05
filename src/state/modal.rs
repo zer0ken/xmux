@@ -24,7 +24,9 @@ pub(crate) enum InputMode {
 
 pub(crate) struct Input {
     pub(crate) mode: InputMode,
-    pub(crate) label: String,
+    /// [`InputMode::Logout`] only: what the logout does, as `(label, value)` rows the
+    /// confirm states above its field. Captured when it opens, like `source`.
+    pub(crate) facts: Vec<(&'static str, String)>,
     pub(crate) buffer: String,
     /// Caret position as a char index into `buffer` (`0..=buffer char count`). Every
     /// edit and movement keeps it in range; the entry line renders a block caret at
@@ -49,16 +51,11 @@ impl Input {
     /// Builds an input with the caret at the END of `buffer`, so a prefilled name
     /// (rename / filter) is ready to edit from its tail. The one constructor keeps
     /// the caret-init rule in a single place.
-    pub(crate) fn new(
-        mode: InputMode,
-        label: String,
-        buffer: String,
-        source: Option<String>,
-    ) -> Self {
+    pub(crate) fn new(mode: InputMode, buffer: String, source: Option<String>) -> Self {
         let cursor = buffer.chars().count();
         Input {
             mode,
-            label,
+            facts: Vec::new(),
             buffer,
             cursor,
             source,

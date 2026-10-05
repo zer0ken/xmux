@@ -256,11 +256,12 @@ impl Switcher {
                 *selected = (*selected).min(palette_count.saturating_sub(1))
             }
             Some(Modal::Help { query, scroll, .. }) => {
-                let rows = modal::matching_help_rows(
-                    &modal::help_rows(&state.chrome.ui_prefix, state.chrome.nav_position),
+                let lines = modal::help_display_len(
+                    &state.chrome.ui_prefix,
+                    state.chrome.nav_position,
                     query,
                 );
-                *scroll = (*scroll).min(modal::help_max_scroll(rows.len(), help_visible));
+                *scroll = (*scroll).min(modal::help_max_scroll(lines, help_visible));
             }
             _ => {}
         }
@@ -380,21 +381,22 @@ impl Switcher {
             .map(|method| method.label())
             .unwrap_or("not observed");
         let subject = session.map_or_else(|| machine.to_owned(), |address| address.display());
-        let credential = match method {
-            "username and password" => "held password cleared",
-            "public key" => "key stays available",
-            _ => "held password cleared; key may stay available",
+        let (password, key) = match method {
+            "username and password" => (Some("held password is cleared"), None),
+            "public key" => (None, Some("stays on the host")),
+            _ => (
+                Some("held password is cleared"),
+                Some("may stay on the host"),
+            ),
         };
-        let label = format!(
-            "logout {subject} · SSH: {method} · {credential} · closes {machine} connections"
-        );
+        let mut facts = vec![("session", subject), ("SSH login", method.to_owned())];
+        facts.extend(password.map(|p| ("password", p.to_owned())));
+        facts.extend(key.map(|k| ("key", k.to_owned())));
+        facts.push(("connections", format!("closes {machine} connections")));
         self.dismiss_modals(state);
-        state.modal = Some(Modal::Input(Box::new(Input::new(
-            InputMode::Logout,
-            label,
-            String::new(),
-            Some(source),
-        ))));
+        let mut input = Input::new(InputMode::Logout, String::new(), Some(source));
+        input.facts = facts;
+        state.modal = Some(Modal::Input(Box::new(input)));
     }
 
     // --- the hosts to check -------------------------------------------------
@@ -505,13 +507,11 @@ impl Switcher {
         self.dismiss_modals(state);
         match mode {
             InputMode::Filter => {
-                let mut input =
-                    Input::new(mode, " filter sessions".into(), state.filter.clone(), None);
+                let mut input = Input::new(mode, state.filter.clone(), None);
                 // The filter the input opened from: Esc restores it, undoing every
                 // live edit made while the input was open.
                 input.restore_filter = Some(state.filter.clone());
                 state.modal = Some(Modal::Input(Box::new(input)));
-                self.update_filter_label(state);
             }
             // New is opened by `open_new` and Jump by `open_jump` (both capture context
             // the mode alone does not carry). The unlock is not a modal: it lives in the
@@ -541,7 +541,6 @@ impl Switcher {
         };
         state.modal = Some(Modal::Input(Box::new(Input::new(
             InputMode::New,
-            " new session name (empty = auto)".into(),
             String::new(),
             Some(source),
         ))));
@@ -553,7 +552,7 @@ impl Switcher {
     /// everything past the highest. The jump reads it on every edit to move the selection
     /// while the number names a card, and at Enter to decide whether to land or flash: see
     /// [`Switcher::jump_accepts`].
-    fn jump_row(&self, number: &str) -> Option<usize> {
+    pub(super) fn jump_row(&self, number: &str) -> Option<usize> {
         let n = number.trim().parse::<usize>().ok()?;
         (0..self.rows.len()).find(|&i| self.rows[i].selectable() && self.card_number(i) == n)
     }
@@ -576,15 +575,9 @@ impl Switcher {
     pub(super) fn open_jump(&mut self, digit: char, state: &mut crate::state::State) {
         state.chrome.clear_flash();
         let seed = digit.to_string();
-        let last = self.highest_number();
         let restore = self.current_ref().cloned();
         self.dismiss_modals(state);
-        let mut input = Input::new(
-            InputMode::Jump,
-            format!(" jump to a session (1 - {last})"),
-            seed,
-            None,
-        );
+        let mut input = Input::new(InputMode::Jump, seed, None);
         input.restore = restore;
         state.modal = Some(Modal::Input(Box::new(input)));
         self.apply_jump(state);
@@ -621,28 +614,6 @@ impl Switcher {
         }
         state.filter = filter;
         self.rebuild(state);
-    }
-
-    pub(super) fn update_filter_label(&self, state: &mut crate::state::State) {
-        let filtered = crate::ui::tree::filter_groups(&state.groups, &state.filter);
-        let matches = filtered
-            .iter()
-            .map(|group| {
-                if group.err.is_some() || group.sessions.is_empty() {
-                    1
-                } else {
-                    group.sessions.len()
-                }
-            })
-            .sum::<usize>();
-        if let Some(Modal::Input(input)) = state.modal.as_mut() {
-            if input.mode == InputMode::Filter {
-                input.label = format!(
-                    "filter sessions · {matches} {}",
-                    if matches == 1 { "match" } else { "matches" }
-                );
-            }
-        }
     }
 
     /// Returns the selection to the card a cancelled jump started from, matched by

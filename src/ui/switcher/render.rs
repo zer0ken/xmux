@@ -3,6 +3,7 @@ use super::*;
 use ratatui::style::Modifier;
 use ratatui::widgets::Paragraph;
 
+use crate::state::PaletteChoice;
 use crate::ui::palette;
 
 /// Where the hint bar actually paints. At rest it is the prefix indicator's rect: a
@@ -75,6 +76,9 @@ struct NavRowPaint<'a> {
     filter: &'a str,
     palette: &'a palette::Palette,
     show_state_word: bool,
+    /// The number the open jump prompt has typed, written in the selected card's number
+    /// cell while it names that card.
+    jump_number: Option<usize>,
 }
 
 fn middle_ellipsize(text: &str, width: usize) -> String {
@@ -194,7 +198,6 @@ pub struct RenderPlan {
     pub nav_col_offset: usize,
     pub popup_rect: Rect,
     pub(super) hint_bar_rect: Rect,
-    login_guide: bool,
     /// Where the prefix indicator keeps the prefix while the bar floats away from it;
     /// empty while the bar rests or the nav is hidden.
     prefix_label: Rect,
@@ -214,7 +217,7 @@ pub struct RenderPlan {
     /// paired with the title's row index.
     title_repeats: Vec<(usize, Rect)>,
     nav_rule: Option<NavRule>,
-    floating_hint_bar: bool,
+    pub(super) floating_hint_bar: bool,
     pub nav_hidden: bool,
     pub nav_collapsed: bool,
 }
@@ -234,7 +237,6 @@ impl Default for RenderPlan {
             nav_col_offset: 0,
             popup_rect: Rect::default(),
             hint_bar_rect: Rect::default(),
-            login_guide: false,
             prefix_label: Rect::default(),
             toasts: Vec::new(),
             key_list: None,
@@ -280,35 +282,25 @@ impl Switcher {
         state: &crate::state::State,
         previous: &RenderPlan,
     ) -> RenderPlan {
-        let login_guide = self.current_view_screen(state) == Some(crate::model::ViewScreen::Login)
-            && state.focus.is_terminal_focused()
-            && state.chrome.flash.is_empty()
-            && !state.chrome.armed;
-        let floating = hint_bar_floats(state) || login_guide;
         let band = nav.position.layout() == ViewLayout::Band;
         // The resting indicator is one row, so the layout is cut for one row whatever the
         // bar says: a floating bar only paints further, it never takes a row from the nav.
         let regions = compute_regions(area, nav, 1);
-        let inputting = state.is_inputting() && state.chrome.flash.is_empty();
+        let floating = hint_bar_floats(state);
         let seam_hint = band
             && !regions.hint_bar.is_empty()
             && floating
             && state.chrome.flash.is_empty()
-            && (!state.chrome.armed || inputting);
+            && !state.chrome.armed;
         let prefix_w = collapsed_nav_width(&state.chrome.ui_prefix);
-        let bar_w = if seam_hint && !inputting && !login_guide {
+        let bar_w = if seam_hint {
             area.width.saturating_sub(prefix_w)
         } else if floating {
             area.width
         } else {
             nav.width
         };
-        let hint_bar_h = if login_guide {
-            crate::state::Chrome::login_hint_lines(bar_w).len()
-        } else {
-            state.chrome.hint_bar_lines(bar_w, state).len()
-        }
-        .max(1) as u16;
+        let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
         // At rest the prefix indicator is a label on the column's bottom row, and the right
         // end of the seam row in a band. While the bar floats, the indicator keeps the
         // prefix alone.
@@ -329,28 +321,15 @@ impl Switcher {
         } else {
             regions.hint_bar
         };
-        let prefix_label =
-            if floating && band && !inputting && !login_guide && !regions.hint_bar.is_empty() {
-                Rect {
-                    width: prefix_w.min(resting_bar.width),
-                    ..resting_bar
-                }
-            } else {
-                Rect::default()
-            };
-        let hint_bar_rect = if (inputting || login_guide) && band && !resting_bar.is_empty() {
-            let h = hint_bar_h.min(area.height);
+        let prefix_label = if floating && band && !regions.hint_bar.is_empty() {
             Rect {
-                x: area.x,
-                y: if nav.position == NavPosition::Top {
-                    resting_bar.y
-                } else {
-                    resting_bar.bottom().saturating_sub(h)
-                },
-                width: area.width,
-                height: h,
+                width: prefix_w.min(resting_bar.width),
+                ..resting_bar
             }
-        } else if seam_hint && !resting_bar.is_empty() {
+        } else {
+            Rect::default()
+        };
+        let hint_bar_rect = if seam_hint && !resting_bar.is_empty() {
             Rect {
                 x: area.x,
                 y: resting_bar.y,
@@ -399,6 +378,7 @@ impl Switcher {
         } else {
             Rect::default()
         };
+        let popup_rect = self.modal_popup_rect(area, state, resting_bar, &regions);
         let mut plan = RenderPlan {
             screen_area: area,
             nav_size: nav,
@@ -413,9 +393,8 @@ impl Switcher {
             },
             nav_row_offset: previous.nav_row_offset,
             nav_col_offset: previous.nav_col_offset,
-            popup_rect: self.modal_popup_rect(area, state),
+            popup_rect,
             hint_bar_rect,
-            login_guide,
             prefix_label,
             // A toast never covers the prefix key list (the list is what a live prefix
             // reads its next key from) or a floating hint bar.
@@ -426,6 +405,7 @@ impl Switcher {
                 nav.position,
                 match &key_list {
                     Some((rect, _)) => *rect,
+                    None if !popup_rect.is_empty() => popup_rect,
                     None if floating => hint_bar_rect,
                     None => Rect::default(),
                 },
@@ -455,6 +435,126 @@ impl Switcher {
             }
         }
         plan
+    }
+
+    /// How many cards the applied filter keeps, and how many the list has without it.
+    fn filter_counts(state: &crate::state::State) -> (usize, usize) {
+        let count = |filter: &str| {
+            crate::ui::tree::filter_groups(&state.groups, filter)
+                .iter()
+                .map(|group| {
+                    if group.err.is_some() || group.sessions.is_empty() {
+                        1
+                    } else {
+                        group.sessions.len()
+                    }
+                })
+                .sum::<usize>()
+        };
+        (count(&state.filter), count(""))
+    }
+
+    /// A popup's final rect: moved by its drag offset, clamped inside the window, and with
+    /// a left edge that would leave a sliver of one or two cells of the row it covers
+    /// snapped to the window's left edge.
+    fn settle(&self, rect: Rect, area: Rect) -> Rect {
+        let w = rect.width.min(area.width);
+        let h = rect.height.min(area.height);
+        let max_x = area.right().saturating_sub(w);
+        let max_y = area.bottom().saturating_sub(h);
+        let (ox, oy) = self.popup_geo.offset;
+        let mut x =
+            (rect.x.min(max_x) as i32 + ox as i32).clamp(area.x as i32, max_x as i32) as u16;
+        let y = (rect.y.min(max_y) as i32 + oy as i32).clamp(area.y as i32, max_y as i32) as u16;
+        if x <= area.x + 2 {
+            x = area.x;
+        }
+        Rect::new(x, y, w, h)
+    }
+
+    /// Where a list popup of `size` opens: where the key list opens, against the prefix
+    /// indicator toward the terminal view.
+    fn key_list_anchor(
+        &self,
+        size: (u16, u16),
+        area: Rect,
+        indicator: Rect,
+        regions: &Regions,
+        position: NavPosition,
+    ) -> Rect {
+        let room = crate::ui::keylist::room(indicator, regions.terminal, area, position);
+        let rect = crate::ui::keylist::place(room, position, indicator.height == 0, size);
+        self.settle(rect, area)
+    }
+
+    /// An open input's popup at `width` outer cells: its frame and rows.
+    fn input_popup_at(
+        &self,
+        state: &crate::state::State,
+        width: u16,
+    ) -> Option<(modal::PopupFrame, Vec<Line<'static>>)> {
+        let Some(Modal::Input(input)) = &state.modal else {
+            return None;
+        };
+        let palette = &self.palette;
+        Some(match input.mode {
+            InputMode::New => {
+                modal::new_session_popover(&self.popover_host(input, state), input, width, palette)
+            }
+            InputMode::Logout => modal::logout_popover(input, width, palette),
+            InputMode::Filter => {
+                let (matches, total) = Self::filter_counts(state);
+                modal::filter_popup(input, matches, total, width, palette)
+            }
+            InputMode::Jump => {
+                let refused = !state.chrome.flash.is_empty();
+                let target = self.jump_row(&input.buffer).map(|i| self.card_name(i));
+                modal::jump_popup(
+                    input,
+                    target.as_deref(),
+                    refused,
+                    self.highest_number(),
+                    width,
+                    palette,
+                )
+            }
+        })
+    }
+
+    /// What a card is called on the jump popup: its session, or its host and mux.
+    fn card_name(&self, i: usize) -> String {
+        let (host, mux, sess) = context_of(&self.rows[i]);
+        if !sess.is_empty() {
+            sess.to_string()
+        } else if mux.is_empty() {
+            host.to_string()
+        } else {
+            format!("{host}/{mux}")
+        }
+    }
+
+    /// The `{host}/{mux}` a new session lands on.
+    fn popover_host(&self, input: &Input, state: &crate::state::State) -> String {
+        input
+            .source
+            .as_deref()
+            .map(|s| state.chrome.source_label(s))
+            .unwrap_or_default()
+    }
+
+    /// The palette's entries as `(key cell, description)` pairs: a command's key and what
+    /// it does, or an empty key and the login it offers.
+    fn palette_cells(&self, state: &crate::state::State, query: &str) -> Vec<(String, String)> {
+        self.palette_entries(state, query)
+            .into_iter()
+            .map(|(name, choice)| match choice {
+                PaletteChoice::Command(_) => match name.split_once("  ") {
+                    Some((desc, key)) => (key.to_string(), desc.to_string()),
+                    None => (String::new(), name),
+                },
+                PaletteChoice::Login(_) => (String::new(), name),
+            })
+            .collect()
     }
 
     /// The one line an empty nav body says: how many hosts are hidden and the key that
@@ -673,13 +773,13 @@ impl Switcher {
         state: &crate::state::State,
         kind: crate::model::ViewScreen,
         focused: bool,
-    ) {
+    ) -> Option<Position> {
         let address = self.view_screen_address(state, kind);
         if kind == crate::model::ViewScreen::Scanning && address.source.is_empty() {
             if state.chrome.braille_animation {
                 crate::ui::braille_x::render(frame, area, state.chrome.animation_ms);
             }
-            return;
+            return None;
         }
         state.chrome.render_view_screen(
             frame,
@@ -691,7 +791,7 @@ impl Switcher {
                 focused,
             },
             &self.palette,
-        );
+        )
     }
 
     pub fn render(
@@ -726,15 +826,19 @@ impl Switcher {
         // the terminal view owns the whole area - no nav list, no view border, and no
         // prefix indicator of its own. A selected view screen still owns that region.
         if plan.nav_hidden {
-            match plan.view_screen {
+            let view_caret = match plan.view_screen {
                 Some(kind) => self.render_view_screen(frame, area, state, kind, terminal_focused),
-                None => self.render_terminal_view(frame, area, grid),
-            }
+                None => {
+                    self.render_terminal_view(frame, area, grid);
+                    None
+                }
+            };
             if let Some(g) = grid.filter(|_| plan.view_screen.is_none()) {
                 if !g.hide_cursor() {
                     frame.set_cursor_position(terminal_cursor_pos(area, g.cursor()));
                 }
             }
+            self.place_field_cursor(frame, state, plan, view_caret);
             // The bar still floats for the states that must be seen even here: an armed
             // prefix, open input, or refusal flash. Hiding the nav hides the prefix indicator,
             // not xmux's ability to answer a keypress.
@@ -745,7 +849,6 @@ impl Switcher {
                     state,
                     crate::ui::chrome::BarFill::Row,
                     &palette,
-                    plan.login_guide,
                 );
             }
             self.render_key_list(frame, state, plan, &palette);
@@ -770,11 +873,12 @@ impl Switcher {
             .render_view_border(frame, plan.regions.view_border, terminal_focused);
         let term_area = plan.regions.terminal;
         // A domain-selected view screen replaces the grid.
-        if let Some(kind) = plan.view_screen {
-            self.render_view_screen(frame, term_area, state, kind, terminal_focused);
+        let view_caret = if let Some(kind) = plan.view_screen {
+            self.render_view_screen(frame, term_area, state, kind, terminal_focused)
         } else {
             self.render_terminal_view(frame, term_area, grid);
-        }
+            None
+        };
         // The hint bar paints LAST of the two views, so a floating bar can cover the
         // terminal view. At rest it is the prefix indicator, a label sized to what it says
         // on the column's bottom row or at the right end of a band's seam. A floating
@@ -791,7 +895,6 @@ impl Switcher {
                 state,
                 crate::ui::chrome::BarFill::Row,
                 &palette,
-                plan.login_guide,
             );
             state
                 .chrome
@@ -807,7 +910,6 @@ impl Switcher {
                 state,
                 crate::ui::chrome::BarFill::Content,
                 &palette,
-                plan.login_guide,
             );
         }
         self.render_key_list(frame, state, plan, &palette);
@@ -821,7 +923,70 @@ impl Switcher {
                 }
             }
         }
+        self.place_field_cursor(frame, state, plan, view_caret);
         self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
+    }
+
+    /// Puts the terminal's own cursor on the caret of the text field taking keys, over the
+    /// session grid's cursor. A terminal's input method draws what it is composing at that
+    /// cursor, so a syllable being composed shows in the field it is typed into. A modal's
+    /// field takes the keys while it is open; otherwise a login pane field does.
+    fn place_field_cursor(
+        &self,
+        frame: &mut Frame,
+        state: &crate::state::State,
+        plan: &RenderPlan,
+        view_caret: Option<Position>,
+    ) {
+        let caret = if state.modal.is_some() {
+            self.modal_caret(state, plan)
+        } else {
+            view_caret
+        };
+        if let Some(at) = caret {
+            frame.set_cursor_position(at);
+        }
+    }
+
+    /// Where the open modal's text field has its caret, read from the same lines the paint
+    /// draws: the filter field or jump prompt, a popover's field, the palette's query, or
+    /// the help's search. `None` for a modal without a text field.
+    fn modal_caret(&self, state: &crate::state::State, plan: &RenderPlan) -> Option<Position> {
+        let palette = &self.palette;
+        // A line painted at `rect`'s row `row`, offset by `inset` cells from its left edge.
+        let at = |rect: Rect, inset: u16, row: u16, line: &Line| {
+            let x = rect.x + inset + modal::caret_offset(line)?;
+            let y = rect.y + row;
+            (x < rect.right() && y < rect.bottom()).then_some(Position { x, y })
+        };
+        let inner = |rect: Rect, lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .enumerate()
+                .find_map(|(i, l)| at(rect, 1, 1 + i as u16, l))
+        };
+        match &state.modal {
+            Some(Modal::Input(_)) => {
+                let (_, lines) = self.input_popup_at(state, plan.popup_rect.width)?;
+                inner(plan.popup_rect, &lines)
+            }
+            Some(Modal::Palette { query, .. }) => {
+                let lines = modal::palette_lines(query, &[], 1, 0, 0, 0, palette);
+                inner(plan.popup_rect, &lines[..1])
+            }
+            Some(Modal::Help { query, .. }) => {
+                let (_, lines) = modal::help_lines(
+                    &state.chrome.ui_prefix,
+                    state.chrome.nav_position,
+                    palette,
+                    query,
+                    0,
+                    1,
+                );
+                inner(plan.popup_rect, &lines[..1])
+            }
+            _ => None,
+        }
     }
 
     #[cfg(test)]
@@ -854,6 +1019,13 @@ impl Switcher {
         let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
         let num_w = self.number_width();
         let dim = Style::default().fg(palette.decoration);
+        let jump_number = match &state.modal {
+            Some(Modal::Input(i)) if i.mode == InputMode::Jump => self
+                .jump_row(&i.buffer)
+                .filter(|&row| row == self.selected)
+                .map(|row| self.card_number(row)),
+            _ => None,
+        };
         for &(title, rect) in &plan.title_repeats {
             let room = (rect.width as usize).saturating_sub(CONTINUED.chars().count() + 1);
             let text = format!(
@@ -872,6 +1044,7 @@ impl Switcher {
                     filter: &state.filter,
                     palette,
                     show_state_word: plan.layout == ViewLayout::Column,
+                    jump_number,
                 },
             );
             frame.render_widget(Paragraph::new(lines), rect);
@@ -1008,6 +1181,7 @@ impl Switcher {
                 filter: "",
                 palette,
                 show_state_word: false,
+                jump_number: None,
             },
         );
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
@@ -1057,6 +1231,7 @@ impl Switcher {
             filter,
             palette,
             show_state_word,
+            jump_number,
         } = paint;
         let row = &self.rows[i];
         let selected = self.selected == i;
@@ -1067,7 +1242,12 @@ impl Switcher {
         // The address column every card writes on - the only line, now that a card has
         // none other. A section title never calls it: it carries no number.
         let address = move || -> Vec<Span<'static>> {
-            if selected {
+            if let Some(n) = jump_number.filter(|_| selected) {
+                vec![Span::styled(
+                    format!("{n:>num_w$} "),
+                    accent.add_modifier(Modifier::BOLD),
+                )]
+            } else if selected {
                 vec![Span::styled(format!("{SELECTED_MARK:>num_w$} "), accent)]
             } else {
                 let n = self.card_number(i);
@@ -1245,46 +1425,92 @@ impl Switcher {
         }
     }
 
-    fn modal_popup_rect(&self, area: Rect, state: &crate::state::State) -> Rect {
+    fn modal_popup_rect(
+        &self,
+        area: Rect,
+        state: &crate::state::State,
+        indicator: Rect,
+        regions: &Regions,
+    ) -> Rect {
+        let position = state.chrome.nav_position;
+        let room = crate::ui::keylist::room(indicator, regions.terminal, area, position);
+        let anchor = |size: (u16, u16)| {
+            self.key_list_anchor(
+                (size.0.min(room.width), size.1.min(room.height)),
+                area,
+                indicator,
+                regions,
+                position,
+            )
+        };
+        // Every list popup opens where the key list does.
         match &state.modal {
             Some(Modal::Help { .. }) => {
                 // Sized for every row whatever the search, so typing never moves it.
-                let (inner_w, rows) =
-                    modal::help_size(&state.chrome.ui_prefix, state.chrome.nav_position);
-                let w = (inner_w + 3).max(24).min(area.width.max(1));
-                let h = (rows + 2).min(area.height.max(1));
-                modal::offset_centered(w, h, area, self.popup_geo.offset)
+                let (inner_w, rows) = modal::help_size(&state.chrome.ui_prefix, position);
+                anchor(((inner_w + 3).max(24), rows + 2))
             }
             Some(Modal::Check { selected, .. }) => {
-                let w = history_popup_width(area);
+                let w = history_popup_width(area).min(room.width);
                 let (_, lines) =
                     self.check_table(state, *selected, w.saturating_sub(2), usize::MAX);
-                let h = (lines.len() as u16 + 2).min(area.height.max(1));
-                modal::offset_centered(w, h, area, self.popup_geo.offset)
+                anchor((w, lines.len() as u16 + 2))
             }
             Some(Modal::Palette { query, .. }) => {
-                let w = history_popup_width(area);
-                let rows = self.palette_entries(state, query).len().clamp(1, 12) as u16;
-                modal::offset_centered(
-                    w,
-                    (rows + 4).min(area.height.max(1)),
-                    area,
-                    self.popup_geo.offset,
-                )
+                // The palette is the searchable form of the key list, so it is as tall as
+                // what it lists. Its width holds every command, so a search never moves
+                // its columns.
+                let (w, _) = self.palette_size(state);
+                let h = self.palette_cells(state, query).len().max(1) as u16 + 3;
+                anchor((w, h))
+            }
+            Some(Modal::Input(input)) => {
+                let w = match input.mode {
+                    InputMode::New => modal::new_session_size(&self.popover_host(input, state)).0,
+                    InputMode::Logout => modal::logout_size(input, room.width).0,
+                    InputMode::Filter | InputMode::Jump => modal::POPOVER_MIN_WIDTH,
+                };
+                let rows = self.input_popup_at(state, w).map_or(1, |(_, l)| l.len()) as u16;
+                anchor((w, rows + 2))
             }
             Some(Modal::History { scroll }) => {
-                let w = history_popup_width(area);
+                let w = history_popup_width(area).min(room.width);
                 let (_, lines) = crate::ui::toast::history_lines(
                     &state.notify,
                     *scroll,
                     w.saturating_sub(2),
                     &self.palette,
                 );
-                let h = (lines.len() as u16 + 2).min(area.height.max(1));
-                modal::offset_centered(w, h, area, self.popup_geo.offset)
+                anchor((w, lines.len() as u16 + 2))
             }
             _ => Rect::default(),
         }
+    }
+
+    /// The palette's outer size with every command listed: its rows and the query field.
+    fn palette_size(&self, state: &crate::state::State) -> (u16, u16) {
+        let cells = self.palette_cells(state, "");
+        let (key_w, desc_w) = Self::palette_columns(&cells);
+        let w = (3 + key_w + 2 + desc_w + 1 + 2) as u16;
+        let hints = (modal::hints_width(modal::PALETTE_HINTS) + 6) as u16;
+        (
+            w.max(hints).max(modal::POPOVER_MIN_WIDTH),
+            cells.len().max(1) as u16 + 3,
+        )
+    }
+
+    fn palette_columns(cells: &[(String, String)]) -> (usize, usize) {
+        let key_w = cells
+            .iter()
+            .map(|(k, _)| UnicodeWidthStr::width(k.as_str()).max(1))
+            .max()
+            .unwrap_or(1);
+        let desc_w = cells
+            .iter()
+            .map(|(_, d)| UnicodeWidthStr::width(d.as_str()))
+            .max()
+            .unwrap_or(0);
+        (key_w, desc_w)
     }
 
     /// The check table's title and lines at `width` inner cells.
@@ -1295,14 +1521,11 @@ impl Switcher {
         width: u16,
         visible_rows: usize,
     ) -> (String, Vec<Line<'static>>) {
-        let keys = crate::model::keys::entry_for(crate::model::keys::KeyCommand::Check)
-            .map_or("", |e| e.help);
         crate::ui::check::check_lines(
             &self.check_entries(state),
             selected,
             width,
             visible_rows,
-            keys,
             &self.palette,
         )
     }
@@ -1361,51 +1584,80 @@ impl Switcher {
         rect: Rect,
         palette: &palette::Palette,
     ) {
-        let (title, lines) = match &state.modal {
-            Some(Modal::Help { query, scroll, .. }) => modal::help_lines(
-                &state.chrome.ui_prefix,
-                state.chrome.nav_position,
-                palette,
-                query,
-                *scroll,
-                rect.height.saturating_sub(2),
-            ),
-            Some(Modal::History { scroll }) => crate::ui::toast::history_lines(
-                &state.notify,
-                *scroll,
-                rect.width.saturating_sub(2),
-                palette,
-            ),
-            Some(Modal::Check { selected, .. }) => self.check_table(
-                state,
-                *selected,
-                rect.width.saturating_sub(2),
-                rect.height.saturating_sub(2) as usize,
-            ),
+        let framed = |title: &str, meta: String, hints: &[modal::Hint]| modal::PopupFrame {
+            title: title.to_string(),
+            meta,
+            hints: hints.to_vec(),
+        };
+        let (chrome, lines) = match &state.modal {
+            Some(Modal::Help { query, scroll, .. }) => {
+                let (meta, lines) = modal::help_lines(
+                    &state.chrome.ui_prefix,
+                    state.chrome.nav_position,
+                    palette,
+                    query,
+                    *scroll,
+                    rect.height.saturating_sub(2),
+                );
+                (framed(modal::HELP_TITLE, meta, modal::HELP_HINTS), lines)
+            }
+            Some(Modal::History { scroll }) => {
+                let (meta, lines) = crate::ui::toast::history_lines(
+                    &state.notify,
+                    *scroll,
+                    rect.width.saturating_sub(2),
+                    palette,
+                );
+                (framed("history", meta, modal::HISTORY_HINTS), lines)
+            }
+            Some(Modal::Check { selected, .. }) => {
+                let (meta, lines) = self.check_table(
+                    state,
+                    *selected,
+                    rect.width.saturating_sub(2),
+                    rect.height.saturating_sub(2) as usize,
+                );
+                let hints = if meta.is_empty() {
+                    modal::HISTORY_HINTS
+                } else {
+                    modal::CHECK_HINTS
+                };
+                (framed("hosts to check", meta, hints), lines)
+            }
             Some(Modal::Palette {
                 query, selected, ..
             }) => {
-                let entries = self.palette_entries(state, query);
-                let visible = rect.height.saturating_sub(4) as usize;
-                let start = selected.saturating_sub(visible.saturating_sub(1));
-                let mut lines = vec![Line::from(format!(" : {query}▌")), Line::from("")];
-                if entries.is_empty() {
-                    lines.push(Line::from(" no matching commands"));
-                } else {
-                    for (i, (name, _)) in entries.iter().enumerate().skip(start).take(visible) {
-                        let line = Line::from(format!(" {name}"));
-                        lines.push(if i == *selected {
-                            line.style(palette::selection_style(palette))
-                        } else {
-                            line
-                        });
-                    }
-                }
-                ("commands".to_string(), lines)
+                let (key_w, _) = Self::palette_columns(&self.palette_cells(state, ""));
+                let cells = self.palette_cells(state, query);
+                let total = self.palette_entries(state, "").len();
+                let lines = modal::palette_lines(
+                    query,
+                    &cells,
+                    key_w,
+                    *selected,
+                    rect.height.saturating_sub(3) as usize,
+                    rect.width.saturating_sub(2),
+                    palette,
+                );
+                (
+                    framed(
+                        "commands",
+                        format!("{} of {total}", cells.len()),
+                        modal::PALETTE_HINTS,
+                    ),
+                    lines,
+                )
             }
+            Some(Modal::Input(_)) => match self.input_popup_at(state, rect.width) {
+                Some(popup) => popup,
+                None => return,
+            },
             _ => return,
         };
-        modal::render_popup(frame, area, rect, &title, lines, palette);
+        if rect.is_empty() {
+            return;
+        }
+        modal::render_popup(frame, area, rect, &chrome, lines, palette);
     }
 }
 

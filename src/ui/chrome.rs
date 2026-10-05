@@ -16,7 +16,7 @@ use ratatui::Frame;
 use crate::state::chrome::FLASH_TTL;
 use crate::state::Chrome;
 pub use crate::state::{SourceReach, ViewBorderColors};
-use crate::ui::modal::{wrap_text, Modal};
+use crate::ui::modal::wrap_text;
 use crate::ui::switcher::fit;
 
 /// Parses a tmux-style colour token into a ratatui [`Color`], matching tmux/psmux's
@@ -232,6 +232,14 @@ pub(crate) enum BarFill {
     /// The text plus a cell of padding, on its own background: the resting label.
     Content,
 }
+
+/// The login pane's keys, stated under its form.
+const LOGIN_HINTS: &[crate::ui::modal::Hint] = &[
+    ("Tab", "next"),
+    ("Enter", "next / log in"),
+    ("Space", "choose"),
+    ("Esc", "nav"),
+];
 
 /// The mark a BLOCKED host wears on its nav card, flush after the host name. A blocked
 /// host is a failure the user can act on (the login pane), so it keeps the warning
@@ -513,8 +521,8 @@ impl Chrome {
         state: &crate::state::State,
         view: ViewScreenRender<'_>,
         palette: &crate::ui::palette::Palette,
-    ) {
-        let lines = self.view_screen_lines(
+    ) -> Option<ratatui::layout::Position> {
+        let (lines, caret) = self.view_screen_lines(
             state,
             view.address,
             view.kind,
@@ -532,6 +540,12 @@ impl Chrome {
         if self.braille_animation && crate::ui::braille_x::fits(blank) {
             crate::ui::braille_x::render(frame, blank, self.animation_ms);
         }
+        caret
+            .filter(|&(row, col)| row < area.height as usize && col < area.width)
+            .map(|(row, col)| ratatui::layout::Position {
+                x: area.x + col,
+                y: area.y + row as u16,
+            })
     }
 
     /// The name a view screen carries at its top, in the grammar the nav cards use:
@@ -572,9 +586,10 @@ impl Chrome {
         }
     }
 
-    /// The lines of [`render_view_screen`](Self::render_view_screen). Split out because
-    /// the layout IS the list of rows: both states build one, so neither can drift into a
-    /// paragraph of its own shape.
+    /// The lines of [`render_view_screen`](Self::render_view_screen), and the row and
+    /// column of the caret of the login pane's text field while it takes keys. Split out
+    /// because the layout IS the list of rows: both states build one, so neither can drift
+    /// into a paragraph of its own shape.
     fn view_screen_lines(
         &self,
         state: &crate::state::State,
@@ -583,8 +598,9 @@ impl Chrome {
         width: u16,
         focused: bool,
         palette: &crate::ui::palette::Palette,
-    ) -> Vec<Line<'static>> {
+    ) -> (Vec<Line<'static>>, Option<(usize, u16)>) {
         let pal = palette;
+        let mut caret = None;
         let p = &self.ui_prefix;
         let source = address.source.as_str();
         // The rows in reading order: a reachable empty host offers actions before
@@ -1053,10 +1069,17 @@ impl Chrome {
                 let cause = marked.contains(&which);
                 let mut spans = label(format!("{name}{}", if required { "*" } else { "" }), cause);
                 spans.push(rule.clone());
-                spans.push(Span::styled(
-                    format!("{:<22}", format!("{text}{}", cursor(active))),
-                    reversed(style, active),
-                ));
+                // The focused value is reversed over its own cells and one caret cell,
+                // and the column keeps its width in plain padding.
+                let pad = 22usize.saturating_sub(text.chars().count());
+                if active && taking_keys {
+                    spans.push(Span::styled(text, reversed(style, true)));
+                    spans.push(Span::styled(" ", reversed(Style::default(), true)));
+                    spans.push(Span::raw(" ".repeat(pad.saturating_sub(1))));
+                } else {
+                    spans.push(Span::styled(text, style));
+                    spans.push(Span::raw(" ".repeat(pad)));
+                }
                 if !provenance.is_empty() {
                     spans.push(Span::styled(
                         format!("  {provenance}"),
@@ -1105,6 +1128,7 @@ impl Chrome {
             };
             out.push(Line::from(""));
             out.push(group("Connection"));
+            let fields_at = out.len();
             out.push(field(
                 "address",
                 true,
@@ -1145,6 +1169,19 @@ impl Chrome {
                 "",
                 LoginField::Password,
             ));
+            // The terminal's own cursor sits on the focused field's caret, where an input
+            // method draws what it is composing.
+            let focused_field = match d.focus {
+                LoginFocus::Address => Some(0),
+                LoginFocus::Port => Some(1),
+                LoginFocus::Username => Some(2),
+                LoginFocus::Password => Some(3),
+                _ => None,
+            };
+            if let Some(i) = focused_field.filter(|_| taking_keys) {
+                let row = fields_at + i;
+                caret = crate::ui::modal::caret_offset(&out[row]).map(|col| (row, col));
+            }
             out.push(Line::from(""));
             out.push(group("After login"));
             out.push(choice(
@@ -1184,7 +1221,7 @@ impl Chrome {
             if running {
                 out.push(choice("", "", "logging in…  esc to stop", false));
             } else {
-                out.push(choice("", "", " Log in ", d.focus == LoginFocus::Submit));
+                out.push(choice("", "", "[ Log in ]", d.focus == LoginFocus::Submit));
             }
             out.push(Line::from(""));
             out.push(Line::from(""));
@@ -1294,6 +1331,16 @@ impl Chrome {
                     d.focus == LoginFocus::Details,
                 ));
             }
+            // The pane's keys, under the form while it takes them.
+            if focused {
+                out.push(Line::from(""));
+                let mut spans = vec![Span::raw(" ")];
+                spans.extend(crate::ui::modal::hint_spans(
+                    &crate::ui::modal::fit_hints(LOGIN_HINTS, width.saturating_sub(2) as usize),
+                    pal,
+                ));
+                out.push(Line::from(spans));
+            }
         }
         out.push(Line::from(""));
         for (cell, value) in rows {
@@ -1307,27 +1354,24 @@ impl Chrome {
                 Span::raw(value),
             ]));
         }
-        out
+        (out, caret)
     }
 
     /// The hint bar's logical text, fit to `width`. At rest this text is only the prefix,
     /// the nav's prefix indicator, and it stays the prefix while the prefix is armed (the
-    /// key list beside it names the keys). An
-    /// open input outranks everything but a flash: the bar BECOMES the input line (feature
-    /// name, guide text, and the windowed buffer), so what is being typed is what the bar
-    /// says. The transient states outrank the rest, in order: a flash (a refusal), the
-    /// input, the armed prefix, the hint after a selection move, the scan progress, then
-    /// the active filter. A flash is returned raw - it may
+    /// key list beside it names the keys). An open input keeps the prefix too: the input
+    /// says its keys where it is typed. The transient states outrank the rest, in order:
+    /// a flash (a refusal), the input, the armed prefix, the hint after a selection move,
+    /// then the scan progress. A flash is returned raw - it may
     /// exceed `width`; [`Self::hint_bar_lines`] wraps it so it never clips.
     pub(crate) fn hint_bar_text(&self, width: u16, state: &crate::state::State) -> String {
         // Use the active prefix so the hint_bar matches the user's configured binding.
         let p = &self.ui_prefix;
-        if !self.flash.is_empty() {
-            // A flash outranks even an open input: a dead jump number flashed its range
-            // while leaving the input open, so the range must show over the input line.
+        if self.flash_shown(state) {
             format!(" ✗ {}", self.flash)
-        } else if let Some(Modal::Input(input)) = &state.modal {
-            crate::ui::modal::input_hint_lines(input, width).join("\n")
+        } else if state.is_inputting() {
+            // An open input says its keys on its own box's border, so the indicator rests.
+            fit(&[format!(" {p}"), p.to_string()], width)
         } else if self.armed {
             // A live prefix names its keys in the key list beside the indicator, so the
             // indicator keeps the prefix alone.
@@ -1352,8 +1396,8 @@ impl Chrome {
                 width,
             )
         } else if !state.filter.is_empty() {
-            // The active filter has no border title to live in any more, so it
-            // shows in the hint_bar (with how to clear it).
+            // The applied filter has no row of its own, so it shows here with how to
+            // change and clear it.
             fit(
                 &[
                     format!(" filter: {} · {p} / edit · Esc clear", state.filter),
@@ -1367,6 +1411,16 @@ impl Chrome {
         }
     }
 
+    /// Whether the bar states the flash. An open jump states its own refusal in its box,
+    /// so the bar keeps resting under it.
+    fn flash_shown(&self, state: &crate::state::State) -> bool {
+        !self.flash.is_empty()
+            && !matches!(
+                &state.modal,
+                Some(crate::state::Modal::Input(i)) if i.mode == crate::state::InputMode::Jump
+            )
+    }
+
     /// The hint_bar text split into the lines to render. The fit-based text is always one
     /// line; only a flash (an arbitrary error message) may exceed `width`, so it wraps
     /// across as many nav rows as it needs rather than clipping.
@@ -1374,23 +1428,12 @@ impl Chrome {
         let text = self.hint_bar_text(width, state);
         // Only a flash can exceed `width` (the fit-based text is already constrained);
         // wrap it on word boundaries with a consistent left margin.
-        if self.flash.is_empty() {
-            if let Some(Modal::Input(input)) = &state.modal {
-                return crate::ui::modal::input_hint_lines(input, width);
-            }
+        if !self.flash_shown(state) {
             return vec![text];
         }
         wrap_text(text.trim_start(), width.saturating_sub(1))
             .into_iter()
             .map(|l| format!(" {l}"))
-            .collect()
-    }
-
-    pub(crate) fn login_hint_lines(width: u16) -> Vec<String> {
-        let text = "Tab next · Enter next / log in · Space toggle · Esc nav";
-        wrap_text(text, width.saturating_sub(1))
-            .into_iter()
-            .map(|line| format!(" {line}"))
             .collect()
     }
 
@@ -1475,39 +1518,8 @@ impl Chrome {
         state: &crate::state::State,
         fill: BarFill,
         palette: &crate::ui::palette::Palette,
-        login_guide: bool,
     ) {
-        // An open input owns the bar outright: the bar BECOMES the input line (see
-        // [`Self::hint_bar_text`]), painted as the status bar with a reversed-block
-        // caret. A flash outranks it - a dead jump number flashes its range while
-        // leaving the input open, so the range must show over the input line - and
-        // falls through to the flash path below, exactly as [`Self::hint_bar_text`]
-        // orders them.
-        if self.flash.is_empty() {
-            if let Some(Modal::Input(input)) = &state.modal {
-                let mut lines = vec![crate::ui::modal::input_hint_line(
-                    input, area.width, palette,
-                )];
-                for guide in crate::ui::modal::input_hint_lines(input, area.width)
-                    .iter()
-                    .skip(1)
-                    .take(area.height.saturating_sub(1) as usize)
-                {
-                    lines.push(crate::ui::modal::input_guide_line(guide, palette));
-                }
-                frame.render_widget(Clear, area);
-                frame.render_widget(
-                    Paragraph::new(Text::from(lines)).style(self.hint_bar_render_style(palette)),
-                    area,
-                );
-                return;
-            }
-        }
-        let lines = if login_guide {
-            Self::login_hint_lines(area.width)
-        } else {
-            self.hint_bar_lines(area.width, state)
-        };
+        let lines = self.hint_bar_lines(area.width, state);
         // Key tokens get the accent only on the built-in default style with no flash
         // showing: a `[ui] hint-bar-style` override keeps its exact colours (uniform,
         // as configured), and a flash keeps the one solid style of its kind.
@@ -1516,8 +1528,8 @@ impl Chrome {
             .map(|l| l.chars().count() as u16)
             .max()
             .unwrap_or(0);
-        let styled =
-            self.flash.is_empty() && self.hint_bar_style == hint_bar_default_style(palette);
+        let flash = self.flash_shown(state);
+        let styled = !flash && self.hint_bar_style == hint_bar_default_style(palette);
         let fact = (!self.armed)
             .then_some(self.selection_hint.as_ref())
             .flatten()
@@ -1547,10 +1559,12 @@ impl Chrome {
             BarFill::Content => Self::bar_content_rect(area, width),
         };
         frame.render_widget(Clear, painted);
-        frame.render_widget(
-            Paragraph::new(text).style(self.hint_bar_render_style(palette)),
-            painted,
-        );
+        let style = if flash {
+            error_flash_style(palette)
+        } else {
+            self.hint_bar_style
+        };
+        frame.render_widget(Paragraph::new(text).style(style), painted);
     }
 
     /// Paints the resting prefix across a collapsed nav's indicator. Transient bars are
@@ -1731,16 +1745,16 @@ mod tests {
         let state = crate::state::State {
             modal: Some(Modal::Input(Box::new(Input::new(
                 InputMode::Filter,
-                " filter sessions".into(),
                 "xm".into(),
                 None,
             )))),
             ..Default::default()
         };
         let t = c.hint_bar_text(60, &state);
-        assert!(
-            t.contains("filter  sessions: xm"),
-            "the bar reads the input line: {t:?}"
+        assert_eq!(
+            t.trim(),
+            "C-g",
+            "the input says its keys where it is typed, so the bar rests: {t:?}"
         );
         // A flash displaces the input while it lasts.
         c.flash("no session 9 (1 - 4)");
@@ -1752,9 +1766,10 @@ mod tests {
         // The next key clears the flash and the input line returns.
         c.flash.clear();
         let t3 = c.hint_bar_text(60, &state);
-        assert!(
-            t3.contains("filter  sessions"),
-            "the input line returns once the flash clears: {t3:?}"
+        assert_eq!(
+            t3.trim(),
+            "C-g",
+            "the bar rests once the flash clears: {t3:?}"
         );
     }
 

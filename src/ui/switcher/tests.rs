@@ -293,6 +293,18 @@ impl Harness {
     fn nav_mod_of(&self, text: &str) -> Option<Modifier> {
         mod_of(self.buf(), text, NAV_WIDTH)
     }
+
+    /// Row `i` of the open popup, its top border being row 0; empty with no popup.
+    fn popup_row(&self, i: u16) -> String {
+        let r = self.plan.popup_rect;
+        if r.is_empty() || i >= r.height {
+            return String::new();
+        }
+        let buf = self.buf();
+        (r.x..r.right())
+            .map(|x| buf[(x, r.y + i)].symbol().to_string())
+            .collect()
+    }
 }
 
 fn buffer_text(buf: &Buffer) -> String {
@@ -1348,9 +1360,9 @@ async fn open_filter_reports_matches_and_bolds_matching_cells() {
     h.key(KeyCode::Char('/')).await;
     h.ch('l').await;
     h.ch('p').await;
-    let hint = h.hint_bar_text();
-    assert!(hint.contains("2 matches"), "match count:\n{hint}");
-    assert!(!hint.contains("hidden"), "{hint}");
+    let top = h.popup_row(0);
+    assert!(top.contains(" 2 of 2 "), "match count:\n{top}");
+    assert!(h.popup_row(1).contains(" / lp"), "{}", h.popup_row(1));
     assert!(
         h.nav_mod_of("l")
             .is_some_and(|m| m.contains(Modifier::BOLD)),
@@ -1439,9 +1451,8 @@ async fn empty_filter_counts_every_card() {
     h.state.logged_in.insert("kept".into());
     h.sw.rebuild(&mut h.state);
     h.key(KeyCode::Char('/')).await;
-    let hint = h.hint_bar_text();
-    assert!(hint.contains("3 matches"), "card count: {hint}");
-    assert!(!hint.contains("hidden"), "{hint}");
+    let top = h.popup_row(0);
+    assert!(top.contains(" 3 of 3 "), "card count: {top}");
 }
 
 #[tokio::test]
@@ -1469,9 +1480,9 @@ async fn open_filter_reports_zero_for_the_no_match_fallback() {
         h.ch(ch).await;
     }
     assert!(
-        h.hint_bar_text().contains("0 matches"),
+        h.popup_row(0).contains(" 0 of 4 "),
         "fallback host cards are not matches: {}",
-        h.hint_bar_text()
+        h.popup_row(0)
     );
 }
 
@@ -2060,19 +2071,33 @@ fn refused_login_harness() -> Harness {
 fn login_hint_is_visible_on_first_focus_before_any_field_is_edited() {
     let mut h = refused_login_harness();
     assert!(h.state.login.is_none());
+    h.draw();
+    assert!(
+        !h.view_text().contains("Tab next"),
+        "the pane states its keys only while it takes them"
+    );
     h.state
         .focus
         .set_view_focus(crate::state::ViewFocus::Terminal);
     h.draw_terminal_focused();
     assert_eq!(h.plan.view_screen, Some(crate::model::ViewScreen::Login));
-    assert_eq!(h.plan.hint_bar_rect.width, h.buf().area.width);
-    let bar = h.plan.hint_bar_rect;
-    let row = (bar.x..bar.right())
-        .map(|x| h.buf()[(x, bar.y)].symbol().to_string())
-        .collect::<String>();
     assert!(
-        row.contains("Tab next") && row.contains("Esc nav"),
-        "the keyboard guide is visible when the login pane first takes focus: {row:?}"
+        !h.plan.floating_hint_bar,
+        "no bar floats over the window for the pane"
+    );
+    let out = h.view_text();
+    let keys = out
+        .lines()
+        .position(|l| l.contains("Tab next · Enter next / log in · Space choose · Esc nav"))
+        .unwrap_or_else(|| panic!("the keys sit under the form:\n{out}"));
+    let details = out
+        .lines()
+        .position(|l| l.contains("details"))
+        .expect("the failure's details choice");
+    assert!(keys > details, "under the result block:\n{out}");
+    assert!(
+        out.contains("[ Log in ]"),
+        "the button reads as a button:\n{out}"
     );
 }
 
@@ -2984,7 +3009,7 @@ async fn filter_narrows() {
     );
     assert!(
         out.contains("filter: infer"),
-        "active filter shows in title:\n{out}"
+        "the applied filter shows on the hint bar:\n{out}"
     );
 }
 
@@ -3109,9 +3134,15 @@ fn logout_confirms_the_selected_ssh_session_and_machine() {
     let Some(Modal::Input(input)) = &h.state.modal else {
         panic!("logout confirmation")
     };
-    assert!(input.label.contains("box/api"));
-    assert!(input.label.contains("username and password"));
-    assert!(input.label.contains("held password cleared"));
+    assert_eq!(
+        input.facts,
+        vec![
+            ("session", "box/api".to_string()),
+            ("SSH login", "username and password".to_string()),
+            ("password", "held password is cleared".to_string()),
+            ("connections", "closes box connections".to_string()),
+        ]
+    );
     assert!(h
         .sw
         .handle_key(
@@ -4494,7 +4525,7 @@ async fn help_overlay_renders_takes_q_as_search_and_closes_on_esc_or_prefix_help
     h.draw();
     let out = h.text();
     assert!(
-        out.contains("keys"),
+        out.contains("╭ help "),
         "show_help opens the help modal:\n{out}"
     );
     assert!(out.contains("fuzzy filter"), "help should list keybindings");
@@ -4504,7 +4535,7 @@ async fn help_overlay_renders_takes_q_as_search_and_closes_on_esc_or_prefix_help
         .feed_reader_key(b"q", 0x07, &mut false, 200, &mut h.state));
     h.draw();
     let out = h.text();
-    assert!(out.contains("search q"), "q types into the search:\n{out}");
+    assert!(out.contains("│ / q"), "q types into the search:\n{out}");
     assert!(out.contains("quit xmux"), "the match stays:\n{out}");
     assert!(
         !out.contains("fuzzy filter"),
@@ -4533,8 +4564,8 @@ fn the_help_scrolls_back_up_at_once_from_its_end() {
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
     let visible = 11u16;
-    let rows = modal::help_rows(&state.chrome.ui_prefix, state.chrome.nav_position).len();
-    let max = modal::help_max_scroll(rows, visible);
+    let lines = modal::help_display_len(&state.chrome.ui_prefix, state.chrome.nav_position, "");
+    let max = modal::help_max_scroll(lines, visible);
     let scroll = |state: &crate::state::State| match &state.modal {
         Some(Modal::Help { scroll, .. }) => *scroll,
         _ => panic!("help closed"),
@@ -5168,10 +5199,10 @@ fn the_armed_key_list_covers_the_grid_beside_the_nav_and_moves_no_card() {
 }
 
 #[tokio::test]
-async fn the_input_hint_bar_floats_across_the_whole_window() {
+async fn with_the_nav_hidden_the_filter_opens_at_the_window_bottom_left() {
     // An open input must be seen even with the nav hidden (auto-hide + terminal
-    // focus): like a refusal, it floats to the window's bottom row and covers
-    // the grid, so what is being typed never disappears.
+    // focus): its box opens where the key list does there, the window's bottom left,
+    // over the grid.
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.open_input(InputMode::Filter, &mut state);
@@ -5191,12 +5222,8 @@ async fn the_input_hint_bar_floats_across_the_whole_window() {
         .map(|x| term.backend().buffer()[(x, y)].symbol())
         .collect();
     assert!(
-        row.contains("filter  sessions:") && row.contains("4 matches"),
-        "the input bar floats onto the hidden-nav bottom row: {row:?}"
-    );
-    assert!(
-        !row.contains('X'),
-        "and covers the grid across the whole row: {row:?}"
+        row.starts_with("╰") && row.contains("Enter apply · Esc cancel ╯"),
+        "with the nav hidden the filter box opens at the window's bottom left: {row:?}"
     );
 }
 
@@ -5230,11 +5257,13 @@ async fn a_jump_holds_out_of_range_numbers_and_vets_at_enter() {
         "the flash names the dead number: {}",
         h.state.chrome.flash
     );
-    let bar = h.hint_bar_text();
+    let row = h.popup_row(1);
     assert!(
-        bar.contains("no session"),
-        "the flash shows over the open input: {bar:?}"
+        row.contains(&format!("✗ no card {n}")),
+        "the refused number shows in the jump box: {row:?}"
     );
+    assert!(h.popup_row(0).contains(" 1-"), "the meta keeps the range");
+    assert_eq!(h.hint_bar_text(), " C-g", "the bar keeps resting");
     // A fresh edit clears the flash and the input line returns.
     h.key(KeyCode::Backspace).await;
     assert!(h.state.chrome.flash.is_empty(), "a key clears the flash");
@@ -5357,10 +5386,12 @@ async fn a_jump_on_0_opens_the_input_and_names_no_card() {
         h.sw.selected, start,
         "no card carries 0, so the selection stays"
     );
-    let bar = h.hint_bar_text();
+    let row = h.popup_row(1);
     assert!(
-        bar.contains("jump to a session (1 - 4)"),
-        "the guide states the 1-based range: {bar:?}"
+        row.split("card 0")
+            .nth(1)
+            .is_some_and(|rest| rest.trim_end_matches('│').trim().is_empty()),
+        "the box holds the 0 and names no card: {row:?}"
     );
     h.key(KeyCode::Enter).await;
     assert!(h.state.is_inputting(), "the popup stays open");
@@ -5994,7 +6025,7 @@ fn popup_border_press_then_drag_moves_the_rect() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state); // the help popup, the one popup that remains
-                              // A window taller than the help, so the popup has room to move down.
+                              // A window taller than the help, so the popup has room to move up.
     let mut term = Terminal::new(TestBackend::new(140, 70)).unwrap();
     let before_plan = sw.layout(
         Rect::new(0, 0, 140, 70),
@@ -6010,7 +6041,7 @@ fn popup_border_press_then_drag_moves_the_rect() {
         sw.begin_popup_drag_in_plan(&before_plan, bx, by, &state),
         "press on the border grabs"
     );
-    sw.drag_popup(bx + 5, by + 1);
+    sw.drag_popup(bx + 5, by - 1);
     let after_plan = sw.layout(
         Rect::new(0, 0, 140, 70),
         NavSize::hidden(NAV_WIDTH),
@@ -6020,7 +6051,7 @@ fn popup_border_press_then_drag_moves_the_rect() {
     term.draw(|f| sw.render(f, None, false, &state, &after_plan))
         .unwrap();
     assert_eq!(after_plan.popup_rect.x, before.x + 5, "moved right by 5");
-    assert_eq!(after_plan.popup_rect.y, before.y + 1, "moved down by 1");
+    assert_eq!(after_plan.popup_rect.y, before.y - 1, "moved up by 1");
     sw.end_popup_drag();
     assert!(!sw.popup_drag_active());
 }
@@ -6180,33 +6211,29 @@ fn feed_reader_key_is_modal_searches_and_closes_on_esc() {
 }
 
 #[tokio::test]
-async fn input_renders_in_the_hint_bar() {
-    // The input is not a centered popup any more: it lives in the hint bar, which
-    // floats across the window (like a refusal) and reads `[filter] filter
-    // sessions: <buffer>` on its bottom row. No bordered box appears anywhere.
+async fn the_filter_opens_as_a_box_where_the_key_list_opens() {
     let mut h = Harness::new(sample());
-    h.ch('/').await; // open the filter input
+    let cards_before = h.plan.nav_cells.clone();
+    h.ch('/').await;
     assert!(h.state.is_inputting(), "input open");
-    let w = h.buf().area.width;
-    let last = h.buf().area.height - 1;
-    let bottom: String = (0..w).map(|x| h.buf()[(x, last)].symbol()).collect();
-    assert!(
-        bottom.contains("filter  sessions:") && bottom.contains("4 matches"),
-        "the bar shows the feature head and guide: {bottom:?}"
+    let pop = h.plan.popup_rect;
+    let term = h.plan.regions.terminal;
+    assert_eq!(pop.x, term.x, "beside the column");
+    assert_eq!(
+        pop.bottom(),
+        h.plan.hint_bar_rect.bottom(),
+        "against the indicator row"
     );
-    let whole: String = (0..h.buf().area.height)
-        .flat_map(|y| (0..w).map(move |x| (x, y)))
-        .map(|(x, y)| h.buf()[(x, y)].symbol().to_string())
-        .collect();
-    assert!(!whole.contains('╭'), "no popup box is drawn anywhere");
-    // Typing lands in the bar's input area.
+    assert!(h.popup_row(0).contains("╭ filter "), "{}", h.popup_row(0));
+    assert!(
+        h.popup_row(2).contains("Enter apply · Esc cancel ╯"),
+        "{}",
+        h.popup_row(2)
+    );
+    assert_eq!(h.plan.nav_cells, cards_before, "the nav keeps its rows");
     h.ch('b').await;
     h.ch('u').await;
-    let bottom: String = (0..w).map(|x| h.buf()[(x, last)].symbol()).collect();
-    assert!(
-        bottom.contains(": bu"),
-        "typed text lands in the bar: {bottom:?}"
-    );
+    assert!(h.popup_row(1).contains("│ / bu"), "{}", h.popup_row(1));
 }
 
 #[tokio::test]
@@ -7624,10 +7651,19 @@ async fn the_check_table_groups_problem_hosts_by_cause() {
     h.sw.toggle_check(&mut h.state);
     h.draw();
     let text = h.text();
-    assert!(text.contains("hosts to check"), "{text}");
-    assert!(text.contains("? login needed · 1"), "{text}");
-    assert!(text.contains("▲ unreachable · 2"), "{text}");
-    assert!(text.contains("✗ list failed · 1"), "{text}");
+    assert!(text.contains("╭ hosts to check "), "{text}");
+    assert!(
+        text.contains(" 4 ╮"),
+        "the count is the top border's meta: {text}"
+    );
+    assert!(text.contains("? login needed"), "{text}");
+    assert!(text.contains("▲ unreachable"), "{text}");
+    assert!(text.contains("✗ list failed"), "{text}");
+    assert!(
+        text.contains("dead-1     connection refused"),
+        "a host and its reason share one row: {text}"
+    );
+    assert!(text.contains("Enter open · Esc close ╯"), "{text}");
     assert!(!text.contains("hidden"), "{text}");
 }
 
@@ -7788,4 +7824,90 @@ async fn numbers_stay_open_until_a_held_roster_answers() {
     );
     assert_eq!(number_of(&h.sw, "x"), Some(2), "released, the numbers hold");
     assert_eq!(number_of(&h.sw, "w"), Some(3));
+}
+
+/// The terminal's own cursor after the last draw, and the cell it is on.
+fn hardware_cursor(h: &mut Harness) -> (u16, u16, Modifier) {
+    use ratatui::backend::Backend;
+    let at = h.term.backend_mut().get_cursor_position().unwrap();
+    (at.x, at.y, h.buf()[(at.x, at.y)].modifier)
+}
+
+#[tokio::test]
+async fn every_text_field_puts_the_hardware_cursor_on_its_caret() {
+    // An input method draws what it is composing at the terminal's cursor, so each field
+    // taking keys owns the cursor at its reversed caret cell.
+    let mut h = Harness::new(sample());
+    h.ch('/').await;
+    h.ch('b').await;
+    h.ch('u').await;
+    let pop = h.plan.popup_rect;
+    let (x, y, m) = hardware_cursor(&mut h);
+    assert_eq!((x, y), (pop.x + 6, pop.y + 1), "after `/ bu`");
+    assert!(m.contains(Modifier::REVERSED));
+    h.key(KeyCode::Esc).await;
+
+    h.key(KeyCode::Char('3')).await;
+    let pop = h.plan.popup_rect;
+    let (x, y, m) = hardware_cursor(&mut h);
+    assert_eq!((x, y), (pop.x + 8, pop.y + 1), "after `card 3`");
+    assert!(m.contains(Modifier::REVERSED));
+    h.key(KeyCode::Esc).await;
+
+    h.sw.toggle_palette(&mut h.state);
+    h.draw();
+    let pop = h.plan.popup_rect;
+    let (x, y, m) = hardware_cursor(&mut h);
+    assert_eq!((x, y), (pop.x + 4, pop.y + 1), "after the palette's `: `");
+    assert!(m.contains(Modifier::REVERSED));
+    h.sw.toggle_palette(&mut h.state);
+
+    h.sw.show_help(&mut h.state);
+    h.draw();
+    let pop = h.plan.popup_rect;
+    let (x, y, m) = hardware_cursor(&mut h);
+    assert_eq!((x, y), (pop.x + 4, pop.y + 1), "after the help's `/ `");
+    assert!(m.contains(Modifier::REVERSED));
+}
+
+#[tokio::test]
+async fn a_popover_field_puts_the_hardware_cursor_on_its_caret() {
+    let mut h = Harness::new(Scan {
+        groups: vec![Group {
+            source: "local".into(),
+            err: None,
+            sessions: vec![],
+        }],
+    });
+    h.ch('n').await;
+    h.ch('x').await;
+    let pop = h.plan.popup_rect;
+    let (x, y, m) = hardware_cursor(&mut h);
+    assert_eq!(y, pop.y + 2, "the name row");
+    assert_eq!(
+        h.buf()[(x - 1, y)].symbol(),
+        "x",
+        "just after what was typed"
+    );
+    assert!(m.contains(Modifier::REVERSED));
+}
+
+#[test]
+fn the_login_pane_field_puts_the_hardware_cursor_on_its_caret() {
+    let mut h = refused_login_harness();
+    h.state
+        .focus
+        .set_view_focus(crate::state::ViewFocus::Terminal);
+    h.draw_terminal_focused();
+    let term = h.plan.regions.terminal;
+    let (x, y, m) = hardware_cursor(&mut h);
+    assert!(term.contains(ratatui::layout::Position { x, y }), "{x},{y}");
+    assert!(
+        m.contains(Modifier::REVERSED),
+        "on the focused field's caret"
+    );
+    let row: String = (term.x..term.right())
+        .map(|c| h.buf()[(c, y)].symbol().to_string())
+        .collect();
+    assert!(row.contains("address*"), "the focused field's row: {row:?}");
 }
