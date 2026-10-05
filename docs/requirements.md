@@ -352,7 +352,9 @@ no function, and no test, so renaming code is never a documentation change.
   card, only the session group is painted. When it leaves from either host group,
   every group remains painted. Returning focus to the nav shows every group.
   Prefix and modal interactions preserve this decision while the terminal view
-  keeps focus. Card numbers and selection identity remain stable across focus changes.
+  keeps focus. While the selection is on a host card, every group is painted, so the
+  selected card is always painted. Card numbers and selection identity remain stable
+  across focus changes.
 - **FR-B22** - A host and its mux are SHOWN as one label, `{host}/{mux}`, wherever the pair
   is read: a nav section title, the screen a card selects, the doctor's source list.
   Always that separator, never the one a source id parts its two halves with, because an id

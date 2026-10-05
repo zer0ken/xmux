@@ -7243,7 +7243,7 @@ async fn a_live_prefix_keeps_the_host_band_hidden_after_leaving_nav_from_a_sessi
 }
 
 #[tokio::test]
-async fn a_hidden_band_stays_hidden_until_nav_regains_focus() {
+async fn a_selected_host_card_is_painted_while_the_band_is_hidden() {
     let mut h = Harness::new(scan_with_a_host_band());
     h.sw.sync_view_focus(true);
     h.draw();
@@ -7251,8 +7251,64 @@ async fn a_hidden_band_stays_hidden_until_nav_regains_focus() {
     h.key(KeyCode::Right).await;
     h.key(KeyCode::Right).await; // the selection reaches the band
     assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { .. })));
+    h.draw();
     let nav = h.nav_cards_text();
-    assert!(!nav.contains("db-2"), "the focus decision holds:\n{nav}");
+    assert!(
+        nav.contains("db-2"),
+        "the selected card is painted:
+{nav}"
+    );
+    h.key(KeyCode::Left).await; // back onto a session card
+    h.draw();
+    let nav = h.nav_cards_text();
+    assert!(
+        !nav.contains("db-2"),
+        "the focus decision holds:
+{nav}"
+    );
+}
+
+#[tokio::test]
+async fn a_selection_that_falls_to_its_host_card_is_painted() {
+    // Logging out of the machines, or the machines losing their sessions, leaves the
+    // selection on a host card while the terminal view keeps the focus.
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.sw.sync_view_focus(true);
+    for source in ["local", "jupiter00"] {
+        h.sw.apply_source_result(
+            source.into(),
+            vec![],
+            Some("logged out; log in again or re-scan".into()),
+            &mut h.state,
+        );
+    }
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { .. })));
+    assert!(
+        h.sw.selected < h.sw.painted_rows(),
+        "the selected card is painted"
+    );
+    h.draw();
+    assert!(
+        h.plan.nav_cells.iter().any(|(i, _)| *i == h.sw.selected),
+        "the selected card takes a click"
+    );
+}
+
+#[tokio::test]
+async fn a_jump_to_a_hidden_host_card_paints_it() {
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.sw.sync_view_focus(true);
+    let number = number_of(&h.sw, "db-2").expect("the host card is numbered");
+    let digit = char::from_digit(number as u32, 10).expect("a one-digit number");
+    h.sw.open_jump(digit, &mut h.state);
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"));
+    h.draw();
+    let nav = h.nav_cards_text();
+    assert!(
+        nav.contains("db-2"),
+        "the jump lands on a painted card:
+{nav}"
+    );
 }
 
 /// One host serving `names`, every one a session.

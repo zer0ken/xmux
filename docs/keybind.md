@@ -153,8 +153,9 @@ The first visible boundary can carry a horizontal rule while a side list scrolls
 
 Leaving nav focus from a session card paints only the session group. Leaving from
 either host group keeps every group visible. Returning focus to the nav shows
-every group. Prefix and modal interactions preserve the focus decision. Card
-numbers and selection identity stay the same.
+every group. Prefix and modal interactions preserve the focus decision. While
+the selection is on a host card, every group is painted, so the selected card is
+always visible. Card numbers and selection identity stay the same.
 
 `prefix h` lists hosts with a problem, grouped by cause and carrying their reasons.
 Enter selects the host and opens its login pane when needed. The command palette
