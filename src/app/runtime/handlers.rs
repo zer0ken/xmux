@@ -1853,7 +1853,11 @@ fn last_pane_line(registry: &crate::display::registry::AttachRegistry, id: u64) 
     let Some(grid) = registry.grid(&addr) else {
         return "(no grid)".to_string();
     };
-    let line = grid.lock().ok().and_then(|g| g.last_line());
+    // ssh's closing transfer report follows whatever ended the session.
+    let line = grid
+        .lock()
+        .ok()
+        .and_then(|g| g.last_line_except(crate::transport::diagnostic::is_verbose_report_line));
     line.map(|l| crate::driver::escape_controls(&l))
         .unwrap_or_else(|| "(blank)".to_string())
 }

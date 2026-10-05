@@ -75,9 +75,13 @@ and nothing in `transport/` imports a mux type or a source.
   Submitted connection values are the machine's, not one source's. A source found later
   and a transport rebuilt from the roster receive the same store before use, so neither
   can lose the machine credential.
-- Login, machine probe, and display connections ask OpenSSH to report authentication.
-  Diagnostics go to a temporary file rather than a pipe a persistent master can retain.
-  A host keeps its last observed method; a session reports only its live display
+- Login, machine probe, and display connections ask OpenSSH to report authentication
+  at its verbose level, never a debug level. The report stays on the command's own
+  stderr beside ssh's errors, so a display connection's failure reaches its pane, and no
+  file outlives the command. A persistent master releases an inherited stderr below a
+  debug level, so a probe's pipes close when the probe exits. The verbose level's
+  success reports, the method and the transfer totals, are never part of a failure
+  reason. A host keeps its last observed method; a session reports only its live display
   connection's method. A reused master may report none.
 - A held ssh password is reached only through a private broker token in the child
   environment. The token requires an exact target account-and-host match, answers at most once, and lives until the child

@@ -135,11 +135,8 @@ fn run(
 ) -> Conversation {
     let mut password_asked = Some(password_asked);
     let mut process = std::process::Command::new(command.program());
-    let auth_log = command
-        .observe_auth()
-        .then(crate::transport::auth_log::AuthLog::new);
-    if let Some(log) = &auth_log {
-        process.args(log.args());
+    if command.observe_auth() {
+        process.args(crate::transport::auth_log::args());
     }
     process
         .args(command.args())
@@ -204,10 +201,7 @@ fn run(
     };
     let _ = child.wait();
     let stdout = out.join().unwrap_or_default();
-    let mut stderr = err.join().unwrap_or_default();
-    if let Some(log) = auth_log {
-        stderr.extend_from_slice(log.read().as_bytes());
-    }
+    let stderr = err.join().unwrap_or_default();
     let raw = format!(
         "{}\n{}",
         String::from_utf8_lossy(&stdout),

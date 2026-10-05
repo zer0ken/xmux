@@ -30,7 +30,7 @@ impl Grid {
             self.clear();
         }
         // vt100 0.16.2 panics (screen.rs `Screen::text` unwrap on None) when a wide
-        // (CJK) glyph lands on the last column in some cursor states — common after a
+        // (CJK) glyph lands on the last column in some cursor states - common after a
         // grid shrink. Catch it so the PTY pump thread survives; reset the parser so
         // the next mux repaint refills the grid cleanly instead of re-panicking on the
         // same stale cursor.
@@ -46,7 +46,7 @@ impl Grid {
     /// Wipes the grid to a blank slate (a fresh parser at the same size) at the start
     /// of the next feed. Used when the displayed session switches so the prior
     /// content stays on screen until the mux's full redraw arrives, then clears the
-    /// moment the new content lands — stale cells from the previous session never
+    /// moment the new content lands - stale cells from the previous session never
     /// linger behind the new repaint.
     pub fn clear_on_next_feed(&mut self) {
         self.clear_on_feed = true;
@@ -79,7 +79,7 @@ impl Grid {
         self.parser.screen().hide_cursor()
     }
 
-    /// Whether the grid has no visible content (all blank) — used to diagnose an
+    /// Whether the grid has no visible content (all blank) - used to diagnose an
     /// attachment whose PTY child has not produced output yet.
     /// The last non-empty line the pane holds, for the log to name WHY a display
     /// terminal is gone.
@@ -88,12 +88,17 @@ impl Grid {
     /// closed, a mux says what it refused. Nothing else carries that sentence, so without
     /// reading it back the death is only ever a timestamp.
     pub fn last_line(&self) -> Option<String> {
+        self.last_line_except(|_| false)
+    }
+
+    /// The last non-empty line that `ignored` does not reject.
+    pub fn last_line_except(&self, ignored: impl Fn(&str) -> bool) -> Option<String> {
         let text = self.parser.screen().contents();
         // Trimmed at both ends: a pane keeps its cells padded to the full width, and
         // where a line STARTS on screen says nothing about what it says.
         text.lines()
             .map(str::trim)
-            .rfind(|l| !l.is_empty())
+            .rfind(|l| !l.is_empty() && !ignored(l))
             .map(str::to_string)
     }
 
@@ -101,8 +106,18 @@ impl Grid {
         self.parser.screen().contents().trim().is_empty()
     }
 
+    /// Whether every visible line is blank or rejected by `ignored`.
+    pub fn is_blank_except(&self, ignored: impl Fn(&str) -> bool) -> bool {
+        self.parser
+            .screen()
+            .contents()
+            .lines()
+            .map(str::trim)
+            .all(|l| l.is_empty() || ignored(l))
+    }
+
     /// A cheap, stable hash of the visible cell contents. Changes if and only if the
-    /// rendered text changes — used to detect whether a display transition actually
+    /// rendered text changes - used to detect whether a display transition actually
     /// produced a different screen, so a `display_show decision=switch` not followed
     /// by a `display_grid_changed` event indicates the mux switch had no visible effect.
     pub fn fingerprint(&self) -> u64 {
@@ -143,7 +158,7 @@ impl Grid {
                     // the old glyph's right half as background residue on the
                     // terminal. Marking the trailing cell AlwaysUpdate makes it
                     // differ from any later narrow cell at this column, forcing the
-                    // diff to repaint it on transition — no full-screen clear, so no
+                    // diff to repaint it on transition - no full-screen clear, so no
                     // flash. While the wide glyph is stable the diff skips this cell
                     // via the leading cell's width, so it never redraws needlessly.
                     cell.set_diff_option(ratatui::buffer::CellDiffOption::AlwaysUpdate);
@@ -237,7 +252,7 @@ Connection to host closed.
     }
 
     // NOTE: this test deliberately triggers the vt100 panic that Grid::feed catches, so
-    // `cargo test` prints one "thread panicked at vt100 ... screen.rs" line to stderr —
+    // `cargo test` prints one "thread panicked at vt100 ... screen.rs" line to stderr -
     // expected, not a failure. (The hook is not silenced here because it is process-
     // global and tests run in parallel.)
     #[test]
@@ -264,7 +279,7 @@ Connection to host closed.
     #[test]
     fn feed_survives_wide_char_at_last_column() {
         // Regression: vt100 0.16.2 panics (drawing_cell_mut(col+1).unwrap() on None) when
-        // a wide CJK glyph prints on the last column — observed crashing the PTY pump
+        // a wide CJK glyph prints on the last column - observed crashing the PTY pump
         // thread. Grid::feed must catch+recover so the pump survives and the grid stays
         // usable (a subsequent repaint lands).
         let mut g = Grid::new(1, 4);
@@ -355,7 +370,7 @@ Connection to host closed.
         g_prev.render_into(&mut prev, area);
 
         // Frame 2: col 0 is now a narrow char; col 1 falls back to a blank space
-        // whose symbol matches the old trailing cell — the residue-producing case.
+        // whose symbol matches the old trailing cell - the residue-producing case.
         let mut g_next = Grid::new(1, 4);
         g_next.feed(b"a");
         let mut next = Buffer::empty(area);
@@ -373,7 +388,7 @@ Connection to host closed.
     #[test]
     fn render_into_does_not_redraw_stable_wide_char() {
         // The trailing-cell repaint must fire only on a transition, never while the
-        // wide glyph is unchanged — otherwise every frame would redraw and flash.
+        // wide glyph is unchanged - otherwise every frame would redraw and flash.
         // Two identical wide-char frames must produce an empty diff.
         let area = Rect::new(0, 0, 4, 1);
 
@@ -403,7 +418,7 @@ Connection to host closed.
 
     #[test]
     fn fingerprint_same_contents_same_hash() {
-        // Two grids fed the same bytes must produce the same fingerprint — the hash
+        // Two grids fed the same bytes must produce the same fingerprint - the hash
         // is a function of visible content only, not parser identity or call count.
         let mut a = Grid::new(24, 80);
         let mut b = Grid::new(24, 80);
@@ -417,13 +432,13 @@ Connection to host closed.
     }
 
     // NOTE: this test deliberately triggers the vt100 panic that Grid::feed catches, so
-    // `cargo test` prints one "thread panicked at vt100 ..." line to stderr — expected,
+    // `cargo test` prints one "thread panicked at vt100 ..." line to stderr - expected,
     // not a failure. (The hook is not silenced here because it is process-global and
     // tests run in parallel.)
     #[test]
     fn feed_survives_clear_wide_panic_at_last_column() {
         // Regression: vt100 0.16.2's `Row::clear_wide` (row.rs:89/91) panics when an
-        // erase/remove lands on the boundary of a wide (CJK) glyph — most often a
+        // erase/remove lands on the boundary of a wide (CJK) glyph - most often a
         // double-width char whose first half sits at the last column (col+1 OOB, the
         // row.rs:89 the panic.log shows as "len is 130 but the index is 130") or whose
         // continuation wraps to column 0 (col-1 underflow). Both are the same code path

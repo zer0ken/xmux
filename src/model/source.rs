@@ -194,11 +194,8 @@ impl ExecRunner {
         let name = command.program();
         let args = command.args();
         let mut cmd = tokio::process::Command::new(name);
-        let auth_log = command
-            .observe_auth()
-            .then(crate::transport::auth_log::AuthLog::new);
-        if let Some(log) = &auth_log {
-            cmd.args(log.args());
+        if command.observe_auth() {
+            cmd.args(crate::transport::auth_log::args());
         }
         cmd.args(args);
         // Isolate stdin: these are non-interactive mux/ssh commands (list-sessions,
@@ -274,12 +271,6 @@ impl ExecRunner {
             }
             Ok(status) => status.map_err(|e| RunError::Other(e.to_string()))?,
         };
-        if let Some(log) = auth_log {
-            let diagnostics = tokio::task::spawn_blocking(move || log.read())
-                .await
-                .unwrap_or_default();
-            err.extend_from_slice(diagnostics.as_bytes());
-        }
         if status.success() {
             Ok((out, String::from_utf8_lossy(&err).into_owned()))
         } else {
@@ -564,23 +555,24 @@ mod tests {
     #[tokio::test]
     async fn ssh_auth_diagnostics_do_not_hold_probe_or_login_pipes_open() {
         use std::os::unix::fs::PermissionsExt;
-        let script = crate::transport::auth_log::AuthLog::new();
+        let script =
+            std::env::temp_dir().join(format!("xmux-fake-ssh-master-{}.sh", std::process::id()));
+        // The background sleep is the ControlPersist master: like OpenSSH's, it keeps the
+        // stderr it inherited only when debug output goes there.
         std::fs::write(
-            script.path(),
+            &script,
             r#"#!/bin/sh
-if [ "$1" = '-v' ] && [ "$2" = '-E' ]; then
-  printf 'debug1: Authenticated to box using "publickey".\n' > "$3"
-  sleep 3 >/dev/null 2>&1 &
-else
-  printf 'debug1: Authenticated to box using "publickey".\n' >&2
-  sleep 3 >/dev/null &
-fi
+printf 'Authenticated to box ([10.0.0.1]:22) using "publickey".\n' >&2
+case " $* " in
+  *" -v "*) sleep 3 >/dev/null & ;;
+  *) sleep 3 >/dev/null 2>&1 & ;;
+esac
 echo probe-ok
 "#,
         )
         .unwrap();
-        std::fs::set_permissions(script.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let command = CommandSpec::new(script.path().to_string_lossy().into_owned(), Vec::new())
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let command = CommandSpec::new(script.to_string_lossy().into_owned(), Vec::new())
             .with_auth_observation();
         let (out, diagnostics) = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -605,6 +597,7 @@ echo probe-ok
             .unwrap();
         assert!(login.outcome.is_ok(), "{:?}", login.outcome);
         assert_eq!(login.auth_method, Some(crate::model::AuthMethod::PublicKey));
+        let _ = std::fs::remove_file(&script);
     }
 
     #[tokio::test]
