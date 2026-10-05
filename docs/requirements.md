@@ -650,8 +650,8 @@ no function, and no test, so renaming code is never a documentation change.
   the held password, the metadata and display connections, and the shared SSH master go.
   SSH config is not changed. The key steps run off the event loop, and a second logout
   is refused while one is running.
-- **FR-B40** - The selection follows the user's interest
-  (`docs/adr/0007-context-follows-the-users-interest.md`). When the selected card leaves
+- **FR-B40** - The selection follows the user's interest (Selection by Interest in
+  `docs/principles.md`). When the selected card leaves
   the list, by a scan, a re-scan, a poll, a logout, a session ending, mux discovery, or
   the filter, the selection moves to the nearest node up its lineage that still has a
   target: a session to its source (the `{mux}` part of its section title, or the
@@ -951,16 +951,3 @@ The seamless cross-host switch is bought with three costs, accepted by design:
   distribution's side, because a control stream reads its terminal attributes and exits
   without one. A distribution that cannot allocate one reports that mux unreachable; a
   polled mux there is unaffected.
-
-## Design principles
-
-- **Asked-for requests** - xmux is a guest on every machine it reaches. It asks when
-  something asked it to, one thing at a time, and it answers a refusal by reporting it
-  rather than by asking again. Recovering is the user's to ask for, which costs a
-  keystroke and is the only version of it that ever stops. *(FR-G7, FR-G8)*
-- **Honesty** - The nav shows only what it can back with an answer, and says
-  so when it cannot. A value is never guessed, assumed, or shown as a fact
-  before it is one: a mux appears on a card only when the enumeration
-  answered through it or the machine was resolved to serve it, an unresolved
-  host card turns a spinner instead of a value, and a failure keeps its own
-  state colour while the reason is stated on the screen. *(FR-B7)*

@@ -300,7 +300,7 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
 pub use crate::state::Scan;
 
 /// What the user is interested in: the one value both selection rules read
-/// (docs/adr/0007-context-follows-the-users-interest.md). A card that DISAPPEARS moves
+/// (Selection by Interest in docs/principles.md). A card that DISAPPEARS moves
 /// the selection along its lineage; a card that APPEARS takes the selection only when
 /// it is what this value names.
 #[derive(Clone, Debug, PartialEq, Eq)]

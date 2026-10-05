@@ -1,3 +1,27 @@
+//! The credential broker that lets every ssh the running app starts use a password the
+//! user submitted, while that password stays in this process's memory.
+//!
+//! ssh receives the xmux executable as `SSH_ASKPASS`, a private local endpoint, and an
+//! opaque per-command token, and the helper asks the broker for the password, so the
+//! password never enters argv, a child environment, a log, or a file. This keeps the
+//! platform OpenSSH client with its configuration, keys, agents, known hosts, proxies, and
+//! PTY behavior. The alternatives fail that boundary or cost more: a password in the child
+//! environment is readable by environment inspection and forwarded by configurations that
+//! pass matching variables; answering prompts over a PTY for every ssh makes prompt
+//! wording, terminal controls, and chunk boundaries part of the authentication protocol;
+//! a ControlMaster or an agent is unavailable on Windows, can disappear, and does not
+//! represent a password-only server; a native SSH library would have to reproduce
+//! everything OpenSSH already does.
+//!
+//! Connection sharing therefore stays an optimization: every command can authenticate on
+//! its own, so losing a master costs only performance. Every ssh spawn site composes argv
+//! together with the child environment, because a spawn that accepts bare argv cannot
+//! carry the token. The endpoint is reachable only by the current account and the
+//! operating system: a mode-0700 directory and a mode-0600 socket on Unix, and a protected
+//! named-pipe descriptor naming the current user's SID and SYSTEM on Windows. The
+//! standalone `xmux attach` runs in a fresh process without this memory, so it uses keys
+//! or ssh's own terminal prompt.
+
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};

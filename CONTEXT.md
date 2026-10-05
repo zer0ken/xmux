@@ -33,7 +33,8 @@ One concept, one word. The two axes and the runtime:
   the host is the half of a source id that survives when the mux half is dropped.
   The host FOR a mux is a host that can run it; the host OF a session is the host
   that session runs on. A `Transport` reaches a host; it is not one, and several
-  transports may reach the same host.
+  transports may reach the same host. A sentence about a host must stay true when one
+  host serves two muxes; one that does not is about a source.
 - `MuxDriver` - a mux's display driver, which the mux itself builds.
 - the app - the runtime that owns the terminal: its loop, its focus state, and
   its input routing.
@@ -310,7 +311,7 @@ UI elements a user perceives as distinct things:
   resolves. A click is the same execution as `Enter`: it opens the target's screen,
   focuses the terminal view, and makes the target the hard selection.
 - interest - what the user is on or asked for, the one value the selection is resolved
-  from on every rebuild (see `docs/adr/0007-context-follows-the-users-interest.md`).
+  from on every rebuild (Selection by Interest in `docs/principles.md`).
   Before anything is chosen it is the first session to appear (the launch preselect);
   then it is the selected card; while a session the user asked for has no card yet (the
   session `n` created, the session under the selection when a full re-scan cleared every
@@ -669,7 +670,8 @@ UI elements a user perceives as distinct things:
   scrolled by the arrows. Its tab row names the sections: `←`/`→` or a click moves the
   active tab and scrolls that section to the top, and a scroll moves the active tab to
   the section at the top. A popup's pickable items (the help's tabs, the hosts to check,
-  the palette's commands) follow ADR 0008: the arrows move the hard selection, the
+  the palette's commands) follow Separate Selection and Execution
+  (`docs/principles.md`): the arrows move the hard selection, the
   pointer over an item is the soft selection, underlined, and a click on an item
   executes it as Enter on it would. A hovered tab shows its section until the pointer
   leaves the tab row. A key ends the soft selection. The whole box, its items included,
@@ -712,87 +714,6 @@ work the user started is a `toast`, never a "notice". A card's trailing state is
 selected card is the `selection highlight`; `cursor` names only the terminal's text
 cursor (the grid's, or the one on a focused field's caret). The furniture around the views is the `chrome`, never a "status surface".
 The switcher's rendered screen is the "switcher screen", never an "overlay".
-
-## Working Notes Format
-
-Working Notes use these sections:
-
-- `Purpose`
-- `Mental Model`
-- `Module Seams`
-- `Invariants`
-- `Common Pitfalls`
-- `Before Editing`
-- `Verification`
-
-Working Notes describe the current codebase state. Active refactoring direction
-is expressed as invariants, module seams, and pitfalls rather than as change
-history or phase narrative.
-
-Repository documentation is written in English when it is committed to the
-project. Temporary files outside the repository may use another language.
-
-## Documentation is the standard, code is the subject
-
-Durable documentation states the behavior and the design rules the code is
-checked against. It is not a mirror of the code, so it never names a test, a
-function, a method, a field, or a library API: those move, and a document that
-follows them turns every code change into a documentation change. What a
-document may name is what the design itself prescribes and what the outside
-world already depends on: the two axes and their terms, the directory
-layout a new module must fit, config keys, CLI and ctl verbs, socket names, and
-the argv of the muxes xmux drives.
-
-## Honesty
-
-xmux is honest by design: it shows only what it can back with an answer,
-and it says so when it cannot. Honesty is the core rule every presentation
-decision is checked against, before colour, before layout, before any
-value on a card.
-
-- A mux is named only when it is CONFIRMED. A settled host's enumeration
-  answered through its mux, and a source id that names its own mux was
-  resolved from what the machine actually serves. No mux is assumed for a
-  host that named none, and an unreachable host's written mux stays off its
-  card: the card reads the host alone rather than claim a mux the failed
-  probe never confirmed.
-- An answer that has not arrived is shown as in flight, never as a value.
-  A scanning host's card turns the spinner trailing its line, and no card spins
-  for a session once its host has resolved.
-- A failure is shown as a failure, never dressed as a value. The
-  unreachable mark and the refusal keep their own state colour, and the
-  reason is stated on the screen, where it fits whole, never cut down to
-  fit a card.
-- A card states WHAT something is; WHY it is that way is the screen's. A
-  card that cannot back a word omits it, and a value that was never
-  confirmed is never presented as one.
-
-### Minimal Persistent Surface
-
-The always-visible card surface contains names, numbers, one state glyph, the selection
-mark, and the resting `C-g` prefix only. Long names preserve their beginning and end
-with a middle ellipsis rather than displacing state or navigation cells.
-
-### Helpful Interaction Surface
-
-An interaction surface spends the available space on state words, counts, the next
-key, and complete reasons or solutions. The selected card names its state, an open
-filter names total matches, and a host screen keeps the failure
-reason whole. A nav left with no card is the one exception at rest: its body says in one
-line why it is empty and which key answers it. A live prefix names every key it unlocks, and a selection move names
-the selected card's next keys and its state for three seconds; both read the one key table,
-and the help adds the glyph legend.
-
-### Four-Position Grammar
-
-The nav uses the same card, status, selection, filter, and key grammar at left, top,
-right, and bottom. Placement changes geometry, not vocabulary or interaction shape.
-
-### Terminal-Safe Shape Vocabulary
-
-Persistent UI symbols are conventional one-cell glyphs rendered by OS-default terminal
-fonts without emoji presentation. The allowed vocabulary includes `❯`, `✓`, `✗`,
-braille spinner frames led by `⠋`, box drawing led by `╭`, `▲`, `?`, and `…`.
 
 ## Architecture - the orthogonal design
 
@@ -878,52 +799,10 @@ command, source, persistence, attachment, and login effects in their emitted
 order. Raw terminal bytes are the sole direct path because they are payload for
 the selected terminal display rather than an application-state transition.
 
-## Asked-for requests
-
-**xmux reaches a machine only when something asked it to.** Every request traces to one
-of three things: the launch scan, a user action, or a push stream that is already open.
-No failure raises its own retry.
-
-A user action means a re-scan, a login, selecting a card, managing host access,
-or an operation on a session.
-A push stream is one connection that stays open while the far side speaks over it, which
-is not a repeated request however much it carries. A POLL source that answered is kept
-current on a cadence over a path the machine already holds open: the local box and a WSL
-distribution are a local process, and an ssh machine is reached over the one master this
-side shares across runs, so a repeat there opens no connection and the nav shows what the
-mux is doing now. Where every repeat would be a fresh login (an ssh side that cannot
-multiplex), a POLL source is enumerated only when something asked for it - the launch
-scan or an explicit re-scan. The first enumeration that fails ends the cadence either way.
-
-The rule exists because a request that answers a failed request cannot stop. A machine
-that refuses one connection refuses the next identically, so a client that reconnects on
-every refusal reconnects without end, and the machine's own defences are built to read
-exactly that as an attack. So a host that does not answer is not asked again - the
-re-scan is what asks it. The consequences are deliberate and they are what the user
-sees: a channel that dropped stays dropped, a display whose client died keeps the last
-frame it drew, and a card that is unreachable stays unreachable, each until the user asks
-for it again.
-
-A DETACH is not a drop. A mux that ends a control client which had already listed
-sessions, with a notice that names no reason, says so over the open push stream and
-keeps serving its other sessions: tmux detaches that way a control client whose attached
-session was destroyed. The host answered, so its card stands as the mux last reported it
-and the channel is opened once more. Only a reopened channel that lists sessions again
-earns another reopen on its next detach, so a reopen that fails ends like any other
-channel: an empty host when the mux says it has no sessions or no server, and unreachable
-otherwise. A notice that names a reason is an orderly end and reopens nothing; a server
-that exited leaves the host empty.
-
-Concurrency follows from the same fact. A machine counts the connections that have not
-authenticated yet, so work fans out ACROSS machines and never within one: a machine is
-asked one thing at a time, however many things there are to ask it.
-
 ## Colour ownership
 
-**The terminal theme owns every colour xmux paints.** xmux names ANSI-16 slots and
-attributes; the terminal resolves them into actual hues. So the whole UI recolours with
-whatever scheme the user runs, and xmux never fights a theme it cannot see. This is a
-hard invariant, not a preference.
+The principle is Terminal-Owned Colour in `docs/principles.md`. This section is how
+the palette keeps it.
 
 A THEME is a named role→ANSI-slot assignment, and a theme system curates them: the
 built-ins are `auto-dark` (the default) and `auto-light`, each an ANSI-only theme for a
@@ -983,9 +862,7 @@ At creation time, place a new source file by the axis it belongs to:
 - Runtime state, focus, modal data, and chrome data → `src/state/`.
 
 Then, if the module introduces a new directory, create that directory's
-`AGENTS.md` using the Working Notes Format above (all seven sections). Follow the
-AS-IS rule: describe the current state only, with refactoring direction expressed
-as invariants, seams, and pitfalls - never as change history or phase narrative.
+`AGENTS.md` in the Working Notes format `docs/AGENTS.md` defines.
 
 ## Improvement Notes
 
