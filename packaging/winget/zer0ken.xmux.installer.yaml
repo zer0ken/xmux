@@ -1,10 +1,10 @@
 PackageIdentifier: zer0ken.xmux
-PackageVersion: 0.12.5
+PackageVersion: 0.13.0
 InstallerType: portable
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/zer0ken/xmux/releases/download/v0.12.5/xmux-v0.12.5-x86_64-pc-windows-msvc.exe
-    InstallerSha256: 346dd78238d36b18231c1566f2e0438f1759f290984bd03c46460a4a97d253fa
+    InstallerUrl: https://github.com/zer0ken/xmux/releases/download/v0.13.0/xmux-v0.13.0-x86_64-pc-windows-msvc.exe
+    InstallerSha256: d77455d8821cf27cdb713c6281cab5b8f9e579906f53d11ff94ba4dbb2951853
     Commands:
       - xmux
 ManifestType: installer
