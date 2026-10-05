@@ -117,6 +117,42 @@ macro_rules! runner_spec_via_argv {
 #[cfg(test)]
 pub(crate) use runner_spec_via_argv;
 
+tokio::task_local! {
+    /// The instant by which an operation that runs several commands under one budget
+    /// must have its answer. Unset outside such an operation.
+    static OPERATION_DEADLINE: tokio::time::Instant;
+}
+
+/// Runs `fut` so every [`ExecRunner`] command inside it finishes its own teardown by
+/// `deadline`. An operation that bounds several commands with one outer timeout wraps
+/// them in this, because that timeout firing mid-command drops the command's pipe
+/// reads in flight, the crash [`ExecRunner`]'s own budget exists to prevent.
+pub(crate) async fn within_deadline<F: std::future::Future>(
+    deadline: tokio::time::Instant,
+    fut: F,
+) -> F::Output {
+    OPERATION_DEADLINE.scope(deadline, fut).await
+}
+
+/// The budget one [`ExecRunner`] command gets: its own [`POLL_CMD_TIMEOUT`], cut short
+/// inside [`within_deadline`] so the command times out early enough for its teardown
+/// to finish before the deadline. The teardown gets the same margin the sweep-level
+/// budget leaves it.
+///
+/// [`POLL_CMD_TIMEOUT`]: crate::mux::POLL_CMD_TIMEOUT
+fn command_budget() -> std::time::Duration {
+    let teardown = crate::mux::POLL_SWEEP_BUDGET.saturating_sub(crate::mux::POLL_CMD_TIMEOUT);
+    OPERATION_DEADLINE
+        .try_with(|deadline| {
+            deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .saturating_sub(teardown)
+        })
+        .map_or(crate::mux::POLL_CMD_TIMEOUT, |left| {
+            left.min(crate::mux::POLL_CMD_TIMEOUT)
+        })
+}
+
 /// The real runner: spawns the command via tokio, stripping mux env so a local
 /// command run from inside a mux is not refused as nesting.
 pub struct ExecRunner;
@@ -143,11 +179,8 @@ impl ExecRunner {
         &self,
         command: &CommandSpec,
     ) -> Result<(Vec<u8>, String), RunError> {
-        self.run_spec_until(
-            command,
-            tokio::time::Instant::now() + crate::mux::POLL_CMD_TIMEOUT,
-        )
-        .await
+        self.run_spec_until(command, tokio::time::Instant::now() + command_budget())
+            .await
     }
 
     /// Runs `command` until `deadline`. A password-only retry shares the first attempt's
@@ -212,7 +245,10 @@ impl ExecRunner {
         // read is pending when the handles drop; on Windows an in-flight read at
         // handle-close crashes as "IO is still pending on closed socket" (0xC0000005,
         // the enumeration_failed in issue #116). The sweep-level budget
-        // (within_poll_budget) is one second longer so this teardown always wins.
+        // (within_poll_budget) is one second longer, and an operation deadline
+        // (within_deadline) shortens this budget by that second, so this teardown
+        // always wins.
+        let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
         let mut out = Vec::new();
         let mut err = Vec::new();
         let outcome = tokio::time::timeout_at(deadline, async {
@@ -233,7 +269,7 @@ impl ExecRunner {
                 let _ = stderr.read_to_end(&mut err).await;
                 return Err(RunError::Other(format!(
                     "timed out\n{name} did not answer within {}s",
-                    crate::mux::POLL_CMD_TIMEOUT.as_secs()
+                    budget.as_secs_f64()
                 )));
             }
             Ok(status) => status.map_err(|e| RunError::Other(e.to_string()))?,

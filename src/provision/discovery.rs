@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use crate::model::source::Source;
+use crate::model::source::{within_deadline, Source};
 use crate::session::Session;
 
 /// One source's scan outcome. A non-`None` `err` means the source was
@@ -37,7 +37,14 @@ impl ScanResult {
 async fn scan_one(s: Source, per_source_timeout: Duration) -> ScanResult {
     let alias = s.alias.clone();
     let deadline = tokio::time::Instant::now() + per_source_timeout;
-    let mut host = match timeout(per_source_timeout, s.host_for_op()).await {
+    // The outer timeouts bound a runner that does not limit itself; the deadline
+    // makes a real command time out first, so they never drop it mid-read.
+    let mut host = match timeout(
+        per_source_timeout,
+        within_deadline(deadline, s.host_for_op()),
+    )
+    .await
+    {
         Ok(Ok(host)) => host,
         Ok(Err(e)) => {
             return ScanResult {
@@ -59,7 +66,7 @@ async fn scan_one(s: Source, per_source_timeout: Duration) -> ScanResult {
     };
     match timeout(
         deadline.saturating_duration_since(tokio::time::Instant::now()),
-        host.enumerate_with(s.run_with()),
+        within_deadline(deadline, host.enumerate_with(s.run_with())),
     )
     .await
     {
@@ -359,6 +366,79 @@ mod tests {
                 Ok(b"1:0:ready\n".to_vec())
             }
         }
+    }
+
+    /// Runs a real command that outlives every budget through [`ExecRunner`], and
+    /// records whether the scan dropped that run before the runner returned. A drop
+    /// skips the runner's kill, reap, and drain, which on Windows leaves a pipe read
+    /// in flight when its handle closes (#116).
+    struct HungExecRunner {
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    struct DropMark {
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+        returned: bool,
+    }
+
+    impl Drop for DropMark {
+        fn drop(&mut self) {
+            if !self.returned {
+                self.dropped.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Runner for HungExecRunner {
+        crate::model::source::runner_spec_via_argv!();
+        async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+            // A single process, so the post-kill drain reaches EOF at once: a shell
+            // wrapper would fork a grandchild holding the pipe write ends.
+            #[cfg(windows)]
+            let (name, args) = (
+                "powershell",
+                vec![
+                    "-NoProfile".to_string(),
+                    "-Command".to_string(),
+                    "Start-Sleep -Seconds 30".to_string(),
+                ],
+            );
+            #[cfg(not(windows))]
+            let (name, args) = ("sleep", vec!["30".to_string()]);
+            let mut mark = DropMark {
+                dropped: self.dropped.clone(),
+                returned: false,
+            };
+            let out = crate::model::source::ExecRunner.run(name, &args).await;
+            mark.returned = true;
+            out
+        }
+    }
+
+    #[tokio::test]
+    async fn scan_budget_lets_the_command_tear_itself_down() {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let srcs = vec![scan_source(
+            "prod",
+            Arc::new(HungExecRunner {
+                dropped: dropped.clone(),
+            }),
+        )];
+
+        let start = std::time::Instant::now();
+        let got = scan_all(&srcs, Duration::from_secs(2), 1).await;
+
+        assert!(got[0].err.is_some());
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "the scan budget dropped a command before its own teardown returned"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "took {:?}",
+            start.elapsed()
+        );
     }
 
     #[tokio::test]

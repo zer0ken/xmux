@@ -989,14 +989,18 @@ impl Ops for EnvOps {
         let src = self.source(source)?;
         let _permit = self.sem.acquire().await?;
         let deadline = tokio::time::Instant::now() + SCAN_TIMEOUT;
-        let mut host = with_timeout(SCAN_TIMEOUT, src.host_for_op()).await?;
+        let mut host = with_timeout(
+            SCAN_TIMEOUT,
+            source::within_deadline(deadline, src.host_for_op()),
+        )
+        .await?;
         with_timeout(
             deadline.saturating_duration_since(tokio::time::Instant::now()),
-            async {
+            source::within_deadline(deadline, async {
                 host.enumerate_with(src.run_with())
                     .await
                     .map(|()| host.inventory.sessions)
-            },
+            }),
         )
         .await
     }
