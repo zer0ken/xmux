@@ -33,9 +33,6 @@ const NAV_POSITION_FILE: &str = "nav_position";
 /// The file under the xmux dir holding whether the nav is collapsed ("1"/"0").
 const NAV_COLLAPSED_FILE: &str = "nav_collapsed";
 
-/// The file under the xmux dir holding the nav scope the user last set with `prefix s`.
-const NAV_SCOPE_FILE: &str = "nav_scope";
-
 /// A marker written after the first interactive key has introduced the prefix.
 const FIRST_KEY_HELP_FILE: &str = "first_key_help_seen";
 
@@ -45,21 +42,6 @@ pub fn first_key_help_seen(xmux_dir: &Path) -> bool {
 
 pub fn mark_first_key_help_seen(xmux_dir: &Path) {
     let _ = std::fs::write(xmux_dir.join(FIRST_KEY_HELP_FILE), "1");
-}
-
-/// Reads the persisted nav scope. A missing or unrecognised value means the default
-/// scope.
-pub fn load_nav_scope(xmux_dir: &Path) -> crate::model::NavScope {
-    std::fs::read_to_string(xmux_dir.join(NAV_SCOPE_FILE))
-        .ok()
-        .and_then(|raw| crate::model::NavScope::parse(&raw))
-        .unwrap_or_default()
-}
-
-/// Persists the nav scope. Best-effort: a write failure only loses the next launch's
-/// restore.
-pub fn save_nav_scope(xmux_dir: &Path, scope: crate::model::NavScope) {
-    let _ = std::fs::write(xmux_dir.join(NAV_SCOPE_FILE), scope.word());
 }
 
 /// Reads the persisted collapsed state. Missing or unrecognised values mean expanded.

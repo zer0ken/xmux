@@ -8,6 +8,7 @@
 //! factory here; the trait and its callers name no concrete implementation.
 
 pub mod auth;
+pub(crate) mod auth_log;
 pub mod diagnostic;
 pub mod local;
 pub mod ssh;
@@ -27,6 +28,8 @@ pub struct CommandSpec {
     host_key_command: Option<String>,
     credential_generation: u64,
     auth_unavailable: Option<String>,
+    auth_trace_allowed: bool,
+    observe_auth: bool,
 }
 
 impl CommandSpec {
@@ -41,6 +44,8 @@ impl CommandSpec {
             host_key_command: None,
             credential_generation: 0,
             auth_unavailable: None,
+            auth_trace_allowed: true,
+            observe_auth: false,
         }
     }
 
@@ -53,6 +58,8 @@ impl CommandSpec {
             host_key_command: None,
             credential_generation: 0,
             auth_unavailable: None,
+            auth_trace_allowed: true,
+            observe_auth: false,
         }
     }
 
@@ -101,6 +108,24 @@ impl CommandSpec {
 
     pub fn auth_unavailable(&self) -> Option<&str> {
         self.auth_unavailable.as_deref()
+    }
+
+    pub fn with_auth_trace_allowed(mut self, allowed: bool) -> Self {
+        self.auth_trace_allowed = allowed;
+        self
+    }
+
+    pub fn auth_trace_allowed(&self) -> bool {
+        self.auth_trace_allowed
+    }
+
+    pub fn with_auth_observation(mut self) -> Self {
+        self.observe_auth = true;
+        self
+    }
+
+    pub fn observe_auth(&self) -> bool {
+        self.observe_auth
     }
 
     pub fn detach_tty(mut self) -> Self {
@@ -262,6 +287,11 @@ pub trait Transport: Send + Sync {
     /// repeat is a fresh login. `false` (the default) is the side that must not repeat.
     fn reuses_connection(&self) -> bool {
         false
+    }
+
+    /// A control command for this transport's shared connection, when it owns one.
+    fn close_shared_connection_argv(&self) -> Option<CommandSpec> {
+        None
     }
 
     /// Which shell family answers this machine's remote commands. `Posix` (the default)

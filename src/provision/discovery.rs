@@ -33,11 +33,10 @@ impl ScanResult {
     }
 }
 
-/// Enumerates one source. The shell probe a first contact needs and the listing each
-/// get their own `per_source_timeout`, so a slow first contact does not eat the
-/// listing's budget.
+/// Enumerates one source within a single budget shared by first contact and listing.
 async fn scan_one(s: Source, per_source_timeout: Duration) -> ScanResult {
     let alias = s.alias.clone();
+    let deadline = tokio::time::Instant::now() + per_source_timeout;
     let mut host = match timeout(per_source_timeout, s.host_for_op()).await {
         Ok(Ok(host)) => host,
         Ok(Err(e)) => {
@@ -58,7 +57,12 @@ async fn scan_one(s: Source, per_source_timeout: Duration) -> ScanResult {
             };
         }
     };
-    match timeout(per_source_timeout, host.enumerate_with(s.run_with())).await {
+    match timeout(
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+        host.enumerate_with(s.run_with()),
+    )
+    .await
+    {
         Ok(Ok(())) => ScanResult {
             source: alias,
             sessions: host.inventory.sessions,
@@ -358,13 +362,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_shell_probe_has_a_separate_timeout_from_the_listing() {
+    async fn first_shell_probe_and_listing_share_the_scan_timeout() {
         let srcs = vec![scan_source("prod", Arc::new(SlowFirstUseRunner))];
 
         let got = scan_all(&srcs, Duration::from_millis(40), 1).await;
 
-        assert!(got[0].err.is_none(), "{:?}", got[0].err);
-        assert_eq!(got[0].sessions[0].name, "ready");
+        assert_eq!(got[0].err.as_deref(), Some("timed out after 0.04s"));
     }
 
     #[tokio::test]

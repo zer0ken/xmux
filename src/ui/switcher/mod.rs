@@ -304,16 +304,8 @@ pub struct Switcher {
     /// The session xmux is ITSELF running in, when it is inside one. The
     /// one session the terminal view refuses: see [`Switcher::is_own_session`].
     own_session: Option<Address>,
-    /// Whether the nav hides the settled unreachable hosts' cards (`[ui]
-    /// hide-unreachable`). The app threads it in at construction; there is no live
-    /// toggle. The filter naming a hidden host keeps its card; the check table and
-    /// command palette can also select it directly.
-    hide_unreachable: bool,
     /// Whether the current sorted list receives contiguous numbers on each rebuild.
     renumbering: bool,
-    /// Which cards the nav lists. The app restores the persisted scope at construction and
-    /// the scope key steps it.
-    scope: crate::model::NavScope,
     /// Card numbers keyed by identity. The configured policy either deals them in the
     /// current sorted list order or keeps each card's number until the next full scan.
     numbers: std::collections::HashMap<CardId, usize>,
@@ -322,19 +314,9 @@ pub struct Switcher {
     /// Whether the full scan still waits on its roster answer, which can add hosts after
     /// every source on the list has answered. The numbers are not fixed while it does.
     numbers_held: bool,
-    /// Whether the terminal view held the focus at the last [`Switcher::sync_view_focus`],
-    /// so the move from the nav into the terminal view is seen as the one edge it is.
     terminal_view: bool,
-    /// Whether the nav leaves its host band unpainted. Decided on the move into the
-    /// terminal view: a session card selected then hides the band, since what the user
-    /// went to look at is a session and the hosts with nothing to show are only noise
-    /// beside it; a host card selected keeps it, since the screen beside the nav is that
-    /// host's own. Cleared on the move back into the nav.
+    /// Whether host cards are omitted after leaving nav from a session card.
     host_band_hidden: bool,
-    /// Whether a prefix interaction is live. The hint bar it raises offers a jump to any
-    /// card by number, so every card it can reach is painted while it lasts; the hidden
-    /// band returns to hidden when the prefix ends.
-    prefix_active: bool,
 
     /// A pending re-scan reselect: the session the selection was on when `r`
     /// was pressed. A re-scan clears every session, so the row briefly vanishes; this
@@ -371,16 +353,13 @@ impl Switcher {
             login_target: None,
             terminal_view_target: TerminalViewTarget::default(),
             own_session: None,
-            hide_unreachable: false,
             renumbering: true,
-            scope: crate::model::NavScope::Sessions,
             numbers: std::collections::HashMap::new(),
             next_number: 1,
             numbers_fixed: false,
             numbers_held: false,
             terminal_view: false,
             host_band_hidden: false,
-            prefix_active: false,
             rescan_reselect: None,
             popup_geo: PopupGeometry::default(),
         }
@@ -426,17 +405,6 @@ impl Switcher {
         self.own_session = address;
     }
 
-    /// Sets whether the nav hides the settled unreachable hosts' cards, rebuilding the
-    /// rows since the setting decides which groups render. A no-op when the value is
-    /// unchanged. The app threads the config value in once at startup.
-    pub fn set_hide_unreachable(&mut self, on: bool, state: &mut crate::state::State) {
-        if self.hide_unreachable == on {
-            return;
-        }
-        self.hide_unreachable = on;
-        self.rebuild(state);
-    }
-
     /// Applies the card-number policy to the current list and subsequent rebuilds.
     pub fn set_renumbering(&mut self, on: bool, state: &mut crate::state::State) {
         if self.renumbering == on {
@@ -444,44 +412,6 @@ impl Switcher {
         }
         self.renumbering = on;
         self.rebuild(state);
-    }
-
-    /// The nav scope in effect.
-    pub(crate) fn scope(&self) -> crate::model::NavScope {
-        self.scope
-    }
-
-    /// Sets the nav scope, rebuilding the rows since the scope decides which groups
-    /// render. A no-op when the value is unchanged.
-    pub fn set_scope(&mut self, scope: crate::model::NavScope, state: &mut crate::state::State) {
-        if self.scope == scope {
-            return;
-        }
-        let prior = self.capture_focus();
-        self.scope = scope;
-        // Stable numbering keeps cards' identities across scope changes, including
-        // during a full scan. Sorted numbering is dealt by `number_cards` regardless.
-        let scanning_numbers = !self.numbers_fixed;
-        self.numbers_fixed = true;
-        self.rebuild(state);
-        if scanning_numbers {
-            self.numbers_fixed = false;
-        }
-        self.restore_focus(prior, state);
-    }
-
-    /// Whether the unreachable hiding applies: the configured hiding, in the scope that
-    /// hides.
-    fn hides(&self) -> bool {
-        self.hide_unreachable && self.scope == crate::model::NavScope::Sessions
-    }
-
-    /// The sources the hiding leaves without a card right now.
-    pub(crate) fn hidden_sources(&self, state: &crate::state::State) -> Vec<String> {
-        if !self.hides() {
-            return Vec::new();
-        }
-        tree::hidden_sources(&state.groups, &state.scanning, &state.logged_in)
     }
 
     /// Tells the nav which view holds the focus, the one behind a modal included. The
@@ -496,17 +426,10 @@ impl Switcher {
         self.terminal_view = terminal;
     }
 
-    /// Tells the nav whether a prefix interaction is live (see `prefix_active`).
-    pub fn sync_prefix(&mut self, active: bool) {
-        self.prefix_active = active;
-    }
-
     /// Whether the paint leaves the host band out: hidden by the move into the terminal
-    /// view in the sessions scope, and not overridden by a live prefix.
+    /// view from a session card. Prefix interactions preserve this decision.
     fn band_unpainted(&self) -> bool {
-        self.scope == crate::model::NavScope::Sessions
-            && self.host_band_hidden
-            && !self.prefix_active
+        self.host_band_hidden
     }
 
     /// Whether `(source, target)` addresses the session xmux is ITSELF running in.
@@ -577,30 +500,12 @@ impl Switcher {
         // The mux each card NAMES comes from one resolver, so a session card, its host's
         // card and the screen behind either cannot spell one mux three ways.
         let named_mux = |source: &str| state.chrome.source_mux(source).to_string();
-        let scoped = tree::scoped_groups(&state.groups, &state.scanning, self.scope);
-        let rows = tree::flatten(
-            &scoped,
-            &state.scanning,
-            &state.logged_in,
-            &state.filter,
-            self.hides(),
-            &named_mux,
-        );
+        let rows = tree::flatten(&state.groups, &state.scanning, &state.filter, &named_mux);
         // While the numbers are dealt in list order, they are dealt over the list the
         // filter does not narrow, so a filter typed during a scan cannot renumber the cards
         // it hides.
         let unfiltered = (!self.renumbering && !self.numbers_fixed && !state.filter.is_empty())
-            .then(|| {
-                tree::flatten(
-                    &scoped,
-                    &state.scanning,
-                    &state.logged_in,
-                    "",
-                    self.hides(),
-                    &named_mux,
-                )
-            });
-        drop(scoped);
+            .then(|| tree::flatten(&state.groups, &state.scanning, "", &named_mux));
 
         self.rows = rows;
         self.number_cards(unfiltered.as_deref(), state.scanning.is_empty());
@@ -712,7 +617,7 @@ impl Switcher {
             .unwrap_or(0)
     }
 
-    /// Where the nav's two bands meet: the first host-state card, the flatten having sunk
+    /// Where session cards end: the first host-state card, the flatten having sunk
     /// every host with no session to show to the end of the list. `None` when no host card
     /// is on the list at all; whether a boundary actually parts anything (both bands need
     /// a card) is [`side::place`]'s to judge.
@@ -743,6 +648,33 @@ impl Switcher {
         }
     }
 
+    fn painted_boundaries(&self) -> Vec<usize> {
+        if self.band_unpainted() {
+            return Vec::new();
+        }
+        let mut boundaries = Vec::new();
+        if let Some(first) = self.band_boundary() {
+            boundaries.push(first);
+            if let Some(disconnected) = self.rows.iter().position(|row| {
+                matches!(
+                    row.reference,
+                    RowRef::Host {
+                        unreachable: true,
+                        ..
+                    } | RowRef::Host {
+                        list_failed: true,
+                        ..
+                    } | RowRef::Host { scanning: true, .. }
+                )
+            }) {
+                if disconnected != first {
+                    boundaries.push(disconnected);
+                }
+            }
+        }
+        boundaries
+    }
+
     /// The index of the section title the SELECTED row hangs under: the Section row
     /// directly above a selected session card, `None` when the selection is a host-state
     /// card or no section heads it. A section title is the row its group of cards reads
@@ -762,8 +694,6 @@ impl Switcher {
 
     fn set_selected(&mut self, idx: usize, state: &crate::state::State) {
         if self.rows.is_empty() {
-            // No row is a session row, so the host band has nothing to stay hidden for.
-            self.host_band_hidden = false;
             return;
         }
         let idx = idx.min(self.rows.len() - 1);
@@ -775,9 +705,6 @@ impl Switcher {
             self.login_target = None;
         }
         self.selected = idx;
-        if !matches!(self.current_ref(), Some(RowRef::Session { .. })) {
-            self.host_band_hidden = false;
-        }
         self.on_focus_changed(state);
     }
 
@@ -807,7 +734,7 @@ impl Switcher {
     /// hosts is crossed without stepping over every session between them.
     /// Wraps at both ends, as the vertical step does.
     ///
-    /// A category is a source that has sessions to show, or the whole host band at once
+    /// A category is a source that has sessions, the no-session group, or the disconnected group
     /// ([`category_of_row`]). Landing is always on the category's first card: its first
     /// session, or the band's first host card. Leaving is from ANY card of it, so a
     /// selection deep inside the band steps straight out.
@@ -824,7 +751,7 @@ impl Switcher {
             .rows
             .get(self.selected)
             .map(|r| category_of_row(&r.reference))
-            .and_then(|cat| heads.iter().position(|(c, _)| c.as_deref() == cat))
+            .and_then(|cat| heads.iter().position(|(c, _)| *c == cat))
             .unwrap_or(0) as isize;
         let n = heads.len() as isize;
         let next = ((here + delta) % n + n) % n;
@@ -837,13 +764,13 @@ impl Switcher {
     /// flatten emits a section and its sessions together, and sinks every source with
     /// nothing to show to the host band at the end), so one entry per category is one
     /// place to land.
-    fn category_heads(&self) -> Vec<(Option<String>, usize)> {
-        let mut heads: Vec<(Option<String>, usize)> = Vec::new();
+    fn category_heads(&self) -> Vec<(NavCategory, usize)> {
+        let mut heads: Vec<(NavCategory, usize)> = Vec::new();
         for (i, r) in self.rows.iter().enumerate() {
             if !r.selectable() {
                 continue;
             }
-            let cat = category_of_row(&r.reference).map(str::to_string);
+            let cat = category_of_row(&r.reference);
             if !heads.iter().any(|(c, _)| *c == cat) {
                 heads.push((cat, i));
             }
@@ -1205,6 +1132,7 @@ impl Switcher {
         }
         let prior = self.capture_focus();
         state.scanning.remove(&source);
+        state.scan_deadlines.remove(&source);
         // The failure run, counted where every result lands so no path can skip it: a
         // result that failed lengthens it, one that answered clears it. It is shown, not
         // acted on - see `State::failure_runs`.
@@ -1253,6 +1181,7 @@ impl Switcher {
         }
         let prior = self.capture_focus();
         state.scanning.insert(source.clone());
+        state.scan_deadlines.remove(&source);
         state.groups.push(Group {
             source,
             err: None,
@@ -1275,6 +1204,7 @@ impl Switcher {
         let prior = self.capture_focus();
         g.err = None;
         state.scanning.insert(source.to_string());
+        state.scan_deadlines.remove(source);
         self.rebuild(state);
         self.restore_focus(prior, state);
     }
@@ -1288,6 +1218,7 @@ impl Switcher {
             if crate::session::machine_of(&g.source) == machine {
                 g.err = None;
                 state.scanning.insert(g.source.clone());
+                state.scan_deadlines.remove(&g.source);
             }
         }
         self.rebuild(state);
@@ -1306,6 +1237,7 @@ impl Switcher {
         let prior = self.capture_focus();
         state.groups.retain(|g| g.source != source);
         state.scanning.remove(source);
+        state.scan_deadlines.remove(source);
         state.failure_runs.remove(source);
         state.last_reached.remove(source);
         state.live_sources.remove(source);
@@ -1405,7 +1337,6 @@ pub(crate) struct CheckEntry {
     pub(crate) label: String,
     pub(crate) kind: crate::model::FailureKind,
     pub(crate) reason: String,
-    pub(crate) hidden: bool,
 }
 
 /// The card a number is kept for: a session by its address, a host-state card by its
@@ -1458,19 +1389,26 @@ fn context_of(row: &Row) -> (&str, &str, &str) {
     }
 }
 
-/// The category a card belongs to on the horizontal step: its source where the card
-/// names a session, and the host band as a whole (`None`) for the cards of the sources
-/// with nothing to show.
-///
-/// The band is ONE category because its cards are one machine each with nothing running
-/// on it, and a list of them is a single thing to reach past rather than a run of places
-/// to be carried into one at a time. Every one of them is still a card, so the vertical
-/// step walks them like any other.
-fn category_of_row(reference: &RowRef) -> Option<&str> {
+/// The category reached by a horizontal step. Vertical steps visit every card.
+#[derive(PartialEq, Eq)]
+enum NavCategory {
+    Source(String),
+    NoSession,
+    Disconnected,
+}
+
+fn category_of_row(reference: &RowRef) -> NavCategory {
     match reference {
-        RowRef::Host { .. } => None,
-        RowRef::Section { source, .. } => Some(source),
-        RowRef::Session { sess } => Some(&sess.source),
+        RowRef::Host {
+            unreachable: true, ..
+        }
+        | RowRef::Host {
+            list_failed: true, ..
+        }
+        | RowRef::Host { scanning: true, .. } => NavCategory::Disconnected,
+        RowRef::Host { .. } => NavCategory::NoSession,
+        RowRef::Section { source, .. } => NavCategory::Source(source.clone()),
+        RowRef::Session { sess } => NavCategory::Source(sess.source.clone()),
     }
 }
 

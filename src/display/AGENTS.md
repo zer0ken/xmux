@@ -55,6 +55,9 @@ back to the app, which owns the registry.
   identical from the outside; only the exit being on record separates them.
 - An attachment owns its command's authentication guard until its child has been reaped,
   because a long-lived ssh child can invoke askpass after spawn has returned.
+- An SSH attachment's authentication report is read from its own diagnostic file off
+  the runtime thread. The report identifies the attachment, and an absent report
+  remains unknown rather than borrowing the machine's last method.
 - Input decoding, dispatch, and mouse parsing turn terminal input into routing
   decisions or input actions. Terminal setup holds the prefix parsing, mouse
   capture, and the terminal guard.

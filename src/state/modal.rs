@@ -12,6 +12,7 @@ pub(crate) enum PaletteChoice {
 pub(crate) enum InputMode {
     Filter,
     New,
+    Logout,
     /// Jump to a session by its number (the user-facing name: a `card` is the visual
     /// row, the session is what it stands for). Unlike the other modes this one acts
     /// WHILE it is open: every edit moves the selection while the number names a card,

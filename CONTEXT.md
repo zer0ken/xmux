@@ -54,25 +54,15 @@ UI elements a user perceives as distinct things:
   structure.
 - terminal view - the other region: the selected session's live grid, holding the whole
   area the nav's side does not take.
-- view border - the line between the two views: vertical between the two columns, horizontal
-  between the two bands. Modelled on tmux's pane
-  border, but it borders views (not panes), so it is a `view border`, never a
-  "pane border" or a bare "divider". Its colour is FIXED and the same on every
-  source: the palette `primary` across the whole rule while the nav is focused,
-  `disabled` across it while the terminal is focused, and the hover colour for the
-  drag-hover cue. The border states which VIEW holds focus,
-  which is a fact
-  about xmux and not about the mux on the other side of it, so nothing a host or a
-  mux reports may move it. Its color config keys are `view-border-style` /
-  `view-active-border-style` / `view-border-hover-style`. These keys are OVERRIDES:
-  unset (empty), that side keeps the fixed colour; a non-empty key replaces it.
-- active view border - the whole view border painted the active color while the nav
-  holds focus (tmux `pane-active-border-style`); terminal focus paints the whole rule
-  with the inactive color.
-- view border lines - the view border's line-drawing style (tmux
-  `pane-border-lines`): `single │` (default), `double ║` (auto-hide-nav on),
-  `heavy ┃` (hover - the drag-resize grab cue; the seam thumb of an overflowing side nav
-  also draws `┃` at rest, in the normal border color).
+- view border - the horizontal line between a top or bottom nav and the terminal view.
+  A side nav has an empty one-cell gap that still accepts resize dragging. The
+  horizontal rule uses the palette `primary` with nav focus, `disabled` with terminal
+  focus, and the hover colour while hovered. `view-border-style`,
+  `view-active-border-style`, and `view-border-hover-style` override these colours.
+- active view border - the horizontal rule painted in the active colour while the nav
+  holds focus; terminal focus paints it in the inactive colour.
+- view border lines - the horizontal rule uses `─`, `═` with auto-hide-nav, and `━`
+  while hovered. Side layouts draw no line.
 - chrome - the furniture around the two views: the view border, the hint bar, and
   the view screens.
 - hint bar - the nav's prefix indicator: a label on the bottom row of a side column's
@@ -83,10 +73,11 @@ UI elements a user perceives as distinct things:
   an input line, the prefix while the key list is open, the selection hint, the scan
   indicator, the active filter, then the resting prefix. An input line, a flash, and the
   selection hint use the whole window's bottom rows beside a side column. In a band,
-  the selection hint uses the view border beside the prefix, while an input or flash
-  uses the rows below a top band's seam or above a bottom band's seam. With the nav hidden
-  they use the window's bottom rows. The indicator keeps the prefix in a band. The bar
-  wraps instead of clipping. A flash paints the bar in the
+  the selection hint uses the view border beside the prefix. An input occupies the
+  seam row when its prompt and complete guide fit; otherwise the prompt and guide
+  occupy adjacent rows anchored to that seam. A flash uses the rows below a top
+  band's seam or above a bottom band's seam. With the nav hidden they use the
+  window's bottom rows. The bar wraps instead of clipping. A flash paints the bar in the
   error style with a `✗` mark.
 - key table - the one table of every key xmux binds, with the words that name each key.
   Both focus paths resolve a prefix command through it, and the help, the key list, and
@@ -116,9 +107,9 @@ UI elements a user perceives as distinct things:
   of any of them reads the others: the subject as the headline (a host for the settled
   host states, the session address for `own session`), under it the state word, then
   the rows that apply. A row is the key-column row the help also uses - a
-  right-aligned cell, the `│` rule, the value - where a bold cell is a key that can be
+  left-aligned cell, whitespace, then the value - where a bold cell is a key that can be
   pressed here and a muted cell names a datum. No value on a screen is shortened to fit
-  its column: one too wide hangs under the same rule, a multi-line one keeps its lines,
+  its column: one too wide continues beneath the same value column, a multi-line one keeps its lines,
   and a control character is written as its escape rather than printed as nothing. The
   UNREACHABLE leads with a plain verdict carrying the last successful reach when
   known, then the failure run and the keys to check this host or every host.
@@ -128,15 +119,16 @@ UI elements a user perceives as distinct things:
   provider, the ssh stanza, what other muxes on that machine answered, and the log path.
   The BLOCKED state states the same failure
   facts and adds the login pane above them; the host stays blocked on any failed login
-  and re-probes only itself on a successful one. The EMPTY state's rows are the keys that start a session or rescan. A host
+  and re-probes only itself on a successful one. The EMPTY state leads with the keys
+  that start a session or rescan and follows with the latest observation facts. A host
   still scanning shows a monochrome Braille X rotation in the terminal view only when
   no session grid has been confirmed; its card keeps the in-flight spinner. A full
   re-scan preserves the confirmed grid while session cards temporarily become host
-  cards. The same animation fills the view during an initial scan before a card can
-  be selected. Its fixed 32-column frame is centered and
-  clipped in smaller views; one symbol holds for one second and turns in 0.4 seconds.
+  cards. The same 32-column, 16-row animation fills the view during an initial
+  scan before a card can be selected. A symbol holds for one second, then turns
+  over 0.4 seconds.
   A settled screen retains its text and centers the animation in the rows below it
-  only when at least a 32-column, 16-row frame fits. `[ui] braille-animation = false`
+  only when the complete 32-column, 16-row frame fits. `[ui] braille-animation = false`
   hides the central animation on both screens while nav activity spinners remain.
   A confirmed session shows its grid. The
   `own session` state's rows are why it is refused, and no key, because nothing pressed
@@ -219,29 +211,17 @@ UI elements a user perceives as distinct things:
   name comes from the mux's KIND, not the binary that reached it, so an alias or a path
   cannot put a second spelling on screen. Empty only where nothing knows the mux yet,
   which a card marks with its spinner rather than by dropping the separator.
-- nav bands - the two bands the nav's rows fall into: the session cards (each under
-  its section title), then the cards of the hosts with no session to show, which sit
-  below every session card whatever order the hosts were scanned in. In a column
-  the parting is the ROOM between them while the cards can spare a row for it (the
-  sessions hold the top edge, the host cards the bottom), and a rule across the cards
-  once they cannot and the column scrolls as one list, because a gap parts only what a
-  reader sees at once. The parting always has a row: the column is measured with the
-  rule's row counted in, so a gap of one is the last thing before the rule and the bands
-  never meet, at the price of scrolling a row early. In a band the parting is
-  horizontal: the session columns hold the left edge, the host band is pushed to the
-  right while a blank column parts them, and a vertical rule takes the boundary's column
-  once they cannot (the run scrolls a column early for the same reason). Neither parting
-  is a card, so a click on one selects nothing. A list with NOTHING but host cards is
-  the host band alone, and it still takes its side of the split: anchored to the
-  bottom (column) / right edge (band), the blank rows or columns opposite being where
-  the sessions that will be found land, so a scan reads as the pending hosts draining
-  toward the sessions they become. In the `sessions` scope, the host band is hidden
-  while the terminal view holds the focus when a session card was selected on the move
-  into it, and shown again on the move back into the nav or once the selection reaches
-  a host card; a host card selected on the move keeps it. A live prefix paints the band while it lasts,
-  since its hint bar offers a jump to any card by number, and the band is hidden again
-  when the prefix ends. Hidden cards leave the screen, not the list, so card numbers do
-  not shift.
+- nav groups - the nav lists actual session cards under their source titles, then
+  reachable hosts with no sessions, then hosts whose connection or inventory is
+  unresolved. Each group follows the source order. A blank row parts adjacent groups
+  in a side column (the first visible boundary carries a horizontal rule while scrolling),
+  and a blank column parts them in a top or bottom band. Content
+  starts at the upper-left and unused space stays empty.
+  When focus leaves the nav from a session card, only the session group is painted.
+  When it leaves from either host group, every group stays painted. Returning focus
+  to the nav paints every group. The focus decision holds while the terminal view
+  keeps focus, including during prefix and modal interactions. Painting fewer groups
+  preserves card numbers and the selected card's identity.
 - level color - the per-segment card color, from the palette. Every foreground role
   is ANSI-16, so the terminal theme resolves the hue. There is one TEXT colour, one
   ACCENT, and the section title's quiet header role: a session card reads as one
@@ -282,19 +262,14 @@ UI elements a user perceives as distinct things:
 - selection highlight - the selected card's rendering: reverse video filling the whole
   card, the terminal theme's own selected look, in both focus states,
   plus a `❯` mark standing in the address column of the card's row, where
-  every other card carries its number. The view border colour identifies which view
-  holds focus. The inversion is uniform because the highlight
+  every other card carries its number. The horizontal view border colour identifies
+  focus in a band. The inversion is uniform because the highlight
   pins both foreground and background to the terminal's defaults: inverting per span
   would turn each level color into a background and stripe the card. That same pinning
   is why the mark is an open shape and
   never a solid block: it draws inverted too, so a block fills its cell and disappears
   into the band while an outline keeps a readable silhouette.
   `[ui] selection-style` paints a named background instead.
-- seam thumb - the stretch of a side column's view border drawn heavy (`┃`) beside the
-  cards on screen when the list overflows, placed where those cards sit in the whole list.
-  It is drawn on the view border rather than in a column of the nav, so the cards keep
-  the nav's full width and the selected card's inverted rect never runs under a thumb.
-  Nothing is drawn while everything fits.
 - offscreen counts - what a band writes on its view border row when columns are off
   screen: `‹ 5` at the left end and `7 ›` before the prefix at the right. Cards, not
   columns, because the reader is hunting a session, not a column. They cost no row and
@@ -324,10 +299,11 @@ UI elements a user perceives as distinct things:
   effective policy is `ask`, since the submitted login can accept that key. An unknown
   key under a strict policy stays unreachable and names a command that displays its fingerprint. Remote command permissions, name resolution,
   connectivity failures, and a changed host key stay unreachable. A blocked card keeps
-  the warning-coloured `?` mark, is never hidden by hide-unreachable, and
+  the warning-coloured `?` mark, and
   shows that pane above the same failure facts the unreachable screen states, folded under
-  the pane's details choice. What it was blocked ON is not in its state word: the pane
-  states a verdict over ssh's own sentence. The transport diagnoses the ssh text and the
+  the pane's details choice. A first-seen key opens the login form without a failure
+  verdict; a failed login states its verdict over ssh's own sentence. What blocked the
+  host is not in its state word. The transport diagnoses the ssh text and the
   inventory group exposes the typed failure.
 - login pane - the form a blocked host's panel opens, or that the user opens for an
   unreachable host from the hosts-to-check table or command palette. It holds the three values ssh will
@@ -339,13 +315,12 @@ UI elements a user perceives as distinct things:
   one names it; otherwise it starts empty and must be entered.
   Provisioning resolves those values and the matching ssh stanza before the app
   supplies them to the chrome. A required field is marked in its label; an empty optional one says so in
-  the space its value would occupy. Two choices follow: whether to record the values, and
-  whether to register this machine's public key on the host. The record choice appears
-  only once a value differs from its starting value. The connection values and the two choices are two
-  titled groups. A recent list between them offers successful connection values from
-  this run without passwords; selecting an entry fills the three connection fields.
-  The focused stop's name is reversed while the pane takes keys, and a rule
-  parts the inputs from the login's steps and its failure. A failure reads as a verdict in
+  the space its value would occupy. One radio choice follows: do nothing, record
+  the values in ssh config, or register this machine's public key on the host.
+  The connection values and that choice are two
+  titled groups.
+  The focused text value is reversed while the pane takes keys; section headings and
+  whitespace group the inputs, choices, and result. A failure reads as a verdict in
   plain words, a `✗` on the field it concerns, ssh's own last line dimmed, and a details
   choice that unfolds ssh's whole text and the host facts. Enter means one thing
   throughout - submit from the button, pass the focus on from anywhere else - and Space
@@ -392,13 +367,26 @@ UI elements a user perceives as distinct things:
   backoff after an accept failure; while it is unavailable commands remain non-interactive
   and report that password login is unavailable. The separate command-line attach process has no access to the
   running app's credential and uses keys or ssh's terminal prompt.
-- remembering a login - what the pane's record choice does once the connection works: an
+- SSH authentication record - the information screen states the method OpenSSH
+  reported for the selected session's live display connection: public key or
+  username and password. A host card states the last method reported for its
+  machine. A connection reused through an existing master may report no method,
+  so the screen says `not observed` for that connection. When a held password
+  disappears, or the user logs out, the machine's metadata and display clients close.
+  A login or an explicit re-scan permits another connection.
+- recording a login - what the pane's ssh config choice does once the connection works: an
   xmux-marked stanza naming the host, holding the values that reached it, written at the
   TOP of `~/.ssh/config` because ssh keeps the FIRST value it obtains for a keyword. The
   marker is what makes a second login replace the stanza instead of stacking, and what
   tells a reader which lines are xmux's. Nothing the user wrote is touched. A password is
   never recorded, because ssh config has nowhere to put one; the public-key choice is
   what stops the host asking again.
+- logging out - `prefix L` on an SSH host names the selected session's observed
+  authentication method and the affected machine, then requires typing `logout`.
+  It discards that machine's in-memory password and closes its metadata and display
+  connections and shared SSH master where present. SSH config and public keys remain.
+  A pending login on that machine is cancelled, and its result cannot reopen it.
+  The next requested connection can use an available key; otherwise a login is needed.
 - registering a key - what the pane's key choice does once the connection works. The
   login command reads the host's shell family, because the registration is a command for
   one family and a locked host's family is unknown until someone gets in. Registration is
@@ -419,7 +407,7 @@ UI elements a user perceives as distinct things:
   stay aligned and the numbers line up by units place as the highest number crosses 10.
 - card number - with `[ui] renumbering = true` (the default), the card's 1-based
   position in the current sorted nav list. Adding or removing a card, filtering,
-  changing nav scope, and scanning can change that number. A section title has no
+  and scanning can change that number. A section title has no
   number. With `renumbering = false`, a card keeps the number it first takes for the
   run; an ended card leaves its number vacant, a new card takes the next number, and
   a full scan deals numbers again in list order. The list order, not the numbers,
@@ -523,27 +511,23 @@ UI elements a user perceives as distinct things:
   which scans a source for sessions, and from the host axis, which reaches one.
 - filter - the type-to-filter input over the nav list. It applies as you type: each
   edit re-filters the cards, the selection holds its card while that survives and
-  lands on the first remaining card otherwise. The input states the total matches and
-  how many matching hosts are normally hidden, and matching characters are bold.
+  lands on the first remaining card otherwise. The input states the total matches,
+  and matching characters are bold.
   Esc restores the filter the input opened with; with the input closed, Esc clears an
-  active filter. A host hidden from the nav (`[ui] hide-unreachable`) shows its card
-  while the filter names it.
-  The hosts-to-check table and command palette open its login pane without a filter.
-- nav scope - which cards the nav lists: `sessions` (the default, with the hidden hosts
-  left out), `all hosts` (nothing hidden), or `needs attention` (only the hosts in a
-  settled problem state, no session). `prefix s` steps it, it is named only while the
-  user interacts (the key list's bottom border, a toast when it steps), and it is
-  remembered across runs.
+  active filter. The hosts-to-check table and command palette can select a host by name.
 - hosts to check - the table `prefix h` opens: every host in a problem state grouped by
-  cause, each with its reason and a mark on the ones the hiding leaves without a card.
-  Enter on a row selects that host's card, switching to the all-hosts scope when
-  needed, and opens the login pane for a blocked or unreachable host.
+  cause, each with its reason.
+  Enter on a row selects that host's card
+  and opens the login pane for a blocked or unreachable host.
 - command palette - the searchable popup `prefix :` opens. It lists named actions
   from the key table and login entries for blocked or unreachable hosts. Enter runs
   the selected action; Esc closes it.
 - one-host re-scan - `prefix R`: the selected card's machine asked again alone, its
   reachability probe and then every source it serves, reported in its own summary toast.
   A full re-scan (`prefix r`) asked meanwhile takes over.
+- a source scan has one ten-second budget shared by first contact and the session
+  listing; a slow first contact leaves only the remaining time for enumeration.
+  A card still scanning after ten seconds reports a timeout and stops spinning.
 - flash - the reason a key did nothing, shown in the hint bar (a jump number no card
   carries, a new session on an unreachable host). It goes away on the next tree key, and
   after ten seconds for a user who presses nothing, since it is about something that
@@ -681,8 +665,7 @@ with a middle ellipsis rather than displacing state or navigation cells.
 
 An interaction surface spends the available space on state words, counts, the next
 key, and complete reasons or solutions. The selected card names its state, an open
-filter names total matches and matches from hidden hosts, the key list's bottom border
-names the nav scope and the hidden host count, and a host screen keeps the failure
+filter names total matches, and a host screen keeps the failure
 reason whole. A nav left with no card is the one exception at rest: its body says in one
 line why it is empty and which key answers it. A live prefix names every key it unlocks, and a selection move names
 the selected card's next keys and its state for three seconds; both read the one key table,
@@ -789,7 +772,8 @@ the selected terminal display rather than an application-state transition.
 of three things: the launch scan, a user action, or a push stream that is already open.
 No failure raises its own retry.
 
-A user action means a re-scan, a login, selecting a card, or an operation on a session.
+A user action means a re-scan, a login, selecting a card, managing host access,
+or an operation on a session.
 A push stream is one connection that stays open while the far side speaks over it, which
 is not a repeated request however much it carries. A POLL source that answered is kept
 current on a cadence over a path the machine already holds open: the local box and a WSL

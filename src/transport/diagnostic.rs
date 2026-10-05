@@ -82,6 +82,9 @@ pub fn sanitize(input: &str) -> String {
         .map(str::trim)
         .filter(|line| {
             !line.is_empty()
+                && !line.starts_with("debug1:")
+                && !line.starts_with("debug2:")
+                && !line.starts_with("debug3:")
                 && (!line.to_ascii_lowercase().contains("password:")
                     || line.starts_with("xmux askpass refused prompt:"))
                 && !line.starts_with("xmux-shell:")

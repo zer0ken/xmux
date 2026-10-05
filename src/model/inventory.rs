@@ -13,7 +13,9 @@ impl FailureKind {
     pub fn from_error(error: &str) -> Self {
         if error.starts_with("invalid ") && error.contains(" session listing:") {
             Self::ListFailed
-        } else if crate::transport::diagnostic::requires_login(error) {
+        } else if error.starts_with("logged out;")
+            || crate::transport::diagnostic::requires_login(error)
+        {
             Self::Blocked
         } else {
             Self::Unreachable

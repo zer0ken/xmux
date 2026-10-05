@@ -18,7 +18,9 @@ view-local state (flash, spinner, view border colours, prefix, ready, the select
 hint). The hint bar rests as the nav's prefix indicator: a label on a side column's
 bottom row, and at the right end of the view border row in a band. A floating bar
 spans the full width in a side layout. A band's selection hint shares the view border
-with the prefix and temporarily takes the place of offscreen counts. The indicator
+with the prefix and temporarily takes the place of offscreen counts. An input uses
+the band's seam row, with an adjacent guide row when the complete text needs more
+space. The indicator
 shows the prefix alone at rest
 and while a prefix interaction is live. The chrome instance
 itself lives in the runtime state, fed by the app each frame and rendered from it.
@@ -51,8 +53,8 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   the selection style), so the theme changes in one place. A theme is a named
   role→ANSI-slot assignment; the palette holds the registry (`auto-dark`,
   `auto-light`) and `[ui] theme` selects one. `decoration` is the CONTENT furniture
-  (card number, `/`, the rules); the view border uses `primary` across the whole rule
-  for nav focus and `disabled` across it for terminal focus. The hint
+  (card number, `/`, the rules); the horizontal view border uses `primary` across
+  the rule for nav focus and `disabled` for terminal focus. The hint
   bar reads its OWN accent (`bar_accent`) because it sits on a different surface than
   the cards - a slot that reads on one may not read on the other. What lives in the
   chrome is only the override layer over these (the per-role `[ui]` colour keys).
@@ -88,8 +90,7 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   disabling it leaves nav activity spinners visible. The
   application owns its clock, the render plan records the domain-selected screen,
   and both the live frame and off-screen dump paint from that same immutable choice.
-  Its 32-column monochrome frame atlas is sampled from the approved outline prototype
-  so font rasterization and emoji fallback never run on the terminal event loop. A confirmed
+  Its fixed 32-column, 16-row monochrome frames use terminal Braille glyphs. A confirmed
   session grid remains visible through a scan, including a full re-scan.
 - The terminal view refuses exactly one address, the session xmux is running in, and it
   refuses it by emptying the view TARGET rather than at each place that would attach.
@@ -120,27 +121,22 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   nothing on screen turns out of step with anything else.
 - Row transforms do not mutate their inputs unless the function name and
   signature make mutation explicit.
-- The nav hides a settled unreachable host's card unless the filter names that host
-  (`[ui] hide-unreachable`, default on): the named card is the one entry to its
-  unreachable screen, so the hiding must leave it reachable. A reachable empty host and
-  a host still scanning never hide, and the prune runs before the filter, so the no-match
-  fallback cannot resurrect a host the filter does not name. The hiding applies in the
-  `sessions` scope only; the scope narrows the groups before the prune, and the hidden
-  count, the check table's hidden mark, and the empty-nav line all read the one set of
-  hidden sources the prune leaves out.
+- The nav inventory includes every host. Actual sessions form the first group,
+  reachable hosts with no sessions form the second, and hosts whose connection or
+  inventory is unresolved form the third.
 - With `[ui] renumbering` on, each card's number is its position in the current sorted
   list, and a rebuild assigns contiguous numbers. With it off, a card keeps its number
   by identity (a session by its address, a host card by its source); only a full scan
   deals those numbers again. Under either policy the jump resolves the number painted
   on the card.
 - A BLOCKED host, whose authentication ssh refused or whose first-seen host key needs
-  login-time approval under an effective `ask` policy, never hides, whatever
-  hide-unreachable says: its card is the one entry to that pane, so the prune keeps it
-  alongside a filter-named card. The model supplies the typed classification, based only
+  login-time approval under an effective `ask` policy, has a card that opens the login pane. The model supplies the typed classification, based only
   on ssh's own final
   account-and-host authentication line or an approvable unknown host-key verification failure, never
   a generic permission error, name resolution, connectivity, or changed host key.
   An unknown key under a strict policy is unreachable and gives the fingerprint command.
+  An approvable first-seen key opens the form without a failed-login verdict; a
+  submitted login that fails keeps its own verdict.
 - A machine with a held credential never hides. It is the host the user just chose, and
   whatever it answers next is the answer they are waiting for. The mark is synchronized
   with credential presence and is per MACHINE, since a login authenticates the machine
@@ -162,12 +158,18 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   probe errors. Key registration reports through the login's toast and remains in the
   host information after the pane gives way to sessions. A success re-probes that host.
 - The pane's inputs come in two groups, the connection values and what happens after a
-  login worked, and a rule parts them from what the pane reports back. The focused stop's
-  name is reversed (a stop with no name reverses its own text), only while the pane takes
-  keys. Below the rule, a login's steps (connect, authenticate, the selected follow-ups,
+  login worked. One radio choice selects doing nothing, saving connection values, or
+  registering this machine's public key. Whitespace parts it from what the pane reports
+  back. The focused stop's
+  value is reversed (a stop with no value reverses its own text), only while the pane takes
+  keys. Below the grouped inputs, a login's steps (connect, authenticate, the selected follow-ups,
   find mux) each carry one state mark: blank for pending, the spinner for running, `✓`,
   `✗`, or `·` for skipped. A step moves only on an event the login itself reported, never
   on a timer, and the steps stay on screen after one of them failed.
+- Logout names the selected session's observed SSH authentication method and the
+  affected machine, then requires typing `logout`. It clears the held password and
+  closes that machine's connections, including its shared SSH master where present.
+  SSH config and public keys remain available.
 - A failure on the pane reads in one order: the verdict in plain words, the `✗` mark on
   the field it concerns, ssh's own last line dimmed, and a details choice that unfolds
   ssh's whole text with the host facts the other screens state. The details choice is a
@@ -184,27 +186,13 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   was told to make raises none.
 - The help is searched by typing, so a printable key is part of the query and only Esc
   or prefix ? closes it.
-- The nav's two bands are parted by the ROOM between them while the cards can spare a row
-  for it, and by a rule once they cannot: a gap that scrolls out of view parts nothing a
-  reader can see. The parting is measured as part of the run, so the bands never meet with
-  nothing between them and the list scrolls a row before the cards alone would fill it.
-  Which parting applies is decided in the side list's placement, and the boundary itself is
-  one question asked once (the first host-state card), so the paint, the hit-test and the
-  seam thumb cannot part the list in three places.
-- A list with NOTHING but host-state cards (no session has a session to show) is the host
-  band alone, and it still takes its side of the split: anchored to the BOTTOM in a
-  column, to the RIGHT edge in a band, with the blank rows/columns opposite being
-  where the sessions that will be found land. As each source resolves, its section and
-  cards move to the top / left, so a scan reads as the pending hosts draining toward the
-  sessions they become.
-- The host band's hiding (`sessions` scope, terminal view focused from a session card)
-  is a PAINT decision: the rows stay whole and only what is painted shrinks to the rows
-  above the boundary, with no boundary to part. So card numbers, the selection and the list-walking keys are
-  identical either way, and the hit-test reads the shorter paint like any other. The
-  decision is latched on the nav-to-terminal edge from the effective view (a modal keeps
-  the view behind it), not re-derived each frame from the selection. A live prefix
-  overrides the paint without clearing the latch, so the band is painted while the hint
-  bar offers a jump to every card and hidden again when the prefix ends.
+- Adjacent nav groups have one blank row in a side column or one blank column in
+  a top or bottom band. Content starts at the upper-left, leaving unused space empty.
+  The first visible boundary can carry a horizontal rule while a side list scrolls.
+- When focus leaves nav from a session card, only the session group is painted.
+  Leaving from either host group keeps all groups painted. Returning nav focus shows
+  all groups. Prefix and modal interactions preserve the focus decision while the
+  terminal view keeps focus. Card numbers and selected identity do not change.
 - A card's rect is decided by the PAINT and read back from it, in both layouts. Neither
   layout puts cards on a fixed pitch the paint ignores (a column parts its bands, a
   band runs columns), so a hit-test that measured its own pitch would land clicks
@@ -217,14 +205,13 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   the selection inverts and what the hit-test reads - starts past the indent. A band
   column that continues a split section repeats the title on its top row; a band one row
   tall indents nothing and runs titles and cards along its row.
-- The view border is the ONE line between the nav and the terminal view, and what the nav
-  says about overflow is said on it, never in a row or column of the nav: a side column's
-  overflow thickens the stretch beside the cards on screen, and a band writes its counts
-  on the border row beside the prefix, so the cards keep every row and column the nav
-  has and no inverted card runs under a cue. A count is a hit target for the hidden card
+- A side nav and the terminal view are parted by one blank cell that accepts resize
+  dragging. A top or bottom nav has a horizontal view border. A band writes its
+  overflow counts on that border row beside the prefix, so the cards keep every row
+  the nav has. A count is a hit target for the hidden card
   nearest the visible ones, read back from the same plan the paint used.
-- The view border's colour identifies focus. The selected card keeps reverse video and its
-  mark in both focus states.
+- The horizontal view border's colour identifies focus. The selected card keeps reverse
+  video and its mark in both focus states.
 - A collapsed nav expands from the prefix or from a click anywhere on it, and a view border
   drag past the minimum collapses it, so the
   collapsed shape is the prefix indicator alone and the whole of it is one hit target.
@@ -267,7 +254,7 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 - Selection and drag helpers are invoked only inside the app update transition.
   The runtime observes the updated application model and executes emitted effects.
 - A surface that exists to be READ never shortens what it states. A value too wide for
-  its column hangs under the same rule, a multi-line value keeps its lines, and a
+  its column continues beneath the same value column, a multi-line value keeps its lines, and a
   control character is written as its escape rather than printed as nothing: where a
   datum does not fit, the surface grows, and the datum is never the thing that gives
   way. This is why the reason, the probe command and the ssh stanza are on a screen and

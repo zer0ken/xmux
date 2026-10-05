@@ -209,7 +209,6 @@ fn nav_action(command: KeyCommand, key: ratatui::crossterm::event::KeyEvent) -> 
         KeyCommand::History => Some(Action::ShowHistory),
         KeyCommand::Check => Some(Action::ShowCheck),
         KeyCommand::Palette => Some(Action::ShowPalette),
-        KeyCommand::Scope => Some(Action::CycleNavScope),
         KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
         KeyCommand::Collapse => Some(Action::ToggleCollapse),
         KeyCommand::Position => Some(Action::CycleNavPosition),
@@ -224,6 +223,7 @@ fn nav_action(command: KeyCommand, key: ratatui::crossterm::event::KeyEvent) -> 
         | KeyCommand::NewSession
         | KeyCommand::Rescan
         | KeyCommand::RescanHost => Some(Action::NavKey(key)),
+        KeyCommand::Logout => Some(Action::NavKey(key)),
         KeyCommand::HostInfo => Some(Action::NavKey(key)),
         KeyCommand::FocusNav | KeyCommand::LiteralPrefix => None,
     }
@@ -297,8 +297,8 @@ mod tests {
         );
         assert_eq!(
             rt(b"\x07s", false),
-            vec![Action::CycleNavScope],
-            "prefix s steps the nav scope"
+            Vec::<Action>::new(),
+            "prefix s is unbound"
         );
         assert_eq!(
             rt(b"\x07l", false),
@@ -412,7 +412,6 @@ mod tests {
             KeyCommand::History => Some(Action::ShowHistory),
             KeyCommand::Check => Some(Action::ShowCheck),
             KeyCommand::Palette => Some(Action::ShowPalette),
-            KeyCommand::Scope => Some(Action::CycleNavScope),
             KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
             KeyCommand::Collapse => Some(Action::ToggleCollapse),
             KeyCommand::Position => Some(Action::CycleNavPosition),
@@ -424,6 +423,7 @@ mod tests {
             | KeyCommand::NewSession
             | KeyCommand::Rescan
             | KeyCommand::RescanHost => Some(Action::NavKey(key)),
+            KeyCommand::Logout => Some(Action::NavKey(key)),
             KeyCommand::HostInfo => Some(Action::NavKey(key)),
             KeyCommand::FocusNav | KeyCommand::LiteralPrefix => None,
         }

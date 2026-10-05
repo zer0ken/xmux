@@ -91,6 +91,140 @@ struct Shot {
     buf: Buffer,
 }
 
+#[test]
+fn three_card_groups_and_focus_policy_hold_at_every_position() {
+    for position in ALL {
+        let mut scan = scan_of(vec![("local", vec!["work"]), ("z-empty", vec![])]);
+        scan.groups.push(Group {
+            source: "a-offline".into(),
+            sessions: vec![],
+            err: Some("connection refused".into()),
+        });
+        let mut shot = Shot::new(scan, nav_at(position), false);
+        let session = shot
+            .sw
+            .rows
+            .iter()
+            .position(|r| matches!(r.reference, RowRef::Session { .. }))
+            .unwrap();
+        let empty = shot
+            .sw
+            .rows
+            .iter()
+            .position(
+                |r| matches!(&r.reference, RowRef::Host { source, .. } if source == "z-empty"),
+            )
+            .unwrap();
+        let offline = shot
+            .sw
+            .rows
+            .iter()
+            .position(
+                |r| matches!(&r.reference, RowRef::Host { source, .. } if source == "a-offline"),
+            )
+            .unwrap();
+        assert!(session < empty && empty < offline, "{position:?}");
+        shot.sw.set_selected(session, &shot.state);
+        shot.sw.nav_horizontal(1, &shot.state);
+        assert_eq!(shot.sw.selected, empty);
+        shot.sw.nav_horizontal(1, &shot.state);
+        assert_eq!(shot.sw.selected, offline);
+        shot.sw.nav_horizontal(1, &shot.state);
+        assert_eq!(shot.sw.selected, session);
+        let rect = |i| {
+            shot.plan
+                .nav_cells
+                .iter()
+                .find(|(idx, _)| *idx == i)
+                .unwrap()
+                .1
+        };
+        let empty_rect = rect(empty);
+        let offline_rect = rect(offline);
+        if is_band(position) {
+            assert!(offline_rect.x > empty_rect.right(), "{position:?}");
+        } else {
+            assert!(offline_rect.y > empty_rect.bottom(), "{position:?}");
+        }
+        let numbers = [
+            shot.sw.card_number(session),
+            shot.sw.card_number(empty),
+            shot.sw.card_number(offline),
+        ];
+        shot.sw.set_selected(session, &shot.state);
+        shot.sw.sync_view_focus(true);
+        shot.state.chrome.armed = true;
+        shot.draw(true);
+        assert!(
+            shot.plan.nav_cells.iter().all(|(i, _)| *i < empty),
+            "{position:?}"
+        );
+        for selected in [empty, offline] {
+            shot.sw.sync_view_focus(false);
+            shot.sw.set_selected(selected, &shot.state);
+            shot.sw.sync_view_focus(true);
+            shot.draw(true);
+            assert!(
+                shot.plan.nav_cells.iter().any(|(i, _)| *i == empty),
+                "{position:?}"
+            );
+            assert!(
+                shot.plan.nav_cells.iter().any(|(i, _)| *i == offline),
+                "{position:?}"
+            );
+        }
+        shot.sw.sync_view_focus(false);
+        shot.draw(false);
+        assert_eq!(
+            numbers,
+            [
+                shot.sw.card_number(session),
+                shot.sw.card_number(empty),
+                shot.sw.card_number(offline)
+            ]
+        );
+    }
+}
+
+#[test]
+fn a_floating_host_label_uses_free_space_before_covering_another_card() {
+    for position in [NavPosition::Top, NavPosition::Bottom] {
+        let mut scan = scan_of(vec![("local", vec!["work"]), ("empty-fixture", vec![])]);
+        scan.groups.push(Group {
+            source: "offline-fixture".into(),
+            sessions: vec![],
+            err: Some("connection refused".into()),
+        });
+        let mut shot = Shot::new(scan, nav_at(position), false);
+        let empty = shot.sw.rows.iter().position(|row| {
+            matches!(&row.reference, RowRef::Host { source, .. } if source == "empty-fixture")
+        }).unwrap();
+        let offline = shot.sw.rows.iter().position(|row| {
+            matches!(&row.reference, RowRef::Host { source, .. } if source == "offline-fixture")
+        }).unwrap();
+        let rect = shot
+            .plan
+            .nav_cells
+            .iter()
+            .find(|(i, _)| *i == offline)
+            .unwrap()
+            .1;
+        let identity = shot.row(rect.y, rect.x, rect.right());
+        shot.sw.set_selected(empty, &shot.state);
+        shot.draw(false);
+        assert_eq!(
+            shot.row(rect.y, rect.x, rect.right()),
+            identity,
+            "{position:?}"
+        );
+        assert!(
+            shot.area_text(shot.plan.regions.tree)
+                .contains("no sessions"),
+            "{position:?}"
+        );
+    }
+}
+
 impl Shot {
     fn new(scan: Scan, nav: NavSize, terminal_focused: bool) -> Self {
         let mut state = crate::state::State::from_scan(scan);
@@ -293,23 +427,9 @@ fn pl4_overflow_is_a_thick_seam_segment_or_counts_on_the_band_seam() {
                 "{position:?}: a count stands before the mark: {seam:?}"
             );
         } else {
-            let thumb = shot.plan.seam_thumb;
-            let thick_rows: Vec<u16> = (shot.plan.regions.view_border.y
-                ..shot.plan.regions.view_border.bottom())
-                .filter(|&y| shot.buf[(shot.plan.regions.view_border.x, y)].symbol() == "┃")
-                .collect();
-            assert_eq!(
-                thick_rows,
-                (thumb.y..thumb.bottom()).collect::<Vec<_>>(),
-                "{position:?}: the seam thickens exactly where the visible cards are"
-            );
             assert!(
-                !thick_rows.is_empty() && (thick_rows.len() as u16) < shot.plan.nav_inner.height,
-                "{position:?}: the thumb is a proportion of the card rows: {seam:?}"
-            );
-            assert!(
-                seam.contains('│'),
-                "{position:?}: the rest of the seam stays thin"
+                !seam.chars().any(|c| matches!(c, '│' | '┃' | '║')),
+                "{position:?}: the gap has no vertical divider"
             );
             assert!(
                 !shot.area_text(shot.nav_area()).contains('▐'),
@@ -679,5 +799,45 @@ fn a_band_selection_hint_owns_the_seam_until_it_expires() {
         shot.state.chrome.clear_selection_hint();
         shot.draw(false);
         assert!(shot.plan.overflow_target(mark_x, mark_y).is_some());
+    }
+}
+
+#[test]
+fn a_band_input_uses_the_seam_and_adds_a_guide_row_only_when_needed() {
+    for position in [NavPosition::Top, NavPosition::Bottom] {
+        for (width, expected_height) in [(100, 1), (60, 2)] {
+            let mut state = crate::state::State::from_scan(two_groups());
+            let switcher = Switcher::new(&mut state);
+            state.modal = Some(crate::state::Modal::Input(Box::new(
+                crate::state::Input::new(
+                    crate::state::InputMode::New,
+                    "new session name".into(),
+                    "api".into(),
+                    Some("local".into()),
+                ),
+            )));
+            let area = Rect::new(0, 0, width, 30);
+            let plan = switcher.layout(area, nav_at(position), &state, &RenderPlan::default());
+            let seam = plan.regions.view_border;
+            assert_eq!(plan.hint_bar_rect.height, expected_height);
+            assert_eq!(plan.hint_bar_rect.width, width);
+            if position == NavPosition::Top {
+                assert_eq!(plan.hint_bar_rect.y, seam.y);
+            } else {
+                assert_eq!(plan.hint_bar_rect.bottom(), seam.bottom());
+            }
+            let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+            terminal
+                .draw(|frame| switcher.render(frame, None, false, &state, &plan))
+                .unwrap();
+            let row = |y| {
+                (0..width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            };
+            assert!(row(plan.hint_bar_rect.y).contains("new session  name: api"));
+            let guide_y = plan.hint_bar_rect.bottom() - 1;
+            assert!(row(guide_y).contains("Enter create · Esc cancel · empty = auto"));
+        }
     }
 }

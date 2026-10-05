@@ -103,7 +103,8 @@ only direct input path and go to the selected terminal display.
 
 - ASKED-FOR REQUESTS ONLY. xmux reaches a machine only when something asked it to.
   Every request traces to one of three things: the launch scan, a user action (a
-  re-scan, a login, selecting a card, an operation on a session), or a push stream
+  re-scan, a login, selecting a card, managing host access, an operation on a
+  session), or a push stream
   that is already open. A push stream is not a repeated request: one connection stays
   open and the far side speaks over it. A POLL source that ANSWERED is kept current on a
   cadence only over a path the machine already holds open (the local box, a WSL

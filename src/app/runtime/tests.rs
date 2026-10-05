@@ -562,52 +562,10 @@ async fn host_exited_before_connect_marks_unreachable() {
 }
 
 #[test]
-fn runtime_threads_hide_unreachable_into_its_switcher() {
-    use crate::ui::run::dump_screen;
-    // The default roster config: hide-unreachable = true.
-    let env = std::sync::Arc::new(fake_env_with_sources(&["jup"]));
-    let (mut rt, _io) = Runtime::new(env);
-    rt.model.switcher.apply_source_result(
-        "jup".into(),
-        Vec::new(),
-        Some("no route to host".into()),
-        &mut rt.model.state,
-    );
-    let out = dump_screen(
-        &rt.model.switcher,
-        None,
-        80,
-        24,
-        &rt.model.state,
-        &crate::ui::switcher::RenderPlan::default(),
-    );
-    assert!(
-        !out.contains("jup"),
-        "the config default hides the unreachable host:\n{out}"
-    );
-    rt.model
-        .switcher
-        .set_hide_unreachable(false, &mut rt.model.state);
-    let out = dump_screen(
-        &rt.model.switcher,
-        None,
-        80,
-        24,
-        &rt.model.state,
-        &crate::ui::switcher::RenderPlan::default(),
-    );
-    assert!(
-        out.contains("jup"),
-        "hide-unreachable = false shows the card:\n{out}"
-    );
-}
-
-#[test]
 fn a_blocked_host_shows_the_login_view_screen() {
     use crate::ui::run::dump_screen;
     // A blocked host (reached, credentials refused) shows the login pane: its
     // state word, not the unreachable word, and ssh's own reason. It also
-    // survives the default hide-unreachable (a blocked host is actionable).
     use crate::ui::switcher::Switcher;
     let mut state = crate::state::State::from_sources(vec!["pwbox".into()]);
     let mut switcher = Switcher::from_sources(&mut state);
@@ -672,80 +630,6 @@ fn a_host_whose_name_did_not_resolve_stays_unreachable() {
     assert!(
         !out.contains("login required"),
         "it does not open the login pane:\n{out}"
-    );
-}
-
-#[test]
-fn hide_unreachable_mid_run_hides_the_card_and_the_selection_lands_on_a_remaining_card() {
-    use crate::ui::run::dump_screen;
-    use crate::ui::switcher::Switcher;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
-    let mut switcher = Switcher::from_sources(&mut state);
-    switcher.set_hide_unreachable(true, &mut state);
-    // Put the selection on the jupiter06 card, then let local answer with a session.
-    switcher.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state);
-    switcher.apply_source_result(
-        "local".into(),
-        vec![crate::session::Session {
-            source: "local".into(),
-            name: "editor".into(),
-            ..Default::default()
-        }],
-        None,
-        &mut state,
-    );
-    // jupiter06's control client dies mid-run: the card hides from that moment.
-    assert!(
-        note_host_exited(
-            &mut switcher,
-            &mut state,
-            &mut HashSet::new(),
-            "jupiter06",
-            Some("no route to host".into())
-        ),
-        "the dead never-connected host is marked unreachable"
-    );
-    let out = dump_screen(
-        &switcher,
-        None,
-        80,
-        24,
-        &state,
-        &crate::ui::switcher::RenderPlan::default(),
-    );
-    assert!(
-        !out.contains("jupiter06"),
-        "hidden the moment it fails:\n{out}"
-    );
-    let t = switcher.terminal_view_target();
-    assert_eq!(
-        (t.source, t.target),
-        ("local".into(), "editor".into()),
-        "the selection lands on a remaining card"
-    );
-    // A later scan answers and the host returns.
-    switcher.apply_source_result(
-        "jupiter06".into(),
-        vec![crate::session::Session {
-            source: "jupiter06".into(),
-            name: "ops".into(),
-            ..Default::default()
-        }],
-        None,
-        &mut state,
-    );
-    let out = dump_screen(
-        &switcher,
-        None,
-        80,
-        24,
-        &state,
-        &crate::ui::switcher::RenderPlan::default(),
-    );
-    assert!(
-        out.contains("jupiter06"),
-        "a successful scan revives the host:\n{out}"
     );
 }
 
@@ -2169,6 +2053,96 @@ fn detach_test_hosts(alias: &str) -> crate::model::Hosts {
         crate::mux::for_binary("tmux").unwrap(),
     ));
     hosts
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invalidated_ssh_auth_reaps_display_and_pending_attach() {
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.registry.insert_fake("jup", 7);
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .mark_in_flight("jup", 9);
+    rt.execute_source_effect_for_test(crate::model::EventEffect::DisconnectMachine {
+        machine: "jup".into(),
+    });
+    assert!(!rt.registry.contains("jup"));
+    assert!(rt.hosts.get("jup").unwrap().display.in_flight_is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn display_auth_tracks_the_live_source_connection_across_session_switches() {
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.registry.insert_fake("jup", 7);
+    let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    rt.on_pty_event(
+        PtyEvent::AuthObserved {
+            id: 7,
+            method: crate::model::AuthMethod::PublicKey,
+        },
+        &mut rx,
+    );
+    assert_eq!(
+        rt.model.state.display_auth_methods.get("jup"),
+        Some(&crate::model::AuthMethod::PublicKey)
+    );
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "other");
+    assert_eq!(
+        rt.model.state.display_auth_methods.get("jup"),
+        Some(&crate::model::AuthMethod::PublicKey)
+    );
+    rt.registry
+        .park_pending("jup", crate::display::attachment::fake_attachment(8));
+    rt.on_pty_event(
+        PtyEvent::AuthObserved {
+            id: 8,
+            method: crate::model::AuthMethod::Password,
+        },
+        &mut rx,
+    );
+    assert_eq!(
+        rt.model.state.display_auth_methods.get("jup"),
+        Some(&crate::model::AuthMethod::PublicKey)
+    );
+    rt.registry.remove_pending("jup");
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .mark_in_flight("jup", 9);
+    rt.on_display_event(DisplayEvent::Ready {
+        seq: 9,
+        key: "jup".into(),
+        attachment: crate::display::attachment::fake_attachment(9),
+    });
+    assert!(rt.promote_due_pending(std::time::Instant::now() + std::time::Duration::from_secs(10)));
+    assert!(!rt.model.state.display_auth_methods.contains_key("jup"));
+    rt.on_pty_event(
+        PtyEvent::AuthObserved {
+            id: 7,
+            method: crate::model::AuthMethod::Password,
+        },
+        &mut rx,
+    );
+    assert!(!rt.model.state.display_auth_methods.contains_key("jup"));
+    rt.on_pty_event(
+        PtyEvent::AuthObserved {
+            id: 9,
+            method: crate::model::AuthMethod::Password,
+        },
+        &mut rx,
+    );
+    assert_eq!(
+        rt.model.state.display_auth_methods.get("jup"),
+        Some(&crate::model::AuthMethod::Password)
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -4670,10 +4644,11 @@ fn feed_login_fills_the_pane_and_submits_from_the_button() {
         "the password field passes focus on too"
     );
     assert!(
-        s.feed_login("prod", b"\r\r").is_none(),
-        "remember choices pass focus on"
+        s.feed_login("prod", b"\r").is_none(),
+        "the first radio choice passes focus on"
     );
-    // The focus is on the pubkey checkbox: Space picks it, Enter walks past.
+    assert!(s.feed_login("prod", b"\r").is_none());
+    // The focus is on the public-key radio choice: Space picks it, Enter walks past.
     assert!(
         s.feed_login("prod", b" ").is_none(),
         "Space picks, never submits"
@@ -4687,12 +4662,12 @@ fn feed_login_fills_the_pane_and_submits_from_the_button() {
         crate::model::Command::RunLogin {
             source,
             password,
-            pubkey,
+            after_login,
             ..
         } => {
             assert_eq!(source, "prod");
             assert_eq!(password, "hunter2");
-            assert!(pubkey, "the checkbox the user toggled rides along");
+            assert_eq!(after_login, crate::model::AfterLogin::RegisterKey);
         }
         other => panic!("expected RunLogin, got {other:?}"),
     }
@@ -4716,31 +4691,6 @@ fn login_draft_debug_redacts_the_password() {
 }
 
 #[test]
-fn recent_login_selection_fills_connection_values_without_a_password() {
-    let mut s = State::default();
-    s.recent_logins.push(crate::state::RecentLogin {
-        source: "other".into(),
-        login: crate::transport::Login {
-            address: Some("10.0.0.8".into()),
-            port: Some(2222),
-            user: Some("alice".into()),
-        },
-    });
-    for _ in 0..4 {
-        s.feed_login("prod", b"\t");
-    }
-    assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::Recent(0));
-    assert!(s.feed_login("prod", b"\r").is_none());
-    let d = s.login.as_ref().unwrap();
-    assert_eq!(
-        (&*d.address, &*d.port, &*d.username),
-        ("10.0.0.8", "2222", "alice")
-    );
-    assert_eq!(d.password, "");
-    assert_eq!(d.focus, LoginFocus::Password);
-}
-
-#[test]
 fn feed_login_walks_its_stops_with_tab_and_the_vertical_arrows() {
     let mut s = State::default();
     s.feed_login("prod", b"\t");
@@ -4754,19 +4704,32 @@ fn feed_login_walks_its_stops_with_tab_and_the_vertical_arrows() {
 }
 
 #[test]
-fn feed_login_offers_the_remember_choice_only_after_a_value_changes() {
-    // A stanza repeating what ssh already resolves records nothing, so the choice is
-    // absent until the user changes a connection value, and the stops skip it.
+fn feed_login_after_login_radio_keeps_one_choice() {
     let mut s = State::default();
-    s.feed_login("prod", b"x");
+    s.feed_login("prod", b"");
+    assert_eq!(
+        s.login.as_ref().unwrap().stops(false)[4],
+        LoginFocus::AfterNothing
+    );
+    for _ in 0..4 {
+        s.feed_login("prod", b"\t");
+    }
+    s.feed_login("prod", b" ");
+    assert_eq!(
+        s.login.as_ref().unwrap().after_login,
+        crate::model::AfterLogin::Nothing
+    );
+    s.feed_login("prod", b"\t ");
     let d = s.login.as_ref().unwrap();
-    assert!(d.changed(), "the address was edited");
-    assert!(d.stops(false, 0).contains(&LoginFocus::RememberSshConfig));
-    // Undoing the edit takes the choice away again.
-    s.feed_login("prod", b"\x7f");
+    assert_eq!(d.after_login, crate::model::AfterLogin::SshConfig);
+    s.feed_login("prod", b"\t ");
     let d = s.login.as_ref().unwrap();
-    assert!(!d.changed());
-    assert!(!d.stops(false, 0).contains(&LoginFocus::RememberSshConfig));
+    assert_eq!(d.after_login, crate::model::AfterLogin::RegisterKey);
+    s.feed_login("prod", b"\x1b[A ");
+    assert_eq!(
+        s.login.as_ref().unwrap().after_login,
+        crate::model::AfterLogin::SshConfig
+    );
 }
 
 #[test]
@@ -5441,9 +5404,6 @@ fn terminal_prefix_info_selects_the_source_screen() {
 fn unreachable_screen_details_take_terminal_input() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let mut rt = test_rt(fake_env_with_sources(&["prod"]));
-    rt.model
-        .switcher
-        .set_hide_unreachable(false, &mut rt.model.state);
     crate::app::model::update(
         &mut rt.model,
         crate::app::model::Msg::ApplySourceResult {
