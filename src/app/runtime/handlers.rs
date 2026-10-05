@@ -762,6 +762,8 @@ impl Runtime {
             width_dirty: false,
             width_flush_at: None,
             rescan: None,
+            logout: None,
+            running_logins: Vec::new(),
         };
         let initial_frame_interval = frame_interval(model.max_fps);
         let rt = Runtime {
@@ -781,6 +783,7 @@ impl Runtime {
             attach_seq: 0,
             driver_pty_tx,
             op_tx,
+            key_gates: Default::default(),
             cols,
             body_rows,
             term_input,

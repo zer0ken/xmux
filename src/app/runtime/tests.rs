@@ -1873,6 +1873,8 @@ fn test_rt(env: Env) -> Runtime {
         width_dirty: false,
         width_flush_at: None,
         rescan: None,
+        logout: None,
+        running_logins: Vec::new(),
     };
     let mut rt = Runtime {
         login_probes: 0,
@@ -1890,6 +1892,7 @@ fn test_rt(env: Env) -> Runtime {
         attach_seq: 0,
         driver_pty_tx: pty_tx,
         op_tx,
+        key_gates: Default::default(),
         cols: 80,
         body_rows: 24,
         term_input: crate::display::input::TermInput::new(prefix),
@@ -5440,4 +5443,100 @@ fn unreachable_screen_details_take_terminal_input() {
     assert!(rt.model.state.host_details.contains("prod"));
     rt.handle_stdin_bytes(b"dd", &Selection::default());
     assert!(rt.model.state.host_details.contains("prod"));
+}
+
+/// A registration already past its login holds the machine's key gate, so a logout's key
+/// search waits for the appended line and finds it rather than finishing first.
+#[tokio::test]
+async fn a_logouts_key_search_waits_for_a_registration_under_way() {
+    let gates = KeyGates::default();
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let registration = tokio::spawn({
+        let gate = gates.of("box");
+        let order = order.clone();
+        let cancel = cancel.clone();
+        async move {
+            follow_ups_at_key_gate(&gate, &cancel, |go| async move {
+                assert!(go, "the login was not cancelled when it took the gate");
+                started_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                order.lock().unwrap().push("registered");
+            })
+            .await
+        }
+    });
+    started_rx.await.unwrap();
+    cancel.store(true, std::sync::atomic::Ordering::Release);
+    let search = tokio::spawn({
+        let gates = gates.clone();
+        let order = order.clone();
+        async move {
+            gates.hold("box").await;
+            order.lock().unwrap().push("searched");
+        }
+    });
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert!(order.lock().unwrap().is_empty(), "the search waits");
+    let other = gates.of("elsewhere");
+    assert!(other.try_lock().is_ok(), "another machine's gate is free");
+    release_tx.send(()).unwrap();
+    registration.await.unwrap();
+    search.await.unwrap();
+    assert_eq!(*order.lock().unwrap(), vec!["registered", "searched"]);
+}
+
+/// A logout cancels the login before its search takes the gate, so a login that reaches
+/// the gate after the search registers nothing.
+#[tokio::test]
+async fn a_login_a_logout_cancelled_does_no_follow_ups_at_the_gate() {
+    let gates = KeyGates::default();
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    gates.hold("box").await;
+    cancel.store(true, std::sync::atomic::Ordering::Release);
+    let login = tokio::spawn({
+        let gate = gates.of("box");
+        let cancel = cancel.clone();
+        async move { follow_ups_at_key_gate(&gate, &cancel, |go| async move { go }).await }
+    });
+    tokio::task::yield_now().await;
+    gates.release("box");
+    assert!(
+        !login.await.unwrap(),
+        "the follow-ups are told to do nothing"
+    );
+}
+
+/// A logout keeps the machine's gate from its key search until it clears the machine, so
+/// no login follow-up on that machine runs between the search and the removal.
+#[tokio::test]
+async fn a_login_follow_up_waits_until_the_logout_releases_the_gate() {
+    let gates = KeyGates::default();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    gates.hold("box").await;
+    let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let login = tokio::spawn({
+        let gate = gates.of("box");
+        let ran = ran.clone();
+        async move {
+            follow_ups_at_key_gate(&gate, &cancel, |_| async move {
+                ran.store(true, std::sync::atomic::Ordering::Release);
+            })
+            .await
+        }
+    });
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !ran.load(std::sync::atomic::Ordering::Acquire),
+        "the follow-up waits"
+    );
+    gates.release("box");
+    login.await.unwrap();
+    assert!(ran.load(std::sync::atomic::Ordering::Acquire));
 }

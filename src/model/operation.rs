@@ -82,4 +82,15 @@ pub enum OpResult {
         attempt: u64,
         event: crate::model::LoginEvent,
     },
+    /// The lines of a machine's key files that hold this machine's public keys, which a
+    /// logout looks for before it closes anything.
+    HostKeysFound {
+        machine: String,
+        result: Result<Vec<crate::provision::env::HostKeyLine>, String>,
+    },
+    /// What removing the key lines a logout chose did.
+    HostKeysRemoved {
+        machine: String,
+        result: Result<(), String>,
+    },
 }

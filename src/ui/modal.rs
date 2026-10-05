@@ -723,6 +723,7 @@ pub(crate) fn new_session_popover(
 
 const NEW_SESSION_HINTS: &[Hint] = &[("Enter", "create"), ("Esc", "cancel")];
 const LOGOUT_HINTS: &[Hint] = &[("Enter", "log out"), ("Esc", "cancel")];
+const LOGOUT_KEYS_HINTS: &[Hint] = &[("Enter", "remove"), ("Esc", "keep it")];
 
 /// The new-session popover's outer size for `host`.
 pub(crate) fn new_session_size(host: &str) -> (u16, u16) {
@@ -732,8 +733,15 @@ pub(crate) fn new_session_size(host: &str) -> (u16, u16) {
     (w.max(hints).max(POPOVER_MIN_WIDTH), 4)
 }
 
-/// The label the logout confirm's field sits under.
-const LOGOUT_FIELD: &str = "type logout";
+/// What tells the two logout confirms apart: the title, the word typed in the field, and
+/// the keys on the bottom border. [`InputMode::Logout`] asks to log out at all;
+/// [`InputMode::LogoutKeys`] asks whether a key line xmux did not add goes too.
+fn logout_grammar(input: &Input) -> (&'static str, &'static str, &'static str, &'static [Hint]) {
+    match input.mode {
+        InputMode::LogoutKeys => ("remove key", "type remove", "remove", LOGOUT_KEYS_HINTS),
+        _ => ("log out", "type logout", "logout", LOGOUT_HINTS),
+    }
+}
 
 /// The machine whose connections a logout closes: the popover's meta.
 fn logout_machine(input: &Input) -> String {
@@ -744,14 +752,14 @@ fn logout_machine(input: &Input) -> String {
         .unwrap_or_default()
 }
 
-/// The cells the logout confirm's label column takes.
+/// The cells a logout confirm's label column takes.
 fn logout_lead(input: &Input) -> usize {
     let mut labels: Vec<&str> = input.facts.iter().map(|(l, _)| *l).collect();
-    labels.push(LOGOUT_FIELD);
+    labels.push(logout_grammar(input).1);
     label_lead(&labels)
 }
 
-/// The logout confirm popover's outer size, at most `max_w` wide.
+/// A logout confirm popover's outer size, at most `max_w` wide.
 pub(crate) fn logout_size(input: &Input, max_w: u16) -> (u16, u16) {
     let widest = input
         .facts
@@ -760,20 +768,21 @@ pub(crate) fn logout_size(input: &Input, max_w: u16) -> (u16, u16) {
         .max()
         .unwrap_or(0);
     let w = ((logout_lead(input) + widest + 1 + 2) as u16)
-        .max((hints_width(LOGOUT_HINTS) + 6) as u16)
+        .max((hints_width(logout_grammar(input).3) + 6) as u16)
         .max((logout_machine(input).len() + 16) as u16)
         .max(POPOVER_MIN_WIDTH)
         .min(max_w);
     (w, input.facts.len() as u16 + 2 + 2)
 }
 
-/// The logout confirm popover at `width` outer cells: the facts as rows, a blank row, and
-/// the field the word `logout` is typed in.
+/// A logout confirm popover at `width` outer cells: the facts as rows, a blank row, and
+/// the field the confirming word is typed in.
 pub(crate) fn logout_popover(
     input: &Input,
     width: u16,
     palette: &palette::Palette,
 ) -> (PopupFrame, Vec<Line<'static>>) {
+    let (title, field, word, hints) = logout_grammar(input);
     let room = (width as usize)
         .saturating_sub(2 + logout_lead(input) + 1)
         .max(1);
@@ -783,12 +792,12 @@ pub(crate) fn logout_popover(
         .map(|(l, v)| (*l, vec![Span::raw(middle_cut(v, room))]))
         .collect();
     rows.push(("", Vec::new()));
-    rows.push((LOGOUT_FIELD, input_field(input, room, "logout", palette)));
+    rows.push((field, input_field(input, room, word, palette)));
     (
         PopupFrame {
-            title: "log out".into(),
+            title: title.into(),
             meta: logout_machine(input),
-            hints: LOGOUT_HINTS.to_vec(),
+            hints: hints.to_vec(),
         },
         label_rows(rows, palette),
     )
@@ -1052,7 +1061,10 @@ mod tests {
             ("session", "gpu-01/train".into()),
             ("SSH login", "not observed".into()),
             ("password", "held password is cleared".into()),
-            ("key", "may stay on the host".into()),
+            (
+                "key",
+                "removed from gpu-01; asks first if xmux did not add it".into(),
+            ),
             ("connections", "closes gpu-01 connections".into()),
         ];
         let (w, h) = logout_size(&input, 140);
@@ -1065,9 +1077,33 @@ mod tests {
             "session      gpu-01/train",
             "SSH login    not observed",
             "password     held password is cleared",
-            "key          may stay on the host",
+            "key          removed from gpu-01; asks first if xmux did not add it",
             "connections  closes gpu-01 connections",
             "type logout  logo",
+        ] {
+            assert!(text.contains(row), "{row:?} in {text}");
+        }
+    }
+
+    #[test]
+    fn the_logout_key_popover_keeps_the_logout_grammar_with_its_own_word() {
+        let p = palette::Palette::default();
+        let mut input = Input::new(InputMode::LogoutKeys, String::new(), Some("gpu-01".into()));
+        input.facts = vec![
+            ("key", "1 line of this PC's key not added by xmux".into()),
+            ("remove", "ssh outside xmux loses this key too".into()),
+        ];
+        let (w, h) = logout_size(&input, 140);
+        let (chrome, lines) = logout_popover(&input, w, &p);
+        assert_eq!(chrome.title, "remove key");
+        assert_eq!(chrome.meta, "gpu-01");
+        assert_eq!(chrome.hints, vec![("Enter", "remove"), ("Esc", "keep it")]);
+        assert_eq!(lines.len() as u16 + 2, h);
+        let text = flat(&lines);
+        for row in [
+            "key          1 line of this PC's key not added by xmux",
+            "remove       ssh outside xmux loses this key too",
+            "type remove  remove",
         ] {
             assert!(text.contains(row), "{row:?} in {text}");
         }

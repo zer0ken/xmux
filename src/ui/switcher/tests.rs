@@ -3140,6 +3140,10 @@ fn logout_confirms_the_selected_ssh_session_and_machine() {
             ("session", "box/api".to_string()),
             ("SSH login", "username and password".to_string()),
             ("password", "held password is cleared".to_string()),
+            (
+                "key",
+                "removed from box; asks first if xmux did not add it".to_string()
+            ),
             ("connections", "closes box connections".to_string()),
         ]
     );
@@ -3156,6 +3160,72 @@ fn logout_confirms_the_selected_ssh_session_and_machine() {
         &mut h.state,
     );
     assert!(matches!(commands.as_slice(), [Command::Logout(machine)] if machine == "box"));
+}
+
+/// The second confirmation states which lines xmux did not add, what removing them costs
+/// outside xmux, and what keeping them leaves, and only the typed word confirms it.
+#[test]
+fn the_logout_key_confirmation_states_the_risk_and_needs_remove_typed() {
+    let mut h = Harness::from_sources(&["box"]);
+    h.sw.open_logout_keys("box", &["authorized_keys"], 1, &mut h.state);
+    let Some(Modal::Input(input)) = &h.state.modal else {
+        panic!("logout key confirmation")
+    };
+    assert!(input.mode == crate::state::InputMode::LogoutKeys);
+    assert_eq!(
+        input.facts,
+        vec![
+            (
+                "key",
+                "1 line of this PC's key not added by xmux".to_string()
+            ),
+            ("file", "authorized_keys".to_string()),
+            ("remove", "ssh outside xmux loses this key too".to_string()),
+            ("keep", "only the 1 line xmux added go".to_string()),
+            ("logout", "goes on either way".to_string()),
+        ]
+    );
+    h.sw.set_input_text("logout", &mut h.state);
+    assert!(h
+        .sw
+        .handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut h.state
+        )
+        .is_empty());
+    assert!(h.state.modal.is_some(), "another word does not confirm");
+    h.sw.set_input_text("remove", &mut h.state);
+    let commands = h.sw.handle_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut h.state,
+    );
+    assert!(
+        matches!(commands.as_slice(), [Command::RemoveUnmarkedKeys(machine)] if machine == "box")
+    );
+    assert!(h.state.modal.is_none());
+}
+
+#[test]
+fn the_logout_key_confirmation_says_the_key_stays_when_xmux_added_none() {
+    let mut h = Harness::from_sources(&["box"]);
+    h.sw.open_logout_keys(
+        "box",
+        &["authorized_keys", "administrators_authorized_keys"],
+        0,
+        &mut h.state,
+    );
+    let Some(Modal::Input(input)) = &h.state.modal else {
+        panic!("logout key confirmation")
+    };
+    assert_eq!(
+        input.facts[0].1,
+        "2 lines of this PC's key not added by xmux"
+    );
+    assert_eq!(
+        input.facts[1].1,
+        "authorized_keys, administrators_authorized_keys"
+    );
+    assert_eq!(input.facts[3], ("keep", "the key stays on box".to_string()));
 }
 
 #[tokio::test]

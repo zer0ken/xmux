@@ -389,20 +389,66 @@ impl Switcher {
             .map(|method| method.label())
             .unwrap_or("not observed");
         let subject = session.map_or_else(|| machine.to_owned(), |address| address.display());
-        let (password, key) = match method {
-            "username and password" => (Some("held password is cleared"), None),
-            "public key" => (None, Some("stays on the host")),
-            _ => (
-                Some("held password is cleared"),
-                Some("may stay on the host"),
-            ),
-        };
+        let password = (method != "public key").then_some("held password is cleared");
         let mut facts = vec![("session", subject), ("SSH login", method.to_owned())];
         facts.extend(password.map(|p| ("password", p.to_owned())));
-        facts.extend(key.map(|k| ("key", k.to_owned())));
+        facts.push((
+            "key",
+            format!("removed from {machine}; asks first if xmux did not add it"),
+        ));
         facts.push(("connections", format!("closes {machine} connections")));
         self.dismiss_modals(state);
         let mut input = Input::new(InputMode::Logout, String::new(), Some(source));
+        input.facts = facts;
+        state.modal = Some(Modal::Input(Box::new(input)));
+    }
+
+    /// Opens the logout's second confirmation for `machine`, whose key files hold this
+    /// machine's key in lines xmux did not add: `unmarked` names the file of each such
+    /// line, and `marked` counts the lines xmux added, which go whatever the answer is.
+    /// The input carries the machine, so the answer lands on the logout that asked.
+    pub(crate) fn open_logout_keys(
+        &mut self,
+        machine: &str,
+        unmarked: &[&str],
+        marked: usize,
+        state: &mut crate::state::State,
+    ) {
+        let mut files: Vec<&str> = unmarked.to_vec();
+        files.dedup();
+        let lines = |n: usize| {
+            if n == 1 {
+                "1 line".to_string()
+            } else {
+                format!("{n} lines")
+            }
+        };
+        let facts = vec![
+            (
+                "key",
+                format!(
+                    "{} of this PC's key not added by xmux",
+                    lines(unmarked.len())
+                ),
+            ),
+            ("file", files.join(", ")),
+            ("remove", "ssh outside xmux loses this key too".to_string()),
+            (
+                "keep",
+                if marked == 0 {
+                    format!("the key stays on {machine}")
+                } else {
+                    format!("only the {} xmux added go", lines(marked))
+                },
+            ),
+            ("logout", "goes on either way".to_string()),
+        ];
+        self.dismiss_modals(state);
+        let mut input = Input::new(
+            InputMode::LogoutKeys,
+            String::new(),
+            Some(machine.to_owned()),
+        );
         input.facts = facts;
         state.modal = Some(Modal::Input(Box::new(input)));
     }
@@ -524,7 +570,7 @@ impl Switcher {
             // New is opened by `open_new` and Jump by `open_jump` (both capture context
             // the mode alone does not carry). The unlock is not a modal: it lives in the
             // locked panel (see `State::feed_unlock`).
-            InputMode::New | InputMode::Jump | InputMode::Logout => {}
+            InputMode::New | InputMode::Jump | InputMode::Logout | InputMode::LogoutKeys => {}
         }
     }
 
@@ -678,6 +724,10 @@ impl Switcher {
                         state.flash("type logout to confirm");
                         Vec::new()
                     }
+                    InputMode::LogoutKeys if val != "remove" => {
+                        state.flash("type remove to confirm");
+                        Vec::new()
+                    }
                     // The filter applied on every edit, so Enter only closes it; the
                     // create input closes first so a queue helper that early-returns on a
                     // validation failure (empty/unchanged name) still dismisses the
@@ -696,6 +746,10 @@ impl Switcher {
                                     crate::session::machine_of(&source).to_owned(),
                                 )]
                             }
+                            InputMode::LogoutKeys => source
+                                .map(Command::RemoveUnmarkedKeys)
+                                .into_iter()
+                                .collect(),
                         }
                     }
                 }

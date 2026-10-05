@@ -191,18 +191,22 @@ impl Runtime {
                     after_login,
                     attempt,
                     cancel,
-                } => start_login(
-                    LoginRun {
-                        source,
-                        login,
-                        attempt,
-                        write_config: after_login == crate::model::AfterLogin::SshConfig,
-                        register_key: after_login == crate::model::AfterLogin::RegisterKey,
-                    },
-                    password,
-                    cancel,
-                    (&self.ops, &self.op_tx),
-                ),
+                } => {
+                    let key_gate = self.key_gates.of(crate::session::machine_of(&source));
+                    start_login(
+                        LoginRun {
+                            source,
+                            login,
+                            attempt,
+                            write_config: after_login == crate::model::AfterLogin::SshConfig,
+                            register_key: after_login == crate::model::AfterLogin::RegisterKey,
+                        },
+                        password,
+                        cancel,
+                        key_gate,
+                        (&self.ops, &self.op_tx),
+                    )
+                }
                 Effect::PersistNavWidth(width) => {
                     crate::app::prefs::save_nav_width(&self.env.xmux_dir, width);
                 }
@@ -225,13 +229,66 @@ impl Runtime {
                         host.display.clear(&key);
                     }
                 }
+                // Both key steps run over the machine's transport, before the logout
+                // clears it, so they reach the host the way every command has. The
+                // search waits at the machine's key gate, so a registration already
+                // under way lands first and its line is found, and the logout keeps the
+                // gate until it clears the machine.
+                Effect::FindHostKeys {
+                    machine,
+                    cancel_login,
+                } => {
+                    for login in cancel_login {
+                        login.cancel();
+                    }
+                    let transport = self.hosts.host_transport(&machine).map(|t| t.clone_box());
+                    let gates = self.key_gates.clone();
+                    let tx = self.op_tx.clone();
+                    tokio::spawn(async move {
+                        gates.hold(&machine).await;
+                        let result = match transport {
+                            Some(transport) => {
+                                crate::provision::env::find_host_keys(
+                                    &crate::model::source::ExecRunner,
+                                    &transport,
+                                )
+                                .await
+                            }
+                            None => Err("xmux has no way to reach this host".into()),
+                        };
+                        let _ = tx
+                            .send(crate::ui::switcher::OpResult::HostKeysFound { machine, result });
+                    });
+                }
+                Effect::RemoveHostKeys { machine, lines } => {
+                    let transport = self.hosts.host_transport(&machine).map(|t| t.clone_box());
+                    let tx = self.op_tx.clone();
+                    tokio::spawn(async move {
+                        let result = match transport {
+                            Some(transport) => {
+                                crate::provision::env::remove_host_keys(
+                                    &crate::model::source::ExecRunner,
+                                    &transport,
+                                    &lines,
+                                )
+                                .await
+                            }
+                            None => Err("xmux has no way to reach this host".into()),
+                        };
+                        let _ = tx.send(crate::ui::switcher::OpResult::HostKeysRemoved {
+                            machine,
+                            result,
+                        });
+                    });
+                }
                 Effect::LogoutMachine {
                     machine,
                     cancel_login,
                 } => {
-                    if let Some(login) = cancel_login {
+                    for login in cancel_login {
                         login.cancel();
                     }
+                    self.key_gates.release(&machine);
                     let close_master = self
                         .hosts
                         .host_transport(&machine)
@@ -280,8 +337,8 @@ impl Runtime {
                             0,
                         );
                     }
-                    Command::Logout(_) => {
-                        unreachable!("logout commands become LogoutMachine effects in update")
+                    Command::Logout(_) | Command::RemoveUnmarkedKeys(_) => {
+                        unreachable!("logout commands become key and logout effects in update")
                     }
                     Command::AdjustNavWidth(_) => {
                         width_changed = true;
@@ -1466,6 +1523,9 @@ struct Runtime {
     /// A clone of the loop's `PtyEvent` sender handed to drivers for off-loop probes.
     driver_pty_tx: tokio::sync::mpsc::UnboundedSender<PtyEvent>,
     op_tx: tokio::sync::mpsc::UnboundedSender<crate::ui::switcher::OpResult>,
+    /// One gate per machine that a login's follow-ups and a logout's key search pass in
+    /// turn. See [`KeyGates`].
+    key_gates: KeyGates,
     cols: u16,
     body_rows: u16,
     term_input: crate::display::input::TermInput,
@@ -1493,6 +1553,60 @@ struct LoopIo {
     host_rx: tokio::sync::mpsc::UnboundedReceiver<HostEvent>,
     pty_rx: tokio::sync::mpsc::UnboundedReceiver<PtyEvent>,
     op_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ui::switcher::OpResult>,
+}
+
+/// One async gate per machine, taken by a login's follow-ups and by a logout. A
+/// registration appends this machine's key well after the login's verdict, so without the
+/// gate a logout that started meanwhile could search the host, find nothing, and finish,
+/// and the line would land afterwards and log the machine back in by key. A logout takes
+/// the gate before its key search and keeps it until it clears the machine, so no
+/// follow-up on that machine runs between the search and the removal either.
+#[derive(Clone, Default)]
+struct KeyGates {
+    gates: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// The gates a running logout holds, by machine.
+    held: Arc<std::sync::Mutex<HashMap<String, tokio::sync::OwnedMutexGuard<()>>>>,
+}
+
+impl KeyGates {
+    fn of(&self, machine: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.gates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(machine.to_owned())
+            .or_default()
+            .clone()
+    }
+
+    /// Waits for `machine`'s gate and keeps it for the logout until [`Self::release`].
+    async fn hold(&self, machine: &str) {
+        let guard = self.of(machine).lock_owned().await;
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(machine.to_owned(), guard);
+    }
+
+    /// Lets go of the gate a logout of `machine` held.
+    fn release(&self, machine: &str) {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(machine);
+    }
+}
+
+/// Runs a login's follow-ups at the machine's key gate. `follow_ups` is told whether to
+/// do anything: a logout cancels the login before its key search takes the gate, so a
+/// login that finds itself cancelled once it holds the gate does nothing, and one that
+/// held the gate first finishes before the search begins.
+async fn follow_ups_at_key_gate<T, F: std::future::Future<Output = T>>(
+    gate: &tokio::sync::Mutex<()>,
+    cancel: &std::sync::atomic::AtomicBool,
+    follow_ups: impl FnOnce(bool) -> F,
+) -> T {
+    let _held = gate.lock().await;
+    follow_ups(!cancel.load(std::sync::atomic::Ordering::Acquire)).await
 }
 
 /// Runs a [`MuxOp`](crate::model::MuxOp) (the create/rename/kill/... a key resolved
@@ -1539,6 +1653,7 @@ fn start_login(
     run: LoginRun,
     mut password: crate::state::SecretInput,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    key_gate: Arc<tokio::sync::Mutex<()>>,
     op_sink: OpSink<'_>,
 ) {
     let LoginRun {
@@ -1597,7 +1712,7 @@ fn start_login(
             source.clone(),
             command,
             crate::link::unlock::LOGIN_IDLE,
-            cancel,
+            cancel.clone(),
             Box::new(move || asked(crate::model::LoginEvent::PasswordAsked)),
         );
         let conversation = done
@@ -1616,15 +1731,17 @@ fn start_login(
         progress(crate::model::LoginEvent::Verdict(
             conversation.outcome.clone(),
         ));
-        let outcome = crate::ui::switcher::run_login_follow_ups(
-            &source,
-            &login,
-            conversation,
-            write_config,
-            register_key,
-            ops.as_ref(),
-            progress.as_ref(),
-        )
+        let outcome = follow_ups_at_key_gate(&key_gate, &cancel, |go| {
+            crate::ui::switcher::run_login_follow_ups(
+                &source,
+                &login,
+                conversation,
+                write_config && go,
+                register_key && go,
+                ops.as_ref(),
+                progress.as_ref(),
+            )
+        })
         .await;
         let _ = tx.send(crate::ui::switcher::OpResult::Login {
             source,

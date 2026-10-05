@@ -52,6 +52,31 @@ pub(crate) struct AppModel {
     /// The re-scan whose summary toast is still owed, held until every source it asked
     /// and, for a full re-scan, the roster have answered.
     pub(crate) rescan: Option<RescanInFlight>,
+    /// The logout still taking this machine's key off its host.
+    pub(crate) logout: Option<LogoutRun>,
+    /// A cancel handle for every login whose result has not arrived, whichever machine it
+    /// is on. The pane's handle names only the latest submission, so a logout of another
+    /// machine finds its own login here.
+    pub(crate) running_logins: Vec<crate::link::unlock::RunningLogin>,
+}
+
+/// A logout that has not yet cleared its machine. The key comes off the host first, over
+/// the connection the login left, so nothing of the machine's is cleared until the key
+/// steps settle.
+#[derive(Debug)]
+pub(crate) struct LogoutRun {
+    machine: String,
+    step: LogoutStep,
+}
+
+#[derive(Debug)]
+enum LogoutStep {
+    /// The host's key files are being searched.
+    Finding,
+    /// The second confirmation is open over the lines found, some of them not xmux's.
+    Asking(Vec<crate::provision::env::HostKeyLine>),
+    /// The chosen lines are being removed. Carries whether lines xmux did not add stay.
+    Removing { kept_unmarked: bool },
 }
 
 /// A re-scan the user asked for that has not reported yet.
@@ -106,6 +131,8 @@ impl AppModel {
             width_dirty: false,
             width_flush_at: None,
             rescan: None,
+            logout: None,
+            running_logins: Vec::new(),
         }
     }
 
@@ -307,9 +334,19 @@ pub(crate) enum Effect {
     PersistNavPosition(Option<NavPosition>),
     PersistFirstKeyHelpSeen,
     ReattachDisplay(Selection),
+    /// Searches the machine's key files for this machine's public keys, ending first the
+    /// login the logout cancelled.
+    FindHostKeys {
+        machine: String,
+        cancel_login: Vec<crate::link::unlock::RunningLogin>,
+    },
+    RemoveHostKeys {
+        machine: String,
+        lines: Vec<crate::provision::env::HostKeyLine>,
+    },
     LogoutMachine {
         machine: String,
-        cancel_login: Option<crate::link::unlock::RunningLogin>,
+        cancel_login: Vec<crate::link::unlock::RunningLogin>,
     },
     CancelLogin(crate::link::unlock::RunningLogin),
 }
@@ -352,6 +389,14 @@ impl std::fmt::Debug for Effect {
             Self::ReattachDisplay(selection) => {
                 f.debug_tuple("ReattachDisplay").field(selection).finish()
             }
+            Self::FindHostKeys { machine, .. } => {
+                f.debug_tuple("FindHostKeys").field(machine).finish()
+            }
+            Self::RemoveHostKeys { machine, lines } => f
+                .debug_struct("RemoveHostKeys")
+                .field("machine", machine)
+                .field("lines", &lines.len())
+                .finish(),
             Self::LogoutMachine { machine, .. } => {
                 f.debug_tuple("LogoutMachine").field(machine).finish()
             }
@@ -419,54 +464,37 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             Some(Effect::Command(Command::RescanHost(machine)))
         }
         Command::Logout(machine) => {
-            let cancel_login = if model
-                .state
-                .login_run
-                .as_ref()
-                .is_some_and(|run| crate::session::machine_of(&run.source) == machine)
-            {
-                model.state.login_run.take()
-            } else {
-                None
-            };
-            model
-                .state
-                .login_progress
-                .retain(|source, _| crate::session::machine_of(source) != machine);
-            model.state.auth_methods.remove(&machine);
-            clear_display_auth(&mut model.state, &machine);
-            model.state.invalid_auth.insert(machine.clone());
-            model.state.logged_in.remove(&machine);
-            model
-                .state
-                .live_sources
-                .retain(|source| crate::session::machine_of(source) != machine);
-            model
-                .connected
-                .retain(|source| crate::session::machine_of(source) != machine);
-            if crate::session::machine_of(&model.state.displayed.source) == machine {
-                model.state.displayed = Default::default();
-                model.state.attach_deadline = None;
-                model.state.attach_pending = false;
+            if model.logout.is_some() {
+                model.state.flash("a logout is still running");
+                return None;
             }
-            let sources: Vec<_> = model
-                .state
-                .groups
-                .iter()
-                .filter(|group| crate::session::machine_of(&group.source) == machine)
-                .map(|group| group.source.clone())
-                .collect();
-            for source in sources {
-                model.switcher.apply_source_result(
-                    source,
-                    Vec::new(),
-                    Some("logged out; log in again or re-scan".into()),
-                    &mut model.state,
-                );
-            }
-            Some(Effect::LogoutMachine {
+            // A flash is a refusal, never progress: the confirm popup or the result toast
+            // is what the logout says next.
+            let cancel_login = take_login_of(model, &machine);
+            model.logout = Some(LogoutRun {
+                machine: machine.clone(),
+                step: LogoutStep::Finding,
+            });
+            Some(Effect::FindHostKeys {
                 machine,
                 cancel_login,
+            })
+        }
+        Command::RemoveUnmarkedKeys(machine) => {
+            let run = model.logout.as_mut().filter(|run| {
+                run.machine == machine && matches!(run.step, LogoutStep::Asking(_))
+            })?;
+            let LogoutStep::Asking(found) = std::mem::replace(
+                &mut run.step,
+                LogoutStep::Removing {
+                    kept_unmarked: false,
+                },
+            ) else {
+                return None;
+            };
+            Some(Effect::RemoveHostKeys {
+                machine,
+                lines: found,
             })
         }
         Command::Attach(selection)
@@ -500,6 +528,18 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             after_login,
         } => {
             let machine = crate::session::machine_of(&source);
+            // A login's registration could put the key back right after the logout took
+            // it off, so a machine being logged out takes no login until that ends.
+            if model
+                .logout
+                .as_ref()
+                .is_some_and(|run| run.machine == machine)
+            {
+                model
+                    .state
+                    .flash(format!("a logout of {machine} is running"));
+                return None;
+            }
             model.state.logged_in.remove(machine);
             model.state.login_reports.remove(machine);
             model.state.login_attempts += 1;
@@ -516,6 +556,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             );
             let (running, cancel) =
                 crate::link::unlock::RunningLogin::pending(source.clone(), attempt);
+            model.running_logins.push(running.clone());
             model.state.login_run = Some(running);
             Some(Effect::StartLogin {
                 source,
@@ -539,6 +580,203 @@ fn sync_selection(model: &mut AppModel) {
     if selection != model.state.selection {
         model.state.apply(Action::Select(selection));
     }
+}
+
+/// Takes every running login on `machine`, whose results a logout must not let reopen it.
+fn take_login_of(model: &mut AppModel, machine: &str) -> Vec<crate::link::unlock::RunningLogin> {
+    let on_machine = |run: &crate::link::unlock::RunningLogin| {
+        crate::session::machine_of(&run.source) == machine
+    };
+    model
+        .state
+        .login_progress
+        .retain(|source, _| crate::session::machine_of(source) != machine);
+    if model.state.login_run.as_ref().is_some_and(on_machine) {
+        model.state.login_run = None;
+    }
+    let (taken, kept) = std::mem::take(&mut model.running_logins)
+        .into_iter()
+        .partition(|run| on_machine(run));
+    model.running_logins = kept;
+    taken
+}
+
+/// Reads what the logout's search of the host's key files found. Lines xmux added go at
+/// once; a line it did not add asks first, because that key may be how the user reaches
+/// the host from outside xmux. A search that failed leaves the key where it is, and the
+/// logout goes on without it.
+fn logout_keys_found(
+    model: &mut AppModel,
+    machine: String,
+    result: Result<Vec<crate::provision::env::HostKeyLine>, String>,
+) -> Vec<Effect> {
+    let Some(run) = model
+        .logout
+        .as_mut()
+        .filter(|run| run.machine == machine && matches!(run.step, LogoutStep::Finding))
+    else {
+        return Vec::new();
+    };
+    match result {
+        Err(reason) => finish_logout(
+            model,
+            vec![crate::state::notify::Note::new(
+                crate::state::notify::Level::Warning,
+                format!("this PC's key was not removed from {machine}: {reason}"),
+            )],
+        ),
+        Ok(found) if found.is_empty() => finish_logout(
+            model,
+            vec![crate::state::notify::Note::new(
+                crate::state::notify::Level::Info,
+                format!("{machine} holds no key of this PC"),
+            )],
+        ),
+        Ok(found) if found.iter().all(|line| line.marked) => {
+            run.step = LogoutStep::Removing {
+                kept_unmarked: false,
+            };
+            vec![Effect::RemoveHostKeys {
+                machine,
+                lines: found,
+            }]
+        }
+        Ok(found) => {
+            let unmarked: Vec<&str> = found
+                .iter()
+                .filter(|line| !line.marked)
+                .map(|line| line.file.label())
+                .collect();
+            let marked = found.iter().filter(|line| line.marked).count();
+            model
+                .switcher
+                .open_logout_keys(&machine, &unmarked, marked, &mut model.state);
+            run.step = LogoutStep::Asking(found);
+            Vec::new()
+        }
+    }
+}
+
+/// Settles a second confirmation that closed without confirming: the lines xmux did not
+/// add stay, and only the ones it added go. Read on every update, so a confirmation that
+/// closed any way at all, an Esc or another screen taking its place, answers the logout.
+fn settle_logout_choice(model: &mut AppModel) -> Vec<Effect> {
+    let asking = matches!(
+        model.state.modal.as_ref(),
+        Some(crate::state::Modal::Input(input))
+            if input.mode == crate::state::InputMode::LogoutKeys
+    );
+    let Some(run) = model
+        .logout
+        .as_mut()
+        .filter(|run| !asking && matches!(run.step, LogoutStep::Asking(_)))
+    else {
+        return Vec::new();
+    };
+    let LogoutStep::Asking(found) = std::mem::replace(
+        &mut run.step,
+        LogoutStep::Removing {
+            kept_unmarked: true,
+        },
+    ) else {
+        return Vec::new();
+    };
+    let machine = run.machine.clone();
+    let marked: Vec<_> = found.into_iter().filter(|line| line.marked).collect();
+    if marked.is_empty() {
+        let notes = kept_unmarked_notes(&machine);
+        return finish_logout(model, notes);
+    }
+    vec![Effect::RemoveHostKeys {
+        machine,
+        lines: marked,
+    }]
+}
+
+fn kept_unmarked_notes(machine: &str) -> Vec<crate::state::notify::Note> {
+    vec![crate::state::notify::Note::new(
+        crate::state::notify::Level::Info,
+        format!("this PC's key that xmux did not add stays on {machine}"),
+    )]
+}
+
+/// Reads what removing the chosen key lines did, then finishes the logout either way.
+fn logout_keys_removed(
+    model: &mut AppModel,
+    machine: String,
+    result: Result<(), String>,
+) -> Vec<Effect> {
+    let Some(kept_unmarked) = model
+        .logout
+        .as_ref()
+        .filter(|run| run.machine == machine)
+        .and_then(|run| match run.step {
+            LogoutStep::Removing { kept_unmarked } => Some(kept_unmarked),
+            _ => None,
+        })
+    else {
+        return Vec::new();
+    };
+    let mut notes = vec![match result {
+        Ok(()) => crate::state::notify::Note::new(
+            crate::state::notify::Level::Success,
+            format!("this PC's key removed from {machine}"),
+        ),
+        Err(reason) => crate::state::notify::Note::new(
+            crate::state::notify::Level::Warning,
+            format!("this PC's key remains on {machine}: {reason}"),
+        ),
+    }];
+    if kept_unmarked {
+        notes.extend(kept_unmarked_notes(&machine));
+    }
+    finish_logout(model, notes)
+}
+
+/// Clears the logged-out machine once its key steps settled: the held password, the
+/// login state, and every card on it, then the connections through the effect. `notes`
+/// report what happened to the key.
+fn finish_logout(model: &mut AppModel, notes: Vec<crate::state::notify::Note>) -> Vec<Effect> {
+    let Some(LogoutRun { machine, .. }) = model.logout.take() else {
+        return Vec::new();
+    };
+    let cancel_login = take_login_of(model, &machine);
+    model.state.auth_methods.remove(&machine);
+    clear_display_auth(&mut model.state, &machine);
+    model.state.invalid_auth.insert(machine.clone());
+    model.state.logged_in.remove(&machine);
+    model
+        .state
+        .live_sources
+        .retain(|source| crate::session::machine_of(source) != machine);
+    model
+        .connected
+        .retain(|source| crate::session::machine_of(source) != machine);
+    if crate::session::machine_of(&model.state.displayed.source) == machine {
+        model.state.displayed = Default::default();
+        model.state.attach_deadline = None;
+        model.state.attach_pending = false;
+    }
+    let sources: Vec<_> = model
+        .state
+        .groups
+        .iter()
+        .filter(|group| crate::session::machine_of(&group.source) == machine)
+        .map(|group| group.source.clone())
+        .collect();
+    for source in sources {
+        model.switcher.apply_source_result(
+            source,
+            Vec::new(),
+            Some("logged out; log in again or re-scan".into()),
+            &mut model.state,
+        );
+    }
+    model.state.notify.toast(format!("logout {machine}"), notes);
+    vec![Effect::LogoutMachine {
+        machine,
+        cancel_login,
+    }]
 }
 
 fn clear_display_auth(state: &mut crate::state::State, machine: &str) {
@@ -981,11 +1219,12 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         Msg::HostEvent { .. } | Msg::ApplySourceResult { .. } | Msg::ApplyInventory { .. }
     );
     let answering_before = answers.then(|| answering_sources(&model.state));
-    let effects = step(model, msg);
+    let mut effects = step(model, msg);
     if let Some(before) = answering_before {
         record_lost_sources(model, &before);
     }
     settle_rescan(model);
+    effects.extend(settle_logout_choice(model));
     effects
 }
 
@@ -1122,6 +1361,20 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             }
             Vec::new()
         }
+        Msg::OpResult {
+            result: crate::model::OpResult::HostKeysFound { machine, result },
+            logged_in,
+        } => {
+            model.state.logged_in = logged_in;
+            logout_keys_found(model, machine, result)
+        }
+        Msg::OpResult {
+            result: crate::model::OpResult::HostKeysRemoved { machine, result },
+            logged_in,
+        } => {
+            model.state.logged_in = logged_in;
+            logout_keys_removed(model, machine, result)
+        }
         Msg::OpResult { result, logged_in } => {
             if let crate::model::OpResult::Login {
                 source,
@@ -1130,6 +1383,9 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 ..
             } = &result
             {
+                model
+                    .running_logins
+                    .retain(|run| !(run.source == *source && run.attempt == *attempt));
                 // The running handle, not the steps, says which login is current: the
                 // steps can leave before the result arrives, while only a logout or a
                 // newer submission replaces the handle, and so ends the login it held.
@@ -2657,8 +2913,7 @@ mod tests {
         assert!(m.state.chrome.flash.is_empty(), "a result is no flash");
     }
 
-    #[test]
-    fn logout_clears_auth_and_disconnects_the_machine() {
+    fn logged_in_box() -> AppModel {
         let mut m = AppModel::from_sources(vec!["box:tmux".into()]);
         m.state
             .auth_methods
@@ -2668,21 +2923,377 @@ mod tests {
             .insert("box:tmux".into(), crate::model::AuthMethod::Password);
         m.state.live_sources.insert("box:tmux".into());
         m.connected.insert("box:tmux".into());
+        m
+    }
+
+    /// The found line for `line`, whose key is its `ssh-` word and the word after it.
+    fn key_line(line: &str, marked: bool) -> crate::provision::env::HostKeyLine {
+        let mut words = line
+            .split_whitespace()
+            .skip_while(|w| !w.starts_with("ssh-"));
+        crate::provision::env::HostKeyLine {
+            file: crate::provision::env::KeyFile::User,
+            kind: words.next().unwrap().into(),
+            body: words.next().unwrap().into(),
+            marked,
+        }
+    }
+
+    fn keys_found(result: Result<Vec<crate::provision::env::HostKeyLine>, String>) -> Msg {
+        Msg::OpResult {
+            result: crate::ui::switcher::OpResult::HostKeysFound {
+                machine: "box".into(),
+                result,
+            },
+            logged_in: HashSet::new(),
+        }
+    }
+
+    fn keys_removed(result: Result<(), String>) -> Msg {
+        Msg::OpResult {
+            result: crate::ui::switcher::OpResult::HostKeysRemoved {
+                machine: "box".into(),
+                result,
+            },
+            logged_in: HashSet::new(),
+        }
+    }
+
+    fn start_logout(m: &mut AppModel) {
         let effects = update(
-            &mut m,
+            m,
             Msg::Commands(vec![crate::model::Command::Logout("box".into())]),
         );
         assert!(
-            matches!(effects.as_slice(), [Effect::LogoutMachine { machine, .. }] if machine == "box")
+            matches!(effects.as_slice(), [Effect::FindHostKeys { machine, .. }] if machine == "box"),
+            "{effects:?}"
         );
+    }
+
+    fn assert_still_logged_in(m: &AppModel) {
+        assert!(m.state.auth_methods.contains_key("box"));
+        assert!(m.state.live_sources.contains("box:tmux"));
+        assert!(m.connected.contains("box:tmux"));
+        assert!(!m.state.invalid_auth.contains("box"));
+    }
+
+    fn assert_logged_out(m: &AppModel) {
         assert!(!m.state.auth_methods.contains_key("box"));
         assert!(m.state.display_auth_methods.is_empty());
         assert!(m.state.invalid_auth.contains("box"));
         assert!(m.state.live_sources.is_empty());
         assert!(m.connected.is_empty());
+        assert!(m.logout.is_none());
         assert_eq!(
             m.state.groups[0].err.as_deref(),
             Some("logged out; log in again or re-scan")
+        );
+    }
+
+    fn logout_notes(m: &AppModel) -> Vec<(crate::state::notify::Level, String)> {
+        let toast = m.state.notify.toasts.last().expect("the logout reports");
+        assert_eq!(toast.title, "logout box");
+        toast
+            .notes
+            .iter()
+            .map(|note| (note.level, note.text.clone()))
+            .collect()
+    }
+
+    fn press(m: &mut AppModel, code: KeyCode) -> Vec<Effect> {
+        update(m, Msg::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    }
+
+    /// The key comes off the host while the connection the login left is still there,
+    /// so nothing of the machine's is cleared until the removal answered.
+    #[test]
+    fn logout_removes_the_keys_xmux_added_before_it_clears_the_machine() {
+        let mut m = logged_in_box();
+        start_logout(&mut m);
+        assert_still_logged_in(&m);
+        let found = vec![key_line("ssh-ed25519 AAAAkey me xmux-registered", true)];
+        let effects = update(&mut m, keys_found(Ok(found.clone())));
+        assert!(
+            matches!(effects.as_slice(), [Effect::RemoveHostKeys { machine, lines }] if machine == "box" && *lines == found),
+            "{effects:?}"
+        );
+        assert!(
+            m.state.modal.is_none(),
+            "lines xmux added need no second confirmation"
+        );
+        assert_still_logged_in(&m);
+        let effects = update(&mut m, keys_removed(Ok(())));
+        assert!(
+            matches!(effects.as_slice(), [Effect::LogoutMachine { machine, .. }] if machine == "box"),
+            "{effects:?}"
+        );
+        assert_logged_out(&m);
+        assert_eq!(
+            logout_notes(&m),
+            vec![(
+                crate::state::notify::Level::Success,
+                "this PC's key removed from box".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_host_holding_no_key_of_this_pc_logs_out_at_once() {
+        let mut m = logged_in_box();
+        start_logout(&mut m);
+        let effects = update(&mut m, keys_found(Ok(Vec::new())));
+        assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
+        assert_logged_out(&m);
+    }
+
+    /// A line xmux did not add may be how the user reaches the host outside xmux, so it
+    /// goes only after a second confirmation says so.
+    #[test]
+    fn a_key_xmux_did_not_add_asks_again_and_confirming_removes_it_too() {
+        let mut m = logged_in_box();
+        start_logout(&mut m);
+        let found = vec![
+            key_line("ssh-ed25519 AAAAkey me xmux-registered", true),
+            key_line("no-pty ssh-ed25519 AAAAkey me", false),
+        ];
+        let effects = update(&mut m, keys_found(Ok(found.clone())));
+        assert!(effects.is_empty(), "{effects:?}");
+        let Some(crate::state::Modal::Input(input)) = m.state.modal.as_ref() else {
+            panic!("the second confirmation opens");
+        };
+        assert!(input.mode == crate::state::InputMode::LogoutKeys);
+        assert_eq!(
+            input.facts[0].1,
+            "1 line of this PC's key not added by xmux"
+        );
+        assert_eq!(input.facts[3].1, "only the 1 line xmux added go");
+        assert_still_logged_in(&m);
+        press(&mut m, KeyCode::Enter);
+        assert!(m.state.modal.is_some(), "Enter alone does not confirm");
+        for c in "remove".chars() {
+            assert!(press(&mut m, KeyCode::Char(c)).is_empty());
+        }
+        let effects = press(&mut m, KeyCode::Enter);
+        assert!(
+            matches!(effects.as_slice(), [Effect::RemoveHostKeys { lines, .. }] if *lines == found),
+            "{effects:?}"
+        );
+        assert_still_logged_in(&m);
+        let effects = update(&mut m, keys_removed(Ok(())));
+        assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
+        assert_logged_out(&m);
+        assert_eq!(
+            logout_notes(&m),
+            vec![(
+                crate::state::notify::Level::Success,
+                "this PC's key removed from box".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn declining_the_second_confirmation_removes_only_the_keys_xmux_added() {
+        let mut m = logged_in_box();
+        start_logout(&mut m);
+        let marked = key_line("ssh-ed25519 AAAAkey me xmux-registered", true);
+        let found = vec![marked.clone(), key_line("ssh-ed25519 AAAAkey me", false)];
+        update(&mut m, keys_found(Ok(found)));
+        let effects = press(&mut m, KeyCode::Esc);
+        assert!(
+            matches!(effects.as_slice(), [Effect::RemoveHostKeys { lines, .. }] if *lines == vec![marked.clone()]),
+            "{effects:?}"
+        );
+        assert_still_logged_in(&m);
+        let effects = update(&mut m, keys_removed(Ok(())));
+        assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
+        assert_logged_out(&m);
+        assert_eq!(
+            logout_notes(&m),
+            vec![
+                (
+                    crate::state::notify::Level::Success,
+                    "this PC's key removed from box".to_string()
+                ),
+                (
+                    crate::state::notify::Level::Info,
+                    "this PC's key that xmux did not add stays on box".to_string()
+                ),
+            ]
+        );
+    }
+
+    /// A confirmation that closes any way but confirming is a decline, so a logout never
+    /// waits on a question nobody can see.
+    #[test]
+    fn a_second_confirmation_another_screen_replaced_keeps_the_key_and_logs_out() {
+        let mut m = logged_in_box();
+        start_logout(&mut m);
+        update(
+            &mut m,
+            keys_found(Ok(vec![key_line("ssh-ed25519 AAAAkey me", false)])),
+        );
+        let effects = update(&mut m, Msg::ToggleHelp);
+        assert!(
+            matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]),
+            "nothing xmux added is left to remove: {effects:?}"
+        );
+        assert_logged_out(&m);
+        assert_eq!(
+            logout_notes(&m),
+            vec![(
+                crate::state::notify::Level::Info,
+                "this PC's key that xmux did not add stays on box".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn an_unreachable_host_still_logs_out_and_reports_the_key_was_not_removed() {
+        let mut m = logged_in_box();
+        start_logout(&mut m);
+        let effects = update(
+            &mut m,
+            keys_found(Err(
+                "ssh: connect to host box port 22: Connection timed out".into(),
+            )),
+        );
+        assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
+        assert_logged_out(&m);
+        assert_eq!(
+            logout_notes(&m),
+            vec![(
+                crate::state::notify::Level::Warning,
+                "this PC's key was not removed from box: ssh: connect to host box port 22: Connection timed out"
+                    .to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_failed_removal_still_logs_out_and_reports_the_key_remains() {
+        let mut m = logged_in_box();
+        start_logout(&mut m);
+        update(
+            &mut m,
+            keys_found(Ok(vec![key_line(
+                "ssh-ed25519 AAAAkey xmux-registered",
+                true,
+            )])),
+        );
+        let effects = update(&mut m, keys_removed(Err("Permission denied".into())));
+        assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
+        assert_logged_out(&m);
+        assert_eq!(
+            logout_notes(&m),
+            vec![(
+                crate::state::notify::Level::Warning,
+                "this PC's key remains on box: Permission denied".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_second_logout_waits_for_the_first() {
+        let mut m = logged_in_box();
+        start_logout(&mut m);
+        let effects = update(
+            &mut m,
+            Msg::Commands(vec![crate::model::Command::Logout("box".into())]),
+        );
+        assert!(effects.is_empty(), "{effects:?}");
+        assert_eq!(m.state.chrome.flash, "a logout is still running");
+    }
+
+    #[test]
+    fn logout_cancels_its_login_and_rejects_a_late_success() {
+        let (mut m, attempt) = submitted_login(&["box"]);
+        let effects = update(
+            &mut m,
+            Msg::Commands(vec![crate::model::Command::Logout("box".into())]),
+        );
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::FindHostKeys { cancel_login, .. }] if cancel_login.len() == 1
+        ));
+        assert!(m.state.login_run.is_none());
+        assert!(!m.state.login_progress.contains_key("box"));
+        let effects = update(
+            &mut m,
+            login_result("box", attempt, crate::link::unlock::UnlockOutcome::Ok),
+        );
+        assert!(effects.is_empty());
+        update(&mut m, keys_found(Ok(Vec::new())));
+        assert!(m.state.invalid_auth.contains("box"));
+        assert!(!m.state.auth_methods.contains_key("box"));
+        assert_eq!(
+            m.state.groups[0].err.as_deref(),
+            Some("logged out; log in again or re-scan")
+        );
+    }
+
+    /// A login submitted on another machine takes the pane's handle, but a logout still
+    /// cancels the login on its own machine, so that login registers no key afterwards.
+    #[test]
+    fn logout_cancels_its_machines_login_after_another_machine_logged_in() {
+        let mut m = AppModel::from_sources(vec!["a:tmux".into(), "b:tmux".into()]);
+        let run = |machine: &str| crate::model::Command::RunLogin {
+            source: format!("{machine}:tmux"),
+            login: crate::transport::Login::default(),
+            password: Default::default(),
+            after_login: crate::model::AfterLogin::RegisterKey,
+        };
+        update(&mut m, Msg::Commands(vec![run("a")]));
+        update(&mut m, Msg::Commands(vec![run("b")]));
+        assert_eq!(
+            m.state.login_run.as_ref().map(|r| r.source.as_str()),
+            Some("b:tmux")
+        );
+        let effects = update(
+            &mut m,
+            Msg::Commands(vec![crate::model::Command::Logout("a".into())]),
+        );
+        let [Effect::FindHostKeys { cancel_login, .. }] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        let cancelled: Vec<_> = cancel_login.iter().map(|r| r.source.as_str()).collect();
+        assert_eq!(cancelled, vec!["a:tmux"]);
+        assert_eq!(
+            m.state.login_run.as_ref().map(|r| r.source.as_str()),
+            Some("b:tmux"),
+            "the other machine's login keeps running"
+        );
+        assert_eq!(m.running_logins.len(), 1);
+    }
+
+    #[test]
+    fn a_login_on_a_machine_being_logged_out_is_refused() {
+        let mut m = logged_in_box();
+        start_logout(&mut m);
+        let effects = update(
+            &mut m,
+            Msg::Commands(vec![crate::model::Command::RunLogin {
+                source: "box:tmux".into(),
+                login: crate::transport::Login::default(),
+                password: Default::default(),
+                after_login: crate::model::AfterLogin::RegisterKey,
+            }]),
+        );
+        assert!(effects.is_empty(), "{effects:?}");
+        assert_eq!(m.state.chrome.flash, "a logout of box is running");
+        assert!(m.running_logins.is_empty());
+        update(&mut m, keys_found(Ok(Vec::new())));
+        let effects = update(
+            &mut m,
+            Msg::Commands(vec![crate::model::Command::RunLogin {
+                source: "box:tmux".into(),
+                login: crate::transport::Login::default(),
+                password: Default::default(),
+                after_login: crate::model::AfterLogin::RegisterKey,
+            }]),
+        );
+        assert!(
+            matches!(effects.as_slice(), [Effect::StartLogin { .. }]),
+            "a login is taken once the logout ended: {effects:?}"
         );
     }
 
@@ -2711,35 +3322,6 @@ mod tests {
         assert_eq!(
             m.state.groups[0].err.as_deref(),
             Some("SSH password no longer held; log in again")
-        );
-    }
-
-    #[test]
-    fn logout_cancels_its_login_and_rejects_a_late_success() {
-        let (mut m, attempt) = submitted_login(&["box"]);
-        let effects = update(
-            &mut m,
-            Msg::Commands(vec![crate::model::Command::Logout("box".into())]),
-        );
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::LogoutMachine {
-                cancel_login: Some(_),
-                ..
-            }]
-        ));
-        assert!(m.state.login_run.is_none());
-        assert!(!m.state.login_progress.contains_key("box"));
-        let effects = update(
-            &mut m,
-            login_result("box", attempt, crate::link::unlock::UnlockOutcome::Ok),
-        );
-        assert!(effects.is_empty());
-        assert!(m.state.invalid_auth.contains("box"));
-        assert!(!m.state.auth_methods.contains_key("box"));
-        assert_eq!(
-            m.state.groups[0].err.as_deref(),
-            Some("logged out; log in again or re-scan")
         );
     }
 

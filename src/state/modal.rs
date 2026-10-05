@@ -13,6 +13,9 @@ pub(crate) enum InputMode {
     Filter,
     New,
     Logout,
+    /// The logout's second confirmation, open while the host holds this machine's key in
+    /// a line xmux did not add. Closing it any way but confirming keeps that line.
+    LogoutKeys,
     /// Jump to a session by its number (the user-facing name: a `card` is the visual
     /// row, the session is what it stands for). Unlike the other modes this one acts
     /// WHILE it is open: every edit moves the selection while the number names a card,
@@ -24,8 +27,8 @@ pub(crate) enum InputMode {
 
 pub(crate) struct Input {
     pub(crate) mode: InputMode,
-    /// [`InputMode::Logout`] only: what the logout does, as `(label, value)` rows the
-    /// confirm states above its field. Captured when it opens, like `source`.
+    /// [`InputMode::Logout`] and [`InputMode::LogoutKeys`] only: what the confirm decides,
+    /// as `(label, value)` rows the confirm states above its field. Captured when it opens, like `source`.
     pub(crate) facts: Vec<(&'static str, String)>,
     pub(crate) buffer: String,
     /// Caret position as a char index into `buffer` (`0..=buffer char count`). Every

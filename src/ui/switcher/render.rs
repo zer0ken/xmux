@@ -538,7 +538,9 @@ impl Switcher {
             InputMode::New => {
                 modal::new_session_popover(&self.popover_host(input, state), input, width, palette)
             }
-            InputMode::Logout => modal::logout_popover(input, width, palette),
+            InputMode::Logout | InputMode::LogoutKeys => {
+                modal::logout_popover(input, width, palette)
+            }
             InputMode::Filter => {
                 let (matches, total) = Self::filter_counts(state);
                 modal::filter_popup(input, matches, total, width, palette)
@@ -1530,7 +1532,9 @@ impl Switcher {
             Some(Modal::Input(input)) => {
                 let w = match input.mode {
                     InputMode::New => modal::new_session_size(&self.popover_host(input, state)).0,
-                    InputMode::Logout => modal::logout_size(input, room.width).0,
+                    InputMode::Logout | InputMode::LogoutKeys => {
+                        modal::logout_size(input, room.width).0
+                    }
                     InputMode::Filter | InputMode::Jump => modal::POPOVER_MIN_WIDTH,
                 };
                 let rows = self.input_popup_full(state, w).map_or(1, |(_, l)| l.len()) as u16;
