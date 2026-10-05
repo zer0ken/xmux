@@ -789,11 +789,14 @@ fn prefix_surfaces() -> Vec<crate::state::Modal> {
     use crate::state::{Input, InputMode, Modal};
     let input = |mode, source: Option<&str>| {
         let mut input = Input::new(mode, String::new(), source.map(str::to_string));
-        if mode == InputMode::Logout {
+        if matches!(mode, InputMode::Logout | InputMode::LogoutKeys) {
             input.facts = vec![
                 ("session", "local/build".into()),
                 ("SSH login", "public key".into()),
-                ("key", "stays on the host".into()),
+                (
+                    "key",
+                    "removed from local; asks first if xmux did not add it".into(),
+                ),
                 ("connections", "closes local connections".into()),
             ];
         }
@@ -804,6 +807,7 @@ fn prefix_surfaces() -> Vec<crate::state::Modal> {
         input(InputMode::Jump, None),
         input(InputMode::New, Some("local")),
         input(InputMode::Logout, Some("local")),
+        input(InputMode::LogoutKeys, Some("local")),
         Modal::Palette {
             query: String::new(),
             selected: 0,
@@ -906,7 +910,7 @@ fn every_prefix_surface_opens_where_the_key_list_opens() {
 fn an_input_popup_too_short_for_its_rows_keeps_its_field() {
     let mut state = crate::state::State::from_scan(two_groups());
     let switcher = Switcher::new(&mut state);
-    for modal in prefix_surfaces().into_iter().take(4) {
+    for modal in prefix_surfaces().into_iter().take(5) {
         state.modal = Some(modal);
         let (_, lines) = switcher.input_popup_at(&state, 50, 1).expect("an input");
         assert_eq!(lines.len(), 1);

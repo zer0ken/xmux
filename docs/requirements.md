@@ -528,14 +528,17 @@ no function, and no test, so renaming code is never a documentation change.
   `~/.ssh/authorized_keys`; on a Windows host it runs Windows PowerShell, which both
   `cmd.exe` and PowerShell start the same way, and also adds the key to
   `administrators_authorized_keys` when the host's sshd reads an Administrators member's
-  keys from there and the account is one. Either form adds the line only when it is
-  absent, and an ed25519 pair is generated first when the machine has no key to send.
+  keys from there and the account is one. The line it appends ends its comment with the
+  `xmux-registered` mark. Either form adds the line only when no key line in the file
+  holds the same key type and body, whatever its options and comment (a line starting
+  with `#` holds no key), so an existing unmarked line stays unmarked, and an ed25519
+  pair is generated first when the machine has no key to send.
   After adding it, registration runs one ssh login that may authenticate with a key
   only, never prompts, shares no connection master, and runs a remote command that does
   nothing. The result is registered only when that command exits 0. When the host
   authenticates the key and then cannot open a session, the result is failed with the
-  server's error, and the line this registration added is removed from every file it was
-  added to; a line that was present before registration is kept. When the login fails
+  server's error, and the marked line this registration added is removed from every file
+  it was added to; a line that was present before registration is kept. When the login fails
   before authentication finishes (the host cannot be reached, times out, or refuses the
   key), the result is failed as not verified and the line is kept.
 - **FR-B31** - Persistent UI symbols are conventional glyphs that OS-default terminal
@@ -596,6 +599,36 @@ no function, and no test, so renaming code is never a documentation change.
   mark, the overflow cues, the auto-hide border, and the toast levels). Typing searches
   it, ignoring case, and the arrows, `PgUp`/`PgDn`, and `Home`/`End` scroll it; `Esc` or
   `prefix ?` closes it, and its bottom border says so whatever the search leaves.
+- **FR-B39** - LOGGING OUT of an SSH host (`prefix L`, confirmed by typing `logout`)
+  takes this PC's public key off the host before it closes anything, and cancels a
+  pending login on the machine when it starts. Over the machine's current connection it
+  finds, in one command, the lines of the host's key files (the same files registration
+  writes) whose key type and body equal one of this PC's public keys, ignoring options
+  and the comment, and removes the chosen ones in a second command. Lines marked
+  `xmux-registered` are chosen at once. When a matching line lacks the mark, a second
+  confirmation opens where the first one was, in the same layout, and states that xmux
+  did not add the key and that removing it also affects ssh outside xmux; typing
+  `remove` chooses that line too, and closing the confirmation any other way keeps it
+  while the marked lines go. A host that cannot be reached or a removal that fails does
+  not stop the logout: it reports in its toast that the key remains and why. The removal
+  reads the file as bytes, so every other line stays byte for byte whatever its
+  encoding, and it builds the new file as a copy beside it and replaces the file only
+  after the copy holds exactly the other lines, byte for byte, and no line it removes,
+  and only while the file still holds what was read; otherwise the file stays as it was
+  and the removal fails with the reason. A POSIX key file holding a NUL byte is refused
+  the same way. One constraint remains: key files have no locking convention, so when
+  another program (ssh-copy-id, an editor) writes the file in the instant between the
+  removal's last check and its replace, that program's new line is missing from the file
+  after the logout. It cannot be prevented: the check runs immediately before the
+  replace, so the window is the duration of one rename, and a file that changed any
+  earlier is never touched. A key registration on the machine that is under way when the
+  logout starts, whichever login started last, finishes before the search, so its line
+  is found; a login the logout cancelled before that point registers nothing. While the
+  logout runs, a login on that machine is refused with a flash naming the running
+  logout, and no login follow-up on it runs until the logout clears the machine. Then
+  the held password, the metadata and display connections, and the shared SSH master go.
+  SSH config is not changed. The key steps run off the event loop, and a second logout
+  is refused while one is running.
 ## C. Switching (the keystone)
 
 - **FR-C1** - A same-server pick lands on the picked session. Each mux's driver owns

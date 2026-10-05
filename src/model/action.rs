@@ -99,8 +99,12 @@ pub enum Command {
     /// Re-scan one machine alone (the `R` re-scan): its reachability probe, then every
     /// source it serves.
     RescanHost(String),
-    /// Discard xmux's held credential and close this machine's connections.
+    /// Take this machine's public key off the host, then discard xmux's held credential
+    /// and close the host's connections.
     Logout(String),
+    /// The logout's second confirmation answered yes: the key lines xmux did not add go
+    /// with the ones it did.
+    RemoveUnmarkedKeys(String),
     /// Adjust the natural nav width by this signed delta and schedule the debounced
     /// persist.
     AdjustNavWidth(i32),
@@ -134,6 +138,9 @@ impl std::fmt::Debug for Command {
             Self::Rescan => f.write_str("Rescan"),
             Self::RescanHost(machine) => f.debug_tuple("RescanHost").field(machine).finish(),
             Self::Logout(machine) => f.debug_tuple("Logout").field(machine).finish(),
+            Self::RemoveUnmarkedKeys(machine) => {
+                f.debug_tuple("RemoveUnmarkedKeys").field(machine).finish()
+            }
             Self::AdjustNavWidth(delta) => f.debug_tuple("AdjustNavWidth").field(delta).finish(),
             Self::ToggleAutoHide => f.write_str("ToggleAutoHide"),
             Self::PersistLastSession(address) => {

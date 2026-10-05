@@ -1183,7 +1183,11 @@ async fn register_and_verify(
             let kept = if added.is_empty() {
                 "the key line was there before this registration and was kept".to_string()
             } else {
-                let removal = remove_key_command(shell, key, &added)
+                let removal = key_body(key)
+                    .and_then(|(kind, body)| {
+                        let files: Vec<_> = added.iter().map(|file| (*file, false)).collect();
+                        remove_key_command(shell, &[(kind.to_string(), body.to_string())], &files)
+                    })
                     .map_err(|e| e.to_string())
                     .and_then(|command| {
                         transport
@@ -1248,7 +1252,7 @@ fn key_login_verdict(result: Result<Vec<u8>, source::RunError>) -> KeyLogin {
 
 /// A file the key registration appends this machine's key to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum KeyFile {
+pub(crate) enum KeyFile {
     /// `~/.ssh/authorized_keys`.
     User,
     /// Windows OpenSSH's `administrators_authorized_keys`.
@@ -1257,7 +1261,7 @@ enum KeyFile {
 
 impl KeyFile {
     /// The word the registration prints after [`KEY_ADDED`] when it appends to this file.
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::User => "authorized_keys",
             Self::Administrators => "administrators_authorized_keys",
@@ -1301,9 +1305,278 @@ fn write_ssh_config_stanza(
     std::fs::write(&path, next)
 }
 
+/// The word the registration puts at the end of the comment of every key line it appends.
+/// sshd reads the comment as free text, so the line authenticates exactly as the bare key
+/// does, and a logout can tell the lines xmux added from lines someone else put there.
+pub(crate) const KEY_MARK: &str = "xmux-registered";
+
+/// `key` as the registration appends it: [`KEY_MARK`] after whatever comment it carries.
+fn marked_key_line(key: &str) -> String {
+    format!("{} {KEY_MARK}", key.trim_end())
+}
+
+/// The key type, the base64 body, and the comment of one key line, past any options in
+/// front of the key. `None` for a blank line, a comment line, or a line holding no key.
+fn key_line_fields(line: &str) -> Option<(&str, &str, &str)> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let first = line.split_whitespace().next()?;
+    let key = if is_key_type(first) {
+        line
+    } else {
+        skip_key_options(line)
+    };
+    let (kind, rest) = split_key_field(key)?;
+    let (body, comment) = split_key_field(rest)?;
+    Some((kind, body, comment))
+}
+
+/// The first whitespace-separated field of `text` and what follows it, trimmed.
+fn split_key_field(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim_start();
+    if text.is_empty() {
+        return None;
+    }
+    Some(match text.find(char::is_whitespace) {
+        Some(end) => (&text[..end], text[end..].trim()),
+        None => (text, ""),
+    })
+}
+
+/// What follows the options field of an `authorized_keys` line. The field ends at the first
+/// whitespace outside double quotes, and a backslash inside quotes escapes the next
+/// character, which is how sshd reads it.
+fn skip_key_options(line: &str) -> &str {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (at, c) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            c if c.is_whitespace() && !quoted => return &line[at..],
+            _ => {}
+        }
+    }
+    ""
+}
+
+/// Whether `word` names an ssh key type, which is what tells a line that starts with its key
+/// from a line that starts with options.
+fn is_key_type(word: &str) -> bool {
+    ["ssh-", "ecdsa-", "sk-"]
+        .iter()
+        .any(|prefix| word.starts_with(prefix))
+}
+
+/// The key type and body of `key`, checked to hold only the characters a key type and a
+/// base64 body are made of, so either can sit inside any quoting the commands use.
+fn key_body(key: &str) -> Result<(&str, &str), std::io::Error> {
+    let (kind, body, _) = key_line_fields(key)
+        .ok_or_else(|| std::io::Error::other("the public key is not a key line"))?;
+    let plain = |text: &str, extra: &str| {
+        text.chars()
+            .all(|c| c.is_ascii_alphanumeric() || extra.contains(c))
+    };
+    if !plain(kind, "-.@") || !plain(body, "+/=") {
+        return Err(std::io::Error::other(
+            "the public key is not a plain key line",
+        ));
+    }
+    Ok((kind, body))
+}
+
+/// One line of a host's key files that holds one of this machine's public keys.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostKeyLine {
+    pub(crate) file: KeyFile,
+    /// The key type and body the line holds, which is what a removal matches. The rest of
+    /// the line never leaves the host, so bytes that are not text cannot change it.
+    pub(crate) kind: String,
+    pub(crate) body: String,
+    /// Whether the line's comment ends with [`KEY_MARK`], so the registration appended it.
+    pub(crate) marked: bool,
+}
+
+/// The prefix of each line the key search prints: the file's label, `marked` or
+/// `unmarked`, and which of the searched keys the line holds, colon separated.
+const KEY_FOUND: &str = "xmux-key-line:";
+
+/// The lines of the host's key files that hold one of this machine's public keys, found
+/// over `transport` in one command. A machine with no public key has nothing to find, and
+/// is not asked.
+pub(crate) async fn find_host_keys(
+    runner: &dyn Runner,
+    transport: &dyn Transport,
+) -> Result<Vec<HostKeyLine>, String> {
+    let keys = tokio::task::spawn_blocking(this_machine_key_bodies)
+        .await
+        .map_err(|e| e.to_string())?;
+    find_key_lines(runner, transport, &keys).await
+}
+
+async fn find_key_lines(
+    runner: &dyn Runner,
+    transport: &dyn Transport,
+    keys: &[(String, String)],
+) -> Result<Vec<HostKeyLine>, String> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let shell = transport.remote_shell();
+    let command = find_keys_command(shell, keys).map_err(|e| e.to_string())?;
+    let command = transport
+        .raw_shell_argv(&command)
+        .ok_or("this machine has no remote shell")?;
+    let out = runner
+        .run_spec(&command)
+        .await
+        .map_err(|e| crate::link::unlock::sanitize_output(&e.to_string()))?;
+    Ok(found_key_lines(&out, keys))
+}
+
+/// Removes `lines` from the files that hold them, over `transport`, in one command. A
+/// file with an unmarked line among `lines` loses every line holding one of their keys;
+/// any other file loses only the marked ones. The command fails, leaving the file as it
+/// was, unless the rewritten file holds every other line and none of the removed ones.
+pub(crate) async fn remove_host_keys(
+    runner: &dyn Runner,
+    transport: &dyn Transport,
+    lines: &[HostKeyLine],
+) -> Result<(), String> {
+    if lines.is_empty() {
+        return Ok(());
+    }
+    let mut keys: Vec<(String, String)> = Vec::new();
+    for line in lines {
+        let key = (line.kind.clone(), line.body.clone());
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    let files: Vec<(KeyFile, bool)> = [KeyFile::User, KeyFile::Administrators]
+        .into_iter()
+        .filter(|file| lines.iter().any(|line| line.file == *file))
+        .map(|file| {
+            let all = lines.iter().any(|line| line.file == file && !line.marked);
+            (file, all)
+        })
+        .collect();
+    let command =
+        remove_key_command(transport.remote_shell(), &keys, &files).map_err(|e| e.to_string())?;
+    let command = transport
+        .raw_shell_argv(&command)
+        .ok_or("this machine has no remote shell")?;
+    runner
+        .run_spec(&command)
+        .await
+        .map(|_| ())
+        .map_err(|e| crate::link::unlock::sanitize_output(&e.to_string()))
+}
+
+/// The lines a key search printed, each naming its file, whether it is marked, and the
+/// 1-based index into `keys` of the key it holds. The host compares the key fields itself,
+/// so anything else in its output is noise and is skipped.
+fn found_key_lines(out: &[u8], keys: &[(String, String)]) -> Vec<HostKeyLine> {
+    let text = String::from_utf8_lossy(out);
+    text.lines()
+        .filter_map(|printed| {
+            let mut fields = printed.trim_end().strip_prefix(KEY_FOUND)?.split(':');
+            let label = fields.next()?;
+            let file = [KeyFile::User, KeyFile::Administrators]
+                .into_iter()
+                .find(|file| file.label() == label)?;
+            let marked = match fields.next()? {
+                "marked" => true,
+                "unmarked" => false,
+                _ => return None,
+            };
+            let index: usize = fields.next()?.parse().ok()?;
+            let (kind, body) = keys.get(index.checked_sub(1)?)?;
+            Some(HostKeyLine {
+                file,
+                kind: kind.clone(),
+                body: body.clone(),
+                marked,
+            })
+        })
+        .collect()
+}
+
+/// Checks `keys` to hold only the characters a key type and a base64 body are made of,
+/// so they can sit inside any quoting the commands use.
+fn plain_keys(keys: &[(String, String)]) -> Result<(), std::io::Error> {
+    for (kind, body) in keys {
+        key_body(&format!("{kind} {body}"))?;
+    }
+    Ok(())
+}
+
+/// The awk program every POSIX key command runs, under `LC_ALL=C` so each line is bytes
+/// and passes through unchanged whatever encoding its comment is in. `parse` reads one
+/// line the way sshd does: a blank line or one starting with `#` holds no key, an options
+/// field ends at the first space or tab outside double quotes, and the key type and body
+/// follow. A line is ours when its type and body equal one of `keys` (pairs, space
+/// separated), and chosen when it is ours and marked or `all` is set. `mode` picks the
+/// output: `find` prints one [`KEY_FOUND`] line per line that is ours, `has` exits 0 when
+/// one is, `keep` prints every line that is not chosen, `count` prints how many lines
+/// those are, their bytes, and the bytes of the chosen ones (each line counted with its
+/// newline), and `left` exits 1 when a chosen line is there.
+const POSIX_KEY_AWK: &str = r##"function rest(s,  i,c,q,e){q=0;e=0;for(i=1;i<=length(s);i++){c=substr(s,i,1);if(e){e=0;continue}if(q&&c=="\\"){e=1;continue}if(c=="\""){q=!q;continue}if(!q&&(c==" "||c=="\t"))return substr(s,i)}return ""}
+function parse(s,  w,n){sub(/\r$/,"",s);sub(/^[ \t]+/,"",s);sub(/[ \t]+$/,"",s);if(s==""||substr(s,1,1)=="#")return 0;if(s!~/^(ssh-|ecdsa-|sk-)/){s=rest(s);sub(/^[ \t]+/,"",s)}n=split(s,w,/[ \t]+/);if(n<2)return 0;T=w[1];B=w[2];M=(n>=3&&w[n]=="xmux-registered");return 1}
+function ours(  i){for(i=1;i<=nk;i++)if(T==kt[i]&&B==kb[i])return i;return 0}
+BEGIN{n=split(keys,a," ");nk=int(n/2);for(i=1;i<=nk;i++){kt[i]=a[2*i-1];kb[i]=a[2*i]}}
+{k=parse($0)?ours():0;c=k&&(M||all)}
+mode=="find"{if(k)print "xmux-key-line:authorized_keys:" (M?"marked":"unmarked") ":" k;next}
+mode=="has"{if(k)h=1;next}
+mode=="keep"{if(!c)print;next}
+mode=="count"{if(c)gone+=length($0)+1;else{kept++;bytes+=length($0)+1}next}
+mode=="left"{if(c)l=1;next}
+END{if(mode=="has")exit !h;if(mode=="count")print kept+0,bytes+0,gone+0;if(mode=="left")exit l}"##;
+
+/// The POSIX shell function `x MODE FILE` that runs [`POSIX_KEY_AWK`] over FILE for `keys`,
+/// with `all` set or not. `BINMODE=3` keeps a carriage return where gawk on a Windows
+/// POSIX layer would drop it, and other awks read it as an unused variable.
+fn posix_key_awk(keys: &[(String, String)], all: bool) -> String {
+    let quote = crate::transport::vocab::quote;
+    let pairs: Vec<String> = keys.iter().map(|(k, b)| format!("{k} {b}")).collect();
+    format!(
+        "x() {{ LC_ALL=C awk -v BINMODE=3 -v mode=\"$1\" -v keys={} -v all={} {} \"$2\"; }}; ",
+        quote(&pairs.join(" ")),
+        u8::from(all),
+        quote(POSIX_KEY_AWK)
+    )
+}
+
+/// The remote command that prints a [`KEY_FOUND`] line for every line of the host's key
+/// files holding one of `keys`, compared by key type and body on the host. A file that
+/// does not exist holds nothing; a file that cannot be read fails the command.
+fn find_keys_command(
+    shell: crate::transport::vocab::RemoteShell,
+    keys: &[(String, String)],
+) -> Result<String, std::io::Error> {
+    plain_keys(keys)?;
+    match shell {
+        crate::transport::vocab::RemoteShell::Posix => Ok(format!(
+            "f=~/.ssh/authorized_keys; [ -f \"$f\" ] || exit 0; {}x find \"$f\"",
+            posix_key_awk(keys, false)
+        )),
+        crate::transport::vocab::RemoteShell::Other => Ok(encoded_powershell(&format!(
+            "{}{WINDOWS_FIND_KEY_SCRIPT}",
+            windows_key_head(keys)
+        ))),
+    }
+}
+
 /// The remote command that puts `key` where the host's sshd reads it, written for the
-/// shell family the login read. Both forms are idempotent: the key is added only when
-/// that exact line is absent, so a second login changes nothing. Each prints a
+/// shell family the login read. The key goes in marked with [`KEY_MARK`]. Both forms are
+/// idempotent: a file that already holds a key line with the same key type and body,
+/// marked or not, is left as it is, so a second login changes nothing. Each prints a
 /// [`KEY_ADDED`] line naming every file it appended to.
 fn key_command(
     shell: crate::transport::vocab::RemoteShell,
@@ -1315,55 +1588,84 @@ fn key_command(
     }
 }
 
-/// The remote command that takes `key` out of the files a registration appended it to.
-/// Every line equal to the key goes, which in a file the registration appended to is the
-/// one line it added. A POSIX host has only the one file.
+/// The remote command that takes the lines holding `keys` out of each of `files`: every
+/// such line when the file's flag is set, only the marked ones otherwise. A POSIX host has
+/// only the one file.
+///
+/// Both forms read the file as bytes, so a line in any encoding is kept exactly as it
+/// was, and both build the new file as a copy beside it. The file is replaced only after
+/// the copy holds exactly the lines that were to stay, byte for byte, and none that were
+/// to go, and only while the file still holds what was read; otherwise the file is left as
+/// it was and the command fails saying why. The POSIX copy keeps the file's mode, and a
+/// link or a file holding a NUL byte, which awk cannot carry through, is refused. The
+/// Windows copy replaces the file in one step that keeps its access list, which sshd
+/// checks.
+///
+/// `authorized_keys` has no locking convention, so the last comparison and the replace
+/// run back to back with nothing between them. A line another program appends inside
+/// that one rename is still lost; the window cannot be closed from here.
 fn remove_key_command(
     shell: crate::transport::vocab::RemoteShell,
-    key: &str,
-    files: &[KeyFile],
+    keys: &[(String, String)],
+    files: &[(KeyFile, bool)],
 ) -> Result<String, std::io::Error> {
-    plain_key_line(key)?;
+    plain_keys(keys)?;
     match shell {
-        // Written back through the same file, so its mode and any link to it stay. grep
-        // exits 1 when no line is left, which is still a complete result.
-        crate::transport::vocab::RemoteShell::Posix => Ok(format!(
-            "umask 077; f=~/.ssh/authorized_keys; t=\"$f.xmux-$$\"; \
-             grep -vxF '{key}' \"$f\" > \"$t\"; [ $? -le 1 ] && cat \"$t\" > \"$f\"; \
-             s=$?; rm -f \"$t\"; exit $s"
-        )),
+        crate::transport::vocab::RemoteShell::Posix => {
+            let Some((_, all)) = files.iter().find(|(file, _)| *file == KeyFile::User) else {
+                return Ok("exit 0".to_string());
+            };
+            Ok(format!(
+                "umask 077; f=~/.ssh/authorized_keys; [ -f \"$f\" ] || exit 0; \
+                 o=\"$f.xmux-$$.read\"; t=\"$f.xmux-$$\"; {}\
+                 fail() {{ rm -f \"$o\" \"$t\"; echo \"authorized_keys was left unchanged: $1\" >&2; exit 1; }}; \
+                 [ ! -L \"$f\" ] || fail 'it is a symbolic link'; \
+                 cp -p \"$f\" \"$o\" || fail 'it could not be read'; \
+                 [ $(($(wc -c < \"$o\"))) -eq $(($(tr -d '\\000' < \"$o\" | wc -c))) ] || fail 'it holds a NUL byte'; \
+                 cp -p \"$o\" \"$t\" && x keep \"$o\" > \"$t\" || fail 'the copy could not be written'; \
+                 set -- $(x count \"$o\"); [ $# -eq 3 ] || fail 'it could not be counted'; \
+                 p=0; [ ! -s \"$o\" ] || [ -z \"$(tail -c 1 \"$o\")\" ] || p=1; \
+                 [ \"$(LC_ALL=C awk 'END{{print NR}}' \"$t\")\" = \"$1\" ] && \
+                 [ $(($(wc -c < \"$t\"))) -eq \"$2\" ] && \
+                 [ $(($2 + $3)) -eq $(($(wc -c < \"$o\") + p)) ] || fail 'the copy did not hold exactly the other lines'; \
+                 x left \"$t\" || fail 'a removed line was still in the copy'; \
+                 cmp -s \"$o\" \"$f\" || fail 'it changed while it was being rewritten'; \
+                 mv -f \"$t\" \"$f\" || fail 'it could not be replaced'; rm -f \"$o\"",
+                posix_key_awk(keys, *all)
+            ))
+        }
         crate::transport::vocab::RemoteShell::Other => {
-            let mut script = WINDOWS_REMOVE_KEY_SCRIPT.replace("{key}", key);
-            for file in files {
-                script.push_str(match file {
-                    KeyFile::User => "Remove-Key (Join-Path $HOME '.ssh\\authorized_keys')\n",
+            let mut script = format!("{}{WINDOWS_REMOVE_KEY_SCRIPT}", windows_key_head(keys));
+            for (file, all) in files {
+                let path = match file {
+                    KeyFile::User => "(Join-Path $HOME '.ssh\\authorized_keys')",
                     KeyFile::Administrators => {
-                        "Remove-Key (Join-Path $env:ProgramData 'ssh\\administrators_authorized_keys')\n"
+                        "(Join-Path $env:ProgramData 'ssh\\administrators_authorized_keys')"
                     }
-                });
+                };
+                let all = if *all { "$true" } else { "$false" };
+                script.push_str(&format!("Remove-Key {path} {all}\n"));
             }
             Ok(encoded_powershell(&script))
         }
     }
 }
 
-/// Rejects a key that could end the single quotes every form puts it in.
-fn plain_key_line(key: &str) -> Result<(), std::io::Error> {
-    if key.contains('\'') || key.contains('\n') || key.contains('\r') {
-        return Err(std::io::Error::other("the public key is not a plain line"));
-    }
-    Ok(())
-}
-
-/// The POSIX form: the key appended to `~/.ssh/authorized_keys`.
+/// The POSIX form: the key appended to `~/.ssh/authorized_keys` unless a key line there
+/// already holds its type and body. A file whose last line has no newline gets one first,
+/// so the appended line stands on its own. A file that cannot be read fails the command
+/// and gets nothing.
 pub fn authorized_keys_command(key: &str) -> Result<String, std::io::Error> {
-    // Single-quoted for the remote shell, with the key's own quotes made impossible by
-    // the reject, so nothing in it can end the quoting.
-    plain_key_line(key)?;
+    let (kind, body) = key_body(key)?;
+    let line = marked_key_line(key);
     Ok(format!(
-        "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; \
-         grep -qxF '{key}' ~/.ssh/authorized_keys || \
-         {{ printf '%s\\n' '{key}' >> ~/.ssh/authorized_keys && echo {KEY_ADDED}authorized_keys; }}"
+        "umask 077; mkdir -p ~/.ssh; f=~/.ssh/authorized_keys; touch \"$f\"; {}\
+         x has \"$f\"; r=$?; if [ $r -eq 1 ]; then \
+         {{ [ ! -s \"$f\" ] || [ -z \"$(tail -c 1 \"$f\")\" ] || echo >> \"$f\"; }} && \
+         printf '%s\\n' {} >> \"$f\" && echo {KEY_ADDED}authorized_keys; \
+         else [ $r -eq 0 ]; fi",
+        posix_key_awk(&[(kind.to_string(), body.to_string())], false),
+        crate::transport::vocab::quote(&line)
     ))
 }
 
@@ -1380,10 +1682,28 @@ pub fn authorized_keys_command(key: &str) -> Result<String, std::io::Error> {
 /// script creates is given exactly that access. An error stops the script with a nonzero
 /// exit, so a key that did not land is a failed registration.
 fn windows_key_command(key: &str) -> Result<String, std::io::Error> {
+    Ok(encoded_powershell(&windows_key_script(key)?))
+}
+
+/// The script [`windows_key_command`] encodes.
+fn windows_key_script(key: &str) -> Result<String, std::io::Error> {
+    let (kind, body) = key_body(key)?;
     plain_key_line(key)?;
-    Ok(encoded_powershell(
-        &WINDOWS_KEY_SCRIPT.replace("{key}", key),
+    Ok(format!(
+        "{}$k='{}'\n{WINDOWS_KEY_SCRIPT}",
+        windows_key_head(&[(kind.to_string(), body.to_string())]),
+        marked_key_line(key)
     ))
+}
+
+/// Rejects a key that could end the single quotes the Windows form puts it in.
+fn plain_key_line(key: &str) -> Result<(), std::io::Error> {
+    if key.contains([
+        '\'', '\n', '\r', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}',
+    ]) {
+        return Err(std::io::Error::other("the public key is not a plain line"));
+    }
+    Ok(())
 }
 
 /// `script` as a Windows PowerShell command line that `cmd.exe` and PowerShell run alike.
@@ -1395,27 +1715,70 @@ fn encoded_powershell(script: &str) -> String {
     )
 }
 
-/// The script [`windows_key_command`] encodes. `{key}` is the public key line, inside a
-/// single-quoted string the key cannot end. `Add-Key` prints the [`KEY_ADDED`] line for
-/// the file it appends to.
-const WINDOWS_KEY_SCRIPT: &str = r#"$ErrorActionPreference='Stop'
+/// [`WINDOWS_KEY_PRELUDE`] after `$KT` and `$KB`, the types and bodies of `keys`, which
+/// [`plain_keys`] has checked to fit in single quotes.
+fn windows_key_head(keys: &[(String, String)]) -> String {
+    let list = |items: Vec<&String>| {
+        items
+            .iter()
+            .map(|item| format!("'{item}'"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "$KT=@({})\n$KB=@({})\n{WINDOWS_KEY_PRELUDE}",
+        list(keys.iter().map(|(k, _)| k).collect()),
+        list(keys.iter().map(|(_, b)| b).collect())
+    )
+}
+
+/// The head every Windows key script starts with. `Admin-Keys` answers whether sshd reads
+/// this account's keys from `administrators_authorized_keys`: the stock `Match` is in force
+/// and the account is an Administrators member. `Read-Bytes` reads a file's raw bytes as
+/// Latin-1, which maps every byte to one character and back and never reads a byte order
+/// mark as one, so each line, its line ending and any mark included, passes through
+/// unchanged whatever encoding it is in. `Lines` splits such text into lines that keep
+/// their endings, `Parse` reads one line the way sshd does (see [`POSIX_KEY_AWK`]), and
+/// `Ours` answers which of `$KT`/`$KB` a parsed line holds, 1-based, or 0.
+const WINDOWS_KEY_PRELUDE: &str = r#"$ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
-$k='{key}'
-function Add-Key($f,$l){
+$Latin=[Text.Encoding]::GetEncoding(28591)
+function Admin-Keys{
+$c=Join-Path $env:ProgramData 'ssh\sshd_config'
+(Test-Path $c) -and (Select-String -Path $c -Pattern '^\s*Match\s+Group\s+administrators\b' -Quiet) -and ((& "$env:SystemRoot\System32\whoami.exe" /groups) -match 'S-1-5-32-544')
+}
+function Read-Bytes($f){$Latin.GetString([IO.File]::ReadAllBytes($f))}
+function Lines($s){foreach($x in [regex]::Matches($s,'[^\n]*\n|[^\n]+')){$x.Value}}
+function Parse($s){
+$s=$s.TrimEnd([char[]](13,10)).Trim([char[]](32,9))
+if($s -eq '' -or $s.StartsWith('#')){return $null}
+if($s -cnotmatch '^(ssh-|ecdsa-|sk-)'){$q=$false;$e=$false;$i=0
+for(;$i -lt $s.Length;$i++){$c=$s[$i];if($e){$e=$false;continue};if($q -and $c -eq [char]92){$e=$true;continue};if($c -eq [char]34){$q=-not $q;continue};if(-not $q -and ($c -eq [char]32 -or $c -eq [char]9)){break}}
+$s=$s.Substring($i).Trim([char[]](32,9))}
+$w=@($s -split '[ \t]+')
+if($w.Count -lt 2){return $null}
+@{t=$w[0];b=$w[1];m=($w.Count -ge 3 -and $w[$w.Count-1] -ceq 'xmux-registered')}
+}
+function Ours($p){for($i=0;$i -lt $KT.Count;$i++){if($p.t -ceq $KT[$i] -and $p.b -ceq $KB[$i]){return ($i+1)}};0}
+"#;
+
+/// The body of the script [`windows_key_command`] encodes, after `$k` (the marked key
+/// line) and the head naming its type and body. `Add-Key` prints the [`KEY_ADDED`] line
+/// for the file it appends to.
+const WINDOWS_KEY_SCRIPT: &str = r#"function Add-Key($f,$l){
 $d=Split-Path $f
 if(-not(Test-Path $d)){New-Item -ItemType Directory $d|Out-Null}
 $a="$k`r`n"
 if(Test-Path $f){
-if(@(Get-Content $f) -contains $k){return}
-$t=[IO.File]::ReadAllText($f)
-if($t.Length -gt 0 -and -not $t.EndsWith("`n")){$a="`r`n$a"}
+$s=Read-Bytes $f
+foreach($x in (Lines $s)){$p=Parse $x;if($p -and (Ours $p)){return}}
+if($s.Length -gt 0 -and -not $s.EndsWith("`n")){$a="`r`n$a"}
 }
 [IO.File]::AppendAllText($f,$a)
 "xmux-key-added:$l"
 }
 Add-Key (Join-Path $HOME '.ssh\authorized_keys') authorized_keys
-$c=Join-Path $env:ProgramData 'ssh\sshd_config'
-if((Test-Path $c) -and (Select-String -Path $c -Pattern '^\s*Match\s+Group\s+administrators\b' -Quiet) -and ((& "$env:SystemRoot\System32\whoami.exe" /groups) -match 'S-1-5-32-544')){
+if(Admin-Keys){
 $f=Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
 $n=-not(Test-Path $f)
 Add-Key $f administrators_authorized_keys
@@ -1424,18 +1787,41 @@ if($LASTEXITCODE){throw 'icacls failed'}}
 }
 "#;
 
-/// The head of the script [`remove_key_command`] encodes, which calls `Remove-Key` once
-/// per file the registration appended to. `{key}` is the public key line. The file is
-/// rewritten in place, so the access sshd demands of it stays as it was.
-const WINDOWS_REMOVE_KEY_SCRIPT: &str = r#"$ErrorActionPreference='Stop'
-$ProgressPreference='SilentlyContinue'
-$k='{key}'
-function Remove-Key($f){
-if(Test-Path $f){[IO.File]::WriteAllLines($f,[string[]]@([IO.File]::ReadAllLines($f)|Where-Object{$_ -ne $k}))}
+/// The body of the script [`find_keys_command`] encodes. `Find-Key` prints the
+/// [`KEY_FOUND`] line for each line of its file that holds one of the keys.
+const WINDOWS_FIND_KEY_SCRIPT: &str = r#"function Find-Key($f,$l){
+if(Test-Path $f){foreach($x in (Lines (Read-Bytes $f))){$p=Parse $x;if($p){$k=Ours $p;if($k){if($p.m){$w='marked'}else{$w='unmarked'};"xmux-key-line:${l}:${w}:$k"}}}}
+}
+Find-Key (Join-Path $HOME '.ssh\authorized_keys') authorized_keys
+if(Admin-Keys){Find-Key (Join-Path $env:ProgramData 'ssh\administrators_authorized_keys') administrators_authorized_keys}
+"#;
+
+/// The function the script [`remove_key_command`] encodes calls once per file. It builds
+/// the file without the chosen lines and refuses unless none is left in what it built. It
+/// writes that to a copy beside the file, reads the copy back to confirm it, confirms the
+/// file still holds what was read, and only then puts the copy in the file's place with
+/// `File.Replace`, which keeps the file's access list and leaves the file as it was when
+/// it fails.
+const WINDOWS_REMOVE_KEY_SCRIPT: &str = r#"function Chosen($x,$all){$p=Parse $x;[bool]($p -and (Ours $p) -and ($p.m -or $all))}
+function Remove-Key($f,$all){
+if(-not(Test-Path $f)){return}
+$o=Read-Bytes $f
+$y=New-Object Text.StringBuilder
+foreach($x in (Lines $o)){if(-not(Chosen $x $all)){[void]$y.Append($x)}}
+$n=$y.ToString()
+foreach($x in (Lines $n)){if(Chosen $x $all){throw "$f was left unchanged: a removed line was still in the copy"}}
+if($n -ceq $o){return}
+$t="$f.xmux-$PID"
+try{
+[IO.File]::WriteAllBytes($t,$Latin.GetBytes($n))
+if((Read-Bytes $t) -cne $n){throw "$f was left unchanged: the copy does not hold what was written"}
+if((Read-Bytes $f) -cne $o){throw "$f was left unchanged: it changed while it was being rewritten"}
+[IO.File]::Replace($t,$f,[NullString]::Value)
+}finally{if(Test-Path $t){Remove-Item -Force $t}}
 }
 "#;
 
-/// Standard base64 with padding, for [`windows_key_command`]'s `-EncodedCommand`.
+/// Standard base64 with padding, for [`encoded_powershell`].
 fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -1455,10 +1841,13 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// The public key files the registration chooses among, in the order ssh itself prefers.
+const PUBLIC_KEY_FILES: [&str; 3] = ["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"];
+
 /// This machine's public key line, generating an ed25519 pair when it has none.
 ///
-/// The first existing public key wins, in the order ssh itself prefers, so a machine
-/// that already has a key registers THAT one rather than growing a second identity.
+/// The first existing public key wins, so a machine that already has a key registers THAT
+/// one rather than growing a second identity.
 fn public_key_line() -> Result<String, std::io::Error> {
     // The home SSH itself reads `~` from, so the key xmux sends is the key ssh would
     // offer. See `ssh_home`.
@@ -1483,7 +1872,7 @@ fn public_key_line() -> Result<String, std::io::Error> {
 
 fn existing_public_key_line() -> Result<Option<String>, std::io::Error> {
     let dir = ssh_home().join(".ssh");
-    for name in ["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"] {
+    for name in PUBLIC_KEY_FILES {
         if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
             let line = text.trim().to_string();
             if !line.is_empty() {
@@ -1492,6 +1881,20 @@ fn existing_public_key_line() -> Result<Option<String>, std::io::Error> {
         }
     }
     Ok(None)
+}
+
+/// The key type and body of every public key the registration could have chosen, so a key
+/// it put on a host is found whichever file held it then.
+fn this_machine_key_bodies() -> Vec<(String, String)> {
+    let dir = ssh_home().join(".ssh");
+    PUBLIC_KEY_FILES
+        .iter()
+        .filter_map(|name| std::fs::read_to_string(dir.join(name)).ok())
+        .filter_map(|text| {
+            let (kind, body) = key_body(text.trim()).ok()?;
+            Some((kind.to_string(), body.to_string()))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1513,16 +1916,195 @@ mod tests {
     /// probe that every family answers and exits 0 on.
     /// A second login runs the registration again, so it must change nothing then.
     #[test]
-    fn the_posix_key_command_adds_the_line_only_when_it_is_absent() {
+    fn the_posix_key_command_appends_a_marked_line_unless_the_key_body_is_there() {
         let cmd = authorized_keys_command(KNOWN_PUBLIC_KEY).unwrap();
         assert!(
-            cmd.contains("grep -qxF") && cmd.contains(">> ~/.ssh/authorized_keys"),
-            "it appends only what is not already there: {cmd}"
+            cmd.contains("-v keys='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMwVQxmuxTestKeyNeverUsed'")
+                && cmd.contains("LC_ALL=C awk")
+                && cmd.contains("x has \"$f\""),
+            "it looks for the key type and body of real key lines, as bytes: {cmd}"
+        );
+        assert!(
+            cmd.contains(&format!(
+                "printf '%s\\n' '{KNOWN_PUBLIC_KEY} xmux-registered' >> \"$f\""
+            )),
+            "the line it appends ends its comment with the mark: {cmd}"
         );
         assert!(
             cmd.starts_with("umask 077"),
             "the file it may create is not readable by others: {cmd}"
         );
+    }
+
+    #[test]
+    fn the_windows_key_script_appends_a_marked_line_unless_the_key_body_is_there() {
+        let script = windows_key_script(KNOWN_PUBLIC_KEY).unwrap();
+        assert!(
+            script.contains(&format!("$k='{KNOWN_PUBLIC_KEY} xmux-registered'\n")),
+            "{script}"
+        );
+        assert!(
+            script.contains("$KT=@('ssh-ed25519')\n")
+                && script.contains("$KB=@('AAAAC3NzaC1lZDI1NTE5AAAAIMwVQxmuxTestKeyNeverUsed')\n")
+                && script.contains("if($p -and (Ours $p)){return}"),
+            "it looks for the key type and body of real key lines: {script}"
+        );
+        assert!(
+            script.contains("Add-Key $f administrators_authorized_keys"),
+            "{script}"
+        );
+        assert!(
+            windows_key_script("ssh-ed25519 AAAAbody it\u{2019}s mine").is_err(),
+            "a quote PowerShell reads as one never reaches the script"
+        );
+    }
+
+    #[test]
+    fn a_marked_line_keeps_the_key_and_ends_with_the_mark() {
+        let marked = marked_key_line(KNOWN_PUBLIC_KEY);
+        assert_eq!(marked, format!("{KNOWN_PUBLIC_KEY} xmux-registered"));
+        assert_eq!(
+            key_line_fields(&marked),
+            Some((
+                "ssh-ed25519",
+                "AAAAC3NzaC1lZDI1NTE5AAAAIMwVQxmuxTestKeyNeverUsed",
+                "xmux@test xmux-registered"
+            ))
+        );
+        assert_eq!(
+            marked_key_line("ssh-ed25519 AAAAbody"),
+            "ssh-ed25519 AAAAbody xmux-registered",
+            "a key with no comment gets the mark as its comment"
+        );
+    }
+
+    #[test]
+    fn a_key_line_is_read_past_its_options_and_without_its_comment() {
+        assert_eq!(
+            key_line_fields(
+                r#"from="10.0.0.1",command="echo \"a b\"" ssh-rsa AAAAbody laptop key"#
+            ),
+            Some(("ssh-rsa", "AAAAbody", "laptop key"))
+        );
+        assert_eq!(
+            key_line_fields("no-pty\tecdsa-sha2-nistp256 AAAAbody"),
+            Some(("ecdsa-sha2-nistp256", "AAAAbody", ""))
+        );
+        assert_eq!(key_line_fields("# ssh-ed25519 AAAAbody"), None);
+        assert_eq!(key_line_fields("   "), None);
+        assert_eq!(key_line_fields("no-pty"), None);
+    }
+
+    const THIS_BODY: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIMwVQxmuxTestKeyNeverUsed";
+
+    fn this_key() -> Vec<(String, String)> {
+        vec![("ssh-ed25519".to_string(), THIS_BODY.to_string())]
+    }
+
+    fn found(file: KeyFile, marked: bool) -> HostKeyLine {
+        HostKeyLine {
+            file,
+            kind: "ssh-ed25519".into(),
+            body: THIS_BODY.into(),
+            marked,
+        }
+    }
+
+    /// The host compares the key fields and prints only which file, whether marked, and
+    /// which key; a line naming no searched key, or anything else, is skipped.
+    #[test]
+    fn the_search_output_names_the_file_the_mark_and_the_key() {
+        let out = "motd\r\n\
+             xmux-key-line:authorized_keys:marked:1\n\
+             xmux-key-line:authorized_keys:unmarked:1\r\n\
+             xmux-key-line:administrators_authorized_keys:marked:1\n\
+             xmux-key-line:authorized_keys:marked:2\n\
+             xmux-key-line:elsewhere:marked:1\n";
+        assert_eq!(
+            found_key_lines(out.as_bytes(), &this_key()),
+            vec![
+                found(KeyFile::User, true),
+                found(KeyFile::User, false),
+                found(KeyFile::Administrators, true),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_key_search_is_one_command_over_the_logins_connection() {
+        let runner = ScriptedRunner::new(vec![Ok("xmux-key-line:authorized_keys:marked:1\n")]);
+        let lines = find_key_lines(&runner, &multiplexing_ssh(), &this_key())
+            .await
+            .unwrap();
+        assert_eq!(lines, vec![found(KeyFile::User, true)]);
+        let commands = runner.commands();
+        assert_eq!(commands.len(), 1, "{commands:?}");
+        assert!(
+            !is_key_check(&commands[0]),
+            "it rides the login's connection"
+        );
+        let sent = commands[0].last().unwrap();
+        assert!(
+            sent.contains(THIS_BODY) && sent.contains("x find"),
+            "{commands:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_machine_with_no_public_key_asks_the_host_nothing() {
+        let runner = ScriptedRunner::new(vec![]);
+        let found = find_key_lines(&runner, &multiplexing_ssh(), &[])
+            .await
+            .unwrap();
+        assert!(found.is_empty());
+        assert!(runner.commands().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_host_that_cannot_be_reached_fails_the_search_with_ssh_s_reason() {
+        let runner = ScriptedRunner::new(vec![Err(RunError::Exit {
+            stderr: "ssh: connect to host prod port 22: Connection timed out\n".into(),
+            code: 255,
+        })]);
+        let error = find_key_lines(&runner, &multiplexing_ssh(), &this_key())
+            .await
+            .unwrap_err();
+        assert!(error.contains("Connection timed out"), "{error}");
+    }
+
+    /// An unmarked line among the chosen ones makes its file lose every line of the key;
+    /// marked lines alone leave the unmarked ones where they are.
+    #[tokio::test]
+    async fn the_removal_takes_the_chosen_lines_by_key_in_one_command() {
+        let shell = crate::transport::vocab::RemoteShell::Posix;
+        let sent = |lines: &[HostKeyLine]| {
+            let runner = ScriptedRunner::new(vec![Ok("")]);
+            let lines = lines.to_vec();
+            async move {
+                remove_host_keys(&runner, &multiplexing_ssh(), &lines)
+                    .await
+                    .unwrap();
+                let commands = runner.commands();
+                assert_eq!(commands.len(), 1, "{commands:?}");
+                commands[0].last().cloned()
+            }
+        };
+        let expected = |all: bool| {
+            let removal = remove_key_command(shell, &this_key(), &[(KeyFile::User, all)]).unwrap();
+            crate::transport::Transport::raw_shell_argv(&multiplexing_ssh(), &removal)
+                .unwrap()
+                .args()
+                .last()
+                .cloned()
+        };
+        let both = [found(KeyFile::User, true), found(KeyFile::User, false)];
+        assert_eq!(sent(&both).await, expected(true));
+        assert_eq!(sent(&both[..1]).await, expected(false));
+        let runner = ScriptedRunner::new(vec![]);
+        remove_host_keys(&runner, &multiplexing_ssh(), &[])
+            .await
+            .unwrap();
+        assert!(runner.commands().is_empty(), "nothing chosen asks nothing");
     }
 
     #[test]
@@ -1540,20 +2122,142 @@ mod tests {
         }
     }
 
-    /// The Windows key command, run the way Windows OpenSSH runs it under its default
-    /// shell, adds the key once however often it runs, and keeps a line that was there
-    /// without a trailing newline intact. `ProgramData` points at a directory with no
-    /// `sshd_config`, so the run never reaches the machine's own sshd files.
+    /// Runs the key commands for `shell` against `keys` through `run`, which answers a
+    /// command's stdout or `None` when it failed. `eol` is the line ending the
+    /// registration writes. Every line that is not this machine's key, including one whose
+    /// bytes are not UTF-8, must come through each rewrite byte for byte.
+    fn exercise_key_commands(
+        shell: crate::transport::vocab::RemoteShell,
+        keys: &std::path::Path,
+        run: &dyn Fn(&str) -> Option<Vec<u8>>,
+        eol: &str,
+    ) {
+        let ok = |cmd: &str| run(cmd).expect("the command reports success");
+        let marked = format!("{KNOWN_PUBLIC_KEY} xmux-registered");
+        let latin1 = b"ssh-ed25519 AAAAexisting caf\xe9@host".to_vec();
+        let retired = format!("# ssh-ed25519 {THIS_BODY} retired");
+
+        let mut start = latin1.clone();
+        start.extend_from_slice(format!("\n{retired}").as_bytes());
+        std::fs::write(keys, &start).unwrap();
+        let cmd = key_command(shell, KNOWN_PUBLIC_KEY).unwrap();
+        assert_eq!(
+            added_key_files(&ok(&cmd)),
+            vec![KeyFile::User],
+            "a commented-out key is no key, so the first run appends"
+        );
+        assert_eq!(
+            added_key_files(&ok(&cmd)),
+            vec![],
+            "the second run appends nothing"
+        );
+        let mut want = start.clone();
+        want.extend_from_slice(format!("{eol}{marked}{eol}").as_bytes());
+        assert_eq!(
+            std::fs::read(keys).unwrap(),
+            want,
+            "the last line is kept whole"
+        );
+
+        let unmarked = format!(r#"from="10.0.0.1",command="echo 'hi'" {KNOWN_PUBLIC_KEY}"#);
+        let copied = format!("ssh-ed25519 AAAAother copied {THIS_BODY}");
+        let line = |text: &[u8]| {
+            let mut bytes = text.to_vec();
+            bytes.extend_from_slice(b"\r\n");
+            bytes
+        };
+        let file = |parts: &[Vec<u8>]| parts.concat();
+        let mut marked_latin1 = format!("{KNOWN_PUBLIC_KEY} caf").into_bytes();
+        marked_latin1.extend_from_slice(b"\xe9 xmux-registered");
+        std::fs::write(
+            keys,
+            file(&[
+                line(&latin1),
+                line(unmarked.as_bytes()),
+                line(copied.as_bytes()),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            added_key_files(&ok(&cmd)),
+            vec![],
+            "the same key unmarked is the same key"
+        );
+
+        // A byte order mark, then a UTF-8 line another key's options hold Korean in.
+        let mut bom_korean = b"\xef\xbb\xbf".to_vec();
+        bom_korean.extend_from_slice(
+            "command=\"echo 안녕하세요\" ssh-rsa AAAAkorean other@host".as_bytes(),
+        );
+        let kept = [
+            file(&[line(&bom_korean), line(&latin1)]),
+            line(retired.as_bytes()),
+            line(copied.as_bytes()),
+        ];
+        std::fs::write(
+            keys,
+            file(&[
+                kept[0].clone(),
+                line(unmarked.as_bytes()),
+                kept[1].clone(),
+                line(&marked_latin1),
+                line(marked.as_bytes()),
+                kept[2].clone(),
+            ]),
+        )
+        .unwrap();
+        let lines = found_key_lines(
+            &ok(&find_keys_command(shell, &this_key()).unwrap()),
+            &this_key(),
+        );
+        assert_eq!(
+            lines,
+            vec![
+                found(KeyFile::User, false),
+                found(KeyFile::User, true),
+                found(KeyFile::User, true),
+            ]
+        );
+
+        ok(&remove_key_command(shell, &this_key(), &[(KeyFile::User, false)]).unwrap());
+        assert_eq!(
+            std::fs::read(keys).unwrap(),
+            file(&[
+                kept[0].clone(),
+                line(unmarked.as_bytes()),
+                kept[1].clone(),
+                kept[2].clone()
+            ]),
+            "declining removes the marked lines, a non-UTF-8 one too, and keeps every other byte"
+        );
+        ok(&remove_key_command(shell, &this_key(), &[(KeyFile::User, true)]).unwrap());
+        assert_eq!(
+            std::fs::read(keys).unwrap(),
+            file(&kept),
+            "confirming removes the unmarked line with quotes in its options as well"
+        );
+        assert!(
+            found_key_lines(
+                &ok(&find_keys_command(shell, &this_key()).unwrap()),
+                &this_key()
+            )
+            .is_empty(),
+            "no line of this machine's key is left"
+        );
+    }
+
+    /// The Windows key commands, run the way Windows OpenSSH runs them under its default
+    /// shell. `ProgramData` points at a directory with no `sshd_config`, so the run never
+    /// reaches the machine's own sshd files.
     #[cfg(windows)]
     #[test]
-    fn the_windows_key_command_adds_the_line_once_under_cmd() {
+    fn the_windows_key_commands_mark_find_and_remove_lines_under_cmd() {
         let root = std::env::temp_dir().join(format!("xmux-env-win-key-{}", std::process::id()));
         let profile = root.join("profile");
         let program_data = root.join("programdata");
         std::fs::create_dir_all(profile.join(".ssh")).unwrap();
         std::fs::create_dir_all(&program_data).unwrap();
         let keys = profile.join(".ssh").join("authorized_keys");
-        std::fs::write(&keys, "ssh-ed25519 AAAAexisting other@host").unwrap();
         let run = |cmd: &str| {
             let out = std::process::Command::new("cmd.exe")
                 .arg("/c")
@@ -1563,67 +2267,77 @@ mod tests {
                 .stdin(std::process::Stdio::null())
                 .output()
                 .unwrap();
-            assert!(out.status.success(), "the command reports success: {out:?}");
-            added_key_files(&out.stdout)
+            out.status.success().then_some(out.stdout)
         };
-        let cmd = windows_key_command(KNOWN_PUBLIC_KEY).unwrap();
-        assert_eq!(run(&cmd), vec![KeyFile::User], "the first run appends");
-        assert_eq!(run(&cmd), vec![], "the second run appends nothing");
-        let text = std::fs::read_to_string(&keys).unwrap();
-        assert_eq!(
-            text.lines().collect::<Vec<_>>(),
-            vec!["ssh-ed25519 AAAAexisting other@host", KNOWN_PUBLIC_KEY],
-            "{text:?}"
-        );
-        let remove = remove_key_command(
+        exercise_key_commands(
             crate::transport::vocab::RemoteShell::Other,
-            KNOWN_PUBLIC_KEY,
-            &[KeyFile::User],
-        )
-        .unwrap();
-        run(&remove);
-        let text = std::fs::read_to_string(&keys).unwrap();
-        std::fs::remove_dir_all(&root).ok();
-        assert_eq!(
-            text.lines().collect::<Vec<_>>(),
-            vec!["ssh-ed25519 AAAAexisting other@host"],
-            "the removal takes only the registered line: {text:?}"
+            &keys,
+            &run,
+            "\r\n",
         );
+        std::fs::remove_dir_all(&root).ok();
     }
 
-    /// The POSIX key command, run by `sh`, reports the append only when it made one, and
-    /// the removal takes back that line and nothing else.
+    /// The POSIX key commands, run by `sh`. A key file that is a symbolic link is refused
+    /// and left as it was, and a missing file holds nothing to find.
     #[cfg(unix)]
     #[test]
-    fn the_posix_key_command_reports_its_append_and_the_removal_keeps_other_lines() {
+    fn the_posix_key_commands_mark_find_and_remove_lines_under_sh() {
         let home = std::env::temp_dir().join(format!("xmux-env-posix-key-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
         let keys = home.join(".ssh").join("authorized_keys");
-        std::fs::write(&keys, "ssh-ed25519 AAAAexisting other@host\n").unwrap();
-        let run = |cmd: &str| {
+        let run_in = |home: &std::path::Path, cmd: &str| {
             let out = std::process::Command::new("sh")
                 .arg("-c")
                 .arg(cmd)
-                .env("HOME", &home)
+                .env("HOME", home)
+                .env("LANG", "en_US.UTF-8")
                 .stdin(std::process::Stdio::null())
                 .output()
                 .unwrap();
-            assert!(out.status.success(), "the command reports success: {out:?}");
-            added_key_files(&out.stdout)
+            out.status.success().then_some(out.stdout)
         };
-        let cmd = authorized_keys_command(KNOWN_PUBLIC_KEY).unwrap();
-        assert_eq!(run(&cmd), vec![KeyFile::User], "the first run appends");
-        assert_eq!(run(&cmd), vec![], "the second run appends nothing");
-        let remove = remove_key_command(
-            crate::transport::vocab::RemoteShell::Posix,
-            KNOWN_PUBLIC_KEY,
-            &[KeyFile::User],
-        )
-        .unwrap();
-        run(&remove);
-        let text = std::fs::read_to_string(&keys).unwrap();
+        let shell = crate::transport::vocab::RemoteShell::Posix;
+        exercise_key_commands(shell, &keys, &|cmd| run_in(&home, cmd), "\n");
+
+        let target = home.join("real_keys");
+        std::fs::write(&target, format!("{KNOWN_PUBLIC_KEY} xmux-registered\n")).unwrap();
+        std::fs::remove_file(&keys).unwrap();
+        std::os::unix::fs::symlink(&target, &keys).unwrap();
+        assert!(
+            run_in(
+                &home,
+                &remove_key_command(shell, &this_key(), &[(KeyFile::User, true)]).unwrap()
+            )
+            .is_none(),
+            "a link is refused"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            format!("{KNOWN_PUBLIC_KEY} xmux-registered\n")
+        );
+        std::fs::remove_file(&keys).unwrap();
+
+        // awk cannot carry a NUL byte through, so a file holding one is refused untouched.
+        let with_nul = format!("ssh-rsa AAAAother a\0b\n{KNOWN_PUBLIC_KEY} xmux-registered\n");
+        std::fs::write(&keys, &with_nul).unwrap();
+        assert!(
+            run_in(
+                &home,
+                &remove_key_command(shell, &this_key(), &[(KeyFile::User, true)]).unwrap()
+            )
+            .is_none(),
+            "a NUL byte is refused"
+        );
+        assert_eq!(std::fs::read_to_string(&keys).unwrap(), with_nul);
         std::fs::remove_dir_all(&home).ok();
-        assert_eq!(text, "ssh-ed25519 AAAAexisting other@host\n");
+
+        let missing =
+            std::env::temp_dir().join(format!("xmux-env-posix-none-{}", std::process::id()));
+        assert_eq!(
+            run_in(&missing, &find_keys_command(shell, &this_key()).unwrap()),
+            Some(Vec::new())
+        );
     }
 
     /// Answers each command with the next scripted result and records the argv.
@@ -1728,9 +2442,19 @@ mod tests {
         let commands = runner.commands();
         assert_eq!(commands.len(), 3, "{commands:?}");
         let removal = commands[2].last().unwrap();
-        assert!(
-            removal.contains("grep -vxF") && removal.contains(KNOWN_PUBLIC_KEY),
-            "{removal}"
+        let expected = remove_key_command(
+            crate::transport::vocab::RemoteShell::Posix,
+            &this_key(),
+            &[(KeyFile::User, false)],
+        )
+        .unwrap();
+        let sent =
+            crate::transport::Transport::raw_shell_argv(&multiplexing_ssh(), &expected).unwrap();
+        assert!(expected.contains("-v all=0"), "{expected}");
+        assert_eq!(
+            Some(removal),
+            sent.args().last(),
+            "the removal takes the marked line of this key it appended"
         );
         assert!(
             !is_key_check(&commands[2]),
@@ -1803,8 +2527,8 @@ mod tests {
         let commands = runner.commands();
         let expected = remove_key_command(
             crate::transport::vocab::RemoteShell::Other,
-            KNOWN_PUBLIC_KEY,
-            &[KeyFile::User, KeyFile::Administrators],
+            &this_key(),
+            &[(KeyFile::User, false), (KeyFile::Administrators, false)],
         )
         .unwrap();
         assert_eq!(commands.len(), 3, "{commands:?}");

@@ -255,6 +255,10 @@ radio choice decides what a working login leaves behind:
 - the user's public key, registered on the host so it stops asking for a
   password
 
+The line xmux appends ends its comment with `xmux-registered`, which sshd ignores and
+which tells xmux's lines from the user's own. A host that already holds the same key,
+under any comment or options, gets no second line, and its line stays unmarked.
+
 After registering the key, xmux runs one separate login that may use only that key,
 and reports the key registered only when that login runs a command. When the host
 accepts the key but cannot open a session, xmux reports the server's error and removes
@@ -269,11 +273,19 @@ metadata and display connections. A new login or explicit re-scan is needed to
 connect again.
 
 On an SSH host, `prefix L` opens a confirmation that states the selected session, its
-observed SSH login, what happens to a held password and to the key, and the machine
-whose connections close. Type `logout` to clear
-the password xmux holds in memory and close that machine's connections, including
-its SSH master where present. SSH config and public keys remain available. An
-explicit re-scan can reconnect with an available key; otherwise, log in again.
+observed SSH login, what happens to a held password and to this PC's key, and the
+machine whose connections close. Type `logout` to take this PC's public key off the
+host, then clear the password xmux holds in memory and close that machine's
+connections, including its SSH master where present. Before closing anything, xmux
+looks for lines in the host's key files that hold one of this PC's public keys,
+comparing the key type and body and ignoring options and the comment. The lines marked
+`xmux-registered` are removed. A matching line without the mark was not added by xmux,
+and removing it also stops ssh outside xmux from using the key, so a second
+confirmation opens in the same place and asks first: type `remove` to remove it too,
+or press Esc to keep it. When the host cannot be reached or the removal fails, the
+logout still clears the password and the connections, and its toast says the key
+remains and why. SSH config is not changed. A re-scan reconnects only with a key the
+host still accepts; otherwise, log in again.
 
 ## Roster
 

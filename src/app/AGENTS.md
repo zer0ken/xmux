@@ -136,6 +136,20 @@ the card numbers it needs.
   if any, is open. Focus and modal transitions stay in the focus module; the app
   and the state call into it rather than open-coding view or modal bookkeeping.
 - This layer carries no PTY, grid, or terminal-protocol logic; that is `display`.
+- A logout clears nothing of its machine until its key steps settle. The key search and
+  the removal run off the loop over the machine's transport, so they reach the host
+  the way every other command did; only their answer, or the second confirmation closing,
+  moves the logout on, and the held password and the connections go last. The second
+  confirmation closing any way but confirming is read on every update as keeping the
+  unmarked line, so a logout never waits on a question that is no longer on screen.
+- A login's follow-ups and a logout's key search pass one per-machine gate in turn. A
+  registration appends its line well after the login's verdict, so a search that did not
+  wait for it could finish first and the line would land after the logout. The logout
+  cancels every running login on its machine before its search takes the gate, keeps the
+  gate until it clears the machine, and refuses a new login on that machine meanwhile; a
+  login that holds the gate only after the cancel does no follow-ups. The app keeps a cancel
+  handle for every login whose result has not arrived, because the pane's handle names
+  only the latest submission, which may be on another machine.
 - The update transition is where results become reports. A re-scan keeps the inventory
   the user saw when they asked and, once every source and the roster have answered, makes
   one toast of what changed. A source that was answering and stops outside a re-scan is

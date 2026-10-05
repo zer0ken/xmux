@@ -98,7 +98,7 @@ The remaining actions all take the prefix and work from either focus:
 | `prefix n` | start a new session on the selected host |
 | `prefix r` | re-scan: refresh which machines exist, and every source's sessions |
 | `prefix R` | re-scan the selected card's host alone |
-| `prefix L` | log out of the selected SSH machine (asks for the word `logout`) |
+| `prefix L` | log out of the selected SSH machine (asks for the word `logout`): remove this PC's key from it, clear the held password, and close its connections |
 | `prefix h` | open the table of the hosts to check |
 | `prefix :` | search commands by name; type to filter, use arrows to select, Enter to run, Esc to close |
 
@@ -120,6 +120,15 @@ probe, then every source it serves. Its cards keep their sessions and numbers wh
 runs, and it reports in one toast titled `re-scan <host>` that compares that host alone.
 It is refused while the host is still being scanned and while another re-scan has not
 reported; a `prefix r` pressed meanwhile takes over.
+
+`prefix L` asks for `logout` typed in full before it acts. It then looks for the lines
+of the host's key files that hold one of this PC's public keys, by key type and body
+alone, and removes the ones marked `xmux-registered`. A matching line without the mark
+opens a second confirmation, which says that xmux did not add the key and that removing
+it also affects ssh outside xmux: `remove` typed in full removes that line too, and Esc
+or anything else that closes the confirmation keeps it. The held password and the
+connections are cleared only after that, and a host that cannot be reached or a removal
+that fails still logs out, with a toast saying the key remains and why.
 
 ### Jumping by number
 
@@ -335,14 +344,19 @@ field.
   selects that host's card, setting the filter to the host's name when it has no card on
   the list, and for a host that needs a login it also focuses the terminal view, whose
   login pane then takes the keys. `q`, `Esc`, or `prefix h` closes it.
-- **Input** (filter, jump, new session, logout): a popup with one text field and the
+- **Input** (filter, jump, new session, logout, remove key): a popup with one text field and the
   caret at the edit position. Type into the field, `Backspace` deletes, `Enter`
   submits, `Esc` cancels.
 - **New session** (`prefix n`): the popup names the host and mux the session lands on
   and takes its name; an empty name is assigned automatically, as above.
 - **Logout** (`prefix L`): the popup states the session, the observed SSH login, what
-  happens to a held password and the key, and the machine whose connections close.
-  Typing `logout` and `Enter` logs out.
+  happens to a held password and to this PC's key, and the machine whose connections
+  close. Typing `logout` and `Enter` logs out.
+- **Remove key** (opens during a logout): when the host holds this PC's key in a line
+  xmux did not add, a second popup opens in the same place with the same layout. It
+  states how many such lines there are and in which file, that ssh outside xmux loses
+  the key too, what keeping them leaves, and that the logout goes on either way. Typing
+  `remove` and `Enter` removes those lines too; `Esc` keeps them.
 - **Filter** (`prefix /`): the list re-filters as you type, so which cards survive is
   visible before you press anything else; the selection holds its card while that
   survives and lands on the first remaining card otherwise. `Enter` closes it and

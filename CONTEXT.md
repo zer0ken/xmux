@@ -400,10 +400,19 @@ UI elements a user perceives as distinct things:
   what stops the host asking again.
 - logging out - `prefix L` on an SSH host names the selected session's observed
   authentication method and the affected machine, then requires typing `logout`.
-  It discards that machine's in-memory password and closes its metadata and display
-  connections and shared SSH master where present. SSH config and public keys remain.
-  A pending login on that machine is cancelled, and its result cannot reopen it.
-  The next requested connection can use an available key; otherwise a login is needed.
+  Before anything closes, it takes this machine's public key off the host over the
+  machine's current connection: one command lists the lines of the host's key files whose
+  key type and body equal one of this machine's public keys, ignoring options and the
+  comment, and a second removes the chosen ones. Lines carrying the registration mark
+  are chosen at once. A matching line without the mark is a key xmux did not add, and
+  removing it also stops ssh outside xmux from using it, so a second confirmation asks
+  first; confirming chooses it too, and closing the confirmation any other way keeps it.
+  A host that cannot be reached or a removal that fails reports that the key remains and
+  why, and the logout goes on. Then it discards that machine's in-memory password and
+  closes its metadata and display connections and shared SSH master where present. SSH
+  config is not changed. A pending login on that machine is cancelled when the logout
+  starts, and its result cannot reopen it. The next requested connection can use a key
+  the host still accepts; otherwise a login is needed.
 - registering a key - what the pane's key choice does once the connection works. The
   login command reads the host's shell family, because the registration is a command for
   one family and a locked host's family is unknown until someone gets in. Registration is
@@ -412,14 +421,17 @@ UI elements a user perceives as distinct things:
   the log, and host information. A POSIX host gets the
   line in `~/.ssh/authorized_keys`; a Windows host gets it there too, and in
   `administrators_authorized_keys` when its sshd reads an Administrators member's keys
-  from that file. It adds the line only when that line is absent, so a second login
-  changes nothing, and it makes this machine an ed25519 pair first when it has none.
+  from that file. The line it appends ends its comment with the mark `xmux-registered`,
+  which sshd reads as free text and a logout reads as "xmux added this". It adds the line
+  only when no key line in the file holds the same key type and body, so a second login
+  changes nothing and a line the user added stays unmarked, and it makes this machine an
+  ed25519 pair first when it has none.
   Registration then logs in once with the key alone, over a connection of its own that
   shares no master, never prompts, and runs a command that does nothing. Only that
   command running makes the result registered. A host that accepts the key and then
   cannot open a session would refuse every later command from this machine, which offers
-  the key first, so the result is failed with the server's error and the line this
-  registration added is removed; a line that was already there stays. A key login that
+  the key first, so the result is failed with the server's error and the marked line
+  this registration added is removed; a line that was already there stays. A key login that
   fails before authentication finishes proves nothing about the key, so the result is
   failed as not verified and the line stays.
 - address column - the leftmost column set of every card, holding the one thing that
