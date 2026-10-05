@@ -220,8 +220,9 @@ UI elements a user perceives as distinct things:
   When focus leaves the nav from a session card, only the session group is painted.
   When it leaves from either host group, every group stays painted. Returning focus
   to the nav paints every group. The focus decision holds while the terminal view
-  keeps focus, including during prefix and modal interactions. Painting fewer groups
-  preserves card numbers and the selected card's identity.
+  keeps focus, including during prefix and modal interactions. The selected card is
+  always painted: while the selection is on a host card, every group is painted.
+  Painting fewer groups preserves card numbers and the selected card's identity.
 - level color - the per-segment card color, from the palette. Every foreground role
   is ANSI-16, so the terminal theme resolves the hue. There is one TEXT colour, one
   ACCENT, and the section title's quiet header role: a session card reads as one

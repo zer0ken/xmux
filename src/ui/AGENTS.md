@@ -192,7 +192,9 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 - When focus leaves nav from a session card, only the session group is painted.
   Leaving from either host group keeps all groups painted. Returning nav focus shows
   all groups. Prefix and modal interactions preserve the focus decision while the
-  terminal view keeps focus. Card numbers and selected identity do not change.
+  terminal view keeps focus. While the selection is on a host card, every group is
+  painted, so the selected card is always painted. Card numbers and selected identity
+  do not change.
 - A card's rect is decided by the PAINT and read back from it, in both layouts. Neither
   layout puts cards on a fixed pitch the paint ignores (a column parts its bands, a
   band runs columns), so a hit-test that measured its own pitch would land clicks

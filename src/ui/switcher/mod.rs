@@ -427,9 +427,10 @@ impl Switcher {
     }
 
     /// Whether the paint leaves the host band out: hidden by the move into the terminal
-    /// view from a session card. Prefix interactions preserve this decision.
+    /// view from a session card. Prefix interactions preserve this decision, but a
+    /// selection on a host card paints the band, since a selected card is always painted.
     fn band_unpainted(&self) -> bool {
-        self.host_band_hidden
+        self.host_band_hidden && !matches!(self.current_ref(), Some(RowRef::Host { .. }))
     }
 
     /// Whether `(source, target)` addresses the session xmux is ITSELF running in.
