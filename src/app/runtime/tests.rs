@@ -5368,6 +5368,30 @@ fn a_popup_takes_hover_and_a_click_on_its_entry_runs_it_as_enter_does() {
     assert!(rt.model.state.modal.is_none());
 }
 
+/// A drag moves the popup under the pointer, so the soft selection set before it does not
+/// outlive it: the popup shows its hard selection until the pointer moves again.
+#[test]
+fn a_popup_drag_drops_the_soft_selection_it_started_on() {
+    let sel = Selection::default();
+    let mut rt = collapse_rt(crate::ui::switcher::NavPosition::Left);
+    let effects = update(&mut rt.model, Msg::TogglePalette);
+    assert!(effects.is_empty());
+    rt.handle_stdin_bytes(b"quit xmux", &sel);
+    sync_test_render_plan(&mut rt);
+    let r = rt.model.render_plan.popup_rect;
+    let (col, row) = (r.x + 4, r.y + 3);
+    let event = |rt: &mut Runtime, ev| {
+        rt.handle_mouse_event(&ev, &sel, &mut false, &mut false, &mut false, &mut false)
+    };
+    event(&mut rt, mouse(35, col, row, true));
+    assert_eq!(rt.model.state.modal_hover(), Some(0));
+    event(&mut rt, mouse(0, col, row, true));
+    event(&mut rt, mouse(32, col.saturating_sub(3), row + 2, true));
+    event(&mut rt, mouse(0, col.saturating_sub(3), row + 2, false));
+    assert!(rt.model.state.modal.is_some(), "a drag executes nothing");
+    assert_eq!(rt.model.state.modal_hover(), None);
+}
+
 #[test]
 fn dragging_the_seam_past_the_minimum_collapses_the_nav_at_every_position() {
     use crate::ui::switcher::NavPosition;

@@ -31,6 +31,17 @@ impl Switcher {
     /// switcher to act on as an Enter.
     pub fn end_popup_drag_in_plan(&mut self, plan: &RenderPlan, state: &mut crate::state::State) {
         let Some((col, row)) = self.popup_geo.end_drag() else {
+            // A drag moved the popup under the pointer, so the soft selection set before
+            // it names a cell the pointer may no longer be on. The next motion sets it
+            // again from where the popup now is.
+            if let Some(
+                Modal::Help { hover, .. }
+                | Modal::Check { hover, .. }
+                | Modal::Palette { hover, .. },
+            ) = &mut state.modal
+            {
+                *hover = None;
+            }
             return;
         };
         match (
