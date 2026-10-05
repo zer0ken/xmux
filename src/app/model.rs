@@ -1124,32 +1124,24 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         }
         Msg::OpResult { result, logged_in } => {
             if let crate::model::OpResult::Login {
-                source, attempt, ..
-            } = &result
-            {
-                if !model
-                    .state
-                    .login_progress
-                    .get(source)
-                    .is_some_and(|progress| progress.attempt == *attempt)
-                {
-                    return Vec::new();
-                }
-            }
-            if let crate::model::OpResult::Login {
                 source,
                 attempt,
                 outcome,
                 ..
             } = &result
             {
-                if outcome.connect.is_ok()
-                    && model
-                        .state
-                        .login_progress
-                        .get(source)
-                        .is_some_and(|progress| progress.attempt == *attempt)
+                // The running handle, not the steps, says which login is current: the
+                // steps can leave before the result arrives, while only a logout or a
+                // newer submission replaces the handle, and so ends the login it held.
+                if !model
+                    .state
+                    .login_run
+                    .as_ref()
+                    .is_some_and(|run| run.source == *source && run.attempt == *attempt)
                 {
+                    return Vec::new();
+                }
+                if outcome.connect.is_ok() {
                     model
                         .state
                         .invalid_auth
@@ -3089,6 +3081,40 @@ mod tests {
             ),
         );
         assert!(!m.state.login_progress.contains_key("pwbox"));
+    }
+
+    #[test]
+    fn a_result_after_its_steps_left_still_ends_the_login() {
+        use crate::link::unlock::{FailureKind, UnlockOutcome};
+        use crate::model::LoginEvent;
+        let refused = || UnlockOutcome::Failed {
+            kind: FailureKind::WrongPassword,
+            reason: "the password was refused".into(),
+        };
+        let (mut m, attempt) = submitted_login(&["pwbox"]);
+        update(
+            &mut m,
+            login_event("pwbox", attempt, LoginEvent::Verdict(refused())),
+        );
+        // A newer look at the machine arrives before the result and takes the settled
+        // steps with it.
+        update(&mut m, probed("pwbox", 0, None));
+        assert!(!m.state.login_progress.contains_key("pwbox"));
+        update(&mut m, login_result("pwbox", attempt, refused()));
+        assert!(m.state.login_run.is_none(), "the pane offers a login again");
+        assert!(m.state.login_reports.contains_key("pwbox"));
+
+        let (mut m, attempt) = submitted_login(&["pwbox"]);
+        update(
+            &mut m,
+            Msg::RemoveSource {
+                source: "pwbox".to_owned(),
+                clear_tracking: false,
+            },
+        );
+        update(&mut m, login_result("pwbox", attempt, refused()));
+        assert!(m.state.login_run.is_none());
+        assert!(m.state.login_reports.contains_key("pwbox"));
     }
 
     fn capital_r() -> Msg {
