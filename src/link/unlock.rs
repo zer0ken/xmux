@@ -221,6 +221,15 @@ fn run(
             output.push_str(&refusal);
         }
     }
+    if let Ok(status) = &ended {
+        if let Some(retry) = command.password_only_retry(status.code().unwrap_or(-1), &output) {
+            tracing::info!(source = %source, "key opened no session; retrying with the password alone");
+            let retry = retry.clone();
+            let remaining = timeout.saturating_sub(started.elapsed());
+            let asked = password_asked.unwrap_or_else(|| Box::new(|| {}));
+            return run(source, retry, remaining, cancel, asked);
+        }
+    }
     let password_supplied = command.password_was_supplied();
     let outcome = match ended {
         Err(FailureKind::Cancelled) => UnlockOutcome::Failed {

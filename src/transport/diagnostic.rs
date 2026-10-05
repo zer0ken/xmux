@@ -154,6 +154,22 @@ pub fn requires_login(stderr: &str) -> bool {
     contains_auth_refusal(stderr) || host_key_unknown(stderr)
 }
 
+/// True when the server dropped an established connection without refusing
+/// authentication. When askpass never handed over the password, this is how a host
+/// that accepts a key but cannot open a session for it reads on the client: a Windows
+/// sshd cannot build an Entra account's logon token without the password. A drop during
+/// the version exchange happens before authentication and is excluded.
+pub fn closed_without_refusal(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    (lower.contains("connection closed")
+        || lower.contains("connection reset")
+        || lower.contains("connection was closed"))
+        && !lower.contains("kex_exchange_identification")
+        && !contains_auth_refusal(stderr)
+        && !host_key_changed(stderr)
+        && !host_key_unknown(stderr)
+}
+
 const BROKER_UNAVAILABLE: &str = "xmux could not provide the held password";
 const PASSWORD_REFUSED: &str = "the password was refused";
 const AUTH_REFUSED: &str = "authentication was refused";
@@ -367,6 +383,26 @@ mod tests {
             "no server running on /tmp/tmux-1000/default",
         ] {
             assert!(!requires_login(text), "not answerable here: {text}");
+        }
+    }
+
+    #[test]
+    fn a_drop_without_refusal_is_told_apart_from_other_failures() {
+        for text in [
+            "Connection reset by 127.0.0.1 port 22",
+            "Connection closed by 10.0.0.5 port 22",
+            "client_loop: send disconnect: Connection reset",
+        ] {
+            assert!(closed_without_refusal(text), "dropped: {text}");
+        }
+        for text in [
+            "kex_exchange_identification: Connection closed by remote host\nConnection closed by 10.0.0.5 port 22",
+            "dev@box: Permission denied (publickey,password).\nConnection closed by 10.0.0.5 port 22",
+            "ssh: connect to host prod port 22: Connection refused",
+            "ssh: connect to host 192.0.2.1 port 22: Connection timed out",
+            "Host key verification failed.\nConnection closed by 10.0.0.5 port 22",
+        ] {
+            assert!(!closed_without_refusal(text), "not a drop after auth: {text}");
         }
     }
 

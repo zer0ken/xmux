@@ -27,6 +27,7 @@ pub struct CommandSpec {
     host_key_command: Option<String>,
     credential_generation: u64,
     auth_unavailable: Option<String>,
+    password_only_retry: Option<Box<CommandSpec>>,
 }
 
 impl CommandSpec {
@@ -41,6 +42,7 @@ impl CommandSpec {
             host_key_command: None,
             credential_generation: 0,
             auth_unavailable: None,
+            password_only_retry: None,
         }
     }
 
@@ -53,6 +55,7 @@ impl CommandSpec {
             host_key_command: None,
             credential_generation: 0,
             auth_unavailable: None,
+            password_only_retry: None,
         }
     }
 
@@ -109,8 +112,35 @@ impl CommandSpec {
     }
 
     pub(crate) fn with_host_key_command(mut self, command: String) -> Self {
+        if let Some(retry) = self.password_only_retry.take() {
+            self.password_only_retry = Some(Box::new(retry.with_host_key_command(command.clone())));
+        }
         self.host_key_command = Some(command);
         self
+    }
+
+    /// Attaches the same command authenticating with the held password alone, run once
+    /// when the host closes the connection after accepting a key.
+    pub(crate) fn with_password_only_retry(mut self, retry: CommandSpec) -> Self {
+        self.password_only_retry = Some(Box::new(retry));
+        self
+    }
+
+    /// The command to run instead after this one failed, when it held a password that
+    /// askpass never handed over and the host dropped the connection without refusing
+    /// authentication: the host accepted a key and could not open a session for it.
+    /// Marks the held password so every later command skips key authentication.
+    pub fn password_only_retry(&self, exit_code: i32, diagnostic: &str) -> Option<&CommandSpec> {
+        let retry = self.password_only_retry.as_deref()?;
+        let auth = self.auth.as_ref()?;
+        if exit_code != 255
+            || auth.supplied()
+            || !crate::transport::diagnostic::closed_without_refusal(diagnostic)
+        {
+            return None;
+        }
+        auth.mark_key_opens_no_session();
+        Some(retry)
     }
 
     pub(crate) fn host_key_command(&self) -> Option<&str> {
