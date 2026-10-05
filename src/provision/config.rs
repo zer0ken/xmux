@@ -978,49 +978,6 @@ pub fn upsert_managed_stanza(
     out
 }
 
-/// Removes only the stanza xmux marked for `alias`. A user-written stanza and a
-/// marker without the expected `Host` header are left intact.
-pub fn remove_managed_stanza(config_text: &str, alias: &str) -> Option<String> {
-    let marker = managed_marker(alias);
-    let lines: Vec<_> = config_text.lines().collect();
-    let is_header = |line: &str| {
-        line.split_whitespace().next().is_some_and(|word| {
-            word.eq_ignore_ascii_case("Host") || word.eq_ignore_ascii_case("Match")
-        })
-    };
-    let mut kept = Vec::new();
-    let mut removed = false;
-    let mut i = 0;
-    while i < lines.len() {
-        let valid = lines[i].trim() == marker
-            && lines.get(i + 1).is_some_and(|header| {
-                let mut parts = header.split_whitespace();
-                parts
-                    .next()
-                    .is_some_and(|word| word.eq_ignore_ascii_case("Host"))
-                    && parts.next() == Some(alias)
-                    && parts.next().is_none()
-            });
-        if valid {
-            removed = true;
-            i += 2;
-            while i < lines.len() && !is_header(lines[i]) {
-                i += 1;
-            }
-        } else {
-            kept.push(lines[i]);
-            i += 1;
-        }
-    }
-    removed.then(|| {
-        let mut text = kept.join("\n");
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        text
-    })
-}
-
 /// `config_text` without the stanza `marker` opens: the marker line, the `Host` line
 /// under it, and everything up to the next stanza header.
 fn strip_managed(config_text: &str, marker: &str) -> String {
@@ -2212,18 +2169,6 @@ bogus = "nope"
         // Empty config / unknown alias → empty.
         assert!(host_stanza("", "jupiter00").is_empty());
         assert!(host_stanza(cfg, "nope").is_empty());
-    }
-
-    #[test]
-    fn removing_a_managed_stanza_preserves_user_entries() {
-        let config = "Host other\n    User bob\n# xmux: prod\nHost prod\n    HostName 192.0.2.8\n\nHost prod\n    User alice\n";
-        assert_eq!(
-            remove_managed_stanza(config, "prod").as_deref(),
-            Some("Host other\n    User bob\nHost prod\n    User alice\n")
-        );
-        assert!(remove_managed_stanza(config, "other").is_none());
-        let orphan = "# xmux: prod\nHost other\n    User bob\n";
-        assert!(remove_managed_stanza(orphan, "prod").is_none());
     }
 
     #[test]
