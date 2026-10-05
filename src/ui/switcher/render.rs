@@ -929,42 +929,13 @@ impl Switcher {
         let label = format!(" {word} ");
         let width = label.len() as u16;
         let room_right = plan.nav_inner.right().saturating_sub(card.right());
-        let fallback = if room_right >= width.saturating_sub(1) {
+        let x = if room_right >= width.saturating_sub(1) {
             card.right().saturating_sub(1)
         } else if card.x.saturating_sub(plan.nav_inner.x) >= width {
             card.x - width
         } else {
             plan.nav_inner.right().saturating_sub(width)
         };
-        let preferred = card.right().saturating_sub(1);
-        let occupied: Vec<Rect> = plan
-            .nav_cells
-            .iter()
-            .map(|&(idx, mut rect)| {
-                if idx == self.selected {
-                    rect.width = rect.width.saturating_sub(1);
-                }
-                rect
-            })
-            .chain(plan.title_repeats.iter().map(|&(_, rect)| rect))
-            .filter(|rect| rect.y <= card.y && card.y < rect.bottom())
-            .collect();
-        let x = [preferred, plan.nav_inner.x]
-            .into_iter()
-            .chain(
-                occupied
-                    .iter()
-                    .flat_map(|rect| [rect.right(), rect.x.saturating_sub(width)]),
-            )
-            .filter(|&x| {
-                x >= plan.nav_inner.x
-                    && x.saturating_add(width) <= plan.nav_inner.right()
-                    && occupied
-                        .iter()
-                        .all(|rect| !rect.intersects(Rect::new(x, card.y, width, 1)))
-            })
-            .min_by_key(|&x| x.abs_diff(preferred))
-            .unwrap_or(fallback);
         let rect = Rect {
             x,
             y: card.y,
