@@ -473,14 +473,19 @@ impl Chrome {
         }
     }
 
-    /// A band paints a horizontal focus rule. A side layout keeps its resize gap blank.
+    /// The rule between the nav and the terminal view. The whole rule uses the active
+    /// colour while the nav is focused and the inactive colour while the terminal is
+    /// focused. The glyph also encodes auto-hide-nav mode: a double line when on and a
+    /// single line when off, so a visible nav that will vanish on blur is distinguishable
+    /// from a pinned one. Hover keeps its heavy glyph and hover colour.
     pub(crate) fn render_view_border(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         let color = if terminal_focused {
             self.colors.inactive
         } else {
             self.colors.active
         };
-        // Band layout: the view border runs horizontally between the two views.
+        // Band layout: the view border runs horizontally between the two views. It uses
+        // one colour across its full length, like the vertical rule.
         if area.width > area.height {
             let g = if self.view_border_hovered {
                 "━"
@@ -501,9 +506,46 @@ impl Chrome {
                 ))),
                 area,
             );
+            return;
         }
-        // Side layouts keep this cell empty. The gap still owns resize hit testing,
-        // while card reversal and the terminal cursor identify the active view.
+        // Box-drawing rules have no bold form (the BOLD modifier does not thicken them),
+        // so hover swaps the glyph itself to the HEAVY vertical for a thicker line in the
+        // hover colour: the same rule, thicker and lit, as the grab cue.
+        let (glyph, style) = if self.view_border_hovered {
+            ("┃", Style::default().fg(self.colors.hover))
+        } else if self.auto_hide {
+            ("║", Style::default().fg(color))
+        } else {
+            ("│", Style::default().fg(color))
+        };
+        let bars = Text::from(
+            (0..area.height)
+                .map(|_| Line::from(Span::styled(glyph, style)))
+                .collect::<Vec<_>>(),
+        );
+        frame.render_widget(Paragraph::new(bars), area);
+    }
+
+    /// Thickens the stretch of a side nav's view border beside the cards on screen when
+    /// the list overflows: the border's own heavy glyph in the border's own colour, so the
+    /// overflow is read off the one line the nav draws. The hover cue already thickens the
+    /// whole border, so the stretch is not drawn over it.
+    pub(crate) fn render_seam_thumb(&self, frame: &mut Frame, rect: Rect, terminal_focused: bool) {
+        if rect.is_empty() || self.view_border_hovered {
+            return;
+        }
+        let color = if terminal_focused {
+            self.colors.inactive
+        } else {
+            self.colors.active
+        };
+        let style = Style::default().fg(color);
+        let buf = frame.buffer_mut();
+        for y in rect.y..rect.bottom() {
+            let cell = &mut buf[(rect.x, y)];
+            cell.set_symbol("┃");
+            cell.set_style(style);
+        }
     }
 
     /// The terminal-view HOST SCREEN: what fills the terminal-view region in place of a

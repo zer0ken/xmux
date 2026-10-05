@@ -4144,12 +4144,13 @@ async fn the_bands_never_touch_on_screen() {
         rule.chars().all(|c| c.to_string() == BAND_RULE),
         "and that row is the rule: {rule:?}"
     );
-    // The gap remains empty even when the list scrolls.
+    // The list scrolls a row before the cards themselves would need it, so the seam
+    // carries the thumb.
     let seam_x = h.plan.regions.view_border.x;
     assert!(
         (h.plan.nav_inner.y..h.plan.nav_inner.y + h.plan.nav_inner.height)
-            .all(|y| h.buf()[(seam_x, y)].symbol() == " "),
-        "the side gap stays empty"
+            .any(|y| h.buf()[(seam_x, y)].symbol() == "┃"),
+        "the seam thumb is drawn"
     );
 }
 
@@ -5640,21 +5641,21 @@ async fn view_border_uses_configured_colors() {
     let buf = term.backend().buffer().clone();
     assert_eq!(
         fg(&buf, top),
-        Color::Reset,
-        "the side gap carries no colour"
+        Color::Blue,
+        "configured active across the rule"
     );
     assert_eq!(
         fg(&buf, bottom),
-        Color::Reset,
-        "the side gap carries no colour"
+        Color::Blue,
+        "configured active across the rule"
     );
 
     // Terminal focused: the whole rule is inactive.
     term.draw(|f| sw.render_test(f, None, true, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(fg(&buf, top), Color::Reset);
-    assert_eq!(fg(&buf, bottom), Color::Reset);
+    assert_eq!(fg(&buf, top), Color::Gray);
+    assert_eq!(fg(&buf, bottom), Color::Gray);
 
     // Hovering the rule overrides with the configured hover colour.
     state.chrome.set_view_border_hovered(true);
@@ -5663,13 +5664,14 @@ async fn view_border_uses_configured_colors() {
     let buf = term.backend().buffer().clone();
     assert_eq!(
         fg(&buf, top),
-        Color::Reset,
-        "hover does not draw a vertical divider"
+        Color::Red,
+        "configured hover colour while hovered"
     );
 }
 
 #[tokio::test]
 async fn view_border_uses_one_color_for_both_focus_states() {
+    let pal = crate::ui::palette::Palette::default();
     let backend = TestBackend::new(140, 30);
     let mut term = Terminal::new(backend).unwrap();
     let mut state = crate::state::State::from_scan(sample());
@@ -5682,31 +5684,27 @@ async fn view_border_uses_one_color_for_both_focus_states() {
     term.draw(|f| sw.render_test(f, None, true, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(buf[(x, top)].symbol(), " ", "the side gap is blank");
+    assert_eq!(buf[(x, top)].symbol(), "│", "view border still drawn");
     assert_eq!(
         fg(&buf, bottom),
-        Color::Reset,
-        "terminal focus: the side gap is blank"
+        pal.disabled,
+        "terminal focus: whole rule inactive"
     );
     assert_eq!(
         fg(&buf, top),
-        Color::Reset,
-        "terminal focus: the side gap is blank"
+        pal.disabled,
+        "terminal focus: whole rule inactive"
     );
 
     // Nav focused: every cell uses the active colour.
     term.draw(|f| sw.render_test(f, None, false, NavSize::visible(NAV_WIDTH), &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(
-        fg(&buf, top),
-        Color::Reset,
-        "nav focus: the side gap is blank"
-    );
+    assert_eq!(fg(&buf, top), pal.primary, "nav focus: whole rule active");
     assert_eq!(
         fg(&buf, bottom),
-        Color::Reset,
-        "nav focus: the side gap is blank"
+        pal.primary,
+        "nav focus: whole rule active"
     );
 }
 
@@ -5834,20 +5832,28 @@ async fn view_border_color_is_independent_of_nav_position() {
     let buf = term.backend().buffer().clone();
     assert_eq!(
         fg(&buf, x, bottom),
-        Color::Reset,
-        "right side gap stays blank"
+        pal.primary,
+        "right nav focus: whole rule active"
     );
-    assert_eq!(fg(&buf, x, top), Color::Reset, "right side gap stays blank");
+    assert_eq!(
+        fg(&buf, x, top),
+        pal.primary,
+        "right nav focus: whole rule active"
+    );
 
     // Terminal focused: both ends use the inactive colour.
     term.draw(|f| sw.render_test(f, None, true, right, &state))
         .unwrap();
     let buf = term.backend().buffer().clone();
-    assert_eq!(fg(&buf, x, top), Color::Reset, "right side gap stays blank");
+    assert_eq!(
+        fg(&buf, x, top),
+        pal.disabled,
+        "right terminal focus: whole rule inactive"
+    );
     assert_eq!(
         fg(&buf, x, bottom),
-        Color::Reset,
-        "right side gap stays blank"
+        pal.disabled,
+        "right terminal focus: whole rule inactive"
     );
 
     // Band with the nav pinned bottom: the 1-row border at y=59 across 40 columns.
@@ -5905,11 +5911,15 @@ async fn view_border_highlights_on_hover() {
     let buf = term.backend().buffer().clone();
     for y in [2u16, 27u16] {
         let cell = &buf[(x, y)];
-        assert_eq!(cell.symbol(), " ", "hover keeps the gap blank at row {y}");
+        assert_eq!(
+            cell.symbol(),
+            "┃",
+            "hover: heavy (thick) rule glyph at row {y}"
+        );
         assert_eq!(
             cell.fg,
-            Color::Reset,
-            "hover keeps the gap uncoloured at row {y}"
+            crate::ui::palette::Palette::default().accent,
+            "hover: the border-hover cue reads in the accent role at row {y}"
         );
         assert!(
             !cell.modifier.contains(Modifier::REVERSED),
@@ -5933,8 +5943,8 @@ async fn view_border_glyph_reflects_auto_hide_mode() {
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
-        " ",
-        "mode off keeps the gap blank"
+        "│",
+        "mode off → single line"
     );
 
     state.chrome.set_auto_hide(true);
@@ -5942,8 +5952,8 @@ async fn view_border_glyph_reflects_auto_hide_mode() {
         .unwrap();
     assert_eq!(
         term.backend().buffer()[(x, y)].symbol(),
-        " ",
-        "mode on keeps the gap blank"
+        "║",
+        "mode on → double line"
     );
 }
 
@@ -6354,8 +6364,8 @@ fn render_nav_width_zero_gives_terminal_full_width() {
     let buf = term.backend().buffer().clone();
     assert_eq!(
         buf[(20, 0)].symbol(),
-        " ",
-        "the side gap is empty when the nav is shown"
+        "│",
+        "view border present at x=nav_width when shown"
     );
 }
 
@@ -6908,9 +6918,23 @@ fn the_side_lists_overflow_thickens_the_seam_and_spares_every_card() {
     let seam: String = (0..buf.area.height)
         .map(|y| buf[(NAV_WIDTH, y)].symbol())
         .collect();
+    assert!(seam.contains('┃'), "the seam thickens: {seam:?}");
+    let thumb = plan.seam_thumb;
+    let thick_rows: Vec<u16> = (0..buf.area.height)
+        .filter(|&y| buf[(NAV_WIDTH, y)].symbol() == "┃")
+        .collect();
+    assert_eq!(
+        thick_rows,
+        (thumb.y..thumb.bottom()).collect::<Vec<_>>(),
+        "the thick segment covers exactly the thumb's rows: {seam:?}"
+    );
     assert!(
-        seam.chars().all(|c| c == ' '),
-        "the gap stays empty: {seam:?}"
+        thick_rows.len() < plan.nav_inner.height as usize,
+        "the thumb is a proportion of the card rows, not all of them: {seam:?}"
+    );
+    assert!(
+        seam.contains('│'),
+        "only where the cards on screen are: {seam:?}"
     );
     let selected = sw.selected;
     let sel_rect = plan

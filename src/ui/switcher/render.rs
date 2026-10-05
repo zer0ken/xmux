@@ -157,6 +157,28 @@ fn highlighted(text: String, filter: &str, style: Style) -> Vec<Span<'static>> {
         .collect()
 }
 
+/// The thick segment of a side nav's view border: where the cards on screen sit in the
+/// whole list, as a scrollbar thumb would, drawn on the border rather than in a column of
+/// its own, so the cards keep the nav's full width. Counted in cards over the placement
+/// the cards were painted with. Empty when everything fits.
+fn seam_thumb(track: Rect, total: usize, offset: usize, visible: usize) -> Rect {
+    if track.height == 0 || total == 0 || visible >= total {
+        return Rect::default();
+    }
+    let t = track.height as usize;
+    let len = (t * visible / total).clamp(1, t);
+    let y = if offset + visible >= total {
+        t - len
+    } else {
+        (t * offset / total).min(t - len)
+    };
+    Rect {
+        y: track.y + y as u16,
+        height: len as u16,
+        ..track
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NavRule {
     Horizontal(Rect),
@@ -217,6 +239,7 @@ pub struct RenderPlan {
     /// paired with the title's row index.
     title_repeats: Vec<(usize, Rect)>,
     nav_rule: Option<NavRule>,
+    pub(super) seam_thumb: Rect,
     pub(super) floating_hint_bar: bool,
     pub nav_hidden: bool,
     pub nav_collapsed: bool,
@@ -245,6 +268,7 @@ impl Default for RenderPlan {
             overflow_marks: Vec::new(),
             title_repeats: Vec::new(),
             nav_rule: None,
+            seam_thumb: Rect::default(),
             floating_hint_bar: false,
             nav_hidden: true,
             nav_collapsed: false,
@@ -631,6 +655,20 @@ impl Switcher {
                 height: 1,
             })
         });
+        if flow.scrolls {
+            let border = plan.regions.view_border;
+            plan.seam_thumb = seam_thumb(
+                Rect {
+                    x: border.x,
+                    y: cards.y,
+                    width: 1,
+                    height: cards.height,
+                },
+                self.painted_rows(),
+                flow.offset,
+                flow.visible,
+            );
+        }
     }
 
     fn layout_nav_columns(
@@ -880,10 +918,15 @@ impl Switcher {
         // (see `hint_bar_floats` /
         // `hint_bar_rect`).
         self.render_nav(frame, state, plan, &palette);
-        // The horizontal seam states focus; a side layout keeps its resize gap blank.
+        // The view border is the one line the nav draws: its colour says which view holds
+        // the focus, and a side nav's overflow thickens the stretch beside the cards on
+        // screen.
         state
             .chrome
             .render_view_border(frame, plan.regions.view_border, terminal_focused);
+        state
+            .chrome
+            .render_seam_thumb(frame, plan.seam_thumb, terminal_focused);
         let term_area = plan.regions.terminal;
         // A domain-selected view screen replaces the grid.
         let view_caret = if let Some(kind) = plan.view_screen {
