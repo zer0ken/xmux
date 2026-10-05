@@ -158,6 +158,8 @@ only direct input path and go to the selected terminal display.
 
 ## Before PR
 
+- Write commit messages, pull request titles and bodies, issues, and release notes in
+  English (ADR 0002). A pull request title becomes a release note line.
 - Re-review design consistency before creating or merging a PR: confirm the change
   matches what `CONTEXT.md`, the ADRs, and the module `AGENTS.md` files already
   specify, rather than only that it compiles and passes. A change that re-implements

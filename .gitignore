@@ -16,3 +16,4 @@
 
 # scratch build dir for testing a fix without killing the running instance
 /target-test/
+/.pi/
