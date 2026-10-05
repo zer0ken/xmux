@@ -10,8 +10,8 @@ mod view;
 pub use chrome::{Chrome, SourceReach, ViewBorderColors};
 pub use focus::{Focus, ModalKind, ViewFocus};
 pub(crate) use modal::{
-    feed_reader, is_inputting, is_popup_open, is_reader, modal_kind, Input, InputMode, Modal,
-    PaletteChoice,
+    feed_reader, is_inputting, is_popup_open, is_reader, modal_kind, HelpMap, Input, InputMode,
+    Modal, PaletteChoice,
 };
 pub(crate) use view::RowRef;
 pub use view::{OpFollow, Scan};
@@ -341,6 +341,18 @@ impl State {
     /// [`ModalKind::Popup`]
     pub fn is_modal_popup_open(&self) -> bool {
         is_popup_open(&self.modal)
+    }
+
+    /// The open popup's soft selection: the help tab or the list item under the pointer.
+    pub(crate) fn modal_hover(&self) -> Option<usize> {
+        match &self.modal {
+            Some(
+                Modal::Help { hover, .. }
+                | Modal::Check { hover, .. }
+                | Modal::Palette { hover, .. },
+            ) => *hover,
+            _ => None,
+        }
     }
 
     /// True while an input popup (filter / jump / new session / logout) is open. The app

@@ -3456,6 +3456,8 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
             &Selection::default(),
             &mut false,
             &mut false,
+            &mut false,
+            &mut false,
         );
         assert!(!rt.prefix_active(), "{what} disarms the prefix");
         assert!(dirty, "{what} redraws, so the key list goes at once");
@@ -3468,7 +3470,14 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.model.mouse_state.nav_armed = true;
-    rt.handle_mouse_event(&ev(35, true), &Selection::default(), &mut false, &mut false);
+    rt.handle_mouse_event(
+        &ev(35, true),
+        &Selection::default(),
+        &mut false,
+        &mut false,
+        &mut false,
+        &mut false,
+    );
     assert!(rt.prefix_active(), "a hover leaves the chord alone");
 }
 
@@ -3502,7 +3511,14 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
     rt.cols = 200;
     rt.body_rows = 23;
     sync_test_render_plan(&mut rt);
-    rt.handle_mouse_event(&ev, &sel, &mut focus_toggle, &mut wheel);
+    rt.handle_mouse_event(
+        &ev,
+        &sel,
+        &mut focus_toggle,
+        &mut wheel,
+        &mut false,
+        &mut false,
+    );
     assert!(
         rt.model.mouse_state.dragging_view_border,
         "left-press on the view border column grabs it"
@@ -3561,7 +3577,14 @@ fn a_collapsed_view_border_cannot_start_a_resize_drag() {
         row: regions.view_border.y + 1,
         pressed: true,
     };
-    rt.handle_mouse_event(&press, &Selection::default(), &mut false, &mut false);
+    rt.handle_mouse_event(
+        &press,
+        &Selection::default(),
+        &mut false,
+        &mut false,
+        &mut false,
+        &mut false,
+    );
     assert!(!rt.model.mouse_state.dragging_view_border);
 }
 
@@ -3591,7 +3614,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
         pressed: true,
     };
     let (mut ft, mut wheel) = (false, false);
-    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel);
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, &mut false, &mut false);
     assert!(
         rt.model.mouse_state.dragging_view_border,
         "left-press on the horizontal Top border grabs it"
@@ -3604,7 +3627,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
         row: 30,
         pressed: true,
     };
-    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel);
+    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel, &mut false, &mut false);
     assert_eq!(
         rt.model.nav_height, 29,
         "dragging the horizontal border sets the nav HEIGHT to the dragged row"
@@ -3636,7 +3659,7 @@ fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
         pressed: true,
     };
     let (mut ft, mut wheel) = (false, false);
-    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel);
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, &mut false, &mut false);
     assert!(
         rt.model.mouse_state.dragging_view_border,
         "left-press on the horizontal bottom border grabs it"
@@ -3649,7 +3672,7 @@ fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
         row: 40,
         pressed: true,
     };
-    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel);
+    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel, &mut false, &mut false);
     assert_eq!(
         rt.model.nav_height, 20,
         "dragging the bottom border measures the height from the far edge"
@@ -3680,7 +3703,7 @@ fn handle_mouse_event_right_layout_border_drag_resizes_width() {
         pressed: true,
     };
     let (mut ft, mut wheel) = (false, false);
-    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel);
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, &mut false, &mut false);
     assert!(
         rt.model.mouse_state.dragging_view_border,
         "left-press on the vertical right border grabs it"
@@ -3693,7 +3716,7 @@ fn handle_mouse_event_right_layout_border_drag_resizes_width() {
         row: 5,
         pressed: true,
     };
-    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel);
+    rt.handle_mouse_event(&drag, &sel, &mut ft, &mut wheel, &mut false, &mut false);
     assert_eq!(
         rt.model.nav_width_natural, 40,
         "dragging the right border measures the width from the far edge"
@@ -3917,7 +3940,7 @@ fn forward_to_mux_reasserts_capture_and_encodes_the_sgr_press() {
         pressed: true,
     };
     let (mut ft, mut wheel) = (false, false);
-    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel);
+    rt.handle_mouse_event(&press, &sel, &mut ft, &mut wheel, &mut false, &mut false);
     // Re-encoded to grid-local (1-based): col nav_width+12 → gc 11, row 5 → gr 5.
     let logged = log.lock().unwrap().clone();
     assert_eq!(
@@ -5309,6 +5332,43 @@ fn prefix_z_toggles_the_collapse_from_either_view() {
 }
 
 #[test]
+fn a_popup_takes_hover_and_a_click_on_its_entry_runs_it_as_enter_does() {
+    let sel = Selection::default();
+    let mut rt = collapse_rt(crate::ui::switcher::NavPosition::Left);
+    let effects = update(&mut rt.model, Msg::TogglePalette);
+    assert!(effects.is_empty());
+    rt.handle_stdin_bytes(b"quit xmux", &sel);
+    sync_test_render_plan(&mut rt);
+    let r = rt.model.render_plan.popup_rect;
+    // SGR cells are 1-based; the one match is the popup's second inner row.
+    let (col, row) = (r.x + 4, r.y + 3);
+    let event = |rt: &mut Runtime, ev| {
+        let mut quit = false;
+        let dirty = rt.handle_mouse_event(&ev, &sel, &mut false, &mut false, &mut quit, &mut false);
+        (dirty, quit)
+    };
+    assert_eq!(
+        event(&mut rt, mouse(35, col, row, true)),
+        (true, false),
+        "bare motion onto the entry sets the soft selection and redraws"
+    );
+    assert_eq!(rt.model.state.modal_hover(), Some(0));
+    assert_eq!(
+        event(&mut rt, mouse(35, col, row, true)),
+        (false, false),
+        "motion within the same entry changes nothing"
+    );
+    event(&mut rt, mouse(0, col, row, true));
+    assert!(
+        rt.model.state.modal.is_some(),
+        "a press alone executes nothing"
+    );
+    let (_, quit) = event(&mut rt, mouse(0, col, row, false));
+    assert!(quit, "the release on the pressed cell runs the entry");
+    assert!(rt.model.state.modal.is_none());
+}
+
+#[test]
 fn dragging_the_seam_past_the_minimum_collapses_the_nav_at_every_position() {
     use crate::ui::switcher::NavPosition;
     let sel = Selection::default();
@@ -5318,6 +5378,8 @@ fn dragging_the_seam_past_the_minimum_collapses_the_nav_at_every_position() {
         rt.handle_mouse_event(
             &mouse(0, seam.x + 1, seam.y + 1, true),
             &sel,
+            &mut false,
+            &mut false,
             &mut false,
             &mut false,
         );
@@ -5331,7 +5393,14 @@ fn dragging_the_seam_past_the_minimum_collapses_the_nav_at_every_position() {
             NavPosition::Top => (seam.x + 1, 1),
             NavPosition::Bottom => (seam.x + 1, 30),
         };
-        rt.handle_mouse_event(&mouse(0x20, col, row, true), &sel, &mut false, &mut false);
+        rt.handle_mouse_event(
+            &mouse(0x20, col, row, true),
+            &sel,
+            &mut false,
+            &mut false,
+            &mut false,
+            &mut false,
+        );
         assert!(
             rt.model.nav_collapsed,
             "{position:?}: dragging past the minimum collapses the nav"
@@ -5342,12 +5411,26 @@ fn dragging_the_seam_past_the_minimum_collapses_the_nav_at_every_position() {
             NavPosition::Top => (seam.x + 1, 11),
             NavPosition::Bottom => (seam.x + 1, 20),
         };
-        rt.handle_mouse_event(&mouse(0x20, col, row, true), &sel, &mut false, &mut false);
+        rt.handle_mouse_event(
+            &mouse(0x20, col, row, true),
+            &sel,
+            &mut false,
+            &mut false,
+            &mut false,
+            &mut false,
+        );
         assert!(
             !rt.model.nav_collapsed,
             "{position:?}: dragging back out expands it within the same drag"
         );
-        rt.handle_mouse_event(&mouse(0, col, row, false), &sel, &mut false, &mut false);
+        rt.handle_mouse_event(
+            &mouse(0, col, row, false),
+            &sel,
+            &mut false,
+            &mut false,
+            &mut false,
+            &mut false,
+        );
         assert!(!rt.model.mouse_state.dragging_view_border);
     }
 }
@@ -5372,6 +5455,8 @@ fn a_click_anywhere_on_a_collapsed_nav_expands_it_at_every_position() {
             &mouse(0, col, row, true),
             &Selection::default(),
             &mut focus_toggle,
+            &mut false,
+            &mut false,
             &mut false,
         );
         assert!(!rt.model.nav_collapsed, "{position:?}: the click expands");
@@ -5419,6 +5504,8 @@ fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
                     &Selection::default(),
                     &mut false,
                     &mut false,
+                    &mut false,
+                    &mut false,
                 );
                 assert!(
                     !rt.model.nav_collapsed,
@@ -5433,6 +5520,8 @@ fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
             &Selection::default(),
             &mut false,
             &mut false,
+            &mut false,
+            &mut false,
         );
         assert!(
             rt.model.nav_collapsed,
@@ -5445,10 +5534,14 @@ fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
             &Selection::default(),
             &mut false,
             &mut false,
+            &mut false,
+            &mut false,
         );
         rt.handle_mouse_event(
             &mouse(0, inside[0], 1, false),
             &Selection::default(),
+            &mut false,
+            &mut false,
             &mut false,
             &mut false,
         );
@@ -5465,6 +5558,8 @@ fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
             &Selection::default(),
             &mut false,
             &mut false,
+            &mut false,
+            &mut false,
         );
         assert!(
             !rt.model.mouse_state.dragging_view_border,
@@ -5473,6 +5568,8 @@ fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
         rt.handle_mouse_event(
             &mouse(0, border.x + 1, 1, true),
             &Selection::default(),
+            &mut false,
+            &mut false,
             &mut false,
             &mut false,
         );

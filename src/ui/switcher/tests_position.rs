@@ -565,6 +565,8 @@ fn pl9_the_key_list_and_the_help_name_prefix_z() {
         &Default::default(),
         "",
         0,
+        None,
+        None,
         200,
         u16::MAX,
     );
@@ -815,16 +817,20 @@ fn prefix_surfaces() -> Vec<crate::state::Modal> {
         Modal::Palette {
             query: String::new(),
             selected: 0,
+            hover: None,
             open: false,
             decoder: crate::display::decode::KeyDecoder::new(),
         },
         Modal::Help {
             query: String::new(),
             scroll: 0,
+            tab: None,
+            hover: None,
             decoder: crate::display::decode::KeyDecoder::new(),
         },
         Modal::Check {
             selected: 0,
+            hover: None,
             open: false,
         },
         Modal::History { scroll: 0 },

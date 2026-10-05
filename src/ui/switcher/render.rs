@@ -1038,8 +1038,8 @@ impl Switcher {
             }
             Some(Modal::Palette { query, .. }) => {
                 let inner_w = plan.popup_rect.width.saturating_sub(2);
-                let lines = modal::palette_lines(query, &[], 1, 0, 0, inner_w, palette);
-                inner(plan.popup_rect, &lines[..1])
+                let lines = modal::palette_lines(query, &[], 1, 0, None, 0, inner_w, palette);
+                inner(plan.popup_rect, &[lines[0].1.clone()])
             }
             Some(Modal::Help { query, .. }) => {
                 let (_, lines) = modal::help_lines(
@@ -1048,6 +1048,8 @@ impl Switcher {
                     palette,
                     query,
                     0,
+                    None,
+                    None,
                     1,
                     plan.popup_rect.width.saturating_sub(2),
                 );
@@ -1511,26 +1513,32 @@ impl Switcher {
                 position,
             )
         };
-        // Every list popup opens where the key list does.
+        // Every list popup opens where the key list does. A popup narrowed to the room
+        // wraps its rows there, so its height counts the rows at the width it gets.
+        let fit = |w: u16| w.min(room.width);
         match &state.modal {
             Some(Modal::Help { .. }) => {
                 // Sized for every row whatever the search, so typing never moves it.
-                let (inner_w, rows) = modal::help_size(&state.chrome.ui_prefix, position);
-                anchor(((inner_w + 3).max(24), rows + 2))
+                let prefix = &state.chrome.ui_prefix;
+                let w = fit((modal::help_width(prefix, position) + 3).max(24));
+                let rows = modal::help_height(prefix, position, w.saturating_sub(2));
+                anchor((w, rows.saturating_add(2)))
             }
             Some(Modal::Check { selected, .. }) => {
                 let w = history_popup_width(area).min(room.width);
                 let (_, lines) =
-                    self.check_table(state, *selected, w.saturating_sub(2), usize::MAX);
+                    self.check_table(state, *selected, None, w.saturating_sub(2), usize::MAX);
                 anchor((w, lines.len() as u16 + 2))
             }
             Some(Modal::Palette { query, .. }) => {
                 // The palette is the searchable form of the key list, so it is as tall as
                 // what it lists. Its width holds every command, so a search never moves
                 // its columns.
-                let (w, _) = self.palette_size(state);
-                let h = self.palette_cells(state, query).len().max(1) as u16 + 3;
-                anchor((w, h))
+                let w = fit(self.palette_size(state).0);
+                let (key_w, _) = Self::palette_columns(&self.palette_cells(state, ""));
+                let cells = self.palette_cells(state, query);
+                let rows = modal::palette_rows(&cells, key_w, w.saturating_sub(2)).max(1);
+                anchor((w, rows as u16 + 3))
             }
             Some(Modal::Input(input)) => {
                 let w = match input.mode {
@@ -1540,6 +1548,7 @@ impl Switcher {
                     }
                     InputMode::Filter | InputMode::Jump => modal::POPOVER_MIN_WIDTH,
                 };
+                let w = fit(w);
                 let rows = self.input_popup_full(state, w).map_or(1, |(_, l)| l.len()) as u16;
                 anchor((w, rows + 2))
             }
@@ -1583,21 +1592,87 @@ impl Switcher {
         (key_w, desc_w)
     }
 
-    /// The check table's title and lines at `width` inner cells.
+    /// The check table's title and lines at `width` inner cells, each line with the host
+    /// it belongs to.
     fn check_table(
         &self,
         state: &crate::state::State,
         selected: usize,
+        hover: Option<usize>,
         width: u16,
         visible_rows: usize,
-    ) -> (String, Vec<Line<'static>>) {
+    ) -> (String, modal::ItemLines) {
         crate::ui::check::check_lines(
             &self.check_entries(state),
             selected,
+            hover,
             width,
             visible_rows,
             &self.palette,
         )
+    }
+
+    /// The body lines of the open list popup (the hosts to check or the command palette)
+    /// in the popup `rect`, each with the item it belongs to, and the popup's frame. The
+    /// paint and the pointer's hit-test both read this one answer.
+    pub(super) fn list_popup_lines(
+        &self,
+        state: &crate::state::State,
+        rect: Rect,
+    ) -> Option<(modal::PopupFrame, modal::ItemLines)> {
+        let framed = |title: &str, meta: String, hints: &[modal::Hint]| modal::PopupFrame {
+            title: title.to_string(),
+            meta,
+            hints: hints.to_vec(),
+        };
+        match &state.modal {
+            Some(Modal::Check {
+                selected, hover, ..
+            }) => {
+                let (meta, lines) = self.check_table(
+                    state,
+                    *selected,
+                    *hover,
+                    rect.width.saturating_sub(2),
+                    rect.height.saturating_sub(2) as usize,
+                );
+                let hints = if meta.is_empty() {
+                    modal::HISTORY_HINTS
+                } else {
+                    modal::CHECK_HINTS
+                };
+                Some((framed("hosts to check", meta, hints), lines))
+            }
+            Some(Modal::Palette {
+                query,
+                selected,
+                hover,
+                ..
+            }) => {
+                let (key_w, _) = Self::palette_columns(&self.palette_cells(state, ""));
+                let cells = self.palette_cells(state, query);
+                let total = self.palette_entries(state, "").len();
+                let lines = modal::palette_lines(
+                    query,
+                    &cells,
+                    key_w,
+                    *selected,
+                    *hover,
+                    rect.height.saturating_sub(3) as usize,
+                    rect.width.saturating_sub(2),
+                    &self.palette,
+                );
+                Some((
+                    framed(
+                        "commands",
+                        format!("{} of {total}", cells.len()),
+                        modal::PALETTE_HINTS,
+                    ),
+                    lines,
+                ))
+            }
+            _ => None,
+        }
     }
 
     /// Paints the prefix key list where the plan opened it.
@@ -1660,13 +1735,21 @@ impl Switcher {
             hints: hints.to_vec(),
         };
         let (chrome, lines) = match &state.modal {
-            Some(Modal::Help { query, scroll, .. }) => {
+            Some(Modal::Help {
+                query,
+                scroll,
+                tab,
+                hover,
+                ..
+            }) => {
                 let (meta, lines) = modal::help_lines(
                     &state.chrome.ui_prefix,
                     state.chrome.nav_position,
                     palette,
                     query,
                     *scroll,
+                    *tab,
+                    *hover,
                     rect.height.saturating_sub(2),
                     rect.width.saturating_sub(2),
                 );
@@ -1681,43 +1764,11 @@ impl Switcher {
                 );
                 (framed("history", meta, modal::HISTORY_HINTS), lines)
             }
-            Some(Modal::Check { selected, .. }) => {
-                let (meta, lines) = self.check_table(
-                    state,
-                    *selected,
-                    rect.width.saturating_sub(2),
-                    rect.height.saturating_sub(2) as usize,
-                );
-                let hints = if meta.is_empty() {
-                    modal::HISTORY_HINTS
-                } else {
-                    modal::CHECK_HINTS
+            Some(Modal::Check { .. } | Modal::Palette { .. }) => {
+                let Some((chrome, lines)) = self.list_popup_lines(state, rect) else {
+                    return;
                 };
-                (framed("hosts to check", meta, hints), lines)
-            }
-            Some(Modal::Palette {
-                query, selected, ..
-            }) => {
-                let (key_w, _) = Self::palette_columns(&self.palette_cells(state, ""));
-                let cells = self.palette_cells(state, query);
-                let total = self.palette_entries(state, "").len();
-                let lines = modal::palette_lines(
-                    query,
-                    &cells,
-                    key_w,
-                    *selected,
-                    rect.height.saturating_sub(3) as usize,
-                    rect.width.saturating_sub(2),
-                    palette,
-                );
-                (
-                    framed(
-                        "commands",
-                        format!("{} of {total}", cells.len()),
-                        modal::PALETTE_HINTS,
-                    ),
-                    lines,
-                )
+                (chrome, lines.into_iter().map(|(_, line)| line).collect())
             }
             Some(Modal::Input(_)) => {
                 match self.input_popup_at(state, rect.width, rect.height.saturating_sub(2)) {

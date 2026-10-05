@@ -121,8 +121,8 @@ impl Runtime {
 /// hover) in the SAME order, then the focus×position routing. Mutates `st`
 /// (the gesture latches), `state.focus` (mid-loop focus toggles - routing re-reads focus
 /// per event, so deferring would change behavior), and the byte-loop accumulators
-/// (`mouse_focus_toggle`, `wheel_scrolled`). Returns whether a redraw is
-/// needed for this event.
+/// (`mouse_focus_toggle`, `wheel_scrolled`, and the `quit` and `width_changed` a click
+/// on a popup item can raise). Returns whether a redraw is needed for this event.
 impl Runtime {
     pub(super) fn handle_mouse_event(
         &mut self,
@@ -130,6 +130,8 @@ impl Runtime {
         selection: &Selection,
         mouse_focus_toggle: &mut bool,
         wheel_scrolled: &mut bool,
+        quit: &mut bool,
+        width_changed: &mut bool,
     ) -> bool {
         let (cols, body_rows, nav_width) = (self.cols, self.body_rows, self.model.nav_width);
         let mut dirty = false;
@@ -241,11 +243,14 @@ impl Runtime {
         let is_left_press = is_press && (ev.cb & 0x03) == 0;
         // The key list and a modal popup move when dragged from anywhere on them. Once
         // grabbed the drag owns every mouse event until release, like the view border
-        // drag above.
+        // drag above. A release on the cell the press grabbed is a click, which executes
+        // the popup item under it as Enter would.
         if self.model.switcher.popup_drag_active() {
             if !ev.pressed {
                 let effects = update(&mut self.model, Msg::EndPopupDrag);
-                debug_assert!(effects.is_empty());
+                let (q, w, _) = self.execute_effects(effects);
+                *quit |= q;
+                *width_changed |= w;
             } else if !is_wheel {
                 let effects = update(
                     &mut self.model,
@@ -276,8 +281,21 @@ impl Runtime {
         // A modal popup is mouse-modal: while one is open, every mouse
         // event that is not its drag (handled above) is swallowed,
         // so clicks, wheels, view border grabs, and hovers never reach the
-        // nav/terminal/view border behind it.
+        // nav/terminal/view border behind it. Bare motion sets the popup's soft
+        // selection: the help tab or the list item under the pointer.
         if self.model.state.is_modal_popup_open() {
+            if idle_motion {
+                let before = self.model.state.modal_hover();
+                let effects = update(
+                    &mut self.model,
+                    Msg::HoverPopup {
+                        col: col0,
+                        row: row0,
+                    },
+                );
+                debug_assert!(effects.is_empty());
+                dirty |= self.model.state.modal_hover() != before;
+            }
             return dirty;
         }
         // A collapsed nav is one target: a click anywhere on it, its seam included,
@@ -505,6 +523,8 @@ impl Runtime {
                         selection,
                         &mut mouse_focus_toggle,
                         &mut wheel_scrolled,
+                        quit,
+                        width_changed,
                     ) {
                         *dirty = true;
                     }
@@ -542,7 +562,7 @@ impl Runtime {
         // Watchdog: same recovery for a popup border-drag - a lost button-up
         // must not strand `popup_drag` and eat all later mouse input.
         if self.model.switcher.popup_drag_active() && !non_mouse.is_empty() {
-            let effects = update(&mut self.model, Msg::EndPopupDrag);
+            let effects = update(&mut self.model, Msg::AbandonPopupDrag);
             debug_assert!(effects.is_empty());
             *dirty = true;
         }
