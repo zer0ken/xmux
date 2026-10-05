@@ -23,16 +23,18 @@ selection and one kind of execution.
 | Keyboard | the arrow keys move the hard selection | Enter executes the hard selection |
 | Mouse | hovering sets the soft selection | clicking executes the soft selection |
 
-**The hard selection** is the keyboard's target. There is one per surface, and it
-stays where the keys left it. It may show what the target is: the terminal view
-shows the hard-selected card's screen, and a hard-selected help tab scrolls the help
-body to its section. It never moves the focus, runs a command, or changes a host, a
-mux, or a session.
+**A selection shows its target.** Either kind may show what the target is: the
+terminal view shows the selected card's screen, and a selected help tab scrolls the
+help body to its section. A selection never moves the focus, runs a command, or
+changes a host, a mux, or a session.
 
-**The soft selection** is the target under the pointer. It is a highlight drawn apart
-from the hard selection and shows nothing else: it never moves the hard selection,
-so the pointer drifting across the nav never changes the terminal view. It ends when
-the pointer leaves the target.
+**The hard selection** is the keyboard's target. There is one per surface, and it
+stays where the keys left it.
+
+**The soft selection** is the target under the pointer, drawn apart from the hard
+selection. While it exists, it is what the surface shows: hovering a nav card shows
+that card's screen in the terminal view. It never moves the hard selection, and when
+the pointer leaves the target the surface shows the hard selection again.
 
 **Executing** is the same act whichever input starts it: Enter on the hard selection
 and a click on the soft selection do the same thing to their target. Executing opens
