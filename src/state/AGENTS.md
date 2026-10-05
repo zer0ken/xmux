@@ -18,6 +18,10 @@ dead-display recovery budget, and the last session address persisted to
 preferences. It is seeded from either a scan or the configured source list.
 
 Login results are per-machine state separate from reachability and enumeration errors.
+A successful SSH connection's reported authentication method is per machine and is
+shown on its host information screen. Losing a held password invalidates that
+method and closes its metadata and display connections before another explicit
+connection attempt.
 A later probe cannot replace the login's own reason or its key-registration outcome.
 A login's steps belong to one submission on one source. They advance only on reports
 carrying that submission, on the answer to the probe the working login started, and on

@@ -388,7 +388,7 @@ enum ScreenCell {
     Key(String),
     /// The name of the datum beside it, muted so the datum itself reads first.
     Label(&'static str),
-    /// No cell: the value continues the row above, hanging under the same rule, so a
+    /// No cell: the value continues the row above in the same value column, so a
     /// multi-line value stays one row rather than becoming a run of nameless ones.
     Continued,
     /// No row at all - the blank line parting two blocks of them.
@@ -465,19 +465,14 @@ impl Chrome {
         }
     }
 
-    /// The rule between the tree and the terminal view. The whole rule uses the active
-    /// colour while the nav is focused and the inactive colour while the terminal is
-    /// focused. The glyph also encodes auto-hide-nav mode: a double line when on and a
-    /// single line when off, so a visible nav that will vanish on blur is distinguishable
-    /// from a pinned one. Hover keeps its heavy glyph and hover colour.
+    /// A band paints a horizontal focus rule. A side layout keeps its resize gap blank.
     pub(crate) fn render_view_border(&self, frame: &mut Frame, area: Rect, terminal_focused: bool) {
         let color = if terminal_focused {
             self.colors.inactive
         } else {
             self.colors.active
         };
-        // Band layout: the view border runs horizontally between the nav band and the
-        // terminal. It uses one colour across its full length, like the vertical rule.
+        // Band layout: the view border runs horizontally between the two views.
         if area.width > area.height {
             let g = if self.view_border_hovered {
                 "━"
@@ -498,52 +493,9 @@ impl Chrome {
                 ))),
                 area,
             );
-            return;
         }
-        let glyph = if self.auto_hide { "║" } else { "│" };
-        // Hover (mouse over the rule, no button): box-drawing rules have no bold form
-        // (the BOLD modifier does not thicken them), so swap the glyph itself to the
-        // HEAVY vertical (┃) for a genuinely thicker line and recolour it with the
-        // configured hover colour (`[ui] view-border-hover-style`) - same single rule,
-        // just thicker + lit, as the grab cue.
-        if self.view_border_hovered {
-            let style = Style::default().fg(self.colors.hover);
-            let bars = Text::from(
-                (0..area.height)
-                    .map(|_| Line::from(Span::styled("┃", style)))
-                    .collect::<Vec<_>>(),
-            );
-            frame.render_widget(Paragraph::new(bars), area);
-            return;
-        }
-        let bars = Text::from(
-            (0..area.height)
-                .map(|_| Line::from(Span::styled(glyph, Style::default().fg(color))))
-                .collect::<Vec<_>>(),
-        );
-        frame.render_widget(Paragraph::new(bars), area);
-    }
-
-    /// Thickens the stretch of a side nav's seam beside the cards on screen when the list
-    /// overflows: the seam's own heavy glyph in the seam's own colour, so the overflow is
-    /// read off the one line the nav draws. The hover cue already thickens the whole seam,
-    /// so the stretch is not drawn over it.
-    pub(crate) fn render_seam_thumb(&self, frame: &mut Frame, rect: Rect, terminal_focused: bool) {
-        if rect.is_empty() || self.view_border_hovered {
-            return;
-        }
-        let color = if terminal_focused {
-            self.colors.inactive
-        } else {
-            self.colors.active
-        };
-        let style = Style::default().fg(color);
-        let buf = frame.buffer_mut();
-        for y in rect.y..rect.bottom() {
-            let cell = &mut buf[(rect.x, y)];
-            cell.set_symbol("┃");
-            cell.set_style(style);
-        }
+        // Side layouts keep this cell empty. The gap still owns resize hit testing,
+        // while card reversal and the terminal cursor identify the active view.
     }
 
     /// The terminal-view HOST SCREEN: what fills the terminal-view region in place of a
@@ -551,8 +503,8 @@ impl Chrome {
     ///
     /// One screen grammar for settled states: the host's name as the headline,
     /// under it the same status word its nav card carries, then the rows
-    /// that apply to it. A row is the help modal's row borrowed whole - a right-aligned
-    /// left cell, the `│` rule, the value - so a key offered on a screen looks like a key
+    /// that apply to it. A row uses a left-aligned name, whitespace, then the value,
+    /// so a key offered on a screen looks like a key
     /// offered anywhere else, and a datum's name stays quieter than the datum.
     pub(crate) fn render_view_screen(
         &self,
@@ -635,10 +587,8 @@ impl Chrome {
         let pal = palette;
         let p = &self.ui_prefix;
         let source = address.source.as_str();
-        // The rows in reading order: WHY the state is what it is, then what to press
-        // about it. An unreachable host's why is the reason its own transport gave plus
-        // the ssh stanza it was reached through, which is what a fix needs; a reachable
-        // empty host has no why, so its screen is the keys alone.
+        // The rows in reading order: a reachable empty host offers actions before
+        // observation facts; failures explain the reason before their actions.
         let mut rows: Vec<(ScreenCell, String)> = Vec::new();
         // The rows before this index are the host facts; on the login pane they fold
         // under its details choice while it states a failure.
@@ -668,7 +618,7 @@ impl Chrome {
             // bottom it is one account of a failure: the message, its age, the command
             // behind it, and the two things that decide whether the box or the mux is at
             // fault. Nothing here is abbreviated to fit - a value too wide hangs under
-            // its own rule (see below), because a datum the user came here to read is
+            // its value column (see below), because a datum the user came here to read is
             // worth more than a tidy column.
             // The login pane states its failure above these rows, as a verdict over ssh's
             // own text, so only the other screens carry the reason as a row.
@@ -774,6 +724,25 @@ impl Chrome {
             rows.push((ScreenCell::Gap, String::new()));
             facts_end = rows.len();
         } else if kind == ViewScreen::HostInfo {
+            if self.source_reach.get(source).is_some_and(|reach| reach.ssh) {
+                let session = state
+                    .info_session
+                    .as_ref()
+                    .filter(|session| session.source == source);
+                if let Some(session) = session {
+                    rows.push((ScreenCell::Label("session"), session.session.clone()));
+                }
+                let method = if let Some(session) = session {
+                    state.display_auth_methods.get(&session.source)
+                } else if address.session.is_empty() {
+                    state.auth_methods.get(crate::session::machine_of(source))
+                } else {
+                    state.display_auth_methods.get(&address.source)
+                }
+                .map(|method| method.label())
+                .unwrap_or("not observed");
+                rows.push((ScreenCell::Label("SSH login"), method.into()));
+            }
             let count = state
                 .groups
                 .iter()
@@ -835,6 +804,28 @@ impl Chrome {
                 ScreenCell::Key(format!("{p} r")),
                 "re-scan every host".into(),
             ));
+        }
+        if matches!(kind, ViewScreen::HostInfo | ViewScreen::Empty)
+            && self.source_reach.get(source).is_some_and(|reach| reach.ssh)
+        {
+            rows.push((ScreenCell::Gap, String::new()));
+            rows.push((
+                ScreenCell::Key(format!("{p} L")),
+                "log out of this host".into(),
+            ));
+        }
+
+        if kind == ViewScreen::Empty {
+            // A reachable empty host offers its next actions before its observation facts.
+            if let Some(gap) = rows
+                .iter()
+                .position(|(cell, _)| matches!(cell, ScreenCell::Gap))
+            {
+                let facts: Vec<_> = rows.drain(..gap).collect();
+                rows.remove(0);
+                rows.push((ScreenCell::Gap, String::new()));
+                rows.extend(facts);
+            }
         }
 
         if kind == ViewScreen::Unreachable {
@@ -913,14 +904,13 @@ impl Chrome {
             None => {}
         }
 
-        // One column width for keys and labels alike: every row of a screen meets the
-        // same rule, whichever kind of cell it carries.
+        // One column width for keys and labels alike keeps values aligned.
         let cw = rows
             .iter()
             .map(|(c, _)| c.text().chars().count())
             .max()
             .unwrap_or(0);
-        // A value too wide for its column hangs under the SAME rule rather than
+        // A value too wide for its column continues under the SAME value column rather than
         // clipping at the pane edge: ssh names a failure in the LAST clause of a long
         // line, and the card carries only that clause, so a screen that clipped would
         // leave the whole message nowhere readable. A value that already fits is passed
@@ -951,7 +941,7 @@ impl Chrome {
             })
             .collect();
 
-        let rule = Span::styled("│ ", Style::default().fg(pal.decoration));
+        let rule = Span::raw("  ");
         let state_style = Style::default().fg(match kind {
             ViewScreen::Scanning => pal.decoration,
             ViewScreen::Unreachable => pal.error,
@@ -972,14 +962,14 @@ impl Chrome {
         ];
         // The login pane OWNS the connection values: they sit at the panel's top,
         // edited in place from the terminal view (no modal, no nav). The inputs come in
-        // two groups, what ssh dials with and what happens after it worked, and a rule
+        // two groups, what ssh dials with and what happens after it worked, and whitespace
         // parts them from what the pane reports back: the steps of a login and the
-        // failure it ended in. The focused stop's name is reversed and the focused text
+        // failure it ended in. The focused text
         // field shows a cursor, both only while the terminal view is focused and no login
         // runs, so the pane says whether it is taking keys.
         if kind == ViewScreen::Login {
             use crate::model::{LoginField, LoginStep, StepState};
-            use crate::state::{LoginFocus, Remember};
+            use crate::state::{AfterLogin, LoginFocus};
             let running = state.login_run.as_ref().is_some_and(|l| l.source == source);
             let taking_keys = focused && !running;
             let defaults = self.login_defaults(source);
@@ -997,18 +987,11 @@ impl Chrome {
             let marked = failure.as_ref().map(|f| f.fields()).unwrap_or_default();
             // The inputs keep one column of their own, so unfolding the host facts below
             // the rule never moves a field.
-            let fcw = [
-                "address*",
-                "port*",
-                "username*",
-                "password",
-                "remember",
-                "pubkey",
-            ]
-            .iter()
-            .map(|l| l.chars().count())
-            .max()
-            .unwrap_or(0);
+            let fcw = ["address*", "port*", "username*", "password"]
+                .iter()
+                .map(|l| l.chars().count())
+                .max()
+                .unwrap_or(0);
             let cursor = |active: bool| if active && taking_keys { "▊" } else { "" };
             let reversed = |style: Style, active: bool| {
                 if active && taking_keys {
@@ -1017,14 +1000,17 @@ impl Chrome {
                     style
                 }
             };
-            // Only the name inverts, not the padding that right-aligns it.
-            let label = |text: String, active: bool, cause: bool| -> Vec<Span<'static>> {
+            // Labels keep a fixed left edge; the value cell carries input focus.
+            let label = |text: String, cause: bool| -> Vec<Span<'static>> {
                 let style = Style::default().fg(if cause { pal.error } else { pal.decoration });
                 let pad = fcw.saturating_sub(text.chars().count());
+                if text.is_empty() {
+                    return vec![Span::raw(" ")];
+                }
                 vec![
-                    Span::raw(format!(" {}", " ".repeat(pad))),
-                    Span::styled(text, reversed(style, active)),
-                    Span::raw(" "),
+                    Span::raw("   "),
+                    Span::styled(text, style),
+                    Span::raw(" ".repeat(pad)),
                 ]
             };
             // A field carries its own emptiness: a required one is marked in its label,
@@ -1056,46 +1042,39 @@ impl Chrome {
                     (shown, Style::default().fg(pal.secondary))
                 };
                 let cause = marked.contains(&which);
-                let mut spans = label(
-                    format!("{name}{}", if required { "*" } else { "" }),
-                    active,
-                    cause,
-                );
+                let mut spans = label(format!("{name}{}", if required { "*" } else { "" }), cause);
                 spans.push(rule.clone());
                 spans.push(Span::styled(
-                    format!(
-                        "{text}{}{}",
-                        cursor(active),
-                        if provenance.is_empty() {
-                            String::new()
-                        } else {
-                            format!("  {provenance}")
-                        }
-                    ),
-                    style,
+                    format!("{:<22}", format!("{text}{}", cursor(active))),
+                    reversed(style, active),
                 ));
+                if !provenance.is_empty() {
+                    spans.push(Span::styled(
+                        format!("  {provenance}"),
+                        Style::default().fg(pal.decoration),
+                    ));
+                }
                 if cause {
                     spans.push(Span::styled("  ✗", Style::default().fg(pal.error)));
                 }
                 Line::from(spans)
             };
-            // A stop with no name of its own (the second remember option, the button, the
-            // details choice) inverts its text instead.
+            // Choice labels stay plain; the value and its padding carry focus.
             let choice = |name: &str, mark: &str, text: &str, active: bool| {
                 let style = if active {
                     Style::default().fg(pal.secondary)
                 } else {
                     Style::default().fg(pal.decoration)
                 };
-                let mut spans = label(name.to_string(), active, false);
+                let mut spans = label(name.to_string(), false);
                 spans.push(rule.clone());
                 spans.push(Span::styled(
-                    format!("{mark}{}{text}", if mark.is_empty() { "" } else { " " }),
-                    if name.is_empty() {
-                        reversed(style, active)
+                    if mark.is_empty() {
+                        text.to_string()
                     } else {
-                        style
+                        format!(" {mark} {text} ")
                     },
+                    reversed(style, active),
                 ));
                 spans.push(Span::styled(cursor(active), style));
                 Line::from(spans)
@@ -1103,7 +1082,9 @@ impl Chrome {
             let group = |title: &str| {
                 Line::from(Span::styled(
                     format!(" {title}"),
-                    Style::default().fg(pal.decoration),
+                    Style::default()
+                        .fg(pal.secondary)
+                        .add_modifier(Modifier::BOLD),
                 ))
             };
             let provenance = |value: &str, original: &str, resolved: &'static str| {
@@ -1114,7 +1095,7 @@ impl Chrome {
                 }
             };
             out.push(Line::from(""));
-            out.push(group("connection"));
+            out.push(group("Connection"));
             out.push(field(
                 "address",
                 true,
@@ -1155,44 +1136,37 @@ impl Chrome {
                 "",
                 LoginField::Password,
             ));
-            if !state.recent_logins.is_empty() {
-                out.push(Line::from(""));
-                out.push(group("recent logins"));
-                for (i, item) in state.recent_logins.iter().enumerate() {
-                    let value = format!(
-                        "{}  {}@{}:{}",
-                        item.source,
-                        item.login.user.as_deref().unwrap_or(""),
-                        item.login.address.as_deref().unwrap_or(""),
-                        item.login.port.map(|p| p.to_string()).unwrap_or_default(),
-                    );
-                    out.push(choice("", "↳", &value, d.focus == LoginFocus::Recent(i)));
-                }
-            }
             out.push(Line::from(""));
-            out.push(group("after login"));
-            // The remember choice appears only once a value differs from what ssh would
-            // have used: a stanza repeating what ssh already resolves records nothing.
-            if d.changed() {
-                let pick = |on: bool| if on { "(•)" } else { "( )" };
-                out.push(choice(
-                    "remember",
-                    pick(d.remember == Remember::Nothing),
-                    "nothing",
-                    d.focus == LoginFocus::RememberNothing,
-                ));
-                out.push(choice(
-                    "",
-                    pick(d.remember == Remember::SshConfig),
-                    "write address, port, username to ssh config",
-                    d.focus == LoginFocus::RememberSshConfig,
-                ));
-            }
+            out.push(group("After login"));
             out.push(choice(
-                "pubkey",
-                if d.pubkey { "[x]" } else { "[ ]" },
-                "register my public key on this host",
-                d.focus == LoginFocus::Pubkey,
+                "",
+                if d.after_login == AfterLogin::Nothing {
+                    "(*)"
+                } else {
+                    "( )"
+                },
+                "do nothing",
+                d.focus == LoginFocus::AfterNothing,
+            ));
+            out.push(choice(
+                "",
+                if d.after_login == AfterLogin::SshConfig {
+                    "(*)"
+                } else {
+                    "( )"
+                },
+                "save connection to ssh config",
+                d.focus == LoginFocus::AfterSshConfig,
+            ));
+            out.push(choice(
+                "",
+                if d.after_login == AfterLogin::RegisterKey {
+                    "(*)"
+                } else {
+                    "( )"
+                },
+                "register my public key",
+                d.focus == LoginFocus::AfterPublicKey,
             ));
             out.push(Line::from(""));
             // A login under way replaces the button it was started from. The pane keeps
@@ -1201,13 +1175,10 @@ impl Chrome {
             if running {
                 out.push(choice("", "", "logging in…  esc to stop", false));
             } else {
-                out.push(choice("", "", "[ login ]", d.focus == LoginFocus::Submit));
+                out.push(choice("", "", " Log in ", d.focus == LoginFocus::Submit));
             }
             out.push(Line::from(""));
-            out.push(Line::from(Span::styled(
-                format!(" {}", "─".repeat(width.saturating_sub(2) as usize)),
-                Style::default().fg(pal.decoration),
-            )));
+            out.push(Line::from(""));
             // The steps of this source's last login, while they run and after one of them
             // failed. A login whose every step worked has handed the pane to its sessions,
             // so its steps say nothing more.
@@ -1322,7 +1293,7 @@ impl Chrome {
                 continue;
             }
             out.push(Line::from(vec![
-                Span::styled(format!(" {:>cw$} ", cell.text()), cell.style(palette)),
+                Span::styled(format!("   {:<cw$}", cell.text()), cell.style(palette)),
                 rule.clone(),
                 Span::raw(value),
             ]));
@@ -1347,7 +1318,7 @@ impl Chrome {
             // while leaving the input open, so the range must show over the input line.
             format!(" ✗ {}", self.flash)
         } else if let Some(Modal::Input(input)) = &state.modal {
-            crate::ui::modal::input_hint_text(input, width)
+            crate::ui::modal::input_hint_lines(input, width).join("\n")
         } else if self.armed {
             // A live prefix names its keys in the key list beside the indicator, so the
             // indicator keeps the prefix alone.
@@ -1395,11 +1366,22 @@ impl Chrome {
         // Only a flash can exceed `width` (the fit-based text is already constrained);
         // wrap it on word boundaries with a consistent left margin.
         if self.flash.is_empty() {
+            if let Some(Modal::Input(input)) = &state.modal {
+                return crate::ui::modal::input_hint_lines(input, width);
+            }
             return vec![text];
         }
         wrap_text(text.trim_start(), width.saturating_sub(1))
             .into_iter()
             .map(|l| format!(" {l}"))
+            .collect()
+    }
+
+    pub(crate) fn login_hint_lines(width: u16) -> Vec<String> {
+        let text = "Tab next · Enter next / log in · Space toggle · Esc nav";
+        wrap_text(text, width.saturating_sub(1))
+            .into_iter()
+            .map(|line| format!(" {line}"))
             .collect()
     }
 
@@ -1484,6 +1466,7 @@ impl Chrome {
         state: &crate::state::State,
         fill: BarFill,
         palette: &crate::ui::palette::Palette,
+        login_guide: bool,
     ) {
         // An open input owns the bar outright: the bar BECOMES the input line (see
         // [`Self::hint_bar_text`]), painted as the status bar with a reversed-block
@@ -1493,16 +1476,29 @@ impl Chrome {
         // orders them.
         if self.flash.is_empty() {
             if let Some(Modal::Input(input)) = &state.modal {
-                let line = crate::ui::modal::input_hint_line(input, area.width, palette);
+                let mut lines = vec![crate::ui::modal::input_hint_line(
+                    input, area.width, palette,
+                )];
+                for guide in crate::ui::modal::input_hint_lines(input, area.width)
+                    .iter()
+                    .skip(1)
+                    .take(area.height.saturating_sub(1) as usize)
+                {
+                    lines.push(crate::ui::modal::input_guide_line(guide, palette));
+                }
                 frame.render_widget(Clear, area);
                 frame.render_widget(
-                    Paragraph::new(line).style(self.hint_bar_render_style(palette)),
+                    Paragraph::new(Text::from(lines)).style(self.hint_bar_render_style(palette)),
                     area,
                 );
                 return;
             }
         }
-        let lines = self.hint_bar_lines(area.width, state);
+        let lines = if login_guide {
+            Self::login_hint_lines(area.width)
+        } else {
+            self.hint_bar_lines(area.width, state)
+        };
         // Key tokens get the accent only on the built-in default style with no flash
         // showing: a `[ui] hint-bar-style` override keeps its exact colours (uniform,
         // as configured), and a flash keeps the one solid style of its kind.
@@ -1734,7 +1730,7 @@ mod tests {
         };
         let t = c.hint_bar_text(60, &state);
         assert!(
-            t.contains("[filter] filter sessions: xm"),
+            t.contains("filter  sessions: xm"),
             "the bar reads the input line: {t:?}"
         );
         // A flash displaces the input while it lasts.
@@ -1748,7 +1744,7 @@ mod tests {
         c.flash.clear();
         let t3 = c.hint_bar_text(60, &state);
         assert!(
-            t3.contains("[filter] filter sessions"),
+            t3.contains("filter  sessions"),
             "the input line returns once the flash clears: {t3:?}"
         );
     }

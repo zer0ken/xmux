@@ -134,14 +134,13 @@ pub enum KeyCommand {
     Rescan,
     /// Re-scan the selected card's host alone.
     RescanHost,
+    Logout,
     /// Select the current source's section information screen.
     HostInfo,
     /// Toggle the table of the hosts to check.
     Check,
     /// Search and run a named command.
     Palette,
-    /// Step the nav scope.
-    Scope,
     /// Collapse or expand the nav.
     Collapse,
     /// Toggle auto-hide-nav.
@@ -463,6 +462,15 @@ pub static TABLE: &[KeyEntry] = &[
     },
     KeyEntry {
         section: Section::Sessions,
+        keys: Keys::Prefix(&[(Chord::Char('L'), KeyCommand::Logout)]),
+        label: "L",
+        help: "log out of the selected SSH machine",
+        long: "log out of this host",
+        short: "logout",
+        rank: 3,
+    },
+    KeyEntry {
+        section: Section::Sessions,
         keys: Keys::Prefix(&[(Chord::Char('h'), KeyCommand::Check)]),
         label: "h",
         help: "hosts to check, by cause: ↑/↓ move, Enter opens the host, Esc closes",
@@ -478,15 +486,6 @@ pub static TABLE: &[KeyEntry] = &[
         long: "find a command",
         short: "commands",
         rank: 2,
-    },
-    KeyEntry {
-        section: Section::View,
-        keys: Keys::Prefix(&[(Chord::Char('s'), KeyCommand::Scope)]),
-        label: "s",
-        help: "nav scope: sessions · all hosts · needs attention",
-        long: "change the scope",
-        short: "scope",
-        rank: 3,
     },
     KeyEntry {
         section: Section::View,
@@ -719,11 +718,7 @@ mod tests {
     #[test]
     fn the_nav_structure_keys_are_bound_in_the_table() {
         for position in [NavPosition::Left, NavPosition::Bottom] {
-            for (c, command) in [
-                ('h', KeyCommand::Check),
-                ('R', KeyCommand::RescanHost),
-                ('s', KeyCommand::Scope),
-            ] {
+            for (c, command) in [('h', KeyCommand::Check), ('R', KeyCommand::RescanHost)] {
                 assert_eq!(prefix_command(Chord::Char(c), position), Some(command));
                 assert!(entry_for(command).is_some_and(|e| e.prefixed()));
             }

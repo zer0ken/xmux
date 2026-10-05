@@ -24,7 +24,7 @@ impl Switcher {
     /// indent, the rows past the last card). A band's overflow count on the seam stands
     /// for the hidden card nearest the visible ones.
     ///
-    /// Neither layout puts cards on a fixed row pitch - the side list parts its two bands
+    /// Neither layout puts cards on a fixed row pitch - the side list parts its groups
     /// and its card heights vary, the portrait flow runs them into columns - so the plan
     /// records each card's rect and the hit-test reads those back. One geometry, so a
     /// click cannot land on a card the renderer put elsewhere.

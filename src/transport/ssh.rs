@@ -168,13 +168,18 @@ impl Ssh {
         unavailable: Option<String>,
     ) -> crate::transport::CommandSpec {
         let generation = self.credentials.generation(&self.alias);
+        let trace_allowed = !self
+            .credentials
+            .profile(&self.alias)
+            .is_some_and(|profile| profile.proxied);
         let retry_args = access
             .as_ref()
             .filter(|access| !access.key_opens_no_session())
             .and_then(|_| password_only(&args));
         let command = crate::transport::CommandSpec::new("ssh", args)
             .with_credential_generation(generation)
-            .with_auth_unavailable(unavailable);
+            .with_auth_unavailable(unavailable)
+            .with_auth_trace_allowed(trace_allowed);
         match access {
             Some(access) => {
                 let old_unix = cfg!(unix) && !self.credentials.force_askpass_supported();
@@ -190,7 +195,8 @@ impl Ssh {
                 match retry_args {
                     Some(retry_args) => command.with_password_only_retry(with_auth(
                         crate::transport::CommandSpec::new("ssh", retry_args)
-                            .with_credential_generation(generation),
+                            .with_credential_generation(generation)
+                            .with_auth_trace_allowed(trace_allowed),
                     )),
                     None => command,
                 }
@@ -240,6 +246,27 @@ impl Transport for Ssh {
     /// run authenticated. Without multiplexing every run is a login of its own.
     fn reuses_connection(&self) -> bool {
         self.multiplexes()
+    }
+
+    fn close_shared_connection_argv(&self) -> Option<crate::transport::CommandSpec> {
+        self.multiplexes().then(|| {
+            let access = self.credentials.access(&self.alias);
+            let login = access
+                .as_ref()
+                .map(crate::transport::auth::AskpassAccess::login)
+                .unwrap_or(&self.login);
+            let mut args = vec![
+                "-S".into(),
+                self.control_path.clone(),
+                "-O".into(),
+                "exit".into(),
+            ];
+            for option in login.options() {
+                args.extend(["-o".into(), option]);
+            }
+            args.extend(["--".into(), self.alias.clone()]);
+            crate::transport::CommandSpec::new("ssh", args)
+        })
     }
 
     fn remote_shell(&self) -> RemoteShell {
@@ -306,6 +333,7 @@ impl Transport for Ssh {
         let (mut args, access, unavailable) = self.ssh_opts(true, SshPurpose::Normal);
         args.push(self.login_shell_command(&remote_cmd));
         self.command(args, access, true, unavailable)
+            .with_auth_observation()
     }
 
     fn cli_attach_argv(&self, mux_attach_argv: &[String]) -> crate::transport::CommandSpec {
@@ -345,7 +373,12 @@ impl Transport for Ssh {
             self.login_shell_command(remote_cmd)
         };
         args.push(command);
-        Some(self.command(args, access, false, unavailable))
+        let command = self.command(args, access, false, unavailable);
+        Some(if remote_cmd == SHELL_PROBE {
+            command.with_auth_observation()
+        } else {
+            command
+        })
     }
 
     fn login_argv(&self, remote_cmd: &str) -> Option<crate::transport::CommandSpec> {
@@ -402,7 +435,9 @@ impl Transport for Ssh {
             )
         });
         args.push(remote_cmd.to_string());
-        let command = self.command(args, access, false, unavailable);
+        let command = self
+            .command(args, access, false, unavailable)
+            .with_auth_observation();
         Some(match help {
             Some(help) => command.with_host_key_command(help),
             None => command,
@@ -525,6 +560,80 @@ mod tests {
             .ssh_opts(false, SshPurpose::Normal)
             .0;
         assert!(!a.join(" ").contains("ControlMaster"), "{a:?}");
+    }
+
+    #[test]
+    fn logout_closes_only_an_owned_ssh_master() {
+        assert_eq!(
+            ssh("prod", "linux", "/tmp/cm.sock")
+                .close_shared_connection_argv()
+                .unwrap()
+                .argv(),
+            argv(&["ssh", "-S", "/tmp/cm.sock", "-O", "exit", "--", "prod"])
+        );
+        assert!(ssh("prod", "linux", "")
+            .close_shared_connection_argv()
+            .is_none());
+        assert!(ssh("prod", "windows", "/tmp/cm.sock")
+            .close_shared_connection_argv()
+            .is_none());
+    }
+
+    #[test]
+    fn logout_resolves_the_same_master_as_the_login_overrides() {
+        let mut transport = ssh("prod", "linux", "/tmp/cm-%C");
+        transport.set_login(Login {
+            address: Some("192.0.2.8".into()),
+            port: Some(2222),
+            user: Some("alice".into()),
+        });
+        let command = transport.close_shared_connection_argv().unwrap();
+        assert_eq!(
+            command.argv(),
+            argv(&[
+                "ssh",
+                "-S",
+                "/tmp/cm-%C",
+                "-O",
+                "exit",
+                "-o",
+                "HostName=192.0.2.8",
+                "-o",
+                "Port=2222",
+                "-o",
+                "User=alice",
+                "--",
+                "prod"
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn logout_snapshots_the_held_credentials_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-logout-auth-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root);
+        let login = Login {
+            address: Some("192.0.2.8".into()),
+            port: Some(2222),
+            user: Some("alice".into()),
+        };
+        let access = credentials
+            .begin("prod", login.clone(), "secret".into())
+            .unwrap()
+            .unwrap();
+        assert!(access.promote());
+        let mut transport = ssh("prod", "linux", "/tmp/cm-%C");
+        transport.set_credentials(credentials.clone());
+        let command = transport.close_shared_connection_argv().unwrap();
+        credentials.remove("prod");
+        for option in login.options() {
+            assert!(command.args().contains(&option));
+        }
+        assert!(!format!("{command:?}").contains("secret"));
     }
 
     #[test]
@@ -912,6 +1021,7 @@ mod tests {
     fn interactive_attach_remote_execs_over_ssh_tty() {
         let a = ssh("prod", "linux", "")
             .interactive_attach_argv(&argv(&["tmux", "attach", "-t", "api"]));
+        assert!(a.observe_auth());
         assert_eq!(a.program(), "ssh");
         assert!(a.iter().any(|s| s == "-t"), "{a:?}");
         assert!(a.join(" ").contains("BatchMode=yes"), "{a:?}");
@@ -927,6 +1037,8 @@ mod tests {
             .raw_shell_argv(super::super::vocab::SHELL_PROBE)
             .unwrap();
         assert_eq!(got.last().unwrap(), "echo $0");
+        assert!(got.observe_auth());
+        assert!(!got.args().iter().any(|arg| arg == "-v"));
         let marked = ssh("prod", "linux", "")
             .raw_shell_argv(super::super::vocab::MARKED_SHELL_PROBE)
             .unwrap();

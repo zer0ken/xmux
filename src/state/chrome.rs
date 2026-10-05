@@ -31,6 +31,8 @@ pub struct ViewBorderColors {
 /// what keeps this layer blind to which machine kind or which mux a source is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SourceReach {
+    /// Whether the machine is reached over SSH and can use host access actions.
+    pub ssh: bool,
     /// The command a session listing spawns, spelled so it can be run by hand. The one
     /// datum that turns "it failed" into something the user can reproduce outside xmux.
     pub probe: String,

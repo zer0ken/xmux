@@ -1,6 +1,6 @@
 //! Column-flow geometry for the portrait `Top` nav: pure, backend-free placement of
 //! the nav's rows into columns that fill DOWNWARD and then continue to the RIGHT,
-//! plus the parting of the two bands (the sessions left, the host-state cards right).
+//! plus whitespace between session, no-session and disconnected-host groups.
 //!
 //! The `Top` nav is a wide, short band, so one vertical list would show three or four
 //! cards and waste the rest of the row. Rows therefore stack down a column until the
@@ -16,19 +16,16 @@
 //! runs titles and cards along its one line instead.
 //!
 //! The host-state cards are a band of their own, never sharing a column with session
-//! cards. While the bands can spare a column for it they are pushed APART - sessions
-//! against the left edge, host cards against the right - and the blank columns between
-//! them are the parting, because a gap says "a different kind of thing follows"
-//! without spending a glyph on saying it. Once they cannot, the band scrolls as one
-//! run and a vertical rule takes the boundary's column instead. The parting therefore
-//! always has a column of its own: the run is measured with the rule's column
-//! included, so the bands go from a gap of one straight to a rule and never touch.
+//! cards. Both bands start at the left; a blank column parts them. When the whole run
+//! needs more width, the band scrolls and keeps a blank boundary column.
 
 use ratatui::layout::Rect;
 
 /// A card as the flow needs to see it: where a section run starts, and how wide and
 /// tall it renders.
 pub(super) struct Card {
+    /// Starts the disconnected-host group after the no-session group.
+    pub(super) separates_group: bool,
     /// True when this card opens a new unit: a section title (its session cards hang
     /// under it) or a host-state card. A session card is false and hangs under its
     /// section.
@@ -60,10 +57,9 @@ pub(super) struct Cell {
 /// How the two bands part in the horizontal direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Parting {
-    /// Room to spare: the session columns hold the left edge and the host band is
-    /// pushed to the right, blank columns between them.
+    /// Room to spare: a blank column parts adjacent session and host columns.
     Gap,
-    /// The bands would touch: a vertical rule column parts them, and the run scrolls.
+    /// The bands would touch: an additional blank column parts them, and the run scrolls.
     Rule,
 }
 
@@ -83,9 +79,12 @@ pub(super) fn place(cards: &[Card], col_h: u16, boundary: usize) -> Vec<Placed> 
     while i < cards.len() {
         // The host band never shares a column with session cards: the first host card
         // opens a fresh column of its own.
-        if i == boundary && used > 0 {
+        if (i == boundary || cards[i].separates_group) && used > 0 {
             col += 1;
             used = 0;
+        }
+        if cards[i].separates_group && col > 0 {
+            col += 1;
         }
         // The run: this card and every session card hanging under it.
         let mut j = i + 1;
@@ -175,12 +174,7 @@ pub(super) fn parting(
         return None; // no host band: sessions alone flow from the left
     }
     if boundary_col == 0 {
-        // The whole band is host-state cards (nothing has a session to show yet). Their
-        // band is the ONLY band, so it anchors to the RIGHT edge and the blank columns
-        // left of it are where the sessions that will be found land. If the host cards
-        // alone overrun the band, they fall back to a plain flow from the left.
-        let host = widths.iter().sum::<u16>() + (widths.len().saturating_sub(1) as u16) * gutter;
-        return (host < band_w).then_some(Parting::Gap);
+        return None;
     }
     let sess = widths[..boundary_col].iter().sum::<u16>()
         + (boundary_col.saturating_sub(1) as u16) * gutter;
@@ -282,9 +276,8 @@ pub(super) fn hidden_counts(
 }
 
 /// Turns placements into screen rects for the visible columns, and returns the rect of
-/// the band rule when the bands part by one. In the gap parting the host columns are
-/// right-aligned against the band's right edge and nothing scrolls (everything fits by
-/// construction); in the rule parting the whole run scrolls from the left like a plain
+/// the blank boundary column when the bands need one. In the gap parting everything
+/// fits without scrolling; in the rule parting the whole run scrolls from the left like a plain
 /// flow. Cards in columns left of `first` or past the right edge get no cell, so they
 /// are neither painted nor clickable.
 pub(super) fn cells(
@@ -306,21 +299,6 @@ pub(super) fn cells(
         }
         x[i] = cur;
         cur += dw[i];
-    }
-    // The gap parting: everything fits, so push the host columns against the band's
-    // right edge, the blank columns between them being the parting.
-    if parting == Some(Parting::Gap) {
-        let host_total: u16 = widths[boundary_col..].iter().sum::<u16>()
-            + (widths.len().saturating_sub(boundary_col + 1) as u16) * gutter;
-        let host_start = area.width.saturating_sub(host_total);
-        let mut cur = 0u16;
-        for i in boundary_col..widths.len() {
-            if i > boundary_col {
-                cur += gutter;
-            }
-            x[i] = host_start + cur;
-            cur += widths[i];
-        }
     }
     // The rule column, when the bands part by one.
     let rule = match parting {
@@ -364,6 +342,7 @@ mod tests {
     fn run(n: usize, width: u16) -> Vec<Card> {
         (0..n)
             .map(|k| Card {
+                separates_group: false,
                 starts_run: k == 0,
                 width,
                 lines: 1,
@@ -374,6 +353,7 @@ mod tests {
     /// A lone host-state card.
     fn host(width: u16, lines: u16) -> Vec<Card> {
         vec![Card {
+            separates_group: false,
             starts_run: true,
             width,
             lines,
@@ -488,11 +468,13 @@ mod tests {
     fn a_column_is_as_wide_as_its_widest_card() {
         let cards = vec![
             Card {
+                separates_group: false,
                 starts_run: true,
                 width: 8,
                 lines: 1,
             },
             Card {
+                separates_group: false,
                 starts_run: false,
                 width: 20,
                 lines: 1,
@@ -524,9 +506,9 @@ mod tests {
         let host = cells.iter().find(|c| c.idx == 2).unwrap().rect;
         assert_eq!(sess.x, 0, "sessions at the left edge");
         assert_eq!(
-            host.x + host.width,
-            30,
-            "the host card is pushed to the right edge"
+            host.x,
+            sess.x + sess.width + 1,
+            "one blank column parts the bands"
         );
         assert!(host.x > sess.x + sess.width, "blank columns part the bands");
     }

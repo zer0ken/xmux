@@ -99,6 +99,8 @@ pub enum Command {
     /// Re-scan one machine alone (the `R` re-scan): its reachability probe, then every
     /// source it serves.
     RescanHost(String),
+    /// Discard xmux's held credential and close this machine's connections.
+    Logout(String),
     /// Adjust the natural nav width by this signed delta and schedule the debounced
     /// persist.
     AdjustNavWidth(i32),
@@ -121,8 +123,7 @@ pub enum Command {
         source: String,
         login: crate::transport::Login,
         password: crate::model::SecretInput,
-        remember: crate::model::Remember,
-        pubkey: bool,
+        after_login: crate::model::AfterLogin,
     },
 }
 
@@ -132,6 +133,7 @@ impl std::fmt::Debug for Command {
             Self::SelectAddress(address) => f.debug_tuple("SelectAddress").field(address).finish(),
             Self::Rescan => f.write_str("Rescan"),
             Self::RescanHost(machine) => f.debug_tuple("RescanHost").field(machine).finish(),
+            Self::Logout(machine) => f.debug_tuple("Logout").field(machine).finish(),
             Self::AdjustNavWidth(delta) => f.debug_tuple("AdjustNavWidth").field(delta).finish(),
             Self::ToggleAutoHide => f.write_str("ToggleAutoHide"),
             Self::PersistLastSession(address) => {
@@ -143,16 +145,14 @@ impl std::fmt::Debug for Command {
             Self::RunLogin {
                 source,
                 login,
-                remember,
-                pubkey,
+                after_login,
                 ..
             } => f
                 .debug_struct("RunLogin")
                 .field("source", source)
                 .field("login", login)
                 .field("password", &"[redacted]")
-                .field("remember", remember)
-                .field("pubkey", pubkey)
+                .field("after_login", after_login)
                 .finish(),
         }
     }
@@ -229,6 +229,9 @@ pub enum EventEffect {
     /// `Exited`: reap `host`'s metadata client after [`Self::NoteHostExited`] has folded
     /// the tree and connected-set state change.
     ReapHost { host: String },
+    /// An authentication method stopped being available: close the machine's metadata
+    /// and display clients before another explicit connection attempt.
+    DisconnectMachine { machine: String },
     /// `Exited` as a detach of a connected host: open `host`'s metadata channel once
     /// more after [`Self::ReapHost`] has removed the detached one.
     ReopenHost { host: String },
@@ -361,6 +364,10 @@ impl std::fmt::Debug for EventEffect {
             EventEffect::ReapHost { host } => {
                 f.debug_struct("ReapHost").field("host", host).finish()
             }
+            EventEffect::DisconnectMachine { machine } => f
+                .debug_struct("DisconnectMachine")
+                .field("machine", machine)
+                .finish(),
             EventEffect::ReopenHost { host } => {
                 f.debug_struct("ReopenHost").field("host", host).finish()
             }
@@ -479,8 +486,7 @@ mod tests {
                 user: Some("dev".into()),
             },
             password: "do-not-print-this".into(),
-            remember: crate::model::Remember::Nothing,
-            pubkey: false,
+            after_login: crate::model::AfterLogin::Nothing,
         };
 
         let shown = format!("{command:?}");

@@ -364,6 +364,7 @@ impl Hosts {
             // no Host-owned liveness here. A discovery or machine-probe answer names a
             // MACHINE, not a host in this map, so it could not route here anyway.
             Scanned { .. }
+            | AuthObserved { .. }
             | Sessions { .. }
             | MuxesFound { .. }
             | RosterResolved { .. }

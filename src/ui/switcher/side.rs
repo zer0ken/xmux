@@ -1,5 +1,5 @@
 //! The side list's card geometry: where every card paints, where the rule parting the
-//! two bands goes, and how far the list has scrolled. Pure over card HEIGHTS, so the
+//! groups goes, and how far the list has scrolled. Pure over card HEIGHTS, so the
 //! paint, the mouse hit-test and the tests all read one answer.
 
 /// One card's placement inside the card region, in rows from its top edge. `h` is what
@@ -20,18 +20,18 @@ pub(super) struct Flow {
     pub rule_y: Option<u16>,
     /// The first card drawn: the scroll position, counted in cards.
     pub offset: usize,
-    /// How many cards are drawn WHOLE, which is the seam thumb's viewport length.
+    /// How many cards are drawn whole.
     pub visible: usize,
-    /// Whether the list is a scrolling run, which is what thickens the seam beside it.
+    /// Whether the list is a scrolling run.
     pub scrolls: bool,
 }
 
 /// The rows cards `from..to` take, counting the parting rule when the boundary falls
 /// inside that run. The rule sits immediately above card `boundary`, so a run starting
 /// exactly there still pays for it.
-fn span(heights: &[u16], boundary: Option<usize>, from: usize, to: usize) -> u16 {
+fn span(heights: &[u16], boundaries: &[usize], from: usize, to: usize) -> u16 {
     let cards: u16 = heights[from..to].iter().sum();
-    let rule = u16::from(matches!(boundary, Some(b) if from <= b && b < to));
+    let rule = boundaries.iter().filter(|&&b| from <= b && b < to).count() as u16;
     cards + rule
 }
 
@@ -46,7 +46,7 @@ fn span(heights: &[u16], boundary: Option<usize>, from: usize, to: usize) -> u16
 /// it takes to show it.
 fn scroll_to(
     heights: &[u16],
-    boundary: Option<usize>,
+    boundaries: &[usize],
     region_h: u16,
     offset: usize,
     selected: usize,
@@ -54,37 +54,24 @@ fn scroll_to(
 ) -> usize {
     let n = heights.len();
     let mut off = offset.min(selected);
-    while off < selected && span(heights, boundary, off, selected + 1) > region_h {
+    while off < selected && span(heights, boundaries, off, selected + 1) > region_h {
         off += 1;
     }
-    while off > 0 && span(heights, boundary, off - 1, n) <= region_h {
+    while off > 0 && span(heights, boundaries, off - 1, n) <= region_h {
         off -= 1;
     }
     if let Some(t) = selected_section_title {
-        if span(heights, boundary, t, selected + 1) <= region_h {
+        if span(heights, boundaries, t, selected + 1) <= region_h {
             off = off.min(t);
         }
     }
     off
 }
 
-/// Places the cards of a side list `region_h` rows tall, given each card's height and the
-/// index of the first host-state card.
-///
-/// The list is two BANDS: the session cards, then the host-state cards (the hosts with no
-/// session to show, which the flatten sinks to the end). While the cards can spare a row
-/// for it, the bands are pushed APART - sessions against the top edge, host states against
-/// the bottom - and the blank rows left between them are the parting, because a gap says "a
-/// different kind of thing follows" without spending a glyph on saying it. Once they cannot
-/// the list is one scrolling run, since a gap only parts what is on screen together, and a
-/// rule takes the boundary's row instead.
-///
-/// The parting therefore always has a row of its own: the run is measured with the rule's
-/// row included, so the bands go from a gap of one straight to a rule and never touch. That
-/// makes the list scroll one row earlier than the cards alone would need.
-///
-/// A boundary with a band empty on either side parts nothing, so it is dropped here: this
-/// is the one place that rule lives.
+/// Places the cards in group order, reserving one row at each group boundary.
+/// Empty groups take no row. The run scrolls to keep the selected card visible.
+/// The first scrolling group boundary can carry a horizontal rule; every
+/// other group boundary remains blank.
 ///
 /// `selected_section_title` is the index of the section title the selected card hangs
 /// under, `None` when it hangs under none (a host-state card). When the card is close
@@ -93,7 +80,7 @@ fn scroll_to(
 /// position that shows it.
 pub(super) fn place(
     heights: &[u16],
-    boundary: Option<usize>,
+    boundaries: impl IntoIterator<Item = usize>,
     region_h: u16,
     offset: usize,
     selected: usize,
@@ -103,25 +90,16 @@ pub(super) fn place(
     if n == 0 || region_h == 0 {
         return Flow::default();
     }
-    // A boundary of 0 is the list with NOTHING but host-state cards - the empty
-    // session band - which the filter below would drop as "no parting". The band still
-    // anchors to the bottom edge then, so the change is kept here.
-    let host_only = boundary == Some(0);
-    let boundary = boundary.filter(|&b| b > 0 && b < n);
+    let boundaries: Vec<_> = boundaries.into_iter().filter(|&b| b > 0 && b < n).collect();
     let total: u16 = heights.iter().sum();
     // The parting's own row is part of what the region has to hold, so the bands never
     // meet with nothing between them.
-    if total + u16::from(boundary.is_some()) <= region_h {
-        let gap = region_h - total;
+    if total + boundaries.len() as u16 <= region_h {
         let mut slots = Vec::with_capacity(n);
-        // A boundary of 0 was dropped above, meaning the whole list is host-state cards
-        // (nothing has a session to show yet): their band is the ONLY band, so it
-        // anchors to the BOTTOM edge and the blank rows above it are where the sessions
-        // that will be found land. With real bands, the session band holds the top edge.
-        let mut y = if host_only { gap } else { 0 };
+        let mut y = 0;
         for (i, &h) in heights.iter().enumerate() {
-            if Some(i) == boundary {
-                y += gap;
+            if boundaries.contains(&i) {
+                y += 1;
             }
             slots.push(Slot { idx: i, y, h });
             y += h;
@@ -136,7 +114,7 @@ pub(super) fn place(
     }
     let offset = scroll_to(
         heights,
-        boundary,
+        &boundaries,
         region_h,
         offset,
         selected.min(n - 1),
@@ -147,11 +125,11 @@ pub(super) fn place(
     let mut visible = 0usize;
     let mut y = 0u16;
     for (i, &card_h) in heights.iter().enumerate().skip(offset) {
-        if Some(i) == boundary {
+        if boundaries.contains(&i) {
             if y >= region_h {
                 break;
             }
-            rule_y = Some(y);
+            rule_y = rule_y.or(Some(y));
             y += 1;
         }
         if y >= region_h {
@@ -190,11 +168,11 @@ mod tests {
 
     #[test]
     fn the_bands_part_with_the_rows_left_over() {
-        // 3 session cards, 2 host-state cards, 20 rows: 10 rows of cards, 10 of gap.
+        // Both bands start at the top, with one blank row between them.
         let flow = place(&[2, 2, 2, 2, 2], Some(3), 20, 0, 0, None);
         assert_eq!(
             ys(&flow),
-            vec![(0, 0, 2), (1, 2, 2), (2, 4, 2), (3, 16, 2), (4, 18, 2)]
+            vec![(0, 0, 2), (1, 2, 2), (2, 4, 2), (3, 7, 2), (4, 9, 2)]
         );
         assert_eq!(flow.rule_y, None, "a gap parts them, not a rule");
         assert_eq!(flow.offset, 0);
@@ -223,11 +201,9 @@ mod tests {
 
     #[test]
     fn a_boundary_with_an_empty_band_parts_nothing() {
-        // A list with NOTHING but host cards is the host band alone: it parts nothing
-        // (no rule, no second band) but anchors to the BOTTOM, so the blank rows above
-        // it are where the sessions that will be found land.
+        // A list with only host cards starts at the top like any other list.
         let all_hosts = place(&[2, 2], Some(0), 20, 0, 0, None);
-        assert_eq!(ys(&all_hosts), vec![(0, 16, 2), (1, 18, 2)]);
+        assert_eq!(ys(&all_hosts), vec![(0, 0, 2), (1, 2, 2)]);
         // A list of sessions alone fills from the top, the host band being absent.
         let no_hosts = place(&[2, 2], Some(2), 20, 0, 0, None);
         assert_eq!(ys(&no_hosts), vec![(0, 0, 2), (1, 2, 2)]);

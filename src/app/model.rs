@@ -146,7 +146,6 @@ pub(crate) enum Msg {
     ToggleHistory,
     ToggleCheck,
     TogglePalette,
-    CycleNavScope,
     DismissToast(u64),
     /// A key read while the help or the history is open, with the configured prefix byte
     /// so the prefix keys that open them can close them.
@@ -165,6 +164,13 @@ pub(crate) enum Msg {
         /// The machine probe the runtime starts for this login, whose answer alone
         /// settles the login's mux search.
         probe: u64,
+    },
+    CredentialInventory {
+        held: HashSet<String>,
+    },
+    DisplayAuth {
+        source: String,
+        method: Option<crate::model::AuthMethod>,
     },
     ApplyInventory {
         source: String,
@@ -290,8 +296,7 @@ pub(crate) enum Effect {
         source: String,
         login: crate::transport::Login,
         password: crate::model::SecretInput,
-        remember: crate::model::Remember,
-        pubkey: bool,
+        after_login: crate::model::AfterLogin,
         /// The submission this run is, carried on every report it sends back.
         attempt: u64,
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -300,9 +305,12 @@ pub(crate) enum Effect {
     PersistNavHeight(u16),
     PersistNavCollapsed(bool),
     PersistNavPosition(Option<NavPosition>),
-    PersistNavScope(crate::model::NavScope),
     PersistFirstKeyHelpSeen,
     ReattachDisplay(Selection),
+    LogoutMachine {
+        machine: String,
+        cancel_login: Option<crate::link::unlock::RunningLogin>,
+    },
     CancelLogin(crate::link::unlock::RunningLogin),
 }
 
@@ -320,16 +328,14 @@ impl std::fmt::Debug for Effect {
             Self::StartLogin {
                 source,
                 login,
-                remember,
-                pubkey,
+                after_login,
                 ..
             } => f
                 .debug_struct("StartLogin")
                 .field("source", source)
                 .field("login", login)
                 .field("password", &"[redacted]")
-                .field("remember", remember)
-                .field("pubkey", pubkey)
+                .field("after_login", after_login)
                 .finish(),
             Self::PersistNavWidth(width) => f.debug_tuple("PersistNavWidth").field(width).finish(),
             Self::PersistNavHeight(height) => {
@@ -342,10 +348,12 @@ impl std::fmt::Debug for Effect {
             Self::PersistNavPosition(position) => {
                 f.debug_tuple("PersistNavPosition").field(position).finish()
             }
-            Self::PersistNavScope(scope) => f.debug_tuple("PersistNavScope").field(scope).finish(),
             Self::PersistFirstKeyHelpSeen => f.write_str("PersistFirstKeyHelpSeen"),
             Self::ReattachDisplay(selection) => {
                 f.debug_tuple("ReattachDisplay").field(selection).finish()
+            }
+            Self::LogoutMachine { machine, .. } => {
+                f.debug_tuple("LogoutMachine").field(machine).finish()
             }
             Self::CancelLogin(_) => f.write_str("CancelLogin"),
         }
@@ -359,6 +367,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             None
         }
         Command::Rescan => {
+            model.state.invalid_auth.clear();
             // A re-scan asked for while one is still running keeps the first snapshot, so
             // its summary compares against what the user saw before any of them. Each one
             // re-resolves the roster, so the summary waits for that answer again.
@@ -395,6 +404,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                 model.state.flash("a re-scan is still running");
                 return None;
             }
+            model.state.invalid_auth.remove(&machine);
             model.rescan = Some(RescanInFlight {
                 before: crate::state::notify::ScanSnapshot::of(&model.state, &HashSet::new())
                     .only_machine(&machine),
@@ -407,6 +417,65 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                 .switcher
                 .mark_machine_scanning(&machine, &mut model.state);
             Some(Effect::Command(Command::RescanHost(machine)))
+        }
+        Command::Logout(machine) => {
+            let cancel_login = if model
+                .state
+                .login_run
+                .as_ref()
+                .is_some_and(|run| crate::session::machine_of(&run.source) == machine)
+            {
+                model.state.login_run.take()
+            } else {
+                None
+            };
+            model
+                .state
+                .login_progress
+                .retain(|source, _| crate::session::machine_of(source) != machine);
+            model.state.auth_methods.remove(&machine);
+            clear_display_auth(&mut model.state, &machine);
+            model.state.invalid_auth.insert(machine.clone());
+            model.state.logged_in.remove(&machine);
+            model
+                .state
+                .live_sources
+                .retain(|source| crate::session::machine_of(source) != machine);
+            model
+                .connected
+                .retain(|source| crate::session::machine_of(source) != machine);
+            if crate::session::machine_of(&model.state.displayed.source) == machine {
+                model.state.displayed = Default::default();
+                model.state.attach_deadline = None;
+                model.state.attach_pending = false;
+            }
+            let sources: Vec<_> = model
+                .state
+                .groups
+                .iter()
+                .filter(|group| crate::session::machine_of(&group.source) == machine)
+                .map(|group| group.source.clone())
+                .collect();
+            for source in sources {
+                model.switcher.apply_source_result(
+                    source,
+                    Vec::new(),
+                    Some("logged out; log in again or re-scan".into()),
+                    &mut model.state,
+                );
+            }
+            Some(Effect::LogoutMachine {
+                machine,
+                cancel_login,
+            })
+        }
+        Command::Attach(selection)
+            if model
+                .state
+                .invalid_auth
+                .contains(crate::session::machine_of(&selection.source)) =>
+        {
+            None
         }
         Command::AdjustNavWidth(delta) => {
             let min = nav_width_min(&model.state.chrome.ui_prefix) as i32;
@@ -428,8 +497,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             source,
             login,
             password,
-            remember,
-            pubkey,
+            after_login,
         } => {
             let machine = crate::session::machine_of(&source);
             model.state.logged_in.remove(machine);
@@ -442,8 +510,8 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                     attempt,
                     &login,
                     !password.is_empty(),
-                    remember == crate::state::Remember::SshConfig,
-                    pubkey,
+                    after_login == crate::model::AfterLogin::SshConfig,
+                    after_login == crate::model::AfterLogin::RegisterKey,
                 ),
             );
             let (running, cancel) =
@@ -453,8 +521,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                 source,
                 login,
                 password,
-                remember,
-                pubkey,
+                after_login,
                 attempt,
                 cancel,
             })
@@ -474,14 +541,47 @@ fn sync_selection(model: &mut AppModel) {
     }
 }
 
+fn clear_display_auth(state: &mut crate::state::State, machine: &str) {
+    state
+        .display_auth_methods
+        .retain(|source, _| crate::session::machine_of(source) != machine);
+}
+
 fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Vec<EventEffect> {
     use crate::link::HostEvent;
 
     match event {
+        HostEvent::AuthObserved {
+            machine, method, ..
+        } => {
+            if !model.state.invalid_auth.contains(&machine) {
+                model.state.auth_methods.insert(machine, method);
+            }
+            Vec::new()
+        }
+        HostEvent::Connected { host, .. } | HostEvent::Inventory { host, .. }
+            if model
+                .state
+                .invalid_auth
+                .contains(crate::session::machine_of(&host)) =>
+        {
+            Vec::new()
+        }
         HostEvent::Connected { host, sessions } | HostEvent::Inventory { host, sessions } => vec![
             EventEffect::MarkConnected { host: host.clone() },
             EventEffect::ApplyInventory { host, sessions },
         ],
+        HostEvent::Changed { host }
+        | HostEvent::ClientDetached { host, .. }
+        | HostEvent::ClientSessionChanged { host, .. }
+        | HostEvent::DisplayTty { host, .. }
+            if model
+                .state
+                .invalid_auth
+                .contains(crate::session::machine_of(&host)) =>
+        {
+            Vec::new()
+        }
         HostEvent::Changed { host } => vec![EventEffect::Refetch { host }],
         // The server detached a client that was answering (tmux does this when the
         // client's attached session is destroyed): the host still serves its other
@@ -489,6 +589,14 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
         // opened once more. The connected mark is cleared here, so only a reopened channel
         // that lists sessions again can make a later exit a detach: a reopen that fails
         // takes the ordinary exit path below and never opens a third channel.
+        HostEvent::Exited { host, .. }
+            if model
+                .state
+                .invalid_auth
+                .contains(crate::session::machine_of(&host)) =>
+        {
+            vec![EventEffect::ReapHost { host }]
+        }
         HostEvent::Exited {
             host,
             detached: true,
@@ -525,6 +633,9 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
         HostEvent::DisplayTty { host, tty } => {
             vec![EventEffect::RecordDisplayTty { host, tty }]
         }
+        HostEvent::MuxesFound { machine, .. } if model.state.invalid_auth.contains(&machine) => {
+            Vec::new()
+        }
         HostEvent::MuxesFound { machine, muxes } => {
             // Discovery that found nothing ends a login's mux search here: no source
             // result follows it, since the machine's card goes instead.
@@ -560,6 +671,14 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             }),
             rescan: false,
         }],
+        HostEvent::Scanned { source, .. }
+            if model
+                .state
+                .invalid_auth
+                .contains(crate::session::machine_of(&source)) =>
+        {
+            Vec::new()
+        }
         HostEvent::Scanned {
             source,
             detected,
@@ -619,12 +738,41 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             if result_generation != current_credential_generation {
                 return Vec::new();
             }
+            if model.state.invalid_auth.contains(&machine) {
+                return Vec::new();
+            }
             match err {
                 Some(reason) => {
-                    if credential_held
-                        && password_supplied
-                        && crate::transport::diagnostic::contains_auth_refusal(&reason)
-                    {
+                    let auth_refused = crate::transport::diagnostic::contains_auth_refusal(&reason);
+                    let known_auth = model.state.auth_methods.contains_key(&machine)
+                        || model
+                            .state
+                            .display_auth_methods
+                            .keys()
+                            .any(|source| crate::session::machine_of(source) == machine);
+                    let disconnect = if auth_refused && known_auth {
+                        model.state.auth_methods.remove(&machine);
+                        clear_display_auth(&mut model.state, &machine);
+                        model.state.invalid_auth.insert(machine.clone());
+                        model
+                            .state
+                            .live_sources
+                            .retain(|source| crate::session::machine_of(source) != machine);
+                        model
+                            .connected
+                            .retain(|source| crate::session::machine_of(source) != machine);
+                        if crate::session::machine_of(&model.state.displayed.source) == machine {
+                            model.state.displayed = Default::default();
+                            model.state.attach_deadline = None;
+                            model.state.attach_pending = false;
+                        }
+                        vec![EventEffect::DisconnectMachine {
+                            machine: machine.clone(),
+                        }]
+                    } else {
+                        Vec::new()
+                    };
+                    if credential_held && password_supplied && auth_refused {
                         model
                             .state
                             .scanning
@@ -632,9 +780,9 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                         if let Some(rescan) = model.rescan.as_mut() {
                             rescan.locked.insert(machine);
                         }
-                        return Vec::new();
+                        return disconnect;
                     }
-                    model
+                    let mut effects: Vec<_> = model
                         .state
                         .groups
                         .iter()
@@ -644,7 +792,9 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                             sessions: Vec::new(),
                             err: Some(reason.clone()),
                         })
-                        .collect()
+                        .collect();
+                    effects.extend(disconnect);
+                    effects
                 }
                 None => {
                     model.state.login_reports.remove(&machine);
@@ -658,6 +808,14 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                     }]
                 }
             }
+        }
+        HostEvent::Sessions { source, .. }
+            if model
+                .state
+                .invalid_auth
+                .contains(crate::session::machine_of(&source)) =>
+        {
+            Vec::new()
         }
         HostEvent::Sessions {
             source,
@@ -836,28 +994,26 @@ fn run_palette_choice(model: &mut AppModel, choice: crate::state::PaletteChoice)
     use crate::state::PaletteChoice;
     match choice {
         PaletteChoice::Login(source) => {
-            let scope = model.switcher.scope();
             let opened = model.switcher.open_host(&source, &mut model.state);
-            let mut effects = if opened {
+            if opened {
                 update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
             } else {
                 Vec::new()
-            };
-            if scope != model.switcher.scope() {
-                effects.push(Effect::PersistNavScope(model.switcher.scope()));
             }
-            effects
         }
         PaletteChoice::Command(command) => match command {
             KeyCommand::Filter
             | KeyCommand::NewSession
             | KeyCommand::Rescan
-            | KeyCommand::RescanHost => {
+            | KeyCommand::RescanHost
+            | KeyCommand::Logout => {
                 let key = match command {
                     KeyCommand::Filter => '/',
                     KeyCommand::NewSession => 'n',
                     KeyCommand::Rescan => 'r',
-                    _ => 'R',
+                    KeyCommand::RescanHost => 'R',
+                    KeyCommand::Logout => 'L',
+                    _ => unreachable!(),
                 };
                 update(
                     model,
@@ -869,7 +1025,6 @@ fn run_palette_choice(model: &mut AppModel, choice: crate::state::PaletteChoice)
             }
             KeyCommand::FocusNav => update(model, Msg::Focus(crate::model::FocusTarget::Nav)),
             KeyCommand::Check => update(model, Msg::ToggleCheck),
-            KeyCommand::Scope => update(model, Msg::CycleNavScope),
             KeyCommand::Collapse => update(model, Msg::ToggleNavCollapsed),
             KeyCommand::AutoHide => update(model, Msg::Action(Action::ToggleAutoHide)),
             KeyCommand::Position => update(model, Msg::CycleNavPosition),
@@ -945,18 +1100,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.switcher.toggle_palette(&mut model.state);
             Vec::new()
         }
-        Msg::CycleNavScope => {
-            let scope = model.switcher.scope().next();
-            model.switcher.set_scope(scope, &mut model.state);
-            model.state.notify.toast(
-                "nav scope",
-                vec![crate::state::notify::Note::new(
-                    crate::state::notify::Level::Info,
-                    scope.word(),
-                )],
-            );
-            vec![Effect::PersistNavScope(scope)]
-        }
         Msg::DismissToast(id) => {
             model.state.notify.dismiss(id);
             Vec::new()
@@ -970,18 +1113,9 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 help_visible,
                 &mut model.state,
             );
-            let scope = model.switcher.scope();
             let opened = model.switcher.open_checked_host(&mut model.state);
-            if opened || scope != model.switcher.scope() {
-                let mut effects = if opened {
-                    update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
-                } else {
-                    Vec::new()
-                };
-                if scope != model.switcher.scope() {
-                    effects.push(Effect::PersistNavScope(model.switcher.scope()));
-                }
-                return effects;
+            if opened {
+                return update(model, Msg::Focus(crate::model::FocusTarget::Terminal));
             }
             if let Some(choice) = model.switcher.take_palette_choice(&mut model.state) {
                 return run_palette_choice(model, choice);
@@ -989,13 +1123,53 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::OpResult { result, logged_in } => {
+            if let crate::model::OpResult::Login {
+                source, attempt, ..
+            } = &result
+            {
+                if !model
+                    .state
+                    .login_progress
+                    .get(source)
+                    .is_some_and(|progress| progress.attempt == *attempt)
+                {
+                    return Vec::new();
+                }
+            }
+            if let crate::model::OpResult::Login {
+                source,
+                attempt,
+                outcome,
+                ..
+            } = &result
+            {
+                if outcome.connect.is_ok()
+                    && model
+                        .state
+                        .login_progress
+                        .get(source)
+                        .is_some_and(|progress| progress.attempt == *attempt)
+                {
+                    model
+                        .state
+                        .invalid_auth
+                        .remove(crate::session::machine_of(source));
+                    if let Some(method) = outcome.auth_method {
+                        model
+                            .state
+                            .auth_methods
+                            .insert(crate::session::machine_of(source).to_owned(), method);
+                    }
+                }
+            }
             model.state.logged_in = logged_in;
-            model
+            let effects: Vec<_> = model
                 .switcher
                 .apply_op_result(result, &mut model.state)
                 .map(|(source, login)| Effect::LoginApplied { source, login })
                 .into_iter()
-                .collect()
+                .collect();
+            effects
         }
         Msg::LoginSettled {
             source,
@@ -1022,6 +1196,73 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .is_some_and(|draft| draft.source == source)
             {
                 model.state.login = None;
+            }
+            Vec::new()
+        }
+        Msg::CredentialInventory { held } => {
+            let mut missing: HashSet<String> = model
+                .state
+                .auth_methods
+                .iter()
+                .filter(|(machine, method)| {
+                    **method == crate::model::AuthMethod::Password && !held.contains(*machine)
+                })
+                .map(|(machine, _)| machine.clone())
+                .collect();
+            for (source, method) in &model.state.display_auth_methods {
+                let machine = crate::session::machine_of(source);
+                if *method == crate::model::AuthMethod::Password && !held.contains(machine) {
+                    missing.insert(machine.to_owned());
+                }
+            }
+            let mut effects = Vec::new();
+            for machine in missing {
+                model.state.auth_methods.remove(&machine);
+                clear_display_auth(&mut model.state, &machine);
+                model.state.invalid_auth.insert(machine.clone());
+                model.state.logged_in.remove(&machine);
+                model
+                    .state
+                    .live_sources
+                    .retain(|source| crate::session::machine_of(source) != machine);
+                model
+                    .connected
+                    .retain(|source| crate::session::machine_of(source) != machine);
+                if crate::session::machine_of(&model.state.displayed.source) == machine {
+                    model.state.displayed = Default::default();
+                    model.state.attach_deadline = None;
+                    model.state.attach_pending = false;
+                }
+                let sources: Vec<_> = model
+                    .state
+                    .groups
+                    .iter()
+                    .filter(|group| crate::session::machine_of(&group.source) == machine)
+                    .map(|group| group.source.clone())
+                    .collect();
+                for source in sources {
+                    model.switcher.apply_source_result(
+                        source,
+                        Vec::new(),
+                        Some("SSH password no longer held; log in again".into()),
+                        &mut model.state,
+                    );
+                }
+                effects.push(Effect::Event(EventEffect::DisconnectMachine { machine }));
+            }
+            effects
+        }
+        Msg::DisplayAuth { source, method } => {
+            if let Some(method) = method {
+                if !model
+                    .state
+                    .invalid_auth
+                    .contains(crate::session::machine_of(&source))
+                {
+                    model.state.display_auth_methods.insert(source, method);
+                }
+            } else {
+                model.state.display_auth_methods.remove(&source);
             }
             Vec::new()
         }
@@ -1065,6 +1306,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             source,
             clear_tracking,
         } => {
+            model.state.display_auth_methods.remove(&source);
             if clear_tracking {
                 model.connected.remove(&source);
                 model.detecting.remove(&source);
@@ -1096,6 +1338,22 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             held_credentials,
             source_reach,
         } => {
+            let machines: HashSet<_> = source_reach
+                .keys()
+                .map(|source| crate::session::machine_of(source).to_owned())
+                .collect();
+            model
+                .state
+                .auth_methods
+                .retain(|machine, _| machines.contains(machine));
+            model
+                .state
+                .display_auth_methods
+                .retain(|source, _| source_reach.contains_key(source));
+            model
+                .state
+                .invalid_auth
+                .retain(|machine| machines.contains(machine));
             model.state.chrome.set_roster_providers(providers);
             model
                 .state
@@ -1306,7 +1564,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .chrome
                 .set_view_border_hovered(view_border_hovered);
             model.state.chrome.set_armed(prefix_active);
-            model.switcher.sync_prefix(prefix_active);
             let modal_kind = model.state.modal_kind();
             model.state.focus.sync_modal(modal_kind);
             let nav_focused = model.state.focus.view_is_nav();
@@ -1363,6 +1620,32 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::Tick { now, spinner } => {
+            let mut expired = Vec::new();
+            for source in &model.state.scanning {
+                let deadline = model
+                    .state
+                    .scan_deadlines
+                    .entry(source.clone())
+                    .or_insert(now + crate::provision::env::SCAN_TIMEOUT);
+                if now >= *deadline {
+                    expired.push(source.clone());
+                }
+            }
+            for source in expired {
+                let sessions = model
+                    .state
+                    .groups
+                    .iter()
+                    .find(|group| group.source == source)
+                    .map(|group| group.sessions.clone())
+                    .unwrap_or_default();
+                model.switcher.apply_source_result(
+                    source,
+                    sessions,
+                    Some("scan timed out after 10s".into()),
+                    &mut model.state,
+                );
+            }
             model.state.chrome.expire_flash(now);
             model.state.chrome.expire_selection_hint(now);
             let history_open =
@@ -1431,6 +1714,11 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
 /// Raises the hint about the card the user just moved the selection to, replacing any
 /// earlier one. A selection that stayed on `before` raises nothing.
 fn hint_selection_move(model: &mut AppModel, before: &Option<crate::state::RowRef>) {
+    if model.state.info_session.as_ref().is_some_and(|session| {
+        !matches!(model.switcher.selected_card(), Some(crate::state::RowRef::Section { source }) if source == session.source)
+    }) {
+        model.state.info_session = None;
+    }
     if model.state.chrome.first_key_notice {
         return;
     }
@@ -1458,6 +1746,7 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::{update, AppModel, Effect, Msg};
+    use crate::model::EventEffect;
 
     fn model() -> AppModel {
         AppModel::from_sources(vec!["local".to_owned()])
@@ -2375,6 +2664,127 @@ mod tests {
         assert!(m.state.chrome.flash.is_empty(), "a result is no flash");
     }
 
+    #[test]
+    fn logout_clears_auth_and_disconnects_the_machine() {
+        let mut m = AppModel::from_sources(vec!["box:tmux".into()]);
+        m.state
+            .auth_methods
+            .insert("box".into(), crate::model::AuthMethod::Password);
+        m.state
+            .display_auth_methods
+            .insert("box:tmux".into(), crate::model::AuthMethod::Password);
+        m.state.live_sources.insert("box:tmux".into());
+        m.connected.insert("box:tmux".into());
+        let effects = update(
+            &mut m,
+            Msg::Commands(vec![crate::model::Command::Logout("box".into())]),
+        );
+        assert!(
+            matches!(effects.as_slice(), [Effect::LogoutMachine { machine, .. }] if machine == "box")
+        );
+        assert!(!m.state.auth_methods.contains_key("box"));
+        assert!(m.state.display_auth_methods.is_empty());
+        assert!(m.state.invalid_auth.contains("box"));
+        assert!(m.state.live_sources.is_empty());
+        assert!(m.connected.is_empty());
+        assert_eq!(
+            m.state.groups[0].err.as_deref(),
+            Some("logged out; log in again or re-scan")
+        );
+    }
+
+    #[test]
+    fn losing_a_held_password_disconnects_the_machine() {
+        let mut m = AppModel::from_sources(vec!["box:tmux".into()]);
+        m.state
+            .auth_methods
+            .insert("box".into(), crate::model::AuthMethod::Password);
+        m.state.live_sources.insert("box:tmux".into());
+        m.connected.insert("box:tmux".into());
+        let effects = update(
+            &mut m,
+            Msg::CredentialInventory {
+                held: HashSet::new(),
+            },
+        );
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Event(EventEffect::DisconnectMachine { machine })] if machine == "box"
+        ));
+        assert!(!m.state.auth_methods.contains_key("box"));
+        assert!(m.state.invalid_auth.contains("box"));
+        assert!(m.state.live_sources.is_empty());
+        assert!(m.connected.is_empty());
+        assert_eq!(
+            m.state.groups[0].err.as_deref(),
+            Some("SSH password no longer held; log in again")
+        );
+    }
+
+    #[test]
+    fn logout_cancels_its_login_and_rejects_a_late_success() {
+        let (mut m, attempt) = submitted_login(&["box"]);
+        let effects = update(
+            &mut m,
+            Msg::Commands(vec![crate::model::Command::Logout("box".into())]),
+        );
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::LogoutMachine {
+                cancel_login: Some(_),
+                ..
+            }]
+        ));
+        assert!(m.state.login_run.is_none());
+        assert!(!m.state.login_progress.contains_key("box"));
+        let effects = update(
+            &mut m,
+            login_result("box", attempt, crate::link::unlock::UnlockOutcome::Ok),
+        );
+        assert!(effects.is_empty());
+        assert!(m.state.invalid_auth.contains("box"));
+        assert!(!m.state.auth_methods.contains_key("box"));
+        assert_eq!(
+            m.state.groups[0].err.as_deref(),
+            Some("logged out; log in again or re-scan")
+        );
+    }
+
+    #[test]
+    fn scanning_card_stops_after_ten_seconds_and_rescan_gets_a_new_budget() {
+        let mut m = AppModel::from_sources(vec!["box".to_owned()]);
+        let started = std::time::Instant::now();
+        update(
+            &mut m,
+            Msg::Tick {
+                now: started,
+                spinner: HashSet::new(),
+            },
+        );
+        assert!(m.state.scanning.contains("box"));
+        update(
+            &mut m,
+            Msg::Tick {
+                now: started + std::time::Duration::from_secs(10),
+                spinner: HashSet::new(),
+            },
+        );
+        assert!(!m.state.scanning.contains("box"));
+        assert_eq!(
+            m.state.groups[0].err.as_deref(),
+            Some("scan timed out after 10s")
+        );
+        m.switcher.mark_scanning("box", &mut m.state);
+        update(
+            &mut m,
+            Msg::Tick {
+                now: started + std::time::Duration::from_secs(11),
+                spinner: HashSet::new(),
+            },
+        );
+        assert!(m.state.scanning.contains("box"));
+    }
+
     /// A model with `sources` blocked by a refused probe, then a login submitted on the
     /// first of them through the pane's own keys. Returns the submission's attempt.
     fn submitted_login(sources: &[&str]) -> (AppModel, u64) {
@@ -2435,6 +2845,7 @@ mod tests {
                 login: crate::transport::Login::default(),
                 attempt,
                 outcome: crate::ui::ops::LoginOutcome {
+                    auth_method: None,
                     connect,
                     output: String::new(),
                     saved: None,
@@ -2443,28 +2854,6 @@ mod tests {
             },
             logged_in: HashSet::new(),
         }
-    }
-
-    #[test]
-    fn only_successful_logins_enter_the_recent_values_list() {
-        let (mut m, attempt) = submitted_login(&["pwbox"]);
-        let login = crate::transport::Login {
-            address: Some("10.0.0.8".into()),
-            port: Some(2222),
-            user: Some("alice".into()),
-        };
-        let mut ok = login_result("pwbox", attempt, crate::link::unlock::UnlockOutcome::Ok);
-        if let Msg::OpResult {
-            result: crate::ui::switcher::OpResult::Login { login: value, .. },
-            ..
-        } = &mut ok
-        {
-            *value = login.clone();
-        }
-        update(&mut m, ok);
-        assert_eq!(m.state.recent_logins.len(), 1);
-        assert_eq!(m.state.recent_logins[0].login, login);
-        assert_eq!(m.state.recent_logins[0].source, "pwbox");
     }
 
     fn probed(machine: &str, probe: u64, err: Option<&str>) -> Msg {
@@ -2771,28 +3160,6 @@ mod tests {
     }
 
     #[test]
-    fn the_scope_key_steps_the_scope_says_so_and_persists_it() {
-        use crate::model::NavScope;
-        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
-        answer(&mut m, "a", &["x"], None);
-        let effects = update(&mut m, Msg::CycleNavScope);
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::PersistNavScope(NavScope::AllHosts)]
-        ));
-        assert_eq!(m.switcher.scope(), NavScope::AllHosts);
-        assert_eq!(m.state.notify.toasts[0].title, "nav scope");
-        assert_eq!(note_texts(&m), ["all hosts"]);
-        update(&mut m, Msg::CycleNavScope);
-        update(&mut m, Msg::CycleNavScope);
-        assert_eq!(
-            m.switcher.scope(),
-            NavScope::Sessions,
-            "three steps go round"
-        );
-    }
-
-    #[test]
     fn enter_in_the_check_table_on_a_blocked_host_focuses_its_login_pane() {
         let mut m = AppModel::from_sources(vec!["a".to_owned(), "lock".to_owned()]);
         answer(&mut m, "a", &["x"], None);
@@ -2854,11 +3221,10 @@ mod tests {
     }
 
     #[test]
-    fn palette_login_opens_a_hidden_unreachable_host_without_filtering() {
+    fn palette_login_opens_an_unreachable_host() {
         let mut m = AppModel::from_sources(vec!["a".to_owned(), "dead".to_owned()]);
         answer(&mut m, "a", &["x"], None);
         answer(&mut m, "dead", &[], Some("connection refused"));
-        m.switcher.set_hide_unreachable(true, &mut m.state);
         update(&mut m, Msg::TogglePalette);
         let effects = update(
             &mut m,
@@ -2867,15 +3233,11 @@ mod tests {
                 prefix: 0x07,
             },
         );
-        assert_eq!(m.switcher.scope(), crate::model::NavScope::AllHosts);
         assert!(m.state.filter.is_empty());
         assert_eq!(m.switcher.current_source().as_deref(), Some("dead"));
         assert!(m.switcher.current_host_blocked());
         assert!(!m.state.focus.view_is_nav());
-        assert!(effects.iter().any(|effect| matches!(
-            effect,
-            Effect::PersistNavScope(crate::model::NavScope::AllHosts)
-        )));
+        assert!(effects.is_empty());
         answer(&mut m, "dead", &[], None);
         assert!(!m.switcher.current_host_blocked());
     }

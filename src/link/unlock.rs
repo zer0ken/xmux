@@ -61,6 +61,7 @@ pub struct Conversation {
     pub output: String,
     pub shell: Option<crate::transport::vocab::RemoteShell>,
     pub password_supplied: bool,
+    pub auth_method: Option<crate::model::AuthMethod>,
 }
 
 #[derive(Clone)]
@@ -134,6 +135,12 @@ fn run(
 ) -> Conversation {
     let mut password_asked = Some(password_asked);
     let mut process = std::process::Command::new(command.program());
+    let auth_log = command
+        .observe_auth()
+        .then(crate::transport::auth_log::AuthLog::new);
+    if let Some(log) = &auth_log {
+        process.args(log.args());
+    }
     process
         .args(command.args())
         .envs(command.env().iter().cloned())
@@ -197,7 +204,10 @@ fn run(
     };
     let _ = child.wait();
     let stdout = out.join().unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
+    let mut stderr = err.join().unwrap_or_default();
+    if let Some(log) = auth_log {
+        stderr.extend_from_slice(log.read().as_bytes());
+    }
     let raw = format!(
         "{}\n{}",
         String::from_utf8_lossy(&stdout),
@@ -231,6 +241,10 @@ fn run(
         }
     }
     let password_supplied = command.password_was_supplied();
+    let auth_method = command
+        .auth_trace_allowed()
+        .then(|| crate::model::AuthMethod::from_ssh_stderr(&raw))
+        .flatten();
     let outcome = match ended {
         Err(FailureKind::Cancelled) => UnlockOutcome::Failed {
             kind: FailureKind::Cancelled,
@@ -277,6 +291,7 @@ fn run(
         output,
         shell,
         password_supplied,
+        auth_method,
     }
 }
 
@@ -286,6 +301,7 @@ fn failed(kind: FailureKind, reason: String, password_supplied: bool) -> Convers
         output: String::new(),
         shell: None,
         password_supplied,
+        auth_method: None,
     }
 }
 
