@@ -210,9 +210,9 @@ def features(s):
 
 
 SCENARIOS = {
-    "compare-manual": (92, 26, compare_manual),
-    "compare-xmux": (92, 26, compare_xmux),
-    "features": (120, 32, features),
+    "compare-manual": (80, 22, compare_manual),
+    "compare-xmux": (80, 22, compare_xmux),
+    "features": (100, 28, features),
 }
 
 
