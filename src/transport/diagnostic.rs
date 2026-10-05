@@ -45,7 +45,24 @@ pub fn decode_openssh_octal(input: &str) -> String {
     out
 }
 
-pub fn sanitize(input: &str) -> String {
+/// A line OpenSSH writes at its VERBOSE level to report a step that worked: the method
+/// that authenticated the connection, or what the session transferred. xmux asks for
+/// that level to learn the method, so these lines never explain a failure.
+pub fn is_verbose_report_line(line: &str) -> bool {
+    let line = line.trim();
+    [
+        "Authenticated to ",
+        "Authenticated using ",
+        "Transferred: sent ",
+        "Bytes per second: ",
+    ]
+    .iter()
+    .any(|prefix| line.starts_with(prefix))
+}
+
+/// The text a terminal would show for `input`: OpenSSH's octal escapes decoded, and
+/// escape sequences, carriage returns, and other control characters dropped.
+pub fn plain_text(input: &str) -> String {
     let decoded = decode_openssh_octal(input);
     let mut plain = String::with_capacity(decoded.len());
     let mut chars = decoded.chars().peekable();
@@ -77,6 +94,11 @@ pub fn sanitize(input: &str) -> String {
             Some(_) | None => {}
         }
     }
+    plain
+}
+
+pub fn sanitize(input: &str) -> String {
+    let plain = plain_text(input);
     let lines: Vec<&str> = plain
         .lines()
         .map(str::trim)
@@ -85,6 +107,7 @@ pub fn sanitize(input: &str) -> String {
                 && !line.starts_with("debug1:")
                 && !line.starts_with("debug2:")
                 && !line.starts_with("debug3:")
+                && !is_verbose_report_line(line)
                 && (!line.to_ascii_lowercase().contains("password:")
                     || line.starts_with("xmux askpass refused prompt:"))
                 && !line.starts_with("xmux-shell:")
@@ -289,6 +312,15 @@ mod tests {
     #[test]
     fn utf8_octal_run_decodes_without_consuming_adjacent_ascii_octal() {
         assert_eq!(decode_openssh_octal(r"\354\225\214\101"), r"알\101");
+    }
+
+    #[test]
+    fn opensshs_verbose_success_reports_are_not_part_of_a_failure() {
+        let input = "Authenticated to box ([10.0.0.1]:22) using \"publickey\".\r\n\
+                     sh: tmux: not found\r\n\
+                     Transferred: sent 2172, received 2836 bytes, in 0.1 seconds\r\n\
+                     Bytes per second: sent 15970.6, received 20853.0";
+        assert_eq!(sanitize(input), "sh: tmux: not found");
     }
 
     #[test]

@@ -416,7 +416,10 @@ pub struct Attachment {
     /// The OS name this attachment's own PTY carries, read when the PTY was opened.
     /// `None` where the platform's PTY has no name (a Windows ConPTY has none).
     child_tty: Option<String>,
-    auth_log: Option<crate::transport::auth_log::AuthLog>,
+    /// The first output an observed ssh child wrote, which carries OpenSSH's report of
+    /// the method that authenticated it. The pump drops its handle once the transcript
+    /// is full or the child is gone, so nothing more can arrive after that.
+    auth_transcript: Option<Arc<Mutex<Vec<u8>>>>,
     #[cfg(test)]
     input_log: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
     /// The one variable a headless attachment answers for, standing in for the live
@@ -427,23 +430,24 @@ pub struct Attachment {
 }
 
 impl Attachment {
-    /// Observe the display client's SSH log off the runtime thread.
+    /// Observe the display client's SSH authentication report off the runtime thread.
     pub fn watch_auth(&mut self, events: tokio::sync::mpsc::UnboundedSender<PtyEvent>) {
-        let Some(auth_log) = self.auth_log.take() else {
+        let Some(transcript) = self.auth_transcript.take() else {
             return;
         };
         let id = self.id;
         std::thread::spawn(move || {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-            while std::time::Instant::now() < deadline {
-                let log = auth_log.read();
-                if let Some(method) = crate::model::AuthMethod::from_ssh_stderr(&log) {
+            loop {
+                // Read after checking the pump is gone, so its last chunk is still seen.
+                let complete = Arc::strong_count(&transcript) == 1;
+                let text = String::from_utf8_lossy(&transcript.lock().unwrap()).into_owned();
+                let text = crate::transport::diagnostic::plain_text(&text);
+                if let Some(method) = crate::model::AuthMethod::from_ssh_stderr(&text) {
                     let _ = events.send(PtyEvent::AuthObserved { id, method });
                     break;
                 }
-                if log.contains("Entering interactive session")
-                    || log.contains("mux_client_request_session")
-                {
+                if complete || std::time::Instant::now() >= deadline {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
@@ -523,6 +527,10 @@ impl Attachment {
     }
 }
 
+/// OpenSSH reports the authentication method before the session writes anything, so the
+/// report is within the child's first output.
+const AUTH_TRANSCRIPT_LIMIT: usize = 16 * 1024;
+
 /// Opens a PTY at `cols×rows`, spawns `argv` (a real `attach` argv composed by the
 /// mux/transport layers) with the caller-supplied `env_clear` keys removed from the
 /// child's environment (the mux nesting guard), starts the control thread (owns
@@ -559,10 +567,9 @@ pub fn spawn_attachment(
     #[cfg(not(unix))]
     let child_tty: Option<String> = None;
     let mut cmd = CommandBuilder::new(command.program());
-    let auth_log = (command.observe_auth() && command.auth_trace_allowed())
-        .then(crate::transport::auth_log::AuthLog::new);
-    if let Some(log) = &auth_log {
-        cmd.args(log.args());
+    let observed = command.observe_auth() && command.auth_trace_allowed();
+    if observed {
+        cmd.args(crate::transport::auth_log::args());
     }
     for arg in command.args() {
         cmd.arg(arg);
@@ -601,6 +608,8 @@ pub fn spawn_attachment(
     let pump_connecting = connecting.clone();
     let pump_output_times = output_times.clone();
     let pump_pending = pending.clone();
+    let auth_transcript = observed.then(|| Arc::new(Mutex::new(Vec::new())));
+    let mut pump_transcript = auth_transcript.clone();
     // The pump answers the child's terminal queries (DSR/DA) over this sender, since
     // there is no real terminal behind the PTY to answer - without it the child
     // stalls on startup and the grid stays blank.
@@ -627,8 +636,14 @@ pub fn spawn_attachment(
                         };
                         g.feed(&buf[..n]);
                         // Only checked until the first visible frame: after that every
-                        // chunk counts, so a full-grid scan never runs per chunk.
-                        (g.cursor(), painted || !g.is_blank())
+                        // chunk counts, so a full-grid scan never runs per chunk. ssh's
+                        // own authentication report is not a frame of the session, so
+                        // a switch never swaps in a pane that shows only that.
+                        let visible = painted
+                            || !g.is_blank_except(
+                                crate::transport::diagnostic::is_verbose_report_line,
+                            );
+                        (g.cursor(), visible)
                     };
                     // Answer DSR/DA queries so the child does not block (empty-pane bug).
                     // Carry only an INCOMPLETE trailing query prefix to the next read -
@@ -656,6 +671,16 @@ pub fn spawn_attachment(
                         }
                     }
                     pump_connecting.store(false, Ordering::Release);
+                    if let Some(transcript) = &pump_transcript {
+                        let mut kept = transcript.lock().unwrap();
+                        let room = AUTH_TRANSCRIPT_LIMIT.saturating_sub(kept.len());
+                        kept.extend_from_slice(&buf[..n.min(room)]);
+                        let full = kept.len() >= AUTH_TRANSCRIPT_LIMIT;
+                        drop(kept);
+                        if full {
+                            pump_transcript = None;
+                        }
+                    }
                     if !marker_done {
                         // Diagnostic: does the display-tty marker sentinel even reach our
                         // read? If a remote attach emits it but the marker never appears
@@ -707,7 +732,7 @@ pub fn spawn_attachment(
         _auth: command.auth_guard().map(Box::new),
         id,
         child_tty,
-        auth_log,
+        auth_transcript,
         #[cfg(test)]
         input_log: None,
         #[cfg(test)]
@@ -779,7 +804,7 @@ fn fake_attachment_with_child(id: u64, child: DummyChild) -> Attachment {
         _auth: None,
         id,
         child_tty: None,
-        auth_log: None,
+        auth_transcript: None,
         input_log: None,
         env_answer: None,
     }
@@ -830,11 +855,13 @@ mod tests {
 
     #[test]
     fn attach_auth_watch_reports_its_own_method() {
-        let auth_log = crate::transport::auth_log::AuthLog::new();
-        let path = auth_log.path().to_path_buf();
-        std::fs::write(&path, "debug1: Authenticated to box using \"password\".\n").unwrap();
+        // ConPTY renders the report as a positioned row of its console.
+        let transcript = Arc::new(Mutex::new(
+            b"\x1b[?25l\x1b[1;1HAuthenticated to box ([10.0.0.1]:22) using \"password\".\x1b[K\r\n"
+                .to_vec(),
+        ));
         let mut attachment = fake_attachment(42);
-        attachment.auth_log = Some(auth_log);
+        attachment.auth_transcript = Some(transcript);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         attachment.watch_auth(tx);
         let event = (0..100).find_map(|_| {
@@ -851,13 +878,191 @@ mod tests {
                 method: crate::model::AuthMethod::Password
             })
         ));
-        for _ in 0..20 {
-            if !path.exists() {
-                return;
+    }
+
+    /// A stand-in for the ssh binary: a script that receives the argv the attach hands
+    /// ssh. `windows` and `unix` are the same behavior in each platform's shell.
+    fn fake_ssh(windows: &str, unix: &str) -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let stem = format!("xmux-fake-ssh-{}-{n}", std::process::id());
+        #[cfg(windows)]
+        let path = {
+            let _ = unix;
+            let path = std::env::temp_dir().join(format!("{stem}.cmd"));
+            std::fs::write(&path, windows.replace('\n', "\r\n")).unwrap();
+            path
+        };
+        #[cfg(unix)]
+        let path = {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = windows;
+            let path = std::env::temp_dir().join(format!("{stem}.sh"));
+            std::fs::write(&path, unix).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            path
+        };
+        path
+    }
+
+    /// The pane's visible text, one row per line.
+    fn pane_text(att: &Attachment) -> String {
+        let g = att.grid.lock().unwrap();
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        g.render_into(&mut buf, area);
+        (0..24)
+            .map(|y| {
+                (0..80)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Spawns `ssh` as an observed display attach and waits for its pane to close or to
+    /// show ssh's failure. A ConPTY can stay open after its child exits.
+    fn run_observed_attach(ssh: &std::path::Path) -> Attachment {
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let command = crate::transport::CommandSpec::new(
+            ssh.to_string_lossy().into_owned(),
+            vec!["--".into(), "box".into(), "exec tmux attach".into()],
+        )
+        .with_auth_observation();
+        let att = spawn_attachment(&command, 80, 24, 9, events, &[]).expect("spawn");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while std::time::Instant::now() < deadline
+            && !pane_text(&att).contains("Host key verification failed.")
+        {
+            match received.try_recv() {
+                Ok(PtyEvent::Exited { .. }) => break,
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(25)),
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        panic!("authentication log was not cleaned up");
+        att
+    }
+
+    /// ssh given `-E` writes its errors to that file; without it they go to stderr.
+    const FAILING_SSH_WINDOWS: &str = "@echo off
+echo args: %*
+if \"%1\"==\"-v\" if \"%2\"==\"-E\" goto logfile
+echo Host key verification failed. 1>&2
+goto end
+:logfile
+echo Host key verification failed.>>\"%~3\"
+:end
+ping -n 2 127.0.0.1 >nul
+exit /b 255
+";
+    const FAILING_SSH_UNIX: &str = "#!/bin/sh
+echo \"args: $*\"
+if [ \"$1\" = -v ] && [ \"$2\" = -E ]; then
+  echo 'Host key verification failed.' >> \"$3\"
+else
+  echo 'Host key verification failed.' >&2
+fi
+sleep 1
+exit 255
+";
+
+    #[cfg_attr(
+        windows,
+        ignore = "spawns a real ConPTY child; run only in a real terminal"
+    )]
+    #[test]
+    fn display_attach_shows_sshs_own_error_in_its_pane() {
+        let ssh = fake_ssh(FAILING_SSH_WINDOWS, FAILING_SSH_UNIX);
+        let att = run_observed_attach(&ssh);
+        let text = pane_text(&att);
+        att.teardown();
+        let _ = std::fs::remove_file(&ssh);
+        assert!(
+            text.lines()
+                .any(|line| line.trim() == "Host key verification failed."),
+            "the reason ssh stopped must be in the pane: {text:?}"
+        );
+    }
+
+    #[cfg_attr(
+        windows,
+        ignore = "spawns a real ConPTY child; run only in a real terminal"
+    )]
+    #[test]
+    fn display_attach_gives_ssh_no_log_file() {
+        let ssh = fake_ssh(FAILING_SSH_WINDOWS, FAILING_SSH_UNIX);
+        let att = run_observed_attach(&ssh);
+        let text = pane_text(&att);
+        att.teardown();
+        let _ = std::fs::remove_file(&ssh);
+        let args = text
+            .lines()
+            .find(|line| line.starts_with("args:"))
+            .unwrap_or_else(|| panic!("the fake ssh reports its argv: {text:?}"));
+        assert!(
+            !args.split_whitespace().any(|arg| arg == "-E"),
+            "a file ssh holds open outlives the attach that reads it: {args}"
+        );
+    }
+
+    /// ssh reports the method, then the session takes a while to draw its first frame.
+    const AUTHENTICATED_SSH_WINDOWS: &str = "@echo off
+echo Authenticated to box ([10.0.0.1]:22) using \"password\". 1>&2
+ping -n 4 127.0.0.1 >nul
+echo session-frame
+ping -n 3 127.0.0.1 >nul
+";
+    const AUTHENTICATED_SSH_UNIX: &str = "#!/bin/sh
+printf '%s\\n' 'Authenticated to box ([10.0.0.1]:22) using \"password\".' >&2
+sleep 3
+echo session-frame
+sleep 2
+";
+
+    #[cfg_attr(
+        windows,
+        ignore = "spawns a real ConPTY child; run only in a real terminal"
+    )]
+    #[test]
+    fn display_attach_reports_its_method_without_painting_the_report() {
+        use std::time::{Duration, Instant};
+        let ssh = fake_ssh(AUTHENTICATED_SSH_WINDOWS, AUTHENTICATED_SSH_UNIX);
+        let (events, _received) = tokio::sync::mpsc::unbounded_channel();
+        let command = crate::transport::CommandSpec::new(
+            ssh.to_string_lossy().into_owned(),
+            vec!["--".into(), "box".into(), "exec tmux attach".into()],
+        )
+        .with_auth_observation();
+        let mut att = spawn_attachment(&command, 80, 24, 9, events, &[]).expect("spawn");
+        let (auth_tx, mut auth_rx) = tokio::sync::mpsc::unbounded_channel();
+        att.watch_auth(auth_tx);
+        let deadline = Instant::now() + Duration::from_millis(2500);
+        let method = loop {
+            match auth_rx.try_recv() {
+                Ok(PtyEvent::AuthObserved { id: 9, method }) => break Some(method),
+                _ if Instant::now() >= deadline => break None,
+                _ => std::thread::sleep(Duration::from_millis(25)),
+            }
+        };
+        let reported = pane_text(&att);
+        let painted_by_report = att.output_times().is_some();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while att.output_times().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let framed = pane_text(&att);
+        att.teardown();
+        let _ = std::fs::remove_file(&ssh);
+        assert_eq!(method, Some(crate::model::AuthMethod::Password));
+        assert!(reported.contains("Authenticated to box"), "{reported:?}");
+        assert!(
+            !painted_by_report,
+            "ssh's report alone is not a session frame"
+        );
+        assert!(framed.contains("session-frame"), "{framed:?}");
     }
 
     // The async runtime is single-threaded, so a blocking write to a slow child (or
