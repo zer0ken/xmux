@@ -38,9 +38,9 @@ One concept, one word. The two axes and the runtime:
 - the app - the runtime that owns the terminal: its loop, its focus state, and
   its input routing.
 - `ViewFocus` - which screen region holds focus (nav or terminal).
-- `Modal` - the mutually-exclusive focus-grabbing UI (the help and the inline
-  input). A popup is its one focus sub-kind: a draggable centered dialog, and only
-  the help is one.
+- `Modal` - the mutually-exclusive focus-grabbing UI a prefix key opens: the inputs
+  (filter, jump, new session, logout), the command palette, the help, the hosts to
+  check, and the history. Every modal draws as a popup.
 
 UI elements a user perceives as distinct things:
 
@@ -69,15 +69,14 @@ UI elements a user perceives as distinct things:
   nav region, and at the right end of the view border row in a band, so the terminal
   view keeps every row it owns and every band row holds cards. At rest it shows the
   prefix alone, and it keeps the prefix alone while a prefix interaction is live, since
-  the key list beside it names the keys. It shows one thing at a time, in order: a flash,
-  an input line, the prefix while the key list is open, the selection hint, the scan
-  indicator, the active filter, then the resting prefix. An input line, a flash, and the
-  selection hint use the whole window's bottom rows beside a side column. In a band,
-  the selection hint uses the view border beside the prefix. An input occupies the
-  seam row when its prompt and complete guide fit; otherwise the prompt and guide
-  occupy adjacent rows anchored to that seam. A flash uses the rows below a top
-  band's seam or above a bottom band's seam. With the nav hidden they use the
-  window's bottom rows. The bar wraps instead of clipping. A flash paints the bar in the
+  the key list beside it names the keys, and while an input is open, since the input's
+  popup names its own. It shows one thing at a time, in order: a flash, the prefix while
+  the key list or an input is open, the selection hint, the scan indicator, the active
+  filter, then the resting prefix. A flash and the selection hint use the whole window's
+  bottom rows beside a side column. In a band, the selection hint uses the view border
+  beside the prefix, and a flash uses the rows below a top band's seam or above a
+  bottom band's seam. With the nav hidden they use the window's bottom rows. A jump
+  states its own refusal in its popup, so the bar keeps resting under it. The bar wraps instead of clipping. A flash paints the bar in the
   error style with a `✗` mark.
 - key table - the one table of every key xmux binds, with the words that name each key.
   Both focus paths resolve a prefix command through it, and the help, the key list, and
@@ -282,8 +281,8 @@ UI elements a user perceives as distinct things:
   say what a thumb cannot: which way the cards went, and how many. A click on one selects
   the hidden card nearest the visible ones. The key list opens off the seam row and
   leaves the counts readable.
-- status row fill - how much of its row the hint bar paints. A floating bar (an input
-  line, a refusal, a selection hint) fills the ROW: a solid bar, legible over whatever it
+- status row fill - how much of its row the hint bar paints. A floating bar (a refusal,
+  a selection hint) fills the ROW: a solid bar, legible over whatever it
   covers. The resting prefix
   indicator paints its text plus a cell of padding and stops, leaving the rest of its row
   to the nav or the view border.
@@ -433,11 +432,11 @@ UI elements a user perceives as distinct things:
   run; an ended card leaves its number vacant, a new card takes the next number, and
   a full scan deals numbers again in list order. The list order, not the numbers,
   decides where a card sits.
-- jump - the digits-only input `prefix <digit>` opens in the hint bar holding the
-  digit. It acts WHILE open: each edit moves the selection while the number names a
+- jump - the digits-only input `prefix <digit>` opens in a popup holding the
+  digit, beside the name of the card the number names. It acts WHILE open: each edit moves the selection while the number names a
   card on the list, and a number no card carries (0, a vacant number, one past the
   highest) leaves the selection alone. Enter closes the popup when the number names a
-  card and flashes the range up to the highest number while leaving it open otherwise;
+  card and states in its popup that no card carries the number while leaving it open otherwise;
   Esc restores where it started. User-facing text calls this "jump to a session" (see
   the naming rule below).
 - instance name - a running app's identity: an auto-generated `<adjective>-<noun>`
@@ -532,8 +531,8 @@ UI elements a user perceives as distinct things:
   which scans a source for sessions, and from the host axis, which reaches one.
 - filter - the type-to-filter input over the nav list. It applies as you type: each
   edit re-filters the cards, the selection holds its card while that survives and
-  lands on the first remaining card otherwise. The input states the total matches,
-  and matching characters are bold.
+  lands on the first remaining card otherwise. Its popup's top border counts the cards
+  kept of the cards listed, and matching characters are bold.
   Esc restores the filter the input opened with; with the input closed, Esc clears an
   active filter. The hosts-to-check table and command palette can select a host by name.
 - hosts to check - the table `prefix h` opens: every host in a problem state grouped by
@@ -549,8 +548,9 @@ UI elements a user perceives as distinct things:
 - a source scan has one ten-second budget shared by first contact and the session
   listing; a slow first contact leaves only the remaining time for enumeration.
   A card still scanning after ten seconds reports a timeout and stops spinning.
-- flash - the reason a key did nothing, shown in the hint bar (a jump number no card
-  carries, a new session on an unreachable host). It goes away on the next tree key, and
+- flash - the reason a key did nothing, shown in the hint bar (a new session on an
+  unreachable host, a logout confirm without the word). A jump number no card carries
+  is stated in the jump's popup instead. It goes away on the next tree key, and
   after ten seconds for a user who presses nothing, since it is about something that
   already happened. A flash is a refusal, never the result of work: that is a toast.
 - toast - the result of work the user started (a login and what it registered, a new
@@ -579,10 +579,12 @@ UI elements a user perceives as distinct things:
   is the doubled-prefix command (one literal prefix byte reaches the pane). The
   key list reads ready to open beside the prefix indicator, so becoming ready is a
   visible change and redraws the frame; the list closes the moment ready clears.
-- popup - the rounded-bordered, opaque, centered (draggable) dialog a popup modal
-  draws, its accent title in the top border. The help and the history are popups; an
-  input renders in the hint bar instead, reading `[feature] guide: <buffer>` with a
-  reversed-block caret at the edit position. The help lists the key table section by
+- popup - the rounded-bordered, opaque, draggable box a modal draws, in the key list's
+  grammar: its accent title and a muted count or machine in the top border, its keys on
+  the bottom border, and a text field's caret as a reversed cell, where the terminal's
+  own cursor also sits so an input method composes in the field. Every popup opens
+  where the key list opens, growing the way it does, so a prefix key replaces the key
+  list with its popup in the same place in every nav layout. The help lists the key table section by
   section and then the glyph legend, searched by typing and scrolled by the arrows.
 
 A zellij TAB is a `window` and a zellij SESSION is a `session`: xmux uses
@@ -604,7 +606,7 @@ the function it started ends:
 | a second prefix (terminal view) | clear, one literal prefix byte to the pane |
 
 The key list and the auto-hide nav show for the whole time ready is set, the key list
-giving way to the input line while an input row is open. Because ready spans the
+giving way to the input's popup while an input row is open. Because ready spans the
 function rather than the keystroke, the list stays up across a resize burst, and it
 closes once by itself.
 
@@ -618,8 +620,8 @@ enclosing mux in the chain would have to pass through.
 never a screen region - screen regions are "views", and the line between them is
 the `view border`. A refused key's reason in the hint bar is a `flash`; the result of
 work the user started is a `toast`, never a "notice". A card's trailing state is a `status`, never a "hint". The reverse-video
-selected card is the `selection highlight`; `cursor` names only the grid's text
-cursor. The furniture around the views is the `chrome`, never a "status surface".
+selected card is the `selection highlight`; `cursor` names only the terminal's text
+cursor (the grid's, or the one on a focused field's caret). The furniture around the views is the `chrome`, never a "status surface".
 The switcher's rendered screen is the "switcher screen", never an "overlay".
 
 ## Working Notes Format

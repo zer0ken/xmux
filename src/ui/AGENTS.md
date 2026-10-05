@@ -18,11 +18,9 @@ view-local state (flash, spinner, view border colours, prefix, ready, the select
 hint). The hint bar rests as the nav's prefix indicator: a label on a side column's
 bottom row, and at the right end of the view border row in a band. A floating bar
 spans the full width in a side layout. A band's selection hint shares the view border
-with the prefix and temporarily takes the place of offscreen counts. An input uses
-the band's seam row, with an adjacent guide row when the complete text needs more
-space. The indicator
-shows the prefix alone at rest
-and while a prefix interaction is live. The chrome instance
+with the prefix and temporarily takes the place of offscreen counts. The indicator
+shows the prefix alone at rest,
+while a prefix interaction is live, and while an input is open. The chrome instance
 itself lives in the runtime state, fed by the app each frame and rendered from it.
 
 The key list module lays out and paints the box a live prefix opens from the indicator
@@ -235,6 +233,10 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   names the terminal (right and down with the nav on the left or above, left and up with
   the nav on the right or below), the other pair names the nav. A change
   to one path is a change to both.
+- Every modal opens as a popup where the key list opens, in the key list's grammar, so a
+  prefix key replaces the key list in the same place in every nav layout. The terminal's
+  own cursor sits on the caret of whichever field takes keys (a popup's or the login
+  pane's), so an input method composes in that field.
 - Modal input owns keys while open; those keys must not leak to the terminal view
   or global shortcuts. At most one modal is open, because the state holds one
   optional modal, so opening any modal drops whatever was open.

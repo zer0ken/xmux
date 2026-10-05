@@ -167,8 +167,8 @@ no function, and no test, so renaming code is never a documentation change.
   category is left from any card of it, so a selection deep inside the band steps
   straight out. Both steps wrap, and both mean the same thing in either layout, since
   neither is defined by where a card sits on screen. While filter input is open, its
-  line states the match count and how many matching hosts are normally hidden, and the
-  matching characters on cards are bold. Enter keeps the filter; Esc restores the
+  popup's top border counts the cards kept of the cards listed, and the matching
+  characters on cards are bold. Enter keeps the filter; Esc restores the
   opening filter. With input closed, Esc clears an active filter.
 - **FR-B5** - Surveying without committing is first-class: xmux is a switcher, not a
   session owner. Quitting (`prefix q`, or the ctl `quit` verb) leaves the current
@@ -219,12 +219,12 @@ no function, and no test, so renaming code is never a documentation change.
   next number. The order of the cards on screen is the list order under either setting. The
   selected card holds the selection mark in that same column instead. Selecting a card
   changes nothing else on the card (the address column keeps its width), so a name holds
-  its column as the selection passes over it. The input stays open in the hint bar so
+  its column as the selection passes over it. The input stays open in its popup so
   the number can grow, and every digit is taken as typed: the number only has to name a
   card on the list at Enter. Each edit moves the selection while the number names a card
   and leaves it alone otherwise; `Enter` closes when the number names a card and, for a
-  vacant number or one past the highest, flashes the range up to the highest number on
-  the list while leaving the input open; `Esc` returns to where the jump started.
+  vacant number or one past the highest, states that no card carries it beside the range
+  up to the highest number on the list while leaving the input open; `Esc` returns to where the jump started.
 - **FR-B11** - Every colour xmux paints is an ANSI-16 slot, so the TERMINAL THEME
   resolves the hue and the whole UI recolours with the user's own scheme. A THEME is a
   named role→ANSI-slot assignment curated in a registry: the built-ins are
@@ -593,7 +593,7 @@ no function, and no test, so renaming code is never a documentation change.
   legend of every glyph the screen uses (the host states, the spinner, the selection
   mark, the overflow cues, the auto-hide border, and the toast levels). Typing searches
   it, ignoring case, and the arrows, `PgUp`/`PgDn`, and `Home`/`End` scroll it; `Esc` or
-  `prefix ?` closes it, and the search line says so whatever the search leaves.
+  `prefix ?` closes it, and its bottom border says so whatever the search leaves.
 ## C. Switching (the keystone)
 
 - **FR-C1** - A same-server pick lands on the picked session. Each mux's driver owns
@@ -707,8 +707,9 @@ xmux aggregates and switches; it does not edit what a mux already edits. Startin
 session is the one mutation it keeps, because a reachable source with no sessions has
 nothing to switch to until one exists.
 
-- **FR-E1** - Create a session on a HOST card (`prefix n`), then it appears in the
-  nav. On a session card the action is refused with a flash naming where to press it.
+- **FR-E1** - Create a session on the host and mux the selected card belongs to
+  (`prefix n`), then it appears in the nav. Under an unreachable host the action is
+  refused with a flash.
 - **FR-E2** - There is no rename, kill, or window/pane command: not on a key, not
   in a modal, not on the wire, and not in the mux command set.
 - **FR-E3** - Create runs off the key path so a slow ssh round-trip never freezes

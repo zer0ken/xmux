@@ -98,6 +98,7 @@ The remaining actions all take the prefix and work from either focus:
 | `prefix n` | start a new session on the selected host |
 | `prefix r` | re-scan: refresh which machines exist, and every source's sessions |
 | `prefix R` | re-scan the selected card's host alone |
+| `prefix L` | log out of the selected SSH machine (asks for the word `logout`) |
 | `prefix h` | open the table of the hosts to check |
 | `prefix :` | search commands by name; type to filter, use arrows to select, Enter to run, Esc to close |
 
@@ -131,8 +132,8 @@ takes the next one. A full scan deals numbers again in list order. The cards sta
 list order under either setting.
 
 The selected card shows the selection mark there instead: its number is the address of
-where you already are. `prefix <digit>` jumps straight there and opens the jump input in
-the hint bar holding the number, so anything past 9 is reached by typing the rest of it
+where you already are. `prefix <digit>` jumps straight there and opens the jump popup
+holding the number, so anything past 9 is reached by typing the rest of it
 (`prefix 1` then `2` lands on 12, then `7` on 127).
 
 Every digit is taken as typed: the selection follows the number while it names a card on
@@ -140,8 +141,9 @@ the list and stays put while it does not. No card carries 0, so `prefix 0` opens
 jump input holding a number no card carries and leaves the selection where it is;
 0 matters only inside a longer number (10, 20, 100), and a leading zero is just a
 spelling (01 is 1). `Enter` closes the input when the number names a card and, for a
-vacant number or one past the highest, flashes the range (1 to the highest number on
-the list) while leaving it open; `Esc` cancels it and returns to where you started.
+vacant number or one past the highest, states in the popup that no card carries it
+while leaving it open (the top border names the range, 1 to the highest number on the
+list); `Esc` cancels it and returns to where you started.
 Digits are prefix-gated, so a bare digit never jumps by accident.
 
 ### Card groups and focus
@@ -218,7 +220,8 @@ whatever that turns out to be). Its bottom border names the xmux version where i
 
 Most keys end their function as they run, so the box closes with the keystroke. Two kinds
 run longer and keep it up for as long as they last: a key that opens an input row holds
-it until Enter or Esc closes the row (the input line takes the hint bar meanwhile), and a
+it until Enter or Esc closes the row (the input's popup takes the key list's place
+meanwhile), and a
 resize holds it until the repeat window lapses, so a whole Ctrl+arrow burst reads as one
 interaction.
 
@@ -241,20 +244,20 @@ then drops the reason, then the later keys. A selection xmux was told to make (a
 `switch`, the nav following the mux) raises no hint.
 
 In a top or bottom band the selection hint occupies the view border row beside the
-prefix. Offscreen card counts return when the hint closes. An input or refusal still
-opens into the terminal view next to the border so its text has room to wrap.
+prefix. Offscreen card counts return when the hint closes. A refusal still opens into
+the terminal view next to the border so its text has room to wrap.
 
 With the nav auto-hidden the mux owns every row, prefix indicator included, until a prefix
 interaction starts: then the nav comes back for the moment it is needed, so a jump can
 read the card numbers, and it hides again when the interaction ends. With no indicator on
 screen, the key list opens over the window's bottom left, and the bar floats over the
-bottom of the window for what must be seen the moment it happens: an input line, a
-refusal, and the hint after a selection move. A refusal is the reason a key did nothing (a
-jump number no card carries, a new session on an unreachable host); it opens where the
+bottom of the window for what must be seen the moment it happens: a refusal and the
+hint after a selection move. A refusal is the reason a key did nothing (a new
+session on an unreachable host, a logout confirm without the word); it opens where the
 hint after a selection move does, in the error colour, wraps instead of clipping, and goes
 away on the next key or after ten seconds. Scan progress and the active filter persist,
 so they stay in the nav and never take a row back from a hidden one. The bar shows one
-thing at a time, in order: a refusal, an input line, the prefix alone while the key list
+thing at a time, in order: a refusal, the prefix alone while the key list or an input
 is open, the hint after a selection move, the scan progress, the active filter, and then
 the resting prefix.
 
@@ -295,6 +298,18 @@ forwarded raw to the session's active pane, so programs running inside the mux
 
 ## Modals
 
+Every modal opens as a popup where the key list opens, growing the way it does: beside a
+side column against the prefix indicator, over a bottom band's seam or under a top
+band's seam at its right end, and over the window's bottom left with the nav hidden. A
+prefix key therefore replaces the key list with its popup in the same place. A popup is
+the key list's rounded box: its title and a count or machine in the top border, its keys
+on the bottom border. Its width follows its content or the window, never the nav's
+width. A popup
+whose left edge would leave one or two cells of the row beside it starts at the window's
+left edge instead. A drag moves it. While a popup's text field takes keys, the
+terminal's own cursor sits on the field's caret, so an input method composes in the
+field.
+
 - **Help** (`prefix ?`): every key, section by section, from the same table the key list
   and the hint after a selection move are built from, then a glyph legend: the host
   states `?`, `▲`, and `✗`, the spinner, the selection mark `❯`, the overflow cues `‹ ›`
@@ -303,8 +318,8 @@ forwarded raw to the session's active pane, so programs running inside the mux
   (ignoring case), keeping each match under its section title, and a section title that
   matches keeps its whole section. `Backspace` shortens the query and `Ctrl-U` clears it.
   `↑`/`↓` scroll one row, `PgUp`/`PgDn` ten, and `Home`/`End` jump to either end; the
-  title names the rows on screen whenever they are not all of them. `Esc` or `prefix ?`
-  closes it, as the search line says whatever the search leaves, and any other key is
+  top border names the rows on screen whenever they are not all of them. `Esc` or `prefix ?`
+  closes it, as its bottom border says whatever the search leaves, and any other key is
   swallowed while it is open.
 - **History** (`prefix m`): every result and background event, newest first, each with
   how long ago it happened. `↑`/`↓` (or `k`/`j`) scroll one record and `PgUp`/`PgDn`
@@ -312,23 +327,30 @@ forwarded raw to the session's active pane, so programs running inside the mux
   open. Opening it takes every toast down.
 - **Hosts to check** (`prefix h`): every host in a problem state, grouped under its cause
   (`?` login needed, `▲` unreachable, `✗` list failed), each with the reason its last
-  answer gave and `hidden` on the ones the nav leaves without a card. The title counts
-  the hidden ones. `↑`/`↓` (or `k`/`j`) move the row; `Enter` closes the table and
+  answer gave. The top border
+  counts the hosts. `↑`/`↓` (or `k`/`j`) move the row; `Enter` closes the table and
   selects that host's card, setting the filter to the host's name when it has no card on
   the list, and for a host that needs a login it also focuses the terminal view, whose
   login pane then takes the keys. `q`, `Esc`, or `prefix h` closes it.
-- **Input** (filter, new session, jump): the hint bar becomes the input line,
-  `[feature] guide: <buffer>` with the caret at the edit position. Type into the
-  buffer, `Backspace` deletes, `Enter` submits, `Esc` cancels.
+- **Input** (filter, jump, new session, logout): a popup with one text field and the
+  caret at the edit position. Type into the field, `Backspace` deletes, `Enter`
+  submits, `Esc` cancels.
+- **New session** (`prefix n`): the popup names the host and mux the session lands on
+  and takes its name; an empty name is assigned automatically, as above.
+- **Logout** (`prefix L`): the popup states the session, the observed SSH login, what
+  happens to a held password and the key, and the machine whose connections close.
+  Typing `logout` and `Enter` logs out.
 - **Filter** (`prefix /`): the list re-filters as you type, so which cards survive is
   visible before you press anything else; the selection holds its card while that
   survives and lands on the first remaining card otherwise. `Enter` closes it and
   keeps the filter; `Esc` restores the filter you opened with. With the filter
-  applied and the input closed, `Esc` in the nav clears it. The input line states the
-  total matches and how many matching hosts are normally hidden.
+  applied and the input closed, `Esc` in the nav clears it. The top border counts
+  the cards kept of the cards listed.
 - **Jump** (`prefix <digit>`): digits only. It acts while open (each edit moves the
-  selection while the number names a card), so `Enter` closes when the number names a
-  card and flashes the range otherwise, and `Esc` restores where you started.
+  selection while the number names a card), and the popup names that card beside the
+  number. `Enter` closes when the number names a card and otherwise states in the
+  popup that no card carries it, with the range in the top border. `Esc` restores
+  where you started.
 
 A terminal smaller than 24 columns by 4 rows shows the required and current size in
 place of the split interface.

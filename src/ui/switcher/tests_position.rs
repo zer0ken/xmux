@@ -541,8 +541,15 @@ fn pl9_the_key_list_and_the_help_name_prefix_z() {
         )),
         "the key list names z: {list:?}"
     );
-    let (_, lines) =
-        crate::ui::modal::help_lines("C-g", NavPosition::Left, &Default::default(), "", 0, 200);
+    let (_, lines) = crate::ui::modal::help_lines(
+        "C-g",
+        NavPosition::Left,
+        &Default::default(),
+        "",
+        0,
+        200,
+        u16::MAX,
+    );
     let help: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     assert!(
         help.iter()
@@ -763,42 +770,132 @@ fn a_band_selection_hint_owns_the_seam_until_it_expires() {
     }
 }
 
+/// Every surface a prefix key opens, as the modal it sets.
+fn prefix_surfaces() -> Vec<crate::state::Modal> {
+    use crate::state::{Input, InputMode, Modal};
+    let input = |mode, source: Option<&str>| {
+        let mut input = Input::new(mode, String::new(), source.map(str::to_string));
+        if mode == InputMode::Logout {
+            input.facts = vec![
+                ("session", "local/build".into()),
+                ("SSH login", "public key".into()),
+                ("key", "stays on the host".into()),
+                ("connections", "closes local connections".into()),
+            ];
+        }
+        Modal::Input(Box::new(input))
+    };
+    vec![
+        input(InputMode::Filter, None),
+        input(InputMode::Jump, None),
+        input(InputMode::New, Some("local")),
+        input(InputMode::Logout, Some("local")),
+        Modal::Palette {
+            query: String::new(),
+            selected: 0,
+            open: false,
+            decoder: crate::display::decode::KeyDecoder::new(),
+        },
+        Modal::Help {
+            query: String::new(),
+            scroll: 0,
+            decoder: crate::display::decode::KeyDecoder::new(),
+        },
+        Modal::Check {
+            selected: 0,
+            open: false,
+        },
+        Modal::History { scroll: 0 },
+    ]
+}
+
 #[test]
-fn a_band_input_uses_the_seam_and_adds_a_guide_row_only_when_needed() {
-    for position in [NavPosition::Top, NavPosition::Bottom] {
-        for (width, expected_height) in [(100, 1), (60, 2)] {
+fn every_prefix_surface_opens_where_the_key_list_opens() {
+    let area = Rect::new(0, 0, 140, 38);
+    let navs = [
+        Some(NavPosition::Left),
+        Some(NavPosition::Right),
+        Some(NavPosition::Top),
+        Some(NavPosition::Bottom),
+        None,
+    ];
+    for position in navs {
+        for (n, modal) in prefix_surfaces().into_iter().enumerate() {
             let mut state = crate::state::State::from_scan(two_groups());
             let switcher = Switcher::new(&mut state);
-            state.modal = Some(crate::state::Modal::Input(Box::new(
-                crate::state::Input::new(
-                    crate::state::InputMode::New,
-                    "new session name".into(),
-                    "api".into(),
-                    Some("local".into()),
-                ),
-            )));
-            let area = Rect::new(0, 0, width, 30);
-            let plan = switcher.layout(area, nav_at(position), &state, &RenderPlan::default());
-            let seam = plan.regions.view_border;
-            assert_eq!(plan.hint_bar_rect.height, expected_height);
-            assert_eq!(plan.hint_bar_rect.width, width);
-            if position == NavPosition::Top {
-                assert_eq!(plan.hint_bar_rect.y, seam.y);
-            } else {
-                assert_eq!(plan.hint_bar_rect.bottom(), seam.bottom());
-            }
-            let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
-            terminal
-                .draw(|frame| switcher.render(frame, None, false, &state, &plan))
-                .unwrap();
-            let row = |y| {
-                (0..width)
-                    .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string())
-                    .collect::<String>()
+            let nav = match position {
+                Some(p) => {
+                    let nav = NavSize::visible(24).with_position(p);
+                    if is_band(p) {
+                        nav.with_height(BAND_H)
+                    } else {
+                        nav
+                    }
+                }
+                None => NavSize::hidden(24),
             };
-            assert!(row(plan.hint_bar_rect.y).contains("new session  name: api"));
-            let guide_y = plan.hint_bar_rect.bottom() - 1;
-            assert!(row(guide_y).contains("Enter create · Esc cancel · empty = auto"));
+            state.chrome.set_nav_position(nav.position);
+            state.modal = Some(modal);
+            let plan = switcher.layout(area, nav, &state, &RenderPlan::default());
+            let pop = plan.popup_rect;
+            let r = plan.regions;
+            assert!(!pop.is_empty(), "{position:?} #{n}");
+            assert!(pop.right() <= area.right() && pop.bottom() <= area.bottom());
+            match position {
+                Some(NavPosition::Left) => {
+                    assert_eq!(
+                        (pop.x, pop.bottom()),
+                        (r.terminal.x, r.hint_bar.bottom()),
+                        "#{n}"
+                    )
+                }
+                Some(NavPosition::Right) => {
+                    assert_eq!(
+                        (pop.right(), pop.bottom()),
+                        (r.terminal.right(), r.hint_bar.bottom()),
+                        "#{n}"
+                    )
+                }
+                Some(NavPosition::Bottom) => {
+                    assert_eq!(
+                        (pop.right(), pop.bottom()),
+                        (area.right(), r.view_border.y),
+                        "#{n}"
+                    )
+                }
+                Some(NavPosition::Top) => {
+                    assert_eq!(
+                        (pop.right(), pop.y),
+                        (area.right(), r.view_border.bottom()),
+                        "#{n}"
+                    )
+                }
+                None => assert_eq!((pop.x, pop.bottom()), (area.x, area.bottom()), "#{n}"),
+            }
+            if let Some(p) = position.filter(|p| is_band(*p)) {
+                let card = plan
+                    .nav_cells
+                    .iter()
+                    .find(|(i, _)| *i == switcher.selected)
+                    .map(|(_, r)| *r)
+                    .unwrap();
+                assert!(
+                    !card.intersects(pop),
+                    "{p:?} #{n}: the selected card stays in view"
+                );
+            }
         }
+    }
+}
+
+#[test]
+fn an_input_popup_too_short_for_its_rows_keeps_its_field() {
+    let mut state = crate::state::State::from_scan(two_groups());
+    let switcher = Switcher::new(&mut state);
+    for modal in prefix_surfaces().into_iter().take(4) {
+        state.modal = Some(modal);
+        let (_, lines) = switcher.input_popup_at(&state, 50, 1).expect("an input");
+        assert_eq!(lines.len(), 1);
+        assert!(crate::ui::modal::caret_offset(&lines[0]).is_some());
     }
 }

@@ -5,7 +5,7 @@ impl Runtime {
     /// stdin and bytes replayed after a terminal→nav switch. Handles prefix arming
     /// (`C-g` then `q` → quit, `Ctrl+←` → move the border left, `Ctrl+→` → right,
     /// the nav width following the placement),
-    /// Enter → focus terminal (unless an inline input is open),
+    /// Enter → focus terminal (unless an input popup is open),
     /// ←/→ navigate the nav; then the off-loop op dispatch, ensure-current-host, and
     /// the `r` re-scan. Returns `(focus_terminal, quit, width_delta, toggle_auto_hide)`.
     /// The selection is committed at the loop top, so this only drives navigation +
@@ -29,8 +29,8 @@ impl Runtime {
         for key in keys {
             // Re-query per key: opening a modal popup (via a NavKey applied below) flips
             // this, which changes how the next key in this same read resolves. Gating on
-            // ANY modal popup (not just the inline input) makes a modal OWN its keys: the
-            // help modal and the inline input both swallow prefix/Enter, so `prefix q`
+            // ANY modal popup (not just an input) makes a modal OWN its keys: the
+            // help and an input both swallow prefix/Enter, so `prefix q`
             // can't quit and Enter can't focus the terminal while one is on screen.
             let is_inputting = self.model.state.is_modal_popup_open();
             match resolve_nav_key(

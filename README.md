@@ -196,9 +196,9 @@ The nav takes these keys while it holds focus:
 | `Enter`                  | move focus into the selected session's terminal view                     |
 | `prefix 1`-`prefix 9`    | jump to a session by the number in its left column (keep typing for 10+) |
 | `prefix n`               | start a new session on the selected host                                 |
-| `/`                      | fuzzy-filter the cards                                                   |
+| `prefix /`               | fuzzy-filter the cards                                                   |
 | `prefix r`               | re-scan: refresh which machines exist, and every source's sessions       |
-| `prefix L`               | log out of the current SSH host                                          |
+| `prefix L`               | log out of the selected SSH host                                         |
 
 xmux has its own prefix, like tmux's `set -g prefix`. The default is `Ctrl-g`,
 and `[ui] prefix` replaces it. A chord is the prefix followed by one key:
@@ -240,8 +240,6 @@ login:
    - the port
    - the username
    - an optional masked password
-   After login, one radio choice selects: do nothing, save the connection values
-   to ssh config, or register this machine's public key on the host.
 2. On submit, xmux hands those values to ssh and answers the host-key question
    and the password itself, so the login needs no further input. Esc ends the
    attempt.
@@ -263,15 +261,16 @@ accepts the key but cannot open a session, xmux reports the server's error and r
 the line this registration added, so the host stays reachable by password. When that
 login cannot be tried at all, xmux keeps the key and reports it as not verified.
 
-The information screen shows the SSH authentication method reported by the selected
-session's display connection. On a host card it shows the machine's last observed
+The information screen's `SSH login` row shows the SSH authentication method reported
+by the selected session's display connection. On a host card it shows the machine's last observed
 method. If SSH reuses a connection without reporting its method, the screen says
 `not observed`. A held password disappearing closes that machine's
 metadata and display connections. A new login or explicit re-scan is needed to
 connect again.
 
-On an SSH host, `prefix L` opens a confirmation showing the selected session's
-observed authentication method and the machine affected. Type `logout` to clear
+On an SSH host, `prefix L` opens a confirmation that states the selected session, its
+observed SSH login, what happens to a held password and to the key, and the machine
+whose connections close. Type `logout` to clear
 the password xmux holds in memory and close that machine's connections, including
 its SSH master where present. SSH config and public keys remain available. An
 explicit re-scan can reconnect with an available key; otherwise, log in again.
