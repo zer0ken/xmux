@@ -140,18 +140,20 @@ no function, and no test, so renaming code is never a documentation change.
   shows a visible frame and its output then settles for 50 ms, continuous output after
   that frame reaches 400 ms, or 3 s pass without a visible frame
   (stale-while-revalidate). Input targets the fresh attachment during that wait, and
-  resize reaches both attachments. A selected scanning host without a confirmed grid,
-  and the initial scan before a card is selected, show the monochrome Braille X
-  animation in the terminal view with a centered 32-column, 16-row frame. A full
-  re-scan keeps the confirmed grid visible. A settled host screen keeps its content
-  and centers the animation in the remaining rows when a complete frame fits;
-  a confirmed session shows its grid. An
+  resize reaches both attachments. A selected host card whose source is scanning
+  shows its scanning screen: the `{host}/{mux}` headline, the `scanning` state word,
+  and the host's latest observation facts when any exist. A session grid of another
+  source never shows under it. A full re-scan that turned the selected session card
+  into the same source's host card keeps that session's confirmed grid until the
+  selection moves. The initial scan before a card is selected shows the monochrome
+  Braille X animation alone, in a centered 32-column, 16-row frame. A scanning or
+  settled host screen keeps its content and centers the animation in the remaining
+  rows when a complete frame fits; a confirmed session shows its grid. An
   attachment a host warms on a session of its own choosing is kept
   live, because that is what makes its host instant to reach, but it is never
   confirmed and so cannot take the view. Whenever the confirmed session is not the
   one the cursor names, the view is carried back to the cursor for as long as the two
-  differ. Connection and unreachable state hints remain in the nav; on a scanning
-  screen the animation states only that the selected host has not answered yet. `[ui]
+  differ. Connection and unreachable state hints remain in the nav. `[ui]
   braille-animation` defaults to true; false hides the central animation in both
   scanning and settled host screens while preserving nav activity spinners. Config
   changes apply live.

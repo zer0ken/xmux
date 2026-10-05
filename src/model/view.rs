@@ -21,8 +21,19 @@ pub enum ViewScreen {
     HostInfo,
 }
 
-/// Chooses the terminal view screen from domain facts. A confirmed display keeps
-/// its grid during a scan; only a scan without one receives the animation.
+/// The session confirmed into the terminal view, as the screen choice reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConfirmedDisplay<'a> {
+    pub address: &'a Address,
+    /// A full re-scan turned this session's card into its host card, and the selection
+    /// has not moved since. Only then may a scanning host card keep this session's grid.
+    pub collapsed_into_selection: bool,
+}
+
+/// Chooses the terminal view screen from domain facts. A selected host card that is
+/// scanning shows its scanning screen, never another source's grid. The one exception
+/// is a full re-scan that collapsed the selected session card into its own host card:
+/// that session's grid stays until the selection moves.
 pub fn choose_view_screen(
     selected_source: Option<&str>,
     selected_address: Option<&Address>,
@@ -30,15 +41,14 @@ pub fn choose_view_screen(
     scanning: bool,
     empty: bool,
     own_session: Option<&Address>,
-    // Whether a session has already been confirmed into the terminal view.
-    confirmed_display: bool,
+    displayed: Option<ConfirmedDisplay<'_>>,
 ) -> Option<ViewScreen> {
     if selected_address.is_some() && selected_address == own_session {
         return Some(ViewScreen::SelfSession);
     }
-    if selected_source.is_none() {
-        return (scanning && !confirmed_display).then_some(ViewScreen::Scanning);
-    }
+    let Some(source) = selected_source else {
+        return (scanning && displayed.is_none()).then_some(ViewScreen::Scanning);
+    };
     match failure {
         Some(FailureKind::Blocked) => return Some(ViewScreen::Login),
         Some(FailureKind::ListFailed) => return Some(ViewScreen::ListFailed),
@@ -49,7 +59,9 @@ pub fn choose_view_screen(
         return None;
     }
     if scanning {
-        return (!confirmed_display).then_some(ViewScreen::Scanning);
+        let kept =
+            displayed.is_some_and(|d| d.collapsed_into_selection && d.address.source == source);
+        return (!kept).then_some(ViewScreen::Scanning);
     }
     Some(if empty {
         ViewScreen::Empty
@@ -68,12 +80,27 @@ mod tests {
         Address::new(source, session)
     }
 
+    fn shown(address: &Address) -> Option<ConfirmedDisplay<'_>> {
+        Some(ConfirmedDisplay {
+            address,
+            collapsed_into_selection: false,
+        })
+    }
+
+    fn collapsed(address: &Address) -> Option<ConfirmedDisplay<'_>> {
+        Some(ConfirmedDisplay {
+            address,
+            collapsed_into_selection: true,
+        })
+    }
+
     #[test]
     fn screen_choice_covers_each_settled_state() {
         let selected = address("prod", "work");
+        let other = address("local", "edit");
 
         assert_eq!(
-            choose_view_screen(None, None, None, false, false, None, false),
+            choose_view_screen(None, None, None, false, false, None, None),
             None
         );
         assert_eq!(
@@ -84,7 +111,7 @@ mod tests {
                 false,
                 false,
                 None,
-                false,
+                None,
             ),
             Some(ViewScreen::Login)
         );
@@ -96,16 +123,16 @@ mod tests {
                 false,
                 false,
                 None,
-                false,
+                None,
             ),
             Some(ViewScreen::Unreachable)
         );
         assert_eq!(
-            choose_view_screen(Some("prod"), None, None, false, true, None, false),
+            choose_view_screen(Some("prod"), None, None, false, true, None, None),
             Some(ViewScreen::Empty)
         );
         assert_eq!(
-            choose_view_screen(Some("prod"), None, None, false, false, None, true),
+            choose_view_screen(Some("prod"), None, None, false, false, None, shown(&other)),
             Some(ViewScreen::HostInfo)
         );
         assert_eq!(
@@ -116,7 +143,7 @@ mod tests {
                 false,
                 false,
                 Some(&selected),
-                false,
+                None,
             ),
             Some(ViewScreen::SelfSession)
         );
@@ -134,7 +161,7 @@ mod tests {
                 true,
                 true,
                 Some(&selected),
-                false,
+                None,
             ),
             Some(ViewScreen::SelfSession)
         );
@@ -146,20 +173,16 @@ mod tests {
                 true,
                 true,
                 None,
-                false,
+                None,
             ),
             Some(ViewScreen::Unreachable)
         );
         assert_eq!(
-            choose_view_screen(Some("prod"), None, None, true, true, None, false),
+            choose_view_screen(Some("prod"), None, None, true, true, None, None),
             Some(ViewScreen::Scanning)
         );
         assert_eq!(
-            choose_view_screen(None, None, None, true, false, None, false),
-            Some(ViewScreen::Scanning)
-        );
-        assert_eq!(
-            choose_view_screen(Some("prod"), None, None, false, true, None, false),
+            choose_view_screen(Some("prod"), None, None, false, true, None, None),
             Some(ViewScreen::Empty)
         );
         assert_eq!(
@@ -170,19 +193,70 @@ mod tests {
                 false,
                 false,
                 None,
-                false
+                None
             ),
             None
         );
         assert_eq!(
-            choose_view_screen(Some("prod"), Some(&selected), None, true, true, None, false),
+            choose_view_screen(Some("prod"), Some(&selected), None, true, true, None, None),
             None,
             "a scanning host must not replace a selected session"
         );
+    }
+
+    #[test]
+    fn a_scanning_host_card_never_shows_another_sources_grid() {
+        let other = address("local", "edit");
         assert_eq!(
-            choose_view_screen(Some("prod"), None, None, true, true, None, true),
+            choose_view_screen(Some("prod"), None, None, true, true, None, shown(&other)),
+            Some(ViewScreen::Scanning)
+        );
+        assert_eq!(
+            choose_view_screen(
+                Some("prod"),
+                None,
+                None,
+                true,
+                true,
+                None,
+                collapsed(&other)
+            ),
+            Some(ViewScreen::Scanning),
+            "a collapse into another source's card keeps nothing"
+        );
+    }
+
+    #[test]
+    fn a_full_rescan_collapse_keeps_its_own_session_grid() {
+        let work = address("prod", "work");
+        assert_eq!(
+            choose_view_screen(Some("prod"), None, None, true, true, None, collapsed(&work)),
             None,
-            "a full rescan keeps the confirmed display"
+            "the selection still sits where the re-scan collapsed it"
+        );
+    }
+
+    #[test]
+    fn a_moved_selection_ends_the_collapse_exception() {
+        let work = address("prod", "work");
+        assert_eq!(
+            choose_view_screen(Some("prod"), None, None, true, true, None, shown(&work)),
+            Some(ViewScreen::Scanning),
+            "the same source's grid without the collapse is not kept"
+        );
+    }
+
+    #[test]
+    fn the_initial_scan_without_a_card_animates() {
+        let other = address("local", "edit");
+        assert_eq!(
+            choose_view_screen(None, None, None, true, false, None, None),
+            Some(ViewScreen::Scanning)
+        );
+        assert_eq!(
+            choose_view_screen(None, None, None, true, false, None, shown(&other)),
+            None,
+            "a confirmed display without a selected card keeps its grid"
         );
     }
 }

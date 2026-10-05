@@ -84,14 +84,18 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   states, not a panel each: one builder lays them all out, so the headline, the state
   word, and the key rows cannot drift apart. A later settled state joins that grammar.
   The domain model chooses the state; this layer renders the result.
-- Scanning uses a Braille-only animation instead of the settled-state grammar. A
-  settled screen centers the same animation below its content when the remaining
-  rectangle fits a complete frame. `[ui] braille-animation` controls both placements;
+- A selected scanning host joins the settled-state grammar with the `scanning` state
+  word and its latest observation facts. Only the initial scan before a card is
+  selected paints the Braille animation alone. A scanning or settled screen centers
+  the same animation below its content when the remaining rectangle fits a complete
+  frame. `[ui] braille-animation` controls both placements;
   disabling it leaves nav activity spinners visible. The
   application owns its clock, the render plan records the domain-selected screen,
   and both the live frame and off-screen dump paint from that same immutable choice.
-  Its fixed 32-column, 16-row monochrome frames use terminal Braille glyphs. A confirmed
-  session grid remains visible through a scan, including a full re-scan.
+  Its fixed 32-column, 16-row monochrome frames use terminal Braille glyphs. A scanning
+  host card never shows another source's grid. A full re-scan that collapsed the
+  selected session card into its host card keeps that session's grid until the
+  selection moves.
 - The terminal view refuses exactly one address, the session xmux is running in, and it
   refuses it by emptying the view TARGET rather than at each place that would attach.
   The target is what the display reconcile, the attach and the mux-side switch all read,

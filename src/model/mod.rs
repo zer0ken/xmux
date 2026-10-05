@@ -38,4 +38,4 @@ pub use operation::{KeyRegistration, LoginOutcome, OpResult, Ops, RegistrationOu
 pub use plan::{DeathSignal, DisplayTty, EventSource};
 pub use selection::Selection;
 pub use server_model::ServerModel;
-pub use view::{choose_view_screen, ViewScreen};
+pub use view::{choose_view_screen, ConfirmedDisplay, ViewScreen};

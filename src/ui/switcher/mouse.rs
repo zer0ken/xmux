@@ -54,7 +54,7 @@ impl Switcher {
             return;
         };
         if self.rows.get(idx).is_some() {
-            self.user_moved = true;
+            self.note_user_move();
             self.set_selected(idx, state);
         }
     }

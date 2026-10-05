@@ -1008,6 +1008,109 @@ async fn rescan_returns_cursor_to_the_same_session() {
     );
 }
 
+/// Selects the host card of `source`, as a user move does.
+fn select_host_card(h: &mut Harness, source: &str) {
+    let i =
+        h.sw.rows
+            .iter()
+            .position(|r| matches!(&r.reference, RowRef::Host { source: s, .. } if s == source))
+            .expect("the host card");
+    h.sw.note_user_move();
+    h.sw.set_selected(i, &h.state);
+}
+
+#[test]
+fn a_scanning_host_card_shows_its_scanning_screen_over_another_sources_display() {
+    let mut h = Harness::from_sources(&["local", "prod"]);
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess("local", "web", 1, false)],
+        None,
+        &mut h.state,
+    );
+    h.state.displayed = crate::model::Selection {
+        source: "local".into(),
+        session: "web".into(),
+    };
+    select_host_card(&mut h, "prod");
+    assert!(h.state.scanning.contains("prod"));
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        Some(crate::model::ViewScreen::Scanning),
+        "local/web must not show under the scanning prod card"
+    );
+}
+
+#[tokio::test]
+async fn a_full_rescan_keeps_the_collapsed_sessions_grid_until_the_selection_moves() {
+    let mut h = three_hosts_cursor_on_middle().await;
+    h.state.displayed = crate::model::Selection {
+        source: "jupiter00".into(),
+        session: "infer".into(),
+    };
+    h.sw.request_rescan(&mut h.state);
+    assert!(matches!(
+        h.sw.current_ref(),
+        Some(RowRef::Host { source, .. }) if source == "jupiter00"
+    ));
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        None,
+        "the collapsed session keeps its grid"
+    );
+    // Another source answering does not move the selection.
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess("local", "web", 1, false)],
+        None,
+        &mut h.state,
+    );
+    assert_eq!(h.sw.current_view_screen(&h.state), None);
+    // Moving away and back ends the exception.
+    h.key(KeyCode::Down).await;
+    select_host_card(&mut h, "jupiter00");
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        Some(crate::model::ViewScreen::Scanning)
+    );
+}
+
+#[test]
+fn a_scanning_host_screen_states_its_headline_word_and_facts() {
+    let mut h = Harness::from_sources(&["local", "prod"]);
+    h.sw.apply_source_result(
+        "local".into(),
+        vec![sess("local", "web", 1, false)],
+        None,
+        &mut h.state,
+    );
+    h.state.failure_runs.insert("prod".into(), 2);
+    select_host_card(&mut h, "prod");
+    h.draw();
+    assert_eq!(h.plan.view_screen, Some(crate::model::ViewScreen::Scanning));
+    let view = h.view_text();
+    let lines: Vec<&str> = view.lines().map(str::trim).collect();
+    let headline = lines
+        .iter()
+        .position(|l| l.starts_with("prod"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the headline:
+{view}"
+            )
+        });
+    assert_eq!(lines[headline + 1], "scanning", "{view}");
+    assert!(
+        view.contains("failures") && view.contains("2 in a row"),
+        "{view}"
+    );
+    assert!(
+        !view.contains("re-scan"),
+        "a scan in flight offers no key:
+{view}"
+    );
+}
+
 #[tokio::test]
 async fn rescan_reselect_dropped_when_user_navigates_away() {
     let mut h = three_hosts_cursor_on_middle().await;

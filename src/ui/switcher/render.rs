@@ -663,6 +663,37 @@ impl Switcher {
         }
     }
 
+    /// Paints the domain-selected view screen into `area`. Every screen about a card
+    /// shares the factual chrome grammar; the initial scan, which has no card to be
+    /// about, paints the Braille animation alone.
+    fn render_view_screen(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &crate::state::State,
+        kind: crate::model::ViewScreen,
+        focused: bool,
+    ) {
+        let address = self.view_screen_address(state, kind);
+        if kind == crate::model::ViewScreen::Scanning && address.source.is_empty() {
+            if state.chrome.braille_animation {
+                crate::ui::braille_x::render(frame, area, state.chrome.animation_ms);
+            }
+            return;
+        }
+        state.chrome.render_view_screen(
+            frame,
+            area,
+            state,
+            crate::ui::chrome::ViewScreenRender {
+                address: &address,
+                kind,
+                focused,
+            },
+            &self.palette,
+        );
+    }
+
     pub fn render(
         &self,
         frame: &mut Frame,
@@ -696,25 +727,7 @@ impl Switcher {
         // prefix indicator of its own. A selected view screen still owns that region.
         if plan.nav_hidden {
             match plan.view_screen {
-                Some(crate::model::ViewScreen::Scanning) => {
-                    if state.chrome.braille_animation {
-                        crate::ui::braille_x::render(frame, area, state.chrome.animation_ms);
-                    }
-                }
-                Some(kind) => {
-                    let address = self.view_screen_address(state, kind);
-                    state.chrome.render_view_screen(
-                        frame,
-                        area,
-                        state,
-                        crate::ui::chrome::ViewScreenRender {
-                            address: &address,
-                            kind,
-                            focused: terminal_focused,
-                        },
-                        &palette,
-                    );
-                }
+                Some(kind) => self.render_view_screen(frame, area, state, kind, terminal_focused),
                 None => self.render_terminal_view(frame, area, grid),
             }
             if let Some(g) = grid.filter(|_| plan.view_screen.is_none()) {
@@ -756,27 +769,9 @@ impl Switcher {
             .chrome
             .render_view_border(frame, plan.regions.view_border, terminal_focused);
         let term_area = plan.regions.terminal;
-        // A domain-selected view screen replaces the grid. Scanning paints Braille;
-        // settled host and own-session states share the factual chrome grammar.
+        // A domain-selected view screen replaces the grid.
         if let Some(kind) = plan.view_screen {
-            if kind == crate::model::ViewScreen::Scanning {
-                if state.chrome.braille_animation {
-                    crate::ui::braille_x::render(frame, term_area, state.chrome.animation_ms);
-                }
-            } else {
-                let address = self.view_screen_address(state, kind);
-                state.chrome.render_view_screen(
-                    frame,
-                    term_area,
-                    state,
-                    crate::ui::chrome::ViewScreenRender {
-                        address: &address,
-                        kind,
-                        focused: terminal_focused,
-                    },
-                    &palette,
-                );
-            }
+            self.render_view_screen(frame, term_area, state, kind, terminal_focused);
         } else {
             self.render_terminal_view(frame, term_area, grid);
         }

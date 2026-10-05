@@ -116,16 +116,20 @@ mod tests {
         let mut state = crate::state::State::from_sources(vec!["pending".into()]);
         let switcher = Switcher::from_sources(&mut state);
         let previous = crate::ui::switcher::RenderPlan::default();
-        let first = dump_screen(&switcher, None, 70, 24, &state, &previous);
+        let first = dump_screen(&switcher, None, 90, 24, &state, &previous);
         state.chrome.animation_ms = 1_132;
-        let turned = dump_screen(&switcher, None, 70, 24, &state, &previous);
+        let turned = dump_screen(&switcher, None, 90, 24, &state, &previous);
         assert_ne!(first, turned);
         state.chrome.animation_ms = 0;
+        // The scanning host's screen leaves no room for a whole frame, so none is painted:
+        // a row holds at most the nav card's spinner.
         let small = dump_screen(&switcher, None, 55, 8, &state, &previous);
         assert_eq!(small.lines().count(), 8);
-        assert!(small
+        assert!(small.lines().all(|line| line
             .chars()
-            .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c)));
+            .filter(|c| ('\u{2801}'..='\u{28ff}').contains(c))
+            .count()
+            <= 1));
     }
 
     #[test]
