@@ -520,7 +520,7 @@ impl Switcher {
                 modal::filter_popup(input, matches, total, width, palette)
             }
             InputMode::Jump => {
-                let refused = !state.chrome.flash.is_empty();
+                let refused = input.refused.is_some();
                 let target = self.jump_row(&input.buffer).map(|i| self.card_name(i));
                 modal::jump_popup(
                     input,

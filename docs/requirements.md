@@ -167,8 +167,8 @@ no function, and no test, so renaming code is never a documentation change.
   category is left from any card of it, so a selection deep inside the band steps
   straight out. Both steps wrap, and both mean the same thing in either layout, since
   neither is defined by where a card sits on screen. While filter input is open, its
-  line states the match count and how many matching hosts are normally hidden, and the
-  matching characters on cards are bold. Enter keeps the filter; Esc restores the
+  popup's top border counts the cards kept of the cards listed, and the matching
+  characters on cards are bold. Enter keeps the filter; Esc restores the
   opening filter. With input closed, Esc clears an active filter.
 - **FR-B5** - Surveying without committing is first-class: xmux is a switcher, not a
   session owner. Quitting (`prefix q`, or the ctl `quit` verb) leaves the current
@@ -593,7 +593,7 @@ no function, and no test, so renaming code is never a documentation change.
   legend of every glyph the screen uses (the host states, the spinner, the selection
   mark, the overflow cues, the auto-hide border, and the toast levels). Typing searches
   it, ignoring case, and the arrows, `PgUp`/`PgDn`, and `Home`/`End` scroll it; `Esc` or
-  `prefix ?` closes it, and the search line says so whatever the search leaves.
+  `prefix ?` closes it, and its bottom border says so whatever the search leaves.
 ## C. Switching (the keystone)
 
 - **FR-C1** - A same-server pick lands on the picked session. Each mux's driver owns
@@ -707,8 +707,9 @@ xmux aggregates and switches; it does not edit what a mux already edits. Startin
 session is the one mutation it keeps, because a reachable source with no sessions has
 nothing to switch to until one exists.
 
-- **FR-E1** - Create a session on a HOST card (`prefix n`), then it appears in the
-  nav. On a session card the action is refused with a flash naming where to press it.
+- **FR-E1** - Create a session on the host and mux the selected card belongs to
+  (`prefix n`), then it appears in the nav. Under an unreachable host the action is
+  refused with a flash.
 - **FR-E2** - There is no rename, kill, or window/pane command: not on a key, not
   in a modal, not on the wire, and not in the mux command set.
 - **FR-E3** - Create runs off the key path so a slow ssh round-trip never freezes

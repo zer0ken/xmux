@@ -5249,13 +5249,16 @@ async fn a_jump_holds_out_of_range_numbers_and_vets_at_enter() {
         h.sw.selected, start,
         "while no card carries the number, the selection stays"
     );
-    // Enter on a dead number flashes the range and keeps the popup open.
+    // Enter on a dead number refuses it in the popup and keeps the popup open.
     h.key(KeyCode::Enter).await;
     assert!(h.state.is_inputting(), "the popup stays open");
     assert!(
-        h.state.chrome.flash.contains("no session"),
-        "the flash names the dead number: {}",
-        h.state.chrome.flash
+        matches!(&h.state.modal, Some(Modal::Input(i)) if i.refused.is_some()),
+        "the popup refuses the dead number"
+    );
+    assert!(
+        h.state.chrome.flash.is_empty(),
+        "a jump refusal is no flash"
     );
     let row = h.popup_row(1);
     assert!(
@@ -5396,9 +5399,12 @@ async fn a_jump_on_0_opens_the_input_and_names_no_card() {
     h.key(KeyCode::Enter).await;
     assert!(h.state.is_inputting(), "the popup stays open");
     assert!(
-        h.state.chrome.flash.contains("no session 0 (1 - 4)"),
-        "the flash names the dead number and the 1-based range: {}",
-        h.state.chrome.flash
+        matches!(&h.state.modal, Some(Modal::Input(i)) if matches!(i.refused.as_deref(), Some("0"))),
+        "the popup refuses the dead number"
+    );
+    assert!(
+        h.state.chrome.flash.is_empty(),
+        "a jump refusal is no flash"
     );
 }
 
@@ -5492,9 +5498,12 @@ async fn the_two_digit_boundary_starts_at_exactly_ten_cards() {
     h.key(KeyCode::Enter).await;
     assert!(h.state.is_inputting(), "the popup stays open");
     assert!(
-        h.state.chrome.flash.contains("no session 11 (1 - 10)"),
-        "the flash names the dead number and the 1-based range: {}",
-        h.state.chrome.flash
+        matches!(&h.state.modal, Some(Modal::Input(i)) if matches!(i.refused.as_deref(), Some("11"))),
+        "the popup refuses the dead number"
+    );
+    assert!(
+        h.state.chrome.flash.is_empty(),
+        "a jump refusal is no flash"
     );
 }
 
@@ -7547,9 +7556,12 @@ async fn a_jump_lands_by_the_fixed_number_and_refuses_a_vacant_one() {
         "Enter on a vacant number keeps the input"
     );
     assert!(
-        h.state.chrome.flash.contains("no session 2 (1 - 3)"),
-        "{}",
-        h.state.chrome.flash
+        matches!(&h.state.modal, Some(Modal::Input(i)) if matches!(i.refused.as_deref(), Some("2"))),
+        "the popup refuses the dead number"
+    );
+    assert!(
+        h.state.chrome.flash.is_empty(),
+        "a jump refusal is no flash"
     );
     h.key(KeyCode::Esc).await;
     h.key(KeyCode::Char('3')).await;

@@ -16,7 +16,7 @@ never in a central match on server model. abduco has no control stream; it is po
 ## Mental Model
 
 abduco is a PER-SESSION mux: each session is its own server process owning its own
-unix socket under `~/.abduco`. It is the simplest mux xmux drives — it has no
+unix socket under `~/.abduco`. It is the simplest mux xmux drives: it has no
 windows (a session is one PTY running one command), no control-mode channel, and no
 server-socket flag. The display driver holds ONE per-source PTY and REATTACHES it
 with `abduco -a <name>` on every session change, which attaches to that session's

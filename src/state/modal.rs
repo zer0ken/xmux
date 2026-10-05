@@ -17,8 +17,8 @@ pub(crate) enum InputMode {
     /// row, the session is what it stands for). Unlike the other modes this one acts
     /// WHILE it is open: every edit moves the selection while the number names a card,
     /// so the number is a live cursor rather than a value submitted at the end. Enter
-    /// closes the popup when the number names a card and flashes the valid range while
-    /// leaving it open otherwise; Esc restores where the jump started.
+    /// closes the popup when the number names a card and otherwise states in the popup
+    /// that no card carries it, leaving it open; Esc restores where the jump started.
     Jump,
 }
 
@@ -41,6 +41,9 @@ pub(crate) struct Input {
     /// onto the wrong card. Esc returns here; Enter leaves the selection where the
     /// live jump already put it.
     pub(crate) restore: Option<RowRef>,
+    /// [`InputMode::Jump`] only: the number Enter found no card for, stated in the jump's
+    /// popup until the next key.
+    pub(crate) refused: Option<String>,
     /// [`InputMode::Filter`] only: the filter the input opened from, restored on Esc.
     /// The filter applies live while the input is open, so cancelling must undo every
     /// edit back to this value.
@@ -60,6 +63,7 @@ impl Input {
             cursor,
             source,
             restore: None,
+            refused: None,
             restore_filter: None,
         }
     }
@@ -141,7 +145,7 @@ impl Input {
     }
 }
 
-/// The single open modal, if any: at most one popup or inline input. Modeling it as
+/// The single open modal, if any: at most one popup. Modeling it as
 /// one `Option` (not independent fields) makes the
 /// modals' mutual exclusion structural: opening one drops whatever was open, and
 /// the compiler guarantees two can never coexist, so the hand-maintained "clear
@@ -194,14 +198,14 @@ pub(crate) fn is_reader(modal: &Option<Modal>) -> bool {
     )
 }
 
-/// True while a centered modal popup is open. Every modal is one today, so this
+/// True while a modal popup is open. Every modal is one today, so this
 /// is `is_some()`; it stays a named predicate because callers ask the QUESTION
 /// ("is a draggable popup on screen?"), not the representation.
 pub(crate) fn is_popup_open(modal: &Option<Modal>) -> bool {
     modal.is_some()
 }
 
-/// True while an inline input (filter / new session) is open.
+/// True while an input popup (filter / jump / new session / logout) is open.
 pub(crate) fn is_inputting(modal: &Option<Modal>) -> bool {
     matches!(modal, Some(Modal::Input(_)))
 }

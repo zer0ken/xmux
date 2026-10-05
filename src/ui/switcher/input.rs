@@ -499,7 +499,7 @@ impl Switcher {
 
     // --- input row ----------------------------------------------------------
 
-    /// Opens the fuzzy filter input. The only inline input the switcher opens by
+    /// Opens the fuzzy filter input. The only input popup the switcher opens by
     /// mode; `new session` is opened by [`Switcher::open_new`], which needs the
     /// selected host captured up front.
     pub(super) fn open_input(&mut self, mode: InputMode, state: &mut crate::state::State) {
@@ -550,7 +550,7 @@ impl Switcher {
     /// it. The buffer is read as its value, spelling included, so 01 is 1: the values no
     /// card carries are 0, a vacant number (its card ended or is not on the list), and
     /// everything past the highest. The jump reads it on every edit to move the selection
-    /// while the number names a card, and at Enter to decide whether to land or flash: see
+    /// while the number names a card, and at Enter to decide whether to land or refuse: see
     /// [`Switcher::jump_accepts`].
     pub(super) fn jump_row(&self, number: &str) -> Option<usize> {
         let n = number.trim().parse::<usize>().ok()?;
@@ -559,7 +559,7 @@ impl Switcher {
 
     /// Whether the jump would land on `number`, i.e. some card carries it. Read at
     /// Enter only: every digit is taken while typing, and a number that names no card
-    /// just leaves the selection alone until Enter, which flashes the range. An empty
+    /// just leaves the selection alone until Enter, which refuses it in the popup. An empty
     /// buffer is not acceptable as a jump target but is a legal editing state, so it is
     /// handled by the caller, not here.
     fn jump_accepts(&self, number: &str) -> bool {
@@ -633,11 +633,13 @@ impl Switcher {
     }
 
     fn handle_input_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
-        // A flash is a transient error/message - it lives only until the next key. Clear
-        // it here so a key while an input is open (a fresh edit, a fresh Enter) restores
-        // the input line; an action below may set a fresh one, which survives because
-        // this runs first.
+        // A flash and a jump's refusal live only until the next key. Clear them here so a
+        // key while an input is open (a fresh edit, a fresh Enter) restores the popup; an
+        // action below may set a fresh one, which survives because this runs first.
         state.chrome.clear_flash();
+        if let Some(Modal::Input(input)) = state.modal.as_mut() {
+            input.refused = None;
+        }
         match ev.code {
             KeyCode::Enter => {
                 let (mode, val, source) = {
@@ -652,16 +654,14 @@ impl Switcher {
                 };
                 match mode {
                     // Enter on a jump lands only when the buffer names a card. A number
-                    // no card carries flashes the range and keeps the popup open, so the
-                    // user can find out how high the numbers go without closing; an
-                    // empty buffer just keeps it open.
+                    // no card carries is refused in the popup, which stays open with the
+                    // range in its top border; an empty buffer just keeps it open.
                     InputMode::Jump => {
                         if !val.is_empty() && self.jump_accepts(&val) {
                             self.close_input(state);
-                        } else {
-                            let last = self.highest_number();
-                            if !val.is_empty() {
-                                state.flash(format!("no session {val} (1 - {last})"));
+                        } else if !val.is_empty() {
+                            if let Some(Modal::Input(input)) = state.modal.as_mut() {
+                                input.refused = Some(val);
                             }
                         }
                         Vec::new()

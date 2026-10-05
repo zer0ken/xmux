@@ -179,7 +179,7 @@ xmux update                   # 설치된 바이너리를 갱신한다
 xmux version
 ```
 
-nav는 왼쪽에 있고, terminal view는 선택한 세션의 실시간 화면을 표시한다. 키보드
+nav는 왼쪽에 있고, 오른쪽의 terminal view는 선택한 세션의 실시간 화면을 표시한다. 키보드
 포커스는 두 view 중 한쪽에만 있다.
 
 ## 키
@@ -195,8 +195,9 @@ nav에 포커스가 있을 때 nav가 받는 키는 다음과 같다.
 | `Enter`                    | 선택한 세션의 terminal view로 포커스를 옮긴다                         |
 | `prefix 1`-`prefix 9`      | 왼쪽 열의 번호로 세션을 선택한다 (10 이상은 계속 입력한다)            |
 | `prefix n`                 | 선택한 host에 새 세션을 만든다                                        |
-| `/`                        | card를 퍼지 필터로 좁힌다                                             |
+| `prefix /`                 | card를 퍼지 필터로 좁힌다                                             |
 | `prefix r`                 | 다시 스캔한다. 머신 목록과 각 source의 세션을 모두 갱신한다           |
+| `prefix L`                 | 선택한 SSH host에서 로그아웃한다                                      |
 
 xmux에는 tmux의 `set -g prefix`처럼 자체 prefix가 있다. 기본값은 `Ctrl-g`이며,
 `[ui] prefix` 설정이 이 값을 대체한다. 조합키는 prefix 다음에 누르는 키 하나다.
@@ -211,7 +212,8 @@ xmux에는 tmux의 `set -g prefix`처럼 자체 prefix가 있다. 기본값은 `
 
 prefix를 누르면 prefix 표시 옆에 그 prefix로 쓸 수 있는 키 전체를 나열한 상자가
 열린다. 마우스로 card를 클릭하면 그 card가 선택되고, terminal view를 클릭하면 포커스가
-terminal view로 옮겨진다. 나머지 키는 [`docs/keybind.md`](docs/keybind.md)에 있다.
+terminal view로 옮겨진다. 설치 후 처음 키를 누르면 xmux는 설정된 prefix와 도움말 키를
+잠시 안내하고, 안내를 표시했다는 사실을 기록한다. 나머지 키는 [`docs/keybind.md`](docs/keybind.md)에 있다.
 
 ## host와 source
 
@@ -243,16 +245,29 @@ ssh가 스스로 알아내는 값만으로 접속하지 못한 원격 host는 `l
    모든 명령이 같은 값으로 접속한다.
 
 입력한 값으로 끝낼 수 없는 로그인은 서버가 요구한 것을 알린다. 성공한 로그인이
-남기는 것은 체크박스 두 개가 정한다.
+남기는 것은 라디오 선택 하나가 정한다.
 
-- 입력한 값을 `~/.ssh/config` 스탠자로 기록할지 여부
-- 사용자의 공개키를 그 host에 등록해 비밀번호를 다시 묻지 않게 할지 여부
+- 아무것도 남기지 않음
+- 입력한 값을 `~/.ssh/config` 스탠자로 기록
+- 사용자의 공개키를 그 host에 등록해 비밀번호를 다시 묻지 않게 함
 
 xmux는 공개키를 등록한 뒤 그 키만 허용하는 로그인을 한 번 따로 실행한다. 등록 결과는
 그 로그인이 명령을 실행했을 때만 성공이다. host가 키를 받아들인 뒤 세션을 열지 못하면
 xmux는 서버의 오류를 실패로 알리고 이번 등록이 추가한 줄을 제거하므로, 그 host에는
 계속 비밀번호로 접속할 수 있다. 그 로그인을 시도조차 하지 못하면 xmux는 키를 남겨 두고
 검증하지 못했다고 알린다.
+
+정보 화면의 `SSH login` 행은 선택한 세션의 display 연결이 보고한 SSH 인증 방식을
+표시한다. host card에서는 그 머신에서 마지막으로 관찰한 방식을 표시한다. SSH가 인증
+방식을 보고하지 않고 연결을 재사용하면 이 행은 `not observed`를 표시한다. xmux가
+보관하던 비밀번호가 사라지면 xmux는 그 머신의 메타데이터 연결과 display 연결을 닫는다.
+다시 접속하려면 새로 로그인하거나 명시적으로 다시 스캔해야 한다.
+
+SSH host에서 `prefix L`을 누르면 확인 창이 열린다. 확인 창은 선택한 세션, 그 세션에서
+관찰한 SSH 로그인 방식, 보관한 비밀번호와 키의 처리, 연결을 닫을 머신을 표시한다.
+`logout`을 입력하면 xmux는 메모리에 보관한 비밀번호를 지우고, SSH master가 있으면 그
+master를 포함해 그 머신의 연결을 닫는다. SSH 설정과 공개키는 그대로 남는다. 명시적으로
+다시 스캔하면 사용할 수 있는 키로 다시 접속하고, 그런 키가 없으면 다시 로그인해야 한다.
 
 ## roster
 
@@ -268,7 +283,8 @@ roster는 xmux가 host로 제공할 머신을 조립한다. roster는 provider �
 xmux는 roster를 시작할 때와 다시 스캔할 때마다 조립한다. `local`은 ssh 없이
 접근하는 이 머신 자체라 roster에 포함되지 않으며, 어떤 provider도 이름을 제안하지
 않는 머신은 xmux가 다루지 않는다. `[discovery]` 표는 provider를 하나씩 끄는
-설정이며, 기본값은 모두 켜져 있다.
+설정이며, 기본값은 모두 켜져 있다. 각 source의 첫 접속과 세션 목록 조회는 10초의
+스캔 제한을 함께 쓴다. 10초 안에 응답하지 않은 card는 스캔을 멈추고 timeout을 표시한다.
 
 모든 provider는 ssh 대상 이름을 산출하고, xmux는 어느 provider가 이름을 제안했든
 같게 동작한다. xmux는 제안한 provider를 이름과 함께 보관했다가 host에 접근하지
@@ -341,8 +357,8 @@ mux = "tmux"          # 생략하거나 "auto"이면 호스트가 답한 mux 전
   - 역할별 색 오버라이드
   - selection-style
   - hint-bar-style
-  - max-fps
   - view-border 스타일
+  - max-fps
   - notifications
   - renumbering
   - braille-animation

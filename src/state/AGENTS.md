@@ -55,7 +55,7 @@ that keeps the last-known inventory. Connection and inventory events carry parse
 sessions for update to fold into the source's own inventory, the single owner.
 
 The modal is ONE optional value: at most one of help, history, host check, command
-palette, or inline input.
+palette, or input popup (filter, jump, new session, logout).
 A single option, rather than independent fields, makes the modals' mutual exclusion
 structural, so opening one drops whatever was open. State owns the modal types,
 classifiers, input editing, and the read-only popup feed. The UI owns popup geometry

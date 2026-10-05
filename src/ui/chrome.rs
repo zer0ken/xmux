@@ -1367,7 +1367,7 @@ impl Chrome {
     pub(crate) fn hint_bar_text(&self, width: u16, state: &crate::state::State) -> String {
         // Use the active prefix so the hint_bar matches the user's configured binding.
         let p = &self.ui_prefix;
-        if self.flash_shown(state) {
+        if !self.flash.is_empty() {
             format!(" ✗ {}", self.flash)
         } else if state.is_inputting() {
             // An open input says its keys on its own box's border, so the indicator rests.
@@ -1411,16 +1411,6 @@ impl Chrome {
         }
     }
 
-    /// Whether the bar states the flash. An open jump states its own refusal in its box,
-    /// so the bar keeps resting under it.
-    fn flash_shown(&self, state: &crate::state::State) -> bool {
-        !self.flash.is_empty()
-            && !matches!(
-                &state.modal,
-                Some(crate::state::Modal::Input(i)) if i.mode == crate::state::InputMode::Jump
-            )
-    }
-
     /// The hint_bar text split into the lines to render. The fit-based text is always one
     /// line; only a flash (an arbitrary error message) may exceed `width`, so it wraps
     /// across as many nav rows as it needs rather than clipping.
@@ -1428,7 +1418,7 @@ impl Chrome {
         let text = self.hint_bar_text(width, state);
         // Only a flash can exceed `width` (the fit-based text is already constrained);
         // wrap it on word boundaries with a consistent left margin.
-        if !self.flash_shown(state) {
+        if !!self.flash.is_empty() {
             return vec![text];
         }
         wrap_text(text.trim_start(), width.saturating_sub(1))
@@ -1528,7 +1518,7 @@ impl Chrome {
             .map(|l| l.chars().count() as u16)
             .max()
             .unwrap_or(0);
-        let flash = self.flash_shown(state);
+        let flash = !self.flash.is_empty();
         let styled = !flash && self.hint_bar_style == hint_bar_default_style(palette);
         let fact = (!self.armed)
             .then_some(self.selection_hint.as_ref())
@@ -1737,9 +1727,9 @@ mod tests {
 
     #[test]
     fn hint_bar_shows_a_flash_over_an_open_input() {
-        // A flash outranks an open input: a dead jump number flashes its range while
-        // leaving the input open, so the range must show over the input line; once the
-        // flash clears, the input line takes the bar back.
+        // A flash outranks an open input: a logout confirm Entered without the word
+        // flashes while leaving the input open, so the flash must show; once it clears,
+        // the bar rests again.
         use crate::ui::modal::{Input, InputMode, Modal};
         let mut c = Chrome::default();
         let state = crate::state::State {
@@ -1757,13 +1747,13 @@ mod tests {
             "the input says its keys where it is typed, so the bar rests: {t:?}"
         );
         // A flash displaces the input while it lasts.
-        c.flash("no session 9 (1 - 4)");
+        c.flash("type logout to confirm");
         let t2 = c.hint_bar_text(60, &state);
         assert!(
-            t2.contains("no session 9 (1 - 4)"),
+            t2.contains("type logout to confirm"),
             "the flash shows over the input: {t2:?}"
         );
-        // The next key clears the flash and the input line returns.
+        // The next key clears the flash and the bar rests again.
         c.flash.clear();
         let t3 = c.hint_bar_text(60, &state);
         assert_eq!(

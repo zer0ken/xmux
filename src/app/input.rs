@@ -185,13 +185,18 @@ pub(crate) fn resolve_nav_key(
     if !is_inputting && is_focus_in(key.code) {
         return Some(Action::FocusTerminal);
     }
-    // Tier A: bare (unprefixed) r/R/n, bare `/`, and bare digits are inert - they require
+    // Tier A: bare (unprefixed) r/R/n/L, bare `/`, and bare digits are inert - they require
     // the prefix. Navigation and Enter stay bare. Only applies when not inputting, so
-    // every key is still literal text while an input row (filter / new / jump) is open.
+    // every key is still literal text while an input popup (filter / new / jump / logout)
+    // is open.
     if !is_inputting
         && (matches!(
             key.code,
-            KeyCode::Char('r') | KeyCode::Char('R') | KeyCode::Char('n') | KeyCode::Char('/')
+            KeyCode::Char('r')
+                | KeyCode::Char('R')
+                | KeyCode::Char('n')
+                | KeyCode::Char('L')
+                | KeyCode::Char('/')
         ) || matches!(key.code, KeyCode::Char(c) if c.is_ascii_digit()))
     {
         return None;
@@ -581,7 +586,7 @@ mod tests {
 
         // Bare state-changing keys are inert without the prefix. Digits are in that
         // tier too: a card jump is a deliberate chord, not a stray keystroke.
-        for k in [b"r" as &[u8], b"n", b"/", b"0", b"4", b"9"] {
+        for k in [b"r" as &[u8], b"n", b"L", b"/", b"0", b"4", b"9"] {
             assert_eq!(
                 rt(k, false),
                 Vec::<Action>::new(),
@@ -591,6 +596,7 @@ mod tests {
         // The prefix arms them → they resolve to the nav executor (NavKey).
         assert_eq!(rt(b"\x07r", false), vec![tk('r')], "prefix r arms rescan");
         assert_eq!(rt(b"\x07n", false), vec![tk('n')], "prefix n arms new");
+        assert_eq!(rt(b"L", false), vec![tk('L')], "prefix L arms logout");
         assert_eq!(
             rt(b"\x07/", false),
             vec![tk('/')],

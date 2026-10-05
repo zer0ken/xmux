@@ -64,15 +64,13 @@ pub(crate) fn collapsed_nav_width(ui_prefix: &str) -> u16 {
 /// Whether the hint bar floats over the whole window instead of resting at the nav's
 /// prefix indicator: for a refusal and the hint after a selection move. A live prefix
 /// does not float the bar: its keys open in the key list instead. An open input does not
-/// either: it says its keys where it is typed, and a refused jump says so in its own
-/// prompt.
+/// either: it says its keys on its popup's border.
 pub(crate) fn hint_bar_floats(state: &crate::state::State) -> bool {
-    let jumping = matches!(&state.modal, Some(Modal::Input(i)) if i.mode == InputMode::Jump);
-    (!state.chrome.flash.is_empty() && !jumping)
+    !state.chrome.flash.is_empty()
         || (state.chrome.selection_hint.is_some() && !state.chrome.armed && !state.is_inputting())
 }
 
-/// Whether the prefix key list is open: a live prefix that no input line or refusal
+/// Whether the prefix key list is open: a live prefix that no input popup or refusal
 /// outranks.
 pub(crate) fn key_list_open(state: &crate::state::State) -> bool {
     state.chrome.armed && !state.is_inputting() && state.chrome.flash.is_empty()

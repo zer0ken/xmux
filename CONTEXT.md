@@ -69,9 +69,9 @@ UI elements a user perceives as distinct things:
   nav region, and at the right end of the view border row in a band, so the terminal
   view keeps every row it owns and every band row holds cards. At rest it shows the
   prefix alone, and it keeps the prefix alone while a prefix interaction is live, since
-  the key list beside it names the keys, and while a modal is open, since the modal's
+  the key list beside it names the keys, and while an input is open, since the input's
   popup names its own. It shows one thing at a time, in order: a flash, the prefix while
-  the key list or a modal is open, the selection hint, the scan indicator, the active
+  the key list or an input is open, the selection hint, the scan indicator, the active
   filter, then the resting prefix. A flash and the selection hint use the whole window's
   bottom rows beside a side column. In a band, the selection hint uses the view border
   beside the prefix, and a flash uses the rows below a top band's seam or above a
@@ -281,8 +281,8 @@ UI elements a user perceives as distinct things:
   say what a thumb cannot: which way the cards went, and how many. A click on one selects
   the hidden card nearest the visible ones. The key list opens off the seam row and
   leaves the counts readable.
-- status row fill - how much of its row the hint bar paints. A floating bar (an input
-  line, a refusal, a selection hint) fills the ROW: a solid bar, legible over whatever it
+- status row fill - how much of its row the hint bar paints. A floating bar (a refusal,
+  a selection hint) fills the ROW: a solid bar, legible over whatever it
   covers. The resting prefix
   indicator paints its text plus a cell of padding and stops, leaving the rest of its row
   to the nav or the view border.
@@ -531,8 +531,8 @@ UI elements a user perceives as distinct things:
   which scans a source for sessions, and from the host axis, which reaches one.
 - filter - the type-to-filter input over the nav list. It applies as you type: each
   edit re-filters the cards, the selection holds its card while that survives and
-  lands on the first remaining card otherwise. The input states the total matches,
-  and matching characters are bold.
+  lands on the first remaining card otherwise. Its popup's top border counts the cards
+  kept of the cards listed, and matching characters are bold.
   Esc restores the filter the input opened with; with the input closed, Esc clears an
   active filter. The hosts-to-check table and command palette can select a host by name.
 - hosts to check - the table `prefix h` opens: every host in a problem state grouped by
@@ -620,8 +620,8 @@ enclosing mux in the chain would have to pass through.
 never a screen region - screen regions are "views", and the line between them is
 the `view border`. A refused key's reason in the hint bar is a `flash`; the result of
 work the user started is a `toast`, never a "notice". A card's trailing state is a `status`, never a "hint". The reverse-video
-selected card is the `selection highlight`; `cursor` names only the grid's text
-cursor. The furniture around the views is the `chrome`, never a "status surface".
+selected card is the `selection highlight`; `cursor` names only the terminal's text
+cursor (the grid's, or the one on a focused field's caret). The furniture around the views is the `chrome`, never a "status surface".
 The switcher's rendered screen is the "switcher screen", never an "overlay".
 
 ## Working Notes Format

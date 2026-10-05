@@ -93,8 +93,8 @@ pub struct State {
     /// The app's focus state machine - which pane keys go to and whether a
     /// modal is open. The single source of truth for focus.
     pub focus: Focus,
-    /// The single open modal, if any (help / inline input / kill confirm / context
-    /// menu). One Option - not four independent fields - so the modals' mutual
+    /// The single open modal, if any (an input, the palette, the help, the hosts to
+    /// check, the history). One Option - not four independent fields - so the modals' mutual
     /// exclusion is structural: opening one drops whatever was open, and two can
     /// never coexist. The switcher owns the modal behavior and the transient popup
     /// geometry (drag offset / drawn rect); this owns which modal is open + its content.
@@ -335,8 +335,7 @@ impl State {
         }
     }
 
-    /// True while a modal owns the screen (the help popup or the inline input) is
-    /// open. These drive [`ModalKind::Popup`]; the context
+    /// True while a modal popup owns the screen. These drive [`ModalKind::Popup`]; the context
     /// menu is separate (pointer-anchored).
     ///
     /// [`ModalKind::Popup`]
@@ -344,7 +343,7 @@ impl State {
         is_popup_open(&self.modal)
     }
 
-    /// True while an inline input (filter / rename / new) is open. The app
+    /// True while an input popup (filter / jump / new session / logout) is open. The app
     /// routes every key to the switcher then, with no focus-switch hijack.
     pub fn is_inputting(&self) -> bool {
         is_inputting(&self.modal)
@@ -352,7 +351,7 @@ impl State {
 
     /// Which kind of modal is open - the focus machine derives its modal dimension
     /// from this each loop-top, so [`Focus`] can never mirror-and-desync from the
-    /// open popup. A centered popup and the context menu are mutually exclusive.
+    /// open popup. A popup and the context menu are mutually exclusive.
     ///
     pub(crate) fn modal_kind(&self) -> Option<ModalKind> {
         modal_kind(&self.modal)
