@@ -320,7 +320,11 @@ the key list's rounded box: its title and a count or machine in the top border, 
 on the bottom border. Its width follows its content or the window, never the nav's
 width. A popup
 whose left edge would leave one or two cells of the row beside it starts at the window's
-left edge instead. Pressing anywhere on it and dragging moves it. While a popup's text field takes keys, the
+left edge instead. Every row of a popup wraps to the popup's width rather than being cut:
+a description continues under its own column, and a key wider than its column takes a row
+of its own above it. A text field stays on one row and keeps its caret in view. Pressing
+anywhere on a popup and dragging moves it; on the help, a press on a tab selects the tab
+instead. While a popup's text field takes keys, the
 terminal's own cursor sits on the field's caret, so an input method composes in the
 field.
 
@@ -331,8 +335,14 @@ field.
   printable key narrows the rows to those whose keys or description contain the query
   (ignoring case), keeping each match under its section title, and a section title that
   matches keeps its whole section. `Backspace` shortens the query and `Ctrl-U` clears it.
-  `↑`/`↓` scroll one row, `PgUp`/`PgDn` ten, and `Home`/`End` jump to either end; the
-  top border names the rows on screen whenever they are not all of them. `Esc` or `prefix ?`
+  One blank row parts two sections. Under the search field a row of tabs names the
+  sections, the active one in the title's accent: `←`/`→` (or a click on a tab) move the
+  active tab and scroll that section's title to the top of the body, held at the end of
+  the help. `↑`/`↓` scroll one row, `PgUp`/`PgDn` ten, and `Home`/`End` jump to either end,
+  and the active tab then follows the section at the top of the body. A search leaves the
+  tabs of the sections it matched. When the tabs do not fit the popup's width, the row
+  shows the ones around the active tab, with `‹` or `›` where more are hidden. The top
+  border names the rows on screen whenever they are not all of them. `Esc` or `prefix ?`
   closes it, as its bottom border says whatever the search leaves, and any other key is
   swallowed while it is open.
 - **History** (`prefix m`): every result and background event, newest first, each with
@@ -414,7 +424,8 @@ notifications = true   # false keeps results out of toasts; the history still ha
 | left-click `‹ 5` or `7 ›` on a band's view border | select the nearest card scrolled off that side |
 | wheel over the nav | move the selection (nav focused) |
 | drag the view border | resize the expanded nav (at any of the four borders: the drag mirrors the placement, measuring from the near edge); past the minimum it collapses the nav |
-| drag the key list or a popup | move it (press anywhere on it) |
+| drag the key list or a popup | move it (press anywhere on it but a help tab) |
+| left-click a help tab | scroll the help to that section |
 | left-click a toast | dismiss it |
 
 There is no context menu: every action a right-click could offer is either a

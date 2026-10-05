@@ -599,9 +599,22 @@ no function, and no test, so renaming code is never a documentation change.
   the resting prefix indicator returns.
 - **FR-B38** - The help lists every key in the key table section by section, then a
   legend of every glyph the screen uses (the host states, the spinner, the selection
-  mark, the overflow cues, the auto-hide border, and the toast levels). Typing searches
-  it, ignoring case, and the arrows, `PgUp`/`PgDn`, and `Home`/`End` scroll it; `Esc` or
-  `prefix ?` closes it, and its bottom border says so whatever the search leaves.
+  mark, the overflow cues, the auto-hide border, and the toast levels), as one document
+  with one blank row between two sections. A row of tabs under the search field names
+  each section: `←`/`→` move the active tab and scroll the body so that section's title
+  is its top row (held at the end of the help), and a click on a tab does the same.
+  `↑`/`↓`, `PgUp`/`PgDn`, and `Home`/`End` scroll the body, and the active tab follows
+  the section whose title is at or above the top body row, so the tabs and the scroll
+  never disagree. Typing searches it, ignoring case, and the tabs then name only the
+  sections that kept a row; `Esc` or `prefix ?` closes it, and its bottom border says so
+  whatever the search leaves.
+- **FR-B40** - A popup never loses a word to its size. Every row of a popup body wraps to
+  the popup's inner width: a row with a key column (the help, the command palette, the
+  hosts to check, the logout facts) continues its description under the description
+  column, and a key wider than its column takes rows of its own above its description. A
+  text field is the one row that does not wrap: it keeps its caret in view on one row.
+  A popup's height and its scrolling count the wrapped rows, so a window too small for a
+  popup shows all of it by scrolling.
 - **FR-B39** - LOGGING OUT of an SSH host (`prefix L`, confirmed by typing `logout`)
   takes this PC's public key off the host before it closes anything, and cancels a
   pending login on the machine when it starts. Over the machine's current connection it

@@ -4612,7 +4612,7 @@ async fn help_overlay_renders_takes_q_as_search_and_closes_on_esc_or_prefix_help
     // q is a search character: it narrows the rows and keeps the help open.
     assert!(h
         .sw
-        .feed_reader_key(b"q", 0x07, &mut false, 200, &mut h.state));
+        .feed_reader_key(b"q", 0x07, &mut false, (80, 200), &mut h.state));
     h.draw();
     let out = h.text();
     assert!(out.contains("│ / q"), "q types into the search:\n{out}");
@@ -4624,14 +4624,14 @@ async fn help_overlay_renders_takes_q_as_search_and_closes_on_esc_or_prefix_help
     // Esc closes it.
     assert!(h
         .sw
-        .feed_reader_key(b"\x1b", 0x07, &mut false, 200, &mut h.state));
+        .feed_reader_key(b"\x1b", 0x07, &mut false, (80, 200), &mut h.state));
     h.draw();
     assert!(!h.text().contains("quit xmux"), "Esc closes the help");
     // prefix ? closes it too.
     h.sw.show_help(&mut h.state);
     assert!(h
         .sw
-        .feed_reader_key(b"\x07?", 0x07, &mut false, 200, &mut h.state));
+        .feed_reader_key(b"\x07?", 0x07, &mut false, (80, 200), &mut h.state));
     assert!(
         !matches!(h.state.modal, Some(Modal::Help { .. })),
         "prefix ? closes the help"
@@ -4643,9 +4643,15 @@ fn the_help_scrolls_back_up_at_once_from_its_end() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
-    let visible = 11u16;
-    let lines = modal::help_display_len(&state.chrome.ui_prefix, state.chrome.nav_position, "");
-    let max = modal::help_max_scroll(lines, visible);
+    let visible = (80u16, 11u16);
+    let max = modal::help_map(
+        &state.chrome.ui_prefix,
+        state.chrome.nav_position,
+        "",
+        visible.0,
+        visible.1,
+    )
+    .max_scroll;
     let scroll = |state: &crate::state::State| match &state.modal {
         Some(Modal::Help { scroll, .. }) => *scroll,
         _ => panic!("help closed"),
@@ -5679,9 +5685,15 @@ async fn hint_bar_and_help_reflect_new_model() {
         help.contains("focus the terminal"),
         "help explains focusing the terminal view:\n{help}"
     );
+    // The view tab scrolls its section, the collapse key among it, to the top.
+    let r = h.plan.popup_rect;
+    let inner = (r.width - 2, r.height - 2);
+    h.sw.feed_reader_key(b"\x1b[C\x1b[C\x1b[C", 0x07, &mut false, inner, &mut h.state);
+    h.draw();
+    let view = h.text();
     assert!(
-        help.contains("collapse / expand the nav"),
-        "help explains the collapse key:\n{help}"
+        view.contains("collapse / expand the nav"),
+        "help explains the collapse key:\n{view}"
     );
     assert!(
         help.contains("previous / next host/mux (host cards as one)"),
@@ -6145,7 +6157,7 @@ fn popup_border_press_then_drag_moves_the_rect() {
     let before = before_plan.popup_rect;
     let (bx, by) = (before.x, before.y); // top-left corner is on the border
     assert!(
-        sw.begin_popup_drag_in_plan(&before_plan, bx, by, &state),
+        sw.begin_popup_drag_in_plan(&before_plan, bx, by, &mut state),
         "press on the border grabs"
     );
     sw.drag_popup(bx + 5, by - 1);
@@ -6199,7 +6211,7 @@ fn closed_popup_cannot_be_grabbed_even_with_a_stale_rect() {
     let r = plan.popup_rect;
     state.modal = None; // close WITHOUT re-rendering → popup_rect is stale
     assert!(
-        !sw.begin_popup_drag_in_plan(&plan, r.x, r.y, &state),
+        !sw.begin_popup_drag_in_plan(&plan, r.x, r.y, &mut state),
         "a stale rect must not grab a closed popup"
     );
 }
@@ -6236,11 +6248,11 @@ fn a_press_anywhere_on_a_popup_grabs_it_and_outside_does_not() {
     );
     let r = plan.popup_rect;
     assert!(
-        !sw.begin_popup_drag_in_plan(&plan, r.right() + 1, r.y, &state),
+        !sw.begin_popup_drag_in_plan(&plan, r.right() + 1, r.y, &mut state),
         "a press beside the popup does not grab it"
     );
     assert!(
-        sw.begin_popup_drag_in_plan(&plan, r.x + 2, r.y + 2, &state),
+        sw.begin_popup_drag_in_plan(&plan, r.x + 2, r.y + 4, &mut state),
         "an interior press grabs the popup"
     );
     sw.drag_popup(r.x + 12, r.y + 2);
@@ -6259,6 +6271,99 @@ fn a_press_anywhere_on_a_popup_grabs_it_and_outside_does_not() {
 }
 
 #[test]
+fn a_press_on_a_help_tab_selects_it_and_a_gap_beside_it_drags() {
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    sw.show_help(&mut state);
+    let area = Rect::new(0, 0, 140, 30);
+    let plan = sw.layout(
+        area,
+        NavSize::hidden(NAV_WIDTH),
+        &state,
+        &RenderPlan::default(),
+    );
+    let r = plan.popup_rect;
+    let (inner, visible) = (r.width - 2, r.height - 2);
+    let (prefix, pos) = (state.chrome.ui_prefix.clone(), state.chrome.nav_position);
+    let tab_at = |x| modal::help_tab_at(&prefix, pos, "", 0, None, inner, visible, x);
+    let on_sessions = (0..inner)
+        .find(|&x| tab_at(x) == Some(2))
+        .expect("a sessions tab");
+    let row = r.y + 1 + modal::HELP_TAB_ROW;
+    assert!(!sw.begin_popup_drag_in_plan(&plan, r.x + 1 + on_sessions, row, &mut state));
+    assert!(!sw.popup_drag_active(), "a tab press starts no drag");
+    let map = modal::help_map(&prefix, pos, "", inner, visible);
+    assert!(
+        matches!(state.modal, Some(Modal::Help { scroll, tab: Some(2), .. }) if scroll == map.scroll_to(2)),
+        "the click chose the tab and scrolled its section up"
+    );
+    let gap = (1..inner)
+        .find(|&x| tab_at(x - 1) == Some(0) && tab_at(x).is_none())
+        .expect("a gap after the first tab");
+    assert!(
+        sw.begin_popup_drag_in_plan(&plan, r.x + 1 + gap, row, &mut state),
+        "a press between tabs grabs the popup"
+    );
+}
+
+/// The text inside the open popup's border, row by row.
+fn popup_rows(h: &Harness) -> Vec<String> {
+    let r = h.plan.popup_rect;
+    let buf = h.buf();
+    (r.y + 1..r.bottom() - 1)
+        .map(|y| {
+            (r.x + 1..r.right() - 1)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_small_window_shows_the_whole_help_by_scrolling() {
+    let mut h = Harness::new_sized(sample(), 40, 12);
+    h.sw.show_help(&mut h.state);
+    h.draw();
+    let r = h.plan.popup_rect;
+    assert!(r.width <= 40 && r.height <= 12 && !r.is_empty(), "{r:?}");
+    let inner = (r.width - 2, r.height - 2);
+    let mut seen = String::new();
+    for _ in 0..200 {
+        let rows = popup_rows(&h);
+        seen.push_str(&rows[2..].concat());
+        h.sw.feed_reader_key(b"\x1b[B", 0x07, &mut false, inner, &mut h.state);
+        h.draw();
+    }
+    let seen: String = seen.split_whitespace().collect();
+    let squeeze = |t: &str| t.split_whitespace().collect::<String>();
+    for row in modal::help_rows(&h.state.chrome.ui_prefix, h.state.chrome.nav_position) {
+        let (modal::HelpRow::Head(t) | modal::HelpRow::Key(t, _)) = &row;
+        assert!(seen.contains(&squeeze(t)), "{t:?} shown");
+        if let modal::HelpRow::Key(_, d) = &row {
+            assert!(seen.contains(&squeeze(d)), "{d:?} shown whole");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_narrow_window_wraps_the_palette_descriptions() {
+    let mut h = Harness::new_sized(sample(), 44, 30);
+    h.sw.toggle_palette(&mut h.state);
+    h.draw();
+    let rows = popup_rows(&h);
+    let squeezed: String = rows.concat().split_whitespace().collect();
+    let first =
+        h.sw.palette_entries(&h.state, "")
+            .into_iter()
+            .next()
+            .expect("a command")
+            .0;
+    let desc = first.split_once("  ").map_or(first.as_str(), |(d, _)| d);
+    let desc: String = desc.split_whitespace().collect();
+    assert!(squeezed.contains(&desc), "{desc} in {rows:#?}");
+}
+
+#[test]
 fn the_key_list_drags_and_the_popup_its_key_opens_keeps_the_place() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
@@ -6270,7 +6375,7 @@ fn the_key_list_drags_and_the_popup_its_key_opens_keeps_the_place() {
         .key_list
         .clone()
         .expect("a live prefix opens the key list");
-    assert!(sw.begin_popup_drag_in_plan(&plan, list.x + 3, list.y + 1, &state));
+    assert!(sw.begin_popup_drag_in_plan(&plan, list.x + 3, list.y + 1, &mut state));
     sw.drag_popup(list.x - 7, list.y - 4);
     sw.end_popup_drag();
     let moved = sw.layout(area, nav, &state, &plan);
@@ -6311,7 +6416,7 @@ fn popup_drag_clamps_within_screen() {
         &RenderPlan::default(),
     );
     let r = plan.popup_rect;
-    assert!(sw.begin_popup_drag_in_plan(&plan, r.x, r.y, &state));
+    assert!(sw.begin_popup_drag_in_plan(&plan, r.x, r.y, &mut state));
     sw.drag_popup(r.x.saturating_sub(50), r.y); // yank far left, past the edge
     let next = sw.layout(
         Rect::new(0, 0, 140, 30),
@@ -6342,13 +6447,13 @@ fn feed_reader_key_is_modal_searches_and_closes_on_esc() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     assert!(
-        !sw.feed_reader_key(b"q", 0x07, &mut false, 200, &mut state),
+        !sw.feed_reader_key(b"q", 0x07, &mut false, (80, 200), &mut state),
         "closed → not consumed, routes normally"
     );
 
     sw.toggle_help(&mut state);
     assert!(
-        sw.feed_reader_key(b"q", 0x07, &mut false, 200, &mut state),
+        sw.feed_reader_key(b"q", 0x07, &mut false, (80, 200), &mut state),
         "open → consumed"
     );
     assert!(
@@ -6356,7 +6461,13 @@ fn feed_reader_key_is_modal_searches_and_closes_on_esc() {
         "q types into the search and keeps help open"
     );
     assert!(
-        sw.feed_reader_key(b"\x1b[6~\x1b[6~\x1b[6~", 0x07, &mut false, 200, &mut state),
+        sw.feed_reader_key(
+            b"\x1b[6~\x1b[6~\x1b[6~",
+            0x07,
+            &mut false,
+            (80, 200),
+            &mut state
+        ),
         "a scroll (ESC [) is swallowed, not a close"
     );
     assert!(
@@ -6365,7 +6476,7 @@ fn feed_reader_key_is_modal_searches_and_closes_on_esc() {
     );
 
     assert!(
-        sw.feed_reader_key(b"\x1b", 0x07, &mut false, 200, &mut state),
+        sw.feed_reader_key(b"\x1b", 0x07, &mut false, (80, 200), &mut state),
         "lone Esc → consumed"
     );
     assert!(
@@ -6536,6 +6647,7 @@ fn help_lines_reflects_configured_prefix() {
         &palette,
         "",
         0,
+        None,
         200,
         u16::MAX,
     );
@@ -6561,6 +6673,7 @@ fn help_lines_reflects_configured_prefix() {
         &palette,
         "",
         0,
+        None,
         200,
         u16::MAX,
     );
@@ -7855,7 +7968,7 @@ async fn enter_on_a_blocked_host_selects_it_and_hands_the_focus_to_its_login_pan
     let mut h = Harness::new(problem_scan());
     h.sw.toggle_check(&mut h.state);
     let mut armed = false;
-    h.sw.feed_reader_key(b"\r", 0x07, &mut armed, 20, &mut h.state);
+    h.sw.feed_reader_key(b"\r", 0x07, &mut armed, (80, 20), &mut h.state);
     assert!(
         h.sw.open_checked_host(&mut h.state),
         "the login pane takes the keys"
@@ -7870,9 +7983,9 @@ async fn enter_on_a_disconnected_host_opens_login() {
     let mut h = Harness::new(problem_scan());
     h.sw.toggle_check(&mut h.state);
     let mut armed = false;
-    h.sw.feed_reader_key(b"j", 0x07, &mut armed, 20, &mut h.state);
-    h.sw.feed_reader_key(b"j", 0x07, &mut armed, 20, &mut h.state);
-    h.sw.feed_reader_key(b"\r", 0x07, &mut armed, 20, &mut h.state);
+    h.sw.feed_reader_key(b"j", 0x07, &mut armed, (80, 20), &mut h.state);
+    h.sw.feed_reader_key(b"j", 0x07, &mut armed, (80, 20), &mut h.state);
+    h.sw.feed_reader_key(b"\r", 0x07, &mut armed, (80, 20), &mut h.state);
     assert!(
         h.sw.open_checked_host(&mut h.state),
         "the login pane takes focus"
@@ -7894,7 +8007,7 @@ async fn command_palette_searches_commands_and_host_login() {
     let text = h.text();
     assert!(text.contains("commands"), "{text}");
     let mut armed = false;
-    h.sw.feed_reader_key(b"rescan", 0x07, &mut armed, 20, &mut h.state);
+    h.sw.feed_reader_key(b"rescan", 0x07, &mut armed, (80, 20), &mut h.state);
     let crate::state::Modal::Palette { query, .. } = h.state.modal.as_ref().unwrap() else {
         panic!("palette");
     };
@@ -7904,10 +8017,16 @@ async fn command_palette_searches_commands_and_host_login() {
         .palette_entries(&h.state, query)
         .iter()
         .any(|(name, _)| name.contains("re-scan")));
-    h.sw.feed_reader_key(b"\x15login dead-2", 0x07, &mut armed, 20, &mut h.state);
+    h.sw.feed_reader_key(
+        b"\x15login dead-2",
+        0x07,
+        &mut armed,
+        (80, 20),
+        &mut h.state,
+    );
     h.draw();
     assert!(h.text().contains("log in to dead-2"));
-    h.sw.feed_reader_key(b"\r", 0x07, &mut armed, 20, &mut h.state);
+    h.sw.feed_reader_key(b"\r", 0x07, &mut armed, (80, 20), &mut h.state);
     assert_eq!(
         h.sw.take_palette_choice(&mut h.state),
         Some(crate::state::PaletteChoice::Login("dead-2".into()))
@@ -7926,17 +8045,17 @@ async fn the_check_table_closes_on_esc_and_its_selection_stays_on_a_row() {
     h.sw.toggle_check(&mut h.state);
     let mut armed = false;
     for _ in 0..10 {
-        h.sw.feed_reader_key(b"j", 0x07, &mut armed, 20, &mut h.state);
+        h.sw.feed_reader_key(b"j", 0x07, &mut armed, (80, 20), &mut h.state);
     }
     assert!(matches!(
         h.state.modal,
         Some(crate::state::Modal::Check { selected: 3, .. })
     ));
-    h.sw.feed_reader_key(b"\x1b", 0x07, &mut armed, 20, &mut h.state);
+    h.sw.feed_reader_key(b"\x1b", 0x07, &mut armed, (80, 20), &mut h.state);
     assert!(h.state.modal.is_none());
     // prefix h opens it and prefix h closes it again.
     h.sw.toggle_check(&mut h.state);
-    h.sw.feed_reader_key(b"\x07h", 0x07, &mut armed, 20, &mut h.state);
+    h.sw.feed_reader_key(b"\x07h", 0x07, &mut armed, (80, 20), &mut h.state);
     assert!(h.state.modal.is_none());
 }
 

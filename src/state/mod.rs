@@ -10,8 +10,8 @@ mod view;
 pub use chrome::{Chrome, SourceReach, ViewBorderColors};
 pub use focus::{Focus, ModalKind, ViewFocus};
 pub(crate) use modal::{
-    feed_reader, is_inputting, is_popup_open, is_reader, modal_kind, Input, InputMode, Modal,
-    PaletteChoice,
+    feed_reader, is_inputting, is_popup_open, is_reader, modal_kind, HelpMap, Input, InputMode,
+    Modal, PaletteChoice,
 };
 pub(crate) use view::RowRef;
 pub use view::{OpFollow, Scan};

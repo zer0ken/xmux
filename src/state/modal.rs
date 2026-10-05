@@ -161,11 +161,15 @@ impl Input {
 /// enum small; callers pattern-match through the box and never see the pointer.
 pub(crate) enum Modal {
     /// The help `prefix ?` opens. `query` is what has been typed to search it, and
-    /// `scroll` counts the rows scrolled past from the top of what matches. `decoder`
-    /// lives as long as the help, so a key split across two reads is still one key.
+    /// `scroll` counts the display rows scrolled past from the top of what matches. `tab`
+    /// is the section a tab key or a tab click chose, held while the scroll stays where
+    /// that choice put it; `None` makes the active tab the section the scroll reached.
+    /// `decoder` lives as long as the help, so a key split across two reads is still one
+    /// key.
     Help {
         query: String,
         scroll: usize,
+        tab: Option<usize>,
         decoder: crate::display::decode::KeyDecoder,
     },
     /// The history `prefix m` opens. `scroll` counts the records scrolled past from the
@@ -219,15 +223,52 @@ pub(crate) fn modal_kind(modal: &Option<Modal>) -> Option<ModalKind> {
     modal.as_ref().map(|_| ModalKind::Popup)
 }
 
+/// Where the help's sections lie for one search, as the help lays them out at its current
+/// size: the display row each section's title is on, and the furthest the body scrolls.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HelpMap {
+    pub(crate) heads: Vec<usize>,
+    pub(crate) max_scroll: usize,
+}
+
+impl HelpMap {
+    /// The section the body shows at `scroll`: the last one whose title is at or above
+    /// the top body row.
+    pub(crate) fn section_at(&self, scroll: usize) -> usize {
+        self.heads.iter().rposition(|&h| h <= scroll).unwrap_or(0)
+    }
+
+    /// The active tab: the section `tab` chose, or else the one `scroll` reached.
+    pub(crate) fn active(&self, tab: Option<usize>, scroll: usize) -> usize {
+        tab.filter(|&t| t < self.heads.len())
+            .unwrap_or_else(|| self.section_at(scroll.min(self.max_scroll)))
+    }
+
+    /// The scroll that puts section `tab`'s title on the top body row, held at the end.
+    pub(crate) fn scroll_to(&self, tab: usize) -> usize {
+        self.heads
+            .get(tab)
+            .copied()
+            .unwrap_or(0)
+            .min(self.max_scroll)
+    }
+}
+
 /// Feeds a raw key read to a read-only popup (the help or the history), tmux view-mode
 /// style. While one is open every key is consumed (returns true, so nothing reaches the
 /// nav or the terminal view). A lone Esc closes either. In the history `q` closes it too,
 /// `↑`/`↓` (or `k`/`j`) scroll one record and `PgUp`/`PgDn` ten. The help is searched by
 /// typing: a printable key extends the query and Backspace shortens it, each returning the
-/// view to the top of what matches, and the arrows, `PgUp`/`PgDn`, and `Home`/`End`
-/// scroll. Every other key is swallowed. Returns false when neither is open, so the read
-/// falls through to normal routing.
-pub(crate) fn feed_reader(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
+/// view to the top of what matches. `←`/`→` move the active tab and scroll its section's
+/// title to the top; `↑`/`↓`, `PgUp`/`PgDn`, and `Home`/`End` scroll and hand the active
+/// tab back to the scroll. `help` lays the help out for a query, so every key is held to
+/// the layout the paint shows. Every other key is swallowed. Returns false when neither
+/// is open, so the read falls through to normal routing.
+pub(crate) fn feed_reader(
+    modal: &mut Option<Modal>,
+    bytes: &[u8],
+    help: &dyn Fn(&str) -> HelpMap,
+) -> bool {
     use ratatui::crossterm::event::KeyCode;
     if !is_reader(modal) {
         return false;
@@ -235,35 +276,54 @@ pub(crate) fn feed_reader(modal: &mut Option<Modal>, bytes: &[u8]) -> bool {
     if let Some(Modal::Help {
         query,
         scroll,
+        tab,
         decoder,
     }) = modal
     {
         for key in decoder.feed(bytes) {
-            match key.code {
+            let map = help(query);
+            let at = (*scroll).min(map.max_scroll);
+            let to = |s: usize, by: isize| s.saturating_add_signed(by).min(map.max_scroll);
+            let scrolled = match key.code {
                 KeyCode::Esc => {
                     *modal = None;
                     return true;
                 }
-                KeyCode::Up => *scroll = scroll.saturating_sub(1),
-                KeyCode::Down => *scroll = scroll.saturating_add(1),
-                KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
-                KeyCode::PageDown => *scroll = scroll.saturating_add(10),
-                KeyCode::Home => *scroll = 0,
-                KeyCode::End => *scroll = usize::MAX,
+                KeyCode::Up => Some(to(at, -1)),
+                KeyCode::Down => Some(to(at, 1)),
+                KeyCode::PageUp => Some(to(at, -10)),
+                KeyCode::PageDown => Some(to(at, 10)),
+                KeyCode::Home => Some(0),
+                KeyCode::End => Some(map.max_scroll),
+                KeyCode::Left | KeyCode::Right if !map.heads.is_empty() => {
+                    let now = map.active(*tab, at);
+                    let next = if key.code == KeyCode::Left {
+                        now.saturating_sub(1)
+                    } else {
+                        (now + 1).min(map.heads.len() - 1)
+                    };
+                    *tab = Some(next);
+                    *scroll = map.scroll_to(next);
+                    None
+                }
                 KeyCode::Backspace => {
                     query.pop();
-                    *scroll = 0;
+                    Some(0)
                 }
                 // Ctrl-U clears the query, as it clears an input row.
                 KeyCode::Char('\u{15}') => {
                     query.clear();
-                    *scroll = 0;
+                    Some(0)
                 }
                 KeyCode::Char(c) if !c.is_control() => {
                     query.push(c);
-                    *scroll = 0;
+                    Some(0)
                 }
-                _ => {}
+                _ => None,
+            };
+            if let Some(s) = scrolled {
+                *scroll = s;
+                *tab = None;
             }
         }
         return true;

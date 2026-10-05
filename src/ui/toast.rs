@@ -230,12 +230,18 @@ pub(crate) fn history_lines(
     palette: &Palette,
 ) -> (String, Vec<Line<'static>>) {
     if notify.history.is_empty() {
+        let room = (width as usize).saturating_sub(2).max(1) as u16;
         return (
             String::new(),
-            vec![Line::from(Span::styled(
-                " nothing yet: results and background events land here",
-                Style::default().fg(palette.decoration),
-            ))],
+            wrap_text("nothing yet: results and background events land here", room)
+                .into_iter()
+                .map(|c| {
+                    Line::from(Span::styled(
+                        format!(" {c}"),
+                        Style::default().fg(palette.decoration),
+                    ))
+                })
+                .collect(),
         );
     }
     let aw = 4;

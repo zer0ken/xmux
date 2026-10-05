@@ -3,14 +3,20 @@ use super::*;
 impl Switcher {
     // --- mouse --------------------------------------------------------------
 
-    /// Begins a popup drag against the rectangle painted for the latest frame.
+    /// Begins a popup drag against the rectangle painted for the latest frame. A press on
+    /// one of the help's tabs selects that tab instead and starts no drag: the tabs are
+    /// the one thing in a popup that takes a click, so the rest of the box, the gaps on
+    /// the tab row included, stays its handle.
     pub fn begin_popup_drag_in_plan(
         &mut self,
         plan: &RenderPlan,
         col: u16,
         row: u16,
-        state: &crate::state::State,
+        state: &mut crate::state::State,
     ) -> bool {
+        if Self::click_help_tab(plan, col, row, state) {
+            return false;
+        }
         let key_list = plan.key_list.as_ref().map(|(rect, _)| *rect);
         self.popup_geo.rect = if plan.popup_rect.is_empty() {
             key_list.unwrap_or_default()
@@ -19,6 +25,51 @@ impl Switcher {
         };
         let open = state.is_modal_popup_open() || key_list.is_some();
         self.begin_popup_drag(col, row, open)
+    }
+
+    /// Selects the help tab under `(col, row)` on the popup the plan painted, scrolling its
+    /// section's title to the top of the body. Returns whether the press was on a tab.
+    fn click_help_tab(
+        plan: &RenderPlan,
+        col: u16,
+        row: u16,
+        state: &mut crate::state::State,
+    ) -> bool {
+        let rect = plan.popup_rect;
+        let (prefix, position) = (&state.chrome.ui_prefix, state.chrome.nav_position);
+        let Some(Modal::Help {
+            query, scroll, tab, ..
+        }) = &mut state.modal
+        else {
+            return false;
+        };
+        let inner = Rect::new(
+            rect.x.saturating_add(1),
+            rect.y.saturating_add(1),
+            rect.width.saturating_sub(2),
+            rect.height.saturating_sub(2),
+        );
+        if row != inner.y.saturating_add(modal::HELP_TAB_ROW)
+            || !inner.contains(Position { x: col, y: row })
+        {
+            return false;
+        }
+        let Some(chosen) = modal::help_tab_at(
+            prefix,
+            position,
+            query,
+            *scroll,
+            *tab,
+            inner.width,
+            inner.height,
+            col - inner.x,
+        ) else {
+            return false;
+        };
+        let map = modal::help_map(prefix, position, query, inner.width, inner.height);
+        *tab = Some(chosen);
+        *scroll = map.scroll_to(chosen);
+        true
     }
 
     fn in_tree(plan: &RenderPlan, col: u16, row: u16) -> bool {

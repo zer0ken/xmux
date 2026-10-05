@@ -1048,6 +1048,7 @@ impl Switcher {
                     palette,
                     query,
                     0,
+                    None,
                     1,
                     plan.popup_rect.width.saturating_sub(2),
                 );
@@ -1511,12 +1512,16 @@ impl Switcher {
                 position,
             )
         };
-        // Every list popup opens where the key list does.
+        // Every list popup opens where the key list does. A popup narrowed to the room
+        // wraps its rows there, so its height counts the rows at the width it gets.
+        let fit = |w: u16| w.min(room.width);
         match &state.modal {
             Some(Modal::Help { .. }) => {
                 // Sized for every row whatever the search, so typing never moves it.
-                let (inner_w, rows) = modal::help_size(&state.chrome.ui_prefix, position);
-                anchor(((inner_w + 3).max(24), rows + 2))
+                let prefix = &state.chrome.ui_prefix;
+                let w = fit((modal::help_width(prefix, position) + 3).max(24));
+                let rows = modal::help_height(prefix, position, w.saturating_sub(2));
+                anchor((w, rows.saturating_add(2)))
             }
             Some(Modal::Check { selected, .. }) => {
                 let w = history_popup_width(area).min(room.width);
@@ -1528,9 +1533,11 @@ impl Switcher {
                 // The palette is the searchable form of the key list, so it is as tall as
                 // what it lists. Its width holds every command, so a search never moves
                 // its columns.
-                let (w, _) = self.palette_size(state);
-                let h = self.palette_cells(state, query).len().max(1) as u16 + 3;
-                anchor((w, h))
+                let w = fit(self.palette_size(state).0);
+                let (key_w, _) = Self::palette_columns(&self.palette_cells(state, ""));
+                let cells = self.palette_cells(state, query);
+                let rows = modal::palette_rows(&cells, key_w, w.saturating_sub(2)).max(1);
+                anchor((w, rows as u16 + 3))
             }
             Some(Modal::Input(input)) => {
                 let w = match input.mode {
@@ -1540,6 +1547,7 @@ impl Switcher {
                     }
                     InputMode::Filter | InputMode::Jump => modal::POPOVER_MIN_WIDTH,
                 };
+                let w = fit(w);
                 let rows = self.input_popup_full(state, w).map_or(1, |(_, l)| l.len()) as u16;
                 anchor((w, rows + 2))
             }
@@ -1660,13 +1668,16 @@ impl Switcher {
             hints: hints.to_vec(),
         };
         let (chrome, lines) = match &state.modal {
-            Some(Modal::Help { query, scroll, .. }) => {
+            Some(Modal::Help {
+                query, scroll, tab, ..
+            }) => {
                 let (meta, lines) = modal::help_lines(
                     &state.chrome.ui_prefix,
                     state.chrome.nav_position,
                     palette,
                     query,
                     *scroll,
+                    *tab,
                     rect.height.saturating_sub(2),
                     rect.width.saturating_sub(2),
                 );

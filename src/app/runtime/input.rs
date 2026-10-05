@@ -276,9 +276,10 @@ impl Runtime {
         // A modal popup is mouse-modal: while one is open, every mouse
         // event that is not its drag (handled above) is swallowed,
         // so clicks, wheels, view border grabs, and hovers never reach the
-        // nav/terminal/view border behind it.
+        // nav/terminal/view border behind it. A press that started no drag may have
+        // selected a help tab, so it redraws.
         if self.model.state.is_modal_popup_open() {
-            return dirty;
+            return dirty || is_left_press;
         }
         // A collapsed nav is one target: a click anywhere on it, its seam included,
         // expands it, and is neither a focus move nor a drag.

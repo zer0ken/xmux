@@ -33,7 +33,8 @@ fn cause(kind: FailureKind, palette: &Palette) -> (&'static str, Style, &'static
 /// The table's top-border meta and lines at `width` inner cells. Each cause is a group
 /// title with its glyph in the state's colour, and each host under it a row in the
 /// key-column grammar: the host bold, then its reason muted, wrapped under the reason
-/// column rather than cut. The selected row is reversed across the whole width with `❯`.
+/// column rather than cut. A host wider than its column takes rows of its own above its
+/// reason. The selected row is reversed across the whole width with `❯`.
 pub(crate) fn check_lines(
     entries: &[CheckEntry],
     selected: usize,
@@ -43,12 +44,13 @@ pub(crate) fn check_lines(
 ) -> (String, Vec<Line<'static>>) {
     let dim = Style::default().fg(palette.decoration);
     if entries.is_empty() {
+        let room = (width as usize).saturating_sub(2).max(1) as u16;
         return (
             String::new(),
-            vec![Line::from(Span::styled(
-                " nothing to check: every host answered",
-                dim,
-            ))],
+            crate::ui::modal::wrap_text("nothing to check: every host answered", room)
+                .into_iter()
+                .map(|c| Line::from(Span::styled(format!(" {c}"), dim)))
+                .collect(),
         );
     }
     let lw = entries
@@ -74,27 +76,36 @@ pub(crate) fn check_lines(
             last = Some(entry.kind);
         }
         let chosen = i == selected;
-        let label = crate::ui::modal::middle_cut(&entry.label, lw);
-        let pad = lw.saturating_sub(UnicodeWidthStr::width(label.as_str()));
-        let reason = crate::ui::modal::wrap_text(&entry.reason, words);
+        let mark = if chosen {
+            format!(" {} ", crate::ui::switcher::SELECTED_MARK)
+        } else {
+            "   ".to_string()
+        };
         // The selected row is reversed as one surface, so its spans keep no colour that
         // the reversal would turn into a second background.
         let dim = if chosen { Style::default() } else { dim };
-        for (n, chunk) in reason.into_iter().enumerate() {
-            let mut spans = if n == 0 {
-                vec![
-                    Span::raw(if chosen {
-                        format!(" {} ", crate::ui::switcher::SELECTED_MARK)
-                    } else {
-                        "   ".to_string()
-                    }),
-                    Span::styled(label.clone(), bold),
-                    Span::raw(" ".repeat(pad + 2)),
-                    Span::styled(chunk, dim),
-                ]
-            } else {
-                vec![Span::raw(" ".repeat(lead)), Span::styled(chunk, dim)]
-            };
+        let label_w = UnicodeWidthStr::width(entry.label.as_str());
+        let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+        let mut reason = crate::ui::modal::wrap_text(&entry.reason, words).into_iter();
+        if label_w > lw {
+            let room = (width as usize).saturating_sub(3 + 1).max(1) as u16;
+            for (n, chunk) in crate::ui::modal::wrap_text(&entry.label, room)
+                .into_iter()
+                .enumerate()
+            {
+                let lead = if n == 0 { mark.clone() } else { "   ".into() };
+                rows.push(vec![Span::raw(lead), Span::styled(chunk, bold)]);
+            }
+        } else {
+            rows.push(vec![
+                Span::raw(mark),
+                Span::styled(entry.label.clone(), bold),
+                Span::raw(" ".repeat(lw - label_w + 2)),
+                Span::styled(reason.next().unwrap_or_default(), dim),
+            ]);
+        }
+        rows.extend(reason.map(|c| vec![Span::raw(" ".repeat(lead)), Span::styled(c, dim)]));
+        for (n, mut spans) in rows.into_iter().enumerate() {
             if n == 0 && chosen {
                 selected_line = lines.len();
                 let used: usize = spans.iter().map(|s| s.width()).sum();
@@ -201,6 +212,18 @@ mod tests {
         for reason in ["gpu-02", "db-01"] {
             assert!(all.iter().any(|l| l.contains(reason)), "{all:?}");
         }
-        assert!(all[1].contains('…'), "{all:?}");
+        assert!(
+            all.iter().all(|l| !l.contains('…'))
+                && all[1..3]
+                    .iter()
+                    .map(|l| l.trim())
+                    .collect::<String>()
+                    .contains("worker-01.production.example.com"),
+            "the host is whole, wrapped on rows of its own: {all:?}"
+        );
+        assert!(
+            all[3].starts_with(&" ".repeat(5)) && all[3].trim_start().starts_with("gpu-02"),
+            "its reason under the reason column: {all:?}"
+        );
     }
 }

@@ -1348,12 +1348,15 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::ReaderBytes { bytes, prefix } => {
-            let help_visible = model.render_plan.popup_rect.height.saturating_sub(2);
+            let popup = model.render_plan.popup_rect;
             model.switcher.feed_reader_key(
                 &bytes,
                 prefix,
                 &mut model.mouse_state.nav_armed,
-                help_visible,
+                (
+                    popup.width.saturating_sub(2),
+                    popup.height.saturating_sub(2),
+                ),
                 &mut model.state,
             );
             let opened = model.switcher.open_checked_host(&mut model.state);
@@ -1722,7 +1725,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         Msg::BeginPopupDrag { col, row } => {
             model
                 .switcher
-                .begin_popup_drag_in_plan(&model.render_plan, col, row, &model.state);
+                .begin_popup_drag_in_plan(&model.render_plan, col, row, &mut model.state);
             Vec::new()
         }
         Msg::ToggleNavCollapsed => {

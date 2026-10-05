@@ -28,6 +28,7 @@ impl Switcher {
         state.modal = Some(Modal::Help {
             query: String::new(),
             scroll: 0,
+            tab: None,
             decoder: crate::display::decode::KeyDecoder::new(),
         });
     }
@@ -202,14 +203,14 @@ impl Switcher {
     /// read falls through to normal routing. The single owner of their dismissal - the
     /// app calls it above the tree/terminal split, so the behavior is identical in both
     /// focuses.
-    /// `help_visible` is the help popup's inner height as last painted, so the help
-    /// scrolls no further than the offset its paint can show.
+    /// `help_inner` is the help popup's inner width and height as last painted, so the
+    /// help's keys move over the rows and tabs its paint shows.
     pub fn feed_reader_key(
         &mut self,
         bytes: &[u8],
         prefix: u8,
         armed: &mut bool,
-        help_visible: u16,
+        help_inner: (u16, u16),
         state: &mut crate::state::State,
     ) -> bool {
         if !crate::state::is_reader(&state.modal) {
@@ -233,7 +234,11 @@ impl Switcher {
                 None => (rest, None),
             };
             if !keys.is_empty() {
-                modal::feed_reader(&mut state.modal, keys);
+                let (prefix, position) = (&state.chrome.ui_prefix, state.chrome.nav_position);
+                let help = |query: &str| {
+                    modal::help_map(prefix, position, query, help_inner.0, help_inner.1)
+                };
+                modal::feed_reader(&mut state.modal, keys, &help);
             }
             match after {
                 Some(after) if crate::state::is_reader(&state.modal) => {
@@ -264,12 +269,14 @@ impl Switcher {
                 *selected = (*selected).min(palette_count.saturating_sub(1))
             }
             Some(Modal::Help { query, scroll, .. }) => {
-                let lines = modal::help_display_len(
+                let map = modal::help_map(
                     &state.chrome.ui_prefix,
                     state.chrome.nav_position,
                     query,
+                    help_inner.0,
+                    help_inner.1,
                 );
-                *scroll = (*scroll).min(modal::help_max_scroll(lines, help_visible));
+                *scroll = (*scroll).min(map.max_scroll);
             }
             _ => {}
         }

@@ -621,8 +621,14 @@ UI elements a user perceives as distinct things:
   the bottom border, and a text field's caret as a reversed cell, where the terminal's
   own cursor also sits so an input method composes in the field. Every popup opens
   where the key list opens, growing the way it does, so a prefix key replaces the key
-  list with its popup in the same place in every nav layout. The help lists the key table section by
-  section and then the glyph legend, searched by typing and scrolled by the arrows.
+  list with its popup in the same place in every nav layout. Every row of a popup wraps
+  to its width, a description under its own column, so no size cuts a word; only a text
+  field stays on one row. The help lists the key table section by section and then the
+  glyph legend as one document, a blank row between two sections, searched by typing and
+  scrolled by the arrows. Its tab row names the sections: `←`/`→` or a click moves the
+  active tab and scrolls that section to the top, and a scroll moves the active tab to
+  the section at the top. A tab is the one thing in a popup that takes a click; the rest
+  of the box is its drag handle.
 
 A zellij TAB is a `window` and a zellij SESSION is a `session`: xmux uses
 one set of words for every mux, so a mux's own naming is translated at its implementation
