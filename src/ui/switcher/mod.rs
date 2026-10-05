@@ -323,6 +323,10 @@ pub struct Switcher {
     /// returns the selection to it the instant its host re-streams. Cleared once matched,
     /// or when the user navigates off the parked parent host during the skeleton phase.
     rescan_reselect: Option<Address>,
+    /// The session whose card a full re-scan turned into its host card, held until the
+    /// selection moves. While it holds, the scanning host card keeps that session's
+    /// confirmed grid instead of its scanning screen.
+    rescan_collapse: Option<Address>,
     /// The transient offset and in-flight border drag of the active modal popup. Its
     /// frame geometry belongs to the render plan shared with mouse input.
     popup_geo: PopupGeometry,
@@ -361,6 +365,7 @@ impl Switcher {
             terminal_view: false,
             host_band_hidden: false,
             rescan_reselect: None,
+            rescan_collapse: None,
             popup_geo: PopupGeometry::default(),
         }
     }
@@ -709,12 +714,20 @@ impl Switcher {
         self.on_focus_changed(state);
     }
 
+    /// Records a selection move the user or a caller of xmux made, as opposed to one a
+    /// rebuild made. Such a move ends a full re-scan's collapse, so the scanning host
+    /// card it lands on shows its own screen.
+    fn note_user_move(&mut self) {
+        self.user_moved = true;
+        self.rescan_collapse = None;
+    }
+
     fn move_selection(&mut self, delta: isize, state: &crate::state::State) {
         let sel = self.selectable_indices();
         if sel.is_empty() {
             return;
         }
-        self.user_moved = true;
+        self.note_user_move();
         let cur = sel.iter().position(|&i| i == self.selected).unwrap_or(0) as isize;
         let n = sel.len() as isize;
         let next = ((cur + delta) % n + n) % n;
@@ -756,7 +769,7 @@ impl Switcher {
             .unwrap_or(0) as isize;
         let n = heads.len() as isize;
         let next = ((here + delta) % n + n) % n;
-        self.user_moved = true;
+        self.note_user_move();
         self.set_selected(heads[next as usize].1, state);
     }
 
@@ -784,7 +797,7 @@ impl Switcher {
         if sel.is_empty() {
             return;
         }
-        self.user_moved = true;
+        self.note_user_move();
         let idx = if pos < 0 || pos as usize >= sel.len() {
             sel.len() - 1
         } else {
@@ -954,6 +967,8 @@ impl Switcher {
                 return Some(ViewScreen::Login);
             }
         }
+        let displayed = (!state.displayed.source.is_empty() && !state.displayed.session.is_empty())
+            .then(|| Address::new(&state.displayed.source, &state.displayed.session));
         crate::model::choose_view_screen(
             selected_source,
             selected_address.as_ref(),
@@ -961,7 +976,11 @@ impl Switcher {
             scanning,
             group.is_some_and(|group| group.sessions.is_empty()),
             self.own_session.as_ref(),
-            !state.displayed.source.is_empty() && !state.displayed.session.is_empty(),
+            displayed.as_ref().map(|address| crate::model::ConfirmedDisplay {
+                address,
+                collapsed_into_selection: self.rescan_collapse.as_ref() == Some(address)
+                    && matches!(self.current_ref(), Some(RowRef::Host { source, .. }) if *source == address.source),
+            }),
         )
     }
 
@@ -1041,7 +1060,7 @@ impl Switcher {
     pub fn select_address(&mut self, address: &Address, state: &crate::state::State) -> bool {
         match self.row_of_session(address) {
             Some(i) if i != self.selected => {
-                self.user_moved = true;
+                self.note_user_move();
                 self.set_selected(i, state);
                 true
             }
@@ -1065,6 +1084,7 @@ impl Switcher {
             }
             None => (None, None),
         };
+        self.rescan_collapse = reselect.clone();
         self.rescan_reselect = reselect;
         self.reopen_numbers();
         state.scanning = state.groups.iter().map(|g| g.source.clone()).collect();
@@ -1282,11 +1302,13 @@ impl Switcher {
                     .position(|r| session_addr_of(&r.reference).as_ref() == Some(&addr))
                 {
                     self.rescan_reselect = None;
+                    self.rescan_collapse = None;
                     self.set_selected(i, state);
                     return;
                 }
             } else {
                 self.rescan_reselect = None;
+                self.rescan_collapse = None;
             }
         }
         if !self.user_moved {

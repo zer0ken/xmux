@@ -102,10 +102,11 @@ UI elements a user perceives as distinct things:
   host scans or has settled without a session to show, or when xmux would mirror its
   own session. A settled-state card names the STATE; its screen has room to state WHY.
   The domain model chooses the screen from the selected address, typed host failure,
-  scanning state, empty state, and own-session address. The UI renders that choice.
-  The settled host and own-session states share one factual screen grammar, so a reader
-  of any of them reads the others: the subject as the headline (a host for the settled
-  host states, the session address for `own session`), under it the state word, then
+  scanning state, empty state, own-session address, and confirmed display. The UI
+  renders that choice.
+  The scanning, settled host, and own-session states share one factual screen grammar,
+  so a reader of any of them reads the others: the subject as the headline (a host for
+  the host states, the session address for `own session`), under it the state word, then
   the rows that apply. A row is the key-column row the help also uses - a
   left-aligned cell, whitespace, then the value - where a bold cell is a key that can be
   pressed here and a muted cell names a datum. No value on a screen is shortened to fit
@@ -120,16 +121,20 @@ UI elements a user perceives as distinct things:
   The BLOCKED state states the same failure
   facts and adds the login pane above them; the host stays blocked on any failed login
   and re-probes only itself on a successful one. The EMPTY state leads with the keys
-  that start a session or rescan and follows with the latest observation facts. A host
-  still scanning shows a monochrome Braille X rotation in the terminal view only when
-  no session grid has been confirmed; its card keeps the in-flight spinner. A full
-  re-scan preserves the confirmed grid while session cards temporarily become host
-  cards. The same 32-column, 16-row animation fills the view during an initial
-  scan before a card can be selected. A symbol holds for one second, then turns
-  over 0.4 seconds.
-  A settled screen retains its text and centers the animation in the rows below it
-  only when the complete 32-column, 16-row frame fits. `[ui] braille-animation = false`
-  hides the central animation on both screens while nav activity spinners remain.
+  that start a session or rescan and follows with the latest observation facts. A
+  selected host card or section title whose source is scanning shows the SCANNING
+  state: `{host}/{mux}` as the headline, `scanning` as the state word, then that host's
+  latest observation facts when any exist, with no key offered; its card keeps the
+  in-flight spinner. A session grid of another source never shows under a scanning
+  host card. The one exception is a full re-scan that turned the selected session card
+  into the same source's host card: while the selection has not moved, the view keeps
+  that session's confirmed grid, and the first selection move ends the exception. The
+  monochrome Braille X rotation alone fills the view during an initial scan before a
+  card can be selected. A symbol holds for one second, then turns over 0.4 seconds.
+  A scanning or settled screen retains its text and centers the 32-column, 16-row
+  animation in the rows below it only when the complete frame fits.
+  `[ui] braille-animation = false` hides the central animation on every screen while
+  nav activity spinners remain.
   A confirmed session shows its grid. The
   `own session` state's rows are why it is refused, and no key, because nothing pressed
   here would make it showable.

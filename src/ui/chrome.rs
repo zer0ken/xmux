@@ -501,7 +501,7 @@ impl Chrome {
     /// The terminal-view HOST SCREEN: what fills the terminal-view region in place of a
     /// mux, for a selected host with no session to show.
     ///
-    /// One screen grammar for settled states: the host's name as the headline,
+    /// One screen grammar for settled states and a scanning host: the host's name as the headline,
     /// under it the same status word its nav card carries, then the rows
     /// that apply to it. A row uses a left-aligned name, whitespace, then the value,
     /// so a key offered on a screen looks like a key
@@ -758,6 +758,15 @@ impl Chrome {
             if let Some(reached) = state.last_reached.get(source) {
                 rows.push((ScreenCell::Label("last reached"), reached_at(*reached)));
             }
+        } else if kind == ViewScreen::Scanning {
+            // A scan has no answer yet, so the screen states only what earlier answers
+            // observed. A key is not offered: the re-scan it would start is under way.
+            if let Some(runs) = state.failure_runs.get(source) {
+                rows.push((ScreenCell::Label("failures"), failure_run_words(*runs)));
+            }
+            if let Some(reached) = state.last_reached.get(source) {
+                rows.push((ScreenCell::Label("last reached"), reached_at(*reached)));
+            }
         } else {
             if kind == ViewScreen::Empty {
                 rows.push((ScreenCell::Label("sessions"), "0".into()));
@@ -795,7 +804,7 @@ impl Chrome {
                 "start a new session".into(),
             ));
         }
-        if kind != ViewScreen::SelfSession {
+        if !matches!(kind, ViewScreen::SelfSession | ViewScreen::Scanning) {
             rows.push((
                 ScreenCell::Key(format!("{p} R")),
                 "re-scan this host".into(),

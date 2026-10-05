@@ -16,7 +16,7 @@ impl Switcher {
         };
         if let Some(index) = self.rows.iter().position(|row|
             matches!(&row.reference, RowRef::Section { source: section } if section == &source)) {
-            self.user_moved = true;
+            self.note_user_move();
             self.set_selected(index, state);
         }
     }
@@ -487,7 +487,7 @@ impl Switcher {
         let Some(i) = row else {
             return false;
         };
-        self.user_moved = true;
+        self.note_user_move();
         self.set_selected(i, state);
         if login_needed {
             self.login_target = Some(source.to_owned());
@@ -601,7 +601,7 @@ impl Switcher {
         let Some(n) = self.jump_row(&input.buffer.clone()) else {
             return;
         };
-        self.user_moved = true;
+        self.note_user_move();
         self.set_selected(n, state);
     }
 
@@ -852,7 +852,7 @@ impl Switcher {
                     )],
                 );
                 if let Some(i) = self.row_of_session(&addr) {
-                    self.user_moved = true;
+                    self.note_user_move();
                     self.set_selected(i, state);
                 }
                 None
