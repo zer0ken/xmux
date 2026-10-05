@@ -1599,16 +1599,20 @@ impl Chrome {
         frame.render_widget(Paragraph::new(text).style(style), painted);
     }
 
-    /// Paints the resting prefix across a collapsed nav's indicator. Transient bars are
-    /// handled by the ordinary floating-bar path instead.
+    /// Paints the resting prefix across a collapsed nav's indicator: after a one-cell
+    /// margin on a band's padded chip, from the first cell of a side column, which is
+    /// exactly as wide as the prefix. Transient bars are handled by the ordinary
+    /// floating-bar path instead.
     pub(crate) fn render_collapsed_hint_bar(
         &self,
         frame: &mut Frame,
         area: Rect,
+        padded: bool,
         palette: &crate::ui::palette::Palette,
     ) {
         frame.render_widget(Clear, area);
-        let line = self.hint_bar_line_spans(format!(" {}", self.ui_prefix), palette, None);
+        let margin = if padded { " " } else { "" };
+        let line = self.hint_bar_line_spans(format!("{margin}{}", self.ui_prefix), palette, None);
         frame.render_widget(
             Paragraph::new(line).style(self.hint_bar_render_style(palette)),
             area,

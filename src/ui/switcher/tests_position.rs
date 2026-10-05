@@ -432,9 +432,13 @@ fn pl5_a_collapsed_nav_is_the_seam_line_or_a_prefix_wide_column() {
                 );
             }
             NavPosition::Left => {
-                assert_eq!(r.view_border.x, 5, "the prefix plus a cell either side")
+                assert_eq!(r.view_border.x, 2, "on the prefix's last column");
+                assert_eq!(r.terminal.x, 3);
             }
-            NavPosition::Right => assert_eq!(r.view_border.x, W - 6),
+            NavPosition::Right => {
+                assert_eq!(r.view_border.x, W - 3, "on the prefix's first column");
+                assert_eq!(r.terminal.width, W - 3);
+            }
         }
         let text = shot.area_text(shot.nav_area());
         for token in ["<<", ">>", "▲", "▼"] {
@@ -915,5 +919,65 @@ fn an_input_popup_too_short_for_its_rows_keeps_its_field() {
         let (_, lines) = switcher.input_popup_at(&state, 50, 1).expect("an input");
         assert_eq!(lines.len(), 1);
         assert!(crate::ui::modal::caret_offset(&lines[0]).is_some());
+    }
+}
+
+/// The collapsed side column, cell by cell, at rest, armed, hovered, and under auto-hide:
+/// the prefix keeps all three of its cells on the bottom row, the border runs down the
+/// prefix's terminal-side column on every row above it, and the terminal view starts
+/// on the next column.
+/// A named chrome state to draw in, and the border glyph that state paints.
+type ChromeCase = (&'static str, fn(&mut crate::state::State), &'static str);
+
+#[test]
+fn pl5_b_a_collapsed_column_is_the_prefix_with_the_border_on_its_edge() {
+    let cases: [ChromeCase; 4] = [
+        ("rest", |_| {}, "│"),
+        ("armed", |s| s.chrome.armed = true, "│"),
+        ("hovered", |s| s.chrome.view_border_hovered = true, "┃"),
+        ("auto-hide", |s| s.chrome.auto_hide = true, "║"),
+    ];
+    for position in [NavPosition::Left, NavPosition::Right] {
+        for (name, set, glyph) in cases {
+            let mut shot = Shot::new(two_groups(), collapsed_at(position), false);
+            set(&mut shot.state);
+            shot.draw(false);
+            let r = shot.plan.regions;
+            let (nav_x, edge_x, terminal_x) = match position {
+                NavPosition::Left => (0, 2, 3),
+                _ => (W - 3, W - 3, 0),
+            };
+            assert_eq!(
+                r.hint_bar,
+                Rect::new(nav_x, H - 1, 3, 1),
+                "{position:?} {name}"
+            );
+            assert_eq!(
+                r.terminal,
+                Rect::new(terminal_x, 0, W - 3, H),
+                "{position:?} {name}"
+            );
+            assert_eq!(
+                shot.row(H - 1, nav_x, nav_x + 3),
+                "C-g",
+                "{position:?} {name}: the prefix keeps every cell, no padding"
+            );
+            for y in 0..H - 1 {
+                assert_eq!(
+                    shot.buf[(edge_x, y)].symbol(),
+                    glyph,
+                    "{position:?} {name}: the border on row {y}"
+                );
+            }
+            let off_edge = if position == NavPosition::Left {
+                0
+            } else {
+                W - 1
+            };
+            assert!(
+                (0..H - 1).all(|y| shot.buf[(off_edge, y)].symbol() == " "),
+                "{position:?} {name}: the rest of the column is blank"
+            );
+        }
     }
 }

@@ -435,7 +435,8 @@ fn reconciled_nav_width_hides_only_when_focused_and_enabled_and_no_prefix() {
     );
     assert_eq!(
         reconciled_nav_width(false, false, false, 48, true, "C-g"),
-        5
+        3,
+        "collapsed is exactly the prefix wide"
     );
     assert_eq!(
         reconciled_nav_width(true, true, false, 48, true, "C-g"),
@@ -5362,6 +5363,105 @@ fn a_click_anywhere_on_a_collapsed_nav_expands_it_at_every_position() {
         assert!(
             !rt.model.mouse_state.dragging_view_border,
             "{position:?}: the click is not a drag"
+        );
+    }
+}
+
+/// A collapsed side column is exactly the prefix wide and its border lies inside it, so
+/// the expand target is those three columns on every row, border cells and prefix row
+/// included, and the next column over already belongs to the terminal view. Once the
+/// click expands the nav, the border stands in its own column again and only that
+/// column grabs a resize drag.
+#[test]
+fn a_collapsed_side_nav_expands_from_exactly_its_prefix_column() {
+    use crate::ui::switcher::NavPosition;
+    let collapsed_rt = |position| {
+        let mut rt = collapse_rt(position);
+        rt.model.nav_collapsed = true;
+        rt.model.applied_nav_collapsed = true;
+        rt.model.nav_width = crate::ui::switcher::collapsed_nav_width(&rt.env.ui_prefix);
+        sync_test_render_plan(&mut rt);
+        rt
+    };
+    for position in [NavPosition::Left, NavPosition::Right] {
+        // 1-based SGR columns of the three prefix cells and the first terminal column.
+        let (inside, outside) = match position {
+            NavPosition::Left => ([1, 2, 3], 4),
+            _ => ([138, 139, 140], 137),
+        };
+        let border = collapsed_rt(position).model.render_plan.regions.view_border;
+        assert_eq!(
+            border.x + 1,
+            inside[if position == NavPosition::Left { 2 } else { 0 }]
+        );
+        for col in inside {
+            for row in [1, 15, 30] {
+                let mut rt = collapsed_rt(position);
+                rt.handle_mouse_event(
+                    &mouse(0, col, row, true),
+                    &Selection::default(),
+                    &mut false,
+                    &mut false,
+                );
+                assert!(
+                    !rt.model.nav_collapsed,
+                    "{position:?}: a click at ({col}, {row}) expands"
+                );
+                assert!(!rt.model.mouse_state.dragging_view_border);
+            }
+        }
+        let mut rt = collapsed_rt(position);
+        rt.handle_mouse_event(
+            &mouse(0, outside, 1, true),
+            &Selection::default(),
+            &mut false,
+            &mut false,
+        );
+        assert!(
+            rt.model.nav_collapsed,
+            "{position:?}: the column beside it is the terminal view"
+        );
+
+        let mut rt = collapsed_rt(position);
+        rt.handle_mouse_event(
+            &mouse(0, inside[0], 1, true),
+            &Selection::default(),
+            &mut false,
+            &mut false,
+        );
+        rt.handle_mouse_event(
+            &mouse(0, inside[0], 1, false),
+            &Selection::default(),
+            &mut false,
+            &mut false,
+        );
+        rt.model.nav_width = rt.model.nav_width_natural;
+        sync_test_render_plan(&mut rt);
+        let border = rt.model.render_plan.regions.view_border;
+        let beside = if position == NavPosition::Left {
+            border.x
+        } else {
+            border.x + 2
+        };
+        rt.handle_mouse_event(
+            &mouse(0, beside, 1, true),
+            &Selection::default(),
+            &mut false,
+            &mut false,
+        );
+        assert!(
+            !rt.model.mouse_state.dragging_view_border,
+            "{position:?}: the cell beside the expanded border does not grab it"
+        );
+        rt.handle_mouse_event(
+            &mouse(0, border.x + 1, 1, true),
+            &Selection::default(),
+            &mut false,
+            &mut false,
+        );
+        assert!(
+            rt.model.mouse_state.dragging_view_border,
+            "{position:?}: the expanded border grabs a resize drag"
         );
     }
 }

@@ -53,12 +53,19 @@ pub use crate::ui::chrome::ViewBorderColors;
 
 pub use crate::model::{NavSize, ViewLayout};
 
-/// The collapsed width of a side nav: the resting prefix with one cell either side,
-/// which is the prefix indicator the collapsed column keeps on its bottom line.
+/// The collapsed width of a side nav: exactly the resting prefix, which the collapsed
+/// column keeps on its bottom line with no padding. The column exists only to keep the
+/// prefix in view and to be clicked open, so every further cell would be taken from the
+/// terminal view. Its view border shares the column's terminal-side edge.
 pub(crate) fn collapsed_nav_width(ui_prefix: &str) -> u16 {
-    UnicodeWidthStr::width(ui_prefix)
-        .saturating_add(2)
-        .min(u16::MAX as usize) as u16
+    UnicodeWidthStr::width(ui_prefix).min(u16::MAX as usize) as u16
+}
+
+/// The resting prefix with one cell either side: the chip a band's seam row carries while
+/// the band is collapsed or its bar floats, and the label an expanded nav's indicator
+/// needs room for.
+pub(crate) fn prefix_chip_width(ui_prefix: &str) -> u16 {
+    collapsed_nav_width(ui_prefix).saturating_add(2)
 }
 
 /// Whether the hint bar floats over the whole window instead of resting at the nav's
@@ -103,7 +110,9 @@ fn top_nav_height(body_h: u16) -> u16 {
 /// and the terminal view keeps every row it owns.
 /// A collapsed nav gives the cards no region: a side nav keeps a column as wide as its
 /// collapsed width with the prefix on its bottom row, a top or bottom nav keeps the seam
-/// row alone. `nav_width == 0` is the tree-hidden sentinel: the terminal owns the whole
+/// row alone. A collapsed side nav's view border takes no column of its own: it runs down
+/// the column's terminal-side edge on every row above the prefix, so the prefix keeps
+/// every one of its characters and the terminal view gains the column. `nav_width == 0` is the tree-hidden sentinel: the terminal owns the whole
 /// area (and there is no nav to carry a hint bar). `nav_height == 0` means the band height
 /// is auto (~40% of the area).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,11 +166,34 @@ fn collapsed_hint_bar(nav: Rect) -> Rect {
     }
 }
 
-fn split_nav_for_state(nav: Rect, hint_bar_h: u16, collapsed: bool) -> (Rect, Rect) {
-    if collapsed {
-        (Rect::default(), collapsed_hint_bar(nav))
+/// The regions of a collapsed side nav: a column exactly `nav_width` wide at the nav's
+/// side, its prefix on the bottom row, and the view border on the column's terminal-side
+/// edge above that row. The prefix character on that edge stays readable because the
+/// border stops short of it; the terminal view keeps everything beside the column.
+fn collapsed_column(
+    area: Rect,
+    layout: ViewLayout,
+    nav_width: u16,
+    position: NavPosition,
+) -> Regions {
+    let w = nav_width.min(area.width);
+    let (nav_x, edge_x, terminal_x) = if position == NavPosition::Left {
+        (area.x, area.x + w.saturating_sub(1), area.x + w)
     } else {
-        split_nav(nav, hint_bar_h)
+        let nav_x = area.right() - w;
+        (nav_x, nav_x, area.x)
+    };
+    let nav = Rect::new(nav_x, area.y, w, area.height);
+    Regions {
+        layout,
+        tree: Rect::default(),
+        view_border: if w == 0 {
+            Rect::default()
+        } else {
+            Rect::new(edge_x, area.y, 1, area.height.saturating_sub(1))
+        },
+        terminal: Rect::new(terminal_x, area.y, area.width - w, area.height),
+        hint_bar: collapsed_hint_bar(nav),
     }
 }
 
@@ -182,6 +214,9 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
         };
     }
     match nav.position {
+        NavPosition::Left | NavPosition::Right if nav.collapsed => {
+            collapsed_column(area, layout, nav_width, nav.position)
+        }
         NavPosition::Left => {
             let c = Layout::horizontal([
                 Constraint::Length(nav_width),
@@ -189,7 +224,7 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
                 Constraint::Min(0),
             ])
             .split(area);
-            let (tree, hint_bar) = split_nav_for_state(c[0], hint_bar_h, nav.collapsed);
+            let (tree, hint_bar) = split_nav(c[0], hint_bar_h);
             Regions {
                 layout,
                 tree,
@@ -208,7 +243,7 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
                 Constraint::Length(nav_width),
             ])
             .split(area);
-            let (tree, hint_bar) = split_nav_for_state(c[2], hint_bar_h, nav.collapsed);
+            let (tree, hint_bar) = split_nav(c[2], hint_bar_h);
             Regions {
                 layout,
                 tree,

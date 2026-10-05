@@ -299,8 +299,8 @@ no function, and no test, so renaming code is never a documentation change.
   sets the size, and auto-hide takes
   the width away while no prefix interaction is live (a live one brings the nav back). An
   expanded side nav is never narrower than a card's indent, a two-digit number, and eight
-  cells of name, and never narrower than the collapsed nav, so a wider configured prefix
-  can raise that floor; a band is never less than one row. The values therefore travel as
+  cells of name, and always wider than the prefix with a cell either side, so a wider
+  configured prefix can raise that floor; a band is never less than one row. The values therefore travel as
   ONE value carrying
   the width the user set, the width on screen, the band height, the attachment side, and
   the collapsed state,
@@ -310,8 +310,11 @@ no function, and no test, so renaming code is never a documentation change.
   `prefix z` collapses and expands it from either view,
   and dragging the view border past the nav's minimum width or height collapses it;
   dragging back out within the same drag expands it at the size the pointer reached. A
-  collapsed side nav is a column exactly as wide as the resting prefix with a cell either
-  side, the prefix on its bottom row; a collapsed band is the seam row alone, the prefix at
+  collapsed side nav is a column exactly as wide as the resting prefix, the prefix
+  unpadded on its bottom row. Its view border shares the column: it runs down the
+  column's edge beside the terminal view on every row above the prefix, so the prefix
+  keeps every character and the terminal view takes every column beside the prefix's own;
+  a collapsed band is the seam row alone, the prefix at
   its right end. A collapsed nav renders no cards, keeps the view border, and preserves the
   natural width and height for expansion. A click anywhere on it, the view border
   included, expands it without moving the focus or starting a drag, and focusing the nav
