@@ -34,14 +34,18 @@ fn cause(kind: FailureKind, palette: &Palette) -> (&'static str, Style, &'static
 /// title with its glyph in the state's colour, and each host under it a row in the
 /// key-column grammar: the host bold, then its reason muted, wrapped under the reason
 /// column rather than cut. A host wider than its column takes rows of its own above its
-/// reason. The selected row is reversed across the whole width with `❯`.
+/// reason. The selected row is reversed across the whole width with `❯`, and the rows of
+/// the `hover` host, the soft selection, are underlined. Each line comes with the host it
+/// belongs to (none for a cause title), so a click is hit-tested against the rows the
+/// paint shows.
 pub(crate) fn check_lines(
     entries: &[CheckEntry],
     selected: usize,
+    hover: Option<usize>,
     width: u16,
     visible_rows: usize,
     palette: &Palette,
-) -> (String, Vec<Line<'static>>) {
+) -> (String, crate::ui::modal::ItemLines) {
     let dim = Style::default().fg(palette.decoration);
     if entries.is_empty() {
         let room = (width as usize).saturating_sub(2).max(1) as u16;
@@ -49,7 +53,7 @@ pub(crate) fn check_lines(
             String::new(),
             crate::ui::modal::wrap_text("nothing to check: every host answered", room)
                 .into_iter()
-                .map(|c| Line::from(Span::styled(format!(" {c}"), dim)))
+                .map(|c| (None, Line::from(Span::styled(format!(" {c}"), dim))))
                 .collect(),
         );
     }
@@ -69,10 +73,13 @@ pub(crate) fn check_lines(
     for (i, entry) in entries.iter().enumerate() {
         if last != Some(entry.kind) {
             let (glyph, style, word) = cause(entry.kind, palette);
-            lines.push(Line::from(vec![
-                Span::styled(format!(" {glyph} "), style),
-                Span::styled(word.to_string(), dim.add_modifier(Modifier::BOLD)),
-            ]));
+            lines.push((
+                None,
+                Line::from(vec![
+                    Span::styled(format!(" {glyph} "), style),
+                    Span::styled(word.to_string(), dim.add_modifier(Modifier::BOLD)),
+                ]),
+            ));
             last = Some(entry.kind);
         }
         let chosen = i == selected;
@@ -105,14 +112,20 @@ pub(crate) fn check_lines(
             ]);
         }
         rows.extend(reason.map(|c| vec![Span::raw(" ".repeat(lead)), Span::styled(c, dim)]));
+        let soft = if hover == Some(i) {
+            palette::soft_selection_style()
+        } else {
+            Style::default()
+        };
         for (n, mut spans) in rows.into_iter().enumerate() {
             if n == 0 && chosen {
                 selected_line = lines.len();
                 let used: usize = spans.iter().map(|s| s.width()).sum();
                 spans.push(Span::raw(" ".repeat((width as usize).saturating_sub(used))));
-                lines.push(Line::from(spans).style(palette::selection_style(palette)));
+                let style = palette::selection_style(palette).patch(soft);
+                lines.push((Some(i), Line::from(spans).style(style)));
             } else {
-                lines.push(Line::from(spans));
+                lines.push((Some(i), Line::from(spans).style(soft)));
             }
         }
     }
@@ -151,7 +164,8 @@ mod tests {
             entry("db-01", FailureKind::ListFailed),
         ];
         let p = Palette::default();
-        let (meta, lines) = check_lines(&entries, 1, 40, usize::MAX, &p);
+        let (meta, lines) = check_lines(&entries, 1, None, 40, usize::MAX, &p);
+        let lines: Vec<Line> = lines.into_iter().map(|(_, l)| l).collect();
         assert_eq!(meta, "4");
         let texts: Vec<String> = lines
             .iter()
@@ -179,7 +193,8 @@ mod tests {
 
     #[test]
     fn an_empty_table_says_every_host_answered() {
-        let (meta, lines) = check_lines(&[], 0, 40, usize::MAX, &Palette::default());
+        let (meta, lines) = check_lines(&[], 0, None, 40, usize::MAX, &Palette::default());
+        let lines: Vec<Line> = lines.into_iter().map(|(_, l)| l).collect();
         assert_eq!(meta, "");
         assert_eq!(lines.len(), 1);
         assert!(text(&lines[0]).contains("every host answered"));
@@ -190,7 +205,8 @@ mod tests {
         let entries: Vec<_> = (0..20)
             .map(|i| entry(&format!("host-{i:02}"), FailureKind::Unreachable))
             .collect();
-        let (_, lines) = check_lines(&entries, 19, 50, 8, &Palette::default());
+        let (_, lines) = check_lines(&entries, 19, None, 50, 8, &Palette::default());
+        let lines: Vec<Line> = lines.into_iter().map(|(_, l)| l).collect();
         assert_eq!(lines.len(), 8);
         assert!(lines.iter().any(|line| text(line).contains("host-19")));
         assert!(lines
@@ -206,7 +222,8 @@ mod tests {
         let mut long = entry("gpu-02", FailureKind::Blocked);
         long.label = "worker-01.production.example.com".into();
         let entries = vec![long, entry("db-01", FailureKind::Blocked)];
-        let (_, lines) = check_lines(&entries, 0, 29, usize::MAX, &Palette::default());
+        let (_, lines) = check_lines(&entries, 0, None, 29, usize::MAX, &Palette::default());
+        let lines: Vec<Line> = lines.into_iter().map(|(_, l)| l).collect();
         assert!(lines.iter().all(|l| l.width() <= 29));
         let all: Vec<String> = lines.iter().map(text).collect();
         for reason in ["gpu-02", "db-01"] {
@@ -225,5 +242,23 @@ mod tests {
             all[3].starts_with(&" ".repeat(5)) && all[3].trim_start().starts_with("gpu-02"),
             "its reason under the reason column: {all:?}"
         );
+    }
+
+    #[test]
+    fn the_hovered_host_is_underlined_and_every_row_names_its_host() {
+        let entries = vec![
+            entry("gpu-02", FailureKind::Blocked),
+            entry("web-03", FailureKind::Unreachable),
+        ];
+        let p = Palette::default();
+        let (_, lines) = check_lines(&entries, 0, Some(1), 40, usize::MAX, &p);
+        let items: Vec<Option<usize>> = lines.iter().map(|(i, _)| *i).collect();
+        assert_eq!(
+            items,
+            [None, Some(0), None, Some(1)],
+            "a cause title names no host"
+        );
+        assert_eq!(lines[1].1.style, palette::selection_style(&p));
+        assert_eq!(lines[3].1.style, palette::soft_selection_style());
     }
 }

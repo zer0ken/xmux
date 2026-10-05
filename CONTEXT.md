@@ -573,11 +573,11 @@ UI elements a user perceives as distinct things:
   active filter. The hosts-to-check table and command palette can select a host by name.
 - hosts to check - the table `prefix h` opens: every host in a problem state grouped by
   cause, each with its reason.
-  Enter on a row selects that host's card
+  Enter or a click on a row selects that host's card
   and opens the login pane for a blocked or unreachable host.
 - command palette - the searchable popup `prefix :` opens. It lists named actions
   from the key table and login entries for blocked or unreachable hosts. Enter runs
-  the selected action; Esc closes it.
+  the selected action and a click runs the clicked one; Esc closes it.
 - one-host re-scan - `prefix R`: the selected card's machine asked again alone, its
   reachability probe and then every source it serves, reported in its own summary toast.
   A full re-scan (`prefix r`) asked meanwhile takes over.
@@ -627,8 +627,13 @@ UI elements a user perceives as distinct things:
   glyph legend as one document, a blank row between two sections, searched by typing and
   scrolled by the arrows. Its tab row names the sections: `←`/`→` or a click moves the
   active tab and scrolls that section to the top, and a scroll moves the active tab to
-  the section at the top. A tab is the one thing in a popup that takes a click; the rest
-  of the box is its drag handle.
+  the section at the top. A popup's pickable items (the help's tabs, the hosts to check,
+  the palette's commands) follow ADR 0008: the arrows move the hard selection, the
+  pointer over an item is the soft selection, underlined, and a click on an item
+  executes it as Enter on it would. A hovered tab shows its section until the pointer
+  leaves the tab row. A key ends the soft selection. The whole box, its items included,
+  is its drag handle: a press that moves is a drag, a press released where it was
+  pressed is a click.
 
 A zellij TAB is a `window` and a zellij SESSION is a `session`: xmux uses
 one set of words for every mux, so a mux's own naming is translated at its implementation

@@ -343,6 +343,18 @@ impl State {
         is_popup_open(&self.modal)
     }
 
+    /// The open popup's soft selection: the help tab or the list item under the pointer.
+    pub(crate) fn modal_hover(&self) -> Option<usize> {
+        match &self.modal {
+            Some(
+                Modal::Help { hover, .. }
+                | Modal::Check { hover, .. }
+                | Modal::Palette { hover, .. },
+            ) => *hover,
+            _ => None,
+        }
+    }
+
     /// True while an input popup (filter / jump / new session / logout) is open. The app
     /// routes every key to the switcher then, with no focus-switch hijack.
     pub fn is_inputting(&self) -> bool {

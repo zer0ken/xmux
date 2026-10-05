@@ -3,20 +3,17 @@ use super::*;
 impl Switcher {
     // --- mouse --------------------------------------------------------------
 
-    /// Begins a popup drag against the rectangle painted for the latest frame. A press on
-    /// one of the help's tabs selects that tab instead and starts no drag: the tabs are
-    /// the one thing in a popup that takes a click, so the rest of the box, the gaps on
-    /// the tab row included, stays its handle.
+    /// Begins a popup drag against the rectangle painted for the latest frame. A press
+    /// anywhere on the key list or a modal popup grabs it, a help tab and a list item
+    /// included: the press becomes a drag once the pointer moves, and a click on the
+    /// grabbed cell if it is released there (see [`Self::end_popup_drag_in_plan`]).
     pub fn begin_popup_drag_in_plan(
         &mut self,
         plan: &RenderPlan,
         col: u16,
         row: u16,
-        state: &mut crate::state::State,
+        state: &crate::state::State,
     ) -> bool {
-        if Self::click_help_tab(plan, col, row, state) {
-            return false;
-        }
         let key_list = plan.key_list.as_ref().map(|(rect, _)| *rect);
         self.popup_geo.rect = if plan.popup_rect.is_empty() {
             key_list.unwrap_or_default()
@@ -27,49 +24,113 @@ impl Switcher {
         self.begin_popup_drag(col, row, open)
     }
 
-    /// Selects the help tab under `(col, row)` on the popup the plan painted, scrolling its
-    /// section's title to the top of the body. Returns whether the press was on a tab.
-    fn click_help_tab(
+    /// Ends a popup drag. A press released on the cell it grabbed is a click, and a click
+    /// executes the help tab or the list item under it the way Enter executes the hard
+    /// selection: a tab becomes the hard selection and scrolls its section's title to the
+    /// top of the body, and an item becomes the hard selection and is marked for the
+    /// switcher to act on as an Enter.
+    pub fn end_popup_drag_in_plan(&mut self, plan: &RenderPlan, state: &mut crate::state::State) {
+        let Some((col, row)) = self.popup_geo.end_drag() else {
+            return;
+        };
+        match (
+            self.popup_target_at(plan, col, row, state),
+            &mut state.modal,
+        ) {
+            (
+                Some(chosen),
+                Some(Modal::Help {
+                    query, scroll, tab, ..
+                }),
+            ) => {
+                let inner = Self::popup_inner(plan.popup_rect);
+                let map = modal::help_map(
+                    &state.chrome.ui_prefix,
+                    state.chrome.nav_position,
+                    query,
+                    inner.width,
+                    inner.height,
+                );
+                *tab = Some(chosen);
+                *scroll = map.scroll_to(chosen);
+            }
+            (
+                Some(chosen),
+                Some(Modal::Check { selected, open, .. } | Modal::Palette { selected, open, .. }),
+            ) => {
+                *selected = chosen;
+                *open = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// Sets the soft selection of the open popup to the help tab or the list item under
+    /// `(col, row)`, or clears it when the pointer is on neither.
+    pub fn hover_popup(
+        &mut self,
         plan: &RenderPlan,
         col: u16,
         row: u16,
         state: &mut crate::state::State,
-    ) -> bool {
-        let rect = plan.popup_rect;
-        let (prefix, position) = (&state.chrome.ui_prefix, state.chrome.nav_position);
-        let Some(Modal::Help {
-            query, scroll, tab, ..
-        }) = &mut state.modal
-        else {
-            return false;
-        };
-        let inner = Rect::new(
+    ) {
+        let target = self.popup_target_at(plan, col, row, state);
+        if let Some(
+            Modal::Help { hover, .. } | Modal::Check { hover, .. } | Modal::Palette { hover, .. },
+        ) = &mut state.modal
+        {
+            *hover = target;
+        }
+    }
+
+    /// The popup's inner rect: `rect` inside its border.
+    fn popup_inner(rect: Rect) -> Rect {
+        Rect::new(
             rect.x.saturating_add(1),
             rect.y.saturating_add(1),
             rect.width.saturating_sub(2),
             rect.height.saturating_sub(2),
-        );
-        if row != inner.y.saturating_add(modal::HELP_TAB_ROW)
-            || !inner.contains(Position { x: col, y: row })
-        {
-            return false;
+        )
+    }
+
+    /// What the pointer at `(col, row)` would select on the popup the plan painted: a help
+    /// tab's section, or the index of a list item (a host to check, a palette command).
+    /// A cell between tabs, a cause title, the query field, and the border name nothing.
+    fn popup_target_at(
+        &self,
+        plan: &RenderPlan,
+        col: u16,
+        row: u16,
+        state: &crate::state::State,
+    ) -> Option<usize> {
+        let inner = Self::popup_inner(plan.popup_rect);
+        if !inner.contains(Position { x: col, y: row }) {
+            return None;
         }
-        let Some(chosen) = modal::help_tab_at(
-            prefix,
-            position,
-            query,
-            *scroll,
-            *tab,
-            inner.width,
-            inner.height,
-            col - inner.x,
-        ) else {
-            return false;
-        };
-        let map = modal::help_map(prefix, position, query, inner.width, inner.height);
-        *tab = Some(chosen);
-        *scroll = map.scroll_to(chosen);
-        true
+        match &state.modal {
+            Some(Modal::Help {
+                query, scroll, tab, ..
+            }) => {
+                if row != inner.y.saturating_add(modal::HELP_TAB_ROW) {
+                    return None;
+                }
+                modal::help_tab_at(
+                    &state.chrome.ui_prefix,
+                    state.chrome.nav_position,
+                    query,
+                    *scroll,
+                    *tab,
+                    inner.width,
+                    inner.height,
+                    col - inner.x,
+                )
+            }
+            Some(Modal::Check { .. } | Modal::Palette { .. }) => {
+                let (_, lines) = self.list_popup_lines(state, plan.popup_rect)?;
+                lines.get((row - inner.y) as usize)?.0
+            }
+            _ => None,
+        }
     }
 
     fn in_tree(plan: &RenderPlan, col: u16, row: u16) -> bool {

@@ -164,12 +164,15 @@ pub(crate) enum Modal {
     /// `scroll` counts the display rows scrolled past from the top of what matches. `tab`
     /// is the section a tab key or a tab click chose, held while the scroll stays where
     /// that choice put it; `None` makes the active tab the section the scroll reached.
-    /// `decoder` lives as long as the help, so a key split across two reads is still one
-    /// key.
+    /// `hover` is the tab under the pointer, the soft selection: the body shows that
+    /// tab's section while it is set, and `scroll` and `tab` stay the hard selection the
+    /// body returns to. `decoder` lives as long as the help, so a key split across two
+    /// reads is still one key.
     Help {
         query: String,
         scroll: usize,
         tab: Option<usize>,
+        hover: Option<usize>,
         decoder: crate::display::decode::KeyDecoder,
     },
     /// The history `prefix m` opens. `scroll` counts the records scrolled past from the
@@ -178,14 +181,19 @@ pub(crate) enum Modal {
         scroll: usize,
     },
     /// The table of the hosts to check `prefix h` opens. `selected` is the row the keys
-    /// are on, and `open` records an Enter the switcher has yet to act on.
+    /// are on, `hover` the row under the pointer, and `open` records an Enter or a click
+    /// the switcher has yet to act on.
     Check {
         selected: usize,
+        hover: Option<usize>,
         open: bool,
     },
+    /// The command palette `prefix :` opens, with the same `selected`, `hover`, and `open`
+    /// as the hosts to check.
     Palette {
         query: String,
         selected: usize,
+        hover: Option<usize>,
         open: bool,
         decoder: crate::display::decode::KeyDecoder,
     },
@@ -261,7 +269,8 @@ impl HelpMap {
 /// typing: a printable key extends the query and Backspace shortens it, each returning the
 /// view to the top of what matches. `←`/`→` move the active tab and scroll its section's
 /// title to the top; `↑`/`↓`, `PgUp`/`PgDn`, and `Home`/`End` scroll and hand the active
-/// tab back to the scroll. `help` lays the help out for a query, so every key is held to
+/// tab back to the scroll. A key ends the soft selection of the help, the palette, and the
+/// hosts to check, until the pointer moves again. `help` lays the help out for a query, so every key is held to
 /// the layout the paint shows. Every other key is swallowed. Returns false when neither
 /// is open, so the read falls through to normal routing.
 pub(crate) fn feed_reader(
@@ -277,10 +286,12 @@ pub(crate) fn feed_reader(
         query,
         scroll,
         tab,
+        hover,
         decoder,
     }) = modal
     {
         for key in decoder.feed(bytes) {
+            *hover = None;
             let map = help(query);
             let at = (*scroll).min(map.max_scroll);
             let to = |s: usize, by: isize| s.saturating_add_signed(by).min(map.max_scroll);
@@ -331,11 +342,13 @@ pub(crate) fn feed_reader(
     if let Some(Modal::Palette {
         query,
         selected,
+        hover,
         open,
         decoder,
     }) = modal
     {
         for key in decoder.feed(bytes) {
+            *hover = None;
             match key.code {
                 KeyCode::Esc => {
                     *modal = None;
@@ -363,11 +376,17 @@ pub(crate) fn feed_reader(
     }
     // `q`, or a real Esc (a lone ESC, not the ESC `[` that starts an arrow/CSI).
     let esc = bytes.contains(&0x1b) && !bytes.windows(2).any(|w| w == [0x1b, b'[']);
-    if let Some(Modal::Check { selected, open }) = modal {
+    if let Some(Modal::Check {
+        selected,
+        hover,
+        open,
+    }) = modal
+    {
         if bytes.contains(&b'q') || esc {
             *modal = None;
             return true;
         }
+        *hover = None;
         match bytes {
             b"k" | b"\x1b[A" => *selected = selected.saturating_sub(1),
             b"j" | b"\x1b[B" => *selected = selected.saturating_add(1),

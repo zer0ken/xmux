@@ -100,7 +100,7 @@ The remaining actions all take the prefix and work from either focus:
 | `prefix R` | re-scan the selected card's host alone |
 | `prefix L` | log out of the selected SSH machine (asks for the word `logout`): remove this PC's key from it, clear the held password, and close its connections |
 | `prefix h` | open the table of the hosts to check |
-| `prefix :` | search commands by name; type to filter, use arrows to select, Enter to run, Esc to close |
+| `prefix :` | search commands by name; type to filter, use arrows to select, Enter or a click to run, Esc to close |
 
 While the nav holds focus, bare `i` selects the current source title too. Click the
 title for the same screen. Titles do not take card numbers or interrupt card stepping.
@@ -323,8 +323,12 @@ whose left edge would leave one or two cells of the row beside it starts at the 
 left edge instead. Every row of a popup wraps to the popup's width rather than being cut:
 a description continues under its own column, and a key wider than its column takes a row
 of its own above it. A text field stays on one row and keeps its caret in view. Pressing
-anywhere on a popup and dragging moves it; on the help, a press on a tab selects the tab
-instead. While a popup's text field takes keys, the
+anywhere on a popup and dragging moves it. A popup with items to pick (the help's tabs,
+the hosts to check, the command palette) keeps selecting and executing apart: the arrow
+keys move its selection, the pointer over an item underlines it without moving that
+selection, and a click on an item (a press released where it was pressed) executes it
+exactly as `Enter` on it would. Any key ends the underline until the pointer moves
+again. While a popup's text field takes keys, the
 terminal's own cursor sits on the field's caret, so an input method composes in the
 field.
 
@@ -338,7 +342,8 @@ field.
   One blank row parts two sections. Under the search field a row of tabs names the
   sections, the active one in the title's accent: `←`/`→` (or a click on a tab) move the
   active tab and scroll that section's title to the top of the body, held at the end of
-  the help. `↑`/`↓` scroll one row, `PgUp`/`PgDn` ten, and `Home`/`End` jump to either end,
+  the help. The pointer over a tab underlines it and shows its section while it stays
+  there; off the tab row, the body shows the active tab's position again. `↑`/`↓` scroll one row, `PgUp`/`PgDn` ten, and `Home`/`End` jump to either end,
   and the active tab then follows the section at the top of the body. A search leaves the
   tabs of the sections it matched. When the tabs do not fit the popup's width, the row
   shows the ones around the active tab, with `‹` or `›` where more are hidden. The top
@@ -352,7 +357,7 @@ field.
 - **Hosts to check** (`prefix h`): every host in a problem state, grouped under its cause
   (`?` login needed, `▲` unreachable, `✗` list failed), each with the reason its last
   answer gave. The top border
-  counts the hosts. `↑`/`↓` (or `k`/`j`) move the row; `Enter` closes the table and
+  counts the hosts. `↑`/`↓` (or `k`/`j`) move the row; `Enter` or a click on a host closes the table and
   selects that host's card, setting the filter to the host's name when it has no card on
   the list, and for a host that needs a login it also focuses the terminal view, whose
   login pane then takes the keys. `q`, `Esc`, or `prefix h` closes it.
@@ -424,8 +429,11 @@ notifications = true   # false keeps results out of toasts; the history still ha
 | left-click `‹ 5` or `7 ›` on a band's view border | select the nearest card scrolled off that side |
 | wheel over the nav | move the selection (nav focused) |
 | drag the view border | resize the expanded nav (at any of the four borders: the drag mirrors the placement, measuring from the near edge); past the minimum it collapses the nav |
-| drag the key list or a popup | move it (press anywhere on it but a help tab) |
-| left-click a help tab | scroll the help to that section |
+| drag the key list or a popup | move it (press anywhere on it, an item included) |
+| hover a help tab | underline it and show its section until the pointer leaves the tab row |
+| hover a popup item | underline it without moving the keyboard selection |
+| left-click a help tab | make it the active tab and scroll the help to that section |
+| left-click a popup item | execute it, as `Enter` on it would |
 | left-click a toast | dismiss it |
 
 There is no context menu: every action a right-click could offer is either a

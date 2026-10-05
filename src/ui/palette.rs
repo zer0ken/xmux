@@ -230,6 +230,13 @@ impl Default for Palette {
     }
 }
 
+/// The style a popup item or a help tab under the pointer is painted with, the soft
+/// selection: an underline, which reads apart from the hard selection's reverse video and
+/// sits on top of it when both mark one item. An attribute, so the theme resolves it.
+pub(crate) fn soft_selection_style() -> Style {
+    Style::default().add_modifier(Modifier::UNDERLINED)
+}
+
 /// The style the SELECTED card is painted with.
 ///
 /// By default reverse video, and nothing else: the terminal swaps its own foreground and

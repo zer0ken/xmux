@@ -6157,7 +6157,7 @@ fn popup_border_press_then_drag_moves_the_rect() {
     let before = before_plan.popup_rect;
     let (bx, by) = (before.x, before.y); // top-left corner is on the border
     assert!(
-        sw.begin_popup_drag_in_plan(&before_plan, bx, by, &mut state),
+        sw.begin_popup_drag_in_plan(&before_plan, bx, by, &state),
         "press on the border grabs"
     );
     sw.drag_popup(bx + 5, by - 1);
@@ -6211,7 +6211,7 @@ fn closed_popup_cannot_be_grabbed_even_with_a_stale_rect() {
     let r = plan.popup_rect;
     state.modal = None; // close WITHOUT re-rendering → popup_rect is stale
     assert!(
-        !sw.begin_popup_drag_in_plan(&plan, r.x, r.y, &mut state),
+        !sw.begin_popup_drag_in_plan(&plan, r.x, r.y, &state),
         "a stale rect must not grab a closed popup"
     );
 }
@@ -6248,11 +6248,11 @@ fn a_press_anywhere_on_a_popup_grabs_it_and_outside_does_not() {
     );
     let r = plan.popup_rect;
     assert!(
-        !sw.begin_popup_drag_in_plan(&plan, r.right() + 1, r.y, &mut state),
+        !sw.begin_popup_drag_in_plan(&plan, r.right() + 1, r.y, &state),
         "a press beside the popup does not grab it"
     );
     assert!(
-        sw.begin_popup_drag_in_plan(&plan, r.x + 2, r.y + 4, &mut state),
+        sw.begin_popup_drag_in_plan(&plan, r.x + 2, r.y + 4, &state),
         "an interior press grabs the popup"
     );
     sw.drag_popup(r.x + 12, r.y + 2);
@@ -6270,40 +6270,175 @@ fn a_press_anywhere_on_a_popup_grabs_it_and_outside_does_not() {
     );
 }
 
+/// The help opened on a 140x30 window, laid out and painted, with its tab-finding helpers.
+struct HelpOnScreen {
+    state: crate::state::State,
+    sw: Switcher,
+    plan: RenderPlan,
+    term: Terminal<TestBackend>,
+}
+
+impl HelpOnScreen {
+    fn open() -> Self {
+        let mut state = crate::state::State::from_scan(sample());
+        let mut sw = Switcher::new(&mut state);
+        sw.show_help(&mut state);
+        let mut me = HelpOnScreen {
+            state,
+            sw,
+            plan: RenderPlan::default(),
+            term: Terminal::new(TestBackend::new(140, 30)).unwrap(),
+        };
+        me.paint();
+        me
+    }
+
+    fn paint(&mut self) {
+        self.plan = self.sw.layout(
+            Rect::new(0, 0, 140, 30),
+            NavSize::hidden(NAV_WIDTH),
+            &self.state,
+            &self.plan,
+        );
+        let (sw, state, plan) = (&self.sw, &self.state, &self.plan);
+        self.term
+            .draw(|f| sw.render(f, None, false, state, plan))
+            .unwrap();
+    }
+
+    fn inner(&self) -> (u16, u16) {
+        let r = self.plan.popup_rect;
+        (r.width - 2, r.height - 2)
+    }
+
+    /// The screen cell of the tab row that names `section`'s tab, or the gap after `section`.
+    fn tab_cell(&self, section: usize, gap: bool) -> (u16, u16) {
+        let r = self.plan.popup_rect;
+        let (inner, visible) = self.inner();
+        let (prefix, pos) = (&self.state.chrome.ui_prefix, self.state.chrome.nav_position);
+        let (scroll, tab) = match &self.state.modal {
+            Some(Modal::Help { scroll, tab, .. }) => (*scroll, *tab),
+            _ => panic!("the help is open"),
+        };
+        let at = |x| modal::help_tab_at(prefix, pos, "", scroll, tab, inner, visible, x);
+        let x = if gap {
+            (1..inner).find(|&x| at(x - 1) == Some(section) && at(x).is_none())
+        } else {
+            (0..inner).find(|&x| at(x) == Some(section))
+        }
+        .expect("the tab is on the row");
+        (r.x + 1 + x, r.y + 1 + modal::HELP_TAB_ROW)
+    }
+
+    /// `(scroll, tab, hover)` of the help.
+    fn help(&self) -> (usize, Option<usize>, Option<usize>) {
+        match &self.state.modal {
+            Some(Modal::Help {
+                scroll, tab, hover, ..
+            }) => (*scroll, *tab, *hover),
+            _ => panic!("the help is open"),
+        }
+    }
+
+    /// The text of the help's first body row as painted.
+    fn top_body_row(&self) -> String {
+        let r = self.plan.popup_rect;
+        let y = r.y + 1 + modal::HELP_TAB_ROW + 1;
+        let buf = self.term.backend().buffer();
+        (r.x + 1..r.right() - 1)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    fn section_title(&self, section: usize) -> String {
+        modal::help_rows(&self.state.chrome.ui_prefix, self.state.chrome.nav_position)
+            .into_iter()
+            .filter_map(|r| match r {
+                modal::HelpRow::Head(h) => Some(h),
+                _ => None,
+            })
+            .nth(section)
+            .expect("the section")
+    }
+}
+
 #[test]
-fn a_press_on_a_help_tab_selects_it_and_a_gap_beside_it_drags() {
-    let mut state = crate::state::State::from_scan(sample());
-    let mut sw = Switcher::new(&mut state);
-    sw.show_help(&mut state);
-    let area = Rect::new(0, 0, 140, 30);
-    let plan = sw.layout(
-        area,
-        NavSize::hidden(NAV_WIDTH),
-        &state,
-        &RenderPlan::default(),
-    );
-    let r = plan.popup_rect;
-    let (inner, visible) = (r.width - 2, r.height - 2);
-    let (prefix, pos) = (state.chrome.ui_prefix.clone(), state.chrome.nav_position);
-    let tab_at = |x| modal::help_tab_at(&prefix, pos, "", 0, None, inner, visible, x);
-    let on_sessions = (0..inner)
-        .find(|&x| tab_at(x) == Some(2))
-        .expect("a sessions tab");
-    let row = r.y + 1 + modal::HELP_TAB_ROW;
-    assert!(!sw.begin_popup_drag_in_plan(&plan, r.x + 1 + on_sessions, row, &mut state));
-    assert!(!sw.popup_drag_active(), "a tab press starts no drag");
-    let map = modal::help_map(&prefix, pos, "", inner, visible);
+fn a_click_on_a_help_tab_executes_it_and_a_drag_from_it_moves_the_popup() {
+    let mut h = HelpOnScreen::open();
+    let (col, row) = h.tab_cell(2, false);
     assert!(
-        matches!(state.modal, Some(Modal::Help { scroll, tab: Some(2), .. }) if scroll == map.scroll_to(2)),
-        "the click chose the tab and scrolled its section up"
+        h.sw.begin_popup_drag_in_plan(&h.plan, col, row, &h.state),
+        "a press on a tab grabs the popup until it is released"
     );
-    let gap = (1..inner)
-        .find(|&x| tab_at(x - 1) == Some(0) && tab_at(x).is_none())
-        .expect("a gap after the first tab");
+    h.sw.end_popup_drag_in_plan(&h.plan, &mut h.state);
+    assert!(!h.sw.popup_drag_active());
+    let (inner, visible) = h.inner();
+    let map = modal::help_map(
+        &h.state.chrome.ui_prefix,
+        h.state.chrome.nav_position,
+        "",
+        inner,
+        visible,
+    );
+    assert_eq!(
+        h.help(),
+        (map.scroll_to(2), Some(2), None),
+        "the click made the tab the hard selection and scrolled its section up"
+    );
+    h.paint();
+    // A press on a tab that moves before its release is a drag: the popup follows, and
+    // the hard selection stays.
+    let before = h.plan.popup_rect;
+    let (col, row) = h.tab_cell(0, false);
+    assert!(h.sw.begin_popup_drag_in_plan(&h.plan, col, row, &h.state));
+    h.sw.drag_popup(col + 4, row);
+    h.sw.end_popup_drag_in_plan(&h.plan, &mut h.state);
+    assert_eq!(h.help().1, Some(2), "the drag executed nothing");
+    h.paint();
+    assert_eq!(h.plan.popup_rect.x, before.x + 4, "the popup moved");
+    // A click between tabs names no tab and executes nothing.
+    let (col, row) = h.tab_cell(0, true);
+    assert!(h.sw.begin_popup_drag_in_plan(&h.plan, col, row, &h.state));
+    h.sw.end_popup_drag_in_plan(&h.plan, &mut h.state);
+    assert_eq!(h.help().1, Some(2));
+}
+
+#[test]
+fn hovering_a_help_tab_shows_its_section_until_the_pointer_leaves() {
+    let mut h = HelpOnScreen::open();
+    let first = h.section_title(0);
+    assert_eq!(h.top_body_row(), first);
+    let (col, row) = h.tab_cell(2, false);
+    h.sw.hover_popup(&h.plan, col, row, &mut h.state);
+    assert_eq!(
+        h.help(),
+        (0, None, Some(2)),
+        "the hover leaves the hard selection where it was"
+    );
+    h.paint();
+    assert_eq!(
+        h.top_body_row(),
+        h.section_title(2),
+        "the body shows its section"
+    );
+    let buf = h.term.backend().buffer();
     assert!(
-        sw.begin_popup_drag_in_plan(&plan, r.x + 1 + gap, row, &mut state),
-        "a press between tabs grabs the popup"
+        buf[(col, row)].modifier.contains(Modifier::UNDERLINED),
+        "the hovered tab is drawn apart"
     );
+    let (lit_col, _) = h.tab_cell(0, false);
+    assert!(
+        !buf[(lit_col, row)].modifier.contains(Modifier::UNDERLINED)
+            && buf[(lit_col, row)].modifier.contains(Modifier::BOLD),
+        "the hard-selected tab keeps its own look"
+    );
+    // The pointer moves down onto the body: the body returns to the hard selection.
+    h.sw.hover_popup(&h.plan, col, row + 2, &mut h.state);
+    assert_eq!(h.help(), (0, None, None));
+    h.paint();
+    assert_eq!(h.top_body_row(), first);
 }
 
 /// The text inside the open popup's border, row by row.
@@ -6375,7 +6510,7 @@ fn the_key_list_drags_and_the_popup_its_key_opens_keeps_the_place() {
         .key_list
         .clone()
         .expect("a live prefix opens the key list");
-    assert!(sw.begin_popup_drag_in_plan(&plan, list.x + 3, list.y + 1, &mut state));
+    assert!(sw.begin_popup_drag_in_plan(&plan, list.x + 3, list.y + 1, &state));
     sw.drag_popup(list.x - 7, list.y - 4);
     sw.end_popup_drag();
     let moved = sw.layout(area, nav, &state, &plan);
@@ -6416,7 +6551,7 @@ fn popup_drag_clamps_within_screen() {
         &RenderPlan::default(),
     );
     let r = plan.popup_rect;
-    assert!(sw.begin_popup_drag_in_plan(&plan, r.x, r.y, &mut state));
+    assert!(sw.begin_popup_drag_in_plan(&plan, r.x, r.y, &state));
     sw.drag_popup(r.x.saturating_sub(50), r.y); // yank far left, past the edge
     let next = sw.layout(
         Rect::new(0, 0, 140, 30),
@@ -6648,6 +6783,7 @@ fn help_lines_reflects_configured_prefix() {
         "",
         0,
         None,
+        None,
         200,
         u16::MAX,
     );
@@ -6673,6 +6809,7 @@ fn help_lines_reflects_configured_prefix() {
         &palette,
         "",
         0,
+        None,
         None,
         200,
         u16::MAX,

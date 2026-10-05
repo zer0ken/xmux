@@ -248,7 +248,15 @@ pub(crate) enum Msg {
     },
     SetMouseHovered(bool),
     SetResizeRepeat(Option<std::time::Instant>),
+    /// The button-up that ends a popup drag: a release on the grabbed cell is a click.
     EndPopupDrag,
+    /// Ends a popup drag whose button-up was lost, as no click.
+    AbandonPopupDrag,
+    /// Idle pointer motion over an open popup: sets its soft selection.
+    HoverPopup {
+        col: u16,
+        row: u16,
+    },
     DragPopup {
         col: u16,
         row: u16,
@@ -1232,6 +1240,18 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
     effects
 }
 
+/// Executes the item a list popup was told to execute, by an Enter on its hard selection
+/// or a click on its soft selection: one shared execution, whichever input asked.
+fn execute_list_choice(model: &mut AppModel) -> Vec<Effect> {
+    if model.switcher.open_checked_host(&mut model.state) {
+        return update(model, Msg::Focus(crate::model::FocusTarget::Terminal));
+    }
+    if let Some(choice) = model.switcher.take_palette_choice(&mut model.state) {
+        return run_palette_choice(model, choice);
+    }
+    Vec::new()
+}
+
 fn run_palette_choice(model: &mut AppModel, choice: crate::state::PaletteChoice) -> Vec<Effect> {
     use crate::model::keys::KeyCommand;
     use crate::state::PaletteChoice;
@@ -1359,14 +1379,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 ),
                 &mut model.state,
             );
-            let opened = model.switcher.open_checked_host(&mut model.state);
-            if opened {
-                return update(model, Msg::Focus(crate::model::FocusTarget::Terminal));
-            }
-            if let Some(choice) = model.switcher.take_palette_choice(&mut model.state) {
-                return run_palette_choice(model, choice);
-            }
-            Vec::new()
+            execute_list_choice(model)
         }
         Msg::OpResult {
             result: crate::model::OpResult::HostKeysFound { machine, result },
@@ -1715,7 +1728,19 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::EndPopupDrag => {
+            model
+                .switcher
+                .end_popup_drag_in_plan(&model.render_plan, &mut model.state);
+            execute_list_choice(model)
+        }
+        Msg::AbandonPopupDrag => {
             model.switcher.end_popup_drag();
+            Vec::new()
+        }
+        Msg::HoverPopup { col, row } => {
+            model
+                .switcher
+                .hover_popup(&model.render_plan, col, row, &mut model.state);
             Vec::new()
         }
         Msg::DragPopup { col, row } => {
@@ -1725,7 +1750,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         Msg::BeginPopupDrag { col, row } => {
             model
                 .switcher
-                .begin_popup_drag_in_plan(&model.render_plan, col, row, &mut model.state);
+                .begin_popup_drag_in_plan(&model.render_plan, col, row, &model.state);
             Vec::new()
         }
         Msg::ToggleNavCollapsed => {
@@ -3886,5 +3911,156 @@ mod tests {
         assert!(effects.is_empty());
         answer(&mut m, "dead", &[], None);
         assert!(!m.switcher.current_host_blocked());
+    }
+
+    /// Lays the model out at 140x30 with the nav shown, as a frame would, so a mouse
+    /// message is hit-tested against the popup it painted.
+    fn lay_out(m: &mut AppModel) {
+        m.render_plan = m.switcher.layout(
+            ratatui::layout::Rect::new(0, 0, 140, 30),
+            crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
+            &m.state,
+            &m.render_plan,
+        );
+    }
+
+    /// A press and a release on one cell: a click.
+    fn click(m: &mut AppModel, col: u16, row: u16) -> Vec<Effect> {
+        let effects = update(m, Msg::BeginPopupDrag { col, row });
+        assert!(effects.is_empty());
+        update(m, Msg::EndPopupDrag)
+    }
+
+    fn palette_selection(m: &AppModel) -> (usize, Option<usize>) {
+        match &m.state.modal {
+            Some(crate::state::Modal::Palette {
+                selected, hover, ..
+            }) => (*selected, *hover),
+            _ => panic!("the palette is open"),
+        }
+    }
+
+    #[test]
+    fn a_click_on_a_palette_entry_runs_it_as_enter_does() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        update(&mut m, Msg::TogglePalette);
+        update(
+            &mut m,
+            Msg::ReaderBytes {
+                bytes: b"quit xmux".to_vec(),
+                prefix: 0x07,
+            },
+        );
+        lay_out(&mut m);
+        let r = m.render_plan.popup_rect;
+        // The query field is the first inner row and the one match the second.
+        let effects = click(&mut m, r.x + 3, r.y + 2);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Command(crate::model::Command::Quit)]
+        ));
+        assert!(m.state.modal.is_none());
+    }
+
+    #[test]
+    fn a_click_on_the_query_field_runs_nothing() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        update(&mut m, Msg::TogglePalette);
+        lay_out(&mut m);
+        let r = m.render_plan.popup_rect;
+        assert!(click(&mut m, r.x + 3, r.y + 1).is_empty());
+        assert_eq!(palette_selection(&m), (0, None));
+    }
+
+    #[test]
+    fn a_click_on_a_host_to_check_opens_it_as_enter_does() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned(), "lock".to_owned()]);
+        answer(&mut m, "a", &["x"], None);
+        answer(
+            &mut m,
+            "lock",
+            &[],
+            Some("alice@lock: Permission denied (publickey,password)."),
+        );
+        update(&mut m, Msg::ToggleCheck);
+        lay_out(&mut m);
+        let r = m.render_plan.popup_rect;
+        // The cause title is the first inner row and its one host the second.
+        click(&mut m, r.x + 3, r.y + 2);
+        assert!(m.state.modal.is_none());
+        assert!(
+            !m.state.focus.view_is_nav(),
+            "the login pane takes the keys"
+        );
+        assert_eq!(m.switcher.current_source().as_deref(), Some("lock"));
+    }
+
+    #[test]
+    fn hovering_a_palette_entry_marks_it_without_moving_the_selection() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        update(&mut m, Msg::TogglePalette);
+        lay_out(&mut m);
+        let r = m.render_plan.popup_rect;
+        update(
+            &mut m,
+            Msg::HoverPopup {
+                col: r.x + 3,
+                row: r.y + 4,
+            },
+        );
+        assert_eq!(palette_selection(&m), (0, Some(2)), "the third entry");
+        update(
+            &mut m,
+            Msg::HoverPopup {
+                col: r.x + 3,
+                row: r.y + 1,
+            },
+        );
+        assert_eq!(
+            palette_selection(&m),
+            (0, None),
+            "the query field is no entry"
+        );
+        update(
+            &mut m,
+            Msg::HoverPopup {
+                col: r.x + 3,
+                row: r.y + 4,
+            },
+        );
+        update(
+            &mut m,
+            Msg::ReaderBytes {
+                bytes: b"[B".to_vec(),
+                prefix: 0x07,
+            },
+        );
+        assert_eq!(
+            palette_selection(&m),
+            (1, None),
+            "the arrow moves the hard selection and ends the soft one"
+        );
+    }
+
+    #[test]
+    fn a_press_dragged_off_a_palette_entry_moves_the_popup_and_runs_nothing() {
+        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        update(&mut m, Msg::TogglePalette);
+        update(
+            &mut m,
+            Msg::ReaderBytes {
+                bytes: b"quit xmux".to_vec(),
+                prefix: 0x07,
+            },
+        );
+        lay_out(&mut m);
+        let before = m.render_plan.popup_rect;
+        let (col, row) = (before.x + 3, before.y + 2);
+        update(&mut m, Msg::BeginPopupDrag { col, row });
+        update(&mut m, Msg::DragPopup { col: col - 5, row });
+        assert!(update(&mut m, Msg::EndPopupDrag).is_empty());
+        assert_eq!(palette_selection(&m), (0, None), "nothing ran");
+        lay_out(&mut m);
+        assert_eq!(m.render_plan.popup_rect.x, before.x - 5, "the popup moved");
     }
 }

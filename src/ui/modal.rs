@@ -13,12 +13,14 @@ pub(crate) use crate::state::{feed_reader, Input, InputMode, Modal};
 use crate::state::{is_popup_open, modal_kind};
 use crate::ui::palette;
 
-/// An active border-drag of a modal popup: the grabbed screen cell and the
-/// popup offset at grab time, so motion can compute the new offset.
+/// An active drag of a modal popup: the grabbed screen cell, the popup offset at grab
+/// time, so motion can compute the new offset, and whether the pointer has left the
+/// grabbed cell. A press released on the cell it grabbed is a click, not a move.
 #[derive(Clone, Copy)]
 struct PopupDrag {
     grab: (u16, u16),
     origin: (i16, i16),
+    moved: bool,
 }
 
 /// The transient geometry of the active modal popup, owned by the switcher: the
@@ -46,8 +48,8 @@ impl PopupGeometry {
     }
 
     /// A left press anywhere on the key list or the active modal popup begins a
-    /// move-drag: nothing inside either takes a click, so the whole box is its handle.
-    /// `open` is whether one is live: `rect` is only refreshed on render (frame-gated),
+    /// move-drag, so the whole box is its handle. A press released without moving is a
+    /// click instead (see [`Self::end_drag`]). `open` is whether one is live: `rect` is only refreshed on render (frame-gated),
     /// so a box closed by a keystroke can leave a stale rect - the caller gates on the
     /// live state so a press can't grab a box that no longer exists. Returns true iff
     /// it grabbed (so the app consumes the event).
@@ -66,13 +68,15 @@ impl PopupGeometry {
         self.drag = Some(PopupDrag {
             grab: (col, row),
             origin: self.offset,
+            moved: false,
         });
         true
     }
 
     /// Updates `offset` from the pointer while a drag is active.
     pub(crate) fn drag(&mut self, col: u16, row: u16) {
-        if let Some(d) = self.drag {
+        if let Some(d) = &mut self.drag {
+            d.moved |= (col, row) != d.grab;
             let dx = col as i32 - d.grab.0 as i32;
             let dy = row as i32 - d.grab.1 as i32;
             self.offset = (
@@ -82,9 +86,10 @@ impl PopupGeometry {
         }
     }
 
-    /// Ends a drag.
-    pub(crate) fn end_drag(&mut self) {
-        self.drag = None;
+    /// Ends a drag. Returns the grabbed cell when the pointer never left it: that press
+    /// and release are a click on the cell.
+    pub(crate) fn end_drag(&mut self) -> Option<(u16, u16)> {
+        self.drag.take().filter(|d| !d.moved).map(|d| d.grab)
     }
 
     /// Returns the key list and the popups to their anchored position.
@@ -503,10 +508,12 @@ fn help_tabs(titles: &[String], active: usize, inner: u16) -> (Vec<HelpTab>, boo
     )
 }
 
-/// The tab row's line: the active tab in the popup title's accent bold, the others muted.
+/// The tab row's line: the active tab in the popup title's accent bold, the others muted,
+/// and the `hover` tab underlined as the soft selection.
 fn help_tab_line(
     titles: &[String],
     active: usize,
+    hover: Option<usize>,
     inner: u16,
     palette: &palette::Palette,
 ) -> Line<'static> {
@@ -523,9 +530,14 @@ fn help_tab_line(
     }
     for t in &tabs {
         spans.push(Span::raw(" ".repeat((t.x as usize).saturating_sub(x))));
+        let style = if t.section == active { lit } else { muted };
         spans.push(Span::styled(
             middle_cut(&titles[t.section], t.width as usize),
-            if t.section == active { lit } else { muted },
+            if hover == Some(t.section) {
+                style.patch(palette::soft_selection_style())
+            } else {
+                style
+            },
         ));
         x = (t.x + t.width) as usize;
     }
@@ -567,8 +579,10 @@ pub(crate) fn help_tab_at(
 /// rows: the search field, the tab row, then the window of matching display rows that
 /// starts `scroll` rows down, held so the last page stays full. The rows read like the key
 /// list: a left-aligned bold key cell, whitespace, then the muted description. The active
-/// tab is `tab` when a tab was chosen, and otherwise the section the scroll reached. The
-/// meta says which rows are on screen whenever they are not all of them.
+/// tab is `tab` when a tab was chosen, and otherwise the section the scroll reached. A
+/// `hover` tab, the soft selection, is underlined and the body shows its section instead,
+/// while the active tab stays lit. The meta says which rows are on screen whenever they
+/// are not all of them.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn help_lines(
     prefix: &str,
@@ -577,6 +591,7 @@ pub(crate) fn help_lines(
     query: &str,
     scroll: usize,
     tab: Option<usize>,
+    hover: Option<usize>,
     visible: u16,
     inner: u16,
 ) -> (String, Vec<Line<'static>>) {
@@ -595,10 +610,20 @@ pub(crate) fn help_lines(
     let map = body.map(visible);
     let total = body.lines.len();
     let window = (visible as usize).saturating_sub(HELP_LEAD);
-    let offset = scroll.min(map.max_scroll);
+    let hover = hover.filter(|&h| h < map.heads.len());
+    let offset = hover
+        .map(|h| map.scroll_to(h))
+        .unwrap_or(scroll)
+        .min(map.max_scroll);
     let mut lines = vec![
         Line::from(search),
-        help_tab_line(&body.titles(), map.active(tab, scroll), inner, palette),
+        help_tab_line(
+            &body.titles(),
+            map.active(tab, scroll),
+            hover,
+            inner,
+            palette,
+        ),
     ];
     if total == 0 {
         let room = (inner as usize).saturating_sub(2).max(1) as u16;
@@ -1082,17 +1107,21 @@ pub(crate) fn palette_rows(entries: &[(String, String)], key_w: usize, inner: u1
 /// the key cell bold in a column as wide as the widest key, then the description, wrapped
 /// under the description column rather than cut. The selected entry is reversed across the
 /// whole width with `❯` in its first column, and the window starts late enough to show it
-/// whole. `entries` pairs each key cell with its description; an empty key is a login the
-/// palette offers, marked with the login-needed glyph.
+/// whole. The `hover` entry, the soft selection, is underlined across its rows.
+/// `entries` pairs each key cell with its description; an empty key is a login the
+/// palette offers, marked with the login-needed glyph. Each line comes with the entry it
+/// belongs to, so a click is hit-tested against the rows the paint shows.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn palette_lines(
     query: &str,
     entries: &[(String, String)],
     key_w: usize,
     selected: usize,
+    hover: Option<usize>,
     visible: usize,
     inner: u16,
     palette: &palette::Palette,
-) -> Vec<Line<'static>> {
+) -> ItemLines {
     let muted = Style::default().fg(palette.decoration);
     let key = crate::ui::keylist::key_cell_style(palette);
     let mut q = vec![Span::styled(" : ", muted)];
@@ -1104,13 +1133,13 @@ pub(crate) fn palette_lines(
         field_room(inner, 3),
         palette,
     ));
-    let mut lines = vec![Line::from(q)];
+    let mut lines = vec![(None, Line::from(q))];
     if entries.is_empty() {
         let room = (inner as usize).saturating_sub(2).max(1) as u16;
         lines.extend(
             wrap_text("no matching commands", room)
                 .into_iter()
-                .map(|c| Line::from(Span::styled(format!(" {c}"), muted))),
+                .map(|c| (None, Line::from(Span::styled(format!(" {c}"), muted)))),
         );
         return lines;
     }
@@ -1170,18 +1199,24 @@ pub(crate) fn palette_lines(
             };
             let used: usize = spans.iter().map(|s| s.width()).sum();
             spans.push(Span::raw(" ".repeat((inner as usize).saturating_sub(used))));
-            let line = Line::from(spans);
-            body.push(if chosen {
-                line.style(palette::selection_style(palette))
-            } else {
-                line
-            });
+            let mut style = Style::default();
+            if chosen {
+                style = style.patch(palette::selection_style(palette));
+            }
+            if hover == Some(i) {
+                style = style.patch(palette::soft_selection_style());
+            }
+            body.push((Some(i), Line::from(spans).style(style)));
         }
     }
     body.truncate(visible);
     lines.extend(body);
     lines
 }
+
+/// A list popup's body lines, each with the item it belongs to (none for a row that is
+/// no item), so the paint and the pointer's hit-test read one layout.
+pub(crate) type ItemLines = Vec<(Option<usize>, Line<'static>)>;
 
 /// The palette's keys on its bottom border.
 pub(crate) const PALETTE_HINTS: &[Hint] = &[("↑↓", "select"), ("Enter", "run"), ("Esc", "close")];
@@ -1441,6 +1476,7 @@ mod tests {
             query: String::new(),
             scroll: 0,
             tab: None,
+            hover: None,
             decoder: crate::display::decode::KeyDecoder::new(),
         })
     }
@@ -1493,6 +1529,7 @@ mod tests {
             &palette,
             "",
             0,
+            None,
             None,
             200,
             u16::MAX,
@@ -1576,6 +1613,7 @@ mod tests {
             "zzzz",
             0,
             None,
+            None,
             20,
             u16::MAX,
         );
@@ -1588,7 +1626,17 @@ mod tests {
     fn a_key_wider_than_the_help_key_column_takes_its_own_row() {
         let palette = palette::Palette::default();
         let pos = crate::ui::switcher::NavPosition::Left;
-        let (_, lines) = help_lines("C-g", pos, &palette, "click a card", 0, None, 50, u16::MAX);
+        let (_, lines) = help_lines(
+            "C-g",
+            pos,
+            &palette,
+            "click a card",
+            0,
+            None,
+            None,
+            50,
+            u16::MAX,
+        );
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         let at = text
             .iter()
@@ -1608,9 +1656,9 @@ mod tests {
     fn the_help_scrolls_and_holds_its_last_page_full() {
         let palette = palette::Palette::default();
         let pos = crate::ui::switcher::NavPosition::Left;
-        let (_, all) = help_lines("C-g", pos, &palette, "", 0, None, u16::MAX, u16::MAX);
+        let (_, all) = help_lines("C-g", pos, &palette, "", 0, None, None, u16::MAX, u16::MAX);
         let total = all.len() - HELP_LEAD;
-        let (title, lines) = help_lines("C-g", pos, &palette, "", 0, None, 12, u16::MAX);
+        let (title, lines) = help_lines("C-g", pos, &palette, "", 0, None, None, 12, u16::MAX);
         assert_eq!(
             lines.len(),
             12,
@@ -1618,13 +1666,23 @@ mod tests {
         );
         assert_eq!(title, format!("1-10 of {total}"));
         assert!(flat(&lines).contains("move (nav focus)"));
-        let (title, lines) = help_lines("C-g", pos, &palette, "", 5, None, 12, u16::MAX);
+        let (title, lines) = help_lines("C-g", pos, &palette, "", 5, None, None, 12, u16::MAX);
         assert_eq!(title, format!("6-15 of {total}"));
         assert!(
             !flat(&lines[HELP_LEAD..]).contains("move (nav focus)"),
             "scrolled past"
         );
-        let (title, lines) = help_lines("C-g", pos, &palette, "", usize::MAX, None, 12, u16::MAX);
+        let (title, lines) = help_lines(
+            "C-g",
+            pos,
+            &palette,
+            "",
+            usize::MAX,
+            None,
+            None,
+            12,
+            u16::MAX,
+        );
         assert_eq!(
             title,
             format!("{}-{total} of {total}", total - 9),
@@ -1641,7 +1699,8 @@ mod tests {
         let palette = palette::Palette::default();
         let pos = crate::ui::switcher::NavPosition::Left;
         for (query, scroll) in [("", 0), ("quit", 0), ("zzzz", 0), ("", usize::MAX)] {
-            let (_, lines) = help_lines("C-g", pos, &palette, query, scroll, None, 6, u16::MAX);
+            let (_, lines) =
+                help_lines("C-g", pos, &palette, query, scroll, None, None, 6, u16::MAX);
             let first = flat(&lines[..1]);
             assert!(first.starts_with(" / "), "{query:?}: {first}");
         }
@@ -1781,10 +1840,14 @@ mod tests {
             &query,
             0,
             None,
+            None,
             10,
             29,
         );
-        let commands = palette_lines(&query, &[], 1, 0, 0, 29, &palette);
+        let commands: Vec<Line> = palette_lines(&query, &[], 1, 0, None, 0, 29, &palette)
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect();
         for line in [&help[0], &commands[0]] {
             assert!(line.width() <= 29, "{}", line.width());
             assert!(caret_offset(line).is_some_and(|x| x < 29));
@@ -1815,7 +1878,7 @@ mod tests {
     #[test]
     fn the_help_parts_its_sections_with_one_blank_row() {
         let palette = palette::Palette::default();
-        let (_, lines) = help_lines("C-g", POS, &palette, "", 0, None, u16::MAX, 200);
+        let (_, lines) = help_lines("C-g", POS, &palette, "", 0, None, None, u16::MAX, 200);
         let body: Vec<String> = lines[HELP_LEAD..].iter().map(|l| l.to_string()).collect();
         let titles: Vec<String> = crate::model::keys::Section::ALL
             .iter()
@@ -1865,7 +1928,7 @@ mod tests {
     fn every_help_row_wraps_inside_a_narrow_popup_and_keeps_its_words() {
         let palette = palette::Palette::default();
         for inner in [20u16, 30, 44] {
-            let (_, lines) = help_lines("C-g", POS, &palette, "", 0, None, u16::MAX, inner);
+            let (_, lines) = help_lines("C-g", POS, &palette, "", 0, None, None, u16::MAX, inner);
             for l in &lines[HELP_LEAD..] {
                 assert!(l.width() <= inner as usize, "{inner}: {l:?}");
             }
@@ -1884,7 +1947,7 @@ mod tests {
     fn a_wrapped_help_description_hangs_under_the_description_column() {
         let palette = palette::Palette::default();
         let kw = key_column_width(&help_rows("C-g", POS));
-        let (_, lines) = help_lines("C-g", POS, &palette, "freshness", 0, None, 40, 40);
+        let (_, lines) = help_lines("C-g", POS, &palette, "freshness", 0, None, None, 40, 40);
         let text: Vec<String> = lines[HELP_LEAD..].iter().map(|l| l.to_string()).collect();
         let at = text
             .iter()
@@ -1899,7 +1962,7 @@ mod tests {
     #[test]
     fn the_tab_row_names_each_section_and_lights_the_active_one() {
         let palette = palette::Palette::default();
-        let (_, lines) = help_lines("C-g", POS, &palette, "", 0, None, 30, 120);
+        let (_, lines) = help_lines("C-g", POS, &palette, "", 0, None, None, 30, 120);
         let row = &lines[HELP_TAB_ROW as usize];
         let shown: Vec<&str> = row
             .spans
@@ -1959,6 +2022,7 @@ mod tests {
             "",
             map.heads[1],
             Some(1),
+            None,
             visible,
             inner,
         );
@@ -1980,7 +2044,17 @@ mod tests {
             (map.max_scroll.min(map.heads[last]), Some(last))
         );
         let at = help_at(&m).0;
-        let (_, lines) = help_lines("C-g", POS, &palette, "", at, Some(last), visible, inner);
+        let (_, lines) = help_lines(
+            "C-g",
+            POS,
+            &palette,
+            "",
+            at,
+            Some(last),
+            None,
+            visible,
+            inner,
+        );
         let lit: Vec<String> = lines[HELP_TAB_ROW as usize]
             .spans
             .iter()
@@ -2037,15 +2111,15 @@ mod tests {
     #[test]
     fn a_search_leaves_the_tabs_of_the_sections_it_matched() {
         let palette = palette::Palette::default();
-        let (_, lines) = help_lines("C-g", POS, &palette, "quit", 0, None, 20, 80);
+        let (_, lines) = help_lines("C-g", POS, &palette, "quit", 0, None, None, 20, 80);
         assert_eq!(lines[HELP_TAB_ROW as usize].to_string().trim(), "app");
-        let (_, lines) = help_lines("C-g", POS, &palette, "toast", 0, None, 20, 80);
+        let (_, lines) = help_lines("C-g", POS, &palette, "toast", 0, None, None, 20, 80);
         let tabs = lines[HELP_TAB_ROW as usize].to_string();
         assert!(
             tabs.contains("mouse") && tabs.contains(GLYPH_SECTION) && !tabs.contains("navigate"),
             "{tabs}"
         );
-        let (_, lines) = help_lines("C-g", POS, &palette, "zzzz", 0, None, 20, 80);
+        let (_, lines) = help_lines("C-g", POS, &palette, "zzzz", 0, None, None, 20, 80);
         assert!(lines[HELP_TAB_ROW as usize].to_string().trim().is_empty());
         let mut m = help();
         feed_sized(&mut m, b"zzzz\x1b[C", 80, 20);
@@ -2072,7 +2146,7 @@ mod tests {
             "{tabs:?}"
         );
         assert!(tabs.iter().all(|t| (t.x + t.width) as usize <= 29));
-        let line = help_tab_line(&titles, 4, 30, &palette::Palette::default());
+        let line = help_tab_line(&titles, 4, None, 30, &palette::Palette::default());
         assert!(line.to_string().starts_with(" ‹ "), "{line}");
         assert!(line.width() <= 30);
         let (tabs, _, _) = help_tabs(&titles, 0, 10);
@@ -2097,7 +2171,10 @@ mod tests {
             .collect();
         let rows = palette_desc(&entries[0].1, 5, 30).len();
         assert!(rows > 1);
-        let lines = palette_lines("", &entries, 5, 5, 2 * rows, 30, &p);
+        let lines: Vec<Line> = palette_lines("", &entries, 5, 5, None, 2 * rows, 30, &p)
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect();
         assert!(lines.iter().all(|l| l.width() <= 30));
         let body: Vec<String> = lines[1..].iter().map(|l| l.to_string()).collect();
         assert_eq!(body.len(), 2 * rows, "two entries fill the window");
@@ -2156,5 +2233,34 @@ mod tests {
         assert!(lines.len() > 1 && lines.iter().all(|l| l.width() <= 28));
         assert!(squeezed(&lines).contains(name));
         assert!(caret_offset(&lines[0]).is_some());
+    }
+
+    #[test]
+    fn the_hovered_palette_entry_is_underlined_apart_from_the_selected_one() {
+        let p = palette::Palette::default();
+        let entries: Vec<(String, String)> = ["one", "two", "three"]
+            .map(|d| ("k".to_string(), d.to_string()))
+            .to_vec();
+        let lines = palette_lines("", &entries, 1, 0, Some(1), 10, 40, &p);
+        let items: Vec<Option<usize>> = lines.iter().map(|(i, _)| *i).collect();
+        assert_eq!(
+            items,
+            [None, Some(0), Some(1), Some(2)],
+            "each row names its entry"
+        );
+        let style = |i: usize| lines[i].1.style;
+        assert_eq!(style(1), palette::selection_style(&p), "the hard selection");
+        assert_eq!(
+            style(2),
+            palette::soft_selection_style(),
+            "the soft selection"
+        );
+        assert_eq!(style(3), Style::default());
+        let both = palette_lines("", &entries, 1, 1, Some(1), 10, 40, &p);
+        assert_eq!(
+            both[2].1.style,
+            palette::selection_style(&p).patch(palette::soft_selection_style()),
+            "one entry under both shows both"
+        );
     }
 }

@@ -29,6 +29,7 @@ impl Switcher {
             query: String::new(),
             scroll: 0,
             tab: None,
+            hover: None,
             decoder: crate::display::decode::KeyDecoder::new(),
         });
     }
@@ -63,6 +64,7 @@ impl Switcher {
             state.modal = Some(Modal::Palette {
                 query: String::new(),
                 selected: 0,
+                hover: None,
                 open: false,
                 decoder: crate::display::decode::KeyDecoder::new(),
             });
@@ -470,6 +472,7 @@ impl Switcher {
             self.dismiss_modals(state);
             state.modal = Some(Modal::Check {
                 selected: 0,
+                hover: None,
                 open: false,
             });
         }
@@ -515,6 +518,7 @@ impl Switcher {
         let Some(Modal::Check {
             selected,
             open: true,
+            ..
         }) = state.modal
         else {
             return false;
