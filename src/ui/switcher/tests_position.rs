@@ -388,9 +388,23 @@ fn pl4_overflow_is_a_thick_seam_segment_or_counts_on_the_band_seam() {
                 "{position:?}: a count stands before the mark: {seam:?}"
             );
         } else {
+            let thumb = shot.plan.seam_thumb;
+            let thick_rows: Vec<u16> = (shot.plan.regions.view_border.y
+                ..shot.plan.regions.view_border.bottom())
+                .filter(|&y| shot.buf[(shot.plan.regions.view_border.x, y)].symbol() == "┃")
+                .collect();
+            assert_eq!(
+                thick_rows,
+                (thumb.y..thumb.bottom()).collect::<Vec<_>>(),
+                "{position:?}: the seam thickens exactly where the visible cards are"
+            );
             assert!(
-                !seam.chars().any(|c| matches!(c, '│' | '┃' | '║')),
-                "{position:?}: the gap has no vertical divider"
+                !thick_rows.is_empty() && (thick_rows.len() as u16) < shot.plan.nav_inner.height,
+                "{position:?}: the thumb is a proportion of the card rows: {seam:?}"
+            );
+            assert!(
+                seam.contains('│'),
+                "{position:?}: the rest of the seam stays thin"
             );
             assert!(
                 !shot.area_text(shot.nav_area()).contains('▐'),

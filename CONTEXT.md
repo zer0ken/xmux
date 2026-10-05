@@ -54,15 +54,20 @@ UI elements a user perceives as distinct things:
   structure.
 - terminal view - the other region: the selected session's live grid, holding the whole
   area the nav's side does not take.
-- view border - the horizontal line between a top or bottom nav and the terminal view.
-  A side nav has an empty one-cell gap that still accepts resize dragging. The
-  horizontal rule uses the palette `primary` with nav focus, `disabled` with terminal
-  focus, and the hover colour while hovered. `view-border-style`,
+- view border - the line between the nav and the terminal view: vertical beside a left
+  or right nav, horizontal between a top or bottom nav and the terminal view. Dragging
+  it resizes the nav. The rule uses the palette `primary` across its whole length while
+  the nav is focused, `disabled` while the terminal is focused, and the hover colour for
+  the drag-hover cue, so it states which view holds focus. `view-border-style`,
   `view-active-border-style`, and `view-border-hover-style` override these colours.
-- active view border - the horizontal rule painted in the active colour while the nav
+- active view border - the whole view border painted in the active colour while the nav
   holds focus; terminal focus paints it in the inactive colour.
-- view border lines - the horizontal rule uses `─`, `═` with auto-hide-nav, and `━`
-  while hovered. Side layouts draw no line.
+- view border lines - `│` or `─` by default, `║` or `═` with auto-hide-nav, and `┃` or
+  `━` while hovered.
+- seam thumb - the stretch of a side column's view border drawn heavy (`┃`) beside the
+  cards on screen when the list overflows, placed where those cards sit in the whole list.
+  It is drawn on the view border rather than in a column of the nav, so the cards keep
+  the nav's full width. Nothing is drawn while everything fits.
 - chrome - the furniture around the two views: the view border, the hint bar, and
   the view screens.
 - hint bar - the nav's prefix indicator: a label on the bottom row of a side column's
