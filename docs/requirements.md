@@ -337,7 +337,9 @@ no function, and no test, so renaming code is never a documentation change.
   because mouse bytes are scanned
   out of the stream before either focus path's key handling sees them and a chord left
   half-open keeps its key list on screen and then eats the next key. Bare hover is not
-  an action: the pointer drifting must not break a chord being typed.
+  an action: the pointer drifting must not break a chord being typed. A left press on the
+  key list, and the drag it starts up to its release, is not an action on anything
+  behind the box: it moves the key list and keeps the prefix.
 - **FR-B20** - Input is read as key presses only, because a terminal's byte stream
   carries no key-up. A held prefix is therefore indistinguishable from repeated taps and
   is treated as such: each repeat sends the doubled-prefix literal to the pane and blinks

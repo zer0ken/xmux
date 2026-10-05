@@ -584,7 +584,8 @@ UI elements a user perceives as distinct things:
   is the doubled-prefix command (one literal prefix byte reaches the pane). The
   key list reads ready to open beside the prefix indicator, so becoming ready is a
   visible change and redraws the frame; the list closes the moment ready clears.
-- popup - the rounded-bordered, opaque, draggable box a modal draws, in the key list's
+- popup - the rounded-bordered, opaque box a modal draws, moved by a drag from anywhere
+  on it, in the key list's
   grammar: its accent title and a muted count or machine in the top border, its keys on
   the bottom border, and a text field's caret as a reversed cell, where the terminal's
   own cursor also sits so an input method composes in the field. Every popup opens

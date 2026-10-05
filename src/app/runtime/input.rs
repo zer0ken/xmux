@@ -140,7 +140,25 @@ impl Runtime {
         // user meant for the pane. Bare hover is not an action: the pointer drifting across
         // the screen must not break a chord that is still being typed.
         let idle_motion = ev.pressed && (ev.cb & 0x23) == 0x23;
-        if !idle_motion && (self.model.mouse_state.nav_armed || self.term_input.is_armed()) {
+        // Grabbing the key list to move it is not an action on anything behind it: a left
+        // press on the box, and the drag it starts up to the release, keep the prefix.
+        let at = ratatui::layout::Position {
+            x: ev.col.saturating_sub(1),
+            y: ev.row.saturating_sub(1),
+        };
+        let grabs_key_list = self.model.switcher.popup_drag_active()
+            || (ev.pressed
+                && (ev.cb & 0x63) == 0
+                && self
+                    .model
+                    .render_plan
+                    .key_list
+                    .as_ref()
+                    .is_some_and(|(rect, _)| rect.contains(at)));
+        if !idle_motion
+            && !grabs_key_list
+            && (self.model.mouse_state.nav_armed || self.term_input.is_armed())
+        {
             let effects = update(&mut self.model, Msg::SetMouseNavArmed(false));
             debug_assert!(effects.is_empty());
             self.term_input.disarm();
@@ -221,9 +239,9 @@ impl Runtime {
             return dirty;
         }
         let is_left_press = is_press && (ev.cb & 0x03) == 0;
-        // A modal popup (help/input/confirm) moves when its border is
-        // dragged. Once grabbed it owns every mouse event until release,
-        // like the view border drag above.
+        // The key list and a modal popup move when dragged from anywhere on them. Once
+        // grabbed the drag owns every mouse event until release, like the view border
+        // drag above.
         if self.model.switcher.popup_drag_active() {
             if !ev.pressed {
                 let effects = update(&mut self.model, Msg::EndPopupDrag);
@@ -256,7 +274,7 @@ impl Runtime {
             }
         }
         // A modal popup is mouse-modal: while one is open, every mouse
-        // event that is not its border-drag (handled above) is swallowed,
+        // event that is not its drag (handled above) is swallowed,
         // so clicks, wheels, view border grabs, and hovers never reach the
         // nav/terminal/view border behind it.
         if self.model.state.is_modal_popup_open() {

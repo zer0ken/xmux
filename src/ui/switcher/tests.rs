@@ -6136,7 +6136,7 @@ fn popup_renders_without_panicking_on_a_narrow_screen() {
 }
 
 #[test]
-fn popup_interior_press_does_not_grab() {
+fn a_press_anywhere_on_a_popup_grabs_it_and_outside_does_not() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state);
@@ -6148,9 +6148,66 @@ fn popup_interior_press_does_not_grab() {
     );
     let r = plan.popup_rect;
     assert!(
-        !sw.begin_popup_drag_in_plan(&plan, r.x + 2, r.y + 2, &state),
-        "interior press does not start a drag"
+        !sw.begin_popup_drag_in_plan(&plan, r.right() + 1, r.y, &state),
+        "a press beside the popup does not grab it"
     );
+    assert!(
+        sw.begin_popup_drag_in_plan(&plan, r.x + 2, r.y + 2, &state),
+        "an interior press grabs the popup"
+    );
+    sw.drag_popup(r.x + 12, r.y + 2);
+    sw.end_popup_drag();
+    let moved = sw.layout(
+        Rect::new(0, 0, 140, 30),
+        NavSize::hidden(NAV_WIDTH),
+        &state,
+        &plan,
+    );
+    assert_eq!(
+        moved.popup_rect.x,
+        r.x + 10,
+        "the popup follows the pointer"
+    );
+}
+
+#[test]
+fn the_key_list_drags_and_the_popup_its_key_opens_keeps_the_place() {
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    let area = Rect::new(0, 0, 140, 30);
+    let nav = NavSize::visible(NAV_WIDTH);
+    state.chrome.set_armed(true);
+    let plan = sw.layout(area, nav, &state, &RenderPlan::default());
+    let (list, _) = plan
+        .key_list
+        .clone()
+        .expect("a live prefix opens the key list");
+    assert!(sw.begin_popup_drag_in_plan(&plan, list.x + 3, list.y + 1, &state));
+    sw.drag_popup(list.x - 7, list.y - 4);
+    sw.end_popup_drag();
+    let moved = sw.layout(area, nav, &state, &plan);
+    let (dragged, _) = moved.key_list.clone().unwrap();
+    assert_eq!((dragged.x + 10, dragged.y + 5), (list.x, list.y));
+    // The popup a prefix key opens takes the place the key list was dragged to.
+    sw.show_help(&mut state);
+    let undragged = {
+        let mut fresh = Switcher::new(&mut state);
+        fresh.show_help(&mut state);
+        fresh.layout(area, nav, &state, &moved).popup_rect
+    };
+    let help = sw.layout(area, nav, &state, &moved).popup_rect;
+    assert_eq!(
+        help.x + 10,
+        undragged.x,
+        "the help is as tall as the window, so only x moves"
+    );
+    // Once neither is on screen, the next prefix starts where the key list opens.
+    state.modal = None;
+    state.chrome.set_armed(false);
+    sw.settle_popup_position(&state);
+    state.chrome.set_armed(true);
+    let again = sw.layout(area, nav, &state, &moved);
+    assert_eq!(again.key_list.unwrap().0, list);
 }
 
 #[test]

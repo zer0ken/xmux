@@ -227,7 +227,8 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   the host band never shares a column with session cards.
 - A pending prefix is dropped by the next INPUT, mouse included. The mouse path has to say
   so itself, because mouse bytes never reach either focus path's key handling. Bare hover
-  is exempt: it is the pointer sitting there, not an action.
+  is exempt: it is the pointer sitting there, not an action. So is a press on the key list
+  and the drag it starts: that moves the box the prefix opened.
 - An arrow PAIR names the view it focuses, keyed on the nav's attachment, in both focus
   paths (one for nav focus, one for terminal focus): the pair facing the terminal's side
   names the terminal (right and down with the nav on the left or above, left and up with
