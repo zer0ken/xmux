@@ -1,5 +1,7 @@
 //! Rendering and placement of the toasts and the history popup.
 //! [`State`](crate::state::State) owns the [`Notifications`] this module paints.
+//! The render plan carries each toast's rect, so a click is hit-tested against what was
+//! painted.
 
 use std::time::Instant;
 

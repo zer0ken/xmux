@@ -176,6 +176,14 @@ pub fn host_key_unknown(stderr: &str) -> bool {
 ///
 /// Connectivity, name resolution, remote command permissions, and changed host keys need
 /// action the pane cannot take, so they stay unreachable.
+///
+/// The refusal is read only from ssh's own final account-and-host authentication line
+/// ([`is_auth_refusal_line`]), never from a generic permission error. A first-seen key
+/// qualifies under an effective `ask` policy, where the submitted login may accept it.
+/// Under a strict policy the ssh transport rewrites the probe failure into the command
+/// that shows the fingerprint, so the host stays unreachable. A first-seen key opens the
+/// login form without a failed-login verdict, and a submitted login that fails keeps its
+/// own verdict (see `State::login_failure`).
 pub fn requires_login(stderr: &str) -> bool {
     contains_auth_refusal(stderr) || host_key_unknown(stderr)
 }

@@ -68,7 +68,8 @@ fn scroll_to(
     off
 }
 
-/// Places the cards in group order, reserving one row at each group boundary.
+/// Places the cards in group order from the top, reserving one row at each group
+/// boundary; rows below the last card stay empty.
 /// Empty groups take no row. The run scrolls to keep the selected card visible.
 /// The first scrolling group boundary can carry a horizontal rule; every
 /// other group boundary remains blank.

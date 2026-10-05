@@ -21,7 +21,9 @@ impl Arrow {
 
     /// Whether this arrow points from the nav toward the terminal view at `position`. The
     /// pair facing the terminal's side names the terminal and the other pair the nav, so
-    /// the pair flips with the nav on the right or below.
+    /// the pair flips with the nav on the right or below. Both focus paths (nav focus and
+    /// terminal focus) resolve their prefix arrows through this, so a change to one path
+    /// is a change to both.
     pub fn faces_terminal(self, position: NavPosition) -> bool {
         matches!(self, Arrow::Right | Arrow::Down) == position.forward_arrows_face_terminal()
     }

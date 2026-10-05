@@ -179,8 +179,7 @@ pub struct UiConfig {
     /// The built-in colour theme: `auto-dark` (the default) or `auto-light`, each
     /// painting only ANSI slots so the terminal theme resolves the actual hues. An
     /// unknown name falls back to `auto-dark` and the doctor reports the resolution.
-    /// Selecting a theme names the ANSI-slot mapping; see `Colour ownership` in
-    /// `CONTEXT.md`.
+    /// Selecting a theme names the ANSI-slot mapping; see the palette module doc.
     #[serde(rename = "theme", default = "default_theme")]
     pub theme: String,
     /// xmux's prefix spec (e.g. `C-g`, `C-Space`), config-only like tmux's

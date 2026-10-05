@@ -1,5 +1,12 @@
 //! `HostManager`: owns each host's metadata channel - a `-CC` `HostClient` or a
 //! poll task - plus `control_argv`, the composed control-child argv.
+//!
+//! The manager owns the live mechanisms only. A source's session inventory has one
+//! owner, the source's own inventory: both metadata paths feed it through source events
+//! (the control reader carries its parsed sessions, the poll task the same), and the run
+//! loop folds them in and rebuilds the nav rows from it. Live process and task ownership
+//! stays out of the source domain type, and live per-source processes are tracked here
+//! rather than in a registry of their own.
 
 use std::collections::HashMap;
 

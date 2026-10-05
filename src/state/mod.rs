@@ -43,6 +43,8 @@ pub struct State {
     /// for. Without this, the one action a card offers is the action that makes the card
     /// vanish - the login stops being blocked, so nothing keeps it any more. Keyed by
     /// machine because a login authenticates the machine, not the one mux that carried it.
+    /// The set follows credential presence: a machine whose held credential is gone
+    /// leaves it.
     pub logged_in: HashSet<String>,
     /// SSH authentication reported by the connection that last reached each machine.
     pub auth_methods: HashMap<String, crate::model::AuthMethod>,
@@ -757,6 +759,9 @@ impl State {
     /// The failure the login pane for `source` states: the machine's last login when it
     /// failed, else the probe failure that blocked the host. A first-seen key is a
     /// condition the form can answer, not a failed login. `None` when neither failed.
+    ///
+    /// The login's own categorized ssh reason is stated apart from, and ahead of, later
+    /// probe errors, so a submitted login that fails keeps its own verdict.
     pub(crate) fn login_failure(&self, source: &str) -> Option<crate::model::LoginFailure> {
         let machine = crate::session::machine_of(source);
         if let Some(failure) = self
