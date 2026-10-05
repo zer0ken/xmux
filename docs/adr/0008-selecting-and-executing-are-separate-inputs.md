@@ -15,37 +15,40 @@ commitment.
 
 ## Decision
 
-Choosing a target and acting on it are two separate inputs, on the keyboard and on
-the mouse alike.
+Choosing a target and acting on it are two separate inputs. There are two kinds of
+selection and one kind of execution.
 
 | Input | Selects | Executes |
 | --- | --- | --- |
-| Keyboard | the arrow keys | Enter |
-| Mouse | hovering the pointer over the target | clicking the target |
+| Keyboard | the arrow keys move the hard selection | Enter executes the hard selection |
+| Mouse | hovering sets the soft selection | clicking executes the soft selection |
 
-**Selecting** marks a target and changes nothing else. A selection may show what the
-target is: the terminal view shows the selected card's screen, and a selected help
-tab scrolls the help body to its section. It never moves the focus, runs a command,
-or changes a host, a mux, or a session.
+**The hard selection** is the keyboard's target. There is one per surface, and it
+stays where the keys left it. It may show what the target is: the terminal view
+shows the hard-selected card's screen, and a hard-selected help tab scrolls the help
+body to its section. It never moves the focus, runs a command, or changes a host, a
+mux, or a session.
 
-**Executing** acts on the target: it opens the screen the target names and gives it
-the focus, or runs the command the target stands for. Executing a target that is not
-yet selected selects it first, so a click acts on exactly what the pointer was over.
+**The soft selection** is the target under the pointer. It is a highlight drawn apart
+from the hard selection and shows nothing else: it never moves the hard selection,
+so the pointer drifting across the nav never changes the terminal view. It ends when
+the pointer leaves the target.
 
-A hover highlights the target under the pointer and is drawn apart from the keyboard
-selection. Moving the pointer never moves the keyboard selection, so the pointer
-drifting across the nav never changes the terminal view.
+**Executing** is the same act whichever input starts it: Enter on the hard selection
+and a click on the soft selection do the same thing to their target. Executing opens
+the screen the target names and gives it the focus, or runs the command the target
+stands for. The executed target becomes the hard selection.
 
 Gestures that are neither a pick nor an action keep their own meaning: a drag moves
 or resizes what it grabs, the wheel scrolls, and typing edits a text field.
 
 ## Consequences
 
-Every pickable surface defines both a selected look and a hovered look, and routes
-the arrow keys and hovering to selection, Enter and clicking to execution. A
-surface that has no action has only a selection, and Enter and a click on it do
-nothing beyond selecting.
+Every pickable surface defines a hard-selected look and a soft-selected look, routes
+the arrow keys to the hard selection and hovering to the soft selection, and gives
+Enter and a click one shared execution. A surface that has no action has only a
+hard selection, and executing on it only makes the target the hard selection.
 
-A new input binding states which of the two it is. A binding that would select and
+A new input binding states which of the three it is. A binding that would select and
 execute at once is split, or it is a deliberate shortcut that names its target
 directly (a digit jump, a prefix chord), never an arrow key or a hover.

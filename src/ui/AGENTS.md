@@ -73,10 +73,11 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 
 ## Invariants
 
-- Selecting and executing are separate inputs (ADR 0008): the arrow keys and hovering
-  select, Enter and clicking execute. A selection marks a target and may show it,
-  never moves the focus or runs anything. The pointer's hover is drawn apart from the
-  keyboard selection and never moves it.
+- Selecting and executing are separate inputs (ADR 0008): the arrow keys move the hard
+  selection, hovering sets the soft selection, and Enter on the hard selection and a
+  click on the soft selection are one shared execution. The hard selection may show its
+  target but never moves the focus or runs anything. The soft selection is a highlight
+  drawn apart from it and never moves it.
 - Every colour xmux itself paints is an ANSI-16 slot or an attribute (reverse
   video, bold, dim), so the terminal theme resolves it, never an RGB value. A
   background with no slot for it is an attribute instead: the selected card is
