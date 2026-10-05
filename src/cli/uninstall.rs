@@ -1117,11 +1117,14 @@ mod tests {
     use super::*;
 
     /// A fresh directory under the system temp directory, named for one test.
+    /// A fresh temp directory, spelled as it resolves. A temp directory can be reached
+    /// through an 8.3 short name or a symlink, and the plan names paths as they
+    /// resolve, so the tests build their expectations from the same spelling.
     fn temp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("xmux-uninstall-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        update::plain(&dir.canonicalize().unwrap())
     }
 
     fn write(path: &Path, content: &str) {
