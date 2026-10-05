@@ -1,0 +1,50 @@
+name: Issue label gate
+
+# Every issue records its authorship with exactly one of `ai-generated` or `handmade`.
+# GitHub cannot require a label at creation, so this workflow closes an issue that
+# breaks the rule and reopens it once the labels are fixed.
+
+on:
+  issues:
+    types: [opened, reopened, labeled, unlabeled]
+
+permissions:
+  issues: write
+
+concurrency:
+  group: issue-label-gate-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check authorship label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          # The payload of a `labeled` event fired at creation can predate the next
+          # label, so the issue's current state is read back from the API.
+          issue=$(gh api "repos/$REPO/issues/$NUMBER")
+          state=$(jq -r .state <<<"$issue")
+          count=$(jq '[.labels[].name | select(. == "ai-generated" or . == "handmade")] | length' <<<"$issue")
+
+          if [ "$count" -eq 1 ]; then
+            if [ "$state" = closed ]; then
+              closer=$(gh api --paginate "repos/$REPO/issues/$NUMBER/events" \
+                --jq '.[] | select(.event == "closed") | .actor.login' | tail -n 1)
+              if [ "$closer" = "github-actions[bot]" ]; then
+                gh issue reopen "$NUMBER" --repo "$REPO"
+              fi
+            fi
+            exit 0
+          fi
+
+          if [ "$state" = open ]; then
+            gh issue comment "$NUMBER" --repo "$REPO" --body \
+              "This issue needs exactly one authorship label: \`ai-generated\` or \`handmade\`. It was closed automatically and reopens when the labels are fixed."
+            gh issue close "$NUMBER" --repo "$REPO" --reason "not planned"
+          fi
