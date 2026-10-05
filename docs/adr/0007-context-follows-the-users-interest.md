@@ -21,8 +21,8 @@ appear in the terminal view.
 
 The selection names what the user is interested in, never a position in the
 list: a host, a source, or a session. On the nav it stands on that node's target: a
-session's card, a source's card or the source half of its section title, and a host's
-card or the host half of a title or source card. xmux keeps that interest as one value
+session's card, a source's card or the `{mux}` part of its section title, and a host's
+card or the `{host}` part of a title or source card. xmux keeps that interest as one value
 and resolves the selection from it on every rebuild, by two rules.
 
 **A card disappears.** When the selected node loses its target, the selection moves
@@ -31,7 +31,7 @@ to the nearest node up its lineage that has one:
 - a session goes to its source: the section title, or the source's host-state card
   once the source has no session to show;
 - a source goes to its host: the host's card while the host is down, else the host
-  half of the row the source stood on, else of the host's first row;
+  part of the row the source stood on, else of the host's first row;
 - a card that stood for the whole host (the host's card while it was down, or the
   card of the source named by the host alone) that resolved into sources hands the
   selection to the first of them by name;

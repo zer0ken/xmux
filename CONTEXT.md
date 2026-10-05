@@ -184,17 +184,18 @@ UI elements a user perceives as distinct things:
   indented one cell under it at every nav position. A band column that continues a
   split section repeats it on its top row followed by `…`. It is not a card: it carries
   no number and stays outside ordinary card stepping and number jumps. It has two
-  halves: the `{host}` half stands for the host and the `{mux}` half for the source,
-  and only the half the selection names takes the highlight. A click on a half opens
-  that node's screen; the indent selects nothing. `n` on one of the session cards
+  parts: the `{host}` part stands for the host and the `{mux}` part for the source.
+  They are where the hierarchy meets the nav (see hierarchy), never cards: only the
+  part the selection names takes the highlight, and a click on a part opens that
+  node's screen; the indent selects nothing. `n` on one of the session cards
   creates a sibling in the same section.
 - card focus - the one thing a card's rendering changes when it gains the selection:
   the number in its address column becomes the `❯` mark. It does not grow a context
   line, it does not change height, and its session name keeps the same column - a name
   that shifts as the cursor passes is what makes a list twitch. The selected look is
   the inverted rect (see selection highlight) plus the mark, nothing more. A section
-  title takes the selected mark when selected, but no number, and inverts only the half
-  the selection names.
+  title takes the selected mark when one of its parts is selected, but no number, and
+  inverts only that part.
 - nav size - the nav's live geometry as one value: the width the user SET, the width ON
   SCREEN this frame (0 while auto-hide has taken it and no prefix interaction is live),
   the band height the user set (0 = auto), the side the nav is attached to, and whether
@@ -283,16 +284,25 @@ UI elements a user perceives as distinct things:
   contiguous and the nav never names a source twice. `rebuild` applies the order on
   every pass, and a re-enumeration reproduces the same order exactly, so the list never
   reshuffles under the user.
+- card and section navigation - how the nav itself is walked. The nav is a list of
+  CARDS grouped into SECTIONS, not a tree of the hierarchy: card and section are nav
+  concepts, independent of session, source, and host. Every card is numbered (a session
+  card, a reachable host with no session, an unresolved host), and a section is a
+  source's title with its session cards, or the band of host cards. `↑`/`↓` step between
+  the numbered cards and never stop on a section title; from a title part they go to the
+  adjacent card. `←`/`→` step between sections.
+- hierarchy - session, source, and host, the levels a session lives in. The nav does not
+  show it as a tree; it is reached in three ways: `Ctrl+↑` walks up from a session to
+  its source (its title's `{mux}` part, or its host-state card) and then to its host
+  (the `{host}` part, or the host card), and `Ctrl+↓` returns to the child the walk came
+  from, else the first child (sources by name, sessions in card order); a click or the
+  pointer on a title part; and the links on a host's or a source's view screen.
 - selection - the current pick, the HARD selection: arrows and execution move it, and
-  the terminal view shows it. It names a node of the hierarchy by identity, never a row
-  position: a host by its machine name, a source by its id, a session by its address.
-  On the nav it stands on that node's target: a session's card; a source's host-state
-  card or the `{mux}` half of its section title; a host's card or the `{host}` half of a
-  section title or host-state card. `↑`/`↓` step between numbered cards and never stop on
-  a section title; from a title half they go to the adjacent card. `Ctrl+↑` walks up
-  session, source, host; `Ctrl+↓` returns to the child the walk came from, else the
-  first child (sources by name, sessions in card order). A re-enumeration or restream
-  never moves it, so neither a re-sort nor a host answering late can take it.
+  the terminal view shows it. It names what it is on by identity, never a row position:
+  a session by its address, a source by its id, a host by its machine name. A card is
+  selected by card and section navigation; a title part, or a node with no card, only
+  through the hierarchy. A re-enumeration or restream never moves it, so neither a
+  re-sort nor a host answering late can take it.
 - soft selection - what the pointer rests on: a nav target in nav focus, a screen link
   in terminal focus. It previews (the terminal view shows the hovered node's screen or
   grid) without moving the hard selection, and ends when the pointer leaves or focus
@@ -329,7 +339,7 @@ UI elements a user perceives as distinct things:
   never a solid block: it draws inverted too, so a block fills its cell and disappears
   into the band while an outline keeps a readable silhouette.
   `[ui] selection-style` paints a named background instead. On a section title the
-  inversion covers only the selected half.
+  inversion covers only the selected part.
 - offscreen counts - what a band writes on its view border row when columns are off
   screen: `‹ 5` at the left end and `7 ›` before the prefix at the right. Cards, not
   columns, because the reader is hunting a session, not a column. They cost no row and

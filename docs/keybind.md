@@ -69,7 +69,6 @@ back to the default.
 | `←` / `→` (or `h` / `l`) | move to the previous / next category, landing on its first card (wraps) |
 | `PageUp` / `PageDown` | jump ten cards (wraps, like the card step) |
 | `Home` / `End` | jump to the first / last card |
-| `Ctrl-↑` / `Ctrl-↓` | move up a level (session, source, host) / back down to the child |
 
 A category is a source that has sessions to show, entered at its first session, or the
 whole band of host cards at once, entered at its first card. The band holds one card per
@@ -83,15 +82,27 @@ unreachable, `✗` means the session listing could not be parsed, a braille glyp
 scanning, and a blank cell means reachable with no sessions. Only the selected card
 adds the state word. Long names retain their beginning and end with a middle ellipsis.
 
-The card step never stops on a section title. A title has a host half and a source
-half, and the selection can stand on either: `Ctrl-↑` from a session selects its
-source (the source half of its title, or its host card), and `Ctrl-↑` again selects
-the host. `Ctrl-↓` returns to the child the walk came from, else the first child:
-sources by name, sessions in card order. From a title half, `↑`/`↓` go to the
-adjacent card. A bare `Ctrl-↑`/`Ctrl-↓` right after `prefix Ctrl-↑`/`prefix Ctrl-↓`
-still resizes the band (see below).
+The card step never stops on a section title, and a title takes no number.
 
 `Enter` hands focus to the terminal view, as does `prefix →`.
+
+### Session, source, and host
+
+The nav is a list of cards in sections, not a tree. The levels a session lives in,
+its source (a mux on a host) and its host, are reached three ways: the keys below, the
+two parts of a section title, and the links on a host's or a source's screen.
+
+| Key | Action |
+|---|---|
+| `Ctrl-↑` | move up a level: a session to its source, a source to its host |
+| `Ctrl-↓` | move back down to the child the walk came from, else the first child |
+
+A source is selected on the `{mux}` part of its title, or on its card when it has no
+sessions; a host on the `{host}` part, or on its card when none of its sources
+connected. The first child is the first source by name, or the first session in card
+order. From a title part, `↑`/`↓` go to the adjacent card and `←`/`→` to the adjacent
+section. A bare `Ctrl-↑`/`Ctrl-↓` right after `prefix Ctrl-↑`/`prefix Ctrl-↓` still
+resizes the band (see below).
 
 While the terminal view shows a host or source screen, `↑`/`↓` (and `Tab`) step
 through the screen's links and `Enter` opens the selected one. A host screen links
@@ -115,8 +126,8 @@ The remaining actions all take the prefix and work from either focus:
 | `prefix h` | open the table of the hosts to check |
 | `prefix :` | search commands by name; type to filter, use arrows to select, Enter or a click to run, Esc to close |
 
-While the nav holds focus, bare `i` selects the current source too. Click the source
-half of a title for the same screen, or the host half for the host screen. Titles do
+While the nav holds focus, bare `i` selects the current source too. Click the `{mux}`
+part of a title for the same screen, or the `{host}` part for the host screen. Titles do
 not take card numbers or interrupt card stepping. The source screen states the
 session count, how the list updates, and when the source was last listed. The host
 screen states how the host is addressed, its SSH login method, its public key, and
@@ -439,8 +450,8 @@ notifications = true   # false keeps results out of toasts; the history still ha
 
 | Gesture | Action |
 |---|---|
-| left-click a card or title half | open it: select it and focus the terminal view |
-| point at a card or title half | preview it in the terminal view without moving the selection (nav focused) |
+| left-click a card or title part | open it: select it and focus the terminal view |
+| point at a card or title part | preview it in the terminal view without moving the selection (nav focused) |
 | left-click a screen link | open the screen it names (terminal focused) |
 | left-click a view | focus that view |
 | left-click a collapsed nav | expand the nav |
