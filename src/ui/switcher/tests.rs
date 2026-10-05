@@ -970,7 +970,7 @@ async fn three_hosts_cursor_on_middle() -> Harness {
         &crate::session::Address::new("jupiter00", "infer"),
         &h.state,
     );
-    h.sw.user_moved = true;
+    h.sw.interest = super::Interest::Selected;
     assert_eq!(cur_session_name(&h).as_deref(), Some("infer"));
     h
 }
@@ -1124,7 +1124,7 @@ fn a_scanning_host_screen_states_its_headline_word_and_facts() {
 }
 
 #[tokio::test]
-async fn rescan_reselect_dropped_when_user_navigates_away() {
+async fn rescan_interest_dropped_when_user_navigates_away() {
     let mut h = three_hosts_cursor_on_middle().await;
     h.sw.request_rescan(&mut h.state);
     // The user navigates to the last host during the skeleton phase.
@@ -2705,7 +2705,7 @@ async fn request_rescan_arms_a_display_reattach() {
 #[tokio::test]
 async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
     // The selection thrash: once the user has moved the selection onto a session, a bare
-    // rebuild (a frequent poll / %-event that does not route through restore_focus)
+    // rebuild (a frequent poll / %-event)
     // must keep it there, not snap it back to the preferred preselect.
     let mut state = crate::state::State::from_sources(vec!["h".into()]);
     let mut sw = Switcher::from_sources(&mut state);
@@ -2732,7 +2732,7 @@ async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
         .position(|r| matches!(&r.reference, RowRef::Session { sess } if sess.name == other))
         .expect("other session card");
     sw.set_selected(idx, &state);
-    sw.user_moved = true;
+    sw.interest = super::Interest::Selected;
     sw.rebuild(&mut state);
     let got = match sw.current_ref() {
         Some(RowRef::Session { sess }) => sess.name.clone(),
@@ -3230,9 +3230,12 @@ fn the_logout_key_confirmation_says_the_key_stays_when_xmux_added_none() {
 
 #[tokio::test]
 async fn filter_leaves_cursor_on_visible_session() {
-    // Filter to a session - selection must land on it once the filter is in effect.
-    // The filter applies live while the input is open (set_input_text applies it as a
-    // real edit would), so Enter only closes it.
+    // The filter hides the selected session, so the selection moves along that
+    // session's lineage to its section title, which stays visible because another of its
+    // sessions matches. The title shows its information screen, never another session's
+    // grid; the next step down reaches the visible session. The filter applies live
+    // while the input is open (set_input_text applies it as a real edit would), so Enter
+    // only closes it.
     let mut h = Harness::from_sources(&["local"]);
     h.sw.apply_source_result(
         "local".into(),
@@ -3246,6 +3249,12 @@ async fn filter_leaves_cursor_on_visible_session() {
     h.ch('/').await;
     h.sw.set_input_text("probeL", &mut h.state);
     h.key(KeyCode::Enter).await; // close the input
+    assert!(matches!(
+        h.sw.selected_card(),
+        Some(RowRef::Section { source }) if source == "local"
+    ));
+    assert!(h.sw.current_attach_target(&h.state).is_none());
+    h.key(KeyCode::Down).await;
     let t =
         h.sw.current_attach_target(&h.state)
             .expect("a session row is visible");
@@ -6103,7 +6112,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
         |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
     );
     h.sw.set_selected(build, &h.state);
-    h.sw.user_moved = true;
+    h.sw.interest = super::Interest::Selected;
     h.sw.show_help(&mut h.state);
     let g = blue_grid();
     h.term
@@ -6425,7 +6434,7 @@ fn a_renamed_session_keeps_the_selection_and_the_displayed_record() {
     };
     let mut state = crate::state::State::from_scan(scan);
     let mut sw = Switcher::new(&mut state);
-    sw.user_moved = true;
+    sw.interest = super::Interest::Selected;
     assert!(matches!(sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "api"));
     // The loop syncs the selection off the switcher; stand in for it.
     state.selection = crate::model::Selection {
@@ -6455,7 +6464,7 @@ fn selection_survives_a_rebuild() {
     // selection stays put).
     let mut state = crate::state::State::from_scan(two_window_scan());
     let mut sw = Switcher::new(&mut state); // launch preselects the api card
-    sw.user_moved = true;
+    sw.interest = super::Interest::Selected;
     assert!(matches!(sw.current_ref(), Some(RowRef::Session { .. })));
     sw.rebuild(&mut state);
     assert!(

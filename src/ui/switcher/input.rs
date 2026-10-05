@@ -872,6 +872,10 @@ impl Switcher {
     ) -> Option<(String, crate::transport::Login)> {
         match state.fold_op_result(result) {
             OpFollow::Reselect(addr) => {
+                // The created session is what the user asked for, so its card takes the
+                // selection the moment it appears.
+                self.note_user_move();
+                self.interest = Interest::Awaiting(addr.clone());
                 self.rebuild(state);
                 state.notify.toast(
                     "new session",
@@ -884,10 +888,6 @@ impl Switcher {
                         ),
                     )],
                 );
-                if let Some(i) = self.row_of_session(&addr) {
-                    self.note_user_move();
-                    self.set_selected(i, state);
-                }
                 None
             }
             OpFollow::Failed(message) => {
