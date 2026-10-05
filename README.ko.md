@@ -128,6 +128,7 @@ cargo install xmux
 - 설치 디렉터리 변경
 - 사전 빌드 바이너리
 - 소스 빌드
+- `xmux uninstall`을 이용한 제거
 
 ### 2. 설치 확인
 
@@ -176,6 +177,7 @@ xmux doctor                   # 설정과 source별 접근 가능 여부를 점�
 xmux instances                # 실행 중인 인스턴스를 나열한다
 xmux send <name> <command…>   # 그중 하나를 컨트롤 소켓으로 조작한다
 xmux update                   # 설치된 바이너리를 갱신한다
+xmux uninstall                # 확인을 받은 뒤 설치된 xmux를 제거한다
 xmux version
 ```
 

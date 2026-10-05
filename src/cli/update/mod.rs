@@ -117,7 +117,7 @@ fn marked_root(exe: &Path) -> Option<PathBuf> {
 /// accepts it, but `doctor` prints this path for a person to read and compare
 /// against what they typed. Only the drive-letter form is unwrapped: the UNC form
 /// does not shorten by dropping a prefix, so it is left exactly as it came.
-fn plain(p: &Path) -> PathBuf {
+pub(super) fn plain(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
     let Some(rest) = s.strip_prefix(r"\\?\") else {
         return p.to_path_buf();
@@ -136,7 +136,7 @@ fn plain(p: &Path) -> PathBuf {
 /// Decides the install method from the executable path. Resolves symlinks first so a
 /// Homebrew `/usr/local/bin/xmux` symlink (into `Cellar/`) is read as brew, not as a
 /// bare prebuilt. `cargo_bins` are the Cargo bin directories to check containment in.
-fn classify(exe: &Path, cargo_bins: &[PathBuf], platform: Platform) -> InstallMethod {
+pub(super) fn classify(exe: &Path, cargo_bins: &[PathBuf], platform: Platform) -> InstallMethod {
     let real = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
     let p = real.to_string_lossy().to_lowercase();
     if script_root(exe).is_some() {
@@ -166,7 +166,7 @@ fn classify(exe: &Path, cargo_bins: &[PathBuf], platform: Platform) -> InstallMe
 /// The Cargo bin directories to check: `$CARGO_HOME/bin` when set, plus the
 /// profile home's `.cargo/bin` from `HOME` and `USERPROFILE`. Windows processes
 /// commonly run without `HOME`, so `USERPROFILE` carries the cargo bin there.
-fn cargo_bins() -> Vec<PathBuf> {
+pub(super) fn cargo_bins() -> Vec<PathBuf> {
     cargo_bins_from(
         std::env::var_os("CARGO_HOME").as_deref(),
         std::env::var_os("HOME").as_deref(),
@@ -195,7 +195,7 @@ fn cargo_bins_from(
 }
 
 /// The running platform, used by detection at runtime.
-fn platform() -> Platform {
+pub(super) fn platform() -> Platform {
     if cfg!(windows) {
         Platform::Windows
     } else {
@@ -245,7 +245,7 @@ pub fn detected_method_label() -> &'static str {
     classify(&exe, &cargo_bins(), platform()).label()
 }
 
-fn tool_on_path(tool: &str) -> bool {
+pub(super) fn tool_on_path(tool: &str) -> bool {
     std::process::Command::new(tool)
         .arg("--version")
         .stdin(std::process::Stdio::null())
@@ -255,7 +255,7 @@ fn tool_on_path(tool: &str) -> bool {
         .is_ok()
 }
 
-fn run_delegated(program: &str, args: &[&str]) -> Result<(), String> {
+pub(super) fn run_delegated(program: &str, args: &[&str]) -> Result<(), String> {
     let mut cmd = std::process::Command::new(program);
     cmd.args(args)
         .stdin(std::process::Stdio::inherit())
@@ -361,7 +361,7 @@ fn sidecar_path(target: &Path, pid: u32) -> PathBuf {
 
 /// True when `candidate` is a sidecar an earlier update left next to a binary
 /// named `target_name`.
-fn is_stale_sidecar(target_name: &str, candidate: &str) -> bool {
+pub(super) fn is_stale_sidecar(target_name: &str, candidate: &str) -> bool {
     candidate
         .strip_prefix(target_name)
         .and_then(|rest| rest.strip_prefix(".old-"))

@@ -129,6 +129,7 @@ cargo install xmux
 - a custom install directory
 - the prebuilt binaries
 - building from source
+- removing xmux with `xmux uninstall`
 
 ### 2. Install check
 
@@ -177,6 +178,7 @@ xmux doctor                   # check config and per-source reachability
 xmux instances                # list running instances
 xmux send <name> <command…>   # drive one of them over its control socket
 xmux update                   # update the installed binary
+xmux uninstall                # remove the installed xmux, asking first
 xmux version
 ```
 
