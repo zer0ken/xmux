@@ -284,7 +284,8 @@ UI elements a user perceives as distinct things:
   to the first card after it in the prior card order that survived, else the last one
   before it. A card that APPEARS takes the selection only when it is the interest.
   Scans, re-scans, polls, logouts, a session ending, mux discovery, and the filter all
-  resolve the selection through this one rule, and none falls back to the first card.
+  resolve the selection through this one rule, and none picks a fallback of its own; the
+  first card is taken only when no card of the prior list survives.
   A selection that lands on a source card shows that card's screen (information, login,
   unreachable, empty), never another session's grid.
 - selection highlight - the selected card's rendering: reverse video filling the whole

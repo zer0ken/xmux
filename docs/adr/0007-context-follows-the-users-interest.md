@@ -11,49 +11,56 @@ answers host by host, a host becomes reachable or unreachable, a logout closes a
 host's connections, a mux session ends, a filter narrows the list. Each change
 re-derives the cards, and the card the user was on can vanish or be replaced.
 
-When the selection did not survive such a change it fell to the first card of the
-list. The user could not predict where the cursor would land, and because the
-display follows the selection, an unrelated session could appear in the terminal
-view. At launch the same mechanism attached whichever session answered the scan
-first. Neither outcome was chosen by the user, so both read as random.
+When a path picked the selection's next card on its own, the result depended on
+which path ran: one landed on the first card of the list, another on the previous
+card, another on a parked host. The user could not predict where the cursor would
+land, and because the display follows the selection, an unrelated session could
+appear in the terminal view.
 
 ## Decision
 
-The selection names a thing the user is interested in, never a position in the
-list. xmux keeps that interest as one value and moves the selection by two rules
-that read from it.
+The selection names a card the user is interested in, never a position in the
+list. xmux keeps that interest as one value and resolves the selection from it on
+every rebuild, by two rules.
 
 **A card disappears.** When the selected card leaves the list, the selection moves
 to the nearest surviving card related to it, along the card's own lineage:
 
-- a session card goes to its source's section title, whose screen shows the source;
-- a section title goes to its host's card, or to that host's first surviving section
-  title in card order when the host has no card of its own;
-- a host-state card that resolves (an unreachable host that answers, a scanning
-  host that settles) goes to that host's first section title in card order;
-- when nothing of the host survives, the selection goes to the card that now holds
-  the vanished card's place in card order.
+- a session card goes to its source's card: the section title, or the source's
+  host-state card once the source has no session to show;
+- a source card goes to its machine's own card, else to the machine's first
+  surviving source card in card order;
+- when nothing of the machine survives, the selection goes to the card that now
+  holds the vanished card's place: the first card after it in the prior card order
+  that survived, else the last surviving card before it.
 
-**A card appears.** A new card takes the selection only when it matches the user's
-interest:
+A source keeps one identity whether it shows as a section title or as a host-state
+card, so a host-state card that resolves into sessions hands the selection to its
+own section title, and a machine's card that resolves into several sources hands it
+to the first of them.
 
-- the user asked for it: the session `prefix n` created, the target of a switch, the
-  host the user logged into;
-- it continues what the user is looking at: the cards a selected host-state card
-  resolves into.
+**A card appears.** A new card takes the selection only when the interest names it:
 
-A card unrelated to the interest never moves the selection.
+- the session `prefix n` created;
+- the session that was under the selection when a full re-scan cleared every
+  session, when its source streams it back;
+- at launch, before anything is chosen, the first session card to appear. Once one
+  appears the interest settles on it, so a session answering later does not take the
+  selection.
 
-Host cards and section titles are reused by identity across every rebuild, so a
-selection on one holds for as long as the thing it names exists, and the lineage
-always has somewhere to go.
+Any other new card leaves the selection where it is. An awaited session ends as the
+interest when the user moves the selection or when its source answers without it.
+
+Selecting a session by address, as `ctl switch` and a mux follow do, is not an
+awaited interest. It moves the selection when that session's card is on the list and
+does nothing otherwise.
 
 ## Consequences
 
-Every path that changes the list (scan, re-scan, poll, logout, a session ending, a
-filter, a ctl command) resolves the selection through these two rules. A path does
-not choose a fallback of its own, and a fallback to the first card of the list does
-not exist.
+Every path that changes the list (scan, re-scan, poll, logout, a session ending, mux
+discovery, a filter) resolves the selection through these two rules. A path does not
+choose a fallback of its own. The first card of the list is taken only when the
+selection names no card of the prior list or no card of the prior list survives.
 
 The display follows the selection, so the terminal view never shows a session the
 user neither chose nor was led to by these rules.

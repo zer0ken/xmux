@@ -578,7 +578,13 @@ impl Switcher {
                     self.rescan_collapse = None;
                     return i;
                 }
-                if !state.scanning.contains(&address.source) {
+                // The interest ends only when the source answered without the session.
+                // A session the filter hides is still in the answer, so its card appears
+                // the moment the filter lets it through.
+                let listed = state.groups.iter().any(|g| {
+                    g.source == address.source && g.sessions.iter().any(|s| s.address() == address)
+                });
+                if !listed && !state.scanning.contains(&address.source) {
                     self.interest = Interest::Selected;
                 }
                 self.lineage_row(prior, old_rows, prior_index)
@@ -1192,9 +1198,9 @@ impl Switcher {
     /// A no-op (returns false) when no such row exists or the selection is already there.
     ///
     /// The one mover for a selection xmux is TOLD to make, whoever asked: a ctl `switch`,
-    /// a create landing on its new card, or the nav following the session the mux moved
-    /// its own display client onto. All three name a card and move to it, and nothing
-    /// downstream tells them apart, so they share one entry point.
+    /// or the nav following the session the mux moved its own display client onto. Both
+    /// name a card and move to it, and nothing downstream tells them apart, so they share
+    /// one entry point. Neither waits for a card that is not on the list yet.
     pub fn select_address(&mut self, address: &Address, state: &crate::state::State) -> bool {
         match self.row_of_session(address) {
             Some(i) if i != self.selected => {

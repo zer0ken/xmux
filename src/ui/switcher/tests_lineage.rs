@@ -225,3 +225,35 @@ fn a_preselected_session_that_ends_during_the_scan_holds_its_source_card() {
     answer(&mut sw, &mut state, "alpha", &["a"]);
     assert!(on_host(&sw, "beta"), "a later answer does not take it");
 }
+
+#[test]
+fn a_rescanned_session_the_filter_hides_is_still_awaited() {
+    let (mut sw, mut state) = launch(&["prod"]);
+    answer(&mut sw, &mut state, "prod", &["work", "edit"]);
+    assert!(on_session(&sw, "prod", "edit"), "the launch preselect");
+    sw.request_rescan(&mut state);
+    state.filter = "work".into();
+    sw.rebuild(&mut state);
+    answer(&mut sw, &mut state, "prod", &["work", "edit"]);
+    assert!(on_section(&sw, "prod"), "{}", picked(&sw));
+    state.filter.clear();
+    sw.rebuild(&mut state);
+    assert!(on_session(&sw, "prod", "edit"), "{}", picked(&sw));
+}
+
+#[test]
+fn a_created_session_the_filter_hides_takes_the_selection_once_shown() {
+    let (mut sw, mut state) = launch(&["prod"]);
+    answer(&mut sw, &mut state, "prod", &["work"]);
+    state.filter = "work".into();
+    sw.rebuild(&mut state);
+    sw.apply_op_result(
+        OpResult::Created {
+            session: sess("prod", "edit"),
+        },
+        &mut state,
+    );
+    state.filter.clear();
+    sw.rebuild(&mut state);
+    assert!(on_session(&sw, "prod", "edit"), "{}", picked(&sw));
+}
