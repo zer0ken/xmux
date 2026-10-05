@@ -162,10 +162,24 @@ pub(crate) enum Msg {
     /// key that moves the selection again raises a new one as it is applied.
     KeysRead,
     Key(KeyEvent),
+    /// A click on a nav target. `execute` opens the target's screen and gives the terminal
+    /// view the focus, as Enter does; a band's overflow count only selects the card it
+    /// stands for.
     MouseSelect {
         col: u16,
         row: u16,
+        execute: bool,
     },
+    /// The pointer resting at a cell: the soft selection follows it.
+    Hover {
+        col: u16,
+        row: u16,
+    },
+    /// An arrow key on a host's or a source's screen while the terminal view holds the
+    /// focus: the hard-selected link moves by this many.
+    StepLink(isize),
+    /// Opens a link of the shown screen: the one clicked, or the hard-selected one.
+    OpenLink(Option<usize>),
     MouseScroll {
         down: bool,
     },
@@ -416,7 +430,7 @@ impl std::fmt::Debug for Effect {
 fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
     match command {
         Command::SelectAddress(address) => {
-            model.switcher.select_address(&address, &model.state);
+            model.switcher.select_address(&address);
             None
         }
         Command::Rescan => {
@@ -1325,7 +1339,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             }
         }
         Msg::Key(key) => {
-            let before = model.switcher.selected_card();
+            let before = model.switcher.selected_node();
             let commands = model.switcher.handle_key(key, &mut model.state);
             hint_selection_move(model, &before);
             commands
@@ -1333,17 +1347,37 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .filter_map(|command| command_effect(model, command))
                 .collect()
         }
-        Msg::MouseSelect { col, row } => {
-            let before = model.switcher.selected_card();
-            model
-                .switcher
-                .mouse_select(&model.render_plan, col, row, &model.state);
+        Msg::MouseSelect { col, row, execute } => {
+            let before = model.switcher.selected_node();
+            let hit = model.switcher.mouse_select(&model.render_plan, col, row);
+            hint_selection_move(model, &before);
+            if hit && execute {
+                update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
+            } else {
+                Vec::new()
+            }
+        }
+        Msg::Hover { col, row } => {
+            model.switcher.mouse_hover(&model.render_plan, col, row);
+            model.switcher.link_hover_at(&model.render_plan, col, row);
+            Vec::new()
+        }
+        Msg::StepLink(delta) => {
+            model.switcher.step_link(delta, &model.state);
+            Vec::new()
+        }
+        Msg::OpenLink(index) => {
+            let before = model.switcher.selected_node();
+            match index {
+                Some(i) => model.switcher.open_link(i, &model.state),
+                None => model.switcher.open_selected_link(&model.state),
+            };
             hint_selection_move(model, &before);
             Vec::new()
         }
         Msg::MouseScroll { down } => {
-            let before = model.switcher.selected_card();
-            model.switcher.mouse_scroll(down, &model.state);
+            let before = model.switcher.selected_node();
+            model.switcher.mouse_scroll(down);
             hint_selection_move(model, &before);
             Vec::new()
         }
@@ -1897,7 +1931,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::FollowDisplay(address) => {
-            model.switcher.select_address(&address, &model.state);
+            model.switcher.select_address(&address);
             Vec::new()
         }
         Msg::Tick { now, spinner } => {
@@ -1994,12 +2028,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
 
 /// Raises the hint about the card the user just moved the selection to, replacing any
 /// earlier one. A selection that stayed on `before` raises nothing.
-fn hint_selection_move(model: &mut AppModel, before: &Option<crate::state::RowRef>) {
-    if model.state.info_session.as_ref().is_some_and(|session| {
-        !matches!(model.switcher.selected_card(), Some(crate::state::RowRef::Section { source }) if source == session.source)
-    }) {
-        model.state.info_session = None;
-    }
+fn hint_selection_move(model: &mut AppModel, before: &Option<crate::model::Node>) {
     if model.state.chrome.first_key_notice {
         return;
     }
@@ -2233,7 +2262,14 @@ mod tests {
             .expect("one session card");
         let (col, row) = (rect.x, rect.y);
 
-        let effects = update(&mut model, Msg::MouseSelect { col, row });
+        let effects = update(
+            &mut model,
+            Msg::MouseSelect {
+                col,
+                row,
+                execute: false,
+            },
+        );
 
         assert!(effects.is_empty());
         assert!(model.state.selection.session.is_empty());

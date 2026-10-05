@@ -326,6 +326,7 @@ impl Runtime {
                 Msg::MouseSelect {
                     col: col0,
                     row: row0,
+                    execute: false,
                 },
             );
             let _ = self.execute_effects(effects);
@@ -360,6 +361,42 @@ impl Runtime {
             if over_view_border {
                 return dirty;
             }
+            // The soft selection follows the pointer: a nav target while the nav holds
+            // the focus, a screen link while the terminal view does.
+            let before = self.model.switcher.soft_marks();
+            let effects = update(
+                &mut self.model,
+                Msg::Hover {
+                    col: col0,
+                    row: row0,
+                },
+            );
+            debug_assert!(effects.is_empty());
+            if self.model.switcher.soft_marks() != before {
+                dirty = true;
+            }
+        }
+        // A click on a link of the host or source screen the terminal view shows opens
+        // it, the same as Enter on the hard-selected link.
+        if is_left_press
+            && self.model.state.focus.is_terminal_focused()
+            && self.model.render_plan.view_screen.is_some()
+        {
+            if let Some(link) =
+                crate::ui::switcher::Switcher::link_at(&self.model.render_plan, col0, row0)
+            {
+                let effects = update(&mut self.model, Msg::OpenLink(Some(link)));
+                let _ = self.execute_effects(effects);
+                ensure_current_host(
+                    &mut self.mgr,
+                    &self.hosts,
+                    &self.model.switcher,
+                    cols,
+                    body_rows,
+                    nav_width,
+                );
+                return true;
+            }
         }
         let down = (ev.cb & 0x01) != 0;
         let mut model_msg = None;
@@ -387,13 +424,16 @@ impl Runtime {
                 *mouse_focus_toggle = true;
             }
             ChainAction::SelectRow => {
-                // Left-click a nav row → move the selection to it (select). The
-                // loop top commits the new selection (attach); ensure the
-                // clicked row's host connects so its subtree streams in.
+                // Left-click a nav target executes it: it becomes the hard selection and
+                // its screen takes the focus, as Enter does. The loop top commits the new
+                // selection (attach); ensure the clicked row's host connects so its
+                // subtree streams in.
                 model_msg = Some(Msg::MouseSelect {
                     col: col0,
                     row: ev.row.saturating_sub(1),
+                    execute: true,
                 });
+                *mouse_focus_toggle = true;
                 ensure_after_update = true;
                 dirty = true;
             }
@@ -706,10 +746,7 @@ impl Runtime {
                                 let _ = self.execute_effects(effects);
                             }
                             *dirty = true;
-                        } else if self.model.switcher.current_host_blocked()
-                            || self.model.switcher.current_view_screen(&self.model.state)
-                                == Some(crate::model::ViewScreen::Login)
-                        {
+                        } else if self.model.switcher.login_pane_shown(&self.model.state) {
                             if let Some(source) = self.model.switcher.current_source() {
                                 let effects =
                                     update(&mut self.model, Msg::FeedLogin { source, bytes: f });
@@ -726,24 +763,42 @@ impl Runtime {
                             .current_view_screen(&self.model.state)
                             .is_some()
                         {
-                            if self
-                                .model
-                                .switcher
-                                .current_unreachable_screen(&self.model.state)
-                            {
-                                for byte in f {
-                                    if byte == b'd' {
-                                        let effects = update(
-                                            &mut self.model,
-                                            Msg::Key(ratatui::crossterm::event::KeyEvent::new(
-                                                ratatui::crossterm::event::KeyCode::Char('d'),
-                                                ratatui::crossterm::event::KeyModifiers::NONE,
-                                            )),
-                                        );
-                                        let _ = self.execute_effects(effects);
-                                        *dirty = true;
+                            // A host's or a source's screen takes its own keys: the
+                            // arrows walk its links, Enter opens the selected one, and
+                            // `d` unfolds an unreachable screen's details.
+                            for key in crate::state::decode_keys(&f) {
+                                use crate::state::Key;
+                                let msg = match key {
+                                    Key::Up | Key::BackTab => Msg::StepLink(-1),
+                                    Key::Down | Key::Tab => Msg::StepLink(1),
+                                    Key::Enter => Msg::OpenLink(None),
+                                    Key::Char('d')
+                                        if self
+                                            .model
+                                            .switcher
+                                            .current_unreachable_screen(&self.model.state) =>
+                                    {
+                                        Msg::Key(ratatui::crossterm::event::KeyEvent::new(
+                                            ratatui::crossterm::event::KeyCode::Char('d'),
+                                            ratatui::crossterm::event::KeyModifiers::NONE,
+                                        ))
                                     }
+                                    _ => continue,
+                                };
+                                let opens = matches!(msg, Msg::OpenLink(_));
+                                let effects = update(&mut self.model, msg);
+                                let _ = self.execute_effects(effects);
+                                if opens {
+                                    ensure_current_host(
+                                        &mut self.mgr,
+                                        &self.hosts,
+                                        &self.model.switcher,
+                                        self.cols,
+                                        self.body_rows,
+                                        self.model.nav_width,
+                                    );
                                 }
+                                *dirty = true;
                             }
                         } else {
                             self.registry

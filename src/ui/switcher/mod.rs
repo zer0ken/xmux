@@ -17,7 +17,7 @@ use ratatui::widgets::Clear;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::model::{Action, Command, ViewScreen};
+use crate::model::{Action, Command, Node, ViewScreen};
 use crate::session::{Address, Session};
 use crate::ui::modal::{self, Input, InputMode, Modal, PopupGeometry};
 use crate::ui::tree::{self, Group, Row, RowRef};
@@ -319,6 +319,30 @@ pub(crate) enum Interest {
     Awaiting(Address),
 }
 
+/// Which part of a nav row a selection or the pointer is on. A card is one target. A
+/// section title and a source card's `{host}/{mux}` each read as two: the host half names
+/// the host and the rest names the source, so the title of `db-01/tmux` opens the screen
+/// of `db-01` from one half and of `db-01/tmux` from the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Part {
+    /// The whole card: a session, a source's card, or a host's card.
+    Card,
+    /// The host half of a section title or of a source card.
+    Host,
+    /// The source half of a section title.
+    Source,
+}
+
+/// Where the hard selection stands: a row, the part of it, and a node deeper than any
+/// nav target when a screen link or a step down opened one the nav has no card for. The
+/// nav paints the row and part, which then name that node's nearest ancestor on the list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Target {
+    row: usize,
+    part: Part,
+    deep: Option<Node>,
+}
+
 /// The terminal-view target whose active pane attaching here would land on.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct TerminalViewTarget {
@@ -343,6 +367,22 @@ pub struct Switcher {
 
     rows: Vec<Row>,
     selected: usize,
+    /// The part of the selected row the hard selection is on.
+    part: Part,
+    /// A node the hard selection names that has no nav target of its own; the selected
+    /// row and part then stand for its nearest ancestor on the list.
+    deep: Option<Node>,
+    /// For each node the selection stepped up from, the child it left, so a step down
+    /// returns to it.
+    trail: std::collections::HashMap<Node, Node>,
+    /// The soft selection in the nav: the target under the pointer while the nav holds
+    /// the focus, as a row identity and the part of it. The terminal view shows its
+    /// screen; nothing else follows it.
+    hover: Option<(RowRef, Part)>,
+    /// The hard-selected link on the shown host or source screen.
+    link: usize,
+    /// The link under the pointer on that screen while the terminal view holds the focus.
+    link_hover: Option<usize>,
     /// Host whose login pane was opened explicitly from the check table or palette.
     login_target: Option<String>,
 
@@ -395,6 +435,12 @@ impl Switcher {
             reattach_kick: false,
             rows: Vec::new(),
             selected: 0,
+            part: Part::Card,
+            deep: None,
+            trail: std::collections::HashMap::new(),
+            hover: None,
+            link: 0,
+            link_hover: None,
             login_target: None,
             terminal_view_target: TerminalViewTarget::default(),
             own_session: None,
@@ -463,19 +509,33 @@ impl Switcher {
     /// move from the nav into the terminal view decides whether the host band is hidden
     /// (see `host_band_hidden`); the move back into the nav shows it again.
     pub fn sync_view_focus(&mut self, terminal: bool) {
+        // Each surface's soft selection lives only while that surface holds the focus.
+        let hovered = self.hover.is_some() || self.link_hover.is_some();
+        if terminal {
+            self.hover = None;
+        } else {
+            self.link_hover = None;
+        }
         if terminal && !self.terminal_view {
             self.host_band_hidden = matches!(self.current_ref(), Some(RowRef::Session { .. }));
         } else if !terminal {
             self.host_band_hidden = false;
         }
         self.terminal_view = terminal;
+        if hovered {
+            self.on_focus_changed();
+        }
     }
 
     /// Whether the paint leaves the host band out: hidden by the move into the terminal
     /// view from a session card. Prefix interactions preserve this decision, but a
     /// selection on a host card paints the band, since a selected card is always painted.
     fn band_unpainted(&self) -> bool {
-        self.host_band_hidden && !matches!(self.current_ref(), Some(RowRef::Host { .. }))
+        self.host_band_hidden
+            && !matches!(
+                self.current_ref(),
+                Some(RowRef::Host { .. } | RowRef::Machine { .. })
+            )
     }
 
     /// Whether `(source, target)` addresses the session xmux is ITSELF running in.
@@ -513,8 +573,12 @@ impl Switcher {
         }) {
             self.login_target = None;
         }
-        let prior = self.current_ref().cloned();
-        let prior_index = self.selected;
+        let prior = Prior {
+            node: self.selected_node(),
+            row: self.current_ref().cloned(),
+            deep: self.deep.is_some(),
+            index: self.selected,
+        };
 
         // The deterministic display order (groups local→WSL→remote then by source name,
         // sessions by name) is applied here, once, so every mutation path lands on it and
@@ -537,24 +601,34 @@ impl Switcher {
 
         let old_rows = std::mem::replace(&mut self.rows, rows);
         self.number_cards(unfiltered.as_deref(), state.scanning.is_empty());
-        let target = self.resolve_selection(prior.as_ref(), &old_rows, prior_index, state);
-        self.set_selected(target, state);
+        let target = self.resolve_selection(prior, &old_rows, state);
+        if self
+            .hover
+            .as_ref()
+            .is_some_and(|(r, _)| self.row_matching(r).is_none())
+        {
+            self.hover = None;
+        }
+        self.set_target(target);
     }
 
-    /// The row the selection takes after a rebuild, read from [`Interest`].
+    /// The target the selection takes after a rebuild, read from [`Interest`].
     ///
     /// A card that APPEARS takes the selection only when the interest names it: the first
     /// session card while nothing is chosen yet, or the awaited session. Anything else
-    /// holds the prior card by identity, and a prior card that DISAPPEARED moves along
-    /// its lineage ([`Switcher::lineage_row`]). No path picks a position of its own.
+    /// holds the prior node, and a prior node that DISAPPEARED moves along its lineage
+    /// ([`Switcher::lineage_target`]). No path picks a position of its own.
     fn resolve_selection(
         &mut self,
-        prior: Option<&RowRef>,
+        prior: Prior,
         old_rows: &[Row],
-        prior_index: usize,
         state: &crate::state::State,
-    ) -> usize {
-        let first_selectable = || self.rows.iter().position(Row::selectable).unwrap_or(0);
+    ) -> Target {
+        let first_selectable = || Target {
+            row: self.rows.iter().position(Row::selectable).unwrap_or(0),
+            part: Part::Card,
+            deep: None,
+        };
         match self.interest.clone() {
             Interest::FirstSession => {
                 // A session answering later than the first one does not take the cursor:
@@ -567,7 +641,7 @@ impl Switcher {
                 {
                     Some(i) => {
                         self.interest = Interest::Selected;
-                        i
+                        Target::card(i)
                     }
                     None => first_selectable(),
                 }
@@ -576,7 +650,7 @@ impl Switcher {
                 if let Some(i) = self.row_of_session(&address) {
                     self.interest = Interest::Selected;
                     self.rescan_collapse = None;
-                    return i;
+                    return Target::card(i);
                 }
                 // The interest ends only when the source answered without the session.
                 // A session the filter hides is still in the answer, so its card appears
@@ -587,72 +661,158 @@ impl Switcher {
                 if !listed && !state.scanning.contains(&address.source) {
                     self.interest = Interest::Selected;
                 }
-                self.lineage_row(prior, old_rows, prior_index)
+                self.lineage_target(&prior, old_rows, state)
                     .unwrap_or_else(first_selectable)
             }
             Interest::Selected => self
-                .lineage_row(prior, old_rows, prior_index)
+                .lineage_target(&prior, old_rows, state)
                 .unwrap_or_else(first_selectable),
         }
     }
 
-    /// Where the selection on `prior` goes on the rebuilt rows: `prior` itself when it
-    /// survives, otherwise the nearest surviving card of its lineage.
+    /// Where the selection on `prior` goes on the rebuilt rows: `prior` itself while it
+    /// has a target, otherwise the nearest node up its lineage that has one.
     ///
-    /// - a session goes to its source's card (the section title, or the source's
-    ///   host-state card once it has no session to show);
-    /// - a source goes to its machine's own card (the source named by the machine
-    ///   alone), else to the machine's first source card in card order;
-    /// - when nothing of the machine survives, to the card that now holds the vanished
-    ///   card's place: the first card after it in the prior card order that survived,
-    ///   else the last surviving card before it.
+    /// - a session goes to its source (its section title, or the source's card once it
+    ///   has no session to show);
+    /// - a source goes to its host (the host's card when the host is down, else the host
+    ///   half of the row the source stood on, else of the host's first row);
+    /// - a card that stood for the whole host (its card while it was down, or the card
+    ///   of the source named by the host alone) that resolved into sources hands the
+    ///   selection to the first of them by name;
+    /// - when nothing of the host survives, the selection goes to the card that now holds
+    ///   the vanished card's place: the first card after it in the prior card order that
+    ///   survived, else the last surviving card before it.
     ///
-    /// A source keeps one identity whether it shows as a section title or as a
-    /// host-state card, so a source that gains or loses its sessions is the same card.
-    /// `None` only when `prior` is `None` or no prior card survives at all.
-    fn lineage_row(
+    /// A node the selection reached with no nav target of its own (a screen link opened
+    /// it) stays selected while the inventory still holds it. A node that HAD a target
+    /// and lost it walks up instead, which is how a host going down gathers the selection
+    /// from its sources and sessions onto its one card.
+    fn lineage_target(
         &self,
-        prior: Option<&RowRef>,
+        prior: &Prior,
         old_rows: &[Row],
-        prior_index: usize,
-    ) -> Option<usize> {
-        let prior = prior?;
-        let source_row = |source: &str| {
-            self.rows
-                .iter()
-                .position(|r| card_source(&r.reference) == Some(source))
-        };
-        if let Some(i) = self.row_matching(prior) {
-            return Some(i);
-        }
-        let source = match prior {
-            RowRef::Session { sess } => sess.source.as_str(),
-            RowRef::Host { source, .. } | RowRef::Section { source } => source.as_str(),
-        };
-        let machine = crate::session::machine_of(source);
-        if let Some(i) = source_row(source)
-            .or_else(|| source_row(machine))
-            .or_else(|| {
-                self.rows.iter().position(|r| {
-                    card_source(&r.reference)
-                        .is_some_and(|s| crate::session::machine_of(s) == machine)
-                })
-            })
-        {
-            return Some(i);
+        state: &crate::state::State,
+    ) -> Option<Target> {
+        let mut node = prior.node.clone()?;
+        let near = prior.row.as_ref().and_then(row_source).map(str::to_owned);
+        loop {
+            if let Node::Host(machine) = &node {
+                // A card that stood for the whole host: its card while it was down, or the
+                // card of the source named by the host alone, which stands in for it until
+                // its muxes are known.
+                let card = |r: &RowRef| match r {
+                    RowRef::Machine { machine: m, .. } => m == machine,
+                    RowRef::Host { source, .. } => source == machine,
+                    _ => false,
+                };
+                if prior.row.as_ref().is_some_and(card)
+                    && !self.rows.iter().any(|r| card(&r.reference))
+                {
+                    let sources: std::collections::BTreeSet<&str> = state
+                        .groups
+                        .iter()
+                        .map(|g| g.source.as_str())
+                        .filter(|s| crate::session::machine_of(s) == machine)
+                        .collect();
+                    if let Some((row, part)) = sources
+                        .into_iter()
+                        .find_map(|source| self.target_of(&Node::Source(source.into()), None))
+                    {
+                        return Some(Target {
+                            row,
+                            part,
+                            deep: None,
+                        });
+                    }
+                }
+            }
+            if let Some((row, part)) = self.target_of(&node, near.as_deref()) {
+                return Some(Target {
+                    row,
+                    part,
+                    deep: None,
+                });
+            }
+            if prior.deep && node_exists(&node, state) {
+                return Some(self.deep_target(node));
+            }
+            match node.parent() {
+                Some(parent) => node = parent,
+                None => break,
+            }
         }
         let survivor = |r: &Row| {
             r.selectable()
                 .then(|| self.row_matching(&r.reference))
                 .flatten()
         };
-        let at = prior_index.min(old_rows.len());
+        let at = prior.index.min(old_rows.len());
         old_rows
             .get(at + 1..)
             .unwrap_or_default()
             .iter()
             .find_map(survivor)
             .or_else(|| old_rows[..at].iter().rev().find_map(survivor))
+            .map(Target::card)
+    }
+
+    /// The nav target that stands for `node`: its own card or title half, `None` when the
+    /// list has none. A host stands on its card while it is down, otherwise on the host
+    /// half of one of its rows: the row of `near` (the source the selection comes from)
+    /// when that is one of its, else its first row.
+    fn target_of(&self, node: &Node, near: Option<&str>) -> Option<(usize, Part)> {
+        match node {
+            Node::Session(address) => self.row_of_session(address).map(|i| (i, Part::Card)),
+            Node::Source(source) => {
+                self.rows
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, r)| match &r.reference {
+                        RowRef::Section { source: s } if s == source => Some((i, Part::Source)),
+                        RowRef::Host { source: s, .. } if s == source => Some((i, Part::Card)),
+                        _ => None,
+                    })
+            }
+            Node::Host(machine) => {
+                if let Some(i) = self.rows.iter().position(
+                    |r| matches!(&r.reference, RowRef::Machine { machine: m, .. } if m == machine),
+                ) {
+                    return Some((i, Part::Card));
+                }
+                let halved = |r: &Row, want: Option<&str>| match &r.reference {
+                    RowRef::Section { source } | RowRef::Host { source, .. } => {
+                        crate::session::machine_of(source) == machine
+                            && want.is_none_or(|w| w == source)
+                    }
+                    _ => false,
+                };
+                near.and_then(|n| self.rows.iter().position(|r| halved(r, Some(n))))
+                    .or_else(|| self.rows.iter().position(|r| halved(r, None)))
+                    .map(|i| (i, Part::Host))
+            }
+        }
+    }
+
+    /// The target of a node the nav has no target for: the node itself, standing on its
+    /// nearest ancestor's target, or on the first card when no ancestor is on the list.
+    fn deep_target(&self, node: Node) -> Target {
+        let mut up = node.parent();
+        while let Some(ancestor) = up {
+            if let Some((row, part)) = self.target_of(&ancestor, node.source()) {
+                return Target {
+                    row,
+                    part,
+                    deep: Some(node),
+                };
+            }
+            up = ancestor.parent();
+        }
+        Target {
+            row: self.rows.iter().position(Row::selectable).unwrap_or(0),
+            part: Part::Card,
+            deep: Some(node),
+        }
     }
 
     // --- selection / navigation --------------------------------------------
@@ -667,12 +827,12 @@ impl Switcher {
     }
 
     /// Whether card `i` opens a new unit in the portrait column flow: a section title
-    /// (its session cards hang under it) or a host-state card. A session card hangs
-    /// under its section and starts nothing.
+    /// (its session cards hang under it), a source's card or a host's card. A session
+    /// card hangs under its section and starts nothing.
     fn starts_run(&self, i: usize) -> bool {
         matches!(
             self.rows.get(i).map(|r| &r.reference),
-            Some(RowRef::Section { .. }) | Some(RowRef::Host { .. })
+            Some(RowRef::Section { .. } | RowRef::Host { .. } | RowRef::Machine { .. })
         )
     }
 
@@ -761,7 +921,7 @@ impl Switcher {
     fn band_boundary(&self) -> Option<usize> {
         self.rows
             .iter()
-            .position(|r| matches!(r.reference, RowRef::Host { .. }))
+            .position(|r| matches!(r.reference, RowRef::Host { .. } | RowRef::Machine { .. }))
     }
 
     /// How many rows the nav paints: every row, or only the rows above the host band
@@ -802,6 +962,7 @@ impl Switcher {
                         list_failed: true,
                         ..
                     } | RowRef::Host { scanning: true, .. }
+                        | RowRef::Machine { .. }
                 )
             }) {
                 if disconnected != first {
@@ -829,20 +990,116 @@ impl Switcher {
             .rposition(|r| matches!(r.reference, RowRef::Section { .. }))
     }
 
-    fn set_selected(&mut self, idx: usize, state: &crate::state::State) {
+    /// Puts the hard selection on card `idx` as a whole (the source half of a section
+    /// title, which is no card).
+    fn set_selected(&mut self, idx: usize) {
+        self.set_target(Target::card(idx));
+    }
+
+    /// Puts the hard selection on `target`. A section title is never selected whole: its
+    /// source half stands for it. The login a host's screen was opened for ends when the
+    /// selection leaves that host, and the screen's link selection starts over when the
+    /// selection names another node.
+    fn set_target(&mut self, target: Target) {
         if self.rows.is_empty() {
+            self.deep = target.deep;
             return;
         }
-        let idx = idx.min(self.rows.len() - 1);
-        if self.rows.get(idx).and_then(|row| match &row.reference {
-            RowRef::Host { source, .. } => Some(source.as_str()),
+        let before = self.selected_node();
+        let row = target.row.min(self.rows.len() - 1);
+        let part = match (&self.rows[row].reference, target.part) {
+            (RowRef::Section { .. }, Part::Card) => Part::Source,
+            (RowRef::Section { .. }, part) => part,
+            (RowRef::Host { .. }, Part::Host) => Part::Host,
+            _ => Part::Card,
+        };
+        self.selected = row;
+        self.part = part;
+        self.deep = target.deep;
+        let after = self.selected_node();
+        let host = match &after {
+            Some(Node::Host(machine)) => Some(machine.as_str()),
             _ => None,
-        }) != self.login_target.as_deref()
+        };
+        if self
+            .login_target
+            .as_deref()
+            .is_some_and(|source| Some(crate::session::machine_of(source)) != host)
         {
             self.login_target = None;
         }
-        self.selected = idx;
-        self.on_focus_changed(state);
+        if before != after {
+            self.link = 0;
+        }
+        self.on_focus_changed();
+    }
+
+    /// The node the hard selection names.
+    pub(crate) fn selected_node(&self) -> Option<Node> {
+        self.deep.clone().or_else(|| {
+            self.rows
+                .get(self.selected)
+                .map(|r| node_of(&r.reference, self.part))
+        })
+    }
+
+    /// The node whose screen the terminal view shows: the soft selection while the pointer
+    /// is on a nav target, else the hard selection.
+    pub(crate) fn shown_node(&self) -> Option<Node> {
+        match &self.hover {
+            Some((reference, part)) => Some(node_of(reference, *part)),
+            None => self.selected_node(),
+        }
+    }
+
+    /// Moves the hard selection to `node`: onto its nav target, or onto the nearest
+    /// ancestor's target as a node the nav has no target for. A host keeps the row the
+    /// selection leaves when that row is one of its. A move from a node to its parent
+    /// records the child, so a step down returns to it.
+    fn select_node(&mut self, node: Node) {
+        let before = self.selected_node();
+        let near = self.current_ref().and_then(row_source).map(str::to_owned);
+        if let Some(child) = before.filter(|b| b.parent().as_ref() == Some(&node)) {
+            self.trail.insert(node.clone(), child);
+        }
+        let target = match self.target_of(&node, near.as_deref()) {
+            Some((row, part)) => Target {
+                row,
+                part,
+                deep: None,
+            },
+            None => self.deep_target(node),
+        };
+        self.set_target(target);
+    }
+
+    /// `Ctrl+↑`: the selection walks up a level, session to source to host.
+    fn ascend(&mut self) {
+        let Some(parent) = self.selected_node().and_then(|node| node.parent()) else {
+            return;
+        };
+        self.note_user_move();
+        self.select_node(parent);
+    }
+
+    /// `Ctrl+↓`: the selection walks down a level, to the child it last came up from
+    /// while that is still a child, else to the first child: a host's sources by name, a
+    /// source's sessions in card order.
+    fn descend(&mut self, state: &crate::state::State) {
+        let Some(node) = self.selected_node() else {
+            return;
+        };
+        let children = node_children(&node, state);
+        let child = self
+            .trail
+            .get(&node)
+            .filter(|child| children.contains(child))
+            .or_else(|| children.first())
+            .cloned();
+        if let Some(child) = child {
+            self.note_user_move();
+            self.select_node(child);
+        }
     }
 
     /// Records a selection move the user or a caller of xmux made, as opposed to one a
@@ -853,7 +1110,7 @@ impl Switcher {
         self.rescan_collapse = None;
     }
 
-    fn move_selection(&mut self, delta: isize, state: &crate::state::State) {
+    fn move_selection(&mut self, delta: isize) {
         let sel = self.selectable_indices();
         if sel.is_empty() {
             return;
@@ -875,15 +1132,15 @@ impl Switcher {
         };
         let n = sel.len() as isize;
         let next = ((cur + delta) % n + n) % n;
-        self.set_selected(sel[next as usize], state);
+        self.set_selected(sel[next as usize]);
     }
 
     /// Vertical navigation shared by ↑/↓, k/j, AND the plain scroll wheel, so the wheel
     /// moves the selection exactly as the arrows do: prev/next card linearly across the
     /// whole flat list (wraps). The flat card list has no levels, so this is a plain
     /// linear step - the same as [`Switcher::move_selection`].
-    fn nav_vertical(&mut self, delta: isize, state: &crate::state::State) {
-        self.move_selection(delta, state);
+    fn nav_vertical(&mut self, delta: isize) {
+        self.move_selection(delta);
     }
 
     /// Horizontal navigation (←/→): the selection lands on the first card of the
@@ -900,7 +1157,7 @@ impl Switcher {
     /// Neither step is defined by where a card sits on screen, so both mean the same
     /// thing in the side column and in the portrait band, whose cards flow down a column
     /// and then right.
-    fn nav_horizontal(&mut self, delta: isize, state: &crate::state::State) {
+    fn nav_horizontal(&mut self, delta: isize) {
         let heads = self.category_heads();
         if heads.is_empty() {
             return;
@@ -914,7 +1171,7 @@ impl Switcher {
         let n = heads.len() as isize;
         let next = ((here + delta) % n + n) % n;
         self.note_user_move();
-        self.set_selected(heads[next as usize].1, state);
+        self.set_selected(heads[next as usize].1);
     }
 
     /// Each category in list order paired with its first selectable card - the landing
@@ -936,7 +1193,7 @@ impl Switcher {
         heads
     }
 
-    fn move_to(&mut self, pos: isize, state: &crate::state::State) {
+    fn move_to(&mut self, pos: isize) {
         let sel = self.selectable_indices();
         if sel.is_empty() {
             return;
@@ -947,95 +1204,130 @@ impl Switcher {
         } else {
             pos as usize
         };
-        self.set_selected(sel[idx], state);
+        self.set_selected(sel[idx]);
     }
 
     fn current_ref(&self) -> Option<&RowRef> {
         self.rows.get(self.selected).map(|r| &r.reference)
     }
 
+    /// The row of the session card `source/name`.
+    #[cfg(test)]
+    pub(crate) fn session_row(&self, source: &str, name: &str) -> Option<usize> {
+        self.row_of_session(&Address::new(source, name))
+    }
+
     /// The card the selection is on, as an identity a later look can compare with: the
     /// same card across a rebuild that moved its row.
+    #[cfg(test)]
     pub(crate) fn selected_card(&self) -> Option<RowRef> {
         self.current_ref().cloned()
     }
 
-    /// Whether the selection is on a different card than `before`.
-    pub(crate) fn selection_moved_from(&self, before: &Option<RowRef>) -> bool {
-        match (before, self.current_ref()) {
-            (Some(a), Some(b)) => !same_node(a, b),
-            (None, None) => false,
-            _ => true,
-        }
+    /// Whether the selection names a different node than `before`.
+    pub(crate) fn selection_moved_from(&self, before: &Option<Node>) -> bool {
+        self.selected_node() != *before
     }
 
-    /// What the hint bar offers about the selected card after a selection move: its most
-    /// relevant keys, read from the key table, and one fact about it. A session offers its terminal and a sibling
-    /// session and states its windows; a settled host offers the screen that explains it
-    /// (or a new session when it is empty) and a re-scan of that host, and states its state word with
-    /// the reason behind it; a host still scanning offers the filter and says so. With
-    /// `nav_focused` false the terminal view holds the focus, where a bare key goes to the
-    /// pane, so only the prefix keys are offered.
+    /// What the hint bar offers about the selected node after a selection move: its most
+    /// relevant keys, read from the key table, and one fact about it. A session offers its
+    /// terminal and a sibling session and states its windows; a source offers its screen
+    /// (or a new session when it is empty) and a re-scan of its host, and states its
+    /// sessions or its state word with the reason behind it; a host offers its screen and
+    /// a re-scan and states its state word; anything still scanning offers the filter and
+    /// says so. With `nav_focused` false the terminal view holds the focus, where a bare key
+    /// goes to the pane, so only the prefix keys are offered.
     pub(crate) fn selection_hint(
         &self,
         state: &crate::state::State,
         nav_focused: bool,
     ) -> Option<(Vec<crate::state::chrome::HintKey>, String)> {
         use crate::model::keys::{entry_for, KeyCommand};
-        let (commands, fact): (&[KeyCommand], String) = match self.current_ref()? {
-            RowRef::Section { source } => {
-                let count = state
+        let first_line = |source: &str| {
+            state
+                .groups
+                .iter()
+                .find(|g| g.source == source)
+                .and_then(|g| g.err.as_deref())
+                .and_then(|e| e.lines().map(str::trim).find(|l| !l.is_empty()))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let with_reason = |word: &str, reason: String| {
+            if reason.is_empty() {
+                word.to_string()
+            } else {
+                format!("{word}: {reason}")
+            }
+        };
+        let (commands, fact): (&[KeyCommand], String) = match self.selected_node()? {
+            Node::Session(address) => {
+                let sess = state
                     .groups
                     .iter()
-                    .find(|g| &g.source == source)
-                    .map_or(0, |g| g.sessions.len());
-                let method = state.refresh_words(source);
-                (
-                    &[KeyCommand::FocusTerminal, KeyCommand::RescanHost],
-                    format!("{count} sessions, {method}"),
-                )
-            }
-            RowRef::Session { sess } => {
-                let mut facts = Vec::new();
-                if sess.windows > 0 {
-                    let s = if sess.windows == 1 { "" } else { "s" };
-                    facts.push(format!("{} window{s}", sess.windows));
-                }
-                if sess.attached {
-                    facts.push("attached".to_string());
-                }
+                    .find(|g| g.source == address.source)
+                    .and_then(|g| g.sessions.iter().find(|s| s.name == address.session));
                 (
                     &[KeyCommand::FocusTerminal, KeyCommand::NewSession],
-                    facts.join(", "),
+                    sess.map(session_facts).unwrap_or_default(),
                 )
             }
-            RowRef::Host { scanning: true, .. } => (&[KeyCommand::Filter], "scanning".into()),
-            RowRef::Host {
-                source,
-                unreachable,
-                blocked,
-                list_failed,
-                ..
-            } => {
-                let word = tree::host_state_word(false, *blocked, *list_failed, *unreachable);
-                let reason = state
-                    .groups
-                    .iter()
-                    .find(|g| &g.source == source)
-                    .and_then(|g| g.err.as_deref())
-                    .and_then(|e| e.lines().map(str::trim).find(|l| !l.is_empty()))
-                    .unwrap_or_default();
-                let commands: &[KeyCommand] = if *unreachable || *blocked || *list_failed {
-                    &[KeyCommand::FocusTerminal, KeyCommand::RescanHost]
+            Node::Source(source) => {
+                let group = state.groups.iter().find(|g| g.source == source);
+                if state.scanning.contains(&source) {
+                    (&[KeyCommand::Filter], "scanning".into())
+                } else if let Some(kind) = group.and_then(crate::model::Group::failure) {
+                    use crate::model::FailureKind;
+                    let word = tree::host_state_word(
+                        false,
+                        kind == FailureKind::Blocked,
+                        kind == FailureKind::ListFailed,
+                        true,
+                    );
+                    (
+                        &[KeyCommand::FocusTerminal, KeyCommand::RescanHost],
+                        with_reason(word, first_line(&source)),
+                    )
                 } else {
-                    &[KeyCommand::NewSession, KeyCommand::RescanHost]
+                    let count = group.map_or(0, |g| g.sessions.len());
+                    if count == 0 {
+                        (
+                            &[KeyCommand::NewSession, KeyCommand::RescanHost],
+                            tree::host_state_word(false, false, false, false).into(),
+                        )
+                    } else {
+                        let method = state.refresh_words(&source);
+                        (
+                            &[KeyCommand::FocusTerminal, KeyCommand::RescanHost],
+                            format!("{count} sessions, {method}"),
+                        )
+                    }
+                }
+            }
+            Node::Host(machine) => {
+                let fact = match host_failure(state, &machine) {
+                    Some(kind) => {
+                        let source = self.current_source().unwrap_or_default();
+                        let word = tree::host_state_word(
+                            false,
+                            kind == crate::model::FailureKind::Blocked,
+                            false,
+                            true,
+                        );
+                        with_reason(word, first_line(&source))
+                    }
+                    None if host_scanning(state, &machine) => "scanning".into(),
+                    None => {
+                        let n = state
+                            .groups
+                            .iter()
+                            .filter(|g| crate::session::machine_of(&g.source) == machine)
+                            .count();
+                        let s = if n == 1 { "" } else { "s" };
+                        format!("{}, {n} source{s}", tree::HOST_REACHABLE)
+                    }
                 };
-                let fact = if reason.is_empty() {
-                    word.to_string()
-                } else {
-                    format!("{word}: {reason}")
-                };
-                (commands, fact)
+                (&[KeyCommand::FocusTerminal, KeyCommand::RescanHost], fact)
             }
         };
         let keys = commands
@@ -1053,66 +1345,97 @@ impl Switcher {
         Some((keys, fact))
     }
 
+    /// The source the selection acts on. A session's and a source's own; for a host, the
+    /// source the row standing for it names (its card's login source, or the source of
+    /// the title or card whose host half is selected), which is what a login, a host
+    /// re-scan and a logout address. `None` for a host with no row on the list.
     pub(crate) fn current_source(&self) -> Option<String> {
-        match self.current_ref()? {
-            RowRef::Host { source, .. } | RowRef::Section { source, .. } => Some(source.clone()),
-            RowRef::Session { sess } => Some(sess.source.clone()),
+        match self.selected_node()? {
+            Node::Session(address) => Some(address.source),
+            Node::Source(source) => Some(source),
+            Node::Host(machine) => self
+                .current_ref()
+                .and_then(row_source)
+                .filter(|source| crate::session::machine_of(source) == machine)
+                .map(str::to_owned),
         }
-    }
-
-    pub(super) fn current_host_unreachable(&self) -> bool {
-        matches!(self.current_ref(), Some(RowRef::Host { unreachable, .. }) if *unreachable)
     }
 
     pub(crate) fn current_unreachable_screen(&self, state: &crate::state::State) -> bool {
         self.current_view_screen(state) == Some(ViewScreen::Unreachable)
     }
 
-    /// True when the selected host failed in a way the user can answer from xmux. Its
-    /// terminal-view panel carries the login pane, so a keystroke typed while the
-    /// terminal view is focused drives that pane rather than reaching a session.
+    /// True when the selected host's screen carries the login pane: the host is down and
+    /// a login answers it, or its pane was opened from the hosts to check. A keystroke
+    /// typed while the terminal view is focused then drives that pane rather than
+    /// reaching a session.
     pub(crate) fn current_host_blocked(&self) -> bool {
-        matches!(self.current_ref(), Some(RowRef::Host { blocked: true, .. }))
-            || matches!(self.current_ref(), Some(RowRef::Host { source, .. }) if self.login_target.as_deref() == Some(source))
+        let Some(Node::Host(machine)) = self.selected_node() else {
+            return false;
+        };
+        matches!(self.current_ref(), Some(RowRef::Machine { blocked: true, machine: m, .. }) if *m == machine)
+            || self
+                .login_target
+                .as_deref()
+                .is_some_and(|source| crate::session::machine_of(source) == machine)
+    }
+
+    /// Whether the selected host's screen carries the login pane, which then takes the keys
+    /// typed while the terminal view holds the focus. Only a host's screen carries it: a
+    /// source refused until a login states its failure and leaves the login to its host.
+    pub(crate) fn login_pane_shown(&self, state: &crate::state::State) -> bool {
+        matches!(self.selected_node(), Some(Node::Host(_)))
+            && (self.current_host_blocked()
+                || self.current_view_screen(state) == Some(ViewScreen::Login))
     }
 
     /// Which screen the terminal view shows in place of the grid, or `None` for a session.
+    /// It is the screen of the shown node: the soft selection's while the pointer is on a
+    /// nav target, else the hard selection's.
     pub(crate) fn current_view_screen(&self, state: &crate::state::State) -> Option<ViewScreen> {
-        let selected_address = self.current_screen_address(state);
-        let selected_source = match self.current_ref() {
-            Some(RowRef::Host { source, .. } | RowRef::Section { source }) => Some(source.as_str()),
+        let displayed = (!state.displayed.source.is_empty() && !state.displayed.session.is_empty())
+            .then(|| Address::new(&state.displayed.source, &state.displayed.session));
+        let node = self.shown_node();
+        if let Some(Node::Host(machine)) = &node {
+            let login_open = self
+                .login_target
+                .as_deref()
+                .is_some_and(|source| crate::session::machine_of(source) == machine)
+                && state.groups.iter().any(|g| {
+                    crate::session::machine_of(&g.source) == machine && g.failure().is_some()
+                });
+            let login_reported = state
+                .login
+                .as_ref()
+                .is_some_and(|draft| crate::session::machine_of(&draft.source) == machine)
+                && state
+                    .login_reports
+                    .get(machine.as_str())
+                    .and_then(crate::model::LoginFailure::of_login)
+                    .is_some();
+            if login_open || login_reported {
+                return Some(ViewScreen::Login);
+            }
+            return Some(crate::model::choose_host_screen(
+                host_failure(state, machine),
+                host_scanning(state, machine),
+            ));
+        }
+        let selected_source = match &node {
+            Some(Node::Source(source)) => Some(source.as_str()),
+            _ => None,
+        };
+        let selected_address = match &node {
+            Some(Node::Session(address)) => Some(address.clone()),
             _ => None,
         };
         let group = selected_source
             .and_then(|source| state.groups.iter().find(|group| group.source == source));
-        if selected_source.is_some_and(|source| self.login_target.as_deref() == Some(source))
-            && group.and_then(crate::model::Group::failure).is_some()
-        {
-            return Some(ViewScreen::Login);
-        }
-        let scanning = match self.current_ref() {
-            Some(RowRef::Host { source, .. } | RowRef::Section { source }) => {
-                state.scanning.contains(source)
-            }
+        let scanning = match &node {
+            Some(Node::Source(source)) => state.scanning.contains(source),
             None => !state.scanning.is_empty(),
             _ => false,
         };
-        if let Some(source) = selected_source {
-            if state
-                .login
-                .as_ref()
-                .is_some_and(|draft| draft.source == source)
-                && state
-                    .login_reports
-                    .get(crate::session::machine_of(source))
-                    .and_then(crate::model::LoginFailure::of_login)
-                    .is_some()
-            {
-                return Some(ViewScreen::Login);
-            }
-        }
-        let displayed = (!state.displayed.source.is_empty() && !state.displayed.session.is_empty())
-            .then(|| Address::new(&state.displayed.source, &state.displayed.session));
         crate::model::choose_view_screen(
             selected_source,
             selected_address.as_ref(),
@@ -1120,73 +1443,218 @@ impl Switcher {
             scanning,
             group.is_some_and(|group| group.sessions.is_empty()),
             self.own_session.as_ref(),
-            displayed.as_ref().map(|address| crate::model::ConfirmedDisplay {
-                address,
-                collapsed_into_selection: self.rescan_collapse.as_ref() == Some(address)
-                    && matches!(self.current_ref(), Some(RowRef::Host { source, .. }) if *source == address.source),
-            }),
+            displayed
+                .as_ref()
+                .map(|address| crate::model::ConfirmedDisplay {
+                    address,
+                    collapsed_into_selection: self.rescan_collapse.as_ref() == Some(address)
+                        && selected_source == Some(address.source.as_str())
+                        && matches!(self.current_ref(), Some(RowRef::Host { .. })),
+                }),
         )
     }
 
-    /// The session the selected card would show, or `None` when it would show nothing.
-    /// The pair is what a refusal is keyed to, and what the screen writes as its headline.
-    fn current_screen_address(&self, state: &crate::state::State) -> Option<Address> {
-        let r = self.current_ref()?;
-        let (source, target) = tree::target_for(r, &state.groups, &state.filter);
-        (!target.is_empty()).then(|| Address::new(&source, &target))
+    /// The node a view screen of `kind` is about, and the address it is reached by: the
+    /// session for the self-session state, a source with an empty session half for a
+    /// source's states, and for a host the source its login and probes address. `None`
+    /// before anything is selected.
+    pub(crate) fn view_subject(&self, kind: ViewScreen) -> Option<(Node, Address)> {
+        let node = self.shown_node()?;
+        let address = match (&node, kind) {
+            (Node::Session(address), _) => address.clone(),
+            (Node::Source(source), _) => Address::new(source, ""),
+            (Node::Host(machine), _) => {
+                let source = match &self.hover {
+                    Some((reference, _)) => row_source(reference).map(str::to_owned),
+                    None => self.current_source(),
+                };
+                Address::new(source.unwrap_or_else(|| machine.clone()), "")
+            }
+        };
+        Some((node, address))
     }
 
-    /// What the view screen is about: the [`Address`] for the
-    /// self-session state, whose subject is one session, and the host (with an empty
-    /// session half) for the two host states, whose subject is the host.
-    pub(crate) fn view_screen_address(
+    /// The links the screen of `node` offers, in the order the arrow keys walk them: a
+    /// host's sources by name, each with its session count or state; a source's host and
+    /// then its sessions in card order. A session's grid offers none.
+    pub(crate) fn screen_links(
+        &self,
+        node: &Node,
+        state: &crate::state::State,
+    ) -> Vec<crate::ui::chrome::ScreenLink> {
+        use crate::ui::chrome::ScreenLink;
+        match node {
+            Node::Host(machine) => state
+                .groups
+                .iter()
+                .filter(|g| crate::session::machine_of(&g.source) == machine)
+                .map(|g| {
+                    // A source is named by its mux, and only by a mux an answer
+                    // confirmed, as its card and its own screen name it: otherwise by
+                    // its id.
+                    let answered = g.err.is_none() && !state.scanning.contains(&g.source);
+                    let mux = state.chrome.source_mux(&g.source);
+                    let label = if mux.is_empty()
+                        || !crate::session::mux_may_be_named(&g.source, answered)
+                    {
+                        g.source.clone()
+                    } else {
+                        mux.to_string()
+                    };
+                    let value = if state.scanning.contains(&g.source) {
+                        "scanning".to_string()
+                    } else if let Some(kind) = g.failure() {
+                        use crate::model::FailureKind;
+                        tree::host_state_word(
+                            false,
+                            kind == FailureKind::Blocked,
+                            kind == FailureKind::ListFailed,
+                            true,
+                        )
+                        .to_string()
+                    } else {
+                        match g.sessions.len() {
+                            0 => tree::host_state_word(false, false, false, false).to_string(),
+                            1 => "1 session".to_string(),
+                            n => format!("{n} sessions"),
+                        }
+                    };
+                    ScreenLink {
+                        node: Node::Source(g.source.clone()),
+                        label,
+                        value,
+                    }
+                })
+                .collect(),
+            Node::Source(source) => {
+                let machine = crate::session::machine_of(source);
+                let mut links = vec![ScreenLink {
+                    node: Node::Host(machine.to_string()),
+                    label: machine.to_string(),
+                    value: String::new(),
+                }];
+                if let Some(g) = state
+                    .groups
+                    .iter()
+                    .find(|g| g.source == *source && g.err.is_none())
+                {
+                    links.extend(g.sessions.iter().map(|sess| ScreenLink {
+                        node: Node::Session(sess.address()),
+                        label: sess.name.clone(),
+                        value: session_facts(sess),
+                    }));
+                }
+                links
+            }
+            Node::Session(_) => Vec::new(),
+        }
+    }
+
+    /// The links of the shown screen, empty while it is a session's grid.
+    pub(crate) fn shown_links(
         &self,
         state: &crate::state::State,
-        kind: ViewScreen,
-    ) -> Address {
-        match kind {
-            ViewScreen::SelfSession => self.current_screen_address(state).unwrap_or_default(),
-            _ => Address::new(self.current_source().unwrap_or_default(), ""),
+    ) -> Vec<crate::ui::chrome::ScreenLink> {
+        match self.shown_node() {
+            Some(node) if self.current_view_screen(state).is_some() => {
+                self.screen_links(&node, state)
+            }
+            _ => Vec::new(),
         }
+    }
+
+    /// Which link of the shown screen is hard-selected and which is under the pointer.
+    /// Both belong to the terminal view, so neither is drawn while the nav holds the focus
+    /// or while the nav's soft selection is showing another screen there.
+    pub(crate) fn link_marks(&self) -> (Option<usize>, Option<usize>) {
+        if !self.terminal_view || self.hover.is_some() {
+            return (None, None);
+        }
+        (Some(self.link), self.link_hover)
+    }
+
+    /// Where the soft selections stand, as the paint draws them: the nav row and part
+    /// under the pointer, and the screen link under it.
+    pub(crate) fn soft_marks(&self) -> (Option<(usize, Part)>, Option<usize>) {
+        let nav = self
+            .hover
+            .as_ref()
+            .and_then(|(reference, part)| self.row_matching(reference).map(|i| (i, *part)));
+        (nav, self.link_hover)
+    }
+
+    /// The arrow keys on a host's or a source's screen while the terminal view holds the
+    /// focus: they walk its links, stopping at both ends.
+    pub(crate) fn step_link(&mut self, delta: isize, state: &crate::state::State) {
+        let n = self.shown_links(state).len();
+        if n == 0 {
+            return;
+        }
+        self.link = (self.link as isize + delta).clamp(0, n as isize - 1) as usize;
+    }
+
+    /// Executes link `index` of the shown screen: the node it names becomes the hard
+    /// selection and its screen opens. The link standing for the node just left is
+    /// selected on the new screen, so a step back is one Enter away.
+    pub(crate) fn open_link(&mut self, index: usize, state: &crate::state::State) -> bool {
+        let Some(link) = self.shown_links(state).into_iter().nth(index) else {
+            return false;
+        };
+        let before = self.selected_node();
+        self.note_user_move();
+        self.link_hover = None;
+        self.select_node(link.node);
+        if let Some(before) = before {
+            if let Some(node) = self.selected_node() {
+                if let Some(i) = self
+                    .screen_links(&node, state)
+                    .iter()
+                    .position(|l| l.node == before)
+                {
+                    self.link = i;
+                }
+            }
+        }
+        true
+    }
+
+    /// Opens the hard-selected link of the shown screen (Enter in the terminal view).
+    pub(crate) fn open_selected_link(&mut self, state: &crate::state::State) -> bool {
+        self.open_link(self.link, state)
     }
 
     // --- preview ------------------------------------------------------------
 
-    fn on_focus_changed(&mut self, state: &crate::state::State) {
-        self.terminal_view_target = match self.current_ref() {
-            Some(r) => {
-                let (source, target) = tree::target_for(r, &state.groups, &state.filter);
-                // xmux's OWN session is not a terminal-view target. Emptying it here is
-                // what makes the refusal total: the target is the one value the display
-                // reconcile, the attach, and the mux-side switch all read, so none of
-                // them can reach this session by another path.
-                if self.is_own_session(&source, &target) {
-                    TerminalViewTarget::default()
-                } else {
-                    TerminalViewTarget { source, target }
+    fn on_focus_changed(&mut self) {
+        // The shown node's session, never xmux's OWN session. Emptying the target here is
+        // what makes the refusal total: the target is the one value the display reconcile,
+        // the attach, and the mux-side switch all read, so none of them can reach this
+        // session by another path.
+        self.terminal_view_target = match self.shown_node() {
+            Some(Node::Session(address))
+                if !self.is_own_session(&address.source, &address.session) =>
+            {
+                TerminalViewTarget {
+                    source: address.source,
+                    target: address.session,
                 }
             }
-            None => TerminalViewTarget::default(),
+            _ => TerminalViewTarget::default(),
         };
     }
 
-    /// The session the selection is currently on, used by the app to
-    /// `switch-client` on every selection move (`select = attach`). Returns `Some`
-    /// for session, loading, and host-with-session rows; `None` for empty-host rows.
-    pub fn current_attach_target(&self, state: &crate::state::State) -> Option<TerminalViewTarget> {
-        let r = self.current_ref()?;
-        let (source, target) = tree::target_for(r, &state.groups, &state.filter);
-        if target.is_empty() || self.is_own_session(&source, &target) {
-            None
-        } else {
-            Some(TerminalViewTarget { source, target })
-        }
+    /// The session the shown node attaches to, `None` for a host or a source.
+    pub fn current_attach_target(
+        &self,
+        _state: &crate::state::State,
+    ) -> Option<TerminalViewTarget> {
+        let target = self.terminal_view_target.clone();
+        (!target.target.is_empty()).then_some(target)
     }
 
-    /// The host (source alias) the selection is on.
-    /// The app ensures this host's control-mode client is connected on every
-    /// selection move, so the host's `list-sessions` populates the tree even before
-    /// any session is selected (a control-mode client is the only session source).
+    /// The source the selection is on, whose control-mode client the app keeps connected
+    /// on every selection move, so its `list-sessions` populates the nav even before any
+    /// session is selected.
     pub fn current_host(&self) -> Option<String> {
         self.current_source()
     }
@@ -1201,11 +1669,11 @@ impl Switcher {
     /// or the nav following the session the mux moved its own display client onto. Both
     /// name a card and move to it, and nothing downstream tells them apart, so they share
     /// one entry point. Neither waits for a card that is not on the list yet.
-    pub fn select_address(&mut self, address: &Address, state: &crate::state::State) -> bool {
+    pub fn select_address(&mut self, address: &Address) -> bool {
         match self.row_of_session(address) {
-            Some(i) if i != self.selected => {
+            Some(i) if self.selected_node() != Some(Node::Session(address.clone())) => {
                 self.note_user_move();
-                self.set_selected(i, state);
+                self.set_selected(i);
                 true
             }
             _ => false,
@@ -1221,8 +1689,8 @@ impl Switcher {
     /// session's source card through the skeleton phase (the lineage of a vanished
     /// session) and returns to the session the instant its source re-streams it.
     pub fn request_rescan(&mut self, state: &mut crate::state::State) {
-        let selected = match self.current_ref() {
-            Some(RowRef::Session { sess }) => Some(sess.address()),
+        let selected = match self.selected_node() {
+            Some(Node::Session(address)) => Some(address),
             _ => None,
         };
         self.rescan_collapse = selected.clone();
@@ -1409,13 +1877,14 @@ pub(crate) struct CheckEntry {
     pub(crate) reason: String,
 }
 
-/// The card a number is kept for: a session by its address, a host-state card by its
-/// source. A session that ends and later returns under the same address is the same card
-/// and takes its number back.
+/// The card a number is kept for: a session by its address, a source's card by its
+/// source, a host's card by its host. A session that ends and later returns under the
+/// same address is the same card and takes its number back.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum CardId {
     Session(String, String),
     Host(String),
+    Machine(String),
 }
 
 /// The card `reference` names, or `None` for a section title, which carries no number.
@@ -1423,6 +1892,7 @@ fn card_id(reference: &RowRef) -> Option<CardId> {
     match reference {
         RowRef::Session { sess } => Some(CardId::Session(sess.source.clone(), sess.name.clone())),
         RowRef::Host { source, .. } => Some(CardId::Host(source.clone())),
+        RowRef::Machine { machine, .. } => Some(CardId::Machine(machine.clone())),
         RowRef::Section { .. } => None,
     }
 }
@@ -1451,6 +1921,7 @@ fn context_of(row: &Row) -> (&str, &str, &str) {
         RowRef::Host { source, .. } | RowRef::Section { source, .. } => {
             (crate::session::machine_of(source), &row.mux, "")
         }
+        RowRef::Machine { machine, .. } => (machine, "", ""),
         RowRef::Session { sess } => (
             crate::session::machine_of(&sess.source),
             &row.mux,
@@ -1475,42 +1946,180 @@ fn category_of_row(reference: &RowRef) -> NavCategory {
         | RowRef::Host {
             list_failed: true, ..
         }
-        | RowRef::Host { scanning: true, .. } => NavCategory::Disconnected,
+        | RowRef::Host { scanning: true, .. }
+        | RowRef::Machine { .. } => NavCategory::Disconnected,
         RowRef::Host { .. } => NavCategory::NoSession,
         RowRef::Section { source, .. } => NavCategory::Source(source.clone()),
         RowRef::Session { sess } => NavCategory::Source(sess.source.clone()),
     }
 }
 
-/// The session a card belongs to (a session card), or `None` for a
-/// host-state card and a section title. Lets selection tracking, kill-confirm
-/// survival, and `select_address` treat a session card as that session.
+/// The session a card belongs to (a session card), or `None` for any other row. Lets
+/// selection tracking, kill-confirm survival, and `select_address` treat a session card
+/// as that session.
 fn session_addr_of(reference: &RowRef) -> Option<Address> {
     match reference {
         RowRef::Session { sess } => Some(sess.address()),
-        RowRef::Host { .. } | RowRef::Section { .. } => None,
+        RowRef::Host { .. } | RowRef::Section { .. } | RowRef::Machine { .. } => None,
     }
 }
 
-/// The source a source card names: a section title or a host-state card. A source shows
-/// as exactly one of the two on any list, the title while it has sessions to show and
-/// the host-state card otherwise, so both are the one card of that source.
-fn card_source(reference: &RowRef) -> Option<&str> {
+/// The source a row stands on: a session's, a title's or a source card's own, and the
+/// source a host's card logs in through.
+fn row_source(reference: &RowRef) -> Option<&str> {
     match reference {
-        RowRef::Host { source, .. } | RowRef::Section { source } => Some(source),
-        RowRef::Session { .. } => None,
+        RowRef::Host { source, .. }
+        | RowRef::Section { source }
+        | RowRef::Machine { source, .. } => Some(source),
+        RowRef::Session { sess } => Some(&sess.source),
     }
 }
 
-/// Whether two row references name the same card across a rebuild: a session by its
+/// Whether two row references name the same row across a rebuild: a session by its
 /// address, a source by its id whether it shows as its section title or its host-state
-/// card. The selection holds on that identity, so a source gaining or losing its
-/// sessions keeps it.
+/// card, a host's card by its host. The selection holds on that identity, so a source
+/// gaining or losing its sessions keeps it.
 fn same_node(a: &RowRef, b: &RowRef) -> bool {
-    match (card_source(a), card_source(b)) {
-        (Some(x), Some(y)) => x == y,
-        (None, None) => session_addr_of(a) == session_addr_of(b),
+    match (a, b) {
+        (RowRef::Session { .. }, RowRef::Session { .. }) => {
+            session_addr_of(a) == session_addr_of(b)
+        }
+        (RowRef::Machine { machine: x, .. }, RowRef::Machine { machine: y, .. }) => x == y,
+        (
+            RowRef::Section { source: x } | RowRef::Host { source: x, .. },
+            RowRef::Section { source: y } | RowRef::Host { source: y, .. },
+        ) => x == y,
         _ => false,
+    }
+}
+
+/// The node `part` of a row names: the host half of a title or a source card names the
+/// host, a title's other half and a source card the source, a host's card the host, and a
+/// session card the session.
+fn node_of(reference: &RowRef, part: Part) -> Node {
+    match reference {
+        RowRef::Session { sess } => Node::Session(sess.address()),
+        RowRef::Section { source } | RowRef::Host { source, .. } if part == Part::Host => {
+            Node::Host(crate::session::machine_of(source).to_string())
+        }
+        RowRef::Section { source } | RowRef::Host { source, .. } => Node::Source(source.clone()),
+        RowRef::Machine { machine, .. } => Node::Host(machine.clone()),
+    }
+}
+
+/// Whether the inventory still holds `node`: a host while any source of it is listed, a
+/// source while it is listed, a session while its source lists it.
+fn node_exists(node: &Node, state: &crate::state::State) -> bool {
+    match node {
+        Node::Host(machine) => state
+            .groups
+            .iter()
+            .any(|g| crate::session::machine_of(&g.source) == machine),
+        Node::Source(source) => state.groups.iter().any(|g| g.source == *source),
+        Node::Session(address) => state.groups.iter().any(|g| {
+            g.source == address.source
+                && g.err.is_none()
+                && g.sessions.iter().any(|s| s.name == address.session)
+        }),
+    }
+}
+
+/// The nodes one level below `node`, in the order a step down picks from: a host's
+/// sources by name, a source's sessions in card order.
+fn node_children(node: &Node, state: &crate::state::State) -> Vec<Node> {
+    match node {
+        Node::Host(machine) => {
+            let mut sources: Vec<&str> = state
+                .groups
+                .iter()
+                .map(|g| g.source.as_str())
+                .filter(|s| crate::session::machine_of(s) == machine)
+                .collect();
+            sources.sort_unstable();
+            sources
+                .into_iter()
+                .map(|s| Node::Source(s.to_string()))
+                .collect()
+        }
+        Node::Source(source) => state
+            .groups
+            .iter()
+            .filter(|g| g.source == *source && g.err.is_none())
+            .flat_map(|g| g.sessions.iter().map(|s| Node::Session(s.address())))
+            .collect(),
+        Node::Session(_) => Vec::new(),
+    }
+}
+
+/// The failure a host as a whole is in: the failure every one of its sources shares, a
+/// login one when any of them needs a login. `None` while any source answered or is still
+/// waiting on its answer, since a host is down only when none of its sources connected.
+pub(crate) fn host_failure(
+    state: &crate::state::State,
+    machine: &str,
+) -> Option<crate::model::FailureKind> {
+    use crate::model::FailureKind;
+    let mut blocked = false;
+    let mut any = false;
+    for g in state
+        .groups
+        .iter()
+        .filter(|g| crate::session::machine_of(&g.source) == machine)
+    {
+        any = true;
+        match g.failure() {
+            _ if state.scanning.contains(&g.source) => return None,
+            Some(FailureKind::Blocked) => blocked = true,
+            Some(FailureKind::Unreachable) => {}
+            _ => return None,
+        }
+    }
+    any.then_some(if blocked {
+        FailureKind::Blocked
+    } else {
+        FailureKind::Unreachable
+    })
+}
+
+/// Whether every source of a host is still waiting on its answer.
+pub(crate) fn host_scanning(state: &crate::state::State, machine: &str) -> bool {
+    let mut sources = state
+        .groups
+        .iter()
+        .filter(|g| crate::session::machine_of(&g.source) == machine)
+        .peekable();
+    sources.peek().is_some() && sources.all(|g| state.scanning.contains(&g.source))
+}
+
+/// What a session's link and hint say about it: its windows and whether a client is on it.
+fn session_facts(sess: &Session) -> String {
+    let mut facts = Vec::new();
+    if sess.windows > 0 {
+        let s = if sess.windows == 1 { "" } else { "s" };
+        facts.push(format!("{} window{s}", sess.windows));
+    }
+    if sess.attached {
+        facts.push("attached".to_string());
+    }
+    facts.join(", ")
+}
+
+/// The hard selection as a rebuild found it, before the rows are re-derived.
+struct Prior {
+    node: Option<Node>,
+    row: Option<RowRef>,
+    /// Whether the node had no nav target of its own.
+    deep: bool,
+    index: usize,
+}
+
+impl Target {
+    fn card(row: usize) -> Self {
+        Target {
+            row,
+            part: Part::Card,
+            deep: None,
+        }
     }
 }
 
@@ -1524,6 +2133,9 @@ fn terminal_cursor_pos(area: Rect, cursor: (u16, u16)) -> ratatui::layout::Posit
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_hierarchy;
 
 #[cfg(test)]
 mod tests_lineage;

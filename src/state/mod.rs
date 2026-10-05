@@ -48,8 +48,6 @@ pub struct State {
     pub auth_methods: HashMap<String, crate::model::AuthMethod>,
     /// Authentication reported by the current live display attachment of each source.
     pub display_auth_methods: HashMap<String, crate::model::AuthMethod>,
-    /// The session whose information opened the current host section.
-    pub info_session: Option<crate::session::Address>,
     /// Machines whose known authentication was invalidated until the user asks again.
     pub invalid_auth: HashSet<String>,
     /// The last login attempt for each machine. It is separate from probe failures so a
@@ -257,9 +255,10 @@ impl LoginDraft {
     }
 }
 
-/// One key the login pane understands, decoded from the terminal's bytes.
+/// One key the login pane or a host's or source's screen understands, decoded from the
+/// terminal's bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Key {
+pub(crate) enum Key {
     Char(char),
     Enter,
     Tab,
@@ -275,7 +274,7 @@ enum Key {
 /// Only the sequences the pane uses are recognised: the vertical arrows walk its stops
 /// and back-tab walks them backwards. A horizontal arrow is dropped rather than mapped,
 /// because the fields are edited from their end and there is no caret for it to move.
-fn decode_keys(bytes: &[u8]) -> Vec<Key> {
+pub(crate) fn decode_keys(bytes: &[u8]) -> Vec<Key> {
     let text = String::from_utf8_lossy(bytes);
     let mut out = Vec::new();
     let mut chars = text.chars().peekable();

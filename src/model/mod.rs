@@ -36,6 +36,6 @@ pub use login::{
 pub use nav::{step_nav_position, NavPosition, NavSize, ViewLayout};
 pub use operation::{KeyRegistration, LoginOutcome, OpResult, Ops, RegistrationOutcome};
 pub use plan::{DeathSignal, DisplayTty, EventSource};
-pub use selection::Selection;
+pub use selection::{Node, Selection};
 pub use server_model::ServerModel;
-pub use view::{choose_view_screen, ConfirmedDisplay, ViewScreen};
+pub use view::{choose_host_screen, choose_view_screen, ConfirmedDisplay, ViewScreen};

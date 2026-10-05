@@ -120,16 +120,16 @@ fn three_card_groups_and_focus_policy_hold_at_every_position() {
             .rows
             .iter()
             .position(
-                |r| matches!(&r.reference, RowRef::Host { source, .. } if source == "a-offline"),
+                |r| matches!(&r.reference, RowRef::Machine { machine, .. } if machine == "a-offline"),
             )
             .unwrap();
         assert!(session < empty && empty < offline, "{position:?}");
-        shot.sw.set_selected(session, &shot.state);
-        shot.sw.nav_horizontal(1, &shot.state);
+        shot.sw.set_selected(session);
+        shot.sw.nav_horizontal(1);
         assert_eq!(shot.sw.selected, empty);
-        shot.sw.nav_horizontal(1, &shot.state);
+        shot.sw.nav_horizontal(1);
         assert_eq!(shot.sw.selected, offline);
-        shot.sw.nav_horizontal(1, &shot.state);
+        shot.sw.nav_horizontal(1);
         assert_eq!(shot.sw.selected, session);
         let rect = |i| {
             shot.plan
@@ -151,7 +151,7 @@ fn three_card_groups_and_focus_policy_hold_at_every_position() {
             shot.sw.card_number(empty),
             shot.sw.card_number(offline),
         ];
-        shot.sw.set_selected(session, &shot.state);
+        shot.sw.set_selected(session);
         shot.sw.sync_view_focus(true);
         shot.state.chrome.armed = true;
         shot.draw(true);
@@ -161,7 +161,7 @@ fn three_card_groups_and_focus_policy_hold_at_every_position() {
         );
         for selected in [empty, offline] {
             shot.sw.sync_view_focus(false);
-            shot.sw.set_selected(selected, &shot.state);
+            shot.sw.set_selected(selected);
             shot.sw.sync_view_focus(true);
             shot.draw(true);
             assert!(
@@ -465,7 +465,7 @@ fn pl7_a_one_row_band_runs_title_and_cards_on_one_line() {
 fn pl7_a_one_row_band_scrolls_to_the_selection() {
     for position in [NavPosition::Top, NavPosition::Bottom] {
         let mut shot = Shot::new(many_sessions(30, 6), nav_at(position).with_height(1), false);
-        shot.sw.move_to(-1, &shot.state);
+        shot.sw.move_to(-1);
         shot.draw(false);
         let tree = shot.plan.regions.tree;
         assert!(
@@ -506,7 +506,7 @@ fn hit_test_reads_every_band_row_as_cards() {
             )
             .unwrap_or_else(|| panic!("{position:?}: {}", shot.area_text(tree)));
         let plan = shot.plan.clone();
-        shot.sw.mouse_select(&plan, x, y, &shot.state);
+        shot.sw.mouse_select(&plan, x, y);
         assert_eq!(
             shot.sw.current_ref().map(|r| match r {
                 RowRef::Session { sess } => sess.name.clone(),
@@ -528,7 +528,7 @@ fn hit_test_a_band_overflow_count_selects_the_nearest_hidden_card() {
             .unwrap_or_else(|| panic!("{position:?}: {}", shot.seam_text()));
         let before = shot.sw.selected;
         let plan = shot.plan.clone();
-        shot.sw.mouse_select(&plan, x + 1, y, &shot.state);
+        shot.sw.mouse_select(&plan, x + 1, y);
         assert_ne!(
             shot.sw.selected, before,
             "{position:?}: the count is a target"

@@ -2328,7 +2328,7 @@ async fn a_mux_side_switch_in_terminal_focus_moves_the_nav_to_that_session() {
     // stays where it is.
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address(&crate::session::Address::new("jup", "api"), &state); // deterministic start (ignore any last_session)
+    switcher.select_address(&crate::session::Address::new("jup", "api")); // deterministic start (ignore any last_session)
     let mut rt = test_rt(fake_env_with_sources(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.hosts.get_mut("jup").unwrap().display_tty =
@@ -2394,7 +2394,7 @@ async fn a_switch_onto_a_session_with_no_card_yet_moves_the_nav_when_its_card_ap
     // after the enumeration that brings the card in moves the nav there.
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address(&crate::session::Address::new("jup", "api"), &state);
+    switcher.select_address(&crate::session::Address::new("jup", "api"));
     let mut rt = test_rt(fake_env_with_sources(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.hosts.get_mut("jup").unwrap().display_tty =
@@ -2446,7 +2446,7 @@ async fn a_card_appearing_for_a_session_the_client_has_left_moves_nothing() {
     // older move to arrive late, because no move was ever written down.
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address(&crate::session::Address::new("jup", "api"), &state);
+    switcher.select_address(&crate::session::Address::new("jup", "api"));
     let mut rt = test_rt(fake_env_with_sources(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.hosts.get_mut("jup").unwrap().display_tty =
@@ -2538,7 +2538,7 @@ fn the_client_reports(rt: &mut Runtime, id: u64, session: &str) {
 fn a_settled_psmux_runtime() -> Runtime {
     let mut state = crate::state::State::from_scan(psmux_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address(&crate::session::Address::new("local", "a"), &state);
+    switcher.select_address(&crate::session::Address::new("local", "a"));
     let mut rt = test_rt(fake_env_with_sources(&[]));
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
@@ -2629,7 +2629,7 @@ fn zellij_scan() -> crate::ui::switcher::Scan {
 fn a_settled_zellij_runtime() -> Runtime {
     let mut state = crate::state::State::from_scan(zellij_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
-    switcher.select_address(&crate::session::Address::new("local", "a"), &state);
+    switcher.select_address(&crate::session::Address::new("local", "a"));
     let mut rt = test_rt(fake_env_with_sources(&[]));
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
@@ -2869,7 +2869,7 @@ async fn a_switch_asked_for_in_terminal_focus_is_not_dragged_back() {
     // What a ctl `switch local/b` dispatches to.
     rt.model
         .switcher
-        .select_address(&crate::session::Address::new("local", "b"), &rt.model.state);
+        .select_address(&crate::session::Address::new("local", "b"));
     one_pass(&mut rt, t0);
     one_pass(&mut rt, t0 + std::time::Duration::from_millis(50));
     assert_eq!(
@@ -2924,7 +2924,7 @@ async fn a_pick_on_the_selected_card_leaves_the_nav_and_the_display_naming_one_s
     // The user picks local/a, the card already selected.
     rt.model
         .switcher
-        .select_address(&crate::session::Address::new("local", "a"), &rt.model.state);
+        .select_address(&crate::session::Address::new("local", "a"));
 
     // `focus terminal`
     rt.model
@@ -5777,4 +5777,154 @@ async fn a_login_follow_up_waits_until_the_logout_releases_the_gate() {
     gates.release("box");
     login.await.unwrap();
     assert!(ran.load(std::sync::atomic::Ordering::Acquire));
+}
+
+/// A runtime whose nav holds `gpu` (one session) and `web` (two), on a 140x30 screen with
+/// the nav on the left. The launch selection is `gpu/train`.
+fn hierarchy_rt() -> Runtime {
+    use crate::ui::switcher::{Scan, Switcher};
+    let group = |source: &str, names: &[&str]| crate::model::Group {
+        source: source.into(),
+        err: None,
+        sessions: names
+            .iter()
+            .map(|name| crate::session::Session {
+                source: source.into(),
+                name: (*name).into(),
+                windows: 1,
+                ..Default::default()
+            })
+            .collect(),
+    };
+    let mut state = State::from_scan(Scan {
+        groups: vec![group("gpu", &["train"]), group("web", &["api", "deploy"])],
+    });
+    let switcher = Switcher::new(&mut state);
+    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    rt.hosts = crate::model::Hosts::default();
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.cols = 140;
+    rt.body_rows = 29;
+    sync_test_render_plan(&mut rt);
+    rt
+}
+
+fn selected(rt: &Runtime) -> Option<crate::model::Node> {
+    rt.model.switcher.selected_node()
+}
+
+fn session_node(source: &str, name: &str) -> Option<crate::model::Node> {
+    Some(crate::model::Node::Session(crate::session::Address::new(
+        source, name,
+    )))
+}
+
+#[test]
+fn ctrl_arrows_in_nav_focus_walk_the_hierarchy_and_the_prefix_layer_keeps_its_own() {
+    use crate::model::Node;
+    let mut rt = hierarchy_rt();
+    assert_eq!(selected(&rt), session_node("gpu", "train"));
+    rt.handle_stdin_bytes(b"\x1b[1;5A", &Selection::default());
+    assert_eq!(selected(&rt), Some(Node::Source("gpu".into())));
+    rt.handle_stdin_bytes(b"\x1b[1;5A", &Selection::default());
+    assert_eq!(selected(&rt), Some(Node::Host("gpu".into())));
+    // Behind the prefix, Ctrl+↑ is the band border, never a level step.
+    rt.handle_stdin_bytes(b"\x07\x1b[1;5B", &Selection::default());
+    assert_eq!(selected(&rt), Some(Node::Host("gpu".into())));
+    // A bare Ctrl+arrow right after it repeats the resize; once that window lapses, the
+    // bare keys step the levels again.
+    rt.model.mouse_state.repeat_until = None;
+    rt.handle_stdin_bytes(b"\x1b[1;5B\x1b[1;5B", &Selection::default());
+    assert_eq!(selected(&rt), session_node("gpu", "train"));
+}
+
+#[test]
+fn the_arrows_and_enter_walk_and_open_a_screens_links_in_terminal_focus() {
+    let mut rt = hierarchy_rt();
+    rt.handle_stdin_bytes(b"\x1b[1;5A", &Selection::default()); // the gpu source
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    rt.model.switcher.sync_view_focus(true);
+    sync_test_render_plan(&mut rt);
+    // The source's links are its host and then its session.
+    rt.handle_stdin_bytes(b"\x1b[B\r", &Selection::default());
+    assert_eq!(selected(&rt), session_node("gpu", "train"));
+    rt.handle_stdin_bytes(b"\x1b[1;5A", &Selection::default());
+    assert_eq!(
+        selected(&rt),
+        session_node("gpu", "train"),
+        "the terminal view's keys are the pane's, or the screen's own"
+    );
+}
+
+#[test]
+fn hovering_a_nav_card_previews_it_and_a_click_executes_it() {
+    let mut rt = hierarchy_rt();
+    let deploy = rt.model.switcher.session_row("web", "deploy").unwrap();
+    let rect = rt
+        .model
+        .render_plan
+        .nav_cells
+        .iter()
+        .find(|(i, _)| *i == deploy)
+        .map(|(_, r)| *r)
+        .unwrap();
+    let at = |cb: u16| crate::display::mouse::MouseEvent {
+        cb,
+        col: rect.x + 1,
+        row: rect.y + 1,
+        pressed: true,
+    };
+    // cb 35: motion with no button held.
+    let dirty = rt.handle_mouse_event(&at(35), &Selection::default(), &mut false, &mut false);
+    assert!(dirty, "a new soft selection repaints");
+    assert_eq!(
+        selected(&rt),
+        session_node("gpu", "train"),
+        "hovering moves nothing"
+    );
+    assert_eq!(rt.model.switcher.terminal_view_target().target, "deploy");
+    assert!(rt.model.state.focus.is_nav_focused());
+
+    rt.handle_mouse_event(&at(0), &Selection::default(), &mut false, &mut false);
+    assert_eq!(selected(&rt), session_node("web", "deploy"));
+    assert!(
+        rt.model.state.focus.is_terminal_focused(),
+        "a click executes: the terminal view takes the focus"
+    );
+}
+
+#[test]
+fn a_click_on_a_screen_link_opens_it() {
+    let mut rt = hierarchy_rt();
+    rt.handle_stdin_bytes(b"\x1b[B\x1b[1;5A", &Selection::default()); // the web source
+    assert_eq!(
+        selected(&rt),
+        Some(crate::model::Node::Source("web".into()))
+    );
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    rt.model.switcher.sync_view_focus(true);
+    sync_test_render_plan(&mut rt);
+    let (_, rect) = rt
+        .model
+        .render_plan
+        .view_links
+        .iter()
+        .find(|(i, _)| *i == 2)
+        .copied()
+        .expect("the second session's link is painted");
+    let press = crate::display::mouse::MouseEvent {
+        cb: 0,
+        col: rect.x + 1,
+        row: rect.y + 1,
+        pressed: true,
+    };
+    rt.handle_mouse_event(&press, &Selection::default(), &mut false, &mut false);
+    assert_eq!(selected(&rt), session_node("web", "deploy"));
 }
