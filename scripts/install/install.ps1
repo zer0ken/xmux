@@ -141,8 +141,13 @@ function Test-OnPath([string] $Dir) {
 }
 
 # Appends to the USER PATH in the registry, never the machine one, so the install
-# needs no elevation and touches nothing another account relies on.
-function Add-ToUserPath([string] $Dir) {
+# needs no elevation and touches nothing another account relies on. The entry it
+# appends is written to $RecordFile under a fixed first line, because
+# `xmux uninstall` removes a PATH entry only when this script recorded adding it;
+# an entry already there may be the user's own. A file of that name without the
+# first line is not this script's, so it is left as it is and nothing is recorded.
+function Add-ToUserPath([string] $Dir, [string] $RecordFile) {
+    $recordHeader = '# xmux installer: PATH entry added'
     $current = [Environment]::GetEnvironmentVariable('Path', 'User')
     if ($null -eq $current) { $current = '' }
     $entries = ($current -split ';') | Where-Object { $_ -ne '' }
@@ -154,6 +159,15 @@ function Add-ToUserPath([string] $Dir) {
     }
     $updated = if ($current.Trim() -eq '') { $Dir } else { "$($current.TrimEnd(';'));$Dir" }
     [Environment]::SetEnvironmentVariable('Path', $updated, 'User')
+    $ownRecord = -not (Test-Path -LiteralPath $RecordFile)
+    if (-not $ownRecord) {
+        $ownRecord = (Get-Content -LiteralPath $RecordFile -TotalCount 1) -ceq $recordHeader
+    }
+    if ($ownRecord) {
+        Set-Content -LiteralPath $RecordFile -Value @($recordHeader, $Dir) -Encoding utf8
+    } else {
+        Write-Warning "$RecordFile is not a file this installer wrote; leaving it as it is, so ``xmux uninstall`` will leave $Dir on PATH"
+    }
     $env:PATH = "$env:PATH;$Dir"
     Say "added $Dir to your user PATH"
     Say 'open a new terminal for it to take effect'
@@ -233,7 +247,7 @@ try {
         Say "$BinDir is not on PATH. Add it with:"
         Say "  [Environment]::SetEnvironmentVariable('Path', (([Environment]::GetEnvironmentVariable('Path','User')) + ';$BinDir'), 'User')"
     } else {
-        Add-ToUserPath $BinDir
+        Add-ToUserPath $BinDir (Join-Path $Root 'path-added')
     }
 
     # Proof the thing that was installed runs, rather than a claim that it was

@@ -42,8 +42,9 @@ placed, and to run the script again rather than writing the binary itself.
 
 The script adds the launcher directory to your `PATH` when it is not already
 there. On unix it appends a marked block to your shell profile; on Windows it
-writes your own user `PATH`, never the machine one, so it needs no elevation.
-Pass `--no-modify-path` and it prints what to add instead.
+writes your own user `PATH`, never the machine one, so it needs no elevation,
+and records the entry it added in a file in the install directory. Pass
+`--no-modify-path` and it prints what to add instead.
 
 The scripts take the same options; the PowerShell and CMD scripts spell them
 `-Version`, `-BinDir`, `-Root` and `-NoModifyPath`:
@@ -374,6 +375,67 @@ On Windows a running executable cannot be overwritten. A script install is
 unaffected, because the new build goes into a directory of its own; the other
 paths either rename the running binary aside or finish in the background once
 every xmux instance has exited.
+
+## Uninstalling
+
+`xmux uninstall` removes xmux the way it was installed. It reads where the
+`xmux` binary lives, the same way `xmux update` does, prints what it will
+remove, and asks `Remove xmux? (y/N)`. Only `y` or `yes` removes anything; an
+empty answer, any other answer, and a run with no terminal to ask leave
+everything as it is.
+
+| Install | What `xmux uninstall` removes |
+|---|---|
+| Install script | The version directories, the launcher and the file beside it, and the `PATH` change the script made |
+| Cargo | `cargo uninstall xmux` |
+| winget | `winget uninstall --id zer0ken.xmux` |
+| Homebrew | `brew uninstall xmux` |
+| A binary you copied onto your `PATH` yourself | That binary |
+
+A script install loses only the paths the script wrote:
+
+- each version directory, named after a version and holding the xmux binary
+- each launcher that its marker, its link into those versions, or (in the install
+  directory's `bin`) its identical bytes show the script placed, with its marker
+- the `PATH` change the script made
+
+A directory you chose with `--root` or `--bin-dir` keeps every other file in
+it, and is removed only when nothing else is left in it. A launcher-named file
+nothing proves the script placed stays, and the command says so. On unix a
+marked block the script appended to your shell profile is removed when it adds
+this install's launcher directory, written exactly; a block for another install
+stays, and the rest of the profile is left byte for byte. On Windows the user
+`PATH` entry is removed only when the script recorded adding it, and only the one
+entry spelled exactly as recorded. An install from a script that kept no such
+record leaves the entry, and the command prints it for you to remove. A directory
+the command cannot read stops it with an error before anything is removed.
+
+After the program, it asks `Also remove settings and data? (y/N)`, naming the
+two directories xmux keeps: `~/.xmux` (state, logs, and the control sockets)
+and `~/.config/xmux` (the config file). The default keeps both, and the command
+prints where they are.
+
+| Option | Effect |
+|---|---|
+| `--yes`, `-y` | Answer yes to removing xmux. Settings and data stay. |
+| `--purge` | Answer yes to removing settings and data. |
+
+`xmux uninstall` refuses while an xmux instance is running and names it; quit
+that instance first. It changes nothing on remote hosts: a key this PC
+registered on a host stays there, and `prefix L` in the app removes it, one host
+at a time, before you uninstall.
+
+The command checks for running instances again right before each removal. An
+instance started while the first question waited stops the command before
+anything is removed; one started while the second question waited keeps the
+settings and data, and the program removal already confirmed still completes.
+
+On Windows a running executable cannot be deleted, so the files are removed, and
+a package manager's uninstall runs, in the background once every xmux process
+has exited. The command names a log file in the temporary directory; it lists
+every path that could not be removed, the package manager's output, and a last
+line once the removal finished. The user `PATH` is changed before the command
+exits.
 
 ## New releases
 

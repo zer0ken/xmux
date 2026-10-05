@@ -735,6 +735,17 @@ no function, and no test, so renaming code is never a documentation change.
   owns that install, and whether a newer version was recorded, so an update that lands
   somewhere unexpected is traceable to the install it acted on. It asks the network
   nothing.
+- **FR-D13** - `xmux uninstall` removes xmux the way it was installed, read from the
+  running executable's path as `xmux update` reads it: an install the script placed
+  loses its version directories, its launcher and the file beside it, and the `PATH`
+  change the script made, and nothing else; a cargo, winget, or Homebrew install runs
+  its package manager's uninstall; and a binary the user placed is deleted. It removes
+  nothing until the user answers `y` or `yes` to `Remove xmux? (y/N)`; any other
+  answer, end of input, and a run with no terminal to ask are a no. A second question
+  covers the settings and data directories, and its default keeps them. `--yes`
+  answers only the first question and `--purge` the second. It refuses while an xmux
+  instance is running, checking again right before each removal, and it reaches no
+  remote host, so a key registered on a host stays until the app's logout removes it.
 
 ## E. Session management
 

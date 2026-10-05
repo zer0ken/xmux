@@ -36,7 +36,7 @@ text injection is an unstable low-level surface.
   the runtime loop and unified effect executor, the ctl socket server, and
   preference persistence.
 - `src/cli/` - the CLI surface: argument parsing and command dispatch, plus the
-  `xmux update` subcommand. It exposes ONE public entry, which the binary shim calls.
+  `xmux update` and `xmux uninstall` subcommands. It exposes ONE public entry, which the binary shim calls.
 - `src/provision/` - resolution: the TOML config, the roster of ssh targets, the
   concurrent source probe, login defaults and host stanzas, and the resolved runtime
   view over them.

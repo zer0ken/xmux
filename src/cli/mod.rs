@@ -1,6 +1,6 @@
 //! The `xmux` CLI: argument parsing and command dispatch (`ls`/`attach`/`doctor`/
-//! `instances`/`send`/`version` and the default interactive app). `run` is the single
-//! entry the binary shim calls.
+//! `instances`/`send`/`update`/`uninstall`/`version` and the default interactive
+//! app). `run` is the single entry the binary shim calls.
 //!
 //! A running instance is addressed by NAME, not pid: it takes one at startup (auto
 //! generated, or `--name`), owns `ctl-<name>.sock` while it lives, and answers to
@@ -8,6 +8,7 @@
 //! resolved by exact match first, then by unique prefix, so `xmux send am <cmd>`
 //! reaches `amber-otter` when nothing else starts with `am`.
 
+pub mod uninstall;
 pub mod update;
 
 use std::path::PathBuf;
@@ -76,6 +77,16 @@ enum Command {
         #[arg(long, value_name = "x.y.z")]
         version: Option<String>,
     },
+    /// Remove the installed xmux, asking first.
+    Uninstall {
+        /// Answer yes to removing xmux. Settings and data stay unless `--purge` is
+        /// also given.
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Also remove the settings and data directories without asking.
+        #[arg(long)]
+        purge: bool,
+    },
     /// Print version.
     Version,
 }
@@ -136,6 +147,11 @@ pub async fn run() -> i32 {
                 version,
             })
             .await
+        }
+        Some(Command::Uninstall { yes, purge }) => {
+            // Like `update`, it acts on the installed binary alone, so a broken config
+            // must not block it.
+            crate::cli::uninstall::run(crate::cli::uninstall::Args { yes, purge }).await
         }
         Some(Command::Version) => {
             println!("xmux {}", env!("CARGO_PKG_VERSION"));
