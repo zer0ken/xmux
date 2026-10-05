@@ -740,7 +740,11 @@ nothing to switch to until one exists.
   every direct app-owned ssh forces the private askpass path and permits one password answer,
   including a tty attach when the client supports forced askpass. An older Unix client
   runs non-interactive children in a new session so it cannot read the user's terminal;
-  an older Windows client does not enter the password path. Attach requests a tty.
+  an older Windows client does not enter the password path. A command holding a password
+  offers a key first; when the host drops the connection before a session starts, without
+  refusing authentication and before the password is handed over, the command runs once
+  more with key authentication off within the same time budget. Once that retry succeeds,
+  later commands holding that password skip the key. Attach requests a tty.
   ControlMaster multiplexing is added only off Windows and remains an optimization.
   Effective ssh configuration is resolved with bounded concurrency, and a timed-out
   resolver process is terminated.

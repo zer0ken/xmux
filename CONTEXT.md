@@ -362,7 +362,14 @@ UI elements a user perceives as distinct things:
   every direct ssh started by that running app can use the held password even when connection
   sharing is unavailable. A command removes a held password only when it actually received
   that credential, exits with ssh's connection-failure status, and carries ssh's own
-  authentication refusal. A probe result tagged with an older credential generation
+  authentication refusal. A command holding a password still offers a key first. When
+  the host drops the connection before a session starts, without refusing authentication
+  and before askpass hands over the password, the host accepted the key and could not open
+  a session for it, as a Windows sshd does for an Entra account. That command runs once
+  more with key authentication off, within the first attempt's time budget. A drop after
+  the session started is not retried, because the remote command may have run. Once the
+  retry succeeds, every later command holding that password skips the key.
+  A probe result tagged with an older credential generation
   cannot reclassify a machine after a newer login. The broker recreates its endpoint with
   backoff after an accept failure; while it is unavailable commands remain non-interactive
   and report that password login is unavailable. The separate command-line attach process has no access to the

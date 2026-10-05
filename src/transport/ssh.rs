@@ -118,11 +118,15 @@ impl Ssh {
             a.push("-o".into());
             a.push("BatchMode=yes".into());
         } else {
-            if access.is_some() {
+            if let Some(access) = &access {
                 a.push("-o".into());
                 a.push("NumberOfPasswordPrompts=1".into());
-                a.push("-o".into());
-                a.push("PreferredAuthentications=publickey,password,keyboard-interactive".into());
+                if access.key_opens_no_session() {
+                    a.extend(PASSWORD_ONLY.iter().map(|opt| opt.to_string()));
+                } else {
+                    a.push("-o".into());
+                    a.push(KEY_FIRST.into());
+                }
             }
         }
         a.push("-o".into());
@@ -163,23 +167,38 @@ impl Ssh {
         tty: bool,
         unavailable: Option<String>,
     ) -> crate::transport::CommandSpec {
+        let generation = self.credentials.generation(&self.alias);
+        let trace_allowed = !self
+            .credentials
+            .profile(&self.alias)
+            .is_some_and(|profile| profile.proxied);
+        let retry_args = access
+            .as_ref()
+            .filter(|access| !access.key_opens_no_session())
+            .and_then(|_| password_only(&args));
         let command = crate::transport::CommandSpec::new("ssh", args)
-            .with_credential_generation(self.credentials.generation(&self.alias))
+            .with_credential_generation(generation)
             .with_auth_unavailable(unavailable)
-            .with_auth_trace_allowed(
-                !self
-                    .credentials
-                    .profile(&self.alias)
-                    .is_some_and(|profile| profile.proxied),
-            );
+            .with_auth_trace_allowed(trace_allowed);
         match access {
             Some(access) => {
                 let old_unix = cfg!(unix) && !self.credentials.force_askpass_supported();
-                let command = command.with_auth(access, old_unix && !tty);
-                if !tty {
-                    command.detach_tty()
-                } else {
-                    command
+                let with_auth = |command: crate::transport::CommandSpec| {
+                    let command = command.with_auth(access.clone(), old_unix && !tty);
+                    if !tty {
+                        command.detach_tty()
+                    } else {
+                        command
+                    }
+                };
+                let command = with_auth(command);
+                match retry_args {
+                    Some(retry_args) => command.with_password_only_retry(with_auth(
+                        crate::transport::CommandSpec::new("ssh", retry_args)
+                            .with_credential_generation(generation)
+                            .with_auth_trace_allowed(trace_allowed),
+                    )),
+                    None => command,
                 }
             }
             None => command,
@@ -435,6 +454,32 @@ impl Transport for Ssh {
             ..self.clone()
         })
     }
+}
+
+/// A held password still lets ssh try a key first, so a host that takes a key needs no
+/// password prompt.
+const KEY_FIRST: &str = "PreferredAuthentications=publickey,password,keyboard-interactive";
+
+/// The options of a command that authenticates with the held password alone, for a host
+/// that accepts a key and then closes the connection before a session opens.
+const PASSWORD_ONLY: [&str; 4] = [
+    "-o",
+    "PubkeyAuthentication=no",
+    "-o",
+    "PreferredAuthentications=password,keyboard-interactive",
+];
+
+/// `args` with the key-first option replaced by [`PASSWORD_ONLY`], or `None` when the
+/// options before the destination do not try a key first.
+fn password_only(args: &[String]) -> Option<Vec<String>> {
+    let destination = args.iter().position(|arg| arg == "--")?;
+    let at = args[..destination]
+        .windows(2)
+        .position(|pair| pair[0] == "-o" && pair[1] == KEY_FIRST)?;
+    let mut retry = args[..at].to_vec();
+    retry.extend(PASSWORD_ONLY.iter().map(|opt| opt.to_string()));
+    retry.extend_from_slice(&args[at + 2..]);
+    Some(retry)
 }
 
 fn shell_quote(value: &str) -> String {
@@ -1001,5 +1046,176 @@ mod tests {
             marked.last().unwrap(),
             super::super::vocab::MARKED_SHELL_PROBE
         );
+    }
+
+    #[tokio::test]
+    async fn a_key_that_opens_no_session_is_retried_once_with_the_password_alone() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-ssh-key-session-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root.clone());
+        let pending = credentials
+            .begin("prod", Login::default(), "secret".into())
+            .unwrap()
+            .unwrap();
+        assert!(pending.promote());
+        let mut transport = ssh("prod", "linux", "/tmp/cm.sock");
+        transport.set_credentials(credentials.clone());
+        let dropped = "Connection reset by 127.0.0.1 port 22";
+
+        let command = transport.exec_argv(false, &argv(&["tmux", "ls"]));
+        assert!(command.argv().contains(&KEY_FIRST.to_string()));
+        assert!(command.password_only_retry(1, dropped).is_none());
+        assert!(command
+            .password_only_retry(255, "dev@prod: Permission denied (publickey,password).")
+            .is_none());
+        let retry = command
+            .password_only_retry(255, dropped)
+            .expect("a drop before the password prompt is retried");
+        let joined = retry.argv().join(" ");
+        assert!(joined.contains("PubkeyAuthentication=no"), "{joined}");
+        assert!(
+            joined.contains("PreferredAuthentications=password,keyboard-interactive"),
+            "{joined}"
+        );
+        assert!(!joined.contains("publickey"), "{joined}");
+        assert_eq!(
+            retry.argv().last(),
+            command.argv().last(),
+            "the retry runs the same remote command"
+        );
+        assert!(retry.has_credential());
+        assert!(
+            retry.password_only_retry(255, dropped).is_none(),
+            "the retry runs once"
+        );
+        assert!(
+            transport
+                .exec_argv(false, &argv(&["tmux", "ls"]))
+                .argv()
+                .contains(&KEY_FIRST.to_string()),
+            "a retry that has not succeeded leaves key authentication in use"
+        );
+        assert!(command
+            .password_only_retry(255, "client_loop: send disconnect: Connection reset")
+            .is_none());
+
+        // Once the retry succeeded, every command composed later skips the key.
+        command.password_only_worked();
+        let later = transport.exec_argv(false, &argv(&["tmux", "ls"]));
+        let joined = later.argv().join(" ");
+        assert!(joined.contains("PubkeyAuthentication=no"), "{joined}");
+        assert!(later.password_only_retry(255, dropped).is_none());
+        drop(transport);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_drop_after_the_password_was_handed_over_is_not_retried() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-ssh-key-session-supplied-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root.clone());
+        let pending = credentials
+            .begin(
+                "prod",
+                Login {
+                    address: Some("127.0.0.1".into()),
+                    port: None,
+                    user: Some("dev".into()),
+                },
+                "secret".into(),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(pending.promote());
+        let mut transport = ssh("prod", "windows", "");
+        transport.set_credentials(credentials.clone());
+        let command = transport.exec_argv(false, &argv(&["tmux", "ls"]));
+        let env = |name: &str| {
+            command
+                .env()
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+                .unwrap()
+        };
+        let supplied = crate::transport::auth::request_password(
+            std::path::Path::new(&env("XMUX_ASKPASS_ENDPOINT")),
+            &env("XMUX_ASKPASS_TOKEN"),
+            "dev@127.0.0.1's password: ",
+        )
+        .await
+        .expect("broker reply");
+        assert_eq!(supplied.as_deref(), Some("secret"));
+        assert!(command
+            .password_only_retry(255, "Connection closed by 127.0.0.1 port 22")
+            .is_none());
+        drop(transport);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_password_the_retry_handed_over_counts_as_supplied() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-ssh-key-session-retry-supplied-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root.clone());
+        let pending = credentials
+            .begin(
+                "prod",
+                Login {
+                    address: Some("127.0.0.1".into()),
+                    port: None,
+                    user: Some("dev".into()),
+                },
+                "secret".into(),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(pending.promote());
+        let mut transport = ssh("prod", "windows", "");
+        transport.set_credentials(credentials.clone());
+        let command = transport.exec_argv(false, &argv(&["tmux", "ls"]));
+        let retry = command
+            .password_only_retry(255, "Connection reset by 127.0.0.1 port 22")
+            .expect("retry");
+        let env = |name: &str| {
+            retry
+                .env()
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+                .unwrap()
+        };
+        assert!(!command.password_was_supplied());
+        let supplied = crate::transport::auth::request_password(
+            std::path::Path::new(&env("XMUX_ASKPASS_ENDPOINT")),
+            &env("XMUX_ASKPASS_TOKEN"),
+            "dev@127.0.0.1's password: ",
+        )
+        .await
+        .expect("broker reply");
+        assert_eq!(supplied.as_deref(), Some("secret"));
+        assert!(
+            command.password_was_supplied(),
+            "the original command reports what its retry did"
+        );
+        drop(transport);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_command_without_a_password_has_no_retry() {
+        let command = ssh("prod", "linux", "/tmp/cm.sock").exec_argv(false, &argv(&["tmux", "ls"]));
+        assert!(command
+            .password_only_retry(255, "Connection reset by 127.0.0.1 port 22")
+            .is_none());
     }
 }

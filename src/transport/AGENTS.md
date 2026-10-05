@@ -87,6 +87,11 @@ and nothing in `transport/` imports a mux type or a source.
   command without a credential uses batch mode. Older Unix ssh clients are detached from
   the controlling terminal for non-interactive work, and older Windows clients do not
   enter the password path.
+- A command holding a password offers a key first and carries a password-only copy of
+  itself. The copy runs once, within the first attempt's time budget, only when the host dropped
+  the connection before a session started without refusing authentication and askpass
+  never handed over the password. Its success marks the credential so later commands
+  compose without the key.
 - A destination configured with `ProxyJump` or `ProxyCommand` requires key authentication
   because its hop would inherit target askpass state.
 - A credential generation is captured when a command is composed. A probe result from
