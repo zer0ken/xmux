@@ -169,9 +169,14 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   `✗`, or `·` for skipped. A step moves only on an event the login itself reported, never
   on a timer, and the steps stay on screen after one of them failed.
 - Logout names the selected session's observed SSH authentication method and the
-  affected machine, then requires typing `logout`. It clears the held password and
-  closes that machine's connections, including its shared SSH master where present.
-  SSH config and public keys remain available.
+  affected machine, then requires typing `logout`. It removes this PC's key from the
+  host first, then clears the held password and closes that machine's connections,
+  including its shared SSH master where present. When the host holds the key in a line
+  xmux did not add, a second confirmation opens in the same place and grammar as the
+  first: its rows state how many such lines there are and in which file, that removing
+  them affects ssh outside xmux, what keeping them leaves, and that the logout goes on
+  either way, and it requires typing `remove`; closing it any other way keeps those
+  lines. SSH config is not changed.
 - A failure on the pane reads in one order: the verdict in plain words, the `✗` mark on
   the field it concerns, ssh's own last line dimmed, and a details choice that unfolds
   ssh's whole text with the host facts the other screens state. The details choice is a
