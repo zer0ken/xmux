@@ -35,8 +35,6 @@ pub enum Action {
     ShowCheck,
     /// Open the searchable command palette.
     ShowPalette,
-    /// `prefix s`: step the nav scope. Key-driven only, no ctl verb.
-    CycleNavScope,
     /// `prefix Ctrl+←/→`: the nav WIDTH step on the horizontal axis
     /// (applied only in a column layout). The delta is the key's SCREEN direction (+1 =
     /// right, -1 = left): the border moves that way, so it grows the nav on the left and
@@ -80,7 +78,6 @@ impl Action {
             | Action::ShowHistory
             | Action::ShowCheck
             | Action::ShowPalette
-            | Action::CycleNavScope
             | Action::NavKey(_) => None,
         }
     }

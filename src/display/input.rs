@@ -97,7 +97,6 @@ impl TermInput {
                     KeyCommand::History => Some(Action::ShowHistory),
                     KeyCommand::Check => Some(Action::ShowCheck),
                     KeyCommand::Palette => Some(Action::ShowPalette),
-                    KeyCommand::Scope => Some(Action::CycleNavScope),
                     KeyCommand::Width(d) => Some(Action::Width(d)),
                     KeyCommand::Height(d) => Some(Action::Height(d)),
                     KeyCommand::AutoHide => Some(Action::ToggleAutoHide),
@@ -111,6 +110,7 @@ impl TermInput {
                     | KeyCommand::NewSession
                     | KeyCommand::Rescan
                     | KeyCommand::RescanHost
+                    | KeyCommand::Logout
                     | KeyCommand::HostInfo => Some(Action::NavKey(KeyEvent::new(
                         KeyCode::Char(bytes[i] as char),
                         KeyModifiers::NONE,
@@ -227,7 +227,6 @@ mod tests {
             KeyCommand::History => vec![Action::ShowHistory],
             KeyCommand::Check => vec![Action::ShowCheck],
             KeyCommand::Palette => vec![Action::ShowPalette],
-            KeyCommand::Scope => vec![Action::CycleNavScope],
             KeyCommand::AutoHide => vec![Action::ToggleAutoHide],
             KeyCommand::Collapse => vec![Action::ToggleCollapse],
             KeyCommand::Position => vec![Action::CycleNavPosition],
@@ -238,6 +237,9 @@ mod tests {
             | KeyCommand::NewSession
             | KeyCommand::Rescan
             | KeyCommand::RescanHost => vec![Action::NavKey(key())],
+            KeyCommand::Logout => {
+                vec![Action::NavKey(key())]
+            }
             KeyCommand::HostInfo => vec![Action::NavKey(key())],
             KeyCommand::LiteralPrefix => vec![Action::Forward(vec![0x07])],
             KeyCommand::FocusTerminal => vec![],
@@ -567,16 +569,13 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_h_opens_the_check_table_and_s_steps_the_scope() {
+    fn prefix_then_h_opens_the_check_table_and_s_is_unbound() {
         let mut t = m();
         t.feed(&[0x07], NavPosition::Left);
         assert_eq!(t.feed(b"h", NavPosition::Left), vec![Action::ShowCheck]);
         let mut t2 = m();
         t2.feed(&[0x07], NavPosition::Left);
-        assert_eq!(
-            t2.feed(b"s", NavPosition::Left),
-            vec![Action::CycleNavScope]
-        );
+        assert_eq!(t2.feed(b"s", NavPosition::Left), Vec::<Action>::new());
         let mut t3 = m();
         t3.feed(&[0x07], NavPosition::Left);
         assert_eq!(

@@ -132,103 +132,124 @@ impl Runner for ExecRunner {
         command: &'a CommandSpec,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, RunError>> + Send + 'a>>
     {
-        Box::pin(async move {
-            let name = command.program();
-            let args = command.args();
-            let mut cmd = tokio::process::Command::new(name);
-            cmd.args(args);
-            // Isolate stdin: these are non-interactive mux/ssh commands (list-sessions,
-            // switch-client, …) that read no input. Without this, ssh inherits the parent
-            // console tty and resets its mode (raw → canonical) for its own escape handling,
-            // wrecking the app's raw mode until ssh exits - the terminal then echoes keys
-            // and only flushes input on Enter.
-            cmd.stdin(std::process::Stdio::null());
-            cmd.stdout(std::process::Stdio::piped());
-            cmd.stderr(std::process::Stdio::piped());
-            cmd.kill_on_drop(true); // a cancelled (timed-out) scan kills the child
-            cmd.env_clear();
-            for (k, v) in std::env::vars() {
-                if !crate::mux::vocab::is_mux_var(&k) {
-                    cmd.env(k, v);
-                }
-            }
-            cmd.envs(command.env().iter().cloned());
-            #[cfg(unix)]
-            if command.should_detach_tty() {
-                use std::os::unix::process::CommandExt as _;
-                unsafe {
-                    cmd.as_std_mut().pre_exec(|| {
-                        if libc::setsid() == -1 {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                        Ok(())
-                    });
-                }
-            }
-            let mut child = cmd.spawn().map_err(|e| RunError::Other(e.to_string()))?;
-            let mut stdout = child.stdout.take().expect("spawn with piped stdout");
-            let mut stderr = child.stderr.take().expect("spawn with piped stderr");
+        Box::pin(async move { self.run_spec_output(command).await.map(|(out, _)| out) })
+    }
+}
 
-            // Both pipes are drained WHILE the child runs, not after its exit: a command
-            // whose output exceeds the OS pipe capacity (65,536 bytes on Linux) blocks on
-            // its next write and never exits, so a wait-then-read order would hold every
-            // such command until the budget kills it and lose its output. join! polls both
-            // drains and the exit wait together, so completion does not depend on the
-            // output size.
-            //
-            // The command applies its OWN budget here so a timeout can tear the child down
-            // cleanly: kill, reap, then drain both pipes to EOF. Draining to EOF means no
-            // read is pending when the handles drop; on Windows an in-flight read at
-            // handle-close crashes as "IO is still pending on closed socket" (0xC0000005,
-            // the enumeration_failed in issue #116). The sweep-level budget
-            // (within_poll_budget) is one second longer so this teardown always wins.
-            let mut out = Vec::new();
-            let mut err = Vec::new();
-            let outcome = tokio::time::timeout(crate::mux::POLL_CMD_TIMEOUT, async {
-                let (_, _, status) = tokio::join!(
-                    stdout.read_to_end(&mut out),
-                    stderr.read_to_end(&mut err),
-                    child.wait(),
-                );
-                status
-            })
-            .await;
-            let status = match outcome {
-                Err(_) => {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                    // Drain to EOF so the pipes close with no pending read.
-                    let _ = stdout.read_to_end(&mut out).await;
-                    let _ = stderr.read_to_end(&mut err).await;
-                    return Err(RunError::Other(format!(
-                        "timed out\n{name} did not answer within {}s",
-                        crate::mux::POLL_CMD_TIMEOUT.as_secs()
-                    )));
-                }
-                Ok(status) => status.map_err(|e| RunError::Other(e.to_string()))?,
-            };
-            if status.success() {
-                Ok(out)
-            } else {
-                let code = status.code().unwrap_or(-1);
-                let raw = String::from_utf8_lossy(&err).into_owned();
-                let raw = match command.auth_unavailable() {
-                    Some(reason) => {
-                        format!("xmux credential broker unavailable: {reason}\n{raw}")
-                    }
-                    None => raw,
-                };
-                let stderr =
-                    crate::transport::diagnostic::explain(&raw, command.password_was_supplied());
-                command.forget_refused_password(code, &stderr);
-                Err(RunError::Exit {
-                    // Trim the trailing newline the command's stderr carries, so the
-                    // error reads as one line wherever it is rendered.
-                    stderr,
-                    code,
-                })
+impl ExecRunner {
+    /// Runs a probe with both streams available, so SSH's authentication report can be
+    /// read without putting diagnostic text into the remote command's stdout.
+    pub async fn run_spec_output(
+        &self,
+        command: &CommandSpec,
+    ) -> Result<(Vec<u8>, String), RunError> {
+        let name = command.program();
+        let args = command.args();
+        let mut cmd = tokio::process::Command::new(name);
+        let auth_log = command
+            .observe_auth()
+            .then(crate::transport::auth_log::AuthLog::new);
+        if let Some(log) = &auth_log {
+            cmd.args(log.args());
+        }
+        cmd.args(args);
+        // Isolate stdin: these are non-interactive mux/ssh commands (list-sessions,
+        // switch-client, …) that read no input. Without this, ssh inherits the parent
+        // console tty and resets its mode (raw → canonical) for its own escape handling,
+        // wrecking the app's raw mode until ssh exits - the terminal then echoes keys
+        // and only flushes input on Enter.
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.kill_on_drop(true); // a cancelled (timed-out) scan kills the child
+        cmd.env_clear();
+        for (k, v) in std::env::vars() {
+            if !crate::mux::vocab::is_mux_var(&k) {
+                cmd.env(k, v);
             }
+        }
+        cmd.envs(command.env().iter().cloned());
+        #[cfg(unix)]
+        if command.should_detach_tty() {
+            use std::os::unix::process::CommandExt as _;
+            unsafe {
+                cmd.as_std_mut().pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let mut child = cmd.spawn().map_err(|e| RunError::Other(e.to_string()))?;
+        let mut stdout = child.stdout.take().expect("spawn with piped stdout");
+        let mut stderr = child.stderr.take().expect("spawn with piped stderr");
+
+        // Both pipes are drained WHILE the child runs, not after its exit: a command
+        // whose output exceeds the OS pipe capacity (65,536 bytes on Linux) blocks on
+        // its next write and never exits, so a wait-then-read order would hold every
+        // such command until the budget kills it and lose its output. join! polls both
+        // drains and the exit wait together, so completion does not depend on the
+        // output size.
+        //
+        // The command applies its OWN budget here so a timeout can tear the child down
+        // cleanly: kill, reap, then drain both pipes to EOF. Draining to EOF means no
+        // read is pending when the handles drop; on Windows an in-flight read at
+        // handle-close crashes as "IO is still pending on closed socket" (0xC0000005,
+        // the enumeration_failed in issue #116). The sweep-level budget
+        // (within_poll_budget) is one second longer so this teardown always wins.
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let outcome = tokio::time::timeout(crate::mux::POLL_CMD_TIMEOUT, async {
+            let (_, _, status) = tokio::join!(
+                stdout.read_to_end(&mut out),
+                stderr.read_to_end(&mut err),
+                child.wait(),
+            );
+            status
         })
+        .await;
+        let status = match outcome {
+            Err(_) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                // Drain to EOF so the pipes close with no pending read.
+                let _ = stdout.read_to_end(&mut out).await;
+                let _ = stderr.read_to_end(&mut err).await;
+                return Err(RunError::Other(format!(
+                    "timed out\n{name} did not answer within {}s",
+                    crate::mux::POLL_CMD_TIMEOUT.as_secs()
+                )));
+            }
+            Ok(status) => status.map_err(|e| RunError::Other(e.to_string()))?,
+        };
+        if let Some(log) = auth_log {
+            let diagnostics = tokio::task::spawn_blocking(move || log.read())
+                .await
+                .unwrap_or_default();
+            err.extend_from_slice(diagnostics.as_bytes());
+        }
+        if status.success() {
+            Ok((out, String::from_utf8_lossy(&err).into_owned()))
+        } else {
+            let code = status.code().unwrap_or(-1);
+            let raw = String::from_utf8_lossy(&err).into_owned();
+            let raw = match command.auth_unavailable() {
+                Some(reason) => {
+                    format!("xmux credential broker unavailable: {reason}\n{raw}")
+                }
+                None => raw,
+            };
+            let stderr =
+                crate::transport::diagnostic::explain(&raw, command.password_was_supplied());
+            command.forget_refused_password(code, &stderr);
+            Err(RunError::Exit {
+                // Trim the trailing newline the command's stderr carries, so the
+                // error reads as one line wherever it is rendered.
+                stderr,
+                code,
+            })
+        }
     }
 }
 
@@ -475,6 +496,53 @@ mod tests {
             "stdout captured, got {:?}",
             String::from_utf8_lossy(&out)
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ssh_auth_diagnostics_do_not_hold_probe_or_login_pipes_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let script = crate::transport::auth_log::AuthLog::new();
+        std::fs::write(
+            script.path(),
+            r#"#!/bin/sh
+if [ "$1" = '-v' ] && [ "$2" = '-E' ]; then
+  printf 'debug1: Authenticated to box using "publickey".\n' > "$3"
+  sleep 3 >/dev/null 2>&1 &
+else
+  printf 'debug1: Authenticated to box using "publickey".\n' >&2
+  sleep 3 >/dev/null &
+fi
+echo probe-ok
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(script.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let command = CommandSpec::new(script.path().to_string_lossy().into_owned(), Vec::new())
+            .with_auth_observation();
+        let (out, diagnostics) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            ExecRunner.run_spec_output(&command),
+        )
+        .await
+        .expect("probe pipes must close while the shared master remains alive")
+        .unwrap();
+        assert!(String::from_utf8_lossy(&out).contains("probe-ok"));
+        assert_eq!(
+            crate::model::AuthMethod::from_ssh_stderr(&diagnostics),
+            Some(crate::model::AuthMethod::PublicKey)
+        );
+        let (_, done) = crate::link::unlock::start_login(
+            "box".into(),
+            command,
+            std::time::Duration::from_secs(2),
+        );
+        let login = tokio::time::timeout(std::time::Duration::from_secs(2), done)
+            .await
+            .expect("login pipes must close while the shared master remains alive")
+            .unwrap();
+        assert!(login.outcome.is_ok(), "{:?}", login.outcome);
+        assert_eq!(login.auth_method, Some(crate::model::AuthMethod::PublicKey));
     }
 
     #[tokio::test]

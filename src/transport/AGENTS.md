@@ -75,6 +75,10 @@ and nothing in `transport/` imports a mux type or a source.
   Submitted connection values are the machine's, not one source's. A source found later
   and a transport rebuilt from the roster receive the same store before use, so neither
   can lose the machine credential.
+- Login, machine probe, and display connections ask OpenSSH to report authentication.
+  Diagnostics go to a temporary file rather than a pipe a persistent master can retain.
+  A host keeps its last observed method; a session reports only its live display
+  connection's method. A reused master may report none.
 - A held ssh password is reached only through a private broker token in the child
   environment. The token requires an exact target account-and-host match, answers at most once, and lives until the child
   is reaped. The login uses a pending credential and promotes it only when the broker

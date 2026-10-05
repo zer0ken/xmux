@@ -211,7 +211,7 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B10** - Every unselected card carries a number in its address column, on the row
   of the session it addresses, and `prefix <digit>` jumps to it. With `[ui]
   renumbering = true` (the default), the current sorted nav list receives contiguous
-  numbers from 1 whenever it changes, including filtering, nav scope changes, and
+  numbers from 1 whenever it changes, including filtering and
   scans. With `renumbering = false`, cards keep their numbers until a full scan deals
   them again in list order; ended cards leave vacant numbers and new cards take the
   next number. The order of the cards on screen is the list order under either setting. The
@@ -343,34 +343,16 @@ no function, and no test, so renaming code is never a documentation change.
   requiring the kitty keyboard protocol from the terminal and from every mux enclosing
   xmux, which would make behaviour depend on what that chain passes through; a uniform
   input path everywhere is worth more than this one case.
-- **FR-B21** - The nav is two BANDS, and the cards of a host with no session to show are
-  the lower one: a host card sits below every session card, whatever order the hosts were
-  scanned in. In the side column, while the cards can spare a row for it, the bands are
-  pushed APART - the session cards against the top edge, the host cards against the bottom
-  - and the blank rows between them are the parting, since a gap says a different kind of
-  thing follows without spending a glyph on saying it. Once they cannot the column is one
-  scrolling list, because a gap only parts what is on screen together, and a rule across
-  the cards takes the boundary's row instead. The parting always holds a row of its own:
-  the column is measured with the rule's row counted in, so the bands go from a gap of one
-  straight to a rule and never meet, and the list starts scrolling a row before the cards
-  alone would fill it. Neither the gap nor the rule is a card: a click on either moves
-  nothing. In the portrait band the parting is the same statement on the other axis: the
-  session columns hold the left edge, the host band is pushed to the right while a blank
-  column parts them, and a vertical rule takes the boundary's column once they cannot. A
-  list with NOTHING but host cards is the host band alone, and it still takes its side of
-  the split: anchored to the bottom (side) / right edge (portrait), the blank rows or
-  columns opposite being where the sessions that will be found land, so a scan reads as
-  the pending hosts draining toward the sessions they become. In the `sessions` scope,
-  the host band is HIDDEN while the terminal view holds the focus, decided once on the
-  move from the nav into it: a session card selected then hides the band, because what
-  the user went to look at is a session and hosts with nothing to show are noise beside it; a host card
-  selected keeps it, because the screen beside the nav is that host's own. A modal
-  over the terminal view is not a move back, the move back into the nav shows the band
-  again, and a selection that reaches a host card while the band is hidden shows it,
-  since a selected card is never one nobody can see. While a prefix is live the band is
-  painted, because the key list offers a jump to any card by number, and it is hidden
-  again when the prefix ends. Hiding takes the cards off the screen, not off the list:
-  their numbers and the keys that walk the list stay the same.
+- **FR-B21** - The nav has three groups in order: actual session cards under their
+  source titles, no-session cards for reachable hosts, and cards for hosts whose
+  connection or inventory is unresolved. Adjacent groups are separated by one blank
+  row in a side column or one blank column in a top or bottom band. The first visible
+  boundary can carry a horizontal rule while the side list scrolls. Each group starts
+  at the upper-left of its available area. When focus leaves the nav from a session
+  card, only the session group is painted. When it leaves from either host group,
+  every group remains painted. Returning focus to the nav shows every group.
+  Prefix and modal interactions preserve this decision while the terminal view
+  keeps focus. Card numbers and selection identity remain stable across focus changes.
 - **FR-B22** - A host and its mux are SHOWN as one label, `{host}/{mux}`, wherever the pair
   is read: a nav section title, the screen a card selects, the doctor's source list.
   Always that separator, never the one a source id parts its two halves with, because an id
@@ -403,30 +385,12 @@ no function, and no test, so renaming code is never a documentation change.
   only, so a rename is read off one session leaving the list as exactly one other joins
   it, and any other difference is read as sessions made or ended.
 
-- **FR-B24** - The nav hides the hosts no scan has reached: an unreachable host takes no
-  card by default, and `[ui] hide-unreachable` (default true) controls that hiding. How
-  many hosts are hidden is said wherever the user is interacting with the nav: on the
-  prefix key list's bottom border and in the open filter's line, which counts the hidden
-  hosts the filter matches. `prefix h` opens the table of the hosts to check, which lists
-  every host in a problem state grouped by cause (`?` login needed, `▲` unreachable, `✗`
-  list failed), each with the reason its last answer gave and a mark on the ones the
-  hiding leaves without a card; `Enter` on a row selects that host's card, switches to
-  `all hosts` when needed, and opens the login pane for a login-needed or unreachable
-  host. The command palette also opens these hosts by name. A nav with no card at all
-  writes one line in its body instead: how many hosts are hidden and `prefix h`, or, in
-  the needs-attention scope (FR-B39), that nothing needs attention and the scope key. The
-  filter naming a hidden host brings its card back. An empty filter hides every unreachable host, and a filter
-  matching nothing does not bring them back through the no-match fallback that shows the
-  other hosts. A reachable host with no sessions keeps its card, and a host still scanning
-  never hides, whatever stale failure it carries. A host that goes unreachable mid-run
-  hides from that result on and returns when a scan answers. A host the user LOGGED IN to
-  keeps its card while xmux still holds that machine's credential. A blocked host is kept
-  because it is actionable, and a credential-backed host is kept while its requested
-  result is pending. The exemption ends when an authentication refusal, roster removal,
-  broker outage, or process exit makes the credential unavailable and is per machine, since a login authenticates
-  the machine and not the one mux whose card carried the pane. A listing parse failure
-  proves that the host answered, so its `✗` card remains visible and its host screen
-  states the parser reason.
+- **FR-B24** - `prefix h` opens the table of hosts to check, grouped by cause:
+  login needed, unreachable, and inventory failure. Each host carries its latest
+  reason. Enter selects that host's card and opens its login pane when a login is
+  needed or the host is unreachable. The command palette opens these hosts by name.
+  The nav keeps every host available whenever it holds focus. A nav with no hosts
+  names the re-scan key in its body.
 - **FR-B25** - The nav attaches on one of FOUR sides of the terminal view - a left or
   right column, a top or bottom band - and the placement is a user choice at two layers:
   a single `[ui] nav-position` setting (default `left`) names the placement when nothing
@@ -455,7 +419,7 @@ no function, and no test, so renaming code is never a documentation change.
   its fingerprint. Remote command
   permissions, name resolution, connectivity failures, and a changed host key stay
   unreachable. A
-  blocked host keeps its card whatever hide-unreachable says, renders the `?` mark, and
+  blocked host carries a card, renders the `?` mark, and
   shows the pane above the same failure facts the unreachable screen states. What it was
   blocked on is not in its state word: the pane states a plain-language verdict, marks
   with `✗` the input field the failure concerns (the address for a name that does not
@@ -615,8 +579,7 @@ no function, and no test, so renaming code is never a documentation change.
   sessions, view, app), in as many columns as the room beside the indicator holds. When
   the keys do not fit, the box shortens every description first and then gives up the
   keys needed least, counting them as `+N more`; the jump, help, and quit keys are never
-  given up, and no key is ever shown without its name. Its bottom border names the nav
-  scope (FR-B39) and, while the hiding leaves any host without a card, how many.
+  given up, and no key is ever shown without its name. Its bottom border names the xmux version where it fits.
 - **FR-B37** - For three seconds after the user moves the selection, the hint bar names
   the selected card's most relevant keys (one to three) and one fact about it: a
   session's windows, or a host's state word with the reason behind it. Any key ends it,
@@ -627,15 +590,6 @@ no function, and no test, so renaming code is never a documentation change.
   mark, the overflow cues, the auto-hide border, and the toast levels). Typing searches
   it, ignoring case, and the arrows, `PgUp`/`PgDn`, and `Home`/`End` scroll it; `Esc` or
   `prefix ?` closes it, and the search line says so whatever the search leaves.
-- **FR-B39** - The nav lists one of three SCOPES, and `prefix s` steps through them in
-  either focus: `sessions` (the default: every session, and a card for each host with
-  none to show except the hosts FR-B24 hides), `all hosts` (the same list with nothing
-  hidden), and `needs attention` (only the hosts in a settled problem state, sessions
-  left out). The scope is named only while the user interacts: on the key list's bottom
-  border, and in a toast when the key steps it. The resting nav carries no scope word.
-  The filter, the card order, and the card numbers work the same in every scope. The
-  scope is remembered in `~/.xmux/nav_scope` for the next launch.
-
 ## C. Switching (the keystone)
 
 - **FR-C1** - A same-server pick lands on the picked session. Each mux's driver owns

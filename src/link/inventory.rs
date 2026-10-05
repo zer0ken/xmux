@@ -44,6 +44,11 @@ pub enum HostCmd {
 
 /// A parsed event the reader emits to the app's `select!` loop.
 pub enum HostEvent {
+    AuthObserved {
+        machine: String,
+        method: crate::model::AuthMethod,
+        credential_generation: u64,
+    },
     /// First list-sessions returned. Carries the parsed sessions so the loop folds
     /// them into `model::Host.inventory` (the single owner) - the reader keeps no
     /// shared inventory of its own.

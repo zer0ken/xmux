@@ -69,9 +69,6 @@ impl Runtime {
                 Some(Action::ShowPalette) => {
                     effects.extend(update(&mut self.model, Msg::TogglePalette));
                 }
-                Some(Action::CycleNavScope) => {
-                    effects.extend(update(&mut self.model, Msg::CycleNavScope));
-                }
                 // resolve_nav_key never emits the mux-only or terminal-only variants
                 // (Forward/FocusNav); None = armed/consumed.
                 Some(Action::Forward(_)) | Some(Action::FocusNav(_)) | None => {}
@@ -738,11 +735,6 @@ impl Runtime {
                     Action::ShowPalette => {
                         let effects = update(&mut self.model, Msg::TogglePalette);
                         debug_assert!(effects.is_empty());
-                        *dirty = true;
-                    }
-                    Action::CycleNavScope => {
-                        let effects = update(&mut self.model, Msg::CycleNavScope);
-                        let _ = self.execute_effects(effects);
                         *dirty = true;
                     }
                     // Same resize + repeat-window as the nav path, so a resize started from

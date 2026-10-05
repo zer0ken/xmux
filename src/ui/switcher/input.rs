@@ -6,7 +6,11 @@ use crate::state::PaletteChoice;
 impl Switcher {
     // --- key handling -------------------------------------------------------
 
-    fn select_host_section(&mut self, state: &crate::state::State) {
+    fn select_host_section(&mut self, state: &mut crate::state::State) {
+        state.info_session = match self.current_ref() {
+            Some(RowRef::Session { sess }) => Some(sess.address()),
+            _ => None,
+        };
         let Some(source) = self.current_source() else {
             return;
         };
@@ -77,8 +81,8 @@ impl Switcher {
             NewSession,
             Rescan,
             RescanHost,
+            Logout,
             Check,
-            Scope,
             Collapse,
             AutoHide,
             Position,
@@ -315,6 +319,7 @@ impl Switcher {
                 'n' => self.open_new(state),
                 'r' => return vec![Command::Rescan],
                 'R' => return self.rescan_host(state),
+                'L' => self.open_logout(state),
                 'i' => self.select_host_section(state),
                 // Jump: the digit opens the jump popup already holding it, so the
                 // number can be extended (4 → 41) without a second keystroke.
@@ -344,6 +349,54 @@ impl Switcher {
         vec![Command::RescanHost(machine)]
     }
 
+    fn open_logout(&mut self, state: &mut crate::state::State) {
+        let Some(source) = self.current_source() else {
+            return;
+        };
+        let machine = crate::session::machine_of(&source);
+        if !state
+            .chrome
+            .source_reach
+            .get(&source)
+            .or_else(|| state.chrome.source_reach.get(machine))
+            .is_some_and(|reach| reach.ssh)
+        {
+            state.flash("this host does not use SSH");
+            return;
+        }
+        let session = match self.current_ref() {
+            Some(RowRef::Session { sess }) => Some(sess.address()),
+            _ => None,
+        };
+        let method = session
+            .as_ref()
+            .and_then(|address| state.display_auth_methods.get(&address.source))
+            .or_else(|| {
+                session
+                    .is_none()
+                    .then(|| state.auth_methods.get(machine))
+                    .flatten()
+            })
+            .map(|method| method.label())
+            .unwrap_or("not observed");
+        let subject = session.map_or_else(|| machine.to_owned(), |address| address.display());
+        let credential = match method {
+            "username and password" => "held password cleared",
+            "public key" => "key stays available",
+            _ => "held password cleared; key may stay available",
+        };
+        let label = format!(
+            "logout {subject} · SSH: {method} · {credential} · closes {machine} connections"
+        );
+        self.dismiss_modals(state);
+        state.modal = Some(Modal::Input(Box::new(Input::new(
+            InputMode::Logout,
+            label,
+            String::new(),
+            Some(source),
+        ))));
+    }
+
     // --- the hosts to check -------------------------------------------------
 
     /// Toggles the table of the hosts to check (`prefix h`) in either focus.
@@ -364,7 +417,6 @@ impl Switcher {
     /// still scanning is in no state yet and is left out.
     pub(crate) fn check_entries(&self, state: &crate::state::State) -> Vec<CheckEntry> {
         use crate::model::FailureKind;
-        let hidden = self.hidden_sources(state);
         let mut entries = Vec::new();
         for kind in [
             FailureKind::Blocked,
@@ -386,7 +438,6 @@ impl Switcher {
                     source: g.source.clone(),
                     kind,
                     reason,
-                    hidden: hidden.contains(&g.source),
                 });
             }
         }
@@ -394,8 +445,7 @@ impl Switcher {
     }
 
     /// Acts on an Enter the check table took: closes the table and selects the chosen
-    /// host's card. A host with no card on the list is brought back by setting the filter
-    /// to its name, which is how a hidden host's card is reached. A host whose login pane
+    /// host's card. The filter is cleared if it excludes the selected host. A host whose login pane
     /// answers it hands the focus to the terminal view, where the pane takes the keys.
     /// Returns whether the focus goes to the terminal view.
     pub fn open_checked_host(&mut self, state: &mut crate::state::State) -> bool {
@@ -421,13 +471,6 @@ impl Switcher {
             .find(|group| group.source == source)
             .and_then(crate::model::Group::failure)
             .is_some_and(|kind| kind != crate::model::FailureKind::ListFailed);
-        if self
-            .hidden_sources(state)
-            .iter()
-            .any(|hidden| hidden == source)
-        {
-            self.set_scope(crate::model::NavScope::AllHosts, state);
-        }
         let host_row = |sw: &Switcher| {
             sw.rows.iter().position(
                 |r| matches!(&r.reference, RowRef::Host { source: row_source, .. } if row_source == source),
@@ -473,7 +516,7 @@ impl Switcher {
             // New is opened by `open_new` and Jump by `open_jump` (both capture context
             // the mode alone does not carry). The unlock is not a modal: it lives in the
             // locked panel (see `State::feed_unlock`).
-            InputMode::New | InputMode::Jump => {}
+            InputMode::New | InputMode::Jump | InputMode::Logout => {}
         }
     }
 
@@ -581,23 +624,7 @@ impl Switcher {
     }
 
     pub(super) fn update_filter_label(&self, state: &mut crate::state::State) {
-        let scoped = crate::ui::tree::scoped_groups(&state.groups, &state.scanning, self.scope);
-        let normally_visible = if self.hides() {
-            crate::ui::tree::drop_hidden_unreachable(&scoped, &state.scanning, &state.logged_in, "")
-        } else {
-            scoped.to_vec()
-        };
-        let filter_visible = if self.hides() {
-            crate::ui::tree::drop_hidden_unreachable(
-                &scoped,
-                &state.scanning,
-                &state.logged_in,
-                &state.filter,
-            )
-        } else {
-            scoped.to_vec()
-        };
-        let filtered = crate::ui::tree::filter_groups(&filter_visible, &state.filter);
+        let filtered = crate::ui::tree::filter_groups(&state.groups, &state.filter);
         let matches = filtered
             .iter()
             .map(|group| {
@@ -608,20 +635,11 @@ impl Switcher {
                 }
             })
             .sum::<usize>();
-        let hidden = if self.hides() {
-            filtered
-                .iter()
-                .filter(|group| !normally_visible.iter().any(|g| g.source == group.source))
-                .count()
-        } else {
-            0
-        };
         if let Some(Modal::Input(input)) = state.modal.as_mut() {
             if input.mode == InputMode::Filter {
                 input.label = format!(
-                    "filter sessions · {matches} {} · {hidden} hidden {}",
-                    if matches == 1 { "match" } else { "matches" },
-                    if hidden == 1 { "host" } else { "hosts" }
+                    "filter sessions · {matches} {}",
+                    if matches == 1 { "match" } else { "matches" }
                 );
             }
         }
@@ -677,6 +695,10 @@ impl Switcher {
                         }
                         Vec::new()
                     }
+                    InputMode::Logout if val != "logout" => {
+                        state.flash("type logout to confirm");
+                        Vec::new()
+                    }
                     // The filter applied on every edit, so Enter only closes it; the
                     // create input closes first so a queue helper that early-returns on a
                     // validation failure (empty/unchanged name) still dismisses the
@@ -687,6 +709,14 @@ impl Switcher {
                             InputMode::Filter => Vec::new(),
                             InputMode::New => self.queue_create(source, &val, state),
                             InputMode::Jump => Vec::new(),
+                            InputMode::Logout => {
+                                let Some(source) = source else {
+                                    return Vec::new();
+                                };
+                                vec![Command::Logout(
+                                    crate::session::machine_of(&source).to_owned(),
+                                )]
+                            }
                         }
                     }
                 }
@@ -857,18 +887,7 @@ impl Switcher {
                     .notify
                     .timed_toast(machine.clone(), login_notes(&outcome));
                 match outcome.connect {
-                    crate::link::unlock::UnlockOutcome::Ok => {
-                        state.recent_logins.retain(|item| item.login != login);
-                        state.recent_logins.insert(
-                            0,
-                            crate::state::RecentLogin {
-                                source: source.clone(),
-                                login: login.clone(),
-                            },
-                        );
-                        state.recent_logins.truncate(3);
-                        Some((source, login))
-                    }
+                    crate::link::unlock::UnlockOutcome::Ok => Some((source, login)),
                     crate::link::unlock::UnlockOutcome::Unavailable => None,
                     crate::link::unlock::UnlockOutcome::Failed { .. } => {
                         state.logged_in.remove(&machine);

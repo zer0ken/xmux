@@ -1,12 +1,43 @@
 //! Login input values shared by domain commands and runtime state.
 
-/// What the login pane does with the values once the connection works. The two are one
-/// choice, not two switches: a draft either leaves nothing behind or writes a stanza.
+/// The one follow-up the login pane performs after a successful connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Remember {
+pub enum AfterLogin {
     #[default]
     Nothing,
     SshConfig,
+    RegisterKey,
+}
+
+/// Authentication method reported by OpenSSH for a completed connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMethod {
+    PublicKey,
+    Password,
+}
+
+impl AuthMethod {
+    pub fn from_ssh_stderr(stderr: &str) -> Option<Self> {
+        stderr
+            .lines()
+            .filter_map(|line| {
+                let (_, rest) = line.split_once("Authenticated to ")?;
+                let (_, method) = rest.split_once(" using \"")?;
+                match method.split_once('"')?.0 {
+                    "publickey" => Some(Self::PublicKey),
+                    "password" | "keyboard-interactive" => Some(Self::Password),
+                    _ => None,
+                }
+            })
+            .next_back()
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PublicKey => "public key",
+            Self::Password => "username and password",
+        }
+    }
 }
 
 /// One step a login performs, in the order it performs them. Connecting and
@@ -516,6 +547,26 @@ mod tests {
     use crate::link::unlock::{FailureKind, UnlockOutcome};
     use crate::model::{LoginOutcome, RegistrationOutcome};
 
+    #[test]
+    fn ssh_auth_method_requires_an_explicit_success_report() {
+        assert_eq!(
+            AuthMethod::from_ssh_stderr(
+                "debug1: Authenticated to box ([10.0.0.1]:22) using \"publickey\".\n"
+            ),
+            Some(AuthMethod::PublicKey)
+        );
+        assert_eq!(
+            AuthMethod::from_ssh_stderr(
+                "debug1: Authenticated to box ([10.0.0.1]:22) using \"password\".\n"
+            ),
+            Some(AuthMethod::Password)
+        );
+        assert_eq!(
+            AuthMethod::from_ssh_stderr("debug1: auto-mux: Trying existing master\n"),
+            None
+        );
+    }
+
     fn states(progress: &LoginProgress) -> Vec<(LoginStep, StepState)> {
         progress.steps.iter().map(|r| (r.step, r.state)).collect()
     }
@@ -530,6 +581,7 @@ mod tests {
 
     fn ok_outcome(registration: RegistrationOutcome) -> LoginOutcome {
         LoginOutcome {
+            auth_method: None,
             connect: UnlockOutcome::Ok,
             output: String::new(),
             saved: Some(Ok(())),
@@ -700,6 +752,7 @@ mod tests {
         let raw =
             "Warning: Permanently added 'box'.\nalice@box: Permission denied (publickey,password).";
         let failure = LoginFailure::of_login(&LoginOutcome {
+            auth_method: None,
             connect: UnlockOutcome::Failed {
                 kind: FailureKind::WrongPassword,
                 reason: format!("the password was refused\n{raw}"),

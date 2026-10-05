@@ -37,7 +37,7 @@ source add) that remain after update folds an inbound source event into the mode
   cannot replace a previously confirmed session grid.
 - The operation port carries slow host operations and their plain results.
   Execution policy and user-facing completion messages stay in the UI layer.
-- Login input values carry the remember choice and bounded secret. The secret
+- Login input values carry one after-login choice and bounded secret. The secret
   keeps its allocation bounded, redacts debug output, and zeroes its storage.
 - The HOST axis lives in `src/transport`, not here; a source holds one transport
   from it.

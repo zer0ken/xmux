@@ -188,8 +188,7 @@ impl Runtime {
                     source,
                     login,
                     password,
-                    remember,
-                    pubkey,
+                    after_login,
                     attempt,
                     cancel,
                 } => start_login(
@@ -197,8 +196,8 @@ impl Runtime {
                         source,
                         login,
                         attempt,
-                        write_config: remember == crate::state::Remember::SshConfig,
-                        register_key: pubkey,
+                        write_config: after_login == crate::model::AfterLogin::SshConfig,
+                        register_key: after_login == crate::model::AfterLogin::RegisterKey,
                     },
                     password,
                     cancel,
@@ -216,9 +215,6 @@ impl Runtime {
                 Effect::PersistNavPosition(position) => {
                     crate::app::prefs::save_nav_position(&self.env.xmux_dir, position);
                 }
-                Effect::PersistNavScope(scope) => {
-                    crate::app::prefs::save_nav_scope(&self.env.xmux_dir, scope);
-                }
                 Effect::PersistFirstKeyHelpSeen => {
                     crate::app::prefs::mark_first_key_help_seen(&self.env.xmux_dir);
                 }
@@ -228,6 +224,38 @@ impl Runtime {
                     if let Some(host) = self.hosts.get_mut(&selection.source) {
                         host.display.clear(&key);
                     }
+                }
+                Effect::LogoutMachine {
+                    machine,
+                    cancel_login,
+                } => {
+                    if let Some(login) = cancel_login {
+                        login.cancel();
+                    }
+                    let close_master = self
+                        .hosts
+                        .host_transport(&machine)
+                        .and_then(|transport| transport.close_shared_connection_argv());
+                    self.env.credentials().remove(&machine);
+                    let (event_rearm, followups) =
+                        self.perform_source_effect(crate::model::EventEffect::DisconnectMachine {
+                            machine: machine.clone(),
+                        });
+                    rearm |= event_rearm;
+                    for followup in followups.into_iter().rev() {
+                        pending.push_front(followup);
+                    }
+                    if let Some(command) = close_master {
+                        tokio::spawn(async move {
+                            if let Err(error) = crate::model::source::ExecRunner
+                                .run_spec_output(&command)
+                                .await
+                            {
+                                tracing::debug!(machine, error = %error, "ssh_master_logout");
+                            }
+                        });
+                    }
+                    self.dirty = true;
                 }
                 Effect::CancelLogin(login) => login.cancel(),
                 Effect::Command(command) => match command {
@@ -251,6 +279,9 @@ impl Runtime {
                             true,
                             0,
                         );
+                    }
+                    Command::Logout(_) => {
+                        unreachable!("logout commands become LogoutMachine effects in update")
                     }
                     Command::AdjustNavWidth(_) => {
                         width_changed = true;
@@ -882,7 +913,6 @@ fn spawn_machine_probe(
     rescan: bool,
     probe: u64,
 ) {
-    use crate::model::source::Runner;
     tokio::spawn(async move {
         let Ok(_permit) = gate.acquire().await else {
             return;
@@ -893,11 +923,27 @@ fn spawn_machine_probe(
             return;
         };
         let credential_generation = argv.credential_generation();
-        let (err, shell) = match crate::model::source::ExecRunner.run_spec(&argv).await {
-            Ok(out) => (
-                None,
-                Some(crate::transport::vocab::RemoteShell::from_probe(&out)),
-            ),
+        let (err, shell) = match crate::model::source::ExecRunner
+            .run_spec_output(&argv)
+            .await
+        {
+            Ok((out, stderr)) => {
+                if let Some(method) = argv
+                    .auth_trace_allowed()
+                    .then(|| crate::model::AuthMethod::from_ssh_stderr(&stderr))
+                    .flatten()
+                {
+                    let _ = tx.send(HostEvent::AuthObserved {
+                        machine: machine.clone(),
+                        method,
+                        credential_generation,
+                    });
+                }
+                (
+                    None,
+                    Some(crate::transport::vocab::RemoteShell::from_probe(&out)),
+                )
+            }
             Err(e) => (Some(transport.probe_diagnostic(e.to_string())), None),
         };
         // This verdict decides whether the machine has cards at all: a failure makes every
@@ -1471,7 +1517,7 @@ fn spawn_op(
 /// The connection is not an op: it waits on a child, on a network, and on a server's
 /// pace, so it runs on its own thread and only the handle that says it is running is
 /// parked on [`State::login_run`]. Only what comes AFTER the verdict is an op - the
-/// pane's two checkboxes over what a working login left behind - and that folds back
+/// pane's after-login choice over what a working login left behind - and that folds back
 /// through the same channel as any other, so the switcher reacts to one login result
 /// however the login was had.
 ///
@@ -1512,6 +1558,7 @@ fn start_login(
             attempt,
             outcome: crate::ui::ops::LoginOutcome {
                 connect,
+                auth_method: None,
                 output: String::new(),
                 saved: None,
                 registration: crate::ui::ops::RegistrationOutcome::NotRequested,
@@ -1563,6 +1610,7 @@ fn start_login(
                 output: String::new(),
                 shell: None,
                 password_supplied: false,
+                auth_method: None,
             });
         tracing::info!(source = %source, outcome = ?conversation.outcome, "login finished");
         progress(crate::model::LoginEvent::Verdict(

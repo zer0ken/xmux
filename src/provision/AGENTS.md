@@ -68,7 +68,8 @@ before the app supplies both to the chrome.
   summarises its peers hands the OS one route for two of them, so a block of up to eight
   is read as its addresses; a wider one is a network and contributes nothing.
 - Discovery probes every source concurrently, isolating each so one unreachable
-  mux never fails the rest, with bounded concurrency, a per-source timeout, and
+  mux never fails the rest, with bounded concurrency, one ten-second budget shared
+  by first contact and enumeration for each source, and
   order-preserving results.
 - Env resolves the source list and the lookups the commands share, owning the
   concurrent scan and the side-effecting operations over the live mux.

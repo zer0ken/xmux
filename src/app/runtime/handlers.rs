@@ -7,6 +7,16 @@ impl Runtime {
     /// Drained in a burst by `on_host_event`. Returns `true` when the caller should
     /// rearm `attach_deadline` and mark dirty for a matched-client detach reap.
     pub(super) fn handle_host_event(&mut self, mut ev: HostEvent) -> bool {
+        if let HostEvent::AuthObserved {
+            machine,
+            credential_generation,
+            ..
+        } = &ev
+        {
+            if *credential_generation != self.env.credentials().generation(machine) {
+                return false;
+            }
+        }
         if let HostEvent::MachineProbed {
             machine,
             credential_held,
@@ -108,6 +118,27 @@ impl Runtime {
             EventEffect::ReapHost { host } => {
                 mgr.reap(&host);
             }
+            EventEffect::DisconnectMachine { machine } => {
+                let sources: Vec<String> = hosts
+                    .ids()
+                    .iter()
+                    .filter(|source| crate::session::machine_of(source) == machine)
+                    .cloned()
+                    .collect();
+                for source in &sources {
+                    mgr.reap(source);
+                    if let Some(host) = hosts.get_mut(source) {
+                        host.clear_display_tty();
+                        host.liveness = crate::model::Liveness::Unreachable;
+                        host.display = Default::default();
+                    }
+                }
+                for key in registry.addresses() {
+                    if crate::session::machine_of(host_of_key(&key)) == machine {
+                        registry.remove(&key);
+                    }
+                }
+            }
             EventEffect::ReopenHost { host } => {
                 // The detached channel is reaped, so this opens exactly one new one. tmux
                 // attaches it to another of the host's sessions. With none left, the new
@@ -174,6 +205,9 @@ impl Runtime {
                 );
             }
             EventEffect::AddDiscoveredSources { machine, muxes } => {
+                if model.state.invalid_auth.contains(&machine) {
+                    return (false, Vec::new());
+                }
                 // A machine answered which muxes it has. Every one it does not already
                 // serve becomes a source of its own, RIGHT NOW: the card appears scanning
                 // and streams its sessions in like any other.
@@ -388,6 +422,20 @@ impl Runtime {
             EventEffect::DispatchScanned {
                 source, detected, ..
             } => {
+                if model
+                    .state
+                    .invalid_auth
+                    .contains(crate::session::machine_of(&source))
+                {
+                    let effects = update(
+                        model,
+                        Msg::DetectionFinished {
+                            source: source.clone(),
+                        },
+                    );
+                    debug_assert!(effects.is_empty());
+                    return (false, Vec::new());
+                }
                 // A detection probe resolved: (re)identify the mux, then dispatch the
                 // now-detected host onto its metadata channel (control client or poll task).
                 // A probe that could not identify one has ALREADY settled the card as
@@ -632,17 +680,12 @@ impl Runtime {
         // The one session the terminal view refuses: the one xmux is running in. Named
         // once here, because the environment that names it cannot change under a run.
         switcher.set_own_session(env.own_session.clone());
-        // [ui] hide-unreachable: the nav drops the settled unreachable hosts' cards. The
-        // filter naming one brings its card, and its unreachable screen, back.
-        switcher.set_hide_unreachable(roster.cfg.ui_hide_unreachable(), &mut state);
         switcher.set_renumbering(roster.cfg.ui.renumbering, &mut state);
         // The launch roster can add hosts after the first sources answer, so the card
         // numbers stay open until it is in.
         if env.startup_pending {
             switcher.hold_numbers(true, &state);
         }
-        // The nav scope the user last chose with the scope key.
-        switcher.set_scope(crate::app::prefs::load_nav_scope(&env.xmux_dir), &mut state);
         // [ui] notifications: whether results show as toasts; the history keeps them either
         // way.
         state.notify.set_toasts_enabled(roster.cfg.ui.notifications);
@@ -1072,6 +1115,16 @@ impl Runtime {
         .flatten();
         match ev {
             PtyEvent::Exited { id } => {
+                if let Some(address) = self.registry.address_of_id(id) {
+                    let effects = update(
+                        &mut self.model,
+                        Msg::DisplayAuth {
+                            source: address,
+                            method: None,
+                        },
+                    );
+                    debug_assert!(effects.is_empty());
+                }
                 // Read before the reap: the reap drops the grid the reason is written on.
                 let last = last_pane_line(&self.registry, id);
                 clear_display_tty_for_attach(&mut self.hosts, &self.registry, id);
@@ -1093,6 +1146,24 @@ impl Runtime {
             }
             PtyEvent::DisplayTty { id, tty } => {
                 record_display_tty(&mut self.hosts, &self.registry, id, tty);
+                false
+            }
+            PtyEvent::AuthObserved { id, method } => {
+                if let Some(address) = self.registry.address_of_id(id).filter(|key| {
+                    self.registry
+                        .get(key)
+                        .is_some_and(|attachment| attachment.id() == id)
+                }) {
+                    let effects = update(
+                        &mut self.model,
+                        Msg::DisplayAuth {
+                            source: address,
+                            method: Some(method),
+                        },
+                    );
+                    debug_assert!(effects.is_empty());
+                    self.dirty = true;
+                }
                 false
             }
             PtyEvent::Output { id } => {
@@ -1162,13 +1233,22 @@ impl Runtime {
     fn install_attachment(
         &mut self,
         key: String,
-        attachment: crate::display::attachment::Attachment,
+        mut attachment: crate::display::attachment::Attachment,
         shown: String,
     ) {
         let selected_key = display_key(&self.hosts, &self.model.state.selection);
         let hid = host_of_key(&key).to_string();
         let attach_id = attachment.id();
         let child_tty = attachment.child_tty().map(str::to_string);
+        let effects = update(
+            &mut self.model,
+            Msg::DisplayAuth {
+                source: hid.clone(),
+                method: None,
+            },
+        );
+        debug_assert!(effects.is_empty());
+        attachment.watch_auth(self.driver_pty_tx.clone());
         self.registry.remove(&key);
         self.registry.insert(&key, attachment);
 
@@ -1644,6 +1724,16 @@ impl Runtime {
     /// control clients, force a full repaint), read xmux's own display client for a
     /// mux-side session change, and refresh the connecting-spinner set.
     pub(super) fn on_tick(&mut self, term: &mut Term) {
+        let auth_effects = update(
+            &mut self.model,
+            Msg::CredentialInventory {
+                held: self.env.credentials().machines(),
+            },
+        );
+        if !auth_effects.is_empty() {
+            self.execute_effects(auth_effects);
+            self.dirty = true;
+        }
         if self.promote_due_pending(std::time::Instant::now()) {
             self.dirty = true;
         }
@@ -1797,6 +1887,7 @@ fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::state::Sourc
         );
         let addressed = kind.addressed_as();
         let socket = kind.socket_path();
+        let ssh = kind.clone().transport().is_remote();
         let probe = kind
             .transport()
             .raw_shell_argv(crate::transport::vocab::SHELL_PROBE)
@@ -1805,6 +1896,7 @@ fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::state::Sourc
         reach.insert(
             machine,
             crate::state::SourceReach {
+                ssh,
                 probe,
                 machine: addressed,
                 socket,
@@ -1824,6 +1916,7 @@ fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::state::Sourc
 /// own listing command - rather than being re-derived from a source id.
 pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::state::SourceReach {
     crate::state::SourceReach {
+        ssh: s.kind.clone().transport().is_remote(),
         probe: crate::driver::shell_line(&s.host().list_sessions_command()),
         machine: s.kind.addressed_as(),
         mux: s.binary.clone(),

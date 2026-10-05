@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 const SCAN_CONCURRENCY: usize = 8;
 const SSH_PROFILE_CONCURRENCY: usize = 8;
 const SSH_PROFILE_TIMEOUT: Duration = Duration::from_secs(3);
-const SCAN_TIMEOUT: Duration = crate::mux::POLL_SWEEP_BUDGET;
+pub(crate) const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 const DETAIL_TIMEOUT: Duration = crate::mux::POLL_SWEEP_BUDGET;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -988,12 +988,16 @@ impl Ops for EnvOps {
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>> {
         let src = self.source(source)?;
         let _permit = self.sem.acquire().await?;
+        let deadline = tokio::time::Instant::now() + SCAN_TIMEOUT;
         let mut host = with_timeout(SCAN_TIMEOUT, src.host_for_op()).await?;
-        with_timeout(SCAN_TIMEOUT, async {
-            host.enumerate_with(src.run_with())
-                .await
-                .map(|()| host.inventory.sessions)
-        })
+        with_timeout(
+            deadline.saturating_duration_since(tokio::time::Instant::now()),
+            async {
+                host.enumerate_with(src.run_with())
+                    .await
+                    .map(|()| host.inventory.sessions)
+            },
+        )
         .await
     }
 
@@ -1455,13 +1459,8 @@ fn public_key_line() -> Result<String, std::io::Error> {
     // The home SSH itself reads `~` from, so the key xmux sends is the key ssh would
     // offer. See `ssh_home`.
     let dir = ssh_home().join(".ssh");
-    for name in ["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"] {
-        if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
-            let line = text.trim().to_string();
-            if !line.is_empty() {
-                return Ok(line);
-            }
-        }
+    if let Some(line) = existing_public_key_line()? {
+        return Ok(line);
     }
     std::fs::create_dir_all(&dir)?;
     let key = dir.join("id_ed25519");
@@ -1476,6 +1475,19 @@ fn public_key_line() -> Result<String, std::io::Error> {
     Ok(std::fs::read_to_string(key.with_extension("pub"))?
         .trim()
         .to_string())
+}
+
+fn existing_public_key_line() -> Result<Option<String>, std::io::Error> {
+    let dir = ssh_home().join(".ssh");
+    for name in ["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"] {
+        if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
+            let line = text.trim().to_string();
+            if !line.is_empty() {
+                return Ok(Some(line));
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

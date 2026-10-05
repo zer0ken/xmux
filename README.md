@@ -198,6 +198,7 @@ The nav takes these keys while it holds focus:
 | `prefix n`               | start a new session on the selected host                                 |
 | `/`                      | fuzzy-filter the cards                                                   |
 | `prefix r`               | re-scan: refresh which machines exist, and every source's sessions       |
+| `prefix L`               | log out of the current SSH host                                          |
 
 xmux has its own prefix, like tmux's `set -g prefix`. The default is `Ctrl-g`,
 and `[ui] prefix` replaces it. A chord is the prefix followed by one key:
@@ -239,8 +240,8 @@ login:
    - the port
    - the username
    - an optional masked password
-   The panel offers recent successful connection values from this run for reuse;
-   passwords are excluded.
+   After login, one radio choice selects: do nothing, save the connection values
+   to ssh config, or register this machine's public key on the host.
 2. On submit, xmux hands those values to ssh and answers the host-key question
    and the password itself, so the login needs no further input. Esc ends the
    attempt.
@@ -248,9 +249,10 @@ login:
    sessions it found. The submitted values become the machine's, so everything
    xmux runs there afterwards connects the way the login did.
 
-A login the values cannot finish reports what the server asked for. Two
-checkboxes decide what a working login leaves behind:
+A login the values cannot finish reports what the server asked for. One
+radio choice decides what a working login leaves behind:
 
+- nothing
 - the values, recorded as an `~/.ssh/config` stanza
 - the user's public key, registered on the host so it stops asking for a
   password
@@ -260,6 +262,19 @@ and reports the key registered only when that login runs a command. When the hos
 accepts the key but cannot open a session, xmux reports the server's error and removes
 the line this registration added, so the host stays reachable by password. When that
 login cannot be tried at all, xmux keeps the key and reports it as not verified.
+
+The information screen shows the SSH authentication method reported by the selected
+session's display connection. On a host card it shows the machine's last observed
+method. If SSH reuses a connection without reporting its method, the screen says
+`not observed`. A held password disappearing closes that machine's
+metadata and display connections. A new login or explicit re-scan is needed to
+connect again.
+
+On an SSH host, `prefix L` opens a confirmation showing the selected session's
+observed authentication method and the machine affected. Type `logout` to clear
+the password xmux holds in memory and close that machine's connections, including
+its SSH master where present. SSH config and public keys remain available. An
+explicit re-scan can reconnect with an available key; otherwise, log in again.
 
 ## Roster
 
@@ -276,6 +291,8 @@ The roster is rebuilt at startup and on every rescan. `local`, this machine
 reached without ssh, is not part of the roster, and a machine no provider names
 is a machine xmux has nothing to do with. The `[discovery]` table turns
 providers off one by one; all are on by default.
+Each source's first contact and session listing share a ten-second scan limit.
+An unanswered card stops scanning after ten seconds and shows a timeout.
 
 Every provider yields ssh target names, and xmux behaves the same whichever
 provider suggested a name. The suggesting provider is kept beside the name and
@@ -324,7 +341,6 @@ theme = "auto-dark"                  # built-in ANSI theme: "auto-dark" (default
                                       # or "auto-light" (for a light terminal)
 prefix = "C-g"                        # xmux's prefix (e.g. C-g, C-Space, C-b)
 auto-hide-nav = false                 # initial auto-hide-nav state
-hide-unreachable = true               # hide hosts no scan has reached (the check table can open one)
 renumbering = true                     # keep card numbers in sorted nav order
 notifications = true                  # show results as toasts (the prefix m history keeps them either way)
 braille-animation = true             # show the central Braille X on scanning and host screens

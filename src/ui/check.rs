@@ -1,7 +1,5 @@
-//! The table of the hosts to check: every host in a problem state, grouped by cause under
-//! the cause's state glyph, each with the reason its last answer gave and whether the
-//! hiding leaves it without a card. The lines are built here from the entries the
-//! switcher derives, so the paint and the tests read one answer.
+//! Hosts to check, grouped by cause with the reason each host last reported.
+//! Lines are built from the entries the switcher derives.
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -43,12 +41,7 @@ pub(crate) fn check_lines(
     palette: &Palette,
 ) -> (String, Vec<Line<'static>>) {
     let dim = Style::default().fg(palette.decoration);
-    let hidden = entries.iter().filter(|e| e.hidden).count();
-    let title = if hidden == 0 {
-        "hosts to check".to_string()
-    } else {
-        format!("hosts to check · {hidden} hidden")
-    };
+    let title = "hosts to check".to_string();
     if entries.is_empty() {
         return (
             title,
@@ -73,11 +66,7 @@ pub(crate) fn check_lines(
             ]));
             last = Some(entry.kind);
         }
-        let mut spans = vec![Span::raw(format!("   {}", entry.label))];
-        if entry.hidden {
-            spans.push(Span::styled("  hidden", dim));
-        }
-        let mut line = Line::from(spans);
+        let mut line = Line::from(Span::raw(format!("   {}", entry.label)));
         if i == selected {
             selected_line = lines.len();
             line = line.style(palette::selection_style(palette));
@@ -108,13 +97,12 @@ pub(crate) fn check_lines(
 mod tests {
     use super::*;
 
-    fn entry(source: &str, kind: FailureKind, hidden: bool) -> CheckEntry {
+    fn entry(source: &str, kind: FailureKind) -> CheckEntry {
         CheckEntry {
             source: source.into(),
             label: source.into(),
             kind,
             reason: format!("{source} said no"),
-            hidden,
         }
     }
 
@@ -123,16 +111,16 @@ mod tests {
     }
 
     #[test]
-    fn entries_read_under_their_cause_with_the_reason_and_the_hidden_mark() {
+    fn entries_read_under_their_cause_with_the_reason() {
         let entries = vec![
-            entry("gpu-02", FailureKind::Blocked, false),
-            entry("web-03", FailureKind::Unreachable, true),
-            entry("web-04", FailureKind::Unreachable, false),
-            entry("db-01", FailureKind::ListFailed, false),
+            entry("gpu-02", FailureKind::Blocked),
+            entry("web-03", FailureKind::Unreachable),
+            entry("web-04", FailureKind::Unreachable),
+            entry("db-01", FailureKind::ListFailed),
         ];
         let p = Palette::default();
         let (title, lines) = check_lines(&entries, 1, 60, usize::MAX, "keys", &p);
-        assert_eq!(title, "hosts to check · 1 hidden");
+        assert_eq!(title, "hosts to check");
         let texts: Vec<String> = lines.iter().map(text).collect();
         assert_eq!(
             texts,
@@ -141,7 +129,7 @@ mod tests {
                 "   gpu-02",
                 "     gpu-02 said no",
                 " ▲ unreachable · 2",
-                "   web-03  hidden",
+                "   web-03",
                 "     web-03 said no",
                 "   web-04",
                 "     web-04 said no",
@@ -171,7 +159,7 @@ mod tests {
     #[test]
     fn selected_host_remains_visible_when_the_table_exceeds_the_popup() {
         let entries: Vec<_> = (0..20)
-            .map(|i| entry(&format!("host-{i:02}"), FailureKind::Unreachable, true))
+            .map(|i| entry(&format!("host-{i:02}"), FailureKind::Unreachable))
             .collect();
         let (_, lines) = check_lines(&entries, 19, 50, 8, "keys", &Palette::default());
         assert_eq!(lines.len(), 8);

@@ -20,7 +20,7 @@ pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
 }
 
 /// Finishes a login the app already ran: takes the ssh child's conversation, runs the
-/// pane's two choices after a connection that worked, and returns the [`LoginOutcome`]
+/// pane's after-login choice after a connection that worked, and returns the [`LoginOutcome`]
 /// the switcher folds. Each follow-up reports through `progress` as it settles, so the pane's
 /// steps advance with the work rather than all at once. Pure over `ops` (no switcher
 /// state), so it runs in a detached task off the event loop like [`run_op`].
@@ -51,6 +51,7 @@ pub async fn run_login_follow_ups(
     }
     LoginOutcome {
         connect,
+        auth_method: conversation.auth_method,
         output: conversation.output,
         saved,
         registration,
