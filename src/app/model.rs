@@ -1556,6 +1556,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .chrome
                 .set_view_border_hovered(view_border_hovered);
             model.state.chrome.set_armed(prefix_active);
+            model.switcher.settle_popup_position(&model.state);
             let modal_kind = model.state.modal_kind();
             model.state.focus.sync_modal(modal_kind);
             let nav_focused = model.state.focus.view_is_nav();

@@ -215,8 +215,11 @@ width, against the same corner. When the keys do not fit, the box first shortens
 needed least and counts them as `+N more`; a key is never shown without its name, and the
 jump, help, and quit keys are never given up. The box floats over the terminal view and
 closes when the function the prefix started ends, or when the prefix is canceled (a focus
-switch or any mouse action: a click, a wheel, a drag - a prefix waits for the next input,
-whatever that turns out to be). Its bottom border names the xmux version where it fits.
+switch or any mouse action outside the box: a click, a wheel, a drag - a prefix waits for
+the next input, whatever that turns out to be). Pressing anywhere on the box and dragging
+moves it and keeps the prefix, and the popup a key then opens takes the place it was moved
+to; the next prefix opens it in its usual place again. Its bottom border names the xmux
+version where it fits.
 
 Most keys end their function as they run, so the box closes with the keystroke. Two kinds
 run longer and keep it up for as long as they last: a key that opens an input row holds
@@ -306,7 +309,7 @@ the key list's rounded box: its title and a count or machine in the top border, 
 on the bottom border. Its width follows its content or the window, never the nav's
 width. A popup
 whose left edge would leave one or two cells of the row beside it starts at the window's
-left edge instead. A drag moves it. While a popup's text field takes keys, the
+left edge instead. Pressing anywhere on it and dragging moves it. While a popup's text field takes keys, the
 terminal's own cursor sits on the field's caret, so an input method composes in the
 field.
 
@@ -393,7 +396,7 @@ notifications = true   # false keeps results out of toasts; the history still ha
 | left-click `‹ 5` or `7 ›` on a band's view border | select the nearest card scrolled off that side |
 | wheel over the nav | move the selection (nav focused) |
 | drag the view border | resize the expanded nav (at any of the four borders: the drag mirrors the placement, measuring from the near edge); past the minimum it collapses the nav |
-| drag a modal's border | move the modal |
+| drag the key list or a popup | move it (press anywhere on it) |
 | left-click a toast | dismiss it |
 
 There is no context menu: every action a right-click could offer is either a

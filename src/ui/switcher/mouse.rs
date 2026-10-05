@@ -11,8 +11,14 @@ impl Switcher {
         row: u16,
         state: &crate::state::State,
     ) -> bool {
-        self.popup_geo.rect = plan.popup_rect;
-        self.begin_popup_drag(col, row, state)
+        let key_list = plan.key_list.as_ref().map(|(rect, _)| *rect);
+        self.popup_geo.rect = if plan.popup_rect.is_empty() {
+            key_list.unwrap_or_default()
+        } else {
+            plan.popup_rect
+        };
+        let open = state.is_modal_popup_open() || key_list.is_some();
+        self.begin_popup_drag(col, row, open)
     }
 
     fn in_tree(plan: &RenderPlan, col: u16, row: u16) -> bool {

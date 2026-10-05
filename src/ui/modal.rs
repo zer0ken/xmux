@@ -27,28 +27,30 @@ struct PopupDrag {
 /// self-contained here so the switcher only forwards mouse events.
 #[derive(Default)]
 pub(crate) struct PopupGeometry {
-    /// Drag offset (cells) applied to a modal popup's anchored position. Reset
-    /// to (0,0) when a popup opens; updated while its border is dragged.
+    /// Drag offset (cells) applied to the anchored position of the key list and of a
+    /// modal popup. Kept while a prefix interaction goes from the key list to the popup
+    /// its key opens, reset once neither is on screen; updated while one is dragged.
     pub(crate) offset: (i16, i16),
-    /// The drawn rect of the active modal popup (help/input/confirm), copied from the
-    /// last frame's render plan when a press starts, so the press can hit-test its
-    /// border. `Rect::default()` means no modal popup is open.
+    /// The drawn rect of the key list or the active modal popup, copied from the last
+    /// frame's render plan when a press starts, so the press can hit-test it.
+    /// `Rect::default()` means neither is on screen.
     pub(crate) rect: Rect,
-    /// Active border-drag of a modal popup. `None` ⇒ not dragging.
+    /// Active drag of the key list or a modal popup. `None` ⇒ not dragging.
     drag: Option<PopupDrag>,
 }
 
 impl PopupGeometry {
-    /// True while a modal popup is being border-dragged.
+    /// True while the key list or a modal popup is being dragged.
     pub(crate) fn drag_active(&self) -> bool {
         self.drag.is_some()
     }
 
-    /// A left press on the active modal popup's border begins a move-drag. `open` is
-    /// whether a modal popup is live: `rect` is only refreshed on render (frame-gated),
-    /// so a popup closed by a keystroke can leave a stale rect - the caller gates on
-    /// the live modal state so a press can't grab a popup that no longer exists.
-    /// Returns true iff it grabbed (so the app consumes the event).
+    /// A left press anywhere on the key list or the active modal popup begins a
+    /// move-drag: nothing inside either takes a click, so the whole box is its handle.
+    /// `open` is whether one is live: `rect` is only refreshed on render (frame-gated),
+    /// so a box closed by a keystroke can leave a stale rect - the caller gates on the
+    /// live state so a press can't grab a box that no longer exists. Returns true iff
+    /// it grabbed (so the app consumes the event).
     pub(crate) fn begin_drag(&mut self, col: u16, row: u16, open: bool) -> bool {
         if !open {
             return false;
@@ -58,9 +60,7 @@ impl PopupGeometry {
             return false; // no modal popup drawn yet
         }
         let inside = col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height;
-        let on_border = inside
-            && (col == r.x || col == r.x + r.width - 1 || row == r.y || row == r.y + r.height - 1);
-        if !on_border {
+        if !inside {
             return false;
         }
         self.drag = Some(PopupDrag {
@@ -70,7 +70,7 @@ impl PopupGeometry {
         true
     }
 
-    /// Updates `offset` from the pointer while a border-drag is active.
+    /// Updates `offset` from the pointer while a drag is active.
     pub(crate) fn drag(&mut self, col: u16, row: u16) {
         if let Some(d) = self.drag {
             let dx = col as i32 - d.grab.0 as i32;
@@ -82,12 +82,12 @@ impl PopupGeometry {
         }
     }
 
-    /// Ends a border-drag.
+    /// Ends a drag.
     pub(crate) fn end_drag(&mut self) {
         self.drag = None;
     }
 
-    /// Resets a modal popup to its anchored position (called when one opens).
+    /// Returns the key list and the popups to their anchored position.
     pub(crate) fn reset(&mut self) {
         self.offset = (0, 0);
         self.drag = None;

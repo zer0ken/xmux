@@ -380,7 +380,7 @@ impl Switcher {
                     resting_bar.height == 0,
                     list.size(),
                 );
-                (rect, list)
+                (self.settle(rect, area), list)
             })
         } else {
             None
