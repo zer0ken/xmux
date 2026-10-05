@@ -524,6 +524,14 @@ no function, and no test, so renaming code is never a documentation change.
   `administrators_authorized_keys` when the host's sshd reads an Administrators member's
   keys from there and the account is one. Either form adds the line only when it is
   absent, and an ed25519 pair is generated first when the machine has no key to send.
+  After adding it, registration runs one ssh login that may authenticate with a key
+  only, never prompts, shares no connection master, and runs a remote command that does
+  nothing. The result is registered only when that command exits 0. When the host
+  authenticates the key and then cannot open a session, the result is failed with the
+  server's error, and the line this registration added is removed from every file it was
+  added to; a line that was present before registration is kept. When the login fails
+  before authentication finishes (the host cannot be reached, times out, or refuses the
+  key), the result is failed as not verified and the line is kept.
 - **FR-B31** - Persistent UI symbols are conventional glyphs that OS-default terminal
   fonts render in one cell without emoji presentation. The vocabulary includes `❯`,
   `✓`, `✗`, braille spinner frames led by `⠋`, box drawing led by `╭`, `▲`, `?`, and
