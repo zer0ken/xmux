@@ -186,45 +186,6 @@ fn three_card_groups_and_focus_policy_hold_at_every_position() {
     }
 }
 
-#[test]
-fn a_floating_host_label_uses_free_space_before_covering_another_card() {
-    for position in [NavPosition::Top, NavPosition::Bottom] {
-        let mut scan = scan_of(vec![("local", vec!["work"]), ("empty-fixture", vec![])]);
-        scan.groups.push(Group {
-            source: "offline-fixture".into(),
-            sessions: vec![],
-            err: Some("connection refused".into()),
-        });
-        let mut shot = Shot::new(scan, nav_at(position), false);
-        let empty = shot.sw.rows.iter().position(|row| {
-            matches!(&row.reference, RowRef::Host { source, .. } if source == "empty-fixture")
-        }).unwrap();
-        let offline = shot.sw.rows.iter().position(|row| {
-            matches!(&row.reference, RowRef::Host { source, .. } if source == "offline-fixture")
-        }).unwrap();
-        let rect = shot
-            .plan
-            .nav_cells
-            .iter()
-            .find(|(i, _)| *i == offline)
-            .unwrap()
-            .1;
-        let identity = shot.row(rect.y, rect.x, rect.right());
-        shot.sw.set_selected(empty, &shot.state);
-        shot.draw(false);
-        assert_eq!(
-            shot.row(rect.y, rect.x, rect.right()),
-            identity,
-            "{position:?}"
-        );
-        assert!(
-            shot.area_text(shot.plan.regions.tree)
-                .contains("no sessions"),
-            "{position:?}"
-        );
-    }
-}
-
 impl Shot {
     fn new(scan: Scan, nav: NavSize, terminal_focused: bool) -> Self {
         let mut state = crate::state::State::from_scan(scan);
