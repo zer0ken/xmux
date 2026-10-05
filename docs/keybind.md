@@ -69,6 +69,7 @@ back to the default.
 | `←` / `→` (or `h` / `l`) | move to the previous / next category, landing on its first card (wraps) |
 | `PageUp` / `PageDown` | jump ten cards (wraps, like the card step) |
 | `Home` / `End` | jump to the first / last card |
+| `Ctrl-↑` / `Ctrl-↓` | move up a level (session, source, host) / back down to the child |
 
 A category is a source that has sessions to show, entered at its first session, or the
 whole band of host cards at once, entered at its first card. The band holds one card per
@@ -82,7 +83,19 @@ unreachable, `✗` means the session listing could not be parsed, a braille glyp
 scanning, and a blank cell means reachable with no sessions. Only the selected card
 adds the state word. Long names retain their beginning and end with a middle ellipsis.
 
+The card step never stops on a section title. A title has a host half and a source
+half, and the selection can stand on either: `Ctrl-↑` from a session selects its
+source (the source half of its title, or its host card), and `Ctrl-↑` again selects
+the host. `Ctrl-↓` returns to the child the walk came from, else the first child:
+sources by name, sessions in card order. From a title half, `↑`/`↓` go to the
+adjacent card. A bare `Ctrl-↑`/`Ctrl-↓` right after `prefix Ctrl-↑`/`prefix Ctrl-↓`
+still resizes the band (see below).
+
 `Enter` hands focus to the terminal view, as does `prefix →`.
+
+While the terminal view shows a host or source screen, `↑`/`↓` (and `Tab`) step
+through the screen's links and `Enter` opens the selected one. A host screen links
+each of its sources; a source screen links its host and each of its sessions.
 
 ## Nav actions
 
@@ -94,7 +107,7 @@ The remaining actions all take the prefix and work from either focus:
 |---|---|
 | `prefix /` | fuzzy-filter the list by `<source>/<name>` (applies as you type, shows match counts, and bolds matching characters) |
 | `prefix 1`-`prefix 9` | jump to a session by its number |
-| `prefix i` | select the current source title and show its session count and update method |
+| `prefix i` | select the current source and show its screen |
 | `prefix n` | start a new session on the selected host |
 | `prefix r` | re-scan: refresh which machines exist, and every source's sessions |
 | `prefix R` | re-scan the selected card's host alone |
@@ -102,11 +115,14 @@ The remaining actions all take the prefix and work from either focus:
 | `prefix h` | open the table of the hosts to check |
 | `prefix :` | search commands by name; type to filter, use arrows to select, Enter or a click to run, Esc to close |
 
-While the nav holds focus, bare `i` selects the current source title too. Click the
-title for the same screen. Titles do not take card numbers or interrupt card stepping.
-The host screen states the session count, how the list updates, and when the source
-last answered. An unreachable host leads with its verdict and re-scan actions; `d`
-unfolds the full diagnostic.
+While the nav holds focus, bare `i` selects the current source too. Click the source
+half of a title for the same screen, or the host half for the host screen. Titles do
+not take card numbers or interrupt card stepping. The source screen states the
+session count, how the list updates, and when the source was last listed. The host
+screen states how the host is addressed, its SSH login method, its public key, and
+when it was last reached, and links its sources. An unreachable host leads with its
+verdict and re-scan actions; `d` unfolds the full diagnostic. A host none of whose
+sources connected shows as one card in the nav.
 
 `prefix n` starts the new session on the host/mux the selected card belongs to -
 a host row or a session row both name one. Creating under an unreachable host is
@@ -423,7 +439,9 @@ notifications = true   # false keeps results out of toasts; the history still ha
 
 | Gesture | Action |
 |---|---|
-| left-click a card | select that card (nav focused) |
+| left-click a card or title half | open it: select it and focus the terminal view |
+| point at a card or title half | preview it in the terminal view without moving the selection (nav focused) |
+| left-click a screen link | open the screen it names (terminal focused) |
 | left-click a view | focus that view |
 | left-click a collapsed nav | expand the nav |
 | left-click `‹ 5` or `7 ›` on a band's view border | select the nearest card scrolled off that side |
@@ -437,7 +455,7 @@ notifications = true   # false keeps results out of toasts; the history still ha
 | left-click a toast | dismiss it |
 
 There is no context menu: every action a right-click could offer is either a
-plain click (focus, select) or a prefix chord. While the terminal view is focused,
+plain click (focus, open) or a prefix chord. While the terminal view is focused,
 mouse events over it are forwarded to the pane (the mux needs its own mouse mode
 enabled to use them).
 

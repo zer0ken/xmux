@@ -39,11 +39,11 @@ pub(crate) struct Input {
     /// host the user was on, not wherever streaming results moved the selection by
     /// the time they pressed Enter.
     pub(crate) source: Option<String>,
-    /// [`InputMode::Jump`] only: the card the selection was on when the popup opened,
-    /// held by IDENTITY (not row index) so a rebuild during the jump cannot restore
-    /// onto the wrong card. Esc returns here; Enter leaves the selection where the
-    /// live jump already put it.
-    pub(crate) restore: Option<RowRef>,
+    /// [`InputMode::Jump`] only: the node the selection named when the popup opened,
+    /// with the card it stood on, held by IDENTITY (not row index) so a rebuild during
+    /// the jump cannot restore onto the wrong card or the wrong half of a title. Esc
+    /// returns here; Enter leaves the selection where the live jump already put it.
+    pub(crate) restore: Option<(RowRef, crate::model::Node)>,
     /// [`InputMode::Jump`] only: the number Enter found no card for, stated in the jump's
     /// popup until the next key.
     pub(crate) refused: Option<String>,

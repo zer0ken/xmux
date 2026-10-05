@@ -6,19 +6,14 @@ use crate::state::PaletteChoice;
 impl Switcher {
     // --- key handling -------------------------------------------------------
 
-    fn select_host_section(&mut self, state: &mut crate::state::State) {
-        state.info_session = match self.current_ref() {
-            Some(RowRef::Session { sess }) => Some(sess.address()),
-            _ => None,
-        };
+    /// The info key: the selection goes to the source the selected card is about, so its
+    /// screen states the source's sessions and how they are kept current.
+    fn select_host_section(&mut self) {
         let Some(source) = self.current_source() else {
             return;
         };
-        if let Some(index) = self.rows.iter().position(|row|
-            matches!(&row.reference, RowRef::Section { source: section } if section == &source)) {
-            self.note_user_move();
-            self.set_selected(index, state);
-        }
+        self.note_user_move();
+        self.select_node(Node::Source(source));
     }
 
     /// Open the modal keys help modal. In tree focus any key then dismisses it (see
@@ -304,21 +299,28 @@ impl Switcher {
         // →/Enter focuses the terminal at the app layer). `n` starts a session on
         // the selected host; a digit opens the jump popup seeded with it (the app only
         // forwards a digit here behind the prefix).
+        let ctrl = ev
+            .modifiers
+            .contains(ratatui::crossterm::event::KeyModifiers::CONTROL);
         match ev.code {
             KeyCode::Enter => {}
+            // Ctrl+↑/↓ walk the hierarchy rather than the list: up from a session to its
+            // source and its host, and back down to where the walk came from.
+            KeyCode::Up if ctrl => self.ascend(),
+            KeyCode::Down if ctrl => self.descend(state),
             // ↑/↓ and ←/→ (and the vim hjkl pair) name the two things the list is made of:
             // ↑/↓ walk the cards, ←/→ walk the categories, landing on the first card of the
             // previous/next one. Neither is defined by where a card sits on screen, so both
             // mean the same thing in the side column and in the portrait band, which flows
             // its cards down a column and then right.
-            KeyCode::Up | KeyCode::Char('k') => self.nav_vertical(-1, state),
-            KeyCode::Down | KeyCode::Char('j') => self.nav_vertical(1, state),
-            KeyCode::Left | KeyCode::Char('h') => self.nav_horizontal(-1, state),
-            KeyCode::Right | KeyCode::Char('l') => self.nav_horizontal(1, state),
-            KeyCode::PageUp => self.move_selection(-10, state),
-            KeyCode::PageDown => self.move_selection(10, state),
-            KeyCode::Home => self.move_to(0, state),
-            KeyCode::End => self.move_to(-1, state),
+            KeyCode::Up | KeyCode::Char('k') => self.nav_vertical(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.nav_vertical(1),
+            KeyCode::Left | KeyCode::Char('h') => self.nav_horizontal(-1),
+            KeyCode::Right | KeyCode::Char('l') => self.nav_horizontal(1),
+            KeyCode::PageUp => self.move_selection(-10),
+            KeyCode::PageDown => self.move_selection(10),
+            KeyCode::Home => self.move_to(0),
+            KeyCode::End => self.move_to(-1),
             // An applied filter is cleared by Esc (the hint bar advertises it); with no
             // filter there is nothing to clear and Esc does nothing.
             KeyCode::Esc if !state.filter.is_empty() => {
@@ -338,7 +340,7 @@ impl Switcher {
                 'r' => return vec![Command::Rescan],
                 'R' => return self.rescan_host(state),
                 'L' => self.open_logout(state),
-                'i' => self.select_host_section(state),
+                'i' => self.select_host_section(),
                 // Jump: the digit opens the jump popup already holding it, so the
                 // number can be extended (4 → 41) without a second keystroke.
                 '0'..='9' => self.open_jump(c, state),
@@ -531,6 +533,9 @@ impl Switcher {
         self.open_host(&entry.source, state)
     }
 
+    /// Selects the card standing for `source` from the hosts to check: the source's own
+    /// card, or its host's card while the host is down. A login answers a failure that is
+    /// not a listing failure, so the host's screen then opens its login pane.
     pub(crate) fn open_host(&mut self, source: &str, state: &mut crate::state::State) -> bool {
         let login_needed = state
             .groups
@@ -538,10 +543,15 @@ impl Switcher {
             .find(|group| group.source == source)
             .and_then(crate::model::Group::failure)
             .is_some_and(|kind| kind != crate::model::FailureKind::ListFailed);
+        let machine = crate::session::machine_of(source);
         let host_row = |sw: &Switcher| {
-            sw.rows.iter().position(
-                |r| matches!(&r.reference, RowRef::Host { source: row_source, .. } if row_source == source),
-            )
+            sw.rows.iter().position(|r| match &r.reference {
+                RowRef::Host {
+                    source: row_source, ..
+                } => row_source == source,
+                RowRef::Machine { machine: m, .. } => m == machine,
+                _ => false,
+            })
         };
         let row = match host_row(self) {
             Some(i) => Some(i),
@@ -555,9 +565,20 @@ impl Switcher {
             return false;
         };
         self.note_user_move();
-        self.set_selected(i, state);
         if login_needed {
+            // The host's own card, or the host half of this source's card while the host
+            // is up, so the pane logs in through the source that was chosen.
+            let host = Node::Host(machine.to_owned());
+            if let Some((row, part)) = self.target_of(&host, Some(source)) {
+                self.set_target(Target {
+                    row,
+                    part,
+                    deep: None,
+                });
+            }
             self.login_target = Some(source.to_owned());
+        } else {
+            self.set_selected(i);
         }
         login_needed
     }
@@ -594,16 +615,33 @@ impl Switcher {
     pub(super) fn open_new(&mut self, state: &mut crate::state::State) {
         state.chrome.clear_flash();
         self.dismiss_modals(state);
-        // A blocked host is unreachable too (its failure is one of unreachable's), so
-        // the one check covers both: nothing can be created over a connection that is
-        // not up.
-        if self.current_host_unreachable() {
-            state.flash("host unreachable, cannot create here");
+        // A session lives in a source, so a host names none to create it in.
+        if let Some(Node::Host(machine)) = self.selected_node() {
+            if host_failure(state, &machine).is_some() {
+                state.flash("host unreachable, cannot create here");
+            } else {
+                state.flash(format!("select a source of {machine} to start a session"));
+            }
             return;
         }
         let Some(source) = self.current_source() else {
             return;
         };
+        // A blocked source is unreachable too (its failure is one of unreachable's), so
+        // the one check covers both: nothing can be created over a connection that is
+        // not up.
+        if state.groups.iter().any(|g| {
+            g.source == source
+                && matches!(
+                    g.failure(),
+                    Some(
+                        crate::model::FailureKind::Blocked | crate::model::FailureKind::Unreachable
+                    )
+                )
+        }) {
+            state.flash("host unreachable, cannot create here");
+            return;
+        }
         state.modal = Some(Modal::Input(Box::new(Input::new(
             InputMode::New,
             String::new(),
@@ -640,7 +678,7 @@ impl Switcher {
     pub(super) fn open_jump(&mut self, digit: char, state: &mut crate::state::State) {
         state.chrome.clear_flash();
         let seed = digit.to_string();
-        let restore = self.current_ref().cloned();
+        let restore = self.current_ref().cloned().zip(self.selected_node());
         self.dismiss_modals(state);
         let mut input = Input::new(InputMode::Jump, seed, None);
         input.restore = restore;
@@ -660,7 +698,7 @@ impl Switcher {
             return;
         };
         self.note_user_move();
-        self.set_selected(n, state);
+        self.set_selected(n);
     }
 
     /// Reflects the open filter input's buffer into the active filter and re-derives
@@ -681,16 +719,25 @@ impl Switcher {
         self.rebuild(state);
     }
 
-    /// Returns the selection to the card a cancelled jump started from, matched by
-    /// identity so a rebuild mid-jump cannot land on the wrong card. A card that
-    /// vanished meanwhile leaves the selection where the jump put it.
-    fn restore_jump(&mut self, restore: Option<RowRef>, state: &mut crate::state::State) {
-        let Some(target) = restore else {
+    /// Returns the selection to the node a cancelled jump started from, on the card it
+    /// stood on, matched by identity so a rebuild mid-jump cannot land on the wrong card
+    /// or the other half of a title. A node that vanished meanwhile leaves the selection
+    /// where the jump put it.
+    fn restore_jump(&mut self, restore: Option<(RowRef, Node)>, state: &crate::state::State) {
+        let Some((row, node)) = restore else {
             return;
         };
-        if let Some(i) = self.row_matching(&target) {
-            self.set_selected(i, state);
-        }
+        let near = row_source(&row).map(str::to_owned);
+        let target = match self.target_of(&node, near.as_deref()) {
+            Some((row, part)) => Target {
+                row,
+                part,
+                deep: None,
+            },
+            None if node_exists(&node, state) => self.deep_target(node),
+            None => return,
+        };
+        self.set_target(target);
     }
 
     pub(super) fn close_input(&mut self, state: &mut crate::state::State) {

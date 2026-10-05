@@ -255,6 +255,40 @@ pub(crate) struct ViewScreenRender<'a> {
     pub(crate) address: &'a crate::session::Address,
     pub(crate) kind: ViewScreen,
     pub(crate) focused: bool,
+    /// The screen is a host's rather than a source's or a session's.
+    pub(crate) host: bool,
+    /// The links the screen offers, in the order the arrow keys walk them. A source's
+    /// first link is its host, written as the host half of the headline.
+    pub(crate) links: &'a [ScreenLink],
+    /// The hard-selected link, drawn while the terminal view holds the focus.
+    pub(crate) link: Option<usize>,
+    /// The link under the pointer.
+    pub(crate) link_hover: Option<usize>,
+}
+
+/// One link a host's or a source's screen offers: the node it opens, the name it is
+/// written as, and what the screen states beside it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ScreenLink {
+    pub(crate) node: crate::model::Node,
+    pub(crate) label: String,
+    pub(crate) value: String,
+}
+
+/// Where a screen painted one of its links: the link, the line, the first column and the
+/// width, relative to the screen's own area.
+type LinkCell = (usize, usize, u16, u16);
+
+/// The first line of a view screen shown in `height` rows: the top, unless the
+/// hard-selected link would fall below the area, in which case the screen scrolls just
+/// far enough to show that link on its last row. A link the user can select is a link
+/// the user can see before opening it.
+fn screen_top(links: &[LinkCell], selected: Option<usize>, height: u16) -> usize {
+    selected
+        .and_then(|s| links.iter().find(|l| l.0 == s))
+        .map_or(0, |&(_, line, _, _)| {
+            (line + 1).saturating_sub(height as usize)
+        })
 }
 
 impl ViewScreen {
@@ -271,6 +305,7 @@ impl ViewScreen {
             ViewScreen::Unreachable => crate::ui::tree::host_state_word(false, false, false, true),
             ViewScreen::Empty => crate::ui::tree::host_state_word(false, false, false, false),
             ViewScreen::HostInfo => "sessions",
+            ViewScreen::Host => crate::ui::tree::HOST_REACHABLE,
         }
     }
 }
@@ -401,24 +436,44 @@ enum ScreenCell {
     Continued,
     /// No row at all - the blank line parting two blocks of them.
     Gap,
+    /// A row whose value opens with link `link`: the name of the list in the cell on the
+    /// list's first row, no cell on the rows after it.
+    Link(Option<&'static str>, usize),
 }
 
 impl ScreenCell {
     fn text(&self) -> &str {
         match self {
             ScreenCell::Key(k) => k,
-            ScreenCell::Label(l) => l,
-            ScreenCell::Continued | ScreenCell::Gap => "",
+            ScreenCell::Label(l) | ScreenCell::Link(Some(l), _) => l,
+            ScreenCell::Continued | ScreenCell::Gap | ScreenCell::Link(None, _) => "",
         }
     }
 
     fn style(&self, palette: &crate::ui::palette::Palette) -> Style {
         match self {
             ScreenCell::Key(_) => crate::ui::palette::interaction_key_style(),
-            ScreenCell::Label(_) => Style::default().fg(palette.decoration),
+            ScreenCell::Label(_) | ScreenCell::Link(..) => Style::default().fg(palette.decoration),
             ScreenCell::Continued | ScreenCell::Gap => Style::default(),
         }
     }
+}
+
+/// How a link reads: the accent, reversed while it is the hard selection and underlined
+/// while the pointer is on it, the same two looks a nav target takes.
+fn link_style(
+    palette: &crate::ui::palette::Palette,
+    index: usize,
+    view: (Option<usize>, Option<usize>),
+) -> Style {
+    let mut style = Style::default().fg(palette.accent);
+    if view.0 == Some(index) {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    if view.1 == Some(index) {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    style
 }
 
 impl Default for Chrome {
@@ -564,14 +619,9 @@ impl Chrome {
         view: ViewScreenRender<'_>,
         palette: &crate::ui::palette::Palette,
     ) -> Option<ratatui::layout::Position> {
-        let (lines, caret) = self.view_screen_lines(
-            state,
-            view.address,
-            view.kind,
-            area.width,
-            view.focused,
-            palette,
-        );
+        let (lines, caret, links) = self.view_screen_lines(state, &view, area.width, palette);
+        let top = screen_top(&links, view.link, area.height);
+        let lines: Vec<Line<'static>> = lines.into_iter().skip(top).collect();
         let content_rows = lines.len().min(area.height as usize) as u16;
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
         let blank = Rect {
@@ -583,6 +633,7 @@ impl Chrome {
             crate::ui::braille_x::render(frame, blank, self.animation_ms);
         }
         caret
+            .and_then(|(row, col)| Some((row.checked_sub(top)?, col)))
             .filter(|&(row, col)| row < area.height as usize && col < area.width)
             .map(|(row, col)| ratatui::layout::Position {
                 x: area.x + col,
@@ -590,14 +641,47 @@ impl Chrome {
             })
     }
 
+    /// Where `view` paints its links inside `area`, read from the same lines the paint
+    /// draws and scrolled the same way, so a click is hit-tested against what is on
+    /// screen.
+    pub(crate) fn view_link_rects(
+        &self,
+        state: &crate::state::State,
+        view: &ViewScreenRender<'_>,
+        area: Rect,
+        palette: &crate::ui::palette::Palette,
+    ) -> Vec<(usize, Rect)> {
+        let (_, _, links) = self.view_screen_lines(state, view, area.width, palette);
+        let top = screen_top(&links, view.link, area.height);
+        links
+            .into_iter()
+            .filter_map(|(link, line, col, width)| Some((link, line.checked_sub(top)?, col, width)))
+            .filter(|&(_, line, col, _)| line < area.height as usize && col < area.width)
+            .map(|(link, line, col, width)| {
+                (
+                    link,
+                    Rect {
+                        x: area.x + col,
+                        y: area.y + line as u16,
+                        width: width.min(area.width - col),
+                        height: 1,
+                    },
+                )
+            })
+            .collect()
+    }
+
     /// The name a view screen carries at its top, in the grammar the nav cards use:
     /// `{host}/{mux}` for a host's screen, and that with the session under it for the
     /// session xmux is itself running in. What arrives is the [`crate::session::Address`]
     /// the screen was reached by, which is the source id and, for the session screen, its
     /// session name - the two halves are already separate, so nothing is re-split.
-    fn headline(&self, address: &crate::session::Address, kind: ViewScreen) -> String {
+    fn headline(&self, address: &crate::session::Address, kind: ViewScreen, host: bool) -> String {
         if address.source.is_empty() {
             return String::new();
+        }
+        if host {
+            return crate::session::machine_of(&address.source).to_string();
         }
         match kind {
             ViewScreen::Scanning => self.source_label(&address.source),
@@ -621,7 +705,8 @@ impl Chrome {
             | ViewScreen::Login
             | ViewScreen::ListFailed
             | ViewScreen::Empty
-            | ViewScreen::HostInfo => self.source_label_when(
+            | ViewScreen::HostInfo
+            | ViewScreen::Host => self.source_label_when(
                 &address.source,
                 matches!(kind, ViewScreen::Empty | ViewScreen::HostInfo),
             ),
@@ -635,12 +720,15 @@ impl Chrome {
     fn view_screen_lines(
         &self,
         state: &crate::state::State,
-        address: &crate::session::Address,
-        kind: ViewScreen,
+        view: &ViewScreenRender<'_>,
         width: u16,
-        focused: bool,
         palette: &crate::ui::palette::Palette,
-    ) -> (Vec<Line<'static>>, Option<(usize, u16)>) {
+    ) -> (Vec<Line<'static>>, Option<(usize, u16)>, Vec<LinkCell>) {
+        let (address, kind, focused, host) = (view.address, view.kind, view.focused, view.host);
+        let marks = (view.link, view.link_hover);
+        // The login pane is a host's: a source refused until a login reads its failure,
+        // and its host's screen is where the login is.
+        let pane = kind == ViewScreen::Login && host;
         let pal = palette;
         let mut caret = None;
         let p = &self.ui_prefix;
@@ -680,7 +768,7 @@ impl Chrome {
             // worth more than a tidy column.
             // The login pane states its failure above these rows, as a verdict over ssh's
             // own text, so only the other screens carry the reason as a row.
-            if kind != ViewScreen::Login {
+            if !pane {
                 let login_report = state.login_reports.get(crate::session::machine_of(source));
                 let reason = login_report
                     .and_then(|report| report.connect.reason().map(str::to_string))
@@ -697,6 +785,7 @@ impl Chrome {
             if let Some(registration) = state
                 .registration_reports
                 .get(crate::session::machine_of(source))
+                .filter(|_| host)
             {
                 use crate::ui::ops::RegistrationOutcome;
                 let registration = match registration {
@@ -767,6 +856,7 @@ impl Chrome {
             // screen: a sibling serving sessions says the box is up and this mux is not.
             for (i, sib) in siblings(state, source, &|s| self.source_label(s))
                 .into_iter()
+                .filter(|_| !host)
                 .enumerate()
             {
                 let cell = if i == 0 {
@@ -781,26 +871,60 @@ impl Chrome {
             }
             rows.push((ScreenCell::Gap, String::new()));
             facts_end = rows.len();
-        } else if kind == ViewScreen::HostInfo {
-            if self.source_reach.get(source).is_some_and(|reach| reach.ssh) {
-                let session = state
-                    .info_session
-                    .as_ref()
-                    .filter(|session| session.source == source);
-                if let Some(session) = session {
-                    rows.push((ScreenCell::Label("session"), session.session.clone()));
-                }
-                let method = if let Some(session) = session {
-                    state.display_auth_methods.get(&session.source)
-                } else if address.session.is_empty() {
-                    state.auth_methods.get(crate::session::machine_of(source))
-                } else {
-                    state.display_auth_methods.get(&address.source)
-                }
-                .map(|method| method.label())
-                .unwrap_or("not observed");
+        } else if kind == ViewScreen::Host {
+            // How the host is reached, then how it logs in, then when it last answered:
+            // the facts that belong to the machine whichever of its muxes is asked.
+            let reach = self.source_reach.get(source);
+            if reach.is_some_and(|reach| reach.ssh) {
+                let defaults = self.login_defaults(source);
+                rows.push((ScreenCell::Label("address"), defaults.address.value));
+                rows.push((ScreenCell::Label("port"), defaults.port.value));
+                rows.push((ScreenCell::Label("user"), defaults.username.value));
+                let machine = crate::session::machine_of(source);
+                let method = state
+                    .auth_methods
+                    .get(machine)
+                    .or_else(|| {
+                        state
+                            .display_auth_methods
+                            .iter()
+                            .filter(|(s, _)| crate::session::machine_of(s) == machine)
+                            .map(|(_, method)| method)
+                            .next()
+                    })
+                    .map(|method| method.label())
+                    .unwrap_or("not observed");
                 rows.push((ScreenCell::Label("SSH login"), method.into()));
+            } else if let Some(reach) = reach.filter(|reach| !reach.machine.is_empty()) {
+                rows.push((ScreenCell::Label("machine"), reach.machine.clone()));
             }
+            if let Some(registration) = state
+                .registration_reports
+                .get(crate::session::machine_of(source))
+            {
+                use crate::ui::ops::RegistrationOutcome;
+                let value = match registration {
+                    RegistrationOutcome::NotRequested => None,
+                    RegistrationOutcome::Registered => Some("registered".to_string()),
+                    RegistrationOutcome::Skipped(reason) => Some(format!("skipped: {reason}")),
+                    RegistrationOutcome::Failed(reason) => Some(format!("failed: {reason}")),
+                };
+                if let Some(value) = value {
+                    rows.push((ScreenCell::Label("public key"), value));
+                }
+            }
+            let machine = crate::session::machine_of(source);
+            if let Some(reached) = state
+                .last_reached
+                .iter()
+                .filter(|(s, _)| crate::session::machine_of(s) == machine)
+                .map(|(_, at)| *at)
+                .max()
+            {
+                rows.push((ScreenCell::Label("last reached"), reached_at(reached)));
+            }
+            rows.push((ScreenCell::Gap, String::new()));
+        } else if kind == ViewScreen::HostInfo {
             let count = state
                 .groups
                 .iter()
@@ -814,8 +938,13 @@ impl Chrome {
                 ));
             }
             if let Some(reached) = state.last_reached.get(source) {
-                rows.push((ScreenCell::Label("last reached"), reached_at(*reached)));
+                rows.push((ScreenCell::Label("last listed"), reached_at(*reached)));
             }
+            rows.push((ScreenCell::Gap, String::new()));
+            rows.push((
+                ScreenCell::Key(format!("{p} n")),
+                "start a new session".into(),
+            ));
         } else if kind == ViewScreen::Scanning {
             // A scan has no answer yet, so the screen states only what earlier answers
             // observed. A key is not offered: the re-scan it would start is under way.
@@ -835,25 +964,9 @@ impl Chrome {
                     ));
                 }
                 if let Some(reached) = state.last_reached.get(source) {
-                    rows.push((ScreenCell::Label("last reached"), reached_at(*reached)));
+                    rows.push((ScreenCell::Label("last listed"), reached_at(*reached)));
                 }
                 rows.push((ScreenCell::Gap, String::new()));
-            }
-            if let Some(registration) = state
-                .registration_reports
-                .get(crate::session::machine_of(source))
-            {
-                use crate::ui::ops::RegistrationOutcome;
-                let value = match registration {
-                    RegistrationOutcome::NotRequested => None,
-                    RegistrationOutcome::Registered => Some("registered".to_string()),
-                    RegistrationOutcome::Skipped(reason) => Some(format!("skipped: {reason}")),
-                    RegistrationOutcome::Failed(reason) => Some(format!("failed: {reason}")),
-                };
-                if let Some(value) = value {
-                    rows.push((ScreenCell::Label("public key"), value));
-                    rows.push((ScreenCell::Gap, String::new()));
-                }
             }
             // Creating under an unreachable host is refused, so `n` is offered only where
             // it can actually run.
@@ -872,10 +985,8 @@ impl Chrome {
                 "re-scan every host".into(),
             ));
         }
-        if matches!(kind, ViewScreen::HostInfo | ViewScreen::Empty)
-            && self.source_reach.get(source).is_some_and(|reach| reach.ssh)
+        if kind == ViewScreen::Host && self.source_reach.get(source).is_some_and(|reach| reach.ssh)
         {
-            rows.push((ScreenCell::Gap, String::new()));
             rows.push((
                 ScreenCell::Key(format!("{p} L")),
                 "log out of this host".into(),
@@ -941,9 +1052,7 @@ impl Chrome {
 
         // The login pane's failure folds the host facts under its details choice: ssh's
         // whole text and the facts come back together when the user unfolds them.
-        let failure = (kind == ViewScreen::Login)
-            .then(|| state.login_failure(source))
-            .flatten();
+        let failure = pane.then(|| state.login_failure(source)).flatten();
         let unfolded = state
             .login
             .as_ref()
@@ -951,7 +1060,7 @@ impl Chrome {
             .is_some_and(|d| d.details);
         // While a login's steps run, the facts describe the probe failure that login is
         // answering, so they stay folded with nothing to unfold them.
-        let steps_running = kind == ViewScreen::Login
+        let steps_running = pane
             && state
                 .login_progress
                 .get(source)
@@ -969,6 +1078,22 @@ impl Chrome {
                 rows.drain(..facts_end);
             }
             None => {}
+        }
+
+        // The level below, as links: a host's sources, a source's sessions. A source's
+        // first link is its host, which the headline carries.
+        let listed = if host { 0 } else { 1 };
+        let name = if host { "sources" } else { "sessions" };
+        if view.links.len() > listed && kind != ViewScreen::SelfSession {
+            rows.push((ScreenCell::Gap, String::new()));
+            for (i, link) in view.links.iter().enumerate().skip(listed) {
+                let value = if link.value.is_empty() {
+                    link.label.clone()
+                } else {
+                    format!("{}  {}", link.label, link.value)
+                };
+                rows.push((ScreenCell::Link((i == listed).then_some(name), i), value));
+            }
         }
 
         // One column width for keys and labels alike keeps values aligned.
@@ -1014,17 +1139,43 @@ impl Chrome {
             ViewScreen::Unreachable => pal.error,
             ViewScreen::Login => pal.warning,
             ViewScreen::ListFailed => pal.primary,
-            ViewScreen::Empty | ViewScreen::SelfSession | ViewScreen::HostInfo => pal.decoration,
+            ViewScreen::Empty
+            | ViewScreen::SelfSession
+            | ViewScreen::HostInfo
+            | ViewScreen::Host => pal.decoration,
         });
-        let headline = format!(" {}", self.headline(address, kind));
+        let headline = self.headline(address, kind, host);
+        let bold = Style::default()
+            .fg(pal.secondary)
+            .add_modifier(Modifier::BOLD);
+        let mut links: Vec<LinkCell> = Vec::new();
+        // A source's headline is its path, and the host half of the path is the link up
+        // to the host's screen.
+        let headline_line = match view.links.first() {
+            Some(up)
+                if !host && kind != ViewScreen::SelfSession && headline.starts_with(&up.label) =>
+            {
+                let rest = headline[up.label.len()..].to_string();
+                links.push((
+                    0,
+                    1,
+                    1,
+                    unicode_width::UnicodeWidthStr::width(up.label.as_str()) as u16,
+                ));
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(
+                        up.label.clone(),
+                        link_style(pal, 0, marks).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(rest, bold),
+                ])
+            }
+            _ => Line::from(Span::styled(format!(" {headline}"), bold)),
+        };
         let mut out = vec![
             Line::from(""),
-            Line::from(Span::styled(
-                headline,
-                Style::default()
-                    .fg(pal.secondary)
-                    .add_modifier(Modifier::BOLD),
-            )),
+            headline_line,
             Line::from(Span::styled(format!(" {}", kind.word()), state_style)),
         ];
         // The login pane OWNS the connection values: they sit at the panel's top,
@@ -1034,7 +1185,7 @@ impl Chrome {
         // failure it ended in. The focused text
         // field shows a cursor, both only while the terminal view is focused and no login
         // runs, so the pane says whether it is taking keys.
-        if kind == ViewScreen::Login {
+        if pane {
             use crate::model::{LoginField, LoginStep, StepState};
             use crate::state::{AfterLogin, LoginFocus};
             let running = state.login_run.as_ref().is_some_and(|l| l.source == source);
@@ -1390,13 +1541,33 @@ impl Chrome {
                 out.push(Line::from(""));
                 continue;
             }
-            out.push(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!("   {:<cw$}", cell.text()), cell.style(palette)),
                 rule.clone(),
-                Span::raw(value),
-            ]));
+            ];
+            match cell {
+                ScreenCell::Link(_, i) => {
+                    let label = &view.links[i].label;
+                    let (name, rest) = if value.starts_with(label.as_str()) {
+                        (label.clone(), value[label.len()..].to_string())
+                    } else {
+                        (value.clone(), String::new())
+                    };
+                    let col = 3 + cw as u16 + 2;
+                    links.push((
+                        i,
+                        out.len(),
+                        col,
+                        unicode_width::UnicodeWidthStr::width(name.as_str()) as u16,
+                    ));
+                    spans.push(Span::styled(name, link_style(pal, i, marks)));
+                    spans.push(Span::styled(rest, Style::default().fg(pal.decoration)));
+                }
+                _ => spans.push(Span::raw(value)),
+            }
+            out.push(Line::from(spans));
         }
-        (out, caret)
+        (out, caret, links)
     }
 
     /// The hint bar's logical text, fit to `width`. At rest this text is only the prefix,

@@ -265,6 +265,13 @@ impl Harness {
         self.key(KeyCode::Char(c)).await;
     }
 
+    /// Ctrl held with `code`: Ctrl+↑/↓ walk the hierarchy.
+    fn ctrl(&mut self, code: KeyCode) {
+        self.sw
+            .handle_key(KeyEvent::new(code, KeyModifiers::CONTROL), &mut self.state);
+        self.draw();
+    }
+
     fn buf(&self) -> &Buffer {
         self.term.backend().buffer()
     }
@@ -966,10 +973,7 @@ async fn three_hosts_cursor_on_middle() -> Harness {
     );
     // infer is the launch preselect - the top card - so a select_address
     // to it is a no-op; pin it as a deliberate user selection so a rebuild won't drift it.
-    h.sw.select_address(
-        &crate::session::Address::new("jupiter00", "infer"),
-        &h.state,
-    );
+    h.sw.select_address(&crate::session::Address::new("jupiter00", "infer"));
     h.sw.interest = super::Interest::Selected;
     assert_eq!(cur_session_name(&h).as_deref(), Some("infer"));
     h
@@ -1028,7 +1032,7 @@ fn select_host_card(h: &mut Harness, source: &str) {
             .position(|r| matches!(&r.reference, RowRef::Host { source: s, .. } if s == source))
             .expect("the host card");
     h.sw.note_user_move();
-    h.sw.set_selected(i, &h.state);
+    h.sw.set_selected(i);
 }
 
 #[test]
@@ -2394,10 +2398,17 @@ async fn a_card_claims_a_mux_only_when_it_is_confirmed() {
                 err: Some("connection refused".into()),
                 sessions: vec![],
             },
-            // qualified id: the mux was resolved on the machine, so it is a fact.
+            // qualified id: the mux was resolved on the machine, so it is a fact. The
+            // machine's other mux answered, so the machine is up and the failing mux keeps
+            // a card of its own.
             Group {
                 source: "srv:zellij".into(),
                 err: Some("connection refused".into()),
+                sessions: vec![],
+            },
+            Group {
+                source: "srv:screen".into(),
+                err: None,
                 sessions: vec![],
             },
             // settled reachable empty host: the enumeration answered through its mux.
@@ -2731,7 +2742,7 @@ async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
         .iter()
         .position(|r| matches!(&r.reference, RowRef::Session { sess } if sess.name == other))
         .expect("other session card");
-    sw.set_selected(idx, &state);
+    sw.set_selected(idx);
     sw.interest = super::Interest::Selected;
     sw.rebuild(&mut state);
     let got = match sw.current_ref() {
@@ -2967,7 +2978,10 @@ async fn selected_host_card_stays_reversed_with_terminal_focus() {
     let mut h = Harness::new_sized(scan_with_a_host_band(), 60, 70);
     h.key(KeyCode::Right).await;
     h.key(KeyCode::Right).await;
-    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { .. })));
+    assert!(matches!(
+        h.sw.current_ref(),
+        Some(RowRef::Host { .. } | RowRef::Machine { .. })
+    ));
     h.sw.sync_view_focus(true);
     h.draw_terminal_focused();
     let (_, rect) = h
@@ -3080,7 +3094,7 @@ async fn n_on_a_session_card_opens_new_for_its_host() {
     let mut h = Harness::new(sample());
     assert!(h
         .sw
-        .select_address(&crate::session::Address::new("local", "editor"), &h.state));
+        .select_address(&crate::session::Address::new("local", "editor")));
     h.ch('n').await;
     assert!(
         h.state.is_inputting(),
@@ -3401,16 +3415,10 @@ async fn filter_keeps_the_selection_on_a_surviving_card_while_typing() {
 #[tokio::test]
 async fn create_on_unreachable_host_refused() {
     let mut h = Harness::new(sample());
-    // jump to the last host row - the unreachable db-2.
+    // jump to the last card - the unreachable db-2, one card for the host.
     h.key(KeyCode::End).await;
     assert!(
-        matches!(
-            h.sw.current_ref(),
-            Some(RowRef::Host {
-                unreachable: true,
-                ..
-            })
-        ),
+        matches!(h.sw.current_ref(), Some(RowRef::Machine { .. })),
         "expected to reach the unreachable db-2 host"
     );
     h.ch('n').await;
@@ -3494,7 +3502,7 @@ async fn a_section_opens_host_freshness_by_key_and_click_without_numbering_it() 
         .find(|(i, _)| *i == section)
         .unwrap()
         .1;
-    h.sw.mouse_select(&h.plan.clone(), rect.x, rect.y, &h.state);
+    h.sw.mouse_select(&h.plan.clone(), rect.x, rect.y);
     h.draw();
     assert!(matches!(h.sw.current_ref(), Some(RowRef::Section { source }) if source == "local"));
     h.sw.rebuild(&mut h.state);
@@ -3505,7 +3513,7 @@ async fn a_section_opens_host_freshness_by_key_and_click_without_numbering_it() 
 }
 
 #[tokio::test]
-async fn ssh_session_info_shows_the_observed_login_method() {
+async fn the_host_screen_shows_the_observed_login_method() {
     let mut h = Harness::from_sources(&["box"]);
     h.state.chrome.source_reach.insert(
         "box".into(),
@@ -3526,17 +3534,21 @@ async fn ssh_session_info_shows_the_observed_login_method() {
     h.state
         .display_auth_methods
         .insert("box".into(), crate::model::AuthMethod::PublicKey);
-    h.key(KeyCode::Char('i')).await;
+    // The login is the host's: a session's source does not state it.
+    h.ctrl(KeyCode::Up);
+    assert!(h.view_cell_of("SSH login").is_none(), "{}", h.view_text());
+    h.ctrl(KeyCode::Up);
     let row = h.view_cell_of("SSH login").unwrap().0;
-    assert!(h.view_row(row).contains("public key"));
+    assert!(h.view_row(row).contains("username and password"));
+    h.state.auth_methods.remove("box");
+    h.draw();
+    assert!(
+        h.view_row(row).contains("public key"),
+        "the display's login stands in for a probe that observed none"
+    );
     h.state.display_auth_methods.remove("box");
     h.draw();
     assert!(h.view_row(row).contains("not observed"));
-    h.state
-        .display_auth_methods
-        .insert("box".into(), crate::model::AuthMethod::Password);
-    h.draw();
-    assert!(h.view_row(row).contains("username and password"));
 }
 
 #[tokio::test]
@@ -3674,10 +3686,9 @@ async fn levels_render_from_the_switchers_palette() {
         "auto-light",
         crate::ui::palette::Overrides::default(),
     ));
-    assert!(h.sw.select_address(
-        &crate::session::Address::new("jupiter00", "inference"),
-        &h.state
-    ));
+    assert!(h
+        .sw
+        .select_address(&crate::session::Address::new("jupiter00", "inference")));
     h.draw();
     assert_eq!(
         h.nav_fg_of("local"),
@@ -4131,7 +4142,7 @@ async fn every_host_state_card_sits_below_every_session_card() {
     let boundary = h.sw.band_boundary().expect("the list has a host card");
     assert!(boundary > 0, "the session cards come first");
     for (i, row) in h.sw.rows.iter().enumerate() {
-        let host_card = matches!(row.reference, RowRef::Host { .. });
+        let host_card = matches!(row.reference, RowRef::Host { .. } | RowRef::Machine { .. });
         assert_eq!(
             host_card,
             i >= boundary,
@@ -4284,7 +4295,7 @@ async fn a_click_on_the_parting_selects_nothing() {
     let before = h.sw.selected;
     let gap_y = card_rect(&h, boundary - 1);
     let gap_y = gap_y.y + gap_y.height;
-    h.sw.mouse_select(&h.plan, h.plan.nav_inner.x, gap_y, &h.state);
+    h.sw.mouse_select(&h.plan, h.plan.nav_inner.x, gap_y);
     assert_eq!(
         h.sw.selected, before,
         "the blank parting is not a card, so a click on it moves nothing"
@@ -4404,14 +4415,18 @@ async fn focus_changes_only_the_address_column() {
 async fn navigation_wraps_around() {
     let mut h = Harness::new(sample());
     h.key(KeyCode::End).await; // last card = db-2 host
-    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"));
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Machine { machine, .. }) if machine == "db-2")
+    );
     h.key(KeyCode::Down).await; // wrap bottom → first SESSION card (row 1, under its title)
     assert_eq!(
         h.sw.selected, 1,
         "↓ from the last card wraps to the first session card"
     );
     h.key(KeyCode::Up).await; // wrap top → bottom
-    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"));
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Machine { machine, .. }) if machine == "db-2")
+    );
 }
 
 #[tokio::test]
@@ -4436,7 +4451,7 @@ async fn horizontal_steps_one_host_and_lands_on_its_first_card() {
     );
     h.key(KeyCode::Right).await;
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"),
+        matches!(h.sw.current_ref(), Some(RowRef::Machine { machine, .. }) if machine == "db-2"),
         "the host band is entered at its first card"
     );
 }
@@ -4451,12 +4466,12 @@ async fn the_host_band_is_one_stop_however_many_cards_it_holds() {
     h.key(KeyCode::Right).await; // local → jupiter00
     h.key(KeyCode::Right).await; // jupiter00 → the band
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"),
+        matches!(h.sw.current_ref(), Some(RowRef::Machine { machine, .. }) if machine == "db-2"),
         "→ enters the band at its first card"
     );
     h.key(KeyCode::Down).await;
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-3"),
+        matches!(h.sw.current_ref(), Some(RowRef::Machine { machine, .. }) if machine == "db-3"),
         "↓ still walks the band card by card"
     );
     h.key(KeyCode::Right).await;
@@ -4513,7 +4528,7 @@ async fn horizontal_wraps_at_both_ends() {
     let mut h = Harness::new(sample());
     h.key(KeyCode::Left).await;
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"),
+        matches!(h.sw.current_ref(), Some(RowRef::Machine { machine, .. }) if machine == "db-2"),
         "← from the first source wraps to the last"
     );
     h.key(KeyCode::Right).await;
@@ -4521,21 +4536,6 @@ async fn horizontal_wraps_at_both_ends() {
         matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
         "→ from the last source wraps to the first"
     );
-}
-
-#[tokio::test]
-async fn double_click_selects_node() {
-    let mut h = Harness::new(sample());
-    // inference preselected; double-click inside the tree moves the selection.
-    let before = h.sw.selected;
-    h.sw.mouse_attach(&h.plan, 5, 4, &h.state);
-    // selection moved (or stayed on the same selectable row - just check no panic
-    // and current_attach_target is populated).
-    assert!(
-        h.sw.current_attach_target(&h.state).is_some(),
-        "double click yields an attach target"
-    );
-    let _ = before; // used
 }
 
 #[tokio::test]
@@ -4549,7 +4549,7 @@ async fn single_click_moves_cursor() {
     );
     h.draw();
     let (x, y) = row_screen_pos(&h, target);
-    h.sw.mouse_select(&h.plan, x, y, &h.state);
+    h.sw.mouse_select(&h.plan, x, y);
     assert_eq!(
         h.sw.selected, target,
         "a click lands on the card drawn at that row"
@@ -4569,12 +4569,12 @@ async fn mouse_hit_testing_reads_the_plan_produced_for_the_frame() {
         .iter()
         .find(|(idx, _)| *idx == target)
         .expect("the target card is in the frame plan");
-    h.sw.set_selected(0, &h.state);
+    h.sw.set_selected(0);
 
-    h.sw.mouse_select(&RenderPlan::default(), rect.x, rect.y, &h.state);
+    h.sw.mouse_select(&RenderPlan::default(), rect.x, rect.y);
     assert_ne!(h.sw.selected, target, "a different plan has no card there");
 
-    h.sw.mouse_select(&frame_plan, rect.x, rect.y, &h.state);
+    h.sw.mouse_select(&frame_plan, rect.x, rect.y);
     assert_eq!(h.sw.selected, target, "the frame plan resolves the click");
 }
 
@@ -4684,7 +4684,7 @@ async fn terminal_view_target_follows_cursor() {
     // On a session card, the target is that session (its active window follows).
     assert!(h
         .sw
-        .select_address(&crate::session::Address::new("local", "editor"), &h.state));
+        .select_address(&crate::session::Address::new("local", "editor")));
     let t = h.sw.terminal_view_target();
     assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
     // Step to the next card (the next session) - the target follows the cursor.
@@ -4742,6 +4742,7 @@ fn cur_row_label(h: &Harness) -> String {
         .map(|r| match &r.reference {
             RowRef::Session { sess } => sess.address().display(),
             RowRef::Host { source, .. } | RowRef::Section { source, .. } => source.clone(),
+            RowRef::Machine { machine, .. } => machine.clone(),
         })
         .unwrap_or_default()
 }
@@ -5029,7 +5030,7 @@ async fn wheel_moves_the_selection_like_the_arrow_keys() {
     // The plain wheel and ↑/↓ share nav_vertical, so one notch lands on the same row as one
     // arrow press - in either layout (column siblings / band within-host).
     let mut a = Harness::new(sample());
-    a.sw.mouse_scroll(true, &a.state);
+    a.sw.mouse_scroll(true);
     let by_wheel = a.sw.selected;
     let mut b = Harness::new(sample());
     b.key(KeyCode::Down).await;
@@ -5039,7 +5040,7 @@ async fn wheel_moves_the_selection_like_the_arrow_keys() {
     );
 
     let mut c = Harness::new_sized(sample(), 60, 70);
-    c.sw.mouse_scroll(true, &c.state);
+    c.sw.mouse_scroll(true);
     let by_wheel_top = c.sw.selected;
     let mut d = Harness::new_sized(sample(), 60, 70);
     d.key(KeyCode::Down).await;
@@ -6123,7 +6124,7 @@ async fn every_popup_type_is_opaque_over_a_colored_grid() {
         &h,
         |r| matches!(r, RowRef::Session { sess } if sess.name == "build"),
     );
-    h.sw.set_selected(build, &h.state);
+    h.sw.set_selected(build);
     h.sw.interest = super::Interest::Selected;
     h.sw.show_help(&mut h.state);
     let g = blue_grid();
@@ -6145,9 +6146,9 @@ fn popup_border_press_then_drag_moves_the_rect() {
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state); // the help popup, the one popup that remains
                               // A window taller than the help, so the popup has room to move up.
-    let mut term = Terminal::new(TestBackend::new(140, 70)).unwrap();
+    let mut term = Terminal::new(TestBackend::new(140, 80)).unwrap();
     let before_plan = sw.layout(
-        Rect::new(0, 0, 140, 70),
+        Rect::new(0, 0, 140, 80),
         NavSize::hidden(NAV_WIDTH),
         &state,
         &RenderPlan::default(),
@@ -6162,7 +6163,7 @@ fn popup_border_press_then_drag_moves_the_rect() {
     );
     sw.drag_popup(bx + 5, by - 1);
     let after_plan = sw.layout(
-        Rect::new(0, 0, 140, 70),
+        Rect::new(0, 0, 140, 80),
         NavSize::hidden(NAV_WIDTH),
         &state,
         &before_plan,
@@ -6855,17 +6856,17 @@ fn select_address_moves_cursor_to_named_session() {
     let mut sw = Switcher::new(&mut state);
     // Selection starts on the first session row (api). Jump to db by address.
     assert!(
-        sw.select_address(&crate::session::Address::new("jup", "db"), &state),
+        sw.select_address(&crate::session::Address::new("jup", "db")),
         "moved to jup/db"
     );
     assert_eq!(sw.terminal_view_target().target, "db");
     // Already-there → no move; unknown address → no move, selection unchanged.
     assert!(
-        !sw.select_address(&crate::session::Address::new("jup", "db"), &state),
+        !sw.select_address(&crate::session::Address::new("jup", "db")),
         "already on jup/db"
     );
     assert!(
-        !sw.select_address(&crate::session::Address::new("jup", "ghost"), &state),
+        !sw.select_address(&crate::session::Address::new("jup", "ghost")),
         "no such session row"
     );
     assert_eq!(
@@ -7232,7 +7233,7 @@ fn the_hidden_columns_are_counted_on_the_seam() {
         26,
     ));
     let mut sw = Switcher::new(&mut state);
-    sw.move_to(-1, &state);
+    sw.move_to(-1);
     term.draw(|f| sw.render_test(f, None, false, auto_nav(NAV_WIDTH, f.area()), &state))
         .unwrap();
     let at_right = row(&term);
@@ -7419,7 +7420,8 @@ async fn a_host_screen_headline_reads_as_host_over_mux() {
         &mut h.state,
     );
     select_unreachable_host(&mut h).await;
-    h.draw();
+    // The host's one card opens the host's screen; a step down opens its source's.
+    h.ctrl(KeyCode::Down);
     let out = h.view_text();
     assert!(
         out.contains("prod/zellij"),
@@ -7508,16 +7510,18 @@ fn reach(mux: &str, machine: &str, socket: &str, probe: &str) -> crate::ui::chro
     }
 }
 
-/// Selects the first unreachable host card, whatever else the nav holds.
+/// Selects the first card of an unreachable host or source, whatever else the nav holds.
 async fn select_unreachable_host(h: &mut Harness) {
     h.key(KeyCode::End).await;
     for _ in 0..64 {
         if matches!(
             h.sw.current_ref(),
-            Some(RowRef::Host {
-                unreachable: true,
-                ..
-            })
+            Some(
+                RowRef::Host {
+                    unreachable: true,
+                    ..
+                } | RowRef::Machine { .. }
+            )
         ) {
             return;
         }
@@ -7756,7 +7760,10 @@ async fn moving_into_the_terminal_view_from_a_host_card_keeps_the_host_band() {
     let mut h = Harness::new(scan_with_a_host_band());
     h.key(KeyCode::Right).await; // local → jupiter00
     h.key(KeyCode::Right).await; // jupiter00 → the band
-    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { .. })));
+    assert!(matches!(
+        h.sw.current_ref(),
+        Some(RowRef::Host { .. } | RowRef::Machine { .. })
+    ));
     h.sw.sync_view_focus(true);
     h.draw();
     let nav = h.nav_cards_text();
@@ -7810,7 +7817,10 @@ async fn a_selected_host_card_is_painted_while_the_band_is_hidden() {
     assert!(!h.nav_cards_text().contains("db-2"));
     h.key(KeyCode::Right).await;
     h.key(KeyCode::Right).await; // the selection reaches the band
-    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { .. })));
+    assert!(matches!(
+        h.sw.current_ref(),
+        Some(RowRef::Host { .. } | RowRef::Machine { .. })
+    ));
     h.draw();
     let nav = h.nav_cards_text();
     assert!(
@@ -7842,7 +7852,10 @@ async fn a_selection_that_falls_to_its_host_card_is_painted() {
             &mut h.state,
         );
     }
-    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { .. })));
+    assert!(matches!(
+        h.sw.current_ref(),
+        Some(RowRef::Host { .. } | RowRef::Machine { .. })
+    ));
     assert!(
         h.sw.selected < h.sw.painted_rows(),
         "the selected card is painted"
@@ -7861,7 +7874,9 @@ async fn a_jump_to_a_hidden_host_card_paints_it() {
     let number = number_of(&h.sw, "db-2").expect("the host card is numbered");
     let digit = char::from_digit(number as u32, 10).expect("a one-digit number");
     h.sw.open_jump(digit, &mut h.state);
-    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "db-2"));
+    assert!(
+        matches!(h.sw.current_ref(), Some(RowRef::Machine { machine, .. }) if machine == "db-2")
+    );
     h.draw();
     let nav = h.nav_cards_text();
     assert!(
@@ -7882,6 +7897,7 @@ fn number_of(sw: &Switcher, name: &str) -> Option<usize> {
         .find(|&i| match &sw.rows[i].reference {
             RowRef::Session { sess } => sess.name == name,
             RowRef::Host { source, .. } => source == name,
+            RowRef::Machine { machine, .. } => machine == name,
             RowRef::Section { .. } => false,
         })
         .map(|i| sw.card_number(i))
@@ -8129,7 +8145,11 @@ async fn enter_on_a_disconnected_host_opens_login() {
     );
     assert!(h.state.filter.is_empty());
     assert_eq!(h.sw.current_source().as_deref(), Some("dead-2"));
-    assert!(h.sw.current_host_unreachable());
+    assert_eq!(
+        h.sw.selected_node(),
+        Some(crate::model::Node::Host("dead-2".into())),
+        "an unreachable host is one card, and its login is on its screen"
+    );
     assert_eq!(
         h.sw.current_view_screen(&h.state),
         Some(crate::model::ViewScreen::Login)

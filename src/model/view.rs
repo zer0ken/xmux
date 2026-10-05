@@ -19,6 +19,9 @@ pub enum ViewScreen {
     Empty,
     /// A selected source section with sessions to inspect.
     HostInfo,
+    /// A host that answered through at least one of its sources: how it is reached and
+    /// which sources it serves.
+    Host,
 }
 
 /// The session confirmed into the terminal view, as the screen choice reads it.
@@ -68,6 +71,19 @@ pub fn choose_view_screen(
     } else {
         ViewScreen::HostInfo
     })
+}
+
+/// Chooses a host's screen from the state of the host as a whole. `failure` is the
+/// failure every one of its sources shares (a host is down only when none of its sources
+/// connected), and `scanning` says every source is still waiting on its first answer. A
+/// host that is neither is reachable, whatever each source answered.
+pub fn choose_host_screen(failure: Option<FailureKind>, scanning: bool) -> ViewScreen {
+    match failure {
+        Some(FailureKind::Blocked) => ViewScreen::Login,
+        Some(FailureKind::Unreachable | FailureKind::ListFailed) => ViewScreen::Unreachable,
+        None if scanning => ViewScreen::Scanning,
+        None => ViewScreen::Host,
+    }
 }
 
 #[cfg(test)]
@@ -244,6 +260,20 @@ mod tests {
             Some(ViewScreen::Scanning),
             "the same source's grid without the collapse is not kept"
         );
+    }
+
+    #[test]
+    fn a_host_screen_follows_the_host_as_a_whole() {
+        assert_eq!(
+            choose_host_screen(Some(FailureKind::Blocked), false),
+            ViewScreen::Login
+        );
+        assert_eq!(
+            choose_host_screen(Some(FailureKind::Unreachable), true),
+            ViewScreen::Unreachable
+        );
+        assert_eq!(choose_host_screen(None, true), ViewScreen::Scanning);
+        assert_eq!(choose_host_screen(None, false), ViewScreen::Host);
     }
 
     #[test]

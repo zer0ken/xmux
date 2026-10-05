@@ -653,17 +653,33 @@ no function, and no test, so renaming code is never a documentation change.
 - **FR-B40** - The selection follows the user's interest
   (`docs/adr/0007-context-follows-the-users-interest.md`). When the selected card leaves
   the list, by a scan, a re-scan, a poll, a logout, a session ending, mux discovery, or
-  the filter, the selection moves to the nearest surviving card of its lineage: a
-  session to its source's card (the section title, or the source's host-state card when
-  it has no session left), a source to its machine's own card and else to the machine's
-  first source card in card order, and a machine with nothing left to the card that now
-  holds its place in card order (the next one, else the previous). A host-state card
-  that resolves into several sources therefore hands the selection to the first of
-  them. A new card takes the selection only when it is what the user asked for (the
+  the filter, the selection moves to the nearest node up its lineage that still has a
+  target: a session to its source (the source half of its section title, or the
+  source's host-state card when it has no session left), a source to its host (the
+  host's card while the host is down, else the host half of a row of that host), and a
+  host with nothing left to the card that now holds its place in card order (the next
+  one, else the previous). A host card that resolves into sources hands the selection
+  to the first of them by name. A new card takes the selection only when it is what the user asked for (the
   session `prefix n` created, the session under the selection when a full re-scan
   returns it) or, at launch, the first session to appear (FR-D5); any other new card
   leaves the selection where it is. A selection that lands on a source card shows that
   card's screen, never another session's grid.
+- **FR-B42** - Hosts, sources, and sessions each have their own view screen, whether
+  or not the nav has a card for them. The host screen states how the host is addressed,
+  its reach state, its SSH login method, its public key, and its last successful reach,
+  holds the login form while a login is needed, offers the keys that re-scan it and log
+  out of it, and links each of its sources with that source's session count or state.
+  The source screen names `{host}/{mux}` with the host segment linking to the host
+  screen, states how its list updates and when it was last listed, offers the key that
+  creates a session there, and links each of its sessions. A section title has a host
+  half and a source half, and only the half the selection names is highlighted. `↑`/`↓`
+  step between numbered cards and never stop on a title; `Ctrl-↑` walks session, source,
+  host, and `Ctrl-↓` returns to the child the walk came from, else the first child. A
+  host none of whose sources connected is one card, and a logout or an unreachable host
+  gathers the selection onto it. Pointing at a nav target previews it in the terminal
+  view without moving the selection; a click opens it, selects it, and focuses the
+  terminal view, the same as `Enter`. In terminal focus, `↑`/`↓` select a screen link,
+  and `Enter` or a click opens it.
 
 ## C. Switching (the keystone)
 

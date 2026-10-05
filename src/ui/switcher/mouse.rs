@@ -148,61 +148,116 @@ impl Switcher {
         plan.nav_inner.contains(Position { x: col, y: row })
     }
 
-    /// The card index under a 0-based screen `(col, row)`, or `None` if it is outside the
-    /// nav or on none of its cards (the gap between the bands, the band rule, a title, an
-    /// indent, the rows past the last card). A band's overflow count on the seam stands
-    /// for the hidden card nearest the visible ones.
+    /// The nav target under a 0-based screen `(col, row)`: a card, or one half of a
+    /// section title or of a source card's `{host}/{mux}`. `None` outside the nav or on
+    /// none of its targets (the gap between the bands, the band rule, the indent, a
+    /// title's blank tail, the rows past the last card). A band's overflow count on the
+    /// seam stands for the hidden card nearest the visible ones.
     ///
     /// Neither layout puts cards on a fixed row pitch - the side list parts its groups
     /// and its card heights vary, the portrait flow runs them into columns - so the plan
-    /// records each card's rect and the hit-test reads those back. One geometry, so a
-    /// click cannot land on a card the renderer put elsewhere.
-    fn row_at(plan: &RenderPlan, col: u16, row: u16) -> Option<usize> {
+    /// records each card's rect and each half's, and the hit-test reads those back. One
+    /// geometry, so a click cannot land on a target the renderer put elsewhere.
+    fn target_at(&self, plan: &RenderPlan, col: u16, row: u16) -> Option<(usize, Part)> {
         if let Some(target) = plan.overflow_target(col, row) {
-            return Some(target);
+            return Some((target, Part::Card));
         }
         if !Self::in_tree(plan, col, row) {
             return None;
         }
         let at = Position { x: col, y: row };
+        if let Some(&(i, part, _)) = plan.nav_parts.iter().find(|(_, _, rect)| rect.contains(at)) {
+            return Some((i, part));
+        }
         plan.nav_cells
+            .iter()
+            .find(|(_, rect)| rect.contains(at))
+            .map(|(i, _)| *i)
+            .filter(|&i| {
+                !matches!(
+                    self.rows.get(i).map(|r| &r.reference),
+                    Some(RowRef::Section { .. })
+                )
+            })
+            .map(|i| (i, Part::Card))
+    }
+
+    /// A click on a nav target: the target becomes the hard selection. Returns whether the
+    /// click landed on one, so the caller can execute it.
+    pub fn mouse_select(&mut self, plan: &RenderPlan, col: u16, row: u16) -> bool {
+        let Some((idx, part)) = self.target_at(plan, col, row) else {
+            return false;
+        };
+        if self.rows.get(idx).is_none() {
+            return false;
+        }
+        self.note_user_move();
+        self.hover = None;
+        let before = self.selected_node();
+        let node = node_of(&self.rows[idx].reference, part);
+        if let Some(child) = before.filter(|b| b.parent().as_ref() == Some(&node)) {
+            self.trail.insert(node, child);
+        }
+        self.set_target(Target {
+            row: idx,
+            part,
+            deep: None,
+        });
+        true
+    }
+
+    /// The pointer resting at `(col, row)` while the nav holds the focus: the nav target
+    /// under it becomes the soft selection, whose screen the terminal view shows. Off any
+    /// target the soft selection ends and the hard selection's screen shows again.
+    /// Returns whether the soft selection changed.
+    pub fn mouse_hover(&mut self, plan: &RenderPlan, col: u16, row: u16) -> bool {
+        let hover = if self.terminal_view {
+            None
+        } else {
+            self.target_at(plan, col, row)
+                .filter(|_| plan.overflow_target(col, row).is_none())
+                .map(|(i, part)| (self.rows[i].reference.clone(), part))
+        };
+        let same = match (&self.hover, &hover) {
+            (Some((a, p)), Some((b, q))) => p == q && same_node(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return false;
+        }
+        self.hover = hover;
+        self.on_focus_changed();
+        true
+    }
+
+    /// The link of the shown screen under `(col, row)`, as the latest frame painted it.
+    pub fn link_at(plan: &RenderPlan, col: u16, row: u16) -> Option<usize> {
+        let at = Position { x: col, y: row };
+        plan.view_links
             .iter()
             .find(|(_, rect)| rect.contains(at))
             .map(|(i, _)| *i)
     }
 
-    /// Single click: move the selection to the clicked row (select; never attach).
-    pub fn mouse_select(
-        &mut self,
-        plan: &RenderPlan,
-        col: u16,
-        row: u16,
-        state: &crate::state::State,
-    ) {
-        let Some(idx) = Self::row_at(plan, col, row) else {
-            return;
+    /// The pointer resting at `(col, row)` while the terminal view holds the focus: the
+    /// link under it is the screen's soft selection. Returns whether it changed.
+    pub fn link_hover_at(&mut self, plan: &RenderPlan, col: u16, row: u16) -> bool {
+        let hover = if self.terminal_view {
+            Self::link_at(plan, col, row)
+        } else {
+            None
         };
-        if self.rows.get(idx).is_some() {
-            self.note_user_move();
-            self.set_selected(idx, state);
+        if hover == self.link_hover {
+            return false;
         }
-    }
-
-    /// Double click: selects the clicked row (the preceding single click already
-    /// moved the selection; with select=attach there is no separate attach action).
-    pub fn mouse_attach(
-        &mut self,
-        plan: &RenderPlan,
-        col: u16,
-        row: u16,
-        state: &crate::state::State,
-    ) {
-        self.mouse_select(plan, col, row, state);
+        self.link_hover = hover;
+        true
     }
 
     /// Scroll wheel: move the selection exactly as ↑/↓ do (`nav_vertical`) - one card up
     /// or down the flat list - so the wheel and the card step never diverge.
-    pub fn mouse_scroll(&mut self, down: bool, state: &crate::state::State) {
-        self.nav_vertical(if down { 1 } else { -1 }, state);
+    pub fn mouse_scroll(&mut self, down: bool) {
+        self.nav_vertical(if down { 1 } else { -1 });
     }
 }

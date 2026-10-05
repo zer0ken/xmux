@@ -9,33 +9,42 @@ pub struct Scan {
     pub groups: Vec<Group>,
 }
 
-/// What a navigation card references. Every card is a selectable target: a session
-/// card attaches to that session (the mux lands on its active window),
-/// a host-state card selects the host (so its host screen shows). A section title is
-/// not a card: it names the group under it and cannot take the selection.
+/// What a navigation row references. A session card attaches to that session (the mux
+/// lands on its active window), a source's host-state card selects the source, and a host
+/// card selects the host, so its screen shows. A section title is not a card: it carries
+/// no number and stays out of the card step, and its host half and source half each
+/// select their own level.
 #[derive(Clone)]
 pub(crate) enum RowRef {
-    /// A host/mux SECTION TITLE: the non-selectable header row a group of sibling
-    /// session cards hangs under. It carries `{host}/{mux}` and is never numbered or
-    /// selectable. The numbers below it are the sessions'. `n` on one of those
-    /// sessions creates a sibling in the same section.
+    /// A host/mux SECTION TITLE: the header row a group of sibling session cards hangs
+    /// under. It carries `{host}/{mux}` and is never numbered; its host half selects the
+    /// host and its mux half the source. The numbers below it are the sessions'. `n` on
+    /// one of those sessions creates a sibling in the same section.
     Section { source: String },
     /// A session card: the session name on a single detail line. Every session card
     /// carries its session name; the focused window it used to name is gone from the
     /// card, and the `{host}/{mux}` it used to carry now lives on the section title
     /// above it.
     Session { sess: Session },
-    /// A host with no session to show (scanning / unreachable / blocked / empty),
-    /// the only host-level entry, sunk to the bottom of the list. `scanning` is the
-    /// in-flight state: the card's unresolved level shows a spinner instead of a
-    /// settled mux. `blocked` refines `unreachable`: the failure is one the user can
-    /// answer from xmux, so its card is the entry to the login pane.
+    /// A source with no session to show (scanning / unreachable / blocked / list
+    /// failed / empty), sunk below the sections. `scanning` is the in-flight state: the
+    /// card's unresolved level shows a spinner instead of a settled mux. `blocked`
+    /// refines `unreachable`: the failure is one a login answers.
     Host {
         source: String,
         unreachable: bool,
         blocked: bool,
         list_failed: bool,
         scanning: bool,
+    },
+    /// A host none of whose sources connected (unreachable, or logged out and waiting on
+    /// a login): one card for the whole machine in place of a card per source. `source`
+    /// is the source the login pane and the probes address for it, its first in card
+    /// order. `blocked` says a login can answer the failure.
+    Machine {
+        machine: String,
+        source: String,
+        blocked: bool,
     },
 }
 

@@ -202,6 +202,9 @@ impl OverflowMark {
     }
 }
 
+/// A run of cells inside a nav cell: its offset from the cell's left edge and its width.
+type CellRun = (u16, u16);
+
 /// Immutable geometry for one rendered frame. The app retains the latest plan so paint
 /// and mouse input consume the same card, popup, and split-view rectangles.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -216,6 +219,11 @@ pub struct RenderPlan {
     pub regions: Regions,
     pub nav_inner: Rect,
     pub nav_cells: Vec<(usize, Rect)>,
+    /// The halves of the rows that read as two targets: a section title's host half and
+    /// source half, and a source card's host half, each with the rect it painted in.
+    pub(crate) nav_parts: Vec<(usize, Part, Rect)>,
+    /// The links of the shown host or source screen and where each was painted.
+    pub(crate) view_links: Vec<(usize, Rect)>,
     pub nav_row_offset: usize,
     pub nav_col_offset: usize,
     pub popup_rect: Rect,
@@ -256,6 +264,8 @@ impl Default for RenderPlan {
             regions: Regions::default(),
             nav_inner: Rect::default(),
             nav_cells: Vec::new(),
+            nav_parts: Vec::new(),
+            view_links: Vec::new(),
             nav_row_offset: 0,
             nav_col_offset: 0,
             popup_rect: Rect::default(),
@@ -451,12 +461,146 @@ impl Switcher {
                 Rect::default()
             };
             self.layout_nav(&mut plan, state, track);
+            let num_w = self.number_width();
+            let column = plan.layout == ViewLayout::Column;
+            plan.nav_parts = plan
+                .nav_cells
+                .iter()
+                .flat_map(|&(i, rect)| {
+                    let (host, source) = self.halves(i, rect.width, num_w, column);
+                    let at = |(x, w): (u16, u16)| Rect {
+                        x: rect.x + x,
+                        width: w.min(rect.width.saturating_sub(x)),
+                        ..rect
+                    };
+                    host.map(|h| (i, Part::Host, at(h)))
+                        .into_iter()
+                        .chain(source.map(|h| (i, Part::Source, at(h))))
+                })
+                .filter(|(_, _, rect)| !rect.is_empty())
+                .collect();
             if self.rows.is_empty() {
                 let body = plan.nav_inner;
                 plan.nav_guidance = Some((Rect { height: 1, ..body }, self.nav_guidance(state)));
             }
         }
+        if let Some(kind) = plan.view_screen {
+            let area = if plan.nav_hidden {
+                plan.screen_area
+            } else {
+                plan.regions.terminal
+            };
+            if let Some((node, address)) = self.view_subject(kind) {
+                let links = self.screen_links(&node, state);
+                let (link, link_hover) = self.link_marks();
+                plan.view_links = state.chrome.view_link_rects(
+                    state,
+                    &crate::ui::chrome::ViewScreenRender {
+                        address: &address,
+                        kind,
+                        focused: self.terminal_view,
+                        host: matches!(node, Node::Host(_)),
+                        links: &links,
+                        link,
+                        link_hover,
+                    },
+                    area,
+                    &self.palette,
+                );
+            }
+        }
         plan
+    }
+
+    /// Where the host half and the source half of row `i` paint inside a cell `width`
+    /// wide, as (offset, width) pairs: a section title has both, a source card's
+    /// `{host}/{mux}` has its host half (the rest of the card is the card), and any other
+    /// row has neither. Read from the same text the paint writes, so the halves the
+    /// pointer finds are the halves on screen.
+    fn halves(
+        &self,
+        i: usize,
+        width: u16,
+        num_w: usize,
+        show_state_word: bool,
+    ) -> (Option<CellRun>, Option<CellRun>) {
+        let w = |t: &str| unicode_width::UnicodeWidthStr::width(t) as u16;
+        match &self.rows[i].reference {
+            RowRef::Section { .. } => {
+                let (mark, title) = self.title_text(i, width);
+                let lead = w(&mark);
+                match title.split_once('/') {
+                    Some((host, mux)) => {
+                        (Some((lead, w(host))), Some((lead + w(host) + 1, w(mux))))
+                    }
+                    None => (None, Some((lead, w(&title)))),
+                }
+            }
+            RowRef::Host { .. } => {
+                let identity = self.host_identity(i, width, num_w, show_state_word);
+                let host = identity
+                    .split_once('/')
+                    .map_or(identity.as_str(), |(h, _)| h);
+                (Some((num_w as u16 + 1, w(host))), None)
+            }
+            _ => (None, None),
+        }
+    }
+
+    /// A section title as painted in a cell `width` wide: the selected mark before it, and
+    /// the `{host}/{mux}` shortened to the room left. A `width` of 0 measures it whole.
+    fn title_text(&self, i: usize, width: u16) -> (String, String) {
+        let selected = self.selected == i;
+        let title = self.section_title(i);
+        let title = if width == 0 {
+            title
+        } else {
+            middle_ellipsize(
+                &title,
+                width.saturating_sub(if selected { 3 } else { 1 }) as usize,
+            )
+        };
+        let mark = if selected {
+            format!("{SELECTED_MARK} ")
+        } else {
+            String::new()
+        };
+        (mark, title)
+    }
+
+    /// A source card's `{host}/{mux}` (or its host alone while no mux is confirmed) as
+    /// painted in a cell `width` wide, shortened to the room its number, glyph and state
+    /// word leave.
+    fn host_identity(&self, i: usize, width: u16, num_w: usize, show_state_word: bool) -> String {
+        let (host, mux, _) = context_of(&self.rows[i]);
+        let identity = if mux.is_empty() {
+            host.to_string()
+        } else {
+            format!("{host}/{mux}")
+        };
+        let word_w = match &self.rows[i].reference {
+            RowRef::Host {
+                unreachable,
+                blocked,
+                list_failed,
+                scanning,
+                ..
+            } if show_state_word && self.selected == i && self.part == Part::Card => {
+                crate::ui::tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable)
+                    .len()
+                    + 1
+            }
+            _ => 0,
+        };
+        if width == 0 {
+            identity
+        } else {
+            let suffix_w = 2 + word_w;
+            middle_ellipsize(
+                &identity,
+                (width as usize).saturating_sub(num_w + 1 + suffix_w + 1),
+            )
+        }
     }
 
     /// How many cards the applied filter keeps, and how many the list has without it.
@@ -825,13 +969,17 @@ impl Switcher {
         kind: crate::model::ViewScreen,
         focused: bool,
     ) -> Option<Position> {
-        let address = self.view_screen_address(state, kind);
-        if kind == crate::model::ViewScreen::Scanning && address.source.is_empty() {
-            if state.chrome.braille_animation {
+        let Some((node, address)) = self
+            .view_subject(kind)
+            .filter(|(_, address)| !address.source.is_empty())
+        else {
+            if kind == crate::model::ViewScreen::Scanning && state.chrome.braille_animation {
                 crate::ui::braille_x::render(frame, area, state.chrome.animation_ms);
             }
             return None;
-        }
+        };
+        let links = self.screen_links(&node, state);
+        let (link, link_hover) = self.link_marks();
         state.chrome.render_view_screen(
             frame,
             area,
@@ -840,6 +988,10 @@ impl Switcher {
                 address: &address,
                 kind,
                 focused,
+                host: matches!(node, Node::Host(_)),
+                links: &links,
+                link,
+                link_hover,
             },
             &self.palette,
         )
@@ -1119,9 +1271,38 @@ impl Switcher {
             );
             frame.render_widget(Paragraph::new(lines), rect);
             if self.selected == idx {
+                // A row read as two targets inverts only the half the selection is on.
+                let half = plan
+                    .nav_parts
+                    .iter()
+                    .find(|(i, part, _)| *i == idx && *part == self.part)
+                    .map(|(_, _, r)| *r);
                 frame
                     .buffer_mut()
-                    .set_style(rect, palette::selection_style(palette));
+                    .set_style(half.unwrap_or(rect), palette::selection_style(palette));
+            }
+        }
+        // The soft selection: the target under the pointer, underlined, unless it is the
+        // hard selection already drawn reversed.
+        if let Some((reference, part)) = &self.hover {
+            if let Some(idx) = self.row_matching(reference) {
+                let hard = idx == self.selected && *part == self.part;
+                let rect = plan
+                    .nav_parts
+                    .iter()
+                    .find(|(i, p, _)| *i == idx && p == part)
+                    .map(|(_, _, r)| *r)
+                    .or_else(|| {
+                        plan.nav_cells
+                            .iter()
+                            .find(|(i, _)| *i == idx)
+                            .map(|(_, r)| *r)
+                    });
+                if let Some(rect) = rect.filter(|_| !hard) {
+                    frame
+                        .buffer_mut()
+                        .set_style(rect, Style::default().add_modifier(Modifier::UNDERLINED));
+                }
             }
         }
         match plan.nav_rule {
@@ -1152,18 +1333,22 @@ impl Switcher {
         if card.is_empty() {
             return;
         }
-        let RowRef::Host {
-            scanning,
-            blocked,
-            list_failed,
-            unreachable,
-            ..
-        } = &self.rows[self.selected].reference
-        else {
+        if self.part != Part::Card {
             return;
+        }
+        let word = match &self.rows[self.selected].reference {
+            RowRef::Host {
+                scanning,
+                blocked,
+                list_failed,
+                unreachable,
+                ..
+            } => crate::ui::tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable),
+            RowRef::Machine { blocked, .. } => {
+                crate::ui::tree::host_state_word(false, *blocked, false, true)
+            }
+            _ => return,
         };
-        let word =
-            crate::ui::tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable);
         let label = format!(" {word} ");
         let width = label.len() as u16;
         let room_right = plan.nav_inner.right().saturating_sub(card.right());
@@ -1328,32 +1513,70 @@ impl Switcher {
         // A section title opens its source information screen when selected. It remains
         // bold and unnumbered, with its session cards indented below it.
         if let RowRef::Section { .. } = &row.reference {
-            let title = self.section_title(i);
-            let title = if width == 0 {
-                title
+            let (mark, title) = self.title_text(i, width);
+            let style = Style::default()
+                .fg(if selected {
+                    palette.accent
+                } else {
+                    palette.decoration
+                })
+                .add_modifier(Modifier::BOLD);
+            let mut spans = vec![Span::styled(mark, style)];
+            match title.split_once('/') {
+                Some((host, mux)) => {
+                    spans.push(Span::styled(host.to_string(), style));
+                    spans.push(Span::styled("/", style));
+                    spans.push(Span::styled(mux.to_string(), style));
+                }
+                None => spans.push(Span::styled(title, style)),
+            }
+            spans.push(Span::raw(" "));
+            return vec![Line::from(spans)];
+        }
+        // A host's card names the host alone, with its state glyph, and the state word
+        // while it is selected.
+        if let RowRef::Machine {
+            machine, blocked, ..
+        } = &row.reference
+        {
+            let (glyph, glyph_style) = if *blocked {
+                (
+                    crate::ui::chrome::BLOCK_MARK,
+                    Style::default().fg(palette.warning),
+                )
             } else {
-                middle_ellipsize(
-                    &title,
-                    width.saturating_sub(if selected { 3 } else { 1 }) as usize,
+                (
+                    crate::ui::chrome::UNREACHABLE_MARK,
+                    Style::default().fg(palette.error),
                 )
             };
-            return vec![Line::from(vec![
-                Span::styled(
-                    if selected {
-                        format!("{SELECTED_MARK} {title}")
-                    } else {
-                        title
-                    },
-                    Style::default()
-                        .fg(if selected {
-                            palette.accent
-                        } else {
-                            palette.decoration
-                        })
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-            ])];
+            let word = crate::ui::tree::host_state_word(false, *blocked, false, true);
+            let suffix_w = 2 + if selected && show_state_word {
+                word.len() + 1
+            } else {
+                0
+            };
+            let room = if width == 0 {
+                usize::MAX
+            } else {
+                (width as usize).saturating_sub(num_w + 1 + suffix_w + 1)
+            };
+            let mut line = address();
+            line.extend(highlighted(
+                middle_ellipsize(machine, room),
+                filter,
+                Style::default().fg(palette.secondary),
+            ));
+            line.push(Span::raw(" "));
+            line.push(Span::styled(glyph, glyph_style));
+            if selected && show_state_word {
+                line.push(Span::styled(
+                    format!(" {word}"),
+                    Style::default().fg(palette.secondary),
+                ));
+            }
+            line.push(Span::raw(" "));
+            return vec![Line::from(line)];
         }
         // Host-state cards keep one fixed glyph slot after the host/mux identity. The
         // selected card adds its state word after that slot. Column measurement reserves
@@ -1367,7 +1590,6 @@ impl Switcher {
             ..
         } = &row.reference
         {
-            let (host, mux, _) = context_of(row);
             let pending = Style::default().fg(palette.warning);
             let word =
                 crate::ui::tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable);
@@ -1393,23 +1615,8 @@ impl Switcher {
             } else {
                 (" ".into(), Style::default())
             };
-            let identity = if mux.is_empty() {
-                host.to_string()
-            } else {
-                format!("{host}/{mux}")
-            };
-            let suffix_w = 2 + if selected && show_state_word {
-                word.len() + 1
-            } else {
-                0
-            };
-            let identity_w = if width == 0 {
-                usize::MAX
-            } else {
-                (width as usize).saturating_sub(num_w + 1 + suffix_w + 1)
-            };
             let mut line = address();
-            let identity = middle_ellipsize(&identity, identity_w);
+            let identity = self.host_identity(i, width, num_w, show_state_word);
             let identity = if filter.is_empty() {
                 if let Some((host, mux)) = identity.split_once('/') {
                     vec![
@@ -1436,7 +1643,7 @@ impl Switcher {
             line.extend(identity);
             line.push(Span::raw(" "));
             line.push(Span::styled(glyph, glyph_style));
-            if selected && show_state_word {
+            if selected && show_state_word && self.part == Part::Card {
                 line.push(Span::styled(
                     format!(" {word}"),
                     Style::default().fg(palette.secondary),

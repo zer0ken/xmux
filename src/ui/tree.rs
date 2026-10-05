@@ -205,44 +205,6 @@ pub(crate) fn visible_groups<'a>(groups: &'a [Group], filter: &str) -> Cow<'a, [
     }
 }
 
-/// The group's first VISIBLE session under `filter`: the first session when the filter
-/// is empty or the source itself matches (all sessions are kept), otherwise the first
-/// session whose address matches. An unreachable group (`err` set) yields `None`, since
-/// its sessions carry no meaning. Mirrors [`filter_groups`] for a single group without
-/// cloning every host's sessions - used on the navigation hot path.
-pub(crate) fn first_visible_session(group: &Group, filter: &str) -> Option<Session> {
-    if group.err.is_some() {
-        return None;
-    }
-    if filter.is_empty() || fuzzy_match(filter, &group.source) {
-        group.sessions.first().cloned()
-    } else {
-        group
-            .sessions
-            .iter()
-            .find(|s| fuzzy_match(filter, &s.address().display()))
-            .cloned()
-    }
-}
-
-/// The (source, target) an active-pane attach on `reference` would land on. `target`
-/// empty ⇒ no terminal view (a host with no visible session). Pure over the inventory.
-/// A selected section targets its information screen, so it has no session target.
-pub(crate) fn target_for(reference: &RowRef, groups: &[Group], filter: &str) -> (String, String) {
-    match reference {
-        RowRef::Section { source } => (source.clone(), String::new()),
-        RowRef::Host { source, .. } => match groups
-            .iter()
-            .find(|g| &g.source == source)
-            .and_then(|g| first_visible_session(g, filter))
-        {
-            Some(sess) => (sess.source, sess.name),
-            None => (String::new(), String::new()),
-        },
-        RowRef::Session { sess } => (sess.source.clone(), sess.name.clone()),
-    }
-}
-
 /// Pushes a session's card. Every session gets one card naming its session; the
 /// focused window a card used to name has left the card, so there is no pane state
 /// to wait on and no loading stand-in.
@@ -257,6 +219,9 @@ fn push_session_card(rows: &mut Vec<Row>, sess: &Session, mux_of_source: &dyn Fn
         reference: RowRef::Session { sess: sess.clone() },
     });
 }
+
+/// The state word of a host that answered through at least one of its sources.
+pub(crate) const HOST_REACHABLE: &str = "reachable";
 
 /// The status word a host-state card and its screen share. The specific states precede
 /// unreachable because authentication and listing failures carry their own words. The
@@ -280,12 +245,35 @@ pub(crate) fn host_state_word(
     }
 }
 
+/// The hosts that are down: every source of the host failed to connect (unreachable, or
+/// refused until a login) and none is still waiting on an answer. A listing failure is not
+/// one of them, since the host answered it.
+pub(crate) fn down_machines(groups: &[Group], scanning: &HashSet<String>) -> HashSet<String> {
+    let mut up = HashSet::new();
+    let mut all = HashSet::new();
+    for g in groups {
+        let machine = crate::session::machine_of(&g.source).to_string();
+        let failed = !scanning.contains(&g.source)
+            && matches!(
+                g.failure(),
+                Some(crate::model::FailureKind::Blocked | crate::model::FailureKind::Unreachable)
+            );
+        if !failed {
+            up.insert(machine.clone());
+        }
+        all.insert(machine);
+    }
+    all.retain(|machine| !up.contains(machine));
+    all
+}
+
 /// Flattens the inventory into a flat list of navigation rows: a section title per
 /// source that has a session to show, then one session card per session, emitted in
 /// group order (the deterministic local→WSL→remote, name-sorted order `rebuild`
-/// establishes, so a routine poll reproduces the same list). Hosts with no session to
-/// show get one host-state card each: reachable empty hosts first, then hosts whose
-/// connection or inventory is unresolved. The mux each row NAMES is resolved here through `mux_of_source`, so a
+/// establishes, so a routine poll reproduces the same list). Sources with no session to
+/// show get one host-state card each: reachable empty sources first, then sources whose
+/// connection or inventory is unresolved. A host that is down gets one host card in place
+/// of its sources' cards, where its first source's card would stand. The mux each row NAMES is resolved here through `mux_of_source`, so a
 /// row cannot exist without it and two rows on one source cannot name their mux two
 /// ways; colour is derived at render time from each row's [`RowRef`], so this stays
 /// terminal-free. Inputs are not mutated.
@@ -295,8 +283,23 @@ pub(crate) fn flatten(
     filter: &str,
     mux_of_source: &dyn Fn(&str) -> String,
 ) -> Vec<Row> {
+    let down = down_machines(groups, scanning);
+    let first_source = |machine: &str| {
+        groups
+            .iter()
+            .find(|g| crate::session::machine_of(&g.source) == machine)
+            .map(|g| g.source.clone())
+            .unwrap_or_default()
+    };
+    let blocked_machine = |machine: &str| {
+        groups.iter().any(|g| {
+            crate::session::machine_of(&g.source) == machine
+                && g.failure() == Some(crate::model::FailureKind::Blocked)
+        })
+    };
     let groups = visible_groups(groups, filter);
     let groups: &[Group] = &groups;
+    let mut machine_cards: HashSet<&str> = HashSet::new();
 
     let mut rows = Vec::new();
     // 1. A section per source that has a session to show: outside numbered-card steps
@@ -327,6 +330,20 @@ pub(crate) fn flatten(
                 continue;
             }
             if g.err.is_none() && !g.sessions.is_empty() {
+                continue;
+            }
+            let machine = crate::session::machine_of(&g.source);
+            if down.contains(machine) {
+                if machine_cards.insert(machine) {
+                    rows.push(Row {
+                        mux: String::new(),
+                        reference: RowRef::Machine {
+                            machine: machine.to_string(),
+                            source: first_source(machine),
+                            blocked: blocked_machine(machine),
+                        },
+                    });
+                }
                 continue;
             }
             // The mux a host-state card may CLAIM. A host still scanning or unreachable has
@@ -739,6 +756,7 @@ mod tests {
         match r {
             RowRef::Section { .. } => "section",
             RowRef::Host { .. } => "host",
+            RowRef::Machine { .. } => "machine",
             RowRef::Session { .. } => "session",
         }
     }
@@ -749,6 +767,7 @@ mod tests {
             RowRef::Section { source, .. } => source.clone(),
             RowRef::Session { sess } => sess.address().display(),
             RowRef::Host { source, .. } => source.clone(),
+            RowRef::Machine { machine, .. } => machine.clone(),
         }
     }
 
@@ -813,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn flatten_empty_and_unreachable_hosts_get_host_state_cards() {
+    fn flatten_gives_an_empty_source_its_card_and_a_down_host_one_card() {
         let groups = vec![
             Group {
                 source: "empty".into(),
@@ -828,7 +847,7 @@ mod tests {
         ];
         let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
-        assert_eq!(kinds, vec!["host", "host"]);
+        assert_eq!(kinds, vec!["host", "machine"]);
         assert_eq!(addr_of(&rows[0].reference), "empty");
         assert!(matches!(
             rows[0].reference,
@@ -841,12 +860,62 @@ mod tests {
         assert_eq!(addr_of(&rows[1].reference), "dead");
         assert!(matches!(
             rows[1].reference,
-            RowRef::Host {
-                unreachable: true,
-                scanning: false,
-                ..
-            }
+            RowRef::Machine { blocked: false, .. }
         ));
+    }
+
+    #[test]
+    fn a_host_none_of_whose_sources_connected_is_one_card() {
+        // Two muxes on one machine that refused both: one card for the machine, where its
+        // first source's card would stand, naming that source for the login.
+        let groups = vec![
+            Group {
+                source: "db:tmux".into(),
+                err: Some("refused".into()),
+                sessions: vec![],
+            },
+            Group {
+                source: "db:zellij".into(),
+                err: Some("logged out; log in again or re-scan".into()),
+                sessions: vec![],
+            },
+        ];
+        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(
+            &rows[0].reference,
+            RowRef::Machine { machine, source, blocked: true } if machine == "db" && source == "db:tmux"
+        ));
+    }
+
+    #[test]
+    fn a_host_with_an_answering_source_keeps_a_card_per_source() {
+        // One mux answered, so the machine is up: the failing mux is a source card of its
+        // own, and so is one still scanning.
+        let groups = vec![
+            Group {
+                source: "db:tmux".into(),
+                err: Some("refused".into()),
+                sessions: vec![],
+            },
+            Group {
+                source: "db:screen".into(),
+                err: None,
+                sessions: vec![],
+            },
+        ];
+        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
+        assert_eq!(kinds, vec!["host", "host"]);
+        let mut scanning = HashSet::new();
+        scanning.insert("db:screen".to_string());
+        let rows = flatten(&groups, &scanning, "", &mux_of_source);
+        let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
+        assert_eq!(
+            kinds,
+            vec!["host", "host"],
+            "a scanning source is not down yet"
+        );
     }
 
     #[test]
@@ -868,35 +937,13 @@ mod tests {
     }
 
     #[test]
-    fn first_visible_session_respects_filter() {
-        let g = Group {
-            source: "jup".into(),
-            err: None,
-            sessions: vec![sess("jup", "api"), sess("jup", "web")],
-        };
-        // Empty filter → the first session.
-        assert_eq!(first_visible_session(&g, "").unwrap().name, "api");
-        // Source match → the first session (all sessions kept).
-        assert_eq!(first_visible_session(&g, "jup").unwrap().name, "api");
-        // Session-only match → the first matching session.
-        assert_eq!(first_visible_session(&g, "web").unwrap().name, "web");
-        // Unreachable host → None (its sessions carry no meaning).
-        let dead = Group {
-            source: "jup".into(),
-            err: Some("refused".into()),
-            sessions: vec![sess("jup", "api")],
-        };
-        assert!(first_visible_session(&dead, "").is_none());
-    }
-
-    #[test]
     fn flatten_keeps_the_unreachable_card_when_the_filter_names_it() {
         // The filter names the disconnected host directly.
         let groups = sample_groups();
         let rows = flatten(&groups, &HashSet::new(), "dead", &mux_of_source);
         assert!(rows.iter().any(|r| matches!(
             &r.reference,
-            RowRef::Host { source, unreachable: true, .. } if source == "deadhost"
+            RowRef::Machine { machine, .. } if machine == "deadhost"
         )));
     }
 
@@ -927,15 +974,10 @@ mod tests {
         }];
         let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
         match &rows[0].reference {
-            RowRef::Host {
-                blocked,
-                unreachable,
-                ..
-            } => {
-                assert!(*blocked);
-                assert!(*unreachable, "a blocked host is still a failure (err set)");
+            RowRef::Machine { blocked, .. } => {
+                assert!(*blocked, "a login answers it");
             }
-            _ => panic!("expected a host card, got a non-host row"),
+            _ => panic!("expected the host's card, got another row"),
         }
     }
 

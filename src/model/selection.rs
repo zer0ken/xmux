@@ -20,9 +20,61 @@ impl Selection {
     }
 }
 
+/// One level of the host / source / session hierarchy, the thing a view screen is about
+/// and a nav selection names. A host is a machine, a source is one mux on it, and a
+/// session lives in a source, so every node but a host has exactly one parent.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Node {
+    Host(String),
+    Source(String),
+    Session(crate::session::Address),
+}
+
+impl Node {
+    /// The node one level up, `None` for a host.
+    pub fn parent(&self) -> Option<Node> {
+        match self {
+            Node::Host(_) => None,
+            Node::Source(source) => Some(Node::Host(crate::session::machine_of(source).into())),
+            Node::Session(address) => Some(Node::Source(address.source.clone())),
+        }
+    }
+
+    /// The host this node belongs to.
+    pub fn machine(&self) -> &str {
+        match self {
+            Node::Host(machine) => machine,
+            Node::Source(source) => crate::session::machine_of(source),
+            Node::Session(address) => crate::session::machine_of(&address.source),
+        }
+    }
+
+    /// The source this node belongs to, `None` for a host.
+    pub fn source(&self) -> Option<&str> {
+        match self {
+            Node::Host(_) => None,
+            Node::Source(source) => Some(source),
+            Node::Session(address) => Some(&address.source),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_node_walks_up_session_source_host() {
+        let session = Node::Session(crate::session::Address::new("db:tmux", "pg"));
+        let source = session.parent().unwrap();
+        assert_eq!(source, Node::Source("db:tmux".into()));
+        let host = source.parent().unwrap();
+        assert_eq!(host, Node::Host("db".into()));
+        assert_eq!(host.parent(), None);
+        assert_eq!(session.machine(), "db");
+        assert_eq!(source.source(), Some("db:tmux"));
+        assert_eq!(host.source(), None);
+    }
 
     #[test]
     fn selection_is_empty_only_without_a_session() {

@@ -1520,7 +1520,7 @@ impl Runtime {
                             let _ = self.execute_effects(effects);
                         }
                         self.dirty = true;
-                    } else if self.model.switcher.current_host_blocked() {
+                    } else if self.model.switcher.login_pane_shown(&self.model.state) {
                         if let Some(source) = self.model.switcher.current_source() {
                             let effects = update(&mut self.model, Msg::FeedLogin { source, bytes });
                             let _ = self.execute_effects(effects);
