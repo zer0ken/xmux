@@ -435,6 +435,6 @@ MIT. The full text is in [`LICENSE`](LICENSE).
 - [`INSTALL.md`](INSTALL.md) - every install path, upgrading, and pinning a version
 - [`docs/keybind.md`](docs/keybind.md) - the keybinding and prefix detail
 - [`docs/requirements.md`](docs/requirements.md) - the behavior requirements
-- [`docs/adr/`](docs/adr/) - the architecture decision records
+- [`docs/principles.md`](docs/principles.md) - the design principles
 - [`CONTEXT.md`](CONTEXT.md) - the vocabulary and the design overview
 - [`AGENTS.md`](AGENTS.md) - the per-directory working notes

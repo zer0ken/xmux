@@ -101,24 +101,12 @@ inputs are messages to that transition. It emits one effect type, and the runtim
 handles every effect through one exhaustive executor. Raw terminal bytes are the
 only direct input path and go to the selected terminal display.
 
-- ASKED-FOR REQUESTS ONLY. xmux reaches a machine only when something asked it to.
-  Every request traces to one of three things: the launch scan, a user action (a
-  re-scan, a login, selecting a card, managing host access, an operation on a
-  session), or a push stream
-  that is already open. A push stream is not a repeated request: one connection stays
-  open and the far side speaks over it. A POLL source that ANSWERED is kept current on a
-  cadence only over a path the machine already holds open (the local box, a WSL
-  distribution, or an ssh master this side shares across runs), because a repeat there
-  opens no connection; where every repeat would be a fresh login, it is enumerated only
-  when something asked for it - the launch scan or an explicit re-scan. No failure raises its
-  own retry and nothing repeats against a host that stops answering - a request that
-  answers a failed request is a retry loop a machine's own defences read as an attack.
-  A control client the mux itself detaches while it keeps serving is not a dropped
-  channel: the far side spoke over the open stream, and the channel is reopened once.
-  So a dropped channel stays dropped, a dead display keeps its last frame, and an
-  unreachable card stays unreachable, each until the user asks.
-- A machine is asked ONE THING AT A TIME. Concurrent connections to a single machine
-  are what its own defences count, so a fan-out is per machine, never within one.
+- Every module follows the design principles in `docs/principles.md`. Asked-for
+  Requests binds every path that reaches a machine: a POLL source that answered is
+  kept current on a cadence only over a path the machine already holds open (the local
+  box, a WSL distribution, or an ssh master this side shares across runs), and a
+  control client the mux itself detaches while it keeps serving is reopened once,
+  because the far side spoke over the open stream.
 - The public control surface should speak semantic operations before raw keys.
 - Metadata and control clients do not own display pixels.
 - Display attachments are real mux clients, not reconstructed output streams.
@@ -159,9 +147,9 @@ only direct input path and go to the selected terminal display.
 ## Before PR
 
 - Write commit messages, pull request titles and bodies, issues, and release notes in
-  English (ADR 0002). A pull request title becomes a release note line.
+  English (`docs/AGENTS.md`). A pull request title becomes a release note line.
 - Re-review design consistency before creating or merging a PR: confirm the change
-  matches what `CONTEXT.md`, the ADRs, and the module `AGENTS.md` files already
+  matches what `CONTEXT.md`, `docs/principles.md`, and the module `AGENTS.md` files already
   specify, rather than only that it compiles and passes. A change that re-implements
   or contradicts a documented invariant is wrong even when the tests pass.
 - When the design doc and the code disagree, treat the doc as the intent and fix the

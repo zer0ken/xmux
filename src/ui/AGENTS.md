@@ -73,7 +73,7 @@ operation channel, so the switcher holds no pending-operation queue of its own.
 
 ## Invariants
 
-- Selecting and executing are separate inputs (ADR 0008): the arrow keys move the hard
+- Selecting and executing are separate inputs (`docs/principles.md`): the arrow keys move the hard
   selection, hovering sets the soft selection, and Enter on the hard selection and a
   click on the soft selection are one shared execution. Either selection shows its
   target (a hovered nav card shows its screen) but never moves the focus or runs
@@ -272,7 +272,7 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   domain intents, never a match on mux kind. Per-mux behavior lives behind the mux
   and driver seam, reached through the operations trait, not decided here.
 - A rebuild resolves the selection from the interest alone, by the selection lineage
-  (`CONTEXT.md`, `docs/adr/0007-context-follows-the-users-interest.md`): the selected
+  (`CONTEXT.md`, Selection by Interest in `docs/principles.md`): the selected
   card holds by identity while it survives, a vanished card hands the selection to the
   nearest surviving card of its lineage, and an appearing card takes it only when it is
   the interest. No path picks a fallback row of its own. The rows are re-derived on

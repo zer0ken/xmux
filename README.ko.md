@@ -424,6 +424,6 @@ MIT 라이선스다. 전문은 [`LICENSE`](LICENSE)에 있다.
 - [`INSTALL.md`](INSTALL.md) - 모든 설치 방법, 갱신, 버전 고정
 - [`docs/keybind.md`](docs/keybind.md) - 키 바인딩과 prefix 상세
 - [`docs/requirements.md`](docs/requirements.md) - 동작 요구 사항
-- [`docs/adr/`](docs/adr/) - 아키텍처 결정 기록
+- [`docs/principles.md`](docs/principles.md) - 설계 원칙
 - [`CONTEXT.md`](CONTEXT.md) - 용어와 설계 개요
 - [`AGENTS.md`](AGENTS.md) - 디렉터리별 작업 노트
