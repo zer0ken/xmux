@@ -143,6 +143,21 @@ impl ExecRunner {
         &self,
         command: &CommandSpec,
     ) -> Result<(Vec<u8>, String), RunError> {
+        self.run_spec_until(
+            command,
+            tokio::time::Instant::now() + crate::mux::POLL_CMD_TIMEOUT,
+        )
+        .await
+    }
+
+    /// Runs `command` until `deadline`. A password-only retry shares the first attempt's
+    /// deadline, so the pair stays within one command budget and the sweep budget still
+    /// outlasts this teardown.
+    async fn run_spec_until(
+        &self,
+        command: &CommandSpec,
+        deadline: tokio::time::Instant,
+    ) -> Result<(Vec<u8>, String), RunError> {
         let name = command.program();
         let args = command.args();
         let mut cmd = tokio::process::Command::new(name);
@@ -200,7 +215,7 @@ impl ExecRunner {
         // (within_poll_budget) is one second longer so this teardown always wins.
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let outcome = tokio::time::timeout(crate::mux::POLL_CMD_TIMEOUT, async {
+        let outcome = tokio::time::timeout_at(deadline, async {
             let (_, _, status) = tokio::join!(
                 stdout.read_to_end(&mut out),
                 stderr.read_to_end(&mut err),
@@ -239,7 +254,11 @@ impl ExecRunner {
                     program = name,
                     "key opened no session; retrying with the password alone"
                 );
-                return Box::pin(self.run_spec_output(retry)).await;
+                let result = Box::pin(self.run_spec_until(retry, deadline)).await;
+                if result.is_ok() {
+                    command.password_only_worked();
+                }
+                return result;
             }
             let raw = match command.auth_unavailable() {
                 Some(reason) => {
@@ -649,6 +668,56 @@ echo probe-ok
             "later commands skip the key"
         );
         assert!(credentials.contains("prod"), "the password is kept");
+        drop(command);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn exec_runner_keeps_the_key_when_the_password_only_retry_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-runner-key-session-failed-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root.clone());
+        let pending = credentials
+            .begin("prod", crate::transport::Login::default(), "secret".into())
+            .unwrap()
+            .unwrap();
+        assert!(pending.promote());
+        let access = credentials.access("prod").unwrap();
+        #[cfg(windows)]
+        let dropped = || {
+            CommandSpec::new(
+                "cmd",
+                vec![
+                    "/C".into(),
+                    "echo Connection reset by 127.0.0.1 port 22 1>&2 & exit 255".into(),
+                ],
+            )
+        };
+        #[cfg(not(windows))]
+        let dropped = || {
+            CommandSpec::new(
+                "sh",
+                vec![
+                    "-c".into(),
+                    "echo 'Connection reset by 127.0.0.1 port 22' >&2; exit 255".into(),
+                ],
+            )
+        };
+        let command = dropped()
+            .with_auth(access.clone(), false)
+            .with_password_only_retry(dropped().with_auth(access, false));
+
+        ExecRunner
+            .run_spec(&command)
+            .await
+            .expect_err("both attempts fail");
+        assert!(
+            !credentials.access("prod").unwrap().key_opens_no_session(),
+            "a failed retry is no evidence the key opens no session"
+        );
         drop(command);
         let _ = std::fs::remove_dir_all(root);
     }

@@ -157,17 +157,30 @@ pub fn requires_login(stderr: &str) -> bool {
     contains_auth_refusal(stderr) || host_key_unknown(stderr)
 }
 
-/// True when the server dropped an established connection without refusing
-/// authentication. When askpass never handed over the password, this is how a host
-/// that accepts a key but cannot open a session for it reads on the client: a Windows
-/// sshd cannot build an Entra account's logon token without the password. A drop during
-/// the version exchange happens before authentication and is excluded.
-pub fn closed_without_refusal(stderr: &str) -> bool {
+/// True when the server dropped the connection after the version exchange and before a
+/// session started, without refusing authentication. When askpass never handed over the
+/// password, this is how a host that accepts a key but cannot open a session for it reads
+/// on the client: a Windows sshd cannot build an Entra account's logon token without the
+/// password.
+///
+/// OpenSSH reports a drop at the packet layer with an untagged `Connection reset by` or
+/// `Connection closed by` line (`Read from socket failed:` on older clients). Once a
+/// session runs, the client loop reports the drop instead, as `client_loop:`, `Read from
+/// remote host`, or `closed by remote host`; the remote command may have run, so such a
+/// drop is excluded. A drop during the version exchange happens before authentication
+/// and is excluded too.
+pub fn closed_before_session(stderr: &str) -> bool {
     let lower = stderr.to_ascii_lowercase();
-    (lower.contains("connection closed")
-        || lower.contains("connection reset")
-        || lower.contains("connection was closed"))
+    let dropped = stderr.lines().map(str::trim).any(|line| {
+        line.starts_with("Connection reset by ")
+            || line.starts_with("Connection closed by ")
+            || line.starts_with("Read from socket failed: Connection reset")
+    });
+    dropped
         && !lower.contains("kex_exchange_identification")
+        && !lower.contains("client_loop:")
+        && !lower.contains("read from remote host")
+        && !lower.contains("closed by remote host")
         && !contains_auth_refusal(stderr)
         && !host_key_changed(stderr)
         && !host_key_unknown(stderr)
@@ -390,22 +403,37 @@ mod tests {
     }
 
     #[test]
-    fn a_drop_without_refusal_is_told_apart_from_other_failures() {
+    fn a_drop_before_the_session_is_told_apart_from_other_failures() {
         for text in [
             "Connection reset by 127.0.0.1 port 22",
             "Connection closed by 10.0.0.5 port 22",
-            "client_loop: send disconnect: Connection reset",
+            "Read from socket failed: Connection reset by peer",
+            "debug1: Authenticated to box ([10.0.0.5]:22) using \"publickey\".
+Connection closed by 10.0.0.5 port 22",
         ] {
-            assert!(closed_without_refusal(text), "dropped: {text}");
+            assert!(
+                closed_before_session(text),
+                "dropped before a session: {text}"
+            );
         }
         for text in [
-            "kex_exchange_identification: Connection closed by remote host\nConnection closed by 10.0.0.5 port 22",
-            "dev@box: Permission denied (publickey,password).\nConnection closed by 10.0.0.5 port 22",
+            "kex_exchange_identification: Connection closed by remote host
+Connection closed by 10.0.0.5 port 22",
+            "dev@box: Permission denied (publickey,password).
+Connection closed by 10.0.0.5 port 22",
+            "client_loop: send disconnect: Connection reset",
+            "Read from remote host box: Connection reset by peer
+Connection reset by 10.0.0.5 port 22",
+            "Connection to box closed by remote host.",
             "ssh: connect to host prod port 22: Connection refused",
             "ssh: connect to host 192.0.2.1 port 22: Connection timed out",
-            "Host key verification failed.\nConnection closed by 10.0.0.5 port 22",
+            "Host key verification failed.
+Connection closed by 10.0.0.5 port 22",
         ] {
-            assert!(!closed_without_refusal(text), "not a drop after auth: {text}");
+            assert!(
+                !closed_before_session(text),
+                "not a drop before a session: {text}"
+            );
         }
     }
 

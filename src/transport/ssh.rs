@@ -1091,8 +1091,19 @@ mod tests {
             retry.password_only_retry(255, dropped).is_none(),
             "the retry runs once"
         );
+        assert!(
+            transport
+                .exec_argv(false, &argv(&["tmux", "ls"]))
+                .argv()
+                .contains(&KEY_FIRST.to_string()),
+            "a retry that has not succeeded leaves key authentication in use"
+        );
+        assert!(command
+            .password_only_retry(255, "client_loop: send disconnect: Connection reset")
+            .is_none());
 
-        // Every command composed later skips the key from the start.
+        // Once the retry succeeded, every command composed later skips the key.
+        command.password_only_worked();
         let later = transport.exec_argv(false, &argv(&["tmux", "ls"]));
         let joined = later.argv().join(" ");
         assert!(joined.contains("PubkeyAuthentication=no"), "{joined}");
@@ -1144,6 +1155,58 @@ mod tests {
         assert!(command
             .password_only_retry(255, "Connection closed by 127.0.0.1 port 22")
             .is_none());
+        drop(transport);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_password_the_retry_handed_over_counts_as_supplied() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-ssh-key-session-retry-supplied-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root.clone());
+        let pending = credentials
+            .begin(
+                "prod",
+                Login {
+                    address: Some("127.0.0.1".into()),
+                    port: None,
+                    user: Some("dev".into()),
+                },
+                "secret".into(),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(pending.promote());
+        let mut transport = ssh("prod", "windows", "");
+        transport.set_credentials(credentials.clone());
+        let command = transport.exec_argv(false, &argv(&["tmux", "ls"]));
+        let retry = command
+            .password_only_retry(255, "Connection reset by 127.0.0.1 port 22")
+            .expect("retry");
+        let env = |name: &str| {
+            retry
+                .env()
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+                .unwrap()
+        };
+        assert!(!command.password_was_supplied());
+        let supplied = crate::transport::auth::request_password(
+            std::path::Path::new(&env("XMUX_ASKPASS_ENDPOINT")),
+            &env("XMUX_ASKPASS_TOKEN"),
+            "dev@127.0.0.1's password: ",
+        )
+        .await
+        .expect("broker reply");
+        assert_eq!(supplied.as_deref(), Some("secret"));
+        assert!(
+            command.password_was_supplied(),
+            "the original command reports what its retry did"
+        );
         drop(transport);
         let _ = std::fs::remove_dir_all(root);
     }

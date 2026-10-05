@@ -155,20 +155,29 @@ impl CommandSpec {
     }
 
     /// The command to run instead after this one failed, when it held a password that
-    /// askpass never handed over and the host dropped the connection without refusing
-    /// authentication: the host accepted a key and could not open a session for it.
-    /// Marks the held password so every later command skips key authentication.
+    /// askpass never handed over and the host dropped the connection before a session
+    /// started without refusing authentication: the host accepted a key and could not
+    /// open a session for it. The caller runs it once and calls
+    /// [`CommandSpec::password_only_worked`] when it succeeds.
     pub fn password_only_retry(&self, exit_code: i32, diagnostic: &str) -> Option<&CommandSpec> {
         let retry = self.password_only_retry.as_deref()?;
         let auth = self.auth.as_ref()?;
         if exit_code != 255
             || auth.supplied()
-            || !crate::transport::diagnostic::closed_without_refusal(diagnostic)
+            || !crate::transport::diagnostic::closed_before_session(diagnostic)
         {
             return None;
         }
-        auth.mark_key_opens_no_session();
         Some(retry)
+    }
+
+    /// Marks the held password so every later command skips key authentication. Called
+    /// only after the password-only copy succeeded, so a drop that had another cause
+    /// leaves key authentication in use.
+    pub fn password_only_worked(&self) {
+        if let Some(auth) = &self.auth {
+            auth.mark_key_opens_no_session();
+        }
     }
 
     pub(crate) fn host_key_command(&self) -> Option<&str> {
@@ -179,20 +188,36 @@ impl CommandSpec {
         self.detach_tty
     }
 
+    /// Whether askpass handed the held password to this command or to the password-only
+    /// copy that ran in its place.
     pub fn password_was_supplied(&self) -> bool {
         self.auth.as_ref().is_some_and(auth::CommandAuth::supplied)
+            || self
+                .password_only_retry
+                .as_deref()
+                .is_some_and(CommandSpec::password_was_supplied)
     }
 
     pub fn credential_rejection_generation(&self) -> Option<u64> {
         self.auth
             .as_ref()
             .and_then(auth::CommandAuth::rejection_generation)
+            .or_else(|| {
+                self.password_only_retry
+                    .as_deref()
+                    .and_then(CommandSpec::credential_rejection_generation)
+            })
     }
 
     pub fn refused_auth_prompt(&self) -> Option<String> {
         self.auth
             .as_ref()
             .and_then(auth::CommandAuth::refused_prompt)
+            .or_else(|| {
+                self.password_only_retry
+                    .as_deref()
+                    .and_then(CommandSpec::refused_auth_prompt)
+            })
     }
 
     /// Keeps this command's one-shot askpass token valid for a spawned child.

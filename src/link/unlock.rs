@@ -237,7 +237,11 @@ fn run(
             let retry = retry.clone();
             let remaining = timeout.saturating_sub(started.elapsed());
             let asked = password_asked.unwrap_or_else(|| Box::new(|| {}));
-            return run(source, retry, remaining, cancel, asked);
+            let conversation = run(source, retry, remaining, cancel, asked);
+            if conversation.outcome.is_ok() {
+                command.password_only_worked();
+            }
+            return conversation;
         }
     }
     let password_supplied = command.password_was_supplied();
