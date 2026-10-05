@@ -28,6 +28,7 @@ pub struct CommandSpec {
     host_key_command: Option<String>,
     credential_generation: u64,
     auth_unavailable: Option<String>,
+    password_only_retry: Option<Box<CommandSpec>>,
     auth_trace_allowed: bool,
     observe_auth: bool,
 }
@@ -44,6 +45,7 @@ impl CommandSpec {
             host_key_command: None,
             credential_generation: 0,
             auth_unavailable: None,
+            password_only_retry: None,
             auth_trace_allowed: true,
             observe_auth: false,
         }
@@ -58,6 +60,7 @@ impl CommandSpec {
             host_key_command: None,
             credential_generation: 0,
             auth_unavailable: None,
+            password_only_retry: None,
             auth_trace_allowed: true,
             observe_auth: false,
         }
@@ -120,6 +123,9 @@ impl CommandSpec {
     }
 
     pub fn with_auth_observation(mut self) -> Self {
+        if let Some(retry) = self.password_only_retry.take() {
+            self.password_only_retry = Some(Box::new(retry.with_auth_observation()));
+        }
         self.observe_auth = true;
         self
     }
@@ -134,8 +140,44 @@ impl CommandSpec {
     }
 
     pub(crate) fn with_host_key_command(mut self, command: String) -> Self {
+        if let Some(retry) = self.password_only_retry.take() {
+            self.password_only_retry = Some(Box::new(retry.with_host_key_command(command.clone())));
+        }
         self.host_key_command = Some(command);
         self
+    }
+
+    /// Attaches the same command authenticating with the held password alone, run once
+    /// when the host closes the connection after accepting a key.
+    pub(crate) fn with_password_only_retry(mut self, retry: CommandSpec) -> Self {
+        self.password_only_retry = Some(Box::new(retry));
+        self
+    }
+
+    /// The command to run instead after this one failed, when it held a password that
+    /// askpass never handed over and the host dropped the connection before a session
+    /// started without refusing authentication: the host accepted a key and could not
+    /// open a session for it. The caller runs it once and calls
+    /// [`CommandSpec::password_only_worked`] when it succeeds.
+    pub fn password_only_retry(&self, exit_code: i32, diagnostic: &str) -> Option<&CommandSpec> {
+        let retry = self.password_only_retry.as_deref()?;
+        let auth = self.auth.as_ref()?;
+        if exit_code != 255
+            || auth.supplied()
+            || !crate::transport::diagnostic::closed_before_session(diagnostic)
+        {
+            return None;
+        }
+        Some(retry)
+    }
+
+    /// Marks the held password so every later command skips key authentication. Called
+    /// only after the password-only copy succeeded, so a drop that had another cause
+    /// leaves key authentication in use.
+    pub fn password_only_worked(&self) {
+        if let Some(auth) = &self.auth {
+            auth.mark_key_opens_no_session();
+        }
     }
 
     pub(crate) fn host_key_command(&self) -> Option<&str> {
@@ -146,20 +188,36 @@ impl CommandSpec {
         self.detach_tty
     }
 
+    /// Whether askpass handed the held password to this command or to the password-only
+    /// copy that ran in its place.
     pub fn password_was_supplied(&self) -> bool {
         self.auth.as_ref().is_some_and(auth::CommandAuth::supplied)
+            || self
+                .password_only_retry
+                .as_deref()
+                .is_some_and(CommandSpec::password_was_supplied)
     }
 
     pub fn credential_rejection_generation(&self) -> Option<u64> {
         self.auth
             .as_ref()
             .and_then(auth::CommandAuth::rejection_generation)
+            .or_else(|| {
+                self.password_only_retry
+                    .as_deref()
+                    .and_then(CommandSpec::credential_rejection_generation)
+            })
     }
 
     pub fn refused_auth_prompt(&self) -> Option<String> {
         self.auth
             .as_ref()
             .and_then(auth::CommandAuth::refused_prompt)
+            .or_else(|| {
+                self.password_only_retry
+                    .as_deref()
+                    .and_then(CommandSpec::refused_auth_prompt)
+            })
     }
 
     /// Keeps this command's one-shot askpass token valid for a spawned child.
@@ -368,6 +426,12 @@ pub trait Transport: Send + Sync {
         self.raw_shell_argv(remote_cmd)
     }
 
+    /// A connection of its own that may authenticate with a key and nothing else, running
+    /// `remote_cmd` directly. `None` when the machine is not reached by logging in.
+    fn key_only_argv(&self, _remote_cmd: &str) -> Option<CommandSpec> {
+        None
+    }
+
     /// Clones into a fresh box — a spawned poll task needs an owned transport, and a
     /// trait object cannot derive `Clone`.
     fn clone_box(&self) -> Box<dyn Transport>;
@@ -445,6 +509,9 @@ impl Transport for Box<dyn Transport> {
     }
     fn login_argv(&self, remote_cmd: &str) -> Option<CommandSpec> {
         (**self).login_argv(remote_cmd)
+    }
+    fn key_only_argv(&self, remote_cmd: &str) -> Option<CommandSpec> {
+        (**self).key_only_argv(remote_cmd)
     }
     fn clone_box(&self) -> Box<dyn Transport> {
         (**self).clone_box()

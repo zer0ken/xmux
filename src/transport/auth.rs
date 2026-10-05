@@ -98,6 +98,10 @@ struct Credential {
     expected: ExpectedPrompt,
     askpass: PathBuf,
     generation: u64,
+    /// Set once the host accepted a key and then closed the connection before a session
+    /// opened. Later commands holding this password skip key authentication, because
+    /// trying the key again only drops the connection again.
+    key_opens_no_session: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -341,6 +345,7 @@ impl Credentials {
             token: random_token()?,
             askpass: self.inner.helper.clone(),
             generation: self.bump_generation(machine),
+            key_opens_no_session: AtomicBool::new(false),
         });
         self.inner
             .pending
@@ -663,6 +668,12 @@ impl AskpassAccess {
         self.credential.generation
     }
 
+    /// Whether this password's host is known to close the connection after accepting a
+    /// key, so a command holding it must authenticate with the password alone.
+    pub fn key_opens_no_session(&self) -> bool {
+        self.credential.key_opens_no_session.load(Ordering::Acquire)
+    }
+
     pub fn promote(&self) -> bool {
         let mut pending = self.inner.pending.write().expect("credential lock");
         if !pending
@@ -864,6 +875,16 @@ impl CommandAuth {
             remove_matching(&self.inner.active, &self.machine, &self.credential_token);
         if removed_pending || removed_active {
             bump_generation(&self.inner, &self.machine);
+        }
+    }
+
+    /// Records that the host accepted a key and closed the connection before a session
+    /// opened, so every later command holding this password skips key authentication.
+    pub fn mark_key_opens_no_session(&self) {
+        if let Some(credential) = self.attempt.credential.upgrade() {
+            credential
+                .key_opens_no_session
+                .store(true, Ordering::Release);
         }
     }
 

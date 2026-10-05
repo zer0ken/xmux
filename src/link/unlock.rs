@@ -231,6 +231,19 @@ fn run(
             output.push_str(&refusal);
         }
     }
+    if let Ok(status) = &ended {
+        if let Some(retry) = command.password_only_retry(status.code().unwrap_or(-1), &output) {
+            tracing::info!(source = %source, "key opened no session; retrying with the password alone");
+            let retry = retry.clone();
+            let remaining = timeout.saturating_sub(started.elapsed());
+            let asked = password_asked.unwrap_or_else(|| Box::new(|| {}));
+            let conversation = run(source, retry, remaining, cancel, asked);
+            if conversation.outcome.is_ok() {
+                command.password_only_worked();
+            }
+            return conversation;
+        }
+    }
     let password_supplied = command.password_was_supplied();
     let auth_method = command
         .auth_trace_allowed()

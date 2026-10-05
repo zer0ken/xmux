@@ -524,6 +524,14 @@ no function, and no test, so renaming code is never a documentation change.
   `administrators_authorized_keys` when the host's sshd reads an Administrators member's
   keys from there and the account is one. Either form adds the line only when it is
   absent, and an ed25519 pair is generated first when the machine has no key to send.
+  After adding it, registration runs one ssh login that may authenticate with a key
+  only, never prompts, shares no connection master, and runs a remote command that does
+  nothing. The result is registered only when that command exits 0. When the host
+  authenticates the key and then cannot open a session, the result is failed with the
+  server's error, and the line this registration added is removed from every file it was
+  added to; a line that was present before registration is kept. When the login fails
+  before authentication finishes (the host cannot be reached, times out, or refuses the
+  key), the result is failed as not verified and the line is kept.
 - **FR-B31** - Persistent UI symbols are conventional glyphs that OS-default terminal
   fonts render in one cell without emoji presentation. The vocabulary includes `❯`,
   `✓`, `✗`, braille spinner frames led by `⠋`, box drawing led by `╭`, `▲`, `?`, and
@@ -740,7 +748,11 @@ nothing to switch to until one exists.
   every direct app-owned ssh forces the private askpass path and permits one password answer,
   including a tty attach when the client supports forced askpass. An older Unix client
   runs non-interactive children in a new session so it cannot read the user's terminal;
-  an older Windows client does not enter the password path. Attach requests a tty.
+  an older Windows client does not enter the password path. A command holding a password
+  offers a key first; when the host drops the connection before a session starts, without
+  refusing authentication and before the password is handed over, the command runs once
+  more with key authentication off within the same time budget. Once that retry succeeds,
+  later commands holding that password skip the key. Attach requests a tty.
   ControlMaster multiplexing is added only off Windows and remains an optimization.
   Effective ssh configuration is resolved with bounded concurrency, and a timed-out
   resolver process is terminated.

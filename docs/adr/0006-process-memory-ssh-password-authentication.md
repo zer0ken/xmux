@@ -148,9 +148,11 @@ remains independently capable of password authentication.
 
 Login is one bounded ssh command. Public-key registration is another ordinary ssh command
 using the promoted credential. It is built from the host's transport and submitted values
-even when the host has no source yet. Registration reports registered, skipped with a
-reason, or failed with the sanitized ssh reason in a completion message, the log, and host
-information.
+even when the host has no source yet. Registration is then checked by one ssh login that
+may use a key only, holds no credential, and shares no master, because a master the
+password login opened would answer for a key that cannot log in. Registration reports
+registered, skipped with a reason, or failed with the sanitized ssh reason in a completion
+message, the log, and host information.
 
 Displayed ssh diagnostics decode valid UTF-8 bytes that OpenSSH escaped in octal, remove
 terminal controls, password prompts, and protocol markers, and are bounded. A

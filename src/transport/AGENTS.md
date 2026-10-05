@@ -87,6 +87,11 @@ and nothing in `transport/` imports a mux type or a source.
   command without a credential uses batch mode. Older Unix ssh clients are detached from
   the controlling terminal for non-interactive work, and older Windows clients do not
   enter the password path.
+- A command holding a password offers a key first and carries a password-only copy of
+  itself. The copy runs once, within the first attempt's time budget, only when the host dropped
+  the connection before a session started without refusing authentication and askpass
+  never handed over the password. Its success marks the credential so later commands
+  compose without the key.
 - A destination configured with `ProxyJump` or `ProxyCommand` requires key authentication
   because its hop would inherit target askpass state.
 - A credential generation is captured when a command is composed. A probe result from
@@ -97,11 +102,13 @@ and nothing in `transport/` imports a mux type or a source.
   kind: one maps a kind to a concrete transport, another reads its server socket.
   No match on the kind is scattered across call sites; the trait object carries
   the choice everywhere else.
-- The transport dispatches four shapes and no more: a non-interactive command, an
+- The transport dispatches five shapes and no more: a non-interactive command, an
   attach into the terminal handover (local socket injection, or a shell session that
   folds the attach argv ahead of the handover, which lives here and never in the mux
-  or the caller), a control-mode child, and a raw shell command (which only the
-  shell-based implementations answer).
+  or the caller), a control-mode child, a raw shell command (which only the
+  shell-based implementations answer), and a key-only login check (which only the ssh
+  implementation answers). The check holds no credential and shares no master, so only
+  a key can make it succeed.
 - An implementation that needs a terminal for the control child arranges one on the HOST
   side, the way the ssh implementation forces a pty. It never rewrites a mux flag to work
   around a pipe: which control payload runs is the mux's word, not the

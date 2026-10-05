@@ -179,6 +179,18 @@ impl ExecRunner {
         &self,
         command: &CommandSpec,
     ) -> Result<(Vec<u8>, String), RunError> {
+        self.run_spec_until(command, tokio::time::Instant::now() + command_budget())
+            .await
+    }
+
+    /// Runs `command` until `deadline`. A password-only retry shares the first attempt's
+    /// deadline, so the pair stays within one command budget and the sweep budget still
+    /// outlasts this teardown.
+    async fn run_spec_until(
+        &self,
+        command: &CommandSpec,
+        deadline: tokio::time::Instant,
+    ) -> Result<(Vec<u8>, String), RunError> {
         let name = command.program();
         let args = command.args();
         let mut cmd = tokio::process::Command::new(name);
@@ -236,10 +248,10 @@ impl ExecRunner {
         // (within_poll_budget) is one second longer, and an operation deadline
         // (within_deadline) shortens this budget by that second, so this teardown
         // always wins.
-        let budget = command_budget();
+        let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let outcome = tokio::time::timeout(budget, async {
+        let outcome = tokio::time::timeout_at(deadline, async {
             let (_, _, status) = tokio::join!(
                 stdout.read_to_end(&mut out),
                 stderr.read_to_end(&mut err),
@@ -273,6 +285,17 @@ impl ExecRunner {
         } else {
             let code = status.code().unwrap_or(-1);
             let raw = String::from_utf8_lossy(&err).into_owned();
+            if let Some(retry) = command.password_only_retry(code, &raw) {
+                tracing::info!(
+                    program = name,
+                    "key opened no session; retrying with the password alone"
+                );
+                let result = Box::pin(self.run_spec_until(retry, deadline)).await;
+                if result.is_ok() {
+                    command.password_only_worked();
+                }
+                return result;
+            }
             let raw = match command.auth_unavailable() {
                 Some(reason) => {
                     format!("xmux credential broker unavailable: {reason}\n{raw}")
@@ -634,6 +657,105 @@ echo probe-ok
                 .starts_with("xmux could not provide the held password"),
             "{err}"
         );
+    }
+
+    #[tokio::test]
+    async fn exec_runner_retries_a_dropped_key_session_with_the_password_alone() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-runner-key-session-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root.clone());
+        let pending = credentials
+            .begin("prod", crate::transport::Login::default(), "secret".into())
+            .unwrap()
+            .unwrap();
+        assert!(pending.promote());
+        let access = credentials.access("prod").unwrap();
+        #[cfg(windows)]
+        let dropped = CommandSpec::new(
+            "cmd",
+            vec![
+                "/C".into(),
+                "echo Connection reset by 127.0.0.1 port 22 1>&2 & exit 255".into(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let dropped = CommandSpec::new(
+            "sh",
+            vec![
+                "-c".into(),
+                "echo 'Connection reset by 127.0.0.1 port 22' >&2; exit 255".into(),
+            ],
+        );
+        let (name, args) = echo_cmd("retried");
+        let command = dropped
+            .with_auth(access.clone(), false)
+            .with_password_only_retry(CommandSpec::new(name, args).with_auth(access, false));
+
+        let out = ExecRunner
+            .run_spec(&command)
+            .await
+            .unwrap_or_else(|e| panic!("the retry must run: {e:?}"));
+        assert!(String::from_utf8_lossy(&out).contains("retried"));
+        assert!(
+            credentials.access("prod").unwrap().key_opens_no_session(),
+            "later commands skip the key"
+        );
+        assert!(credentials.contains("prod"), "the password is kept");
+        drop(command);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn exec_runner_keeps_the_key_when_the_password_only_retry_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "xmux-runner-key-session-failed-{}-{}",
+            std::process::id(),
+            crate::transport::auth::request_test_token()
+        ));
+        let credentials = crate::transport::auth::Credentials::new(root.clone());
+        let pending = credentials
+            .begin("prod", crate::transport::Login::default(), "secret".into())
+            .unwrap()
+            .unwrap();
+        assert!(pending.promote());
+        let access = credentials.access("prod").unwrap();
+        #[cfg(windows)]
+        let dropped = || {
+            CommandSpec::new(
+                "cmd",
+                vec![
+                    "/C".into(),
+                    "echo Connection reset by 127.0.0.1 port 22 1>&2 & exit 255".into(),
+                ],
+            )
+        };
+        #[cfg(not(windows))]
+        let dropped = || {
+            CommandSpec::new(
+                "sh",
+                vec![
+                    "-c".into(),
+                    "echo 'Connection reset by 127.0.0.1 port 22' >&2; exit 255".into(),
+                ],
+            )
+        };
+        let command = dropped()
+            .with_auth(access.clone(), false)
+            .with_password_only_retry(dropped().with_auth(access, false));
+
+        ExecRunner
+            .run_spec(&command)
+            .await
+            .expect_err("both attempts fail");
+        assert!(
+            !credentials.access("prod").unwrap().key_opens_no_session(),
+            "a failed retry is no evidence the key opens no session"
+        );
+        drop(command);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// A command whose stdout exceeds the OS pipe capacity (65,536 bytes on

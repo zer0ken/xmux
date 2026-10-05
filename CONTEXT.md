@@ -362,7 +362,14 @@ UI elements a user perceives as distinct things:
   every direct ssh started by that running app can use the held password even when connection
   sharing is unavailable. A command removes a held password only when it actually received
   that credential, exits with ssh's connection-failure status, and carries ssh's own
-  authentication refusal. A probe result tagged with an older credential generation
+  authentication refusal. A command holding a password still offers a key first. When
+  the host drops the connection before a session starts, without refusing authentication
+  and before askpass hands over the password, the host accepted the key and could not open
+  a session for it, as a Windows sshd does for an Entra account. That command runs once
+  more with key authentication off, within the first attempt's time budget. A drop after
+  the session started is not retried, because the remote command may have run. Once the
+  retry succeeds, every later command holding that password skips the key.
+  A probe result tagged with an older credential generation
   cannot reclassify a machine after a newer login. The broker recreates its endpoint with
   backoff after an accept failure; while it is unavailable commands remain non-interactive
   and report that password login is unavailable. The separate command-line attach process has no access to the
@@ -397,6 +404,14 @@ UI elements a user perceives as distinct things:
   `administrators_authorized_keys` when its sshd reads an Administrators member's keys
   from that file. It adds the line only when that line is absent, so a second login
   changes nothing, and it makes this machine an ed25519 pair first when it has none.
+  Registration then logs in once with the key alone, over a connection of its own that
+  shares no master, never prompts, and runs a command that does nothing. Only that
+  command running makes the result registered. A host that accepts the key and then
+  cannot open a session would refuse every later command from this machine, which offers
+  the key first, so the result is failed with the server's error and the line this
+  registration added is removed; a line that was already there stays. A key login that
+  fails before authentication finishes proves nothing about the key, so the result is
+  failed as not verified and the line stays.
 - address column - the leftmost column set of every card, holding the one thing that
   answers "where is this": the dim card number `prefix <digit>` jumps to, or, on the
   SELECTED card, the selection mark - the number there would be the address of where you

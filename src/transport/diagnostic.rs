@@ -157,6 +157,35 @@ pub fn requires_login(stderr: &str) -> bool {
     contains_auth_refusal(stderr) || host_key_unknown(stderr)
 }
 
+/// True when the server dropped the connection after the version exchange and before a
+/// session started, without refusing authentication. When askpass never handed over the
+/// password, this is how a host that accepts a key but cannot open a session for it reads
+/// on the client: a Windows sshd cannot build an Entra account's logon token without the
+/// password.
+///
+/// OpenSSH reports a drop at the packet layer with an untagged `Connection reset by` or
+/// `Connection closed by` line (`Read from socket failed:` on older clients). Once a
+/// session runs, the client loop reports the drop instead, as `client_loop:`, `Read from
+/// remote host`, or `closed by remote host`; the remote command may have run, so such a
+/// drop is excluded. A drop during the version exchange happens before authentication
+/// and is excluded too.
+pub fn closed_before_session(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    let dropped = stderr.lines().map(str::trim).any(|line| {
+        line.starts_with("Connection reset by ")
+            || line.starts_with("Connection closed by ")
+            || line.starts_with("Read from socket failed: Connection reset")
+    });
+    dropped
+        && !lower.contains("kex_exchange_identification")
+        && !lower.contains("client_loop:")
+        && !lower.contains("read from remote host")
+        && !lower.contains("closed by remote host")
+        && !contains_auth_refusal(stderr)
+        && !host_key_changed(stderr)
+        && !host_key_unknown(stderr)
+}
+
 const BROKER_UNAVAILABLE: &str = "xmux could not provide the held password";
 const PASSWORD_REFUSED: &str = "the password was refused";
 const AUTH_REFUSED: &str = "authentication was refused";
@@ -370,6 +399,41 @@ mod tests {
             "no server running on /tmp/tmux-1000/default",
         ] {
             assert!(!requires_login(text), "not answerable here: {text}");
+        }
+    }
+
+    #[test]
+    fn a_drop_before_the_session_is_told_apart_from_other_failures() {
+        for text in [
+            "Connection reset by 127.0.0.1 port 22",
+            "Connection closed by 10.0.0.5 port 22",
+            "Read from socket failed: Connection reset by peer",
+            "debug1: Authenticated to box ([10.0.0.5]:22) using \"publickey\".
+Connection closed by 10.0.0.5 port 22",
+        ] {
+            assert!(
+                closed_before_session(text),
+                "dropped before a session: {text}"
+            );
+        }
+        for text in [
+            "kex_exchange_identification: Connection closed by remote host
+Connection closed by 10.0.0.5 port 22",
+            "dev@box: Permission denied (publickey,password).
+Connection closed by 10.0.0.5 port 22",
+            "client_loop: send disconnect: Connection reset",
+            "Read from remote host box: Connection reset by peer
+Connection reset by 10.0.0.5 port 22",
+            "Connection to box closed by remote host.",
+            "ssh: connect to host prod port 22: Connection refused",
+            "ssh: connect to host 192.0.2.1 port 22: Connection timed out",
+            "Host key verification failed.
+Connection closed by 10.0.0.5 port 22",
+        ] {
+            assert!(
+                !closed_before_session(text),
+                "not a drop before a session: {text}"
+            );
         }
     }
 
