@@ -678,7 +678,7 @@ impl Switcher {
     pub(super) fn open_jump(&mut self, digit: char, state: &mut crate::state::State) {
         state.chrome.clear_flash();
         let seed = digit.to_string();
-        let restore = self.current_ref().cloned();
+        let restore = self.current_ref().cloned().zip(self.selected_node());
         self.dismiss_modals(state);
         let mut input = Input::new(InputMode::Jump, seed, None);
         input.restore = restore;
@@ -719,16 +719,25 @@ impl Switcher {
         self.rebuild(state);
     }
 
-    /// Returns the selection to the card a cancelled jump started from, matched by
-    /// identity so a rebuild mid-jump cannot land on the wrong card. A card that
-    /// vanished meanwhile leaves the selection where the jump put it.
-    fn restore_jump(&mut self, restore: Option<RowRef>) {
-        let Some(target) = restore else {
+    /// Returns the selection to the node a cancelled jump started from, on the card it
+    /// stood on, matched by identity so a rebuild mid-jump cannot land on the wrong card
+    /// or the other half of a title. A node that vanished meanwhile leaves the selection
+    /// where the jump put it.
+    fn restore_jump(&mut self, restore: Option<(RowRef, Node)>, state: &crate::state::State) {
+        let Some((row, node)) = restore else {
             return;
         };
-        if let Some(i) = self.row_matching(&target) {
-            self.set_selected(i);
-        }
+        let near = row_source(&row).map(str::to_owned);
+        let target = match self.target_of(&node, near.as_deref()) {
+            Some((row, part)) => Target {
+                row,
+                part,
+                deep: None,
+            },
+            None if node_exists(&node, state) => self.deep_target(node),
+            None => return,
+        };
+        self.set_target(target);
     }
 
     pub(super) fn close_input(&mut self, state: &mut crate::state::State) {
@@ -816,7 +825,7 @@ impl Switcher {
                     _ => (None, None),
                 };
                 self.close_input(state);
-                self.restore_jump(restore);
+                self.restore_jump(restore, state);
                 if let Some(f) = restore_filter {
                     if state.filter != f {
                         state.filter = f;

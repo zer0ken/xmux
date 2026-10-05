@@ -279,6 +279,18 @@ pub(crate) struct ScreenLink {
 /// width, relative to the screen's own area.
 type LinkCell = (usize, usize, u16, u16);
 
+/// The first line of a view screen shown in `height` rows: the top, unless the
+/// hard-selected link would fall below the area, in which case the screen scrolls just
+/// far enough to show that link on its last row. A link the user can select is a link
+/// the user can see before opening it.
+fn screen_top(links: &[LinkCell], selected: Option<usize>, height: u16) -> usize {
+    selected
+        .and_then(|s| links.iter().find(|l| l.0 == s))
+        .map_or(0, |&(_, line, _, _)| {
+            (line + 1).saturating_sub(height as usize)
+        })
+}
+
 impl ViewScreen {
     /// The state word under the headline. The two SETTLED HOST states read theirs from
     /// the one source the nav cards read, so a card and the screen reached from it can
@@ -607,7 +619,9 @@ impl Chrome {
         view: ViewScreenRender<'_>,
         palette: &crate::ui::palette::Palette,
     ) -> Option<ratatui::layout::Position> {
-        let (lines, caret, _) = self.view_screen_lines(state, &view, area.width, palette);
+        let (lines, caret, links) = self.view_screen_lines(state, &view, area.width, palette);
+        let top = screen_top(&links, view.link, area.height);
+        let lines: Vec<Line<'static>> = lines.into_iter().skip(top).collect();
         let content_rows = lines.len().min(area.height as usize) as u16;
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
         let blank = Rect {
@@ -619,6 +633,7 @@ impl Chrome {
             crate::ui::braille_x::render(frame, blank, self.animation_ms);
         }
         caret
+            .and_then(|(row, col)| Some((row.checked_sub(top)?, col)))
             .filter(|&(row, col)| row < area.height as usize && col < area.width)
             .map(|(row, col)| ratatui::layout::Position {
                 x: area.x + col,
@@ -626,13 +641,9 @@ impl Chrome {
             })
     }
 
-    /// The name a view screen carries at its top, in the grammar the nav cards use:
-    /// `{host}/{mux}` for a host's screen, and that with the session under it for the
-    /// session xmux is itself running in. What arrives is the [`crate::session::Address`]
-    /// the screen was reached by, which is the source id and, for the session screen, its
-    /// session name - the two halves are already separate, so nothing is re-split.
     /// Where `view` paints its links inside `area`, read from the same lines the paint
-    /// draws, so a click is hit-tested against what is on screen.
+    /// draws and scrolled the same way, so a click is hit-tested against what is on
+    /// screen.
     pub(crate) fn view_link_rects(
         &self,
         state: &crate::state::State,
@@ -641,8 +652,10 @@ impl Chrome {
         palette: &crate::ui::palette::Palette,
     ) -> Vec<(usize, Rect)> {
         let (_, _, links) = self.view_screen_lines(state, view, area.width, palette);
+        let top = screen_top(&links, view.link, area.height);
         links
             .into_iter()
+            .filter_map(|(link, line, col, width)| Some((link, line.checked_sub(top)?, col, width)))
             .filter(|&(_, line, col, _)| line < area.height as usize && col < area.width)
             .map(|(link, line, col, width)| {
                 (
@@ -658,6 +671,11 @@ impl Chrome {
             .collect()
     }
 
+    /// The name a view screen carries at its top, in the grammar the nav cards use:
+    /// `{host}/{mux}` for a host's screen, and that with the session under it for the
+    /// session xmux is itself running in. What arrives is the [`crate::session::Address`]
+    /// the screen was reached by, which is the source id and, for the session screen, its
+    /// session name - the two halves are already separate, so nothing is re-split.
     fn headline(&self, address: &crate::session::Address, kind: ViewScreen, host: bool) -> String {
         if address.source.is_empty() {
             return String::new();

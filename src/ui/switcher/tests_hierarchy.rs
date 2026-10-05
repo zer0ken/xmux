@@ -668,3 +668,67 @@ fn a_click_on_a_nav_target_selects_it_and_reports_the_hit() {
     assert!(h.sw.mouse_select(&h.plan.clone(), half.x, half.y));
     assert_eq!(h.node(), source("gpu"));
 }
+
+#[test]
+fn a_cancelled_jump_returns_to_the_half_of_the_title_it_started_on() {
+    let mut h = fleet();
+    h.select("web", "api");
+    h.ctrl(KeyCode::Up);
+    h.ctrl(KeyCode::Up);
+    assert_eq!(h.node(), host("web"));
+    h.key(KeyCode::Char('1'));
+    assert_eq!(h.node(), session("gpu", "train"), "the jump moved");
+    h.key(KeyCode::Esc);
+    assert_eq!(h.node(), host("web"), "Esc returns to the host half");
+    assert_eq!(h.sw.part, Part::Host);
+}
+
+#[test]
+fn the_selected_link_follows_its_node_when_the_links_change() {
+    let mut h = fleet();
+    h.select("web", "api");
+    h.ctrl(KeyCode::Up);
+    h.terminal_focused = true;
+    h.draw();
+    h.sw.step_link(2, &h.state);
+    assert_eq!(h.sw.link, 2, "deploy, after the host and api");
+
+    // api ends: deploy is still the selected link, one place up.
+    h.sw.apply_source_result(
+        "web".into(),
+        vec![sess("web", "deploy")],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    assert_eq!(h.node(), source("web"));
+    assert_eq!(h.sw.link, 1);
+    assert!(h.reversed(h.link_rect(1)));
+
+    // deploy ends too: the selection stays on a link the screen still has.
+    h.sw.apply_source_result("web".into(), vec![sess("web", "api")], None, &mut h.state);
+    h.draw();
+    assert_eq!(h.sw.link, 1);
+    assert!(h.sw.open_selected_link(&h.state), "Enter opens a link");
+    assert_eq!(h.node(), session("web", "api"));
+}
+
+#[test]
+fn a_screen_scrolls_to_keep_the_selected_link_in_view() {
+    let names: Vec<String> = (0..40).map(|i| format!("s{i:02}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut h = H::new(&[("web", &names, None)]);
+    h.select("web", "s00");
+    h.ctrl(KeyCode::Up);
+    h.terminal_focused = true;
+    h.draw();
+    assert!(
+        !h.plan.view_links.iter().any(|(i, _)| *i == 40),
+        "the last session's link is below the screen at first"
+    );
+    h.sw.step_link(40, &h.state);
+    h.draw();
+    let last = h.link_rect(40);
+    assert!(h.reversed(last), "the selected link is on screen");
+    assert_eq!(h.cells(last).trim_end(), "s39");
+}

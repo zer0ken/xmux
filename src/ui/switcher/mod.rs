@@ -379,8 +379,10 @@ pub struct Switcher {
     /// the focus, as a row identity and the part of it. The terminal view shows its
     /// screen; nothing else follows it.
     hover: Option<(RowRef, Part)>,
-    /// The hard-selected link on the shown host or source screen.
+    /// The hard-selected link on the shown host or source screen, by index and by the
+    /// node it names, so a rebuild that adds or drops links keeps the same node selected.
     link: usize,
+    link_node: Option<Node>,
     /// The link under the pointer on that screen while the terminal view holds the focus.
     link_hover: Option<usize>,
     /// Host whose login pane was opened explicitly from the check table or palette.
@@ -440,6 +442,7 @@ impl Switcher {
             trail: std::collections::HashMap::new(),
             hover: None,
             link: 0,
+            link_node: None,
             link_hover: None,
             login_target: None,
             terminal_view_target: TerminalViewTarget::default(),
@@ -610,6 +613,31 @@ impl Switcher {
             self.hover = None;
         }
         self.set_target(target);
+        self.resolve_link(state);
+    }
+
+    /// Re-reads the selected link after the screen's links changed: the link naming the
+    /// same node, else the link now at its place, within the links there are. A pointer
+    /// left over a link that is gone names nothing.
+    fn resolve_link(&mut self, state: &crate::state::State) {
+        let links = self
+            .selected_node()
+            .map(|node| self.screen_links(&node, state))
+            .unwrap_or_default();
+        match self
+            .link_node
+            .as_ref()
+            .and_then(|node| links.iter().position(|l| l.node == *node))
+        {
+            Some(i) => self.link = i,
+            None => {
+                self.link = self.link.min(links.len().saturating_sub(1));
+                self.link_node = links.get(self.link).map(|l| l.node.clone());
+            }
+        }
+        if self.link_hover.is_some_and(|i| i >= links.len()) {
+            self.link_hover = None;
+        }
     }
 
     /// The target the selection takes after a rebuild, read from [`Interest`].
@@ -1030,6 +1058,7 @@ impl Switcher {
         }
         if before != after {
             self.link = 0;
+            self.link_node = None;
         }
         self.on_focus_changed();
     }
@@ -1591,6 +1620,10 @@ impl Switcher {
             return;
         }
         self.link = (self.link as isize + delta).clamp(0, n as isize - 1) as usize;
+        self.link_node = self
+            .shown_links(state)
+            .get(self.link)
+            .map(|l| l.node.clone());
     }
 
     /// Executes link `index` of the shown screen: the node it names becomes the hard
@@ -1612,6 +1645,7 @@ impl Switcher {
                     .position(|l| l.node == before)
                 {
                     self.link = i;
+                    self.link_node = Some(before);
                 }
             }
         }
