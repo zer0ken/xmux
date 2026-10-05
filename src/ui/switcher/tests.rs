@@ -6146,9 +6146,9 @@ fn popup_border_press_then_drag_moves_the_rect() {
     let mut sw = Switcher::new(&mut state);
     sw.show_help(&mut state); // the help popup, the one popup that remains
                               // A window taller than the help, so the popup has room to move up.
-    let mut term = Terminal::new(TestBackend::new(140, 70)).unwrap();
+    let mut term = Terminal::new(TestBackend::new(140, 80)).unwrap();
     let before_plan = sw.layout(
-        Rect::new(0, 0, 140, 70),
+        Rect::new(0, 0, 140, 80),
         NavSize::hidden(NAV_WIDTH),
         &state,
         &RenderPlan::default(),
@@ -6163,7 +6163,7 @@ fn popup_border_press_then_drag_moves_the_rect() {
     );
     sw.drag_popup(bx + 5, by - 1);
     let after_plan = sw.layout(
-        Rect::new(0, 0, 140, 70),
+        Rect::new(0, 0, 140, 80),
         NavSize::hidden(NAV_WIDTH),
         &state,
         &before_plan,

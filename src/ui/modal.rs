@@ -1947,7 +1947,17 @@ mod tests {
     fn a_wrapped_help_description_hangs_under_the_description_column() {
         let palette = palette::Palette::default();
         let kw = key_column_width(&help_rows("C-g", POS));
-        let (_, lines) = help_lines("C-g", POS, &palette, "freshness", 0, None, None, 40, 40);
+        let (_, lines) = help_lines(
+            "C-g",
+            POS,
+            &palette,
+            "current source",
+            0,
+            None,
+            None,
+            40,
+            40,
+        );
         let text: Vec<String> = lines[HELP_LEAD..].iter().map(|l| l.to_string()).collect();
         let at = text
             .iter()

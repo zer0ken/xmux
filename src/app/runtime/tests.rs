@@ -5879,7 +5879,14 @@ fn hovering_a_nav_card_previews_it_and_a_click_executes_it() {
         pressed: true,
     };
     // cb 35: motion with no button held.
-    let dirty = rt.handle_mouse_event(&at(35), &Selection::default(), &mut false, &mut false);
+    let dirty = rt.handle_mouse_event(
+        &at(35),
+        &Selection::default(),
+        &mut false,
+        &mut false,
+        &mut false,
+        &mut false,
+    );
     assert!(dirty, "a new soft selection repaints");
     assert_eq!(
         selected(&rt),
@@ -5889,7 +5896,14 @@ fn hovering_a_nav_card_previews_it_and_a_click_executes_it() {
     assert_eq!(rt.model.switcher.terminal_view_target().target, "deploy");
     assert!(rt.model.state.focus.is_nav_focused());
 
-    rt.handle_mouse_event(&at(0), &Selection::default(), &mut false, &mut false);
+    rt.handle_mouse_event(
+        &at(0),
+        &Selection::default(),
+        &mut false,
+        &mut false,
+        &mut false,
+        &mut false,
+    );
     assert_eq!(selected(&rt), session_node("web", "deploy"));
     assert!(
         rt.model.state.focus.is_terminal_focused(),
@@ -5925,6 +5939,13 @@ fn a_click_on_a_screen_link_opens_it() {
         row: rect.y + 1,
         pressed: true,
     };
-    rt.handle_mouse_event(&press, &Selection::default(), &mut false, &mut false);
+    rt.handle_mouse_event(
+        &press,
+        &Selection::default(),
+        &mut false,
+        &mut false,
+        &mut false,
+        &mut false,
+    );
     assert_eq!(selected(&rt), session_node("web", "deploy"));
 }
