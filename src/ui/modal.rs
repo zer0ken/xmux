@@ -341,6 +341,7 @@ pub(crate) fn help_lines(
     query: &str,
     scroll: usize,
     visible: u16,
+    inner: u16,
 ) -> (String, Vec<Line<'static>>) {
     let all = help_rows(prefix, nav_position);
     let kw = key_column_width(&all);
@@ -350,11 +351,12 @@ pub(crate) fn help_lines(
     let head = crate::ui::keylist::title_style(palette).add_modifier(Modifier::BOLD);
     // The search field is never scrolled or filtered away.
     let mut search = vec![Span::styled(" / ", muted)];
-    search.extend(text_field(
+    search.extend(text_field_in(
         query,
         query.chars().count(),
         true,
         "type to search",
+        field_room(inner, 3),
         palette,
     ));
     let body: Vec<Line<'static>> = rows
@@ -482,19 +484,15 @@ fn caret_window(value: &str, cursor: usize, avail: usize) -> (String, String, St
     (before, at, after)
 }
 
+/// The cells a search field has in a popup `inner` cells wide after a `lead`-cell prefix
+/// and one cell of right padding.
+fn field_room(inner: u16, lead: usize) -> usize {
+    (inner as usize).saturating_sub(lead + 1).max(1)
+}
+
 /// A text field's value cells: the value in the default foreground with one reversed
 /// caret cell at the edit position, windowed to `avail` cells. An empty value shows the
 /// dim `placeholder` under the caret.
-fn text_field(
-    value: &str,
-    cursor: usize,
-    caret: bool,
-    placeholder: &str,
-    palette: &palette::Palette,
-) -> Vec<Span<'static>> {
-    text_field_in(value, cursor, caret, placeholder, usize::MAX, palette)
-}
-
 fn text_field_in(
     value: &str,
     cursor: usize,
@@ -540,7 +538,7 @@ pub(crate) fn caret_offset(line: &Line) -> Option<u16> {
         }
         x += w;
     }
-    found.map(|x| x as u16)
+    found.and_then(|x| u16::try_from(x).ok())
 }
 
 /// An input's value as a text field `avail` cells wide.
@@ -813,7 +811,14 @@ pub(crate) fn palette_lines(
     let muted = Style::default().fg(palette.decoration);
     let key = crate::ui::keylist::key_cell_style(palette);
     let mut q = vec![Span::styled(" : ", muted)];
-    q.extend(text_field(query, query.chars().count(), true, "", palette));
+    q.extend(text_field_in(
+        query,
+        query.chars().count(),
+        true,
+        "",
+        field_room(inner, 3),
+        palette,
+    ));
     let mut lines = vec![Line::from(q)];
     if entries.is_empty() {
         lines.push(Line::from(Span::styled(" no matching commands", muted)));
@@ -1136,6 +1141,7 @@ mod tests {
             "",
             0,
             200,
+            u16::MAX,
         );
         assert_eq!(t, "", "every row fits, so the meta names no range");
     }
@@ -1216,6 +1222,7 @@ mod tests {
             "zzzz",
             0,
             20,
+            u16::MAX,
         );
         let text = flat(&lines);
         assert!(text.contains(" / zzzz"), "{text}");
@@ -1226,7 +1233,7 @@ mod tests {
     fn a_key_wider_than_the_help_key_column_takes_its_own_row() {
         let palette = palette::Palette::default();
         let pos = crate::ui::switcher::NavPosition::Left;
-        let (_, lines) = help_lines("C-g", pos, &palette, "click a card", 0, 50);
+        let (_, lines) = help_lines("C-g", pos, &palette, "click a card", 0, 50, u16::MAX);
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         let at = text
             .iter()
@@ -1247,14 +1254,14 @@ mod tests {
         let palette = palette::Palette::default();
         let pos = crate::ui::switcher::NavPosition::Left;
         let total = help_display_len("C-g", pos, "");
-        let (title, lines) = help_lines("C-g", pos, &palette, "", 0, 11);
+        let (title, lines) = help_lines("C-g", pos, &palette, "", 0, 11, u16::MAX);
         assert_eq!(lines.len(), 11, "the search line and ten rows");
         assert_eq!(title, format!("1-10 of {total}"));
         assert!(flat(&lines).contains("move (nav focus)"));
-        let (title, lines) = help_lines("C-g", pos, &palette, "", 5, 11);
+        let (title, lines) = help_lines("C-g", pos, &palette, "", 5, 11, u16::MAX);
         assert_eq!(title, format!("6-15 of {total}"));
         assert!(!flat(&lines).contains("move (nav focus)"), "scrolled past");
-        let (title, lines) = help_lines("C-g", pos, &palette, "", usize::MAX, 11);
+        let (title, lines) = help_lines("C-g", pos, &palette, "", usize::MAX, 11, u16::MAX);
         assert_eq!(
             title,
             format!("{}-{total} of {total}", total - 9),
@@ -1271,7 +1278,7 @@ mod tests {
         let palette = palette::Palette::default();
         let pos = crate::ui::switcher::NavPosition::Left;
         for (query, scroll) in [("", 0), ("quit", 0), ("zzzz", 0), ("", usize::MAX)] {
-            let (_, lines) = help_lines("C-g", pos, &palette, query, scroll, 6);
+            let (_, lines) = help_lines("C-g", pos, &palette, query, scroll, 6, u16::MAX);
             let first = flat(&lines[..1]);
             assert!(first.starts_with(" / "), "{query:?}: {first}");
         }
@@ -1398,5 +1405,34 @@ mod tests {
             Color::Reset,
             "the popup covers the background colour opaquely"
         );
+    }
+
+    #[test]
+    fn a_long_search_keeps_its_caret_inside_the_popup() {
+        let palette = palette::Palette::default();
+        let query = "a".repeat(40);
+        let (_, help) = help_lines(
+            "C-g",
+            crate::ui::switcher::NavPosition::Left,
+            &palette,
+            &query,
+            0,
+            10,
+            29,
+        );
+        let commands = palette_lines(&query, &[], 1, 0, 0, 29, &palette);
+        for line in [&help[0], &commands[0]] {
+            assert!(line.width() <= 29, "{}", line.width());
+            assert!(caret_offset(line).is_some_and(|x| x < 29));
+        }
+    }
+
+    #[test]
+    fn a_caret_past_the_last_cell_a_terminal_has_is_no_caret() {
+        let line = Line::from(vec![
+            Span::raw("a".repeat(70_000)),
+            Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+        ]);
+        assert_eq!(caret_offset(&line), None);
     }
 }

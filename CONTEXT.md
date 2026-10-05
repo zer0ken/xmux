@@ -548,8 +548,9 @@ UI elements a user perceives as distinct things:
 - a source scan has one ten-second budget shared by first contact and the session
   listing; a slow first contact leaves only the remaining time for enumeration.
   A card still scanning after ten seconds reports a timeout and stops spinning.
-- flash - the reason a key did nothing, shown in the hint bar (a jump number no card
-  carries, a new session on an unreachable host). It goes away on the next tree key, and
+- flash - the reason a key did nothing, shown in the hint bar (a new session on an
+  unreachable host, a logout confirm without the word). A jump number no card carries
+  is stated in the jump's popup instead. It goes away on the next tree key, and
   after ten seconds for a user who presses nothing, since it is about something that
   already happened. A flash is a refusal, never the result of work: that is a toast.
 - toast - the result of work the user started (a login and what it registered, a new

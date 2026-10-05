@@ -250,8 +250,8 @@ interaction starts: then the nav comes back for the moment it is needed, so a ju
 read the card numbers, and it hides again when the interaction ends. With no indicator on
 screen, the key list opens over the window's bottom left, and the bar floats over the
 bottom of the window for what must be seen the moment it happens: a refusal and the
-hint after a selection move. A refusal is the reason a key did nothing (a
-jump number no card carries, a new session on an unreachable host); it opens where the
+hint after a selection move. A refusal is the reason a key did nothing (a new
+session on an unreachable host, a logout confirm without the word); it opens where the
 hint after a selection move does, in the error colour, wraps instead of clipping, and goes
 away on the next key or after ten seconds. Scan progress and the active filter persist,
 so they stay in the nav and never take a row back from a hidden one. The bar shows one

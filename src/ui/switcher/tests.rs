@@ -6373,6 +6373,7 @@ fn help_lines_reflects_configured_prefix() {
         "",
         0,
         200,
+        u16::MAX,
     );
     let text: String = lines
         .iter()
@@ -6397,6 +6398,7 @@ fn help_lines_reflects_configured_prefix() {
         "",
         0,
         200,
+        u16::MAX,
     );
     let text_default: String = lines_default
         .iter()

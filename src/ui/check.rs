@@ -55,7 +55,9 @@ pub(crate) fn check_lines(
         .iter()
         .map(|e| UnicodeWidthStr::width(e.label.as_str()))
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min((width as usize).saturating_sub(3 + 2 + 1) / 2)
+        .max(1);
     let lead = 3 + lw + 2;
     let words = (width as usize).saturating_sub(lead + 1).max(1) as u16;
     let bold = palette::interaction_key_style();
@@ -72,7 +74,8 @@ pub(crate) fn check_lines(
             last = Some(entry.kind);
         }
         let chosen = i == selected;
-        let pad = lw.saturating_sub(UnicodeWidthStr::width(entry.label.as_str()));
+        let label = crate::ui::modal::middle_cut(&entry.label, lw);
+        let pad = lw.saturating_sub(UnicodeWidthStr::width(label.as_str()));
         let reason = crate::ui::modal::wrap_text(&entry.reason, words);
         // The selected row is reversed as one surface, so its spans keep no colour that
         // the reversal would turn into a second background.
@@ -85,7 +88,7 @@ pub(crate) fn check_lines(
                     } else {
                         "   ".to_string()
                     }),
-                    Span::styled(entry.label.clone(), bold),
+                    Span::styled(label.clone(), bold),
                     Span::raw(" ".repeat(pad + 2)),
                     Span::styled(chunk, dim),
                 ]
@@ -185,5 +188,19 @@ mod tests {
         assert!(lines
             .iter()
             .any(|line| line.style == palette::selection_style(&Palette::default())));
+    }
+
+    #[test]
+    fn a_long_host_name_leaves_every_reason_its_column() {
+        let mut long = entry("gpu-02", FailureKind::Blocked);
+        long.label = "worker-01.production.example.com".into();
+        let entries = vec![long, entry("db-01", FailureKind::Blocked)];
+        let (_, lines) = check_lines(&entries, 0, 29, usize::MAX, &Palette::default());
+        assert!(lines.iter().all(|l| l.width() <= 29));
+        let all: Vec<String> = lines.iter().map(text).collect();
+        for reason in ["gpu-02", "db-01"] {
+            assert!(all.iter().any(|l| l.contains(reason)), "{all:?}");
+        }
+        assert!(all[1].contains('…'), "{all:?}");
     }
 }

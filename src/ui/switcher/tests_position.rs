@@ -541,8 +541,15 @@ fn pl9_the_key_list_and_the_help_name_prefix_z() {
         )),
         "the key list names z: {list:?}"
     );
-    let (_, lines) =
-        crate::ui::modal::help_lines("C-g", NavPosition::Left, &Default::default(), "", 0, 200);
+    let (_, lines) = crate::ui::modal::help_lines(
+        "C-g",
+        NavPosition::Left,
+        &Default::default(),
+        "",
+        0,
+        200,
+        u16::MAX,
+    );
     let help: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     assert!(
         help.iter()
@@ -878,5 +885,17 @@ fn every_prefix_surface_opens_where_the_key_list_opens() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn an_input_popup_too_short_for_its_rows_keeps_its_field() {
+    let mut state = crate::state::State::from_scan(two_groups());
+    let switcher = Switcher::new(&mut state);
+    for modal in prefix_surfaces().into_iter().take(4) {
+        state.modal = Some(modal);
+        let (_, lines) = switcher.input_popup_at(&state, 50, 1).expect("an input");
+        assert_eq!(lines.len(), 1);
+        assert!(crate::ui::modal::caret_offset(&lines[0]).is_some());
     }
 }

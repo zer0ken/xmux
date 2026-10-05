@@ -487,8 +487,21 @@ impl Switcher {
         self.settle(rect, area)
     }
 
-    /// An open input's popup at `width` outer cells: its frame and rows.
-    fn input_popup_at(
+    /// An open input's popup at `width` outer cells and at most `rows` inner rows: its
+    /// frame and rows. The field is the last row, so a popup too short for every row
+    /// gives up the rows above it and keeps the field.
+    pub(super) fn input_popup_at(
+        &self,
+        state: &crate::state::State,
+        width: u16,
+        rows: u16,
+    ) -> Option<(modal::PopupFrame, Vec<Line<'static>>)> {
+        let (frame, mut lines) = self.input_popup_full(state, width)?;
+        lines.drain(..lines.len().saturating_sub(rows as usize));
+        Some((frame, lines))
+    }
+
+    fn input_popup_full(
         &self,
         state: &crate::state::State,
         width: u16,
@@ -955,8 +968,11 @@ impl Switcher {
         let palette = &self.palette;
         // A line painted at `rect`'s row `row`, offset by `inset` cells from its left edge.
         let at = |rect: Rect, inset: u16, row: u16, line: &Line| {
-            let x = rect.x + inset + modal::caret_offset(line)?;
-            let y = rect.y + row;
+            let x = rect
+                .x
+                .checked_add(inset)?
+                .checked_add(modal::caret_offset(line)?)?;
+            let y = rect.y.checked_add(row)?;
             (x < rect.right() && y < rect.bottom()).then_some(Position { x, y })
         };
         let inner = |rect: Rect, lines: &[Line<'static>]| {
@@ -967,11 +983,14 @@ impl Switcher {
         };
         match &state.modal {
             Some(Modal::Input(_)) => {
-                let (_, lines) = self.input_popup_at(state, plan.popup_rect.width)?;
+                let rect = plan.popup_rect;
+                let (_, lines) =
+                    self.input_popup_at(state, rect.width, rect.height.saturating_sub(2))?;
                 inner(plan.popup_rect, &lines)
             }
             Some(Modal::Palette { query, .. }) => {
-                let lines = modal::palette_lines(query, &[], 1, 0, 0, 0, palette);
+                let inner_w = plan.popup_rect.width.saturating_sub(2);
+                let lines = modal::palette_lines(query, &[], 1, 0, 0, inner_w, palette);
                 inner(plan.popup_rect, &lines[..1])
             }
             Some(Modal::Help { query, .. }) => {
@@ -982,6 +1001,7 @@ impl Switcher {
                     query,
                     0,
                     1,
+                    plan.popup_rect.width.saturating_sub(2),
                 );
                 inner(plan.popup_rect, &lines[..1])
             }
@@ -1470,7 +1490,7 @@ impl Switcher {
                     InputMode::Logout => modal::logout_size(input, room.width).0,
                     InputMode::Filter | InputMode::Jump => modal::POPOVER_MIN_WIDTH,
                 };
-                let rows = self.input_popup_at(state, w).map_or(1, |(_, l)| l.len()) as u16;
+                let rows = self.input_popup_full(state, w).map_or(1, |(_, l)| l.len()) as u16;
                 anchor((w, rows + 2))
             }
             Some(Modal::History { scroll }) => {
@@ -1598,6 +1618,7 @@ impl Switcher {
                     query,
                     *scroll,
                     rect.height.saturating_sub(2),
+                    rect.width.saturating_sub(2),
                 );
                 (framed(modal::HELP_TITLE, meta, modal::HELP_HINTS), lines)
             }
@@ -1648,10 +1669,12 @@ impl Switcher {
                     lines,
                 )
             }
-            Some(Modal::Input(_)) => match self.input_popup_at(state, rect.width) {
-                Some(popup) => popup,
-                None => return,
-            },
+            Some(Modal::Input(_)) => {
+                match self.input_popup_at(state, rect.width, rect.height.saturating_sub(2)) {
+                    Some(popup) => popup,
+                    None => return,
+                }
+            }
             _ => return,
         };
         if rect.is_empty() {
