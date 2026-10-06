@@ -1,0 +1,22 @@
+#!/bin/sh
+# Starts a detached zellij session and returns once its server has set the session up.
+#
+# zellij 0.45 panics a server that another zellij command reaches before the server has
+# set up its session (zellij-org/zellij#5632), and every zellij command reaches every
+# session's server, so returning as soon as `attach -b` does would let the next command
+# kill the session. The server starts the session's first pane only after the setup, so
+# a child of the server marks the session as up.
+#
+# usage: zellij-new <session>
+set -eu
+s=$1
+zellij attach -b "$s"
+i=0
+until pid=$(pgrep -f "zellij --server .*/$s\$") && pgrep -P "$pid" >/dev/null; do
+  i=$((i + 1))
+  if [ "$i" -gt 100 ]; then
+    echo "zellij-new: the session $s did not start" >&2
+    exit 1
+  fi
+  sleep 0.1
+done

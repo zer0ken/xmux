@@ -36,7 +36,10 @@ process id, which an attach run through the machine's shell records before `exec
   muxes whose session listing includes counts. Zellij 0.45.0 offers no aggregate tab
   listing, so xmux accepts that poll cost for accurate counts. The shared connection
   is reused, and all queries share the seven-second sweep budget and six-second
-  command limit. A failed query fails enumeration rather than inventing a count.
+  command limit. A query that answers no tab list leaves that session listed with no
+  count for the sweep. zellij 0.45 loses a CLI client's reply when its server reuses a
+  client id a probe has just released (zellij-org/zellij#5270), so a lost reply is
+  routine under load, and the listing has already proved the session live.
 - Tab counts do not select a tab; the display mirrors the attached client's tab.
 - `/proc/<pid>/environ` holds the environment a process started with, never the
   client's rewritten session variable, and `list-clients` ties no client to a process.
