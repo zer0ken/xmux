@@ -1049,35 +1049,59 @@ pub(crate) fn logout_size(input: &Input, max_w: u16) -> (u16, u16) {
         .max((logout_machine(input).len() + 16) as u16)
         .max(POPOVER_MIN_WIDTH)
         .min(max_w);
-    let room = logout_room(input, w);
-    let facts: usize = input
-        .facts
-        .iter()
-        .map(|(_, v)| wrap_text(v, room as u16).len())
-        .sum();
-    (w, facts as u16 + 2 + 2)
+    (w, logout_fact_rows(input, w).len() as u16 + 2 + 2)
 }
 
-/// A logout confirm popover at `width` outer cells: the facts as rows, a blank row, and
-/// the field the confirming word is typed in.
+/// A logout confirm's facts at `width` outer cells, one row per wrapped line.
+fn logout_fact_rows(input: &Input, width: u16) -> Vec<(&'static str, Vec<Span<'static>>)> {
+    let room = logout_room(input, width);
+    input
+        .facts
+        .iter()
+        .flat_map(|(l, v)| wrapped_row(l, v, room))
+        .collect()
+}
+
+/// The rows a logout confirm keeps under its facts: a blank row and the field.
+const LOGOUT_FIELD_ROWS: usize = 2;
+
+/// The furthest a logout confirm `width` outer cells wide with `visible` inner rows
+/// scrolls its facts: the offset that shows the last fact row above the field.
+pub(crate) fn logout_max_scroll(input: &Input, width: u16, visible: u16) -> usize {
+    logout_fact_rows(input, width)
+        .len()
+        .saturating_sub((visible as usize).saturating_sub(LOGOUT_FIELD_ROWS))
+}
+
+/// A logout confirm popover at `width` outer cells with `visible` inner rows: the facts as
+/// rows, a blank row, and the field the confirming word is typed in. The blank row and the
+/// field stay at the bottom; when the facts do not fit above them, they scroll from
+/// `input.scroll` and the top border counts the fact rows shown.
 pub(crate) fn logout_popover(
     input: &Input,
     width: u16,
+    visible: u16,
     palette: &palette::Palette,
 ) -> (PopupFrame, Vec<Line<'static>>) {
     let (title, field, word, hints) = logout_grammar(input);
     let room = logout_room(input, width);
-    let mut rows: Vec<(&'static str, Vec<Span<'static>>)> = input
-        .facts
-        .iter()
-        .flat_map(|(l, v)| wrapped_row(l, v, room))
-        .collect();
+    let facts = logout_fact_rows(input, width);
+    let total = facts.len();
+    let window = (visible as usize).saturating_sub(LOGOUT_FIELD_ROWS);
+    let offset = input.scroll.min(logout_max_scroll(input, width, visible));
+    let mut meta = logout_machine(input);
+    if total > window && window > 0 {
+        let last = (offset + window).min(total);
+        meta = format!("{meta} · {}-{last} of {total}", offset + 1);
+    }
+    let mut rows: Vec<(&'static str, Vec<Span<'static>>)> =
+        facts.into_iter().skip(offset).take(window).collect();
     rows.push(("", Vec::new()));
     rows.push((field, input_field(input, room, word, palette)));
     (
         PopupFrame {
             title: title.into(),
-            meta: logout_machine(input),
+            meta,
             hints: hints.to_vec(),
         },
         label_rows(rows, palette),
@@ -1411,7 +1435,7 @@ mod tests {
             ("connections", "closes gpu-01 connections".into()),
         ];
         let (w, h) = logout_size(&input, 140);
-        let (chrome, lines) = logout_popover(&input, w, &p);
+        let (chrome, lines) = logout_popover(&input, w, h - 2, &p);
         assert_eq!(chrome.title, "log out");
         assert_eq!(chrome.meta, "gpu-01");
         assert_eq!(lines.len() as u16 + 2, h);
@@ -1437,7 +1461,7 @@ mod tests {
             ("remove", "ssh outside xmux loses this key too".into()),
         ];
         let (w, h) = logout_size(&input, 140);
-        let (chrome, lines) = logout_popover(&input, w, &p);
+        let (chrome, lines) = logout_popover(&input, w, h - 2, &p);
         assert_eq!(chrome.title, "remove key");
         assert_eq!(chrome.meta, "gpu-01");
         assert_eq!(chrome.hints, vec![("Enter", "remove"), ("Esc", "keep it")]);
@@ -2214,7 +2238,7 @@ mod tests {
             ),
         ];
         let (w, h) = logout_size(&input, 40);
-        let (_, lines) = logout_popover(&input, w, &p);
+        let (_, lines) = logout_popover(&input, w, h - 2, &p);
         assert_eq!(
             lines.len() as u16 + 2,
             h,

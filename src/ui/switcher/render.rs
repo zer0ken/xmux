@@ -657,14 +657,15 @@ impl Switcher {
 
     /// An open input's popup at `width` outer cells and at most `rows` inner rows: its
     /// frame and rows. The field is the last row, so a popup too short for every row
-    /// gives up the rows above it and keeps the field.
+    /// gives up the rows above it and keeps the field; a logout confirm scrolls its facts
+    /// instead.
     pub(super) fn input_popup_at(
         &self,
         state: &crate::state::State,
         width: u16,
         rows: u16,
     ) -> Option<(modal::PopupFrame, Vec<Line<'static>>)> {
-        let (frame, mut lines) = self.input_popup_full(state, width)?;
+        let (frame, mut lines) = self.input_popup_full(state, width, rows)?;
         lines.drain(..lines.len().saturating_sub(rows as usize));
         Some((frame, lines))
     }
@@ -673,6 +674,7 @@ impl Switcher {
         &self,
         state: &crate::state::State,
         width: u16,
+        rows: u16,
     ) -> Option<(modal::PopupFrame, Vec<Line<'static>>)> {
         let Some(Modal::Input(input)) = &state.modal else {
             return None;
@@ -683,7 +685,7 @@ impl Switcher {
                 modal::new_session_popover(&self.popover_host(input, state), input, width, palette)
             }
             InputMode::Logout | InputMode::LogoutKeys => {
-                modal::logout_popover(input, width, palette)
+                modal::logout_popover(input, width, rows, palette)
             }
             InputMode::Filter => {
                 let (matches, total) = Self::filter_counts(state);
@@ -1767,7 +1769,9 @@ impl Switcher {
                     InputMode::Filter | InputMode::Jump => modal::POPOVER_MIN_WIDTH,
                 };
                 let w = fit(w);
-                let rows = self.input_popup_full(state, w).map_or(1, |(_, l)| l.len()) as u16;
+                let rows = self
+                    .input_popup_full(state, w, u16::MAX)
+                    .map_or(1, |(_, l)| l.len()) as u16;
                 anchor((w, rows + 2))
             }
             Some(Modal::History { scroll }) => {
