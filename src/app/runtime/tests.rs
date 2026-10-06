@@ -2280,6 +2280,48 @@ async fn client_session_changed_matching_our_tty_syncs_display_belief() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn a_client_session_change_before_the_tty_is_known_lands_once_it_is_captured() {
+    // A remote attach records its tty on the host before it execs the mux client, so the
+    // capture made as the attach starts can find nothing, and the mux reports the client
+    // before xmux knows it is its own. The report is kept until the tty is captured; only
+    // xmux's own client's report then moves the display belief.
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.registry.insert_fake("jup", 7);
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "db".into(),
+    });
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/9".into(),
+        session: "web".into(),
+    });
+    assert_eq!(
+        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        Some("api"),
+        "a report about a client not yet known to be ours moves nothing"
+    );
+
+    rt.handle_host_event(HostEvent::DisplayTty {
+        host: "jup".into(),
+        tty: Some("/dev/pts/3".into()),
+    });
+    assert_eq!(
+        rt.hosts.get("jup").unwrap().display.shows("jup"),
+        Some("db"),
+        "once the tty is captured, our own client's earlier move is recorded"
+    );
+}
+
 /// A host `jup` with two loaded sessions: `api` and `db`.
 /// Lets a follow test assert the selection lands on the mux-moved session's card.
 fn two_session_scan() -> crate::ui::switcher::Scan {

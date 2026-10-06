@@ -163,7 +163,7 @@ impl Runtime {
                 registry.remove(&key);
                 if let Some(h) = hosts.get_mut(&host) {
                     h.display.clear(&key); // forget the shown session + any in-flight spawn
-                    h.display_tty = crate::model::DisplayTty(None); // the dead client's tty is gone
+                    h.clear_display_tty(); // the dead client's tty is gone
                 }
                 return (true, Vec::new()); // rearm recovery
             }
@@ -175,16 +175,32 @@ impl Runtime {
                 // Follow ONLY when the switched client is OUR display attach (matched against
                 // Host.display_tty). A third party's own client (e.g. the user's separate tmux
                 // client on a real server) can never match, so it is structurally inert - the
-                // nav never chases someone else's switch. The display tty is captured right
-                // after attach (the record snippet echoes it on the first pump read, before the
-                // user can drive the client), so a real prefix+s always matches; only a switch
-                // in the sub-capture window would be missed, and the next nav move self-heals it.
-                let Some(h) = hosts.get(&host) else {
+                // nav never chases someone else's switch.
+                let Some(h) = hosts.get_mut(&host) else {
                     return (false, Vec::new());
                 };
                 if !h.matches_display_tty(&client) {
+                    // With no tty known yet, the report cannot be judged. A remote attach
+                    // records its tty before it execs the mux client, and the mux reports
+                    // that client the moment it attaches, so the record exists by now:
+                    // read it, and keep the report until the reply says whose it was.
+                    if h.display_tty.0.is_none() && h.transport.runs_through_shell() {
+                        let key = host_selection_key(h);
+                        if let Some(attachment) = registry.get(&key) {
+                            h.note_reported_session(&client, &session);
+                            if let Some(control) = mgr.get(&host) {
+                                let tty_key = crate::mux::display_tty_key(
+                                    &key,
+                                    &self.instance_name,
+                                    attachment.id(),
+                                );
+                                control.capture_display_tty(&tty_key);
+                            }
+                        }
+                    }
                     return (false, Vec::new());
                 }
+                let h = &*h;
                 // xmux's own display PTY was moved to `session` by the mux itself (e.g.
                 // the user's prefix+s). RECORD IT AND NOTHING ELSE: this is where a mux
                 // with a control channel makes known where its client actually is, and
@@ -567,6 +583,12 @@ impl Runtime {
                         tracing::info!(host, ?tty, "display_tty_recorded");
                     }
                     h.record_display_tty(tty);
+                    // A move the mux reported before the tty was known lands now.
+                    if let Some(session) = h.take_reported_session() {
+                        let key = host_selection_key(h);
+                        h.display.set_shows(&key, &session);
+                        tracing::info!(host, session, "display_client_session_changed");
+                    }
                 }
             }
         }

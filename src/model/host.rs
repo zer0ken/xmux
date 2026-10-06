@@ -347,6 +347,13 @@ pub struct Host {
     /// xmux's own display-client tty, captured in memory. Passed to the mux's
     /// `switch_in_place` so its `SwitchPlan` targets xmux's own display client.
     pub display_tty: DisplayTty,
+    /// The session each client the mux reported moving was last on, kept only while
+    /// `display_tty` is unknown. A remote attach records its tty on the host before it
+    /// execs the mux client, so a capture made as the attach starts can find no record
+    /// yet; the mux's report of that client arriving is what proves the record exists,
+    /// and the report has to wait here until the capture it prompts names which client
+    /// is xmux's own.
+    reported_sessions: HashMap<String, String>,
     pub liveness: Liveness,
     pub(crate) detected: bool,
 }
@@ -361,6 +368,7 @@ impl Host {
             inventory: HostInventory::new(),
             display: HostDisplay::default(),
             display_tty: DisplayTty::default(),
+            reported_sessions: HashMap::new(),
             liveness: Liveness::Connecting,
             detected: false,
         }
@@ -459,10 +467,28 @@ impl Host {
         self.display_tty = DisplayTty(tty);
     }
 
+    /// Remember that the mux moved `client` to `session` while xmux's own display tty is
+    /// still unknown, so the move can be matched once the tty is captured.
+    pub fn note_reported_session(&mut self, client: &str, session: &str) {
+        self.reported_sessions
+            .insert(client.to_string(), session.to_string());
+    }
+
+    /// The session the mux last reported xmux's own display client on, once its tty is
+    /// known. Every other remembered client is someone else's and is dropped with it.
+    pub fn take_reported_session(&mut self) -> Option<String> {
+        let tty = self.display_tty.0.as_deref()?;
+        let session = self.reported_sessions.remove(tty);
+        self.reported_sessions.clear();
+        session
+    }
+
     /// Forget the display tty when the attachment dies, so no later `switch-client`
-    /// is aimed at a detached/dead client (the blank-pane class).
+    /// is aimed at a detached/dead client (the blank-pane class). Moves reported for the
+    /// dead attachment's clients go with it, so the next attachment's tty cannot claim one.
     pub fn clear_display_tty(&mut self) {
         self.display_tty = DisplayTty(None);
+        self.reported_sessions.clear();
     }
 
     /// True when `client` (a `%client-detached` client tty) is xmux's OWN display

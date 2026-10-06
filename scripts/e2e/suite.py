@@ -35,7 +35,6 @@ COLS, ROWS = 140, 60
 # reports KNOWN when it fails and PASS when it passes.
 KNOWN = {
     (None, "screen", "alpine"): "#588",
-    ("in-client-switch", "tmux", None): "#586",
     ("in-client-switch", "tuios", None): "#333",
 }
 # Cells that do not apply: the mux cannot move a client between sessions (a screen,
