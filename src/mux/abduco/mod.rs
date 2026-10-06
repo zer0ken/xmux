@@ -1,4 +1,4 @@
-//! abduco: one server per session, no control mode, no windows — every session is a
+//! abduco: one server per session, no control mode, no windows - every session is a
 //! single PTY. Sessions are enumerated from `abduco`'s own listing and polled for
 //! change; there is no per-session query, so each session resolves as the session
 //! alone (one window, its own name).
@@ -106,7 +106,7 @@ impl Mux for Abduco {
 
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         // `-n` creates a session without attaching, running abduco's default command
-        // (typically dvtm, the user's tool inside the session — out of xmux's scope).
+        // (typically dvtm, the user's tool inside the session - out of xmux's scope).
         // abduco requires the name it is given (`assigns_new_session_name` is false, so
         // the manage layer names an empty request before building this plan).
         vec![self.bin.clone(), "-n".to_string(), name.to_string()]
@@ -114,20 +114,24 @@ impl Mux for Abduco {
 }
 
 /// Parses `abduco`'s listing into sessions tagged with `source`/`mux`. Each line is
-/// `<status> <Day>\t<YYYY-MM-DD HH:MM:SS>\t<pid>\t<name>`; the header and any banner
-/// carry no tabs and are skipped. `attached` reads the leading status char (`*` = a
-/// client attached; `+` = command terminated while unattached; ` ` = running,
-/// unattached).
+/// `<status> <Day>\t<YYYY-MM-DD HH:MM:SS>\t<name>` in the released abduco 0.6, and
+/// abduco's master branch inserts a `<pid>` field before the name; an all-digit third
+/// field followed by a fourth is that pid. The header and any banner carry no tabs and
+/// are skipped. `attached` reads the leading status char (`*` = a client attached;
+/// `+` = command terminated while unattached; ` ` = running, unattached).
 pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in out.split('\n') {
         let ln = ln.strip_suffix('\r').unwrap_or(ln);
         let fields: Vec<&str> = ln.split('\t').collect();
-        if fields.len() < 4 {
+        if fields.len() < 3 {
             continue;
         }
         let status = fields[0].chars().next().unwrap_or(' ');
-        let name = fields[3..].join("\t");
+        let has_pid = fields.len() > 3
+            && !fields[2].is_empty()
+            && fields[2].bytes().all(|b| b.is_ascii_digit());
+        let name = fields[if has_pid { 3 } else { 2 }..].join("\t");
         if name.is_empty() {
             continue;
         }
@@ -252,6 +256,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn enumerate_reads_the_released_listing_without_a_pid() {
+        // abduco 0.6, as Alpine and Homebrew ship it, prints no pid field, and its day
+        // field ends in a tab before a space-led date.
+        let m = abduco();
+        let out = concat!(
+            "Active sessions (on host a3f1b0a6ef4d)\n",
+            "* Tue\t 2026-10-06 05:45:57\tx\n",
+            "  Tue\t 2026-10-06 05:46:10\t2048\n",
+            "  Tue\t 2026-10-06 05:46:12\tproj\tname\n",
+        );
+        let runner = CannedRunner::ok(out);
+        let got = m.enumerate(&ssh("jup"), &runner).await.unwrap();
+        let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["x", "2048", "proj\tname"]);
+        assert!(got[0].attached, "the * marker means a client is attached");
+        assert!(!got[1].attached);
+    }
+
+    #[tokio::test]
     async fn enumerate_skips_banners_and_short_lines() {
         let m = abduco();
         let out = concat!(
@@ -298,7 +321,7 @@ mod tests {
     }
 
     /// A poll sweep over a listing resolves each session's card directly: one
-    /// `Sessions` event, then one empty `Panes` per session (the session alone) —
+    /// `Sessions` event, then one empty `Panes` per session (the session alone) -
     /// abduco has no per-session query to run.
     #[tokio::test]
     async fn poll_once_resolves_each_session_without_a_per_session_query() {

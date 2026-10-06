@@ -34,7 +34,6 @@ COLS, ROWS = 140, 60
 # scenario, mux, host system or None for every system). Such a cell still runs; it
 # reports KNOWN when it fails and PASS when it passes.
 KNOWN = {
-    (None, "abduco", "alpine"): "#578",
     (None, "screen", "alpine"): "#588",
     ("new-session", "zellij", None): "#584",
     ("new-session", "abduco", None): "#584",
