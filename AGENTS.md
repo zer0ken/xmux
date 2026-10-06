@@ -87,8 +87,9 @@ is empty, and any new edge fails the check.
 
 The View Purity rule requires rendering to read the application model and write
 only the frame. Its required data direction is application model, immutable
-`RenderPlan`, frame. Rendering must not mutate application, layout, interaction,
-or hit-test state.
+`RenderPlan`, frame. Paint and input hit-testing consume the same plan, and
+neither owns or mutates it. Rendering must not mutate application, layout,
+interaction, or hit-test state.
 
 ### Single Update Owner
 
@@ -97,8 +98,10 @@ mutate application state. The application model owns domain state, switcher
 interaction state, navigation geometry and preferences, mouse state, source
 connection tracking, detection tracking, and the last render plan. Key, mouse,
 semantic ctl, source event, operation result, tick, resize, and configuration
-inputs are messages to that transition. It emits one effect type, and the runtime
-handles every effect through one exhaustive executor. Raw terminal bytes are the
+inputs are messages to that transition. It applies domain actions as one part of the
+same flow and emits one effect type, and the runtime handles every effect (command,
+source, persistence, attachment, and login) through one exhaustive executor in the
+order emitted. Raw terminal bytes are the
 only direct input path and go to the selected terminal display.
 
 - Every module follows the design principles in `docs/principles.md`. Asked-for
@@ -141,8 +144,7 @@ only direct input path and go to the selected terminal display.
   operations, or transport dispatch.
 - Follow the existing seam first; only widen a seam when the current interface
   cannot represent the behavior.
-- Check `CONTEXT.md` for the vocabulary and open architecture notes before moving
-  responsibilities.
+- Check `CONTEXT.md` for the vocabulary before naming anything.
 
 ## Before PR
 

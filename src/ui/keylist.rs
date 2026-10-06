@@ -3,7 +3,11 @@
 //! the one key table. It lays its keys out in as many columns as the room beside the
 //! indicator holds. When they do not fit it first shortens every description, then gives
 //! up the least needed keys and says how many with `+N more`, so a key is never shown
-//! without its name.
+//! without its name. It keeps the jump, help, and quit keys whatever it gives up.
+//!
+//! The layout is pure: it takes the room beside the indicator and returns the columns,
+//! the description length, and which keys it gave up, so the render plan carries one
+//! answer that the paint and the tests both read.
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;

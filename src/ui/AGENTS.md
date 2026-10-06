@@ -13,49 +13,14 @@ BEHAVIOR and rendering, key and mouse handling, operation result application, an
 render state. The runtime state owns the modal type and open-modal value; the
 switcher reads and writes it and owns only transient popup geometry.
 
-The chrome is the view border, the hint bar, and the host screens, plus its
-view-local state (flash, spinner, view border colours, prefix, ready, the selection
-hint). The hint bar rests as the nav's prefix indicator: a label on a side column's
-bottom row, and at the right end of the view border row in a band. A floating bar
-spans the full width in a side layout. A band's selection hint shares the view border
-with the prefix and temporarily takes the place of offscreen counts. The indicator
-shows the prefix alone at rest,
-while a prefix interaction is live, and while an input is open. The chrome instance
-itself lives in the runtime state, fed by the app each frame and rendered from it.
-
-The key list module lays out and paints the box a live prefix opens from the indicator
-toward the terminal view. Its layout is pure: it takes the room beside the indicator and
-returns the columns, the description length, and which keys it gave up, so the render
-plan carries one answer that the paint and the tests both read.
-
-The toast module places and paints toasts in the terminal view's corner nearest the
-hint, and builds the history popup's lines. A toast never covers the prefix key list
-or floating hint. The render plan carries each toast's rect, so a click is hit-tested
-against what was painted. Timed toasts show remaining life on their bottom border.
-
-The operations module holds the off-loop mux-action runners and the UI decisions
-that turn domain operation results into toasts. The operation port
-and its exchanged values live in the model. A switcher key that COMMITS a slow
-action resolves it through the state's apply into a deferred-operation command it
-RETURNS up; the run loop spawns the runner and folds the outcome back through the
-operation channel, so the switcher holds no pending-operation queue of its own.
-
 ## Module Seams
 
 - Pure row and group transforms belong in the row model.
 - Every word a surface says about a key (the help, the key list, the selection hint)
   is read from the model's one key table. A surface never spells a key or its
   description itself, so it cannot drift from what the key does.
-- UI colours come from the semantic palette (the seven roles - primary, secondary,
-  accent, decoration, warning, error, disabled - plus the hint bar's own pair and
-  the selection style), so the theme changes in one place. A theme is a named
-  role→ANSI-slot assignment; the palette holds the registry (`auto-dark`,
-  `auto-light`) and `[ui] theme` selects one. `decoration` is the CONTENT furniture
-  (card number, `/`, the rules); the horizontal view border uses `primary` across
-  the rule for nav focus and `disabled` for terminal focus. The hint
-  bar reads its OWN accent (`bar_accent`) because it sits on a different surface than
-  the cards - a slot that reads on one may not read on the other. What lives in the
-  chrome is only the override layer over these (the per-role `[ui]` colour keys).
+- UI colours come from the semantic palette, so the theme changes in one place. The
+  chrome holds only the override layer over it (the per-role `[ui]` colour keys).
 - A colour the USER named is parsed in the chrome, never in the palette: the
   palette holds xmux's own choices, which are slots only.
 - Chrome rendering and its view-local state belong in the chrome; it reads
@@ -79,10 +44,6 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   target (a hovered nav card shows its screen) but never moves the focus or runs
   anything. The soft selection never moves the hard selection, and the hard selection
   shows again when the pointer leaves.
-- A screen link is a selection target in terminal focus: `↑`/`↓` move its hard
-  selection, the pointer its soft one, and Enter or a click opens it. The link rects
-  come from the render plan, so the paint and the click read one geometry. A nav hover
-  hides the link marks, since the view then previews another node.
 - The selection is a node (host, source, session), not a row: a row is only where the
   node stands. The nav stays a list of numbered cards in sections: the card step and the
   section step never stop on a title, and a title part never takes a number. A section
@@ -90,36 +51,10 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   pointer, a click), and only the selected part inverts. A node with no nav target of its own (a source of a
   down host opened from a link) stays the selection while the nav stands on its
   nearest ancestor's target.
-- A host none of whose sources connected is one card (`RowRef::Machine`), placed where
-  its first source would stand. Its screen is the host screen, and its sources are
-  reached through that screen's links.
 - Every colour xmux itself paints is an ANSI-16 slot or an attribute (reverse
-  video, bold, dim), so the terminal theme resolves it, never an RGB value. A
-  background with no slot for it is an attribute instead: the selected card is
-  reverse video, not a computed surface. See "Colour ownership" in `CONTEXT.md`;
-  the palette is guarded so a stray RGB colour cannot reach it.
-- The settled host and own-session view screens are ONE factual screen in several
-  states, not a panel each: one builder lays them all out, so the headline, the state
-  word, and the key rows cannot drift apart. A later settled state joins that grammar.
-  The domain model chooses the state; this layer renders the result.
-- A selected scanning host joins the settled-state grammar with the `scanning` state
-  word and its latest observation facts. Only the initial scan before a card is
-  selected paints the Braille animation alone. A scanning or settled screen centers
-  the same animation below its content when the remaining rectangle fits a complete
-  frame. `[ui] braille-animation` controls both placements;
-  disabling it leaves nav activity spinners visible. The
-  application owns its clock, the render plan records the domain-selected screen,
-  and both the live frame and off-screen dump paint from that same immutable choice.
-  Its fixed 32-column, 16-row monochrome frames use terminal Braille glyphs. A scanning
-  host card never shows another source's grid. A full re-scan that collapsed the
-  selected session card into its host card keeps that session's grid until the
-  selection moves.
-- The terminal view refuses exactly one address, the session xmux is running in, and it
-  refuses it by emptying the view TARGET rather than at each place that would attach.
-  The target is what the display reconcile, the attach and the mux-side switch all read,
-  so a refusal anywhere else would leave the other paths open.
-- A settled host's status word has one source, so the word on a card and the word on the
-  screen reached from it are the same word.
+  video, bold, dim), so the terminal theme resolves it, never an RGB value. The
+  palette module documentation holds the rule and its exceptions; the palette is
+  guarded so a stray RGB colour cannot reach it.
 - A host and its mux are shown as ONE label, and the mux in it is resolved ONCE per card,
   so a session card, its host's card and the screen behind either cannot spell one mux
   three ways. A source id's own separator never reaches a surface: an id is typed, a label
@@ -134,135 +69,11 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   that offered the host, the config stanza it was reached through) is stated on the
   screen that card selects. A card is only as wide as the nav, so a reason on it is a
   cut-down copy of one the screen already holds whole.
-- A card that is waiting turns ONE spinner, trailing the line of a scanning
-  host card in the same place whatever the host has or has not resolved, so all
-  scanning cards read as the same thing loading. A settled card shows its value and
-  no spinner - a session is never waiting once its host has resolved.
 - Every in-flight marker in this layer reads its glyph from the one spinner helper on
   the frame the chrome advances, cards and the hint bar's scan progress alike, so
   nothing on screen turns out of step with anything else.
 - Row transforms do not mutate their inputs unless the function name and
   signature make mutation explicit.
-- The nav inventory includes every host. Actual sessions form the first group,
-  reachable hosts with no sessions form the second, and hosts whose connection or
-  inventory is unresolved form the third.
-- With `[ui] renumbering` on, each card's number is its position in the current sorted
-  list, and a rebuild assigns contiguous numbers. With it off, a card keeps its number
-  by identity (a session by its address, a host card by its source); only a full scan
-  deals those numbers again. Under either policy the jump resolves the number painted
-  on the card.
-- A BLOCKED host, whose authentication ssh refused or whose first-seen host key needs
-  login-time approval under an effective `ask` policy, has a card that opens the login pane. The model supplies the typed classification, based only
-  on ssh's own final
-  account-and-host authentication line or an approvable unknown host-key verification failure, never
-  a generic permission error, name resolution, connectivity, or changed host key.
-  An unknown key under a strict policy is unreachable and gives the fingerprint command.
-  An approvable first-seen key opens the form without a failed-login verdict; a
-  submitted login that fails keeps its own verdict.
-- A machine with a held credential never hides. It is the host the user just chose, and
-  whatever it answers next is the answer they are waiting for. The mark is synchronized
-  with credential presence and is per MACHINE, since a login authenticates the machine
-  and not the one mux whose card carried the pane.
-- The login pane holds what ssh will not ask for and nothing else. Every value starts at
-  what provisioning reports OpenSSH would use, with the matching ssh config entry as
-  fallback. The chrome receives resolved starting values and matching stanza text, and
-  does not parse ssh configuration. A
-  blocked host's switch and create are refused. The password is never rendered, and after
-  submit it lives only in the process credential broker. The rendered frame carries no
-  plaintext.
-- Enter means one thing across the whole pane: submit from the button, pass the focus on
-  from anywhere else. A key that sometimes toggles and sometimes submits would make
-  filling the pane by feel unsafe.
-- Once the pane is submitted it says a login is under way in place of the button it
-  offered and keeps the values on screen. A lone Esc ends it. The verdict brings the
-  button back with what was typed still there, so a failure is retried rather than
-  retyped. The pane shows the login's own categorized ssh reason separately from later
-  probe errors. Key registration reports through the login's toast and remains in the
-  host information after the pane gives way to sessions. A success re-probes that host.
-- The pane's inputs come in two groups, the connection values and what happens after a
-  login worked. One radio choice selects doing nothing, saving connection values, or
-  registering this machine's public key. Whitespace parts it from what the pane reports
-  back. The focused stop's
-  value is reversed (a stop with no value reverses its own text), only while the pane takes
-  keys. Below the grouped inputs, a login's steps (connect, authenticate, the selected follow-ups,
-  find mux) each carry one state mark: blank for pending, the spinner for running, `✓`,
-  `✗`, or `·` for skipped. A step moves only on an event the login itself reported, never
-  on a timer, and the steps stay on screen after one of them failed.
-- Logout names the selected session's observed SSH authentication method and the
-  affected machine, then requires typing `logout`. It removes this PC's key from the
-  host first, then clears the held password and closes that machine's connections,
-  including its shared SSH master where present. When the host holds the key in a line
-  xmux did not add, a second confirmation opens in the same place and grammar as the
-  first: its rows state how many such lines there are and in which file, that removing
-  them affects ssh outside xmux, what keeping them leaves, and that the logout goes on
-  either way, and it requires typing `remove`; closing it any other way keeps those
-  lines. SSH config is not changed.
-- A failure on the pane reads in one order: the verdict in plain words, the `✗` mark on
-  the field it concerns, ssh's own last line dimmed, and a details choice that unfolds
-  ssh's whole text with the host facts the other screens state. The details choice is a
-  stop only while the pane states a failure, and Space picks it like any other choice.
-  While a login's steps run the facts stay folded, since they describe the probe failure
-  that login is answering.
-- The dump should reflect the same split view the main draw path renders.
-- A live prefix opens the key list at once and the indicator keeps the prefix. The list
-  never shows a key without its name: when the room is short it shortens every
-  description first and then gives up the keys needed least behind `+N more`, and it
-  keeps the jump, help, and quit keys whatever it gives up.
-- The selection hint answers only a move the user made (a key, a click, a wheel), lasts
-  three seconds on the animation tick, and ends at the next key read. A selection xmux
-  was told to make raises none.
-- The help is searched by typing, so a printable key is part of the query and only Esc
-  or prefix ? closes it.
-- Adjacent nav groups have one blank row in a side column or one blank column in
-  a top or bottom band. Content starts at the upper-left, leaving unused space empty.
-  The first visible boundary can carry a horizontal rule while a side list scrolls.
-- When focus leaves nav from a session card, only the session group is painted.
-  Leaving from either host group keeps all groups painted. Returning nav focus shows
-  all groups. Prefix and modal interactions preserve the focus decision while the
-  terminal view keeps focus. While the selection is on a host card, every group is
-  painted, so the selected card is always painted. Card numbers and selected identity
-  do not change.
-- A card's rect is decided by the PAINT and read back from it, in both layouts. Neither
-  layout puts cards on a fixed pitch the paint ignores (a column parts its bands, a
-  band runs columns), so a hit-test that measured its own pitch would land clicks
-  on cards the renderer put elsewhere.
-- A selected host's floating state word in a band has one blank cell on each side.
-  Both cells join its reverse-video highlight under nav focus without widening the card.
-- A group reads the same at every nav position: a bold section title with its session
-  cards indented under it, and nothing else. The indent is never inside a card's rect: the
-  selected card is painted by inverting that rect, so the rect the paint records - what
-  the selection inverts and what the hit-test reads - starts past the indent. A band
-  column that continues a split section repeats the title on its top row; a band one row
-  tall indents nothing and runs titles and cards along its row.
-- A side nav and the terminal view are parted by one blank cell that accepts resize
-  dragging. A top or bottom nav has a horizontal view border. A band writes its
-  overflow counts on that border row beside the prefix, so the cards keep every row
-  the nav has. A count is a hit target for the hidden card
-  nearest the visible ones, read back from the same plan the paint used.
-- The horizontal view border's colour identifies focus. The selected card keeps reverse
-  video and its mark in both focus states.
-- A collapsed nav expands from the prefix or from a click anywhere on it, and a view border
-  drag past the minimum collapses it, so the
-  collapsed shape is the prefix indicator alone and the whole of it is one hit target.
-
-- No card's height or shape moves with the selection: focus changes only the address
-  column (the number becomes the mark), so a row that gained a line under the cursor
-  would reflow the list and the columns as the cursor passed. A section title is a
-  fixed-height information target selected by click or the info key, and in a band
-  the host band never shares a column with session cards.
-- A pending prefix is dropped by the next INPUT, mouse included. The mouse path has to say
-  so itself, because mouse bytes never reach either focus path's key handling. Bare hover
-  is exempt: it is the pointer sitting there, not an action. So is a press on the key list
-  and the drag it starts: that moves the box the prefix opened.
-- An arrow PAIR names the view it focuses, keyed on the nav's attachment, in both focus
-  paths (one for nav focus, one for terminal focus): the pair facing the terminal's side
-  names the terminal (right and down with the nav on the left or above, left and up with
-  the nav on the right or below), the other pair names the nav. A change
-  to one path is a change to both.
-- Every modal opens as a popup where the key list opens, in the key list's grammar, so a
-  prefix key replaces the key list in the same place in every nav layout. The terminal's
-  own cursor sits on the caret of whichever field takes keys (a popup's or the login
-  pane's), so an input method composes in that field.
 - Modal input owns keys while open; those keys must not leak to the terminal view
   or global shortcuts. At most one modal is open, because the state holds one
   optional modal, so opening any modal drops whatever was open.
@@ -279,15 +90,6 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   every answer of the scan, so a selection re-picked from the top would walk from host
   to host as they arrive; the launch interest is the first session to appear, and once
   it lands it stays until the user or the mux moves it.
-- The nav's two navigation steps name the two things its list is made of: one walks the
-  cards, the other walks the categories, landing on a category's first card. A category
-  is a source with sessions to show, or the whole host band at once. Neither step is
-  defined by where a card sits on screen, so both mean the same thing in a column and in
-  a band.
-- A selection xmux is TOLD to make - a ctl switch, a create landing on its new
-  card, the nav following the session the mux moved its own display client onto -
-  names the card and moves to it through one entry point. Nothing downstream tells
-  those callers apart, so the switcher does not either.
 - Selection and drag helpers are invoked only inside the app update transition.
   The runtime observes the updated application model and executes emitted effects.
 - A surface that exists to be READ never shortens what it states. A value too wide for
@@ -296,11 +98,6 @@ operation channel, so the switcher holds no pending-operation queue of its own.
   datum does not fit, the surface grows, and the datum is never the thing that gives
   way. This is why the reason, the probe command and the ssh stanza are on a screen and
   not on a card - the card had the room for none of them.
-- A state screen states everything known about the state it explains, not the minimum
-  that identifies it. The user reached it because the one-line state word was not
-  enough, so the screen carries what failed, what was asked and over what, who put the
-  thing on the list, what else nearby answered, and where the full history is written. A
-  datum nothing recorded is an ABSENT row, never a blank one.
 - The words on a screen and the values the code runs come from one place: the ssh
   connect wait is printed from the same constant the ssh option is built from, and a
   status word from the one helper the cards read. Two spellings of one fact drift.

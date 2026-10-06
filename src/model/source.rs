@@ -6,6 +6,11 @@
 //! the machine boundary itself - argv assembly and the ssh transport (connect-timeout,
 //! injection-safe quoting) - lives entirely in `Transport`, built at the single
 //! `MachineKind::transport` site. The mux-env rules live in `mux::vocab`.
+//!
+//! The runtime source registry is the app loop's, every source keyed by id in display
+//! order; the environment keeps this definition's list and its alias index for the
+//! CLI, the scan, and the off-loop operations. New local or ssh execution belongs in
+//! the transport and new mux behavior in the mux, never in this adapter.
 
 use std::path::Path;
 use std::sync::Arc;

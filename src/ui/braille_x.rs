@@ -1,5 +1,11 @@
 //! Fixed, monochrome Braille frames sampled from the final X rotation prototype.
 //! The atlas keeps browser font rasterization and emoji fallback out of the TUI loop.
+//! Every frame is 32 columns by 16 rows of terminal Braille glyphs.
+//!
+//! The animation has two placements: alone, for the initial scan before a card is
+//! selected, and centered below a view screen's content when the rows left there fit a
+//! complete frame. `[ui] braille-animation` controls both; disabling it leaves the nav's
+//! activity spinners visible, since they are a separate glyph.
 
 use ratatui::{layout::Rect, Frame};
 
@@ -29,6 +35,8 @@ fn frame_index(elapsed_ms: u64) -> usize {
 }
 
 /// Paints the selected frame, centered and clipped to the terminal-view region.
+/// `elapsed_ms` is the application's animation clock, so the live frame and an
+/// off-screen dump taken at the same moment paint the same frame.
 /// Only Braille cells are written; neither RGB nor a terminal-dependent shade is used.
 pub(crate) fn render(frame: &mut Frame, area: Rect, elapsed_ms: u64) {
     if area.is_empty() {

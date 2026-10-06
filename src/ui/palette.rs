@@ -1,27 +1,46 @@
 //! The switcher's semantic colour palette: one module naming every colour the nav
 //! cards, chrome, and modals paint with, so the UI reads as one coherent theme and a
-//! colour is changed in exactly one place.
+//! colour is changed in exactly one place. It is how xmux keeps Terminal-Owned Colour
+//! (`docs/principles.md`).
 //!
-//! **The invariant: xmux never emits a colour of its own.** Every colour here is an
-//! ANSI-16 slot, so the TERMINAL THEME decides the actual hue and the whole UI recolours
-//! with whatever scheme the user runs. Anything that cannot be said in sixteen slots is
-//! said with an ATTRIBUTE instead - reverse video, bold, or dim - which the theme also resolves.
-//! A `Color::Rgb` or a `Color::Indexed` above 15 is a colour xmux picked for somebody
-//! else's terminal, and it is wrong on every theme it was not picked for; a test below
-//! fails if one appears.
+//! **The invariant: xmux never emits a colour of its own.** The palette is the sixteen
+//! ANSI slots (one per UI role) plus ATTRIBUTES: reverse video, bold, and dim. Nothing
+//! else. The TERMINAL THEME decides the actual hue, so the whole UI recolours with
+//! whatever scheme the user runs. A `Color::Rgb` or a `Color::Indexed` above 15 is a
+//! colour xmux picked for somebody else's terminal, and it is wrong on every theme it was
+//! not picked for; a test below fails if one appears. A new colour goes into the palette
+//! as a slot, or it does not go in.
 //!
-//! That is why the selection is REVERSE VIDEO rather than a raised surface. "One step
-//! off the background" is not a colour sixteen slots can name, and computing one from
-//! the terminal's reported background only works on terminals that answer a colour
-//! query (Windows Terminal answers none). Reverse video needs no answer and no choice:
-//! the terminal swaps its own foreground and background, which is exactly what a theme
-//! means by "selected".
+//! Anything the sixteen slots cannot say is said with an attribute instead, which the
+//! theme also resolves. "One step off the background" is the case that keeps coming up,
+//! and it is not a slot, so the selection is REVERSE VIDEO rather than a raised surface.
+//! Computing a surface needs the terminal's background, and a terminal is free to answer
+//! no colour query at all (Windows Terminal answers none), which leaves a fixed fallback
+//! as the permanent state rather than a rare one. Reverse video needs no answer and no
+//! choice: the terminal swaps its own foreground and background, which is exactly what a
+//! theme means by "selected".
 //!
-//! A user who wants a specific colour names one: `[ui] primary`, `secondary`,
-//! `accent`, `decoration`, `warning`, `error`, `disabled`, the hint bar's
-//! `bar-bg`/`bar-fg`/`bar-accent`, `selection-style`, or `hint-bar-style`. Their
-//! terminal, their choice; those user-named colours are the only ones that may leave
-//! the sixteen slots (see [`Overrides`]).
+//! A THEME is a named role→ANSI-slot assignment, and [`THEMES`] is the registry: the
+//! built-ins are `auto-dark` (the default) and `auto-light`, each an ANSI-only theme for
+//! a dark or a light terminal background. `[ui] theme` names one; an unknown name falls
+//! back to `auto-dark`, and `xmux doctor` reports the resolution. Selecting a theme picks
+//! no colours: the theme IS the slot mapping, and both ends (the `accent` on the cards,
+//! the `bar_accent` on the hint bar) stay within the slots. Adding a theme is adding one
+//! registry entry plus its tests, which is how the set grows without loosening the
+//! invariant.
+//!
+//! The exceptions are colours the USER names: the per-role keys (`[ui] primary`,
+//! `secondary`, `accent`, `decoration`, `warning`, `error`, `disabled`, and the hint
+//! bar's `bar-bg`/`bar-fg`/`bar-accent`), plus `[ui] selection-style`,
+//! `[ui] hint-bar-style`, and the view-border colours. Their terminal, their choice;
+//! those user-named colours are the only ones that may leave the sixteen slots (see
+//! [`Overrides`]). The chrome parses them, never this module, and the chrome's colour
+//! mapping is the only place a `#rrggbb` may enter. A nonempty `NO_COLOR` resets this
+//! palette and the configured chrome colours; the selection stays visible through
+//! reverse video.
+//!
+//! A colour a CHILD program emits passes through untouched: it is that program's own
+//! choice against the same theme, and xmux is not in it.
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -32,7 +51,7 @@ pub(crate) fn interaction_key_style() -> Style {
 /// The semantic colour set. One field per UI role - callers name the role, never
 /// a hue, so the assignments below stay changeable in one place. Every field is an
 /// ANSI-16 slot (see the module doc) except the one the user names; a `[ui]` key can
-/// override any role (see [`Overrides`] and `Colour ownership` in `CONTEXT.md`).
+/// override any role (see [`Overrides`]).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Palette {
     /// The whole view border while the nav holds focus. Its own role, apart from the
@@ -80,7 +99,7 @@ pub(crate) struct Palette {
 /// The light built-in theme's name; the dark one is the config default
 /// (`auto-dark`). `[ui] theme` names one; `auto` is not a mode, the two names ARE the
 /// two ANSI-only themes - `auto-light` for a light terminal, `auto-dark` for a dark one, each following the terminal's own palette by painting only
-/// ANSI slots. See the module doc and `Colour ownership` in `CONTEXT.md`.
+/// ANSI slots. See the module doc.
 pub(crate) const AUTO_LIGHT: &str = "auto-light";
 
 /// `auto-dark`: for a dark terminal background. Painted with the dark-slot ends of the
@@ -152,7 +171,7 @@ fn resolve_or_default(name: &str) -> (&'static str, &'static Palette) {
 /// The per-role overrides a user can name in `[ui]`; `None` leaves that role at the
 /// theme's own slot. The only colours xmux takes from outside the sixteen slots are
 /// ones the USER names, because the user naming one is the one person who knows their
-/// own theme (see the module doc and `Colour ownership` in `CONTEXT.md`).
+/// own theme (see the module doc).
 #[derive(Default, Clone, Copy)]
 pub(crate) struct Overrides {
     pub primary: Option<Color>,

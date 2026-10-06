@@ -273,7 +273,8 @@ pub(crate) fn down_machines(groups: &[Group], scanning: &HashSet<String>) -> Has
 /// establishes, so a routine poll reproduces the same list). Sources with no session to
 /// show get one host-state card each: reachable empty sources first, then sources whose
 /// connection or inventory is unresolved. A host that is down gets one host card in place
-/// of its sources' cards, where its first source's card would stand. The mux each row NAMES is resolved here through `mux_of_source`, so a
+/// of its sources' cards, where its first source's card would stand; its screen is the host
+/// screen, and its sources are reached through that screen's links. The mux each row NAMES is resolved here through `mux_of_source`, so a
 /// row cannot exist without it and two rows on one source cannot name their mux two
 /// ways; colour is derived at render time from each row's [`RowRef`], so this stays
 /// terminal-free. Inputs are not mutated.

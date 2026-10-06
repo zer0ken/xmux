@@ -111,8 +111,8 @@ the debounced attach, and renders the live split view.
   `provision`, `session`, and `transport` import only backend peers. `state`
   imports backend peers and itself. Neither layer imports upward into `app` or
   `ui`, and backend modules do not import `state`. The architecture check includes
-  `#[cfg(test)]` modules and has no known exceptions. `CONTEXT.md` owns the
-  complete allowed-edge table.
+  `#[cfg(test)]` modules and has no known exceptions. The root `AGENTS.md` owns
+  the complete allowed-edge table.
 - **View Purity:** rendering must read the application model and write only the
   frame. Layout and hit testing must pass through an immutable `RenderPlan`
   rather than mutable view state.
@@ -164,6 +164,21 @@ the debounced attach, and renders the live split view.
   the screen.
 
 ## Before Editing
+
+- Place a new source file by the concern it belongs to:
+  - a host implementation, or per-host execution: `transport/`
+  - a mux implementation, or per-mux behavior: `mux/<kind>/`
+  - PTY, grid, or terminal-protocol mechanics: `display/`
+  - orchestration of the runtime loop: `app/`
+  - per-source connection management: `link/`
+  - domain types: `model/`
+  - config, roster, discovery, and the resolved environment: `provision/`
+  - the CLI command surface: `cli/`
+  - switcher, nav rows, and status UI: `ui/`
+  - runtime state, focus, modal data, and chrome data: `state/`
+
+  A new directory gets its own `AGENTS.md` in the Working Notes format
+  `docs/AGENTS.md` defines.
 
 - For ctl changes, add a domain action only when the behavior is a real domain
   action rather than a key alias.

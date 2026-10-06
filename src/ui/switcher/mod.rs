@@ -38,9 +38,10 @@ pub(super) const COL_GUTTER: u16 = 1;
 pub(super) const BAND_RULE: &str = "\u{2500}";
 
 /// The columns a session card is indented by under its section title, at every nav
-/// position. The indent and the dim title are the whole of what marks a group: no rule
+/// position. The indent and the bold title are the whole of what marks a group: no rule
 /// and no connector is painted for it. The indent lies outside the card's rect, so the
-/// selection's inversion of that rect starts where the card does. A band one row tall
+/// selection's inversion of that rect, and the hit-test that reads it, start where the
+/// card does. A band one row tall
 /// runs its titles and cards along one line, where an indent would mark nothing, so it
 /// indents nothing.
 pub(super) const CARD_INDENT: u16 = 1;
@@ -105,7 +106,7 @@ fn top_nav_height(body_h: u16) -> u16 {
 /// the PTY sizing, and mouse hit-testing all agree (one geometry, no divergence). The
 /// tree and terminal split the whole area side by side (`Column`, sized by `nav_width`)
 /// or stacked (`Band`, sized by `nav_height`), parted by the one-cell view border, the
-/// seam. The hint bar is where the prefix indicator rests: the BOTTOM row of a column's
+/// seam: a rule a drag resizes the nav from. The hint bar is where the prefix indicator rests: the BOTTOM row of a column's
 /// nav region, and the seam row itself in a band, so every row a band takes holds cards
 /// and the terminal view keeps every row it owns.
 /// A collapsed nav gives the cards no region: a side nav keeps a column as wide as its
@@ -408,7 +409,8 @@ pub struct Switcher {
 
     /// The session whose card a full re-scan turned into its host card, held until the
     /// selection moves. While it holds, the scanning host card keeps that session's
-    /// confirmed grid instead of its scanning screen.
+    /// confirmed grid instead of its scanning screen, and only when the session is on
+    /// the card's own source, so a scanning host card never shows another source's grid.
     rescan_collapse: Option<Address>,
     /// The transient offset and in-flight border drag of the active modal popup. Its
     /// frame geometry belongs to the render plan shared with mouse input.
@@ -865,7 +867,7 @@ impl Switcher {
     }
 
     /// Gives every card on the current list its number. Sorted numbering follows the
-    /// visible list on every rebuild. Stable numbering holds identities until a full
+    /// visible list on every rebuild, dealing contiguous numbers. Stable numbering holds identities until a full
     /// scan deals the cards again, including filtered-out cards during that scan.
     fn number_cards(&mut self, unfiltered: Option<&[Row]>, settled: bool) {
         if self.renumbering {
@@ -934,8 +936,9 @@ impl Switcher {
             .unwrap_or(0)
     }
 
-    /// The number card `i` carries under the configured policy. A section title has no
-    /// number and is never a jump target.
+    /// The number card `i` carries under the configured policy: the number the paint
+    /// writes on the card and the one the jump resolves, under either policy. A section
+    /// title has no number and is never a jump target.
     fn card_number(&self, i: usize) -> usize {
         card_id(&self.rows[i].reference)
             .and_then(|id| self.numbers.get(&id).copied())
@@ -1266,6 +1269,10 @@ impl Switcher {
     /// a re-scan and states its state word; anything still scanning offers the filter and
     /// says so. With `nav_focused` false the terminal view holds the focus, where a bare key
     /// goes to the pane, so only the prefix keys are offered.
+    ///
+    /// The hint answers only a move the user made (a key, a click, a wheel), lasts three
+    /// seconds on the animation tick, and ends at the next key read. A selection xmux was
+    /// told to make raises none.
     pub(crate) fn selection_hint(
         &self,
         state: &crate::state::State,
@@ -1702,7 +1709,8 @@ impl Switcher {
     /// The one mover for a selection xmux is TOLD to make, whoever asked: a ctl `switch`,
     /// or the nav following the session the mux moved its own display client onto. Both
     /// name a card and move to it, and nothing downstream tells them apart, so they share
-    /// one entry point. Neither waits for a card that is not on the list yet.
+    /// one entry point. Neither waits for a card that is not on the list yet. A create
+    /// lands on its new card through the awaited interest (`Interest::Awaiting`) instead.
     pub fn select_address(&mut self, address: &Address) -> bool {
         match self.row_of_session(address) {
             Some(i) if self.selected_node() != Some(Node::Session(address.clone())) => {

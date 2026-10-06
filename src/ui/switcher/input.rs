@@ -16,8 +16,9 @@ impl Switcher {
         self.select_node(Node::Source(source));
     }
 
-    /// Open the modal keys help modal. In tree focus any key then dismisses it (see
-    /// `handle_key`); [`toggle_help`] is the focus-independent open/close entry point.
+    /// Open the modal keys help modal. The help is searched by typing, so a printable key
+    /// is part of the query and only Esc or prefix ? closes it; [`toggle_help`] is the
+    /// focus-independent open/close entry point.
     pub fn show_help(&mut self, state: &mut crate::state::State) {
         self.dismiss_modals(state);
         state.modal = Some(Modal::Help {
@@ -369,6 +370,11 @@ impl Switcher {
         vec![Command::RescanHost(machine)]
     }
 
+    /// Opens the logout confirm for the selected card's machine. It names the selected
+    /// session's observed SSH authentication method and the affected machine, then
+    /// requires typing `logout`. The logout removes this PC's key from the host first,
+    /// then clears the held password and closes that machine's connections, including its
+    /// shared SSH master where present. SSH config is not changed.
     fn open_logout(&mut self, state: &mut crate::state::State) {
         let Some(source) = self.current_source() else {
             return;
@@ -418,6 +424,11 @@ impl Switcher {
     /// machine's key in lines xmux did not add: `unmarked` names the file of each such
     /// line, and `marked` counts the lines xmux added, which go whatever the answer is.
     /// The input carries the machine, so the answer lands on the logout that asked.
+    ///
+    /// It opens in the same place and grammar as the first confirm: its rows state how
+    /// many such lines there are and in which file, that removing them affects ssh outside
+    /// xmux, what keeping them leaves, and that the logout goes on either way, and it
+    /// requires typing `remove`. Closing it any other way keeps those lines.
     pub(crate) fn open_logout_keys(
         &mut self,
         machine: &str,
@@ -958,7 +969,8 @@ impl Switcher {
             // A successful unlock promoted this machine's credential. Only this
             // machine's reach changed, so the app re-probes just it. Either way one toast
             // reports the login and the follow-ups it ran; the user retypes the password
-            // after a failure.
+            // after a failure. A key registration's outcome is also kept per machine, so
+            // the host information still states it after the pane gives way to sessions.
             OpFollow::LoginResult {
                 source,
                 login,

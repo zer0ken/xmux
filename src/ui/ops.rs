@@ -1,6 +1,11 @@
 //! The off-loop operation runners for deferred mux actions and login follow-ups.
 //! The operation port and its exchanged values live in the domain model; this
 //! module decides the UI-facing result messages.
+//!
+//! A switcher key that COMMITS a slow action resolves it through the state's apply into a
+//! deferred-operation command it RETURNS up; the run loop spawns the runner here and folds
+//! the outcome back through the operation channel, so the switcher holds no
+//! pending-operation queue of its own.
 
 use crate::model::MuxOp;
 pub use crate::model::{KeyRegistration, LoginOutcome, OpResult, Ops, RegistrationOutcome};

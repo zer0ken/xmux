@@ -7,6 +7,10 @@
 //! crossterm [`KeyEvent`]s so the switcher handles injected and real keys through
 //! one path. The socket server (accept loop + dispatch) lives in `app::control`, where
 //! it forwards into the event loop's command channel.
+//!
+//! Public ctl verbs resolve to domain actions, so user-facing automation is added as a
+//! semantic action first. Raw key and text injection stays behind the unstable `raw:`
+//! namespace and is reserved for low-level compatibility.
 
 use std::path::{Path, PathBuf};
 

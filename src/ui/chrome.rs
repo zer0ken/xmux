@@ -267,7 +267,9 @@ pub(crate) struct ViewScreenRender<'a> {
 }
 
 /// One link a host's or a source's screen offers: the node it opens, the name it is
-/// written as, and what the screen states beside it.
+/// written as, and what the screen states beside it. In terminal focus a link is a
+/// selection target: the arrow keys move its hard selection, the pointer its soft one,
+/// and Enter or a click opens it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ScreenLink {
     pub(crate) node: crate::model::Node,
@@ -611,6 +613,13 @@ impl Chrome {
     /// that apply to it. A row uses a left-aligned name, whitespace, then the value,
     /// so a key offered on a screen looks like a key
     /// offered anywhere else, and a datum's name stays quieter than the datum.
+    ///
+    /// The settled host screens and the own-session screen are ONE factual screen in
+    /// several states, not a panel each: one builder lays them all out, so the headline,
+    /// the state word, and the key rows cannot drift apart, and a later settled state
+    /// joins this grammar. The domain model chooses the state; this renders the result.
+    /// When the rows left below the content fit a complete frame, the Braille animation
+    /// is centered there, on a settled screen as on a scanning one.
     pub(crate) fn render_view_screen(
         &self,
         frame: &mut Frame,
@@ -765,7 +774,10 @@ impl Chrome {
             // behind it, and the two things that decide whether the box or the mux is at
             // fault. Nothing here is abbreviated to fit - a value too wide hangs under
             // its value column (see below), because a datum the user came here to read is
-            // worth more than a tidy column.
+            // worth more than a tidy column. The user reached this screen because the
+            // one-line state word was not enough, so it states everything known about the
+            // state, not the minimum that identifies it; a datum nothing recorded is an
+            // ABSENT row, never a blank one.
             // The login pane states its failure above these rows, as a verdict over ssh's
             // own text, so only the other screens carry the reason as a row.
             if !pane {
@@ -1185,6 +1197,14 @@ impl Chrome {
         // failure it ended in. The focused text
         // field shows a cursor, both only while the terminal view is focused and no login
         // runs, so the pane says whether it is taking keys.
+        //
+        // The pane holds what ssh will not ask for and nothing else. Every value starts at
+        // what provisioning reports OpenSSH would use, with the matching ssh config entry
+        // as fallback: the chrome receives resolved starting values and the matching
+        // stanza text, and does not parse ssh configuration. A blocked host's switch and
+        // create are refused. The password is never rendered, and after submit it lives
+        // only in the process credential broker, so the rendered frame carries no
+        // plaintext.
         if pane {
             use crate::model::{LoginField, LoginStep, StepState};
             use crate::state::{AfterLogin, LoginFocus};
@@ -1284,7 +1304,11 @@ impl Chrome {
                 }
                 Line::from(spans)
             };
-            // Choice labels stay plain; the value and its padding carry focus.
+            // Choice labels stay plain; the value and its padding carry focus. The focused
+            // stop's value is reversed (a stop with no value reverses its own text), only
+            // while the pane takes keys. One radio choice under "After login" selects doing
+            // nothing, saving the connection values, or registering this machine's public
+            // key.
             let choice = |name: &str, mark: &str, text: &str, active: bool| {
                 let style = if active {
                     Style::default().fg(pal.secondary)
@@ -1410,7 +1434,9 @@ impl Chrome {
             out.push(Line::from(""));
             // A login under way replaces the button it was started from. The pane keeps
             // every value, so what the user sees is the thing they submitted, still
-            // theirs, with the one thing they can now say about it.
+            // theirs, with the one thing they can now say about it. A lone Esc ends the
+            // login. Its verdict brings the button back with the connection values still
+            // there; the password is typed again, since it leaves the draft on submit.
             if running {
                 out.push(choice("", "", "logging in…  esc to stop", false));
             } else {
@@ -1420,7 +1446,10 @@ impl Chrome {
             out.push(Line::from(""));
             // The steps of this source's last login, while they run and after one of them
             // failed. A login whose every step worked has handed the pane to its sessions,
-            // so its steps say nothing more.
+            // so its steps say nothing more. Each step (connect, authenticate, the selected
+            // follow-ups, find mux) carries one state mark: blank for pending, the spinner
+            // for running, `✓`, `✗`, or `·` for skipped. A step moves only on an event the
+            // login itself reported, never on a timer.
             let wrap_w = width.saturating_sub(4).max(1);
             let progress = state.login_progress.get(source).filter(|p| !p.succeeded());
             if let Some(progress) = progress {
@@ -1494,7 +1523,10 @@ impl Chrome {
                 }
             }
             // The failure reads in one order: the verdict, the field it concerns (marked
-            // above), ssh's own last line dimmed, and the choice that unfolds the rest.
+            // above), ssh's own last line dimmed, and the choice that unfolds the rest:
+            // ssh's whole text with the host facts the other screens state. The details
+            // choice is a stop only while the pane states a failure, and Space picks it
+            // like any other choice.
             if let Some(failure) = &failure {
                 out.push(Line::from(""));
                 for (i, line) in failure.verdict.lines().enumerate() {

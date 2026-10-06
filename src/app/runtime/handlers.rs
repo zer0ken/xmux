@@ -575,6 +575,10 @@ impl Runtime {
 }
 
 /// Detects a config-file change and, on a real change, reloads the `[ui]` section.
+/// The redraw cadence stats the file rather than watching it, so no watch dependency is
+/// needed, and a malformed edit keeps the previous settings. Only the `[ui]` presentation
+/// settings reload live: re-scanning sources is the `rescan` key's job, and a config edit
+/// must not reset the user's sessions.
 /// Returns `Some(ui)` only when the file genuinely changed since the last sight;
 /// the first sight just records a baseline and a missing/currently-unwritable file is
 /// ignored, so an editor mid-save never blanks the UI. Pure - it touches no global

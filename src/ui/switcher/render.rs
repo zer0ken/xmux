@@ -212,7 +212,8 @@ pub struct RenderPlan {
     pub screen_area: Rect,
     /// Nav geometry used to produce this frame, reused for an off-screen dump.
     pub(crate) nav_size: NavSize,
-    /// Domain-selected replacement for the live grid on this frame.
+    /// Domain-selected replacement for the live grid on this frame. The live frame and
+    /// the off-screen dump both paint from this one immutable choice.
     pub(crate) view_screen: Option<crate::model::ViewScreen>,
     pub layout: ViewLayout,
     pub nav_position: NavPosition,
@@ -241,6 +242,9 @@ pub struct RenderPlan {
     pub(crate) nav_guidance: Option<(Rect, String)>,
     /// The cells a click on a collapsed nav expands it from: the whole collapsed column
     /// with its seam, or a collapsed band's seam row. Empty while the nav is expanded.
+    /// A collapsed nav expands from the prefix or from a click anywhere on it, and a view
+    /// border drag past the minimum collapses it, so the collapsed shape is the prefix
+    /// indicator alone and the whole of it is one hit target.
     pub expand_area: Rect,
     overflow_marks: Vec<OverflowMark>,
     /// The repeated title on the top row of each band column that continues a section,
@@ -1271,7 +1275,9 @@ impl Switcher {
             );
             frame.render_widget(Paragraph::new(lines), rect);
             if self.selected == idx {
-                // A row read as two targets inverts only the half the selection is on.
+                // A row read as two targets inverts only the half the selection is on. The
+                // inversion and the mark hold in both focus states; the view border's
+                // colour alone says which view holds the focus.
                 let half = plan
                     .nav_parts
                     .iter()
@@ -1321,6 +1327,9 @@ impl Switcher {
         }
     }
 
+    /// Floats the selected host card's state word beside it in a band, with one blank
+    /// cell on each side. Both cells take the word's selection highlight, and the card
+    /// itself does not widen.
     fn render_selected_host_word(
         &self,
         frame: &mut Frame,
@@ -1470,7 +1479,9 @@ impl Switcher {
     /// A name that shifts as the cursor passes is what makes a list twitch. Focus
     /// changes nothing else about a card: it does not grow a context line, and the
     /// session keeps the same style selected or not (the selected look is the inverted
-    /// rect the paint applies, not a per-span style here).
+    /// rect the paint applies, not a per-span style here). A section title is one row
+    /// whatever the selection does, so no row reflows the list or the columns as the
+    /// cursor passes.
     ///
     /// The surface background comes from the paint's `selection_style`, so no per-span
     /// background is baked in here.
@@ -1581,7 +1592,9 @@ impl Switcher {
         // Host-state cards keep one fixed glyph slot after the host/mux identity. The
         // selected card adds its state word after that slot. Column measurement reserves
         // the word on every host card, so moving the selection changes paint but never
-        // moves the columns.
+        // moves the columns. A scanning card turns the ONE spinner in that slot, in the
+        // same place whatever the host has or has not resolved, so all scanning cards read
+        // as the same thing loading; a settled card shows its glyph and no spinner.
         if let RowRef::Host {
             unreachable,
             blocked,
@@ -1702,6 +1715,9 @@ impl Switcher {
         }
     }
 
+    /// Where the open modal's popup goes. Every modal opens where the key list opens, in
+    /// the key list's grammar, so a prefix key replaces the key list in the same place in
+    /// every nav layout.
     fn modal_popup_rect(
         &self,
         area: Rect,
