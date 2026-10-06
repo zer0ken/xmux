@@ -3250,6 +3250,31 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
 }
 
 #[test]
+fn status_line_names_the_listed_mux_before_the_reach_resolves() {
+    use crate::session::Session;
+    use crate::ui::switcher::{Scan, Switcher};
+    use crate::ui::tree::Group;
+    // No reach yet, so the host names no mux, but the listing does: the displayed path
+    // names the mux the session's card names.
+    let mut state = crate::state::State::from_scan(Scan {
+        groups: vec![Group {
+            host: "jup".into(),
+            err: None,
+            sessions: vec![Session {
+                mux: "psmux".into(),
+                host: "jup".into(),
+                name: "api".into(),
+                windows: 1,
+                attached: false,
+            }],
+        }],
+    });
+    let sw = Switcher::new(&mut state);
+    let line = status_line(&sw, &state, "amber-otter", true, "/tmp/x", "-");
+    assert!(line.contains("\ttarget=jup/psmux/api\t"), "{line}");
+}
+
+#[test]
 fn status_line_reports_focus_and_address() {
     use crate::session::Session;
     use crate::ui::switcher::{Scan, Switcher};
@@ -3284,11 +3309,11 @@ fn status_line_reports_focus_and_address() {
     // whole path, so the listing names the machine and the mux it runs under.
     let pid = std::process::id();
     assert_eq!(
-        status_line(&sw, &state.chrome, "amber-otter", true, "/tmp/x", "-"),
+        status_line(&sw, &state, "amber-otter", true, "/tmp/x", "-"),
         format!("name=amber-otter\tpid={pid}\tfocus=nav\ttarget=jup/tmux/api\tcwd=/tmp/x\ttty=-")
     );
     assert_eq!(
-        status_line(&sw, &state.chrome, "amber-otter", false, "/tmp/x", "/dev/pts/3"),
+        status_line(&sw, &state, "amber-otter", false, "/tmp/x", "/dev/pts/3"),
         format!(
             "name=amber-otter\tpid={pid}\tfocus=terminal\ttarget=jup/tmux/api\tcwd=/tmp/x\ttty=/dev/pts/3"
         )

@@ -62,6 +62,19 @@ pub fn session_label(machine: &str, mux: &str, session: &str) -> String {
     format!("{}{MUX_LABEL_SEP}{session}", host_label(machine, mux))
 }
 
+/// The mux a session is named under: the one its listing reported, else `host_mux`, the
+/// mux its host is known by. A listing names the mux it enumerated through, so it is a fact
+/// even while the host's own reach is unresolved; every surface that writes a session's
+/// path takes its mux from here, so a card and the lines that name the same session cannot
+/// spell its mux two ways.
+pub fn session_mux<'a>(sess: &'a Session, host_mux: &'a str) -> &'a str {
+    if sess.mux.is_empty() {
+        host_mux
+    } else {
+        &sess.mux
+    }
+}
+
 /// Whether a host's mux may be NAMED on screen, given whether it ANSWERED.
 ///
 /// A mux is named only when it is confirmed. A host that answered enumerated THROUGH its

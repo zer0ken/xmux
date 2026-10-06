@@ -599,6 +599,23 @@ impl State {
             .collect()
     }
 
+    /// Formats a session as its `{machine}/{mux}/{session}` path, naming the mux its
+    /// listing reported when the inventory lists it, else its host's mux.
+    pub(crate) fn session_label(&self, address: &crate::session::Address) -> String {
+        let host_mux = self.chrome.host_mux(&address.host);
+        let mux = self
+            .groups
+            .iter()
+            .flat_map(|g| &g.sessions)
+            .find(|s| s.host == address.host && s.name == address.session)
+            .map_or(host_mux, |s| crate::session::session_mux(s, host_mux));
+        crate::session::session_label(
+            crate::session::machine_of(&address.host),
+            mux,
+            &address.session,
+        )
+    }
+
     /// Resolves a `switch` target against the current inventory - the set the nav
     /// shows. `Ok` when a session with exactly that host and session is listed;
     /// `Err` names which half is missing (an absent host, or a present host with no

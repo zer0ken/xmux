@@ -69,15 +69,6 @@ pub(crate) fn match_marks(pattern: &str, text: &str) -> Vec<bool> {
     marks
 }
 
-/// The mux a session's card names: the one its listing reported, else its host's.
-pub(crate) fn session_mux(sess: &Session, mux_of_host: &dyn Fn(&str) -> String) -> String {
-    if sess.mux.is_empty() {
-        mux_of_host(&sess.host)
-    } else {
-        sess.mux.clone()
-    }
-}
-
 /// Keeps the groups whose host matches `pattern` or that have at least one
 /// matching session, preserving group order. A host is matched as its
 /// `{machine}/{mux}` label and a session as its `{machine}/{mux}/{session}` path, the
@@ -119,8 +110,9 @@ pub fn filter_groups(
             .sessions
             .iter()
             .filter(|s| {
-                let path =
-                    crate::session::session_label(machine, &session_mux(s, mux_of_host), &s.name);
+                let host_mux = mux_of_host(&s.host);
+                let mux = crate::session::session_mux(s, &host_mux);
+                let path = crate::session::session_label(machine, mux, &s.name);
                 fuzzy_match(pattern, &path)
             })
             .cloned()
@@ -265,7 +257,7 @@ pub(crate) fn visible_groups<'a>(
 /// to wait on and no loading stand-in.
 fn push_session_card(rows: &mut Vec<Row>, sess: &Session, mux_of_host: &dyn Fn(&str) -> String) {
     rows.push(Row {
-        mux: session_mux(sess, mux_of_host),
+        mux: crate::session::session_mux(sess, &mux_of_host(&sess.host)).to_string(),
         reference: RowRef::Session { sess: sess.clone() },
     });
 }
