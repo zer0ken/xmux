@@ -547,6 +547,22 @@ impl Attachment {
 /// report is within the child's first output.
 const AUTH_TRANSCRIPT_LIMIT: usize = 16 * 1024;
 
+/// A [`CommandBuilder`] for `program` whose environment is exactly this process's.
+///
+/// On Windows, portable-pty seeds a new builder from the registry's system and user
+/// environment on top of the process's, so a variable both define, `PATH` among them,
+/// takes the registry value, and a PTY child can start a different program than the
+/// piped children xmux runs for the same host. Replacing that seed with the process
+/// environment gives every child the same one.
+pub(crate) fn inherited_command(program: &str) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(program);
+    cmd.env_clear();
+    for (key, value) in std::env::vars_os() {
+        cmd.env(key, value);
+    }
+    cmd
+}
+
 /// Opens a PTY at `cols×rows`, spawns `argv` (a real `attach` argv composed by the
 /// mux/transport layers) with the caller-supplied `env_clear` keys removed from the
 /// child's environment (the mux nesting guard), starts the control thread (owns
@@ -582,7 +598,7 @@ pub fn spawn_attachment(
         .map(|p| p.to_string_lossy().into_owned());
     #[cfg(not(unix))]
     let child_tty: Option<String> = None;
-    let mut cmd = CommandBuilder::new(command.program());
+    let mut cmd = inherited_command(command.program());
     let observed = command.observe_auth() && command.auth_trace_allowed();
     if observed {
         cmd.args(crate::transport::auth_log::args());
@@ -861,6 +877,52 @@ pub fn fake_attachment_with_input_log(id: u64) -> (Attachment, Arc<Mutex<Vec<Vec
     let log = Arc::new(Mutex::new(Vec::new()));
     att.input_log = Some(log.clone());
     (att, log)
+}
+
+#[cfg(all(test, windows))]
+mod inherited_env_tests {
+    use super::*;
+
+    /// A PTY child carries the `PATH` xmux runs with, not the registry's. Under `cargo
+    /// test` the process `PATH` leads with the build's own directories, which the
+    /// registry does not hold, so the two differ and a registry seed would show.
+    #[test]
+    fn a_pty_child_carries_the_process_path() {
+        let path = std::env::var("PATH").expect("the test process has a PATH");
+        assert_ne!(
+            CommandBuilder::new("cmd.exe").get_env("PATH"),
+            Some(std::ffi::OsStr::new(&path)),
+            "portable-pty seeds a builder's PATH from the registry"
+        );
+
+        let pty = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("open a pty");
+        let mut cmd = inherited_command("cmd.exe");
+        cmd.args(["/c", "pause"]);
+        let mut child = pty.slave.spawn_command(cmd).expect("spawn a child");
+        drop(pty.slave);
+
+        // The spawn returns once the process object exists, before its environment block
+        // is readable, so the read is retried for a moment.
+        let mut got = None;
+        for _ in 0..50 {
+            got = crate::display::child_env::read(&*child, "PATH");
+            if got.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert_eq!(got.as_deref(), Some(path.as_str()));
+    }
 }
 
 #[cfg(test)]
