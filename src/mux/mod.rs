@@ -139,6 +139,17 @@ async fn within_poll_budget<T>(
     }
 }
 
+/// How a host-side query names xmux's own display client, for a mux whose client moves
+/// itself between sessions where no listing reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DisplayClient {
+    /// The attach child IS the mux client and runs on this machine under this process id.
+    Pid(u32),
+    /// The attach ran through the host's shell, which recorded the client's process id
+    /// under this record key before it became the client.
+    Recorded(String),
+}
+
 /// An opaque, mux-authored plan for an in-place display-client switch. The driver runs
 /// it BLIND through the host's transport and never inspects which variant it is - the
 /// variant↔dispatch mapping is `run_switch_plan`'s job, not the driver's. Each variant
@@ -280,6 +291,22 @@ pub trait Mux: Send + Sync {
     /// answering here is not a promise that an answer is available - the caller gates on
     /// the transport as well.
     fn display_session_env(&self) -> Option<&str> {
+        None
+    }
+
+    /// The argv of a query that asks the host which session `client` is attached to, for
+    /// a mux whose client moves itself between sessions and is not read on this machine
+    /// through [`display_session_env`](Self::display_session_env). `None` (the default)
+    /// for a mux that has no such query. The query runs through the host's transport,
+    /// never through a display attachment.
+    fn display_client_query(&self, _client: &DisplayClient) -> Option<Vec<String>> {
+        None
+    }
+
+    /// The session a [`display_client_query`](Self::display_client_query) output names.
+    /// `None` is no signal: the client is gone, the host could not answer, or the answer
+    /// names no single session.
+    fn parse_display_client(&self, _out: &str) -> Option<String> {
         None
     }
 

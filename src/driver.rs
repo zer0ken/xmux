@@ -326,6 +326,54 @@ pub(crate) fn session_truth_source(host: &Host) -> Option<(String, &str)> {
     Some((host_selection_key(host), var))
 }
 
+/// Whether an attach through `transport` runs in a POSIX host shell, which can record
+/// the attach's own process id before `exec` makes that process the mux client.
+pub fn attach_records_client(transport: &dyn crate::transport::Transport) -> bool {
+    transport.runs_through_shell() && transport.remote_shell().runs_posix_snippets()
+}
+
+/// A host-side query for the session xmux's own display client is on, as the attachment
+/// it asks about and the command that asks, for a host whose client cannot be read on
+/// this machine. `None` when nothing can ask:
+///
+/// - the client's live environment is read on this machine instead;
+/// - the mux has no such query;
+/// - the host is reached by a fresh login per command, where a repeated query would be
+///   a repeated login;
+/// - no attachment is live for the host, or nothing names its client.
+///
+/// The client is named by its process id: the attach child's own on this machine,
+/// where the child IS the client, and the one the attach shell recorded where the attach
+/// runs through a host shell, since there the child is the transport's process.
+pub fn display_client_probe(
+    host: &Host,
+    registry: &AttachRegistry,
+    instance_name: &str,
+) -> Option<(u64, crate::transport::CommandSpec)> {
+    if crate::display::child_env::READS_LIVE_ENV && session_truth_source(host).is_some() {
+        return None;
+    }
+    if !host.transport.reuses_connection() {
+        return None;
+    }
+    let key = host_selection_key(host);
+    let attachment = registry.get(&key)?;
+    let client = if host.transport.runs_through_shell() {
+        if !attach_records_client(host.transport.as_ref()) {
+            return None;
+        }
+        crate::mux::DisplayClient::Recorded(crate::mux::display_tty_key(
+            &key,
+            instance_name,
+            attachment.id(),
+        ))
+    } else {
+        crate::mux::DisplayClient::Pid(attachment.child_pid()?)
+    };
+    let argv = host.mux.display_client_query(&client)?;
+    Some((attachment.id(), host.transport.exec_argv(false, &argv)))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -407,6 +455,55 @@ pub(crate) mod tests {
                 "{bin} names no session variable on its client"
             );
         }
+    }
+
+    /// The host-side query reaches a client over a shared connection, named by the record
+    /// its shell-run attach wrote under that attachment's own key. A host reached by a
+    /// fresh login per command, a mux with no query, and a host with no live client are
+    /// not asked.
+    #[test]
+    fn a_shell_run_client_is_queried_by_its_record_over_a_shared_connection() {
+        let host = |control_path: &str, bin: &str| {
+            crate::model::Host::new(
+                crate::transport::ssh("jup".into(), control_path.into(), "linux".into()),
+                crate::mux::for_binary(bin).unwrap(),
+            )
+        };
+        let mut registry = AttachRegistry::new();
+        registry.insert("jup", crate::display::attachment::fake_attachment(7));
+
+        let (id, command) = display_client_probe(&host("/tmp/cm", "zellij"), &registry, "run")
+            .expect("a shared connection to a zellij host is queried");
+        assert_eq!(id, 7);
+        assert_eq!(command.program(), "ssh");
+        let record = crate::mux::display_tty_key("jup", "run", 7);
+        let token: String = record
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || "_-.".contains(c) {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        assert!(
+            command
+                .last()
+                .unwrap()
+                .contains(&format!("/tmp/.xmux-zc-{token}")),
+            "{command:?}"
+        );
+
+        assert!(
+            display_client_probe(&host("", "zellij"), &registry, "run").is_none(),
+            "a fresh login per query is never repeated on a cadence"
+        );
+        assert!(display_client_probe(&host("/tmp/cm", "tmux"), &registry, "run").is_none());
+        assert!(
+            display_client_probe(&host("/tmp/cm", "zellij"), &AttachRegistry::new(), "run")
+                .is_none()
+        );
     }
 
     /// No attachment for the host means no client, and no client means NO SIGNAL - not a

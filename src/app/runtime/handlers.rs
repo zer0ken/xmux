@@ -810,6 +810,7 @@ impl Runtime {
             dirty: true,
             last_draw: std::time::Instant::now() - initial_frame_interval,
             rescan_pending: false,
+            display_probe: DisplayProbe::default(),
             #[cfg(test)]
             discovery_runs: 0,
             #[cfg(test)]
@@ -1188,6 +1189,13 @@ impl Runtime {
             }
             PtyEvent::Osc52 { seq } => {
                 Self::emit_osc52(&seq);
+                false
+            }
+            PtyEvent::DisplayClientSession { id, session } => {
+                self.display_probe.in_flight = false;
+                if session.is_some_and(|session| self.record_display_client_session(id, &session)) {
+                    self.dirty = true;
+                }
                 false
             }
         }
@@ -1741,6 +1749,90 @@ impl Runtime {
         true
     }
 
+    /// Starts the host-side query for where xmux's own display client is, for a host
+    /// whose client cannot be read on this machine (see
+    /// [`crate::driver::display_client_probe`]). The answer comes back as a
+    /// `PtyEvent::DisplayClientSession` and is recorded by
+    /// [`record_display_client_session`](Self::record_display_client_session).
+    ///
+    /// The query runs off the loop, because its duration is the host's to set. One runs
+    /// at a time and the next waits [`DISPLAY_PROBE_EVERY`], so a host that answers
+    /// slowly is asked less often rather than more. No query starts while a reattach is
+    /// in flight for the display key, for the same reason the local read refuses one.
+    pub(super) fn start_display_probe(&mut self, now: std::time::Instant) {
+        if self.display_probe.in_flight
+            || self.display_probe.next.is_some_and(|next| now < next)
+            || self.model.state.selection.is_empty()
+        {
+            return;
+        }
+        let Some(host) = self.hosts.get(&self.model.state.selection.source) else {
+            return;
+        };
+        let key = host_selection_key(host);
+        if host.display.in_flight_contains(&key) || host.display.pending_paint_contains(&key) {
+            return;
+        }
+        let Some((id, command)) =
+            crate::driver::display_client_probe(host, &self.registry, &self.instance_name)
+        else {
+            return;
+        };
+        let mux = host.mux.clone_box();
+        let events = self.driver_pty_tx.clone();
+        self.display_probe = DisplayProbe {
+            next: Some(now + DISPLAY_PROBE_EVERY),
+            in_flight: true,
+        };
+        tokio::spawn(async move {
+            use crate::model::source::Runner;
+            let session = match crate::model::source::ExecRunner.run_spec(&command).await {
+                Ok(out) => mux.parse_display_client(&String::from_utf8_lossy(&out)),
+                Err(error) => {
+                    tracing::debug!(id, error = %error, "display_client_query_failed");
+                    None
+                }
+            };
+            let _ = events.send(PtyEvent::DisplayClientSession { id, session });
+        });
+    }
+
+    /// Records the session a host-side query found attachment `id`'s mux client on, as
+    /// [`observe_display_session`](Self::observe_display_session) records a local read.
+    /// Returns true when the record moved.
+    ///
+    /// The answer is about the attachment the query was started for, and it is recorded
+    /// only while that attachment is still the live one for its key and no reattach is
+    /// in flight or waiting to paint there. A reattach the nav started after the query
+    /// leaves the old client on the old session until it is torn down, so its answer
+    /// would name a session the display is leaving.
+    pub(super) fn record_display_client_session(&mut self, id: u64, session: &str) -> bool {
+        let Some(key) = self
+            .registry
+            .address_of_id(id)
+            .filter(|key| self.registry.get(key).is_some_and(|a| a.id() == id))
+        else {
+            return false;
+        };
+        let source = host_of_key(&key).to_string();
+        let Some(host) = self.hosts.get_mut(&source) else {
+            return false;
+        };
+        if host.display.in_flight_contains(&key)
+            || host.display.pending_paint_contains(&key)
+            || host.display.shows(&key) == Some(session)
+        {
+            return false;
+        }
+        host.display.set_shows(&key, session);
+        tracing::info!(
+            host = %source,
+            session = %session,
+            "display_client_session_changed"
+        );
+        true
+    }
+
     /// The animation-tick arm: detect a console resize (push the new size to PTYs +
     /// control clients, force a full repaint), read xmux's own display client for a
     /// mux-side session change, and refresh the connecting-spinner set.
@@ -1777,6 +1869,7 @@ impl Runtime {
         if self.observe_display_session() {
             self.dirty = true;
         }
+        self.start_display_probe(std::time::Instant::now());
         // A flash outlives the moment it was about, so it comes down on its own for a
         // user who pressed nothing. The tick is where that is noticed, because it is the
         // one wake that happens without the user doing anything.
