@@ -1,9 +1,83 @@
 # Installing xmux
 
-The [README](README.md#1-installation) gives the install commands. This document
-covers what they leave out: the platform requirements, how the install script lays
-out and pins an install, the prebuilt binaries, building from source, upgrading,
-and uninstalling.
+The [README](README.md#install) gives the native install commands. This document
+covers every install path and what follows it: the package managers, the platform
+requirements, how the install script lays out and pins an install, the prebuilt
+binaries, building from source, upgrading, and uninstalling.
+
+## Install Commands
+
+**Native install (recommended)**
+
+macOS, Linux, WSL, Android Termux:
+
+```sh
+curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://github.com/zer0ken/xmux/releases/latest/download/install.ps1 | iex
+```
+
+Windows CMD:
+
+```batch
+curl -fsSL https://github.com/zer0ken/xmux/releases/latest/download/install.cmd -o install.cmd && install.cmd && del install.cmd
+```
+
+The error `The token '&&' is not a valid statement separator` means the CMD
+command ran in PowerShell, and `'irm' is not recognized as an internal or
+external command` means the PowerShell command ran in CMD. A PowerShell prompt
+starts with `PS C:\`; a CMD prompt is just `C:\`.
+
+The install script:
+
+- downloads the build for the machine it runs on
+- refuses the build unless it matches the checksum the release publishes
+- puts the `xmux` command on `PATH` without asking for elevation
+
+A terminal opened after the install picks up the new `PATH`.
+
+> `xmux update` upgrades a native install. xmux reports a newer release on
+> startup but never installs one on its own.
+
+**Homebrew** (macOS)
+
+```sh
+brew install zer0ken/xmux/xmux
+```
+
+> A Homebrew install does not update itself. `xmux update` or
+> `brew upgrade zer0ken/xmux/xmux` installs a new release.
+
+**WinGet** (Windows)
+
+```powershell
+winget install --id zer0ken.xmux
+```
+
+> A WinGet install does not update itself. `xmux update` or
+> `winget upgrade --id zer0ken.xmux` installs a new release. The winget catalog
+> is updated through a review in the community repository, so it can trail the
+> newest release; the native install always gets the newest one.
+
+**Cargo** (any OS with Rust)
+
+```sh
+cargo install xmux
+```
+
+## Install Check
+
+```sh
+xmux version
+xmux doctor
+```
+
+`xmux doctor` reports which xmux is running and where it was installed, then
+checks the config and whether each source is reachable.
 
 ## Platforms
 
