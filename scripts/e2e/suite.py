@@ -114,18 +114,21 @@ class Hosts:
             docker("exec", "-i", name, "sh", "-c",
                    "cat > /home/dev/.ssh/authorized_keys && chown dev /home/dev/.ssh/authorized_keys"
                    " && chmod 600 /home/dev/.ssh/authorized_keys", input=pubkey)
-        self.seed(alias)
+        self.wait_up(alias)
 
-    def seed(self, alias):
-        """Waits for sshd and starts every mux's sessions on a fresh container."""
+    def wait_up(self, alias):
+        """Waits for sshd, which the host starts only once every mux's sessions are up."""
         name = PREFIX + alias
         end = time.monotonic() + 30
         while docker("exec", name, "sh", "-c", "ls /run/sshd.pid /var/run/sshd.pid 2>/dev/null",
                      check=False).strip() == "":
             if time.monotonic() > end:
-                raise RuntimeError(f"sshd did not start on {alias}")
+                # The host writes its boot output to stderr, which `docker logs` passes on.
+                r = subprocess.run(["docker", "logs", "--tail", "20", name], capture_output=True,
+                                   text=True, timeout=30)
+                raise RuntimeError(f"{alias} did not start its sessions and sshd:\n"
+                                   f"{r.stdout}{r.stderr}")
             time.sleep(0.2)
-        self.sh(alias, "sh /opt/e2e/sessions.sh " + " ".join(MUXES))
 
     def sh(self, alias, command, check=True):
         """Runs a command as the remote user through a login shell on the host."""
@@ -137,7 +140,7 @@ class Hosts:
 
     def start(self, alias):
         docker("start", PREFIX + alias)
-        self.seed(alias)
+        self.wait_up(alias)
 
     def port(self, alias):
         return docker("port", PREFIX + alias, "22/tcp").split("\n")[0].rsplit(":", 1)[1].strip()

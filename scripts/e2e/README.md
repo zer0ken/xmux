@@ -35,7 +35,9 @@ Each host system has three hosts, started from one image per system:
 | `deb-2`, `alp-2` | key |
 | `deb-pw`, `alp-pw` | password only |
 
-Every host serves two sessions in each mux, `<mux>1` and `<mux>2`:
+Every host serves two sessions in each mux, `<mux>1` and `<mux>2`. A host starts them
+each time it boots, before its sshd accepts a connection, so a host that returns after
+a stop serves them again and xmux never reaches a session that is still starting:
 
 | Mux | Debian 12 | Alpine 3.22 |
 | --- | --- | --- |

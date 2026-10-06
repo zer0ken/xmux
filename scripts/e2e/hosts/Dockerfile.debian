@@ -18,9 +18,9 @@ RUN apt-get update \
 COPY --from=abduco /usr/local/bin/abduco /usr/local/bin/abduco
 COPY fetch-muxes.sh /opt/e2e/
 RUN sh /opt/e2e/fetch-muxes.sh && chown -R dev:dev /home/dev && chmod 700 /home/dev/.ssh
-COPY sessions.sh /opt/e2e/
+COPY sessions.sh boot.sh /opt/e2e/
 COPY whereami /usr/local/bin/whereami
 COPY zellij-new /usr/local/bin/zellij-new
 RUN chmod 755 /usr/local/bin/whereami
 ENV LANG=en_US.UTF-8
-CMD ["/usr/sbin/sshd", "-D", "-e"]
+CMD ["sh", "/opt/e2e/boot.sh"]
