@@ -87,14 +87,28 @@ impl Mux for Zellij {
     ) -> Result<Vec<Session>, RunError> {
         let argv = self.list_sessions_plan();
         let command = transport.exec_argv(false, &argv);
-        match runner.run_spec(&command).await {
-            Ok(out) => Ok(parse::parse_sessions(
-                transport.host_id(),
-                &String::from_utf8_lossy(&out),
-            )),
-            Err(e) if crate::mux::is_no_sessions(&e) => Ok(Vec::new()),
-            Err(e) => Err(e),
+        let mut sessions = match runner.run_spec(&command).await {
+            Ok(out) => parse::parse_sessions(transport.host_id(), &String::from_utf8_lossy(&out)),
+            Err(e) if crate::mux::is_no_sessions(&e) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        // Zellij's session listing has no tab count. One extra non-attaching query
+        // per live session is required; run them in order over the same transport.
+        for session in &mut sessions {
+            let argv = vec![
+                self.bin.clone(),
+                "--session".into(),
+                session.name.clone(),
+                "action".into(),
+                "list-tabs".into(),
+                "--json".into(),
+            ];
+            let out = runner.run_spec(&transport.exec_argv(false, &argv)).await?;
+            session.windows = parse::tab_count(&out).map_err(|e| {
+                RunError::Other(format!("zellij list-tabs for {:?}: {e}", session.name))
+            })?;
         }
+        Ok(sessions)
     }
 
     fn attach_plan(&self, session: &str) -> Vec<String> {
@@ -175,7 +189,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .take()
-                .unwrap_or_else(|| Ok(Vec::new()))
+                .unwrap_or_else(|| Ok(br#"[{"tab_id":0,"name":"Tab #1"}]"#.to_vec()))
         }
     }
 
@@ -191,6 +205,131 @@ mod tests {
 
     fn ssh(alias: &str) -> Box<dyn Transport> {
         crate::transport::ssh(alias.into(), String::new(), "linux".into())
+    }
+
+    struct TabRunner {
+        calls: Mutex<Vec<Vec<String>>>,
+        tabs: Result<Vec<u8>, RunError>,
+    }
+
+    #[async_trait]
+    impl Runner for TabRunner {
+        crate::model::source::runner_spec_via_argv!();
+        async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+            let mut call = vec![name.to_string()];
+            call.extend_from_slice(args);
+            self.calls.lock().unwrap().push(call);
+            if args == ["list-sessions", "-n"] {
+                Ok(b"my build [Created 1m ago] \ngone [Created 2m ago] (EXITED - attach to resurrect)\napi [Created 3m ago] \n".to_vec())
+            } else {
+                match &self.tabs {
+                    Ok(out) => Ok(out.clone()),
+                    Err(RunError::Exit { stderr, code }) => Err(RunError::Exit {
+                        stderr: stderr.clone(),
+                        code: *code,
+                    }),
+                    Err(RunError::Other(reason)) => Err(RunError::Other(reason.clone())),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn enumeration_counts_tabs_without_attaching_and_skips_exited_records() {
+        let runner = TabRunner {
+            calls: Mutex::new(Vec::new()),
+            tabs: Ok(
+                br#"[{"tab_id":0,"name":"same\nname"},{"tab_id":2,"name":"same\nname"}]"#.to_vec(),
+            ),
+        };
+        let got = zellij()
+            .enumerate(&crate::transport::Local::default(), &runner)
+            .await
+            .unwrap();
+        assert_eq!(
+            got.iter().map(|s| s.windows).collect::<Vec<_>>(),
+            vec![2, 2]
+        );
+        assert_eq!(
+            *runner.calls.lock().unwrap(),
+            vec![
+                argv(&["zellij", "list-sessions", "-n"]),
+                argv(&[
+                    "zellij",
+                    "--session",
+                    "my build",
+                    "action",
+                    "list-tabs",
+                    "--json"
+                ]),
+                argv(&[
+                    "zellij",
+                    "--session",
+                    "api",
+                    "action",
+                    "list-tabs",
+                    "--json"
+                ]),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_tab_count_is_an_enumeration_error() {
+        for tabs in [
+            Err(RunError::Other("tab query timed out".into())),
+            Err(RunError::Exit {
+                stderr: "There is no active session!".into(),
+                code: 1,
+            }),
+            Ok(b"not JSON".to_vec()),
+            Ok(b"{}".to_vec()),
+        ] {
+            let runner = TabRunner {
+                calls: Mutex::new(Vec::new()),
+                tabs,
+            };
+            assert!(zellij()
+                .enumerate(&crate::transport::Local::default(), &runner)
+                .await
+                .is_err());
+            assert_eq!(
+                runner.calls.lock().unwrap().len(),
+                2,
+                "stop after the failed query"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_tab_query_is_bounded_by_the_poll_sweep() {
+        struct HungTabs;
+        #[async_trait]
+        impl Runner for HungTabs {
+            crate::model::source::runner_spec_via_argv!();
+            async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+                if args == ["list-sessions", "-n"] {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    Ok(b"api [Created 1m ago] \n".to_vec())
+                } else {
+                    std::future::pending().await
+                }
+            }
+        }
+        let started = tokio::time::Instant::now();
+        let mut events = Vec::new();
+        zellij()
+            .poll_once(
+                "local",
+                &crate::transport::Local::default(),
+                &HungTabs,
+                &mut |ev| events.push(ev),
+            )
+            .await;
+        assert_eq!(started.elapsed(), POLL_SWEEP_BUDGET);
+        assert!(
+            matches!(&events[0], HostEvent::Sessions { sessions, err: Some(_) , .. } if sessions.is_empty())
+        );
     }
 
     #[test]

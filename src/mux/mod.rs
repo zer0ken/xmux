@@ -122,7 +122,15 @@ async fn within_poll_budget<T>(
     what: &str,
     fut: impl std::future::Future<Output = Result<T, RunError>>,
 ) -> Result<T, RunError> {
-    match tokio::time::timeout(POLL_SWEEP_BUDGET, fut).await {
+    let deadline = tokio::time::Instant::now() + POLL_SWEEP_BUDGET;
+    // Enumeration can issue several commands. Each must finish its pipe teardown
+    // before the sweep cancels it, even when earlier commands spent most of the budget.
+    match tokio::time::timeout_at(
+        deadline,
+        crate::model::source::within_deadline(deadline, fut),
+    )
+    .await
+    {
         Ok(r) => r,
         Err(_) => Err(RunError::Other(format!(
             "{what} did not answer within {}s",

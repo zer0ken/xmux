@@ -7,6 +7,12 @@
 
 use crate::session::Session;
 
+/// JSON counts tab objects, so duplicate names and embedded newlines are harmless.
+pub fn tab_count(out: &[u8]) -> Result<i64, serde_json::Error> {
+    let tabs: Vec<serde_json::Map<String, serde_json::Value>> = serde_json::from_slice(out)?;
+    Ok(tabs.len() as i64)
+}
+
 /// The literal `zellij list-sessions -n` puts between a session's name and its age.
 /// Splitting on it is what lets a name containing spaces survive: zellij forbids only
 /// `/` in a session name, so a space is legal and a whitespace split would truncate.
@@ -54,9 +60,8 @@ pub fn parse_sessions(source: &str, out: &str) -> Vec<Session> {
             source: source.to_string(),
             name: name.to_string(),
             mux: "zellij".to_string(),
-            // zellij's listing carries no tab count. One is the floor, not a count:
-            // a session always holds at least one tab.
-            windows: 1,
+            // The session listing carries no count; enumeration fills it from list-tabs.
+            windows: 0,
             attached: suffix.contains(CURRENT_MARKER),
         });
     }
@@ -66,6 +71,25 @@ pub fn parse_sessions(source: &str, out: &str) -> Vec<Session> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_json_counts_objects_instead_of_names_or_lines() {
+        assert_eq!(
+            tab_count(br#"[{"name":""},{"name":"same\nname"},{"name":"same\nname"}]"#).unwrap(),
+            3
+        );
+        assert_eq!(tab_count(b"[]").unwrap(), 0);
+        for junk in [
+            b"".as_slice(),
+            b"null",
+            b"{}",
+            b"[1]",
+            b"[null]",
+            b"banner\n[]",
+        ] {
+            assert!(tab_count(junk).is_err());
+        }
+    }
 
     /// Verbatim `zellij list-sessions -n` output (0.45.0): a live session, a session
     /// whose name holds a space, and a dead-but-resurrectable one. zellij prints a
@@ -100,12 +124,10 @@ mod tests {
     }
 
     #[test]
-    fn windows_is_the_floor_and_attachment_is_only_the_current_session() {
-        // zellij's listing reports neither a tab count nor a client count. Every
-        // session holds at least one tab; only the session the command RAN INSIDE is
-        // reported as attached, and xmux runs outside every session.
+    fn the_listing_has_no_count_and_attachment_is_only_the_current_session() {
+        // Only the session the command ran inside is reported as attached.
         let got = parse_sessions("jup", SESSIONS);
-        assert!(got.iter().all(|s| s.windows == 1));
+        assert!(got.iter().all(|s| s.windows == 0));
         assert!(got.iter().all(|s| !s.attached));
         let inside = parse_sessions("local", "hug [Created 1m ago] (current)\n");
         assert!(
