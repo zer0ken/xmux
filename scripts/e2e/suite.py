@@ -221,6 +221,9 @@ class WindowsClient:
 
     Windows OpenSSH reads ~/.ssh from the profile folder whatever HOME says, so a
     wrapper named ssh.exe first on PATH hands the real ssh the temporary config with -F.
+    It also ignores a private key that anyone besides its owner may read, and a file in
+    the temporary directory inherits that directory's grants, so each key copy is left
+    to the current user alone.
     """
 
     def __init__(self, xmux, workdir, hosts):
@@ -233,6 +236,9 @@ class WindowsClient:
         src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "windows", "ssh_wrapper.rs")
         subprocess.run([os.environ.get("RUSTC", "rustc"), "-O", "-o", os.path.join(self.bin, "ssh.exe"), src], check=True)
         self.count, self.lock = 0, threading.Lock()
+        whoami = os.path.join(os.environ["SystemRoot"], "System32", "whoami.exe")
+        self.sid = subprocess.run([whoami, "/user", "/fo", "csv", "/nh"], capture_output=True,
+                                  text=True, check=True).stdout.strip().split(",")[1].strip('"')
 
     def pubkey(self):
         return open(self.key + ".pub").read()
@@ -247,6 +253,8 @@ class WindowsClient:
         key = os.path.join(home, ".ssh", "id_ed25519")
         shutil.copy(self.key, key)
         shutil.copy(self.key + ".pub", key + ".pub")
+        subprocess.run(["icacls", key, "/inheritance:r", "/grant:r", f"*{self.sid}:F"],
+                       capture_output=True, check=True)
         config = os.path.join(home, ".ssh", "config")
         with open(config, "w", newline="\n") as f:
             for a in aliases:
@@ -694,6 +702,9 @@ def main():
     ap.add_argument("--xmux", default=os.environ.get("XMUX_E2E_BIN", "xmux"))
     ap.add_argument("--out", default=os.environ.get("XMUX_E2E_OUT", "out"))
     args = ap.parse_args()
+    # xmux starts in its scenario's home, so a path given relative to here is resolved now.
+    if os.path.exists(args.xmux):
+        args.xmux = os.path.abspath(args.xmux)
     systems = args.os.split(",")
     muxes = args.mux.split(",")
     default = "first-launch,switch" if args.client == "windows" else ",".join(SCENARIOS)
