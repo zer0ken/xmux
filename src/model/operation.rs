@@ -103,4 +103,10 @@ pub enum OpResult {
         machine: String,
         result: Result<Vec<crate::provision::config::RemovedEntry>, String>,
     },
+    /// What ssh config says about a machine, read again after xmux edited the file or
+    /// the machine was rescanned.
+    SshFactsRead {
+        machine: String,
+        facts: crate::provision::env::SshFacts,
+    },
 }

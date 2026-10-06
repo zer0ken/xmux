@@ -1743,6 +1743,126 @@ async fn login_pane_hides_the_ssh_config_choice_when_the_values_are_already_save
     );
 }
 
+/// The facts the roster resolution reads for `machine` from `config_text`, with `ssh -G`
+/// reporting what it reports for any name: the alias as the host name, port 22 unless a
+/// block sets another, and the user a block sets, else the local one.
+fn ssh_facts_of(config_text: &str, machine: &str) -> crate::provision::env::SshFacts {
+    let stanza = crate::provision::config::stanza_login(config_text, machine);
+    let effective = crate::transport::Login {
+        address: stanza.address.or(Some(machine.into())),
+        port: stanza.port.or(Some(22)),
+        user: stanza.user.or(Some("local-user".into())),
+    };
+    crate::provision::env::SshFacts {
+        defaults: crate::provision::config::login_defaults(
+            machine,
+            None,
+            Some(&effective),
+            config_text,
+        ),
+        stanza: crate::provision::config::host_stanza(config_text, machine),
+    }
+}
+
+#[tokio::test]
+async fn login_pane_follows_a_logout_that_removed_the_machines_ssh_config_entry() {
+    let before = "Host gpu-01 web-01 db-01
+    User dev
+";
+    let mut h = Harness::from_hosts(&["db-01"]);
+    let facts = ssh_facts_of(before, "db-01");
+    h.state.chrome.set_login_defaults(
+        [("db-01".to_string(), facts.defaults)].into(),
+        [("db-01".to_string(), facts.stanza)].into(),
+    );
+    h.sw.apply_host_result(
+        "db-01".into(),
+        vec![],
+        Some("dev@db-01: Permission denied (publickey,password).".into()),
+        &mut h.state,
+    );
+    h.state.feed_login("db-01", b"");
+    h.draw();
+    assert!(
+        h.view_text().contains("from ssh config"),
+        "{}",
+        h.view_text()
+    );
+    assert!(
+        !h.text().contains("save connection to ssh config"),
+        "{}",
+        h.text()
+    );
+
+    let (after, _) = crate::provision::config::remove_host_entries(before, "db-01", true);
+    h.state
+        .set_ssh_facts("db-01", ssh_facts_of(&after, "db-01"));
+    h.draw();
+    assert!(
+        !h.view_text().contains("from ssh config"),
+        "no entry names db-01 any more:
+{}",
+        h.view_text()
+    );
+    assert!(
+        h.text().contains("( ) save connection to ssh config"),
+        "{}",
+        h.text()
+    );
+    assert_eq!(h.state.login.as_ref().unwrap().username, "");
+}
+
+#[tokio::test]
+async fn machine_screen_shows_the_user_and_stanza_a_login_saved() {
+    let mut h = Harness::from_hosts(&["db-01"]);
+    h.state.chrome.host_reach.insert(
+        "db-01".into(),
+        crate::state::HostReach {
+            ssh: true,
+            ..Default::default()
+        },
+    );
+    let before = "Host gpu-01 web-01
+    User dev
+";
+    let facts = ssh_facts_of(before, "db-01");
+    h.state.chrome.set_login_defaults(
+        [("db-01".to_string(), facts.defaults)].into(),
+        [("db-01".to_string(), facts.stanza)].into(),
+    );
+    h.sw.apply_host_result(
+        "db-01".into(),
+        vec![sess("db-01", "api", 1, false)],
+        None,
+        &mut h.state,
+    );
+    h.ctrl(KeyCode::Up);
+    h.ctrl(KeyCode::Up);
+    assert!(
+        h.view_text().contains("(no matching entry)"),
+        "{}",
+        h.view_text()
+    );
+
+    let saved = crate::provision::config::upsert_managed_stanza(
+        before,
+        "db-01",
+        &crate::transport::Login {
+            address: Some("10.0.0.5".into()),
+            port: Some(22),
+            user: Some("dev".into()),
+        },
+    );
+    h.state
+        .set_ssh_facts("db-01", ssh_facts_of(&saved, "db-01"));
+    h.draw();
+    let user = h.view_cell_of("user").unwrap().0;
+    assert!(h.view_row(user).contains("dev"), "{}", h.view_text());
+    let stanza = h.view_cell_of("ssh config").unwrap().0;
+    assert!(h.view_row(stanza).contains("db-01"), "{}", h.view_text());
+    assert!(!h.view_text().contains("(no matching entry)"));
+}
+
 #[tokio::test]
 async fn login_pane_prefills_all_values_from_ssh_config() {
     let mut h = Harness::from_hosts(&["e2e-box"]);

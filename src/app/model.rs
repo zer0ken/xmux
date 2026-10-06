@@ -419,6 +419,11 @@ pub(crate) enum Effect {
         machine: String,
         unmarked: bool,
     },
+    /// Reads what ssh config says about the machine as the file is now, for the login
+    /// pane and the machine screen.
+    ReadSshFacts {
+        machine: String,
+    },
     LogoutMachine {
         machine: String,
         cancel_login: Vec<crate::link::unlock::RunningLogin>,
@@ -484,6 +489,7 @@ impl std::fmt::Debug for Effect {
                 .field("machine", machine)
                 .field("unmarked", unmarked)
                 .finish(),
+            Self::ReadSshFacts { machine } => f.debug_tuple("ReadSshFacts").field(machine).finish(),
             Self::LogoutMachine { machine, .. } => {
                 f.debug_tuple("LogoutMachine").field(machine).finish()
             }
@@ -936,6 +942,9 @@ fn logout_stanza_removed(
         return Vec::new();
     };
     let mut notes = std::mem::take(notes);
+    // An entry that went changes what ssh config says about the machine, so the facts
+    // the login pane and the machine screen show are read again.
+    let edited = result.as_ref().is_ok_and(|removed| !removed.is_empty());
     match result {
         Ok(removed) if removed.is_empty() => {}
         Ok(removed) => {
@@ -956,7 +965,11 @@ fn logout_stanza_removed(
             format!("ssh config entries for {machine} remain: {reason}"),
         )),
     }
-    finish_logout(model, notes)
+    let mut effects = finish_logout(model, notes);
+    if edited {
+        effects.push(Effect::ReadSshFacts { machine });
+    }
+    effects
 }
 
 /// Clears the logged-out machine once its key and ssh config steps settled: the held
@@ -1712,7 +1725,16 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.state.logged_in = logged_in;
             logout_stanza_removed(model, machine, result)
         }
+        Msg::OpResult {
+            result: crate::model::OpResult::SshFactsRead { machine, facts },
+            logged_in,
+        } => {
+            model.state.logged_in = logged_in;
+            model.state.set_ssh_facts(&machine, facts);
+            Vec::new()
+        }
         Msg::OpResult { result, logged_in } => {
+            let mut read_facts = Vec::new();
             if let crate::model::OpResult::Login {
                 host,
                 attempt,
@@ -1720,6 +1742,13 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 ..
             } = &result
             {
+                // A saved connection changed ssh config whether or not this login is
+                // still the current one, so the facts are read again either way.
+                if outcome.saved == Some(Ok(())) {
+                    read_facts.push(Effect::ReadSshFacts {
+                        machine: crate::session::machine_of(host).to_owned(),
+                    });
+                }
                 model
                     .running_logins
                     .retain(|run| !(run.host == *host && run.attempt == *attempt));
@@ -1732,7 +1761,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                     .as_ref()
                     .is_some_and(|run| run.host == *host && run.attempt == *attempt)
                 {
-                    return Vec::new();
+                    return read_facts;
                 }
                 if outcome.connect.is_ok() {
                     model
@@ -1749,12 +1778,13 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 }
             }
             model.state.logged_in = logged_in;
-            let effects: Vec<_> = model
+            let mut effects: Vec<_> = model
                 .switcher
                 .apply_op_result(result, &mut model.state)
                 .map(|(host, login)| Effect::LoginApplied { host, login })
                 .into_iter()
                 .collect();
+            effects.extend(read_facts);
             effects
         }
         Msg::LoginSettled {
@@ -3929,7 +3959,10 @@ mod tests {
                 user_entry(),
             ]),
         );
-        assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
+        assert!(
+            matches!(effects.as_slice(), [Effect::LogoutMachine { .. }, Effect::ReadSshFacts { machine }] if machine == "box"),
+            "the removed entries change what ssh config says about box: {effects:?}"
+        );
         assert_logged_out(&m);
         assert_eq!(
             logout_notes(&m),
@@ -3969,7 +4002,10 @@ mod tests {
         let effects = type_remove(&mut m);
         assert!(unmarked_of(&effects), "{effects:?}");
         let effects = stanza_step(&mut m, effects, Ok(vec![user_entry()]));
-        assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
+        assert!(
+            matches!(effects.as_slice(), [Effect::LogoutMachine { .. }, Effect::ReadSshFacts { machine }] if machine == "box"),
+            "{effects:?}"
+        );
         assert_logged_out(&m);
         assert_eq!(
             logout_notes(&m),
@@ -4053,7 +4089,13 @@ mod tests {
                 Vec::new()
             };
             let effects = stanza_step(&mut m, effects, Ok(removed));
-            assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
+            // Only an entry that went changes what ssh config says about the machine.
+            let read = matches!(effects.as_slice(), [Effect::LogoutMachine { .. }, Effect::ReadSshFacts { machine }] if machine == "box");
+            assert!(
+                read == confirm
+                    && (confirm || matches!(effects.as_slice(), [Effect::LogoutMachine { .. }])),
+                "{effects:?}"
+            );
             assert_logged_out(&m);
             let notes: Vec<String> = logout_notes(&m).into_iter().map(|(_, text)| text).collect();
             let want: Vec<&str> = if confirm {
@@ -4378,6 +4420,72 @@ mod tests {
             },
             logged_in: HashSet::new(),
         }
+    }
+
+    /// A login that saved its connection changed ssh config, so the machine's ssh facts
+    /// are read again, whether or not the login is still the current one. A login that
+    /// saved nothing leaves them.
+    #[test]
+    fn a_login_that_saved_its_connection_reads_the_machines_ssh_facts_again() {
+        for (saved, current) in [
+            (Some(Ok(())), true),
+            (Some(Ok(())), false),
+            (Some(Err("denied".to_owned())), true),
+            (None, true),
+        ] {
+            let (mut m, attempt) = submitted_login(&["box"]);
+            let mut msg = login_result(
+                "box",
+                if current { attempt } else { attempt + 1 },
+                crate::link::unlock::UnlockOutcome::Ok,
+            );
+            let Msg::OpResult {
+                result: crate::ui::switcher::OpResult::Login { outcome, .. },
+                ..
+            } = &mut msg
+            else {
+                unreachable!()
+            };
+            outcome.saved = saved.clone();
+            let effects = update(&mut m, msg);
+            let read = effects
+                .iter()
+                .filter(
+                    |effect| matches!(effect, Effect::ReadSshFacts { machine } if machine == "box"),
+                )
+                .count();
+            assert_eq!(
+                read,
+                usize::from(saved == Some(Ok(()))),
+                "{saved:?} {current}: {effects:?}"
+            );
+        }
+    }
+
+    /// Re-read ssh facts reach what the login pane and the machine screen render.
+    #[test]
+    fn re_read_ssh_facts_replace_the_machines_login_values_and_stanza() {
+        let mut m = AppModel::from_hosts(vec!["box".to_owned()]);
+        let text = "Host box
+    User dev
+";
+        let facts = crate::provision::env::SshFacts {
+            defaults: crate::provision::config::login_defaults("box", None, None, text),
+            stanza: crate::provision::config::host_stanza(text, "box"),
+        };
+        let effects = update(
+            &mut m,
+            Msg::OpResult {
+                result: crate::ui::switcher::OpResult::SshFactsRead {
+                    machine: "box".into(),
+                    facts: facts.clone(),
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        assert!(effects.is_empty(), "{effects:?}");
+        assert_eq!(m.state.chrome.login_defaults("box"), facts.defaults);
+        assert_eq!(m.state.chrome.ssh_stanzas["box"], facts.stanza);
     }
 
     fn probed(machine: &str, probe: u64, err: Option<&str>) -> Msg {
