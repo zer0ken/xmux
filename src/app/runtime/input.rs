@@ -770,27 +770,14 @@ impl Runtime {
                             .current_view_screen(&self.model.state)
                             .is_some()
                         {
-                            // A host's or a source's screen takes its own keys: the
-                            // arrows walk its links, Enter opens the selected one, and
-                            // `d` unfolds an unreachable screen's details.
+                            // A host's or a source's screen takes its own keys.
                             for key in crate::state::decode_keys(&f) {
-                                use crate::state::Key;
-                                let msg = match key {
-                                    Key::Up | Key::BackTab => Msg::StepLink(-1),
-                                    Key::Down | Key::Tab => Msg::StepLink(1),
-                                    Key::Enter => Msg::OpenLink(None),
-                                    Key::Char('d')
-                                        if self
-                                            .model
-                                            .switcher
-                                            .current_unreachable_screen(&self.model.state) =>
-                                    {
-                                        Msg::Key(ratatui::crossterm::event::KeyEvent::new(
-                                            ratatui::crossterm::event::KeyCode::Char('d'),
-                                            ratatui::crossterm::event::KeyModifiers::NONE,
-                                        ))
-                                    }
-                                    _ => continue,
+                                let unreachable = self
+                                    .model
+                                    .switcher
+                                    .current_unreachable_screen(&self.model.state);
+                                let Some(msg) = screen_msg(key, unreachable) else {
+                                    continue;
                                 };
                                 let opens = matches!(msg, Msg::OpenLink(_));
                                 let effects = update(&mut self.model, msg);
@@ -953,5 +940,22 @@ impl Runtime {
         }
         self.flush_rescan();
         outcome
+    }
+}
+
+/// What a key does on a host's or a source's screen in the terminal view: the arrows
+/// and the tabs step through its links, Enter opens the selected one, and `d` unfolds an
+/// unreachable host's details. The key table's screen section names every key this reads.
+pub(super) fn screen_msg(key: crate::state::Key, unreachable: bool) -> Option<Msg> {
+    use crate::state::Key;
+    match key {
+        Key::Up | Key::BackTab => Some(Msg::StepLink(-1)),
+        Key::Down | Key::Tab => Some(Msg::StepLink(1)),
+        Key::Enter => Some(Msg::OpenLink(None)),
+        Key::Char('d') if unreachable => Some(Msg::Key(ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::Char('d'),
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        ))),
+        _ => None,
     }
 }

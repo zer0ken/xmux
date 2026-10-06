@@ -169,6 +169,8 @@ pub enum KeyCommand {
 pub enum Section {
     /// Keys the nav reads bare while it holds the focus.
     Move,
+    /// Keys a host's or a source's screen reads in the terminal view.
+    Screen,
     Navigate,
     Sessions,
     View,
@@ -177,8 +179,9 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 6] = [
+    pub const ALL: [Section; 7] = [
         Section::Move,
+        Section::Screen,
         Section::Navigate,
         Section::Sessions,
         Section::View,
@@ -189,6 +192,7 @@ impl Section {
     pub fn title(self) -> &'static str {
         match self {
             Section::Move => "move (nav focus)",
+            Section::Screen => "host and source screens",
             Section::Navigate => "navigate",
             Section::Sessions => "sessions",
             Section::View => "view",
@@ -209,6 +213,8 @@ pub enum Keys {
     /// Keys the nav reads bare while it holds the focus, with `command` when the entry is
     /// a command a hint can offer.
     Bare(Option<KeyCommand>),
+    /// Keys a host's or a source's screen reads bare, by the code each arrives as.
+    Screen(&'static [KeyCode]),
     /// A mouse gesture.
     Mouse,
 }
@@ -255,7 +261,7 @@ impl KeyEntry {
                 }
                 _ => None,
             },
-            Keys::Bare(_) | Keys::Mouse => None,
+            Keys::Bare(_) | Keys::Screen(_) | Keys::Mouse => None,
         }
     }
 
@@ -268,7 +274,7 @@ impl KeyEntry {
                 .filter(|a| a.faces_terminal(position) == toward_terminal)
                 .map(Chord::Arrow)
                 .collect(),
-            Keys::Bare(_) | Keys::Mouse => Vec::new(),
+            Keys::Bare(_) | Keys::Screen(_) | Keys::Mouse => Vec::new(),
         }
     }
 
@@ -307,7 +313,7 @@ impl KeyEntry {
                     }
             }
             Keys::Bare(c) => c == Some(command),
-            Keys::Mouse => false,
+            Keys::Screen(_) | Keys::Mouse => false,
         }
     }
 }
@@ -384,6 +390,33 @@ pub static TABLE: &[KeyEntry] = &[
         help: "clear the applied filter",
         long: "clear the filter",
         short: "clear",
+        rank: 0,
+    },
+    KeyEntry {
+        section: Section::Screen,
+        keys: Keys::Screen(&[KeyCode::Up, KeyCode::Down, KeyCode::Tab, KeyCode::BackTab]),
+        label: "↑/↓ · Tab",
+        help: "select the previous / next link, S-Tab back (terminal focus)",
+        long: "select a link",
+        short: "link",
+        rank: 0,
+    },
+    KeyEntry {
+        section: Section::Screen,
+        keys: Keys::Screen(&[KeyCode::Enter]),
+        label: "Enter",
+        help: "open the screen the selected link names (terminal focus)",
+        long: "open the link",
+        short: "open",
+        rank: 0,
+    },
+    KeyEntry {
+        section: Section::Screen,
+        keys: Keys::Screen(&[KeyCode::Char('d')]),
+        label: "d",
+        help: "unfold / fold an unreachable host's full diagnostic (either focus)",
+        long: "diagnostic",
+        short: "details",
         rank: 0,
     },
     KeyEntry {
