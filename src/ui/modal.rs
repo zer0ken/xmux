@@ -262,8 +262,19 @@ pub(crate) fn matching_help_rows(rows: &[HelpRow], query: &str) -> Vec<HelpRow> 
     out
 }
 
-/// The rows above the help's body: the search field and the tab row.
-const HELP_LEAD: usize = 2;
+/// The rows above the help's body: the search field, the tab row, and the rule under it.
+pub(crate) const HELP_LEAD: usize = 3;
+
+/// The rows above the help's body in a popup with `visible` inner rows. A popup too short
+/// to keep a body row under the rule leaves the rule out, so the rule never takes the
+/// only row the body has.
+pub(crate) fn help_lead(visible: u16) -> usize {
+    if visible as usize > HELP_LEAD {
+        HELP_LEAD
+    } else {
+        HELP_LEAD - 1
+    }
+}
 
 /// The tab row's offset from the help popup's inner top, under the search field.
 pub(crate) const HELP_TAB_ROW: u16 = 1;
@@ -284,7 +295,7 @@ pub(crate) fn help_width(prefix: &str, nav_position: crate::ui::switcher::NavPos
 }
 
 /// The help popup's inner height at `inner` cells wide before any search: every row as it
-/// wraps there, plus the search field and the tab row. Like the width, it holds while a
+/// wraps there, plus the rows above the body. Like the width, it holds while a
 /// search narrows the rows.
 pub(crate) fn help_height(
     prefix: &str,
@@ -304,10 +315,10 @@ pub(crate) fn help_height(
 }
 
 /// The furthest the help scrolls: the offset that shows the last page of `lines` display
-/// rows in a popup with `visible` inner rows, two of which are the search field and the
-/// tab row. The paint and the scroll keys both hold to it.
+/// rows in a popup with `visible` inner rows, [`help_lead`] of which are above the body.
+/// The paint and the scroll keys both hold to it.
 pub(crate) fn help_max_scroll(lines: usize, visible: u16) -> usize {
-    lines.saturating_sub((visible as usize).saturating_sub(HELP_LEAD))
+    lines.saturating_sub((visible as usize).saturating_sub(help_lead(visible)))
 }
 
 /// The widest a help key cell is. A key wider than the column takes a row of its own,
@@ -571,7 +582,7 @@ pub(crate) fn help_tab_at(
 }
 
 /// The help modal's `(meta, lines)` for a popup `inner` cells wide with `visible` inner
-/// rows: the search field, the tab row, then the window of matching display rows that
+/// rows: the search field, the tab row, the rule, then the window of matching display rows that
 /// starts `scroll` rows down, held so the last page stays full. The rows read like the key
 /// list: a left-aligned bold key cell, whitespace, then the muted description. The active
 /// tab is `tab` when a tab was chosen, and otherwise the section the scroll reached. A
@@ -604,7 +615,8 @@ pub(crate) fn help_lines(
     ));
     let map = body.map(visible);
     let total = body.lines.len();
-    let window = (visible as usize).saturating_sub(HELP_LEAD);
+    let lead = help_lead(visible);
+    let window = (visible as usize).saturating_sub(lead);
     let hover = hover.filter(|&h| h < map.heads.len());
     let offset = hover
         .map(|h| map.scroll_to(h))
@@ -620,6 +632,9 @@ pub(crate) fn help_lines(
             palette,
         ),
     ];
+    if lead == HELP_LEAD {
+        lines.push(popup_rule(inner, palette));
+    }
     if total == 0 {
         let room = (inner as usize).saturating_sub(2).max(1) as u16;
         lines.extend(
@@ -1143,8 +1158,11 @@ pub(crate) fn palette_rows(entries: &[(String, String)], key_w: usize, inner: u1
         .sum()
 }
 
-/// The command palette's rows for a popup `inner` cells wide with `visible` rows under the
-/// query field: the query field, then one entry per command in the key list's grammar,
+/// The rows above the palette's commands: the query field and the rule under it.
+pub(crate) const PALETTE_LEAD: u16 = 2;
+
+/// The command palette's rows for a popup `inner` cells wide with `visible` rows under
+/// [`PALETTE_LEAD`]: the query field, the rule, then one entry per command in the key list's grammar,
 /// the key cell bold in a column as wide as the widest key, then the description, wrapped
 /// under the description column rather than cut. The selected entry is reversed across the
 /// whole width, and the window starts late enough to show it
@@ -1174,7 +1192,7 @@ pub(crate) fn palette_lines(
         field_room(inner, 3),
         palette,
     ));
-    let mut lines = vec![(None, Line::from(q))];
+    let mut lines = vec![(None, Line::from(q)), (None, popup_rule(inner, palette))];
     if entries.is_empty() {
         let room = (inner as usize).saturating_sub(2).max(1) as u16;
         lines.extend(
@@ -1264,6 +1282,16 @@ pub(crate) struct PopupFrame {
     pub(crate) title: String,
     pub(crate) meta: String,
     pub(crate) hints: Vec<Hint>,
+}
+
+/// A rule across a popup `inner` cells wide in its border's glyph and colour. It parts the
+/// rows that stay put above a popup's body, a search field or a tab row, from the body
+/// under them, so they read as the popup's controls rather than as its first rows.
+pub(crate) fn popup_rule(inner: u16, palette: &palette::Palette) -> Line<'static> {
+    Line::from(Span::styled(
+        "─".repeat(inner as usize),
+        Style::default().fg(palette.decoration),
+    ))
 }
 
 /// The rounded, opaque box every popup and the key list share: muted rule, the accent bold
@@ -1696,12 +1724,12 @@ mod tests {
         assert_eq!(
             lines.len(),
             12,
-            "the search field, the tab row, and ten rows"
+            "the search field, the tab row, the rule, and nine rows"
         );
-        assert_eq!(title, format!("1-10 of {total}"));
+        assert_eq!(title, format!("1-9 of {total}"));
         assert!(flat(&lines).contains("move (nav focus)"));
         let (title, lines) = help_lines("C-g", pos, &palette, "", 5, None, None, 12, u16::MAX);
-        assert_eq!(title, format!("6-15 of {total}"));
+        assert_eq!(title, format!("6-14 of {total}"));
         assert!(
             !flat(&lines[HELP_LEAD..]).contains("move (nav focus)"),
             "scrolled past"
@@ -1719,13 +1747,36 @@ mod tests {
         );
         assert_eq!(
             title,
-            format!("{}-{total} of {total}", total - 9),
+            format!("{}-{total} of {total}", total - 8),
             "a scroll past the end shows the last full page"
         );
         assert!(
             flat(&lines).contains("five seconds"),
             "the legend's last row"
         );
+    }
+
+    #[test]
+    fn the_rule_under_the_tabs_never_takes_the_only_body_row() {
+        let palette = palette::Palette::default();
+        let pos = crate::ui::switcher::NavPosition::Left;
+        let rule = "─".repeat(30);
+        let rows = |visible| {
+            let (_, lines) = help_lines("C-g", pos, &palette, "", 0, None, None, visible, 30);
+            lines.iter().map(|l| l.to_string()).collect::<Vec<_>>()
+        };
+        let roomy = rows(4);
+        assert_eq!(roomy[2], rule, "a rule parts the tabs from the body");
+        assert_eq!(roomy.len(), 4, "one body row stays under the rule");
+        let short = rows(3);
+        assert!(!short.contains(&rule), "{short:?}");
+        assert_eq!(
+            short[2].trim(),
+            "move (nav focus)",
+            "the body keeps its row"
+        );
+        assert_eq!(help_max_scroll(10, 3), 9);
+        assert_eq!(help_max_scroll(10, 4), 9);
     }
 
     #[test]
@@ -2211,13 +2262,19 @@ mod tests {
             .map(|(_, line)| line)
             .collect();
         assert!(lines.iter().all(|l| l.width() <= 30));
-        let body: Vec<String> = lines[1..].iter().map(|l| l.to_string()).collect();
+        let lead = PALETTE_LEAD as usize;
+        assert_eq!(
+            lines[1].to_string(),
+            "─".repeat(30),
+            "a rule parts the query"
+        );
+        let body: Vec<String> = lines[lead..].iter().map(|l| l.to_string()).collect();
         assert_eq!(body.len(), 2 * rows, "two entries fill the window");
         assert!(
             body[1].starts_with(&" ".repeat(3 + 5 + 2)),
             "the description hangs under its column: {body:?}"
         );
-        let all = squeezed(&lines[1..]);
+        let all = squeezed(&lines[lead..]);
         assert!(
             all.contains(&squeeze(&entries[5].1)),
             "the selected entry is whole: {all}"
@@ -2280,20 +2337,20 @@ mod tests {
         let items: Vec<Option<usize>> = lines.iter().map(|(i, _)| *i).collect();
         assert_eq!(
             items,
-            [None, Some(0), Some(1), Some(2)],
-            "each row names its entry"
+            [None, None, Some(0), Some(1), Some(2)],
+            "each row names its entry, and the query and its rule none"
         );
         let style = |i: usize| lines[i].1.style;
-        assert_eq!(style(1), palette::selection_style(&p), "the hard selection");
+        assert_eq!(style(2), palette::selection_style(&p), "the hard selection");
         assert_eq!(
-            style(2),
+            style(3),
             palette::soft_selection_style(),
             "the soft selection"
         );
-        assert_eq!(style(3), Style::default());
+        assert_eq!(style(4), Style::default());
         let both = palette_lines("", &entries, 1, 1, Some(1), 10, 40, &p);
         assert_eq!(
-            both[2].1.style,
+            both[3].1.style,
             palette::selection_style(&p).patch(palette::soft_selection_style()),
             "one entry under both shows both"
         );

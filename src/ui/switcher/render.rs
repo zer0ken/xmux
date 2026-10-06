@@ -1641,7 +1641,7 @@ impl Switcher {
                 let (key_w, _) = Self::palette_columns(&self.palette_cells(state, ""));
                 let cells = self.palette_cells(state, query);
                 let rows = modal::palette_rows(&cells, key_w, w.saturating_sub(2)).max(1);
-                anchor((w, rows as u16 + 3))
+                anchor((w, rows as u16 + modal::PALETTE_LEAD + 2))
             }
             Some(Modal::Input(input)) => {
                 let w = match input.mode {
@@ -1671,7 +1671,7 @@ impl Switcher {
         }
     }
 
-    /// The palette's outer size with every command listed: its rows and the query field.
+    /// The palette's outer size with every command listed: its rows and the rows above them.
     fn palette_size(&self, state: &crate::state::State) -> (u16, u16) {
         let cells = self.palette_cells(state, "");
         let (key_w, desc_w) = Self::palette_columns(&cells);
@@ -1679,7 +1679,7 @@ impl Switcher {
         let hints = (modal::hints_width(modal::PALETTE_HINTS) + 6) as u16;
         (
             w.max(hints).max(modal::POPOVER_MIN_WIDTH),
-            cells.len().max(1) as u16 + 3,
+            cells.len().max(1) as u16 + modal::PALETTE_LEAD + 2,
         )
     }
 
@@ -1763,7 +1763,7 @@ impl Switcher {
                     key_w,
                     *selected,
                     *hover,
-                    rect.height.saturating_sub(3) as usize,
+                    rect.height.saturating_sub(modal::PALETTE_LEAD + 2) as usize,
                     rect.width.saturating_sub(2),
                     &self.palette,
                 );

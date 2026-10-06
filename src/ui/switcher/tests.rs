@@ -1557,6 +1557,10 @@ async fn interaction_screens_render_key_tokens_in_one_shape() {
     assert!(key_shape(&h, "C-g n").contains(Modifier::BOLD));
     h.sw.show_help(&mut h.state);
     h.draw();
+    let r = h.plan.popup_rect;
+    let inner = (r.width - 2, r.height - 2);
+    h.sw.feed_reader_key(b"new session", 0x07, &mut false, inner, &mut h.state);
+    h.draw();
     assert!(key_shape(&h, "C-g n").contains(Modifier::BOLD));
 }
 
@@ -6598,16 +6602,22 @@ fn a_press_anywhere_on_a_popup_grabs_it_and_outside_does_not() {
     );
 }
 
-/// The help opened on a 140x30 window, laid out and painted, with its tab-finding helpers.
+/// The help opened on a window, 140x30 unless given, laid out and painted, with its
+/// tab-finding helpers.
 struct HelpOnScreen {
     state: crate::state::State,
     sw: Switcher,
     plan: RenderPlan,
     term: Terminal<TestBackend>,
+    size: (u16, u16),
 }
 
 impl HelpOnScreen {
     fn open() -> Self {
+        Self::open_at(140, 30)
+    }
+
+    fn open_at(w: u16, h: u16) -> Self {
         let mut state = crate::state::State::from_scan(sample());
         let mut sw = Switcher::new(&mut state);
         sw.show_help(&mut state);
@@ -6615,7 +6625,8 @@ impl HelpOnScreen {
             state,
             sw,
             plan: RenderPlan::default(),
-            term: Terminal::new(TestBackend::new(140, 30)).unwrap(),
+            term: Terminal::new(TestBackend::new(w, h)).unwrap(),
+            size: (w, h),
         };
         me.paint();
         me
@@ -6623,7 +6634,7 @@ impl HelpOnScreen {
 
     fn paint(&mut self) {
         self.plan = self.sw.layout(
-            Rect::new(0, 0, 140, 30),
+            Rect::new(0, 0, self.size.0, self.size.1),
             NavSize::hidden(NAV_WIDTH),
             &self.state,
             &self.plan,
@@ -6670,11 +6681,15 @@ impl HelpOnScreen {
 
     /// The text of the help's first body row as painted.
     fn top_body_row(&self) -> String {
+        self.inner_row(modal::HELP_LEAD as u16)
+    }
+
+    /// The text of the popup's inner row `y`, counted from its inner top, as painted.
+    fn inner_row(&self, y: u16) -> String {
         let r = self.plan.popup_rect;
-        let y = r.y + 1 + modal::HELP_TAB_ROW + 1;
         let buf = self.term.backend().buffer();
         (r.x + 1..r.right() - 1)
-            .map(|x| buf[(x, y)].symbol().to_string())
+            .map(|x| buf[(x, r.y + 1 + y)].symbol().to_string())
             .collect::<String>()
             .trim()
             .to_string()
@@ -6689,6 +6704,69 @@ impl HelpOnScreen {
             })
             .nth(section)
             .expect("the section")
+    }
+}
+
+#[test]
+fn a_rule_parts_the_help_tabs_from_the_body_at_every_size() {
+    for (w, h) in [(140, 30), (40, 12)] {
+        let mut on = HelpOnScreen::open_at(w, h);
+        let (inner, visible) = on.inner();
+        assert_eq!(
+            on.inner_row(modal::HELP_TAB_ROW + 1),
+            "─".repeat(inner as usize),
+            "{w}x{h}: a rule spans the row under the tabs"
+        );
+        let r = on.plan.popup_rect;
+        let y = r.y + 1 + modal::HELP_TAB_ROW + 1;
+        let buf = on.term.backend().buffer();
+        assert_eq!(
+            buf[(r.x + 1, y)].fg,
+            buf[(r.x, y)].fg,
+            "{w}x{h}: the rule is the border's colour"
+        );
+        assert_eq!(
+            on.top_body_row(),
+            on.section_title(0),
+            "{w}x{h}: the body starts under the rule"
+        );
+        // A click on a tab the row shows, the second where it fits, names that tab and
+        // brings its section up under the rule.
+        let (prefix, pos) = (&on.state.chrome.ui_prefix, on.state.chrome.nav_position);
+        let shown = (0..inner)
+            .filter_map(|x| modal::help_tab_at(prefix, pos, "", 0, None, inner, visible, x))
+            .max()
+            .expect("a tab on the row")
+            .min(1);
+        let (col, row) = on.tab_cell(shown, false);
+        assert!(on
+            .sw
+            .begin_popup_drag_in_plan(&on.plan, col, row, &on.state));
+        on.sw.end_popup_drag_in_plan(&on.plan, &mut on.state);
+        assert_eq!(on.help().1, Some(shown), "{w}x{h}: the click chose its tab");
+        on.paint();
+        assert_eq!(on.top_body_row(), on.section_title(shown), "{w}x{h}");
+        // End scrolls to the last display row, and it is painted on the last inner row.
+        on.sw
+            .feed_reader_key(b"\x1b[F", 0x07, &mut false, (inner, visible), &mut on.state);
+        on.paint();
+        let (_, all) = modal::help_lines(
+            &on.state.chrome.ui_prefix,
+            on.state.chrome.nav_position,
+            &crate::ui::palette::Palette::default(),
+            "",
+            0,
+            None,
+            None,
+            u16::MAX,
+            inner,
+        );
+        let tail = all.last().expect("a body row").to_string();
+        assert_eq!(
+            on.inner_row(visible - 1),
+            tail.trim(),
+            "{w}x{h}: the last body row is reachable"
+        );
     }
 }
 
@@ -6793,7 +6871,7 @@ async fn a_small_window_shows_the_whole_help_by_scrolling() {
     let mut seen = String::new();
     for _ in 0..200 {
         let rows = popup_rows(&h);
-        seen.push_str(&rows[2..].concat());
+        seen.push_str(&rows[modal::help_lead(inner.1)..].concat());
         h.sw.feed_reader_key(b"\x1b[B", 0x07, &mut false, inner, &mut h.state);
         h.draw();
     }
