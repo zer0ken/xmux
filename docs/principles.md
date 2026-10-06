@@ -174,3 +174,18 @@ or resizes, the wheel scrolls, and typing edits a text field.
 The landing screen is the one surface on which a selection shows nothing: from launch
 until the first execution the hard selection only highlights and a hover previews
 nothing, so nothing attaches before the user has chosen.
+
+## Results as Notifications
+
+The hint bar carries only short advice that fits the current state: the prefix, the
+selected card's next keys, the scan progress, and the active filter. Every result of an
+action the user took, whether the action was done, refused, failed, or had nothing to
+do, is a toast titled by the action, and the history keeps it.
+
+Advice and a result answer different questions. Advice says what the user can do next
+and changes with the state it describes, so the hint bar keeps it current. A result says
+what the last action did and stays true after the state moves on, so it belongs to the
+action and to a record the user can open again. A result written into the hint bar
+would push the advice off the bar while it lasted, could leave on the next key before
+it was read, and would be missing from the history. One surface for every result also
+lets a refusal and a failure read alike, so the user looks for an answer in one place.

@@ -184,11 +184,10 @@ switch or any mouse action outside the box cancels the prefix; dragging the box 
 A held prefix sends one literal per repeat and blinks the box, because a terminal sends
 no key-up.
 
-The hint bar shows one thing at a time, in this order: a refusal, the prefix alone while
-the key list or an input is open, the hint after a selection move, the scan progress,
-the active filter, and the resting prefix. A refusal opens into the terminal view in the
-error colour, wraps instead of clipping, and goes away on the next key or after ten
-seconds. The hint after a selection move names the card's next keys and one fact about
+The hint bar shows one thing at a time, in this order: the prefix alone while the key
+list or an input is open, the hint after a selection move, the scan progress, the active
+filter, and the resting prefix. What a key did, or why it did nothing, is a toast. The
+hint after a selection move names the card's next keys and one fact about
 it for three seconds; when the terminal view holds focus it offers only prefix keys, and
 a selection xmux was told to make raises none. With the nav auto-hidden, a prefix
 interaction brings the nav back until it ends, and the key list and the bar open over
@@ -225,12 +224,14 @@ place of the split view.
 
 ## Toasts
 
-The result of work you started floats as a toast in the terminal view's corner nearest
-the hint, at most 40% of the window wide, up to three at once. A toast of successes and
-facts leaves after five seconds, with the time left drawn on its bottom border. One that
-carries a warning (`▲`) or a failure (`✗`) stays until a click on it or opening the
-history takes it down, except a login result, which leaves after five seconds since the
-login pane and the history keep it. Something nobody asked about, such as a machine
+The result of an action you took floats as a toast in the terminal view's corner nearest
+the hint, at most 40% of the window wide, up to three at once. A refused action is a
+result too: its toast is a warning titled by the action, saying why nothing happened. A
+toast of successes and facts leaves after five seconds, with the time left drawn on its
+bottom border. One that carries a warning (`▲`) or a failure (`✗`) stays until a click
+on it or opening the history takes it down, except a login result, which leaves after
+five seconds since the login pane and the history keep it, and a refusal, which leaves
+after five seconds since it changed nothing. Something nobody asked about, such as a machine
 that stops answering, goes to the history only. `[ui] notifications = false` turns
 toasts off; the history still records every result.
 

@@ -76,8 +76,8 @@ against, naming no source file, function, or test.
   exists, else the `[ui] nav-position` default, and the nav never moves on its own.
 - **FR-B16** - The nav's width, band height, side, and collapsed state are live and
   persisted, set by resize keys, border drag, `prefix z`, and auto-hide.
-- **FR-B17** - The resting prefix indicator is a label sized to its text, and a flash
-  explaining why a key did nothing comes down on the next key or after ten seconds.
+- **FR-B17** - The resting prefix indicator is a label sized to its text, and the hint
+  bar carries only advice for the current state, never the result of an action.
 - **FR-B18** - A prefix interaction lasts until the function it starts ends, and the key
   list and an auto-hidden nav show for exactly that span. While the terminal view holds
   the focus, a nav that would leave it smaller than 24 columns by 4 rows hides as an
@@ -116,8 +116,8 @@ against, naming no source file, function, or test.
 - **FR-B31** - Persistent UI symbols use only one-cell glyphs that OS default terminal
   fonts render, and a terminal smaller than 24 columns by 4 rows shows only a size
   screen.
-- **FR-B32** - The result of user-started work (a login, a new session, a re-scan) and a
-  newer release at launch appear as a toast in the terminal view's corner, which `[ui]
+- **FR-B32** - The result of a user action (a login, a new session, a re-scan, or the
+  reason an action was refused) and a newer release at launch appear as a toast in the terminal view's corner, which `[ui]
   notifications` can turn off.
 - **FR-B33** - `prefix m` opens the history of every toast and background event, newest
   first, bounded at 200 records.
@@ -208,7 +208,7 @@ against, naming no source file, function, or test.
 xmux aggregates and switches, so creating a session is the only session change it makes.
 
 - **FR-E1** - `prefix n` creates a session on the selected card's host and mux, which
-  then appears in the nav, and is refused with a flash under an unreachable host.
+  then appears in the nav, and is refused with a toast under an unreachable host.
 - **FR-E2** - There is no rename, kill, or window or pane command anywhere in xmux.
 - **FR-E3** - Creating a session runs off the key path, so a slow ssh round trip never
   freezes rendering or the control channel.

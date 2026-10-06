@@ -116,8 +116,7 @@ impl Harness {
     }
 
     /// The hint bar's row, read at the width it actually paints: the nav column at
-    /// rest, the whole window while a floating bar (an input, a refusal, a selection
-    /// hint) is up. Reading the nav width unconditionally would clip the floating bar.
+    /// rest, the whole window while a floating bar (a selection hint) is up. Reading the nav width unconditionally would clip the floating bar.
     fn hint_bar_text(&self) -> String {
         let buf = self.buf();
         let y = buf.area.height - 1;
@@ -1514,7 +1513,7 @@ async fn list_failure_allows_a_new_session_on_the_answering_host() {
     h.ch('n').await;
     assert!(h.state.is_inputting(), "new-session input opens");
     assert!(
-        h.state.chrome.flash.is_empty(),
+        h.state.notify.toasts.is_empty(),
         "the host is not unreachable"
     );
 }
@@ -3219,6 +3218,94 @@ async fn n_on_a_session_card_opens_new_for_its_host() {
     );
 }
 
+/// Asserts that the newest toast is the refusal `reason` under `title`, a warning that
+/// leaves by itself, and that the hint bar still says `bar`, what it said before the key.
+fn assert_refused(h: &Harness, bar: &str, title: &str, reason: &str) {
+    use crate::state::notify::{Level, Note};
+    let toast = h.state.notify.toasts.last().expect("a refusal is a toast");
+    assert_eq!(toast.title, title);
+    assert_eq!(toast.notes, vec![Note::new(Level::Warning, reason)]);
+    assert!(toast.until.is_some(), "a refusal leaves by itself");
+    assert_eq!(h.hint_bar_text(), bar, "the hint bar keeps its advice");
+}
+
+/// What an action did or why it did nothing is a notification, never hint-bar text:
+/// every refused key reports a toast and leaves the hint bar on its contextual text.
+#[tokio::test]
+async fn a_refused_key_is_a_notification_and_the_hint_bar_keeps_its_advice() {
+    // The local machine is not reached over SSH, so it has no login to log out of.
+    let mut h = Harness::new(sample());
+    h.key(KeyCode::Home).await;
+    let bar = h.hint_bar_text();
+    h.ch('L').await;
+    assert!(h.state.modal.is_none(), "no logout confirm opens");
+    assert_refused(&h, &bar, "logout local", "this machine does not use SSH");
+
+    // A session lives in a host, and the unreachable machine has none to create it in.
+    h.key(KeyCode::End).await;
+    let bar = h.hint_bar_text();
+    h.ch('n').await;
+    assert!(!h.state.is_inputting(), "no new-session input opens");
+    assert_refused(
+        &h,
+        &bar,
+        "new session",
+        "machine unreachable, cannot create here",
+    );
+
+    // A machine names no host to create a session in.
+    h.key(KeyCode::Home).await;
+    h.ctrl(KeyCode::Up);
+    h.ctrl(KeyCode::Up);
+    let bar = h.hint_bar_text();
+    h.ch('n').await;
+    assert!(!h.state.is_inputting(), "no new-session input opens");
+    assert_refused(
+        &h,
+        &bar,
+        "new session",
+        "select a host of local to start a session",
+    );
+
+    // A machine is asked one thing at a time.
+    h.key(KeyCode::Home).await;
+    h.state.scanning.insert("local".into());
+    h.draw();
+    let bar = h.hint_bar_text();
+    h.ch('r').await;
+    assert_refused(
+        &h,
+        &bar,
+        "rescan machine local",
+        "local is still being scanned",
+    );
+    h.state.scanning.clear();
+
+    // A logout confirm Entered without its word keeps the confirm open.
+    let mut h = Harness::from_hosts(&["box"]);
+    h.state.chrome.host_reach.insert(
+        "box".into(),
+        crate::state::HostReach {
+            ssh: true,
+            ..Default::default()
+        },
+    );
+    h.sw.apply_host_result(
+        "box".into(),
+        vec![sess("box", "api", 1, true)],
+        None,
+        &mut h.state,
+    );
+    h.ch('L').await;
+    for c in "nope".chars() {
+        h.ch(c).await;
+    }
+    let bar = h.hint_bar_text();
+    h.key(KeyCode::Enter).await;
+    assert!(h.state.is_inputting(), "the confirm stays open");
+    assert_refused(&h, &bar, "logout box", "type logout to confirm");
+}
+
 #[test]
 fn logout_confirms_the_machine_of_the_selected_session() {
     let mut h = Harness::from_hosts(&["box"]);
@@ -3703,10 +3790,13 @@ async fn create_on_unreachable_machine_refused() {
         "expected to reach the unreachable db-2 machine"
     );
     h.ch('n').await;
-    assert!(
-        h.state.chrome.flash.to_lowercase().contains("unreachable"),
-        "create on unreachable machine should flash unreachable, got {:?}",
-        h.state.chrome.flash
+    assert_eq!(
+        h.state.notify.last_report(),
+        Some((
+            "new session",
+            crate::state::notify::Level::Warning,
+            "machine unreachable, cannot create here"
+        ))
     );
     assert!(h.ops.created.lock().unwrap().is_empty());
 }
@@ -5082,81 +5172,6 @@ async fn current_host_tracks_cursor_host() {
 }
 
 #[test]
-fn long_flash_wraps_in_narrow_hint_bar_instead_of_clipping() {
-    // The hint_bar lives in the tree column; a long flash must wrap across lines rather
-    // than clip at the column edge (a narrow tree would otherwise hide most of it).
-    let mut state = crate::state::State::from_scan(sample());
-    state.chrome.flash = "host unreachable, cannot create here".into();
-    let lines = state.chrome.hint_bar_lines(20, &state);
-    assert!(
-        lines.len() > 1,
-        "long flash wraps across lines, got {lines:?}"
-    );
-    assert!(
-        lines.iter().all(|l| l.chars().count() <= 20),
-        "every wrapped line fits the width, got {lines:?}"
-    );
-    let joined = lines.join("").replace("  ", " ");
-    assert!(
-        joined.contains("cannot create here"),
-        "no text is lost: {joined:?}"
-    );
-}
-
-#[test]
-fn a_collapsed_nav_renders_every_wrapped_flash_line() {
-    let mut state = crate::state::State::from_scan(sample());
-    state.chrome.flash = "host unreachable, cannot create here".into();
-    let sw = Switcher::new(&mut state);
-    let mut term = Terminal::new(TestBackend::new(24, 8)).unwrap();
-    let width = collapsed_nav_width("C-g");
-    let nav = NavSize {
-        natural: NAV_WIDTH,
-        width,
-        height: 0,
-        position: NavPosition::Left,
-        collapsed: true,
-    };
-    term.draw(|f| sw.render_test(f, None, false, nav, &state))
-        .unwrap();
-
-    let buf = term.backend().buffer();
-    // The bar spans the whole window below the collapsed column.
-    let lines = state.chrome.hint_bar_lines(buf.area.width, &state);
-    assert!(lines.len() > 1);
-    let first = buf.area.height - lines.len() as u16;
-    let painted = (first..buf.area.height)
-        .map(|y| {
-            (0..buf.area.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    for word in ["host", "unreachable,", "cannot", "create", "here"] {
-        assert!(
-            painted.contains(word),
-            "all wrapped flash text remains visible: {painted:?}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn flash_clears_on_next_key_restoring_the_hint_bar() {
-    // A flash (e.g. "host unreachable, cannot create here") is transient: any key
-    // dismisses it so the normal help/status hint_bar returns. Regression: it persisted
-    // because only the input-opening actions cleared it, so navigation never did.
-    let mut h = Harness::new(sample());
-    h.state.chrome.flash = "host unreachable, cannot create here".into();
-    h.key(KeyCode::Down).await;
-    assert!(
-        h.state.chrome.flash.is_empty(),
-        "navigation clears the flash, got {:?}",
-        h.state.chrome.flash
-    );
-}
-
-#[test]
 fn hiding_the_nav_leaves_the_layout_where_it_was() {
     use ratatui::layout::Rect;
     // Auto-hide takes the nav's width away for as long as the terminal holds focus. The
@@ -5604,7 +5619,7 @@ async fn with_the_nav_hidden_the_filter_opens_at_the_window_bottom_left() {
 async fn a_jump_holds_out_of_range_numbers_and_vets_at_enter() {
     // The number goes into the buffer whatever it addresses; the existence check is
     // Enter-time. While the number names no card the selection stays put, and Enter on
-    // it flashes the range and keeps the popup open.
+    // it shows the range and keeps the popup open.
     let mut h = Harness::new(sample());
     let n = h.sw.rows.len();
     assert!(n < 10, "sample() is a single-digit list");
@@ -5629,10 +5644,6 @@ async fn a_jump_holds_out_of_range_numbers_and_vets_at_enter() {
         matches!(&h.state.modal, Some(Modal::Input(i)) if i.refused.is_some()),
         "the popup refuses the dead number"
     );
-    assert!(
-        h.state.chrome.flash.is_empty(),
-        "a jump refusal is no flash"
-    );
     let row = h.popup_row(1);
     assert!(
         row.contains(&format!("✗ no card {n}")),
@@ -5640,9 +5651,8 @@ async fn a_jump_holds_out_of_range_numbers_and_vets_at_enter() {
     );
     assert!(h.popup_row(0).contains(" 1-"), "the meta keeps the range");
     assert_eq!(h.hint_bar_text(), " C-g", "the bar keeps resting");
-    // A fresh edit clears the flash and the input line returns.
+    // A fresh edit clears the refusal and the input line returns.
     h.key(KeyCode::Backspace).await;
-    assert!(h.state.chrome.flash.is_empty(), "a key clears the flash");
     // In range, the popup opens and each further digit is taken as typed.
     h.key(KeyCode::Char('1')).await;
     assert!(h.state.is_inputting(), "an in-range digit opens the popup");
@@ -5670,7 +5680,6 @@ async fn a_jump_enter_on_an_empty_buffer_keeps_the_popup_open() {
         h.state.is_inputting(),
         "Enter on an empty buffer keeps the popup open"
     );
-    assert!(h.state.chrome.flash.is_empty(), "and flashes nothing");
     assert_eq!(h.input_buffer(), "", "the buffer is still empty");
 }
 
@@ -5751,7 +5760,7 @@ async fn card_numbers_count_from_1_and_the_last_card_carries_the_count() {
 #[tokio::test]
 async fn a_jump_on_0_opens_the_input_and_names_no_card() {
     // No card carries 0: `prefix 0` opens the jump input holding 0 and the
-    // selection stays put; Enter flashes the 1-based range and keeps the popup.
+    // selection stays put; Enter shows the 1-based range and keeps the popup.
     let mut h = Harness::new(sample());
     h.key(KeyCode::End).await; // start far from where 0 used to point
     let start = h.sw.selected;
@@ -5774,10 +5783,6 @@ async fn a_jump_on_0_opens_the_input_and_names_no_card() {
     assert!(
         matches!(&h.state.modal, Some(Modal::Input(i)) if matches!(i.refused.as_deref(), Some("0"))),
         "the popup refuses the dead number"
-    );
-    assert!(
-        h.state.chrome.flash.is_empty(),
-        "a jump refusal is no flash"
     );
 }
 
@@ -5858,7 +5863,7 @@ async fn the_two_digit_boundary_starts_at_exactly_ten_cards() {
     assert!(!h.state.is_inputting(), "Enter closes the popup");
     assert_eq!(h.sw.selected, last, "and keeps where the jump landed");
     // One past the boundary is already dead: the extension to 11 leaves the
-    // selection on the seeded card, and Enter flashes the range and keeps the
+    // selection on the seeded card, and Enter shows the range and keeps the
     // popup open.
     h.key(KeyCode::Char('1')).await;
     h.key(KeyCode::Char('1')).await;
@@ -5873,10 +5878,6 @@ async fn the_two_digit_boundary_starts_at_exactly_ten_cards() {
     assert!(
         matches!(&h.state.modal, Some(Modal::Input(i)) if matches!(i.refused.as_deref(), Some("11"))),
         "the popup refuses the dead number"
-    );
-    assert!(
-        h.state.chrome.flash.is_empty(),
-        "a jump refusal is no flash"
     );
 }
 
@@ -5922,17 +5923,6 @@ fn a_hidden_nav_keeps_no_status_line_until_it_has_something_to_say() {
         "an armed prefix opens its key list over a hidden nav: {armed:?}"
     );
     state.chrome.set_armed(false);
-
-    // A refusal is the other thing that must be seen: with no nav row to hold it, it
-    // floats too. A flash the user cannot see is worse than a row borrowed for a moment.
-    state.flash("nope".to_string());
-    draw(&mut term, &mut sw, &state);
-    let flashed = row(&term);
-    assert!(
-        flashed.contains("nope") && !flashed.contains('X'),
-        "a refusal floats over a hidden nav: {flashed:?}"
-    );
-    state.chrome.clear_flash();
 
     // Another host's scan does NOT float over a selected session. The user asked
     // for the whole live grid and the hidden nav contributes no persistent line.
@@ -6178,24 +6168,16 @@ fn compute_regions_collapsed_geometry_for_all_positions() {
 fn a_floating_bar_opens_from_the_prefix_indicator_toward_the_terminal() {
     use super::render::hint_bar_rect;
     let area = Rect::new(0, 0, 24, 8);
-    // A top band opens below its seam, collapsed or not, and grows down.
-    let top = hint_bar_rect(Rect::new(0, 0, 24, 1), area, 3, true, NavPosition::Top);
-    assert_eq!(top, Rect::new(0, 1, 24, 3));
-    let top_band = hint_bar_rect(Rect::new(20, 3, 4, 1), area, 1, true, NavPosition::Top);
-    assert_eq!(top_band, Rect::new(0, 4, 24, 1), "the row below the seam");
-    // A bottom band opens above its seam and grows up.
-    let bottom = hint_bar_rect(Rect::new(20, 5, 4, 1), area, 1, true, NavPosition::Bottom);
-    assert_eq!(bottom, Rect::new(0, 4, 24, 1), "the row above the seam");
-    // A side column opens across the whole bottom row.
-    let left = hint_bar_rect(Rect::new(0, 7, 7, 1), area, 3, true, NavPosition::Left);
-    assert_eq!(left, Rect::new(0, 5, 24, 3));
-    let right = hint_bar_rect(Rect::new(17, 7, 7, 1), area, 1, true, NavPosition::Right);
+    // A side column opens across the whole row of its indicator.
+    let left = hint_bar_rect(Rect::new(0, 7, 7, 1), area, true);
+    assert_eq!(left, Rect::new(0, 7, 24, 1));
+    let right = hint_bar_rect(Rect::new(17, 7, 7, 1), area, true);
     assert_eq!(right, Rect::new(0, 7, 24, 1));
-    // A hidden nav has no indicator: the bar borrows the window's bottom rows.
-    let hidden = hint_bar_rect(Rect::default(), area, 2, true, NavPosition::Left);
-    assert_eq!(hidden, Rect::new(0, 6, 24, 2));
+    // A hidden nav has no indicator: the bar borrows the window's bottom row.
+    let hidden = hint_bar_rect(Rect::default(), area, true);
+    assert_eq!(hidden, Rect::new(0, 7, 24, 1));
     // At rest the bar is the indicator itself.
-    let rest = hint_bar_rect(Rect::new(0, 7, 7, 1), area, 1, false, NavPosition::Left);
+    let rest = hint_bar_rect(Rect::new(0, 7, 7, 1), area, false);
     assert_eq!(rest, Rect::new(0, 7, 7, 1));
 }
 
@@ -8285,10 +8267,6 @@ async fn a_jump_lands_by_the_fixed_number_and_refuses_a_vacant_one() {
         matches!(&h.state.modal, Some(Modal::Input(i)) if matches!(i.refused.as_deref(), Some("2"))),
         "the popup refuses the dead number"
     );
-    assert!(
-        h.state.chrome.flash.is_empty(),
-        "a jump refusal is no flash"
-    );
     h.key(KeyCode::Esc).await;
     h.key(KeyCode::Char('3')).await;
     h.key(KeyCode::Enter).await;
@@ -8532,7 +8510,14 @@ async fn prefix_r_asks_for_the_selected_machine_alone_unless_it_is_scanning() {
         &mut h.state,
     );
     assert!(cmds.is_empty(), "a machine is asked one thing at a time");
-    assert!(h.state.chrome.flash.contains("still being scanned"));
+    assert_eq!(
+        h.state.notify.last_report(),
+        Some((
+            format!("rescan machine {machine}").as_str(),
+            crate::state::notify::Level::Warning,
+            format!("{machine} is still being scanned").as_str()
+        ))
+    );
 }
 
 #[tokio::test]

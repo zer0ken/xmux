@@ -1,7 +1,8 @@
 //! Toasts and the history: what xmux tells the user about work that finished, and the
 //! record of every such report and every background event.
 //!
-//! A toast reports the result of work the user started. A background event (a host that
+//! A toast reports the result of work the user started, a refusal included: what an
+//! action did or why it did nothing is never hint-bar text. A background event (a host that
 //! stopped answering while nobody asked it anything) is recorded without a toast, because
 //! an interruption the user did not cause would pull attention from the terminal they are
 //! working in. Both land in the history, which `prefix m` opens.
@@ -153,6 +154,12 @@ impl Notifications {
         self.toast_at_with_policy(Instant::now(), title, notes, true);
     }
 
+    /// Reports an action xmux refused and why: a warning that leaves after the normal
+    /// duration, because a refusal changed nothing and asks only to be read.
+    pub(crate) fn refusal(&mut self, title: impl Into<String>, reason: impl Into<String>) {
+        self.timed_toast(title, vec![Note::new(Level::Warning, reason)]);
+    }
+
     /// [`Self::toast`] at a given instant.
     pub(crate) fn toast_at(&mut self, now: Instant, title: impl Into<String>, notes: Vec<Note>) {
         self.toast_at_with_policy(now, title, notes, false);
@@ -188,6 +195,15 @@ impl Notifications {
             self.toasts.remove(drop);
         }
         self.now.get_or_insert(now);
+    }
+
+    /// The newest history record as its title, level, and words, so a test reads what
+    /// xmux last reported without walking the history.
+    #[cfg(test)]
+    pub(crate) fn last_report(&self) -> Option<(&str, Level, &str)> {
+        self.history
+            .back()
+            .map(|e| (e.title.as_str(), e.note.level, e.note.text.as_str()))
     }
 
     /// Records a background event: the history only, no toast.

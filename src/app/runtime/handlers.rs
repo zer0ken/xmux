@@ -1905,10 +1905,6 @@ impl Runtime {
             self.dirty = true;
         }
         self.start_display_probe(std::time::Instant::now());
-        // A flash outlives the moment it was about, so it comes down on its own for a
-        // user who pressed nothing. The tick is where that is noticed, because it is the
-        // one wake that happens without the user doing anything.
-        let had_flash = !self.model.state.chrome.flash.is_empty();
         // Spinner set = the selected session if its PTY is still connecting.
         let mut sp = HashSet::new();
         if !self.model.state.selection.is_empty() {
@@ -1936,9 +1932,6 @@ impl Runtime {
             },
         );
         debug_assert!(effects.is_empty());
-        if had_flash && self.model.state.chrome.flash.is_empty() {
-            self.dirty = true;
-        }
         // A toast that left, one still counting down its remaining time, or the open
         // history's ages moving is a change on screen the tick is the only wake for.
         if self.model.state.notify.repaint {

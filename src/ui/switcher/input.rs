@@ -291,10 +291,6 @@ impl Switcher {
         if matches!(state.modal, Some(Modal::Input(_))) {
             return self.handle_input_key(ev, state);
         }
-        // A flash is a transient error/message - it lives only until the next key. Clear
-        // it here so navigation (or any key) restores the normal help
-        // hint_bar; actions below may set a fresh one, which survives because this runs first.
-        state.chrome.clear_flash();
         // The flat card list has no levels or host columns: ↑/↓ (and k/j) step one card,
         // ←/→ step one category, PageUp/Down jump ten, Home/End go to the ends (prefix
         // →/Enter focuses the terminal at the app layer). `n` starts a session on
@@ -365,7 +361,10 @@ impl Switcher {
             .any(|s| crate::session::machine_of(s) == machine)
             || state.machine_scanning.contains(&machine);
         if busy {
-            state.flash(format!("{machine} is still being scanned"));
+            state.refuse(
+                format!("rescan machine {machine}"),
+                format!("{machine} is still being scanned"),
+            );
             return Vec::new();
         }
         vec![Command::RescanMachine(machine)]
@@ -389,7 +388,7 @@ impl Switcher {
             .or_else(|| state.chrome.host_reach.get(machine))
             .is_some_and(|reach| reach.ssh)
         {
-            state.flash("this machine does not use SSH");
+            state.refuse(format!("logout {machine}"), "this machine does not use SSH");
             return;
         }
         let session = match self.current_ref() {
@@ -640,7 +639,6 @@ impl Switcher {
     /// mode; `new session` is opened by [`Switcher::open_new`], which needs the
     /// selected host captured up front.
     pub(super) fn open_input(&mut self, mode: InputMode, state: &mut crate::state::State) {
-        state.chrome.clear_flash();
         self.dismiss_modals(state);
         match mode {
             InputMode::Filter => {
@@ -664,14 +662,16 @@ impl Switcher {
     /// nothing else `n` could add.) The host is captured up front so a streamed
     /// selection move cannot retarget it.
     pub(super) fn open_new(&mut self, state: &mut crate::state::State) {
-        state.chrome.clear_flash();
         self.dismiss_modals(state);
         // A session lives in a host, so a machine names none to create it in.
         if let Some(Node::Machine(machine)) = self.selected_node() {
             if machine_failure(state, &machine).is_some() {
-                state.flash("machine unreachable, cannot create here");
+                state.refuse("new session", "machine unreachable, cannot create here");
             } else {
-                state.flash(format!("select a host of {machine} to start a session"));
+                state.refuse(
+                    "new session",
+                    format!("select a host of {machine} to start a session"),
+                );
             }
             return;
         }
@@ -690,7 +690,7 @@ impl Switcher {
                     )
                 )
         }) {
-            state.flash("host unreachable, cannot create here");
+            state.refuse("new session", "host unreachable, cannot create here");
             return;
         }
         state.modal = Some(Modal::Input(Box::new(Input::new(
@@ -727,7 +727,6 @@ impl Switcher {
     /// selection is only moved while the number names a card, so a dead number just
     /// waits for Enter to vet it.
     pub(super) fn open_jump(&mut self, digit: char, state: &mut crate::state::State) {
-        state.chrome.clear_flash();
         let seed = digit.to_string();
         let restore = self.current_ref().cloned().zip(self.selected_node());
         self.dismiss_modals(state);
@@ -796,10 +795,9 @@ impl Switcher {
     }
 
     fn handle_input_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
-        // A flash and a jump's refusal live only until the next key. Clear them here so a
-        // key while an input is open (a fresh edit, a fresh Enter) restores the popup; an
-        // action below may set a fresh one, which survives because this runs first.
-        state.chrome.clear_flash();
+        // A jump's refusal lives only until the next key. Clear it here so a key while
+        // the jump is open (a fresh edit, a fresh Enter) restores the popup; an action
+        // below may set a fresh one, which survives because this runs first.
         if let Some(Modal::Input(input)) = state.modal.as_mut() {
             input.refused = None;
         }
@@ -832,11 +830,11 @@ impl Switcher {
                         Vec::new()
                     }
                     InputMode::Logout if val != "logout" => {
-                        state.flash("type logout to confirm");
+                        state.refuse(logout_title(host.as_deref()), "type logout to confirm");
                         Vec::new()
                     }
                     InputMode::LogoutKeys if val != "remove" => {
-                        state.flash("type remove to confirm");
+                        state.refuse(logout_title(host.as_deref()), "type remove to confirm");
                         Vec::new()
                     }
                     // The filter applied on every edit, so Enter only closes it; the
@@ -1105,4 +1103,13 @@ pub(crate) fn login_notes(outcome: &crate::ui::ops::LoginOutcome) -> Vec<Note> {
         ));
     }
     notes
+}
+
+/// The title a logout confirm's refusal is reported under: the logout of the machine the
+/// confirm names.
+fn logout_title(host: Option<&str>) -> String {
+    match host {
+        Some(host) => format!("logout {}", crate::session::machine_of(host)),
+        None => "logout".to_string(),
+    }
 }
