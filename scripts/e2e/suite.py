@@ -297,7 +297,9 @@ class App:
             got = self.t.wait(lambda ls: next((m.group(1) for l in ls for m in
                                                [re.search(rf"card {num}\s+(\S+)", l)] if m), None),
                               f"the jump popup on card {num}", 10)
-            if got != name:
+            # The popup names a card by its path: a session under its section, a machine
+            # card by the machine alone.
+            if got != (name if section is None else f"{section}/{name}"):
                 self.t.send("Esc", gap=1.0)
             else:
                 self.t.send("Enter")
