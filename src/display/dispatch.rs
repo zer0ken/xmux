@@ -49,7 +49,7 @@ pub enum Action {
     /// `prefix z`: collapse or expand the nav. Key-driven only, no ctl verb: applied on
     /// the input path, like CycleNavPosition.
     ToggleCollapse,
-    /// `prefix p`: move the nav one side clockwise (left → top → right → bottom →
+    /// `prefix p`: place the nav one side clockwise (left → top → right → bottom →
     /// default). Key-driven only, no ctl verb: applied on the input path, like Height.
     CycleNavPosition,
 }
