@@ -39,7 +39,6 @@ KNOWN = {
     ("new-session", "abduco", None): "#584",
     ("switch", "abduco", None): "#585",
     ("in-client-switch", "tmux", None): "#586",
-    ("in-client-switch", "zellij", None): "#587",
     ("in-client-switch", "tuios", None): "#333",
 }
 # Cells that do not apply: the mux cannot move a client between sessions (a screen,

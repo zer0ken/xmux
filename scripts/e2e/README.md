@@ -49,7 +49,8 @@ Every host serves two sessions in each mux, `<mux>1` and `<mux>2`:
 tuios and herdr are installed in the remote user's `~/.local/bin`, which is on `PATH`
 only through the login profile, as an install without root leaves them. Each mux runs
 on both systems. A host user has seen herdr's first-run screen, and abduco starts the
-login shell, since no host installs dvtm.
+login shell, since no host installs dvtm. Every host has `ss` from iproute2, as a
+server install does, because xmux reads it to follow a zellij client's session switch.
 
 ## Scenarios
 
