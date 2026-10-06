@@ -644,6 +644,10 @@ fn a_logout_gathers_the_selection_onto_the_machines_one_card() {
         !view.contains("ssh failed"),
         "a logout is no failure:\n{view}"
     );
+    assert!(
+        !view.contains("failures"),
+        "a logout starts no failure run:\n{view}"
+    );
 }
 
 #[test]

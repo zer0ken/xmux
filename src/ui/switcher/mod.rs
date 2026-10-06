@@ -1924,9 +1924,12 @@ impl Switcher {
         state.scanning.remove(&host);
         state.scan_deadlines.remove(&host);
         // The failure run, counted where every result lands so no path can skip it: a
-        // result that failed lengthens it, one that answered clears it. It is shown, not
-        // acted on - see `State::failure_runs`.
+        // result that failed lengthens it, one that answered clears it, and a logout, which
+        // is no failure, ends it. It is shown, not acted on - see `State::failure_runs`.
         match &err {
+            Some(e) if e == crate::model::LOGGED_OUT => {
+                state.failure_runs.remove(&host);
+            }
             Some(_) => *state.failure_runs.entry(host.clone()).or_insert(0) += 1,
             None => {
                 state.failure_runs.remove(&host);
@@ -2079,10 +2082,14 @@ impl Switcher {
         state.machine_scanning.remove(machine);
         state.machine_scan_deadlines.remove(machine);
         // The failure run, counted under the machine's name the way a host counts its
-        // own, and the end of the mux search a working login started.
+        // own and ended by a logout, and the end of the mux search a working login started.
         match &err {
             Some(reason) => {
-                *state.failure_runs.entry(machine.to_string()).or_insert(0) += 1;
+                if reason == crate::model::LOGGED_OUT {
+                    state.failure_runs.remove(machine);
+                } else {
+                    *state.failure_runs.entry(machine.to_string()).or_insert(0) += 1;
+                }
                 state.login_mux_answered(machine, &crate::model::MuxAnswer::Failed(reason.clone()));
             }
             None => {
