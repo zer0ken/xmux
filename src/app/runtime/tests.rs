@@ -6901,6 +6901,8 @@ async fn input_held_for_a_selection_left_behind_is_dropped() {
     assert_eq!(logged(&tmux_log), b"kept");
 }
 
+const LONG_MACHINE: &str = "build-runner-07.internal.example.net";
+
 /// A runtime of one machine `machine` sized `cols` by `rows` with the terminal view
 /// focused: blocked on a refused login when `session` is empty, otherwise serving that
 /// session on its mux, with the selection on the host.
@@ -6966,6 +6968,50 @@ fn view_rows(rt: &Runtime, term: &ratatui::Terminal<ratatui::backend::TestBacken
                 .collect()
         })
         .collect()
+}
+
+#[test]
+fn a_headline_wider_than_the_view_continues_under_its_path() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    for (session, level) in [("", "machine "), ("train", "host ")] {
+        for (cols, rows) in [(80u16, 24u16), (40, 12)] {
+            let mut rt = headline_rt(LONG_MACHINE, session, cols, rows);
+            let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+            rt.prepare_and_draw(&mut term);
+            let view = view_rows(&rt, &term);
+            let out = view.join("\n");
+            let path_col = 1 + level.len();
+            // The headline's rows: the first after the level word, the rest indented to
+            // the path's first column.
+            let mut headline = view[1][path_col..].trim_end().to_string();
+            for row in &view[2..] {
+                if !row.starts_with(&" ".repeat(path_col)) || row.trim().is_empty() {
+                    break;
+                }
+                headline.push_str(row.trim());
+            }
+            let want = if session.is_empty() {
+                LONG_MACHINE.to_string()
+            } else {
+                format!("{LONG_MACHINE}/tmux")
+            };
+            assert_eq!(headline, want, "{cols}x{rows}:\n{out}");
+            assert!(view[1].starts_with(&format!(" {level}")), "{out}");
+            if !session.is_empty() {
+                // The machine half is the link up on every row it covers.
+                let link_rows: Vec<u16> = rt
+                    .model
+                    .render_plan
+                    .view_links
+                    .iter()
+                    .filter(|(link, _)| *link == 0)
+                    .map(|(_, rect)| rect.y)
+                    .collect();
+                assert_eq!(link_rows.len(), 2, "{cols}x{rows}: {link_rows:?}\n{out}");
+            }
+        }
+    }
 }
 
 #[test]
