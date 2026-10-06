@@ -981,31 +981,55 @@ pub fn upsert_managed_stanza(
 }
 
 /// One ssh config entry a logout changed: the `Host` line as it read before, and whether
-/// the whole block went or only the host's name came off that line.
+/// the `Host` line it leaves, or `None` when the whole block went.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemovedEntry {
     pub header: String,
-    pub whole: bool,
+    pub after: Option<String>,
 }
 
-/// `config_text` without `alias` in any `Host` entry that names it, and the entries that
-/// changed, empty when none named it.
+/// `config_text` without the stanza under xmux's marker for `alias`, and, when `unmarked`
+/// is set, without `alias` in any other `Host` entry that names it; with the entries that
+/// changed, empty when none did.
 ///
-/// The stanza under xmux's marker goes with its marker. A block whose `Host` line names
+/// The stanza under xmux's marker goes with its marker. The other entries are the user's,
+/// so a logout changes them only once the user agreed. A block whose `Host` line names
 /// only `alias` goes with its options and the blank lines after it; a column-0 comment
 /// after its last option stays, as the comment above the next block. A `Host` line naming
 /// other hosts too loses only `alias` and the whitespace in front of it. The name matches
 /// a pattern exactly, ignoring ASCII case, so a wildcard, a negated pattern, and a `Match`
 /// block never match. Every other line is carried across with its own line ending.
-pub fn remove_host_entries(config_text: &str, alias: &str) -> (String, Vec<RemovedEntry>) {
+pub fn remove_host_entries(
+    config_text: &str,
+    alias: &str,
+    unmarked: bool,
+) -> (String, Vec<RemovedEntry>) {
     let (text, managed) = strip_managed(config_text, &managed_marker(alias));
     let mut removed = Vec::new();
     if managed {
         removed.push(RemovedEntry {
             header: format!("Host {alias}"),
-            whole: true,
+            after: None,
         });
     }
+    if !unmarked {
+        return (text, removed);
+    }
+    let (text, entries) = remove_unmarked_entries(&text, alias);
+    removed.extend(entries);
+    (text, removed)
+}
+
+/// The entries naming `alias` that xmux did not write, as [`remove_host_entries`] would
+/// change them once the user agreed.
+pub fn unmarked_host_entries(config_text: &str, alias: &str) -> Vec<RemovedEntry> {
+    let (text, _) = strip_managed(config_text, &managed_marker(alias));
+    remove_unmarked_entries(&text, alias).1
+}
+
+/// `text` without `alias` in any `Host` entry, by the rules of [`remove_host_entries`].
+fn remove_unmarked_entries(text: &str, alias: &str) -> (String, Vec<RemovedEntry>) {
+    let mut removed = Vec::new();
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -1047,7 +1071,7 @@ pub fn remove_host_entries(config_text: &str, alias: &str) -> (String, Vec<Remov
             i = keep;
             removed.push(RemovedEntry {
                 header,
-                whole: true,
+                after: None,
             });
             continue;
         }
@@ -1074,11 +1098,12 @@ pub fn remove_host_entries(config_text: &str, alias: &str) -> (String, Vec<Remov
             from = end;
         }
         rewritten.push_str(&line[from..body_end]);
+        let after = rewritten.trim().to_string();
         rewritten.push_str(&line[body_end..]);
         out.push_str(&rewritten);
         removed.push(RemovedEntry {
             header,
-            whole: false,
+            after: Some(after),
         });
         i += 1;
     }
@@ -1393,14 +1418,14 @@ mod tests {
     fn whole(header: &str) -> RemovedEntry {
         RemovedEntry {
             header: header.into(),
-            whole: true,
+            after: None,
         }
     }
 
-    fn name_only(header: &str) -> RemovedEntry {
+    fn name_only(header: &str, after: &str) -> RemovedEntry {
         RemovedEntry {
             header: header.into(),
-            whole: false,
+            after: Some(after.into()),
         }
     }
 
@@ -1415,7 +1440,7 @@ mod tests {
         ] {
             let recorded = upsert_managed_stanza(user_text, "db-01", &login("10.0.0.5", 22, "dev"));
             assert_eq!(
-                remove_host_entries(&recorded, "db-01"),
+                remove_host_entries(&recorded, "db-01", true),
                 (user_text.to_string(), vec![whole("Host db-01")]),
                 "{recorded:?}"
             );
@@ -1426,7 +1451,7 @@ mod tests {
     fn removing_one_hosts_managed_stanza_keeps_another_hosts() {
         let a = upsert_managed_stanza("Host web\n", "jupiter00", &login("100.88.0.0", 22, "hrlee"));
         let b = upsert_managed_stanza(&a, "mars01", &login("100.77.0.1", 22, "hrlee"));
-        assert_eq!(remove_host_entries(&b, "mars01").0, a);
+        assert_eq!(remove_host_entries(&b, "mars01", true).0, a);
         let relogin = upsert_managed_stanza(&b, "mars01", &login("100.77.0.2", 22, "hrlee"));
         assert!(
             relogin.contains("# xmux: jupiter00\nHost jupiter00\n"),
@@ -1438,13 +1463,13 @@ mod tests {
     fn a_file_that_never_names_the_host_has_nothing_to_remove() {
         let user_text = "Host web-01\n    User admin\n";
         assert_eq!(
-            remove_host_entries(user_text, "db-01"),
+            remove_host_entries(user_text, "db-01", true),
             (user_text.to_string(), Vec::new())
         );
         let other = upsert_managed_stanza(user_text, "web-01", &login("10.0.0.6", 22, "dev"));
-        assert_eq!(remove_host_entries(&other, "db-01").1, Vec::new());
+        assert_eq!(remove_host_entries(&other, "db-01", true).1, Vec::new());
         assert_eq!(
-            remove_host_entries("", "db-01"),
+            remove_host_entries("", "db-01", true),
             (String::new(), Vec::new())
         );
     }
@@ -1456,7 +1481,7 @@ mod tests {
     fn a_block_naming_only_the_host_goes_with_its_options_and_comments() {
         let text = "Include ~/.ssh/conf.d/*\n\nHost web-01\n    User web\n\nHost db-01\n    # the dev box\n    HostName 10.0.0.5\n    User admin\n\n# shared defaults\nHost *\n    ServerAliveInterval 30\n";
         assert_eq!(
-            remove_host_entries(text, "db-01"),
+            remove_host_entries(text, "db-01", true),
             (
                 "Include ~/.ssh/conf.d/*\n\nHost web-01\n    User web\n\n# shared defaults\nHost *\n    ServerAliveInterval 30\n".to_string(),
                 vec![whole("Host db-01")]
@@ -1464,11 +1489,38 @@ mod tests {
         );
         let last = "Host web-01\n    User web\n\nHost DB-01\n    User admin\n";
         assert_eq!(
-            remove_host_entries(last, "db-01"),
+            remove_host_entries(last, "db-01", true),
             (
                 "Host web-01\n    User web\n\n".to_string(),
                 vec![whole("Host DB-01")]
             )
+        );
+    }
+
+    /// Without the user's answer only the login's stanza goes; the entries the user wrote
+    /// are what the confirmation lists.
+    #[test]
+    fn the_users_entries_change_only_when_asked_and_are_listed_first() {
+        let user_text =
+            "Host gpu-01 web-01 db-01\r\n    User dev\r\n\r\nHost db-01\r\n    User admin\r\n";
+        let recorded = upsert_managed_stanza(user_text, "db-01", &login("10.0.0.5", 22, "dev"));
+        assert_eq!(
+            remove_host_entries(&recorded, "db-01", false),
+            (user_text.to_string(), vec![whole("Host db-01")])
+        );
+        assert_eq!(
+            remove_host_entries(user_text, "db-01", false),
+            (user_text.to_string(), Vec::new())
+        );
+        let listed = vec![
+            name_only("Host gpu-01 web-01 db-01", "Host gpu-01 web-01"),
+            whole("Host db-01"),
+        ];
+        assert_eq!(unmarked_host_entries(&recorded, "db-01"), listed);
+        assert_eq!(remove_host_entries(&recorded, "db-01", true).1[1..], listed);
+        assert_eq!(
+            unmarked_host_entries(&recorded, "web-01"),
+            vec![name_only("Host gpu-01 web-01 db-01", "Host gpu-01 db-01")]
         );
     }
 
@@ -1478,7 +1530,7 @@ mod tests {
         let user_text = "Host db-01\n    User admin\n\nHost web-01\n    User web\n";
         let recorded = upsert_managed_stanza(user_text, "db-01", &login("10.0.0.5", 22, "dev"));
         assert_eq!(
-            remove_host_entries(&recorded, "db-01"),
+            remove_host_entries(&recorded, "db-01", true),
             (
                 "Host web-01\n    User web\n".to_string(),
                 vec![whole("Host db-01"), whole("Host db-01")]
@@ -1502,10 +1554,11 @@ mod tests {
             ("Host\tgpu-01\tDB-01\tweb-01\n", "Host\tgpu-01\tweb-01\n"),
             ("Host=gpu-01 db-01\n", "Host=gpu-01\n"),
         ] {
-            let header = text.lines().next().unwrap().trim().to_string();
+            let header = text.lines().next().unwrap().trim();
+            let after = want.lines().next().unwrap().trim();
             assert_eq!(
-                remove_host_entries(text, "db-01"),
-                (want.to_string(), vec![name_only(&header)]),
+                remove_host_entries(text, "db-01", true),
+                (want.to_string(), vec![name_only(header, after)]),
                 "{text:?}"
             );
         }
@@ -1517,7 +1570,7 @@ mod tests {
     fn patterns_negations_and_match_blocks_stay() {
         let text = "Include conf.d/db-01\r\nHost db-*\r\n    User a\r\nHost !db-01 *\r\n    User b\r\nMatch host db-01\r\n    User c\r\nHost db-01.example db-011\r\n    User d\r\nHost db-01 \\\r\n    other\r\n";
         assert_eq!(
-            remove_host_entries(text, "db-01"),
+            remove_host_entries(text, "db-01", true),
             (text.to_string(), Vec::new())
         );
     }

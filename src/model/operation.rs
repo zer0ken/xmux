@@ -94,6 +94,12 @@ pub enum OpResult {
         machine: String,
         result: Result<(), String>,
     },
+    /// The ssh config entries naming a machine being logged out that xmux did not write,
+    /// which the logout asks about before it changes them.
+    SshConfigEntriesFound {
+        machine: String,
+        result: Result<Vec<crate::provision::config::RemovedEntry>, String>,
+    },
     /// What removing a logged-out machine from ssh config did: the entries that named it,
     /// or why they stay.
     SshConfigEntriesRemoved {

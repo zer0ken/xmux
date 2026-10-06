@@ -132,11 +132,12 @@ against, naming no source file, function, or test.
 - **FR-B41** - Every popup body row wraps to the popup's width, except a text field, and
   a popup too tall for the window scrolls.
 - **FR-B39** - Logging out of an SSH host (`prefix L`, confirmed by typing `logout`)
-  removes this PC's matching public keys from the host's key files and the host from
-  every ssh config `Host` entry that names it exactly, then drops the held password and
-  the host's connections. An entry naming only this host goes with its options, an entry
-  naming other hosts too loses only this name, and every other line of ssh config stays
-  as it was.
+  removes this PC's matching public keys from the host's key files and the ssh config
+  stanza a login saved for the host, then drops the held password and the host's
+  connections. A key line or a `Host` entry naming the host exactly that xmux did not
+  add changes only after one second confirmation covering both: an entry naming only
+  this host goes with its options, an entry naming other hosts too loses only this
+  name, and every other line of ssh config stays as it was.
 - **FR-B40** - When the selected card leaves the list, the selection moves to the
   nearest remaining node up its lineage, and a new card takes the selection only when
   the user asked for it (Selection by Interest in docs/principles.md).

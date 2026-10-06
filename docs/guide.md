@@ -88,12 +88,14 @@ and removing it also stops ssh outside xmux from using the key, so a second
 confirmation opens in the same place and asks first: type `remove` to remove it too,
 or press Esc to keep it. When the host cannot be reached or the removal fails, the
 logout still clears the password and the connections, and its toast says the key
-remains and why. After the key, xmux removes the host from every `Host` entry in
-`~/.ssh/config` that names it exactly, ignoring case. An entry that names only this host
-goes with its options, including the one a login saved under its `# xmux: <host>` line;
-an entry that names other hosts too loses only this name. Wildcard and negated patterns
-and `Match` blocks stay, as does every other line of the file; the toast names each
-entry that changed. A re-scan reconnects only with
+remains and why. After the key, xmux removes the host from `~/.ssh/config`. The
+stanza a login saved under its `# xmux: <host>` line goes without asking. Every other
+`Host` entry that names the host exactly, ignoring case, was written by someone else, so
+the second confirmation lists it with the line it leaves, together with any key line xmux
+did not add; one `remove` answers both, and Esc keeps both. An entry that names only this
+host goes with its options, and an entry that names other hosts too loses only this name.
+Wildcard and negated patterns, `Match` blocks, and every other line of the file stay as
+they were; the toast names each entry that changed and each one that stays. A re-scan reconnects only with
 a key the host still accepts; otherwise, log in again.
 
 For the requirements of a Windows host and the limits of Entra-only accounts, see
