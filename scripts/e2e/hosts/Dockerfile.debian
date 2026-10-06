@@ -1,0 +1,25 @@
+# A Debian host xmux reaches over ssh, with every unix mux xmux drives.
+FROM debian:12 AS abduco
+# Debian ships no abduco package, so it is built from source: the master branch, whose
+# listing carries a pid column that the 0.6 release on the Alpine host lacks.
+ARG ABDUCO=8c32909a159aaa9484c82b71f05b7a73321eb491
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev make curl ca-certificates \
+ && curl -fsSL "https://github.com/martanne/abduco/archive/$ABDUCO.tar.gz" | tar xz \
+ && make -C "abduco-$ABDUCO" && install -m 755 "abduco-$ABDUCO/abduco" /usr/local/bin/abduco
+
+FROM debian:12
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      openssh-server tmux screen locales procps curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen \
+ && useradd -m -s /bin/bash dev && echo 'dev:e2e-pass' | chpasswd \
+ && mkdir -p /run/sshd /home/dev/.ssh && touch /home/dev/.hushlogin
+COPY --from=abduco /usr/local/bin/abduco /usr/local/bin/abduco
+COPY fetch-muxes.sh /opt/e2e/
+RUN sh /opt/e2e/fetch-muxes.sh && chown -R dev:dev /home/dev && chmod 700 /home/dev/.ssh
+COPY sessions.sh /opt/e2e/
+COPY whereami /usr/local/bin/whereami
+RUN chmod 755 /usr/local/bin/whereami
+ENV LANG=en_US.UTF-8
+CMD ["/usr/sbin/sshd", "-D", "-e"]

@@ -1,0 +1,13 @@
+# An Alpine host xmux reaches over ssh: busybox sh as the login shell and musl libc.
+FROM alpine:3.22
+RUN apk add --no-cache openssh-server tmux screen abduco bash curl ca-certificates ncurses-terminfo-base procps util-linux-misc \
+ && adduser -D -s /bin/sh dev && echo 'dev:e2e-pass' | chpasswd \
+ && ssh-keygen -A && mkdir -p /home/dev/.ssh && touch /home/dev/.hushlogin \
+ && printf 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac\nexport PATH\n' > /home/dev/.profile
+COPY fetch-muxes.sh /opt/e2e/
+RUN sh /opt/e2e/fetch-muxes.sh && chown -R dev:dev /home/dev && chmod 700 /home/dev/.ssh
+COPY sessions.sh /opt/e2e/
+COPY whereami /usr/local/bin/whereami
+RUN chmod 755 /usr/local/bin/whereami
+ENV LANG=C.UTF-8
+CMD ["/usr/sbin/sshd", "-D", "-e"]
