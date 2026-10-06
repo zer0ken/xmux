@@ -143,8 +143,8 @@ machines.
 The selection names what the user is interested in, a machine, a host, or a session,
 never a position in the list. Every path that changes the list resolves the selection
 from that interest by one lineage: a node that loses its card moves to the nearest node
-up its lineage that has one, and a card that appears takes the selection only when the
-interest names it. A machine keeps a target while any card of it is listed, its own card
+up its lineage that has one, or names nothing when no node up its lineage has one, and a
+card that appears takes the selection only when the interest names it. A machine keeps a target while any card of it is listed, its own card
 or the machine part of a title or card of one of its hosts, so a machine whose card gives
 way to the cards of the hosts found on it, as after a login, stays selected and its screen
 lists those hosts as links.
@@ -169,10 +169,14 @@ so the selection follows it.
 
 The one automatic move is upward. When the context itself is lost, as when a logout or a
 network failure drops a session or a host, the selection and the view move up to the
-nearest level that still exists, session to host and host to machine. They never move
-down or sideways, and a lost context that returns does not take the selection back. The
-upward move is the lineage of Selection by Interest, so the two principles name one rule
-for the selection.
+nearest level that still exists, session to host and host to machine. When nothing of the
+machine is left, because the roster dropped it, it serves no mux, or the filter hides all
+of it, no level is left to move to, so the selection names nothing and the terminal view
+shows the landing list and attaches nothing until the user picks a card. They never move
+down or sideways, and a lost context that returns through a background event does not
+take the selection back. A filter is the user's own, so a filter edit that lists the
+node the user was on again returns the selection to that node. The upward move is the
+lineage of Selection by Interest, so the two principles name one rule for the selection.
 
 The user reads the screen to choose the next input, so a context that moves on its own
 turns a key the user already decided on into an action on something else. A machine

@@ -169,20 +169,44 @@ fn a_vanished_host_goes_to_its_machine_on_the_machines_remaining_title() {
     assert!(on_section(&sw, "mars:tmux"), "{}", picked(&sw));
 }
 
+/// Whether the selection names nothing and the terminal view shows the landing list,
+/// attaching nothing.
+fn names_nothing(sw: &Switcher, state: &State) -> bool {
+    sw.selected_node().is_none()
+        && sw.hard_row().is_none()
+        && sw.current_view_screen(state) == Some(ViewScreen::Landing)
+        && sw.current_attach_target(state).is_none()
+}
+
 #[test]
-fn a_removed_machine_hands_the_selection_to_the_card_in_its_place() {
+fn a_removed_machine_leaves_the_selection_naming_nothing() {
     let (mut sw, mut state) = launch(&["alpha", "beta", "gamma"]);
     for (machine, name) in [("alpha", "a"), ("beta", "b"), ("gamma", "g")] {
         answer(&mut sw, &mut state, machine, &[name]);
     }
-    assert!(sw.select_address(&Address::new("beta", "b")));
+    sw.select_address(&Address::new("beta", "b"));
+    assert!(on_session(&sw, "beta", "b"));
     sw.remove_host("beta", &mut state);
-    assert!(on_session(&sw, "gamma", "g"), "the next card");
-    sw.remove_host("gamma", &mut state);
-    assert!(
-        on_session(&sw, "alpha", "a"),
-        "the previous card at the end"
-    );
+    assert!(names_nothing(&sw, &state), "{}", picked(&sw));
+    // The roster names the machine again and it answers: a background return takes
+    // nothing back.
+    sw.add_host("beta".into(), &mut state);
+    answer(&mut sw, &mut state, "beta", &["b"]);
+    assert!(names_nothing(&sw, &state), "{}", picked(&sw));
+    // The next arrow key starts on the card standing where the lost card stood.
+    sw.move_selection(1);
+    assert!(on_session(&sw, "gamma", "g"), "{}", picked(&sw));
+}
+
+#[test]
+fn a_machine_serving_no_mux_leaves_the_selection_naming_nothing() {
+    let mut state = State::from_roster(vec!["local".into()], vec!["local".into(), "mars".into()]);
+    let mut sw = Switcher::from_hosts(&mut state);
+    answer(&mut sw, &mut state, "local", &["work"]);
+    sw.open_host("mars", &mut state);
+    assert_eq!(sw.selected_node(), machine("mars"));
+    sw.settle_muxless("mars", &mut state);
+    assert!(names_nothing(&sw, &state), "{}", picked(&sw));
 }
 
 #[test]
@@ -203,18 +227,27 @@ fn a_logout_moves_the_selection_to_the_machines_own_card() {
 }
 
 #[test]
-fn a_filter_hiding_the_whole_host_lands_on_the_neighbouring_visible_card() {
+fn a_filter_hiding_the_whole_machine_leaves_the_selection_naming_nothing() {
     let (mut sw, mut state) = launch(&["alpha", "beta", "gamma"]);
     answer(&mut sw, &mut state, "alpha", &["red"]);
     answer(&mut sw, &mut state, "beta", &["blue"]);
     answer(&mut sw, &mut state, "gamma", &["green"]);
-    assert!(sw.select_address(&Address::new("beta", "blue")));
+    sw.select_address(&Address::new("beta", "blue"));
+    assert!(on_session(&sw, "beta", "blue"));
     state.filter = "re".into(); // red and green match, blue does not
     sw.rebuild(&mut state);
-    assert!(on_session(&sw, "gamma", "green"), "{}", picked(&sw));
+    assert!(names_nothing(&sw, &state), "{}", picked(&sw));
+    answer(&mut sw, &mut state, "beta", &["blue", "red2"]);
+    assert!(
+        names_nothing(&sw, &state),
+        "an answer listing the machine again moves nothing: {}",
+        picked(&sw)
+    );
+    // Clearing the filter is the user's own action, and it lists the node the user was
+    // on again, so the selection returns to it.
     state.filter.clear();
     sw.rebuild(&mut state);
-    assert!(on_session(&sw, "gamma", "green"), "clearing holds it");
+    assert!(on_session(&sw, "beta", "blue"), "{}", picked(&sw));
 }
 
 #[test]

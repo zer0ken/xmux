@@ -504,7 +504,7 @@ impl Switcher {
         };
         let word_w = match &self.rows[i].reference {
             reference @ RowRef::Host { .. }
-                if show_state_word && self.selected == i && self.part == Part::Card =>
+                if show_state_word && self.hard_row() == Some(i) && self.part == Part::Card =>
             {
                 crate::ui::tree::card_state_word(reference).map_or(0, |word| word.len() + 1)
             }
@@ -1172,7 +1172,7 @@ impl Switcher {
                 },
             );
             frame.render_widget(Paragraph::new(lines), rect);
-            if self.selected == idx {
+            if self.hard_row() == Some(idx) {
                 // A row read as two targets inverts only the half the selection is on. The
                 // inversion holds in both focus states; the view border's colour alone
                 // says which view holds the focus.
@@ -1190,7 +1190,7 @@ impl Switcher {
         // hard selection already drawn reversed.
         if let Some((reference, part)) = &self.hover {
             if let Some(idx) = self.row_matching(reference) {
-                let hard = idx == self.selected && *part == self.part;
+                let hard = self.hard_row() == Some(idx) && *part == self.part;
                 let rect = plan
                     .nav_parts
                     .iter()
@@ -1234,7 +1234,11 @@ impl Switcher {
         plan: &RenderPlan,
         palette: &palette::Palette,
     ) {
-        let Some(&(_, card)) = plan.nav_cells.iter().find(|(i, _)| *i == self.selected) else {
+        let Some(&(_, card)) = plan
+            .nav_cells
+            .iter()
+            .find(|(i, _)| Some(*i) == self.hard_row())
+        else {
             return;
         };
         if card.is_empty() {
@@ -1387,7 +1391,7 @@ impl Switcher {
             show_state_word,
         } = paint;
         let row = &self.rows[i];
-        let selected = self.selected == i;
+        let selected = self.hard_row() == Some(i);
         let accent = Style::default().fg(palette.accent);
         let number = Style::default()
             .fg(palette.decoration)

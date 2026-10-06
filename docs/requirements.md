@@ -143,7 +143,10 @@ against, naming no source file, function, or test.
   name, and every other line of ssh config stays as it was.
 - **FR-B40** - When the selected card leaves the list, the selection moves to the
   nearest remaining node up its lineage, and a new card takes the selection only when
-  the user asked for it (Selection by Interest in docs/principles.md).
+  the user asked for it (Selection by Interest in docs/principles.md). When nothing of
+  the selected machine is left, the selection names nothing and the terminal view shows
+  the landing list and attaches nothing until the user picks a card, or until a filter
+  edit lists the node the user was on again.
 - **FR-B42** - Machines, hosts, and sessions each have a view screen linked to one
   another, reached through `Ctrl-↑` / `Ctrl-↓`, the section title parts, and the screen
   links.
