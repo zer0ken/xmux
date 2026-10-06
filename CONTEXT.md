@@ -103,8 +103,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   and machines whose connection or inventory is unresolved.
 - **card order** - local, then WSL, then remote, each by host id, sessions by name.
   A re-enumeration reproduces it exactly.
-- **address column** - the leftmost cells of every card: its number, or the selection
-  mark on the selected card.
+- **address column** - the leftmost cells of every card: its number.
 - **card number** - the number `prefix <digit>` jumps to; `[ui] renumbering` decides
   whether it follows list position or stays with the card.
 - **status** - a host-state card's one-cell glyph: `?` login needed, `▲` unreachable,
@@ -128,10 +127,11 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   resolved from on every rebuild.
 - **selection lineage** - session, host, machine: the chain a selection walks up when its
   node loses its card.
-- **selection highlight** - reverse video over the selected card's rect plus the `❯`
-  mark in its address column.
-- **card focus** - the one change a card makes when selected: its number becomes the
-  mark. Its height and its name's column never move.
+- **selection highlight** - reverse video over the cells of the item the hard selection
+  is on, the one look every surface gives its selection.
+- **card focus** - what selecting a card changes: the selection highlight, and on a
+  machine or host card its state word. Its height, its number, and its name's column
+  never move.
 
 ## Interaction Surfaces
 

@@ -439,7 +439,6 @@ mod mouse;
 mod render;
 #[cfg(test)]
 pub(crate) use render::MIDDLE_ELLIPSIS;
-pub(crate) use render::SELECTED_MARK;
 mod side;
 
 pub use render::RenderPlan;
@@ -2458,6 +2457,9 @@ mod tests_lineage;
 
 #[cfg(test)]
 mod tests_position;
+
+#[cfg(test)]
+mod tests_selection;
 
 #[cfg(test)]
 pub(crate) mod tests_support;

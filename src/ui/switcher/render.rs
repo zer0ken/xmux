@@ -31,13 +31,6 @@ pub(super) fn hint_bar_rect(indicator: Rect, area: Rect, floating: bool) -> Rect
     }
 }
 
-/// The glyph marking the SELECTED card, in its address column.
-///
-/// A SHAPE, never a solid block. The selected card is reverse video, which swaps that
-/// cell's own pair, so a filled block inverts into a background-coloured half-cell and is
-/// absorbed into the inverted row's left edge - the mark vanishes exactly where it is
-/// needed. An outline keeps its silhouette either way round.
-pub(crate) const SELECTED_MARK: &str = "\u{276f}";
 pub(crate) const MIDDLE_ELLIPSIS: char = '…';
 
 struct NavRowPaint<'a> {
@@ -45,9 +38,6 @@ struct NavRowPaint<'a> {
     filter: &'a str,
     palette: &'a palette::Palette,
     show_state_word: bool,
-    /// The number the open jump prompt has typed, written in the selected card's number
-    /// cell while it names that card.
-    jump_number: Option<usize>,
 }
 
 fn middle_ellipsize(text: &str, width: usize) -> String {
@@ -474,14 +464,10 @@ impl Switcher {
         let w = |t: &str| unicode_width::UnicodeWidthStr::width(t) as u16;
         match &self.rows[i].reference {
             RowRef::Section { .. } => {
-                let (mark, title) = self.title_text(i, width);
-                let lead = w(&mark);
+                let title = self.title_text(i, width);
                 match title.split_once('/') {
-                    Some((machine, mux)) => (
-                        Some((lead, w(machine))),
-                        Some((lead + w(machine) + 1, w(mux))),
-                    ),
-                    None => (None, Some((lead, w(&title)))),
+                    Some((machine, mux)) => (Some((0, w(machine))), Some((w(machine) + 1, w(mux)))),
+                    None => (None, Some((0, w(&title)))),
                 }
             }
             RowRef::Host { .. } => {
@@ -495,25 +481,15 @@ impl Switcher {
         }
     }
 
-    /// A section title as painted in a cell `width` wide: the selected mark before it, and
-    /// the `{machine}/{mux}` shortened to the room left. A `width` of 0 measures it whole.
-    fn title_text(&self, i: usize, width: u16) -> (String, String) {
-        let selected = self.selected == i;
+    /// A section title as painted in a cell `width` wide: the `{machine}/{mux}` shortened
+    /// to the room left. A `width` of 0 measures it whole.
+    fn title_text(&self, i: usize, width: u16) -> String {
         let title = self.section_title(i);
-        let title = if width == 0 {
+        if width == 0 {
             title
         } else {
-            middle_ellipsize(
-                &title,
-                width.saturating_sub(if selected { 3 } else { 1 }) as usize,
-            )
-        };
-        let mark = if selected {
-            format!("{SELECTED_MARK} ")
-        } else {
-            String::new()
-        };
-        (mark, title)
+            middle_ellipsize(&title, width.saturating_sub(1) as usize)
+        }
     }
 
     /// A host card's `{machine}/{mux}` (or its machine alone while no mux is confirmed) as
@@ -1175,13 +1151,6 @@ impl Switcher {
         let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
         let num_w = self.number_width();
         let dim = Style::default().fg(palette.decoration);
-        let jump_number = match &state.modal {
-            Some(Modal::Input(i)) if i.mode == InputMode::Jump => self
-                .jump_row(&i.buffer)
-                .filter(|&row| row == self.selected)
-                .map(|row| self.card_number(row)),
-            _ => None,
-        };
         for &(title, rect) in &plan.title_repeats {
             let room = (rect.width as usize).saturating_sub(CONTINUED.chars().count() + 1);
             let text = format!(
@@ -1200,14 +1169,13 @@ impl Switcher {
                     filter: &state.filter,
                     palette,
                     show_state_word: plan.layout == ViewLayout::Column,
-                    jump_number,
                 },
             );
             frame.render_widget(Paragraph::new(lines), rect);
             if self.selected == idx {
                 // A row read as two targets inverts only the half the selection is on. The
-                // inversion and the mark hold in both focus states; the view border's
-                // colour alone says which view holds the focus.
+                // inversion holds in both focus states; the view border's colour alone
+                // says which view holds the focus.
                 let half = plan
                     .nav_parts
                     .iter()
@@ -1237,7 +1205,7 @@ impl Switcher {
                 if let Some(rect) = rect.filter(|_| !hard) {
                     frame
                         .buffer_mut()
-                        .set_style(rect, Style::default().add_modifier(Modifier::UNDERLINED));
+                        .set_style(rect, palette::soft_selection_style());
                 }
             }
         }
@@ -1366,7 +1334,6 @@ impl Switcher {
                 filter: "",
                 palette,
                 show_state_word: false,
-                jump_number: None,
             },
         );
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
@@ -1394,10 +1361,9 @@ impl Switcher {
     /// position. A machine's card reads the machine alone with its glyph or spinner.
     ///
     /// The ADDRESS column carries the card's dim number - the thing `prefix <digit>`
-    /// types - on the same row as the session it names. On the SELECTED card that
-    /// column holds the mark instead of a number, because "you are here" answers the
-    /// same question the number answers, and one column pays for both. Every card's
-    /// name therefore starts at the same screen column whatever the selection is doing.
+    /// types - on the same row as the session it names, selected or not: the reversal
+    /// alone marks the selection. Every card's name therefore starts at the same screen
+    /// column whatever the selection is doing.
     /// A name that shifts as the cursor passes is what makes a list twitch. Focus
     /// changes nothing else about a card: it does not grow a context line, and the
     /// session keeps the same style selected or not (the selected look is the inverted
@@ -1419,7 +1385,6 @@ impl Switcher {
             filter,
             palette,
             show_state_word,
-            jump_number,
         } = paint;
         let row = &self.rows[i];
         let selected = self.selected == i;
@@ -1430,31 +1395,18 @@ impl Switcher {
         // The address column every card writes on - the only line, now that a card has
         // none other. A section title never calls it: it carries no number.
         let address = move || -> Vec<Span<'static>> {
-            if let Some(n) = jump_number.filter(|_| selected) {
-                vec![Span::styled(
-                    format!("{n:>num_w$} "),
-                    accent.add_modifier(Modifier::BOLD),
-                )]
-            } else if selected {
-                vec![Span::styled(format!("{SELECTED_MARK:>num_w$} "), accent)]
-            } else {
-                let n = self.card_number(i);
-                vec![Span::styled(format!("{n:>num_w$} "), number)]
-            }
+            let n = self.card_number(i);
+            vec![Span::styled(format!("{n:>num_w$} "), number)]
         };
 
         // A section title opens its host screen when selected. It remains
         // bold and unnumbered, with its session cards indented below it.
         if let RowRef::Section { .. } = &row.reference {
-            let (mark, title) = self.title_text(i, width);
+            let title = self.title_text(i, width);
             let style = Style::default()
-                .fg(if selected {
-                    palette.accent
-                } else {
-                    palette.decoration
-                })
+                .fg(palette.decoration)
                 .add_modifier(Modifier::BOLD);
-            let mut spans = vec![Span::styled(mark, style)];
+            let mut spans = Vec::new();
             match title.split_once('/') {
                 Some((machine, mux)) => {
                     spans.push(Span::styled(machine.to_string(), style));

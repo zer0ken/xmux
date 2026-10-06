@@ -177,10 +177,6 @@ fn glyph_legend() -> Vec<(String, String)> {
             "the spinner: a machine or host still scanning, or a login step still running".into(),
         ),
         (
-            crate::ui::switcher::SELECTED_MARK.into(),
-            "the selected card".into(),
-        ),
-        (
             "‹ 5 · 7 ›".into(),
             "cards off screen to each side of a band, on its view border".into(),
         ),
@@ -509,8 +505,8 @@ fn help_tabs(titles: &[String], active: usize, inner: u16) -> (Vec<HelpTab>, boo
     )
 }
 
-/// The tab row's line: the active tab in the popup title's accent bold, the others muted,
-/// and the `hover` tab underlined as the soft selection.
+/// The tab row's line: the active tab as the hard selection, the others muted, and the
+/// `hover` tab underlined as the soft selection.
 fn help_tab_line(
     titles: &[String],
     active: usize,
@@ -519,9 +515,7 @@ fn help_tab_line(
     palette: &palette::Palette,
 ) -> Line<'static> {
     let muted = Style::default().fg(palette.decoration);
-    let lit = Style::default()
-        .fg(palette.accent)
-        .add_modifier(Modifier::BOLD);
+    let lit = palette::selected(muted, palette);
     let (tabs, before, after) = help_tabs(titles, active, inner);
     let mut spans = vec![Span::raw(" ")];
     let mut x = 1;
@@ -1153,7 +1147,7 @@ pub(crate) fn palette_rows(entries: &[(String, String)], key_w: usize, inner: u1
 /// query field: the query field, then one entry per command in the key list's grammar,
 /// the key cell bold in a column as wide as the widest key, then the description, wrapped
 /// under the description column rather than cut. The selected entry is reversed across the
-/// whole width with `❯` in its first column, and the window starts late enough to show it
+/// whole width, and the window starts late enough to show it
 /// whole. The `hover` entry, the soft selection, is underlined across its rows.
 /// `entries` pairs each key cell with its description; an empty key is a login the
 /// palette offers, marked with the login-needed glyph. Each line comes with the entry it
@@ -1209,19 +1203,11 @@ pub(crate) fn palette_lines(
             break;
         }
         let chosen = i == selected;
-        // The selected entry is reversed as one surface, so its key cell keeps its weight
-        // and no colour the reversal would turn into a second background.
         let (cell, cell_style) = if k.is_empty() {
             (
                 crate::ui::chrome::BLOCK_MARK.to_string(),
-                if chosen {
-                    Style::default()
-                } else {
-                    Style::default().fg(palette.warning)
-                },
+                Style::default().fg(palette.warning),
             )
-        } else if chosen {
-            (k.clone(), palette::interaction_key_style())
         } else {
             (k.clone(), key)
         };
@@ -1229,11 +1215,7 @@ pub(crate) fn palette_lines(
         for (n, chunk) in desc.iter().enumerate() {
             let mut spans = if n == 0 {
                 vec![
-                    Span::raw(if chosen {
-                        format!(" {} ", crate::ui::switcher::SELECTED_MARK)
-                    } else {
-                        "   ".to_string()
-                    }),
+                    Span::raw("   "),
                     Span::styled(cell.clone(), cell_style),
                     Span::raw(" ".repeat(pad + 2)),
                     Span::raw(chunk.clone()),
@@ -1246,14 +1228,15 @@ pub(crate) fn palette_lines(
             };
             let used: usize = spans.iter().map(|s| s.width()).sum();
             spans.push(Span::raw(" ".repeat((inner as usize).saturating_sub(used))));
-            let mut style = Style::default();
+            let mut line = Line::from(spans);
             if chosen {
-                style = style.patch(palette::selection_style(palette));
+                line = palette::selected_line(line, palette);
             }
             if hover == Some(i) {
-                style = style.patch(palette::soft_selection_style());
+                let style = line.style.patch(palette::soft_selection_style());
+                line = line.style(style);
             }
-            body.push((Some(i), Line::from(spans).style(style)));
+            body.push((Some(i), line));
         }
     }
     body.truncate(visible);
@@ -1620,8 +1603,7 @@ mod tests {
                 HelpRow::Head(_) => None,
             })
             .collect();
-        for glyph in ["?", "▲", "✗", "⠋", "❯", "‹ 5 · 7 ›", "┃", "║", "✓", "·"]
-        {
+        for glyph in ["?", "▲", "✗", "⠋", "‹ 5 · 7 ›", "┃", "║", "✓", "·"] {
             assert!(
                 glyphs.contains(&glyph),
                 "the legend explains {glyph}: {glyphs:?}"
@@ -2038,14 +2020,14 @@ mod tests {
         let lit: Vec<&str> = row
             .spans
             .iter()
-            .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
             .map(|s| s.content.as_ref())
             .collect();
-        assert_eq!(lit, ["move (nav focus)"], "the active tab alone is lit");
-        assert!(row
-            .spans
-            .iter()
-            .all(|s| !s.style.add_modifier.contains(Modifier::REVERSED)));
+        assert_eq!(
+            lit,
+            ["move (nav focus)"],
+            "the active tab alone is the hard selection"
+        );
     }
 
     /// The map the help's keys use in a popup `inner` wide and `visible` tall.
@@ -2111,7 +2093,7 @@ mod tests {
         let lit: Vec<String> = lines[HELP_TAB_ROW as usize]
             .spans
             .iter()
-            .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
             .map(|s| s.content.to_string())
             .collect();
         assert_eq!(lit, [GLYPH_SECTION]);

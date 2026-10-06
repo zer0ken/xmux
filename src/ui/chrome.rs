@@ -457,8 +457,9 @@ impl ScreenCell {
     }
 }
 
-/// How a link reads: the accent, reversed while it is the hard selection and underlined
-/// while the pointer is on it, the same two looks a nav target takes.
+/// How a link reads: the accent, the hard selection's look while it is the hard
+/// selection and the soft selection's while the pointer is on it, the same two looks a
+/// nav target takes.
 fn link_style(
     palette: &crate::ui::palette::Palette,
     index: usize,
@@ -466,10 +467,10 @@ fn link_style(
 ) -> Style {
     let mut style = Style::default().fg(palette.accent);
     if view.0 == Some(index) {
-        style = style.add_modifier(Modifier::REVERSED);
+        style = crate::ui::palette::selected(style, palette);
     }
     if view.1 == Some(index) {
-        style = style.add_modifier(Modifier::UNDERLINED);
+        style = style.patch(crate::ui::palette::soft_selection_style());
     }
     style
 }
@@ -1365,10 +1366,9 @@ impl Chrome {
                 .map(|l| l.chars().count())
                 .max()
                 .unwrap_or(0);
-            let cursor = |active: bool| if active && taking_keys { "▊" } else { "" };
             let reversed = |style: Style, active: bool| {
                 if active && taking_keys {
-                    style.add_modifier(Modifier::REVERSED)
+                    crate::ui::palette::selected(style, pal)
                 } else {
                     style
                 }
@@ -1439,7 +1439,10 @@ impl Chrome {
                 let pad = 22usize.saturating_sub(text.chars().count());
                 if active && taking_keys {
                     spans.push(Span::styled(text, reversed(style, true)));
-                    spans.push(Span::styled(" ", reversed(Style::default(), true)));
+                    spans.push(Span::styled(
+                        " ",
+                        Style::default().add_modifier(Modifier::REVERSED),
+                    ));
                     spans.push(Span::raw(" ".repeat(pad.saturating_sub(1))));
                 } else {
                     spans.push(Span::styled(text, style));
@@ -1475,19 +1478,15 @@ impl Chrome {
                 lines
             };
             // Choice labels stay plain; the value and its padding carry focus. The focused
-            // stop's value is reversed (a stop with no value reverses its own text), only
-            // while the pane takes keys. One radio choice under "After login" selects doing
+            // stop is the hard selection over its own text, only while the pane takes
+            // keys. One radio choice under "After login" selects doing
             // nothing, saving the connection values, or registering this machine's public
             // key. Saving is offered only while it would change what ssh uses.
             // A choice too wide for the pane wraps its text under its own first
             // character, so the mark and every word of the choice stay on screen.
             let choice = |name: &str, mark: &str, text: &str, active: bool| {
                 use unicode_width::UnicodeWidthStr;
-                let style = if active {
-                    Style::default().fg(pal.secondary)
-                } else {
-                    Style::default().fg(pal.decoration)
-                };
+                let style = Style::default().fg(pal.decoration);
                 let mut lead = label(name.to_string(), false);
                 lead.push(rule.clone());
                 let lead_w: usize = lead.iter().map(Span::width).sum();
@@ -1497,9 +1496,8 @@ impl Chrome {
                     (format!(" {mark} "), " ")
                 };
                 let open_w = open.width();
-                // The caret takes one cell after the last row's text.
                 let text_w = (width as usize)
-                    .saturating_sub(lead_w + open_w + close.len() + 1)
+                    .saturating_sub(lead_w + open_w + close.len())
                     .max(1);
                 let mut parts = wrap_text(text, text_w.min(u16::MAX as usize) as u16);
                 if parts.is_empty() {
@@ -1524,9 +1522,6 @@ impl Chrome {
                             body.push_str(close);
                         }
                         spans.push(Span::styled(body, reversed(style, active)));
-                        if i == last {
-                            spans.push(Span::styled(cursor(active), style));
-                        }
                         Line::from(spans)
                     })
                     .collect::<Vec<_>>()

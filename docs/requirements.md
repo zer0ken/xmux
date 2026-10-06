@@ -62,8 +62,8 @@ against, naming no source file, function, or test.
   and shows a screen saying why instead, while its card stays selectable.
 - **FR-B9** - The nav carries a prefix indicator that names the prefix at rest and opens
   the key list over the terminal view when the prefix is armed, without moving any card.
-- **FR-B10** - Every unselected card carries a number, and `prefix <digit>` jumps to the
-  card with that number.
+- **FR-B10** - Every card carries a number, and `prefix <digit>` jumps to the card with
+  that number.
 - **FR-B11** - Every colour xmux paints is an ANSI-16 slot chosen by the `[ui] theme`
   (`auto-dark` or `auto-light`), so the terminal's own scheme resolves every hue.
 - **FR-B12** - A group is drawn the same way at every nav position, as a `{machine}/{mux}`

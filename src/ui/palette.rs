@@ -43,6 +43,7 @@
 //! choice against the same theme, and xmux is not in it.
 
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Line;
 
 /// The one bold shape every interaction screen paints a key token in, so a key reads as
 /// a key wherever it is offered.
@@ -57,14 +58,14 @@ pub(crate) fn interaction_key_style() -> Style {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Palette {
     /// The whole view border while the nav holds focus. Its own role, apart from the
-    /// card accent, so the divider is tuned independently of the selection mark and
+    /// card accent, so the divider is tuned independently of the screen links and
     /// session name. Also the list-failed glyph `✗` on a host-state card.
     pub primary: Color,
     /// The host/mux text of a host-state card and the state word beside it. A section
     /// title over a group of session cards uses `decoration`, so the
     /// group label stays below the sessions it names.
     pub secondary: Color,
-    /// The single accent: the session name, the selection mark, the popup titles, and
+    /// The single accent: the session name, the screen links, the popup titles, and
     /// the view border's drag-hover cue all share it, so "interactive / current" is
     /// one colour everywhere. Painted on the CARD / TERMINAL background, so it
     /// follows the theme.
@@ -259,7 +260,8 @@ pub(crate) fn soft_selection_style() -> Style {
     Style::default().add_modifier(Modifier::UNDERLINED)
 }
 
-/// The style the SELECTED card is painted with.
+/// The style every hard selection is painted with: a nav card or the half of a section
+/// title, a screen link, a help tab, a list row, and a focused login stop.
 ///
 /// By default reverse video, and nothing else: the terminal swaps its own foreground and
 /// background, so the selection is as legible as that theme's own text and xmux picks no
@@ -281,6 +283,27 @@ fn selection_style_for(selection_bg: Option<Color>) -> Style {
             .bg(Color::Reset)
             .add_modifier(Modifier::REVERSED),
     }
+}
+
+/// `style` as the hard selection paints it: the selection style patched over it, so the
+/// surface's own colour never stays under the reversal as a second background.
+pub(crate) fn selected(style: Style, palette: &Palette) -> Style {
+    style.patch(selection_style(palette))
+}
+
+/// `line` as the hard selection paints it: [`selected`] over the line and over each of its
+/// spans, so every cell the line covers reads as the one selected look.
+pub(crate) fn selected_line(line: Line<'static>, palette: &Palette) -> Line<'static> {
+    let style = selected(line.style, palette);
+    let spans = line
+        .spans
+        .into_iter()
+        .map(|span| {
+            let style = selected(span.style, palette);
+            span.style(style)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans).style(style)
 }
 
 /// What `xmux doctor` says about the selected card's paint. The selection is the one
