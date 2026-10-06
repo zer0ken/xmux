@@ -1211,7 +1211,8 @@ impl Chrome {
         // line, and the card carries only that clause, so a screen that clipped would
         // leave the whole message nowhere readable. A value that already fits is passed
         // through untouched, which is what keeps the ssh stanza's own indentation.
-        let value_w = width.saturating_sub(cw as u16 + 4);
+        // The value column starts at `3 + cw + 2`, after the indent, the cell, and the rule.
+        let value_w = width.saturating_sub(cw as u16 + 5);
         let rows: Vec<(ScreenCell, String)> = rows
             .into_iter()
             .flat_map(|(cell, value)| {
@@ -1796,8 +1797,12 @@ impl Chrome {
             }
         }
         out.push(Line::from(""));
+        // A link's name that wraps keeps reading, and answering, as the link on every row
+        // it continues onto: `link_left` is the part of the name no row has drawn yet.
+        let mut link_left: Option<(usize, String)> = None;
         for (cell, value) in rows {
             if matches!(cell, ScreenCell::Gap) {
+                link_left = None;
                 out.push(Line::from(""));
                 continue;
             }
@@ -1805,25 +1810,44 @@ impl Chrome {
                 Span::styled(format!("   {:<cw$}", cell.text()), cell.style(palette)),
                 rule.clone(),
             ];
-            match cell {
-                ScreenCell::Link(_, i) => {
-                    let label = &view.links[i].label;
-                    let (name, rest) = if value.starts_with(label.as_str()) {
-                        (label.clone(), value[label.len()..].to_string())
-                    } else {
-                        (value.clone(), String::new())
-                    };
-                    let col = 3 + cw as u16 + 2;
-                    links.push((
-                        i,
-                        out.len(),
-                        col,
-                        unicode_width::UnicodeWidthStr::width(name.as_str()) as u16,
+            match &cell {
+                ScreenCell::Link(_, i) => link_left = Some((*i, view.links[*i].label.clone())),
+                ScreenCell::Continued => {}
+                _ => link_left = None,
+            }
+            match link_left.take() {
+                Some((i, left)) => {
+                    // A word wrap drops the space it broke at, so the name's remainder is
+                    // matched without its leading spaces.
+                    let left = left.trim_start();
+                    let shared = value
+                        .char_indices()
+                        .zip(left.chars())
+                        .take_while(|((_, a), b)| a == b)
+                        .last()
+                        .map_or(0, |((at, c), _)| at + c.len_utf8());
+                    // A link row whose value does not open with its name is all link.
+                    let whole = shared == 0 && matches!(cell, ScreenCell::Link(..));
+                    let (name, rest) = value.split_at(if whole { value.len() } else { shared });
+                    if !name.is_empty() {
+                        links.push((
+                            i,
+                            out.len(),
+                            3 + cw as u16 + 2,
+                            unicode_width::UnicodeWidthStr::width(name) as u16,
+                        ));
+                        spans.push(Span::styled(name.to_string(), link_style(pal, i, marks)));
+                    }
+                    spans.push(Span::styled(
+                        rest.to_string(),
+                        Style::default().fg(pal.decoration),
                     ));
-                    spans.push(Span::styled(name, link_style(pal, i, marks)));
-                    spans.push(Span::styled(rest, Style::default().fg(pal.decoration)));
+                    let left = if whole { "" } else { &left[shared..] };
+                    if !left.is_empty() && rest.is_empty() {
+                        link_left = Some((i, left.to_string()));
+                    }
                 }
-                _ => spans.push(Span::raw(value)),
+                None => spans.push(Span::raw(value)),
             }
             out.push(Line::from(spans));
         }

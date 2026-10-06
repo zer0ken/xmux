@@ -6900,3 +6900,103 @@ async fn input_held_for_a_selection_left_behind_is_dropped() {
     rt.forward_input(b"kept".to_vec());
     assert_eq!(logged(&tmux_log), b"kept");
 }
+
+/// A runtime of one machine `machine` sized `cols` by `rows` with the terminal view
+/// focused: blocked on a refused login when `session` is empty, otherwise serving that
+/// session on its mux, with the selection on the host.
+fn headline_rt(machine: &str, session: &str, cols: u16, rows: u16) -> Runtime {
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    let host = if session.is_empty() {
+        machine.to_string()
+    } else {
+        format!("{machine}:tmux")
+    };
+    let mut state = crate::state::State::from_hosts(vec![host.clone()]);
+    let mut switcher = crate::ui::switcher::Switcher::from_hosts(&mut state);
+    if session.is_empty() {
+        switcher.apply_host_result(
+            host,
+            Vec::new(),
+            Some(format!(
+                "alice@{machine}: Permission denied (publickey,password)."
+            )),
+            &mut state,
+        );
+    } else {
+        switcher.apply_host_result(
+            host.clone(),
+            vec![crate::session::Session {
+                host: host.clone(),
+                name: session.into(),
+                mux: "tmux".into(),
+                windows: 1,
+                attached: false,
+            }],
+            None,
+            &mut state,
+        );
+        switcher.handle_key(
+            ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Up,
+                ratatui::crossterm::event::KeyModifiers::CONTROL,
+            ),
+            &mut state,
+        );
+    }
+    state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.cols = cols;
+    rt.body_rows = rows - 1;
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    rt
+}
+
+/// The terminal view's rows of `rt` as drawn on `term`, each cut to the view's columns.
+fn view_rows(rt: &Runtime, term: &ratatui::Terminal<ratatui::backend::TestBackend>) -> Vec<String> {
+    let view = rt.model.render_plan.regions.terminal;
+    drawn_text(term)
+        .lines()
+        .map(|l| {
+            l.chars()
+                .skip(view.x as usize)
+                .take(view.width as usize)
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn a_wrapped_screen_value_keeps_every_character_in_the_view() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let session = "a-long-training-session-name";
+    for (cols, rows) in [(80u16, 24u16), (40, 30)] {
+        let mut rt = headline_rt("gpu", session, cols, rows);
+        let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        rt.prepare_and_draw(&mut term);
+        let view = view_rows(&rt, &term);
+        let out = view.join("\n");
+        let at = view
+            .iter()
+            .rposition(|l| l.trim_start().starts_with("sessions") && !l.contains("sessions     1"))
+            .unwrap_or_else(|| panic!("{out}"));
+        let value_col = view[at].find("a-long").unwrap_or_else(|| panic!("{out}"));
+        let mut value = String::new();
+        for row in &view[at..] {
+            if row.trim().is_empty() {
+                break;
+            }
+            value.push_str(row[value_col..].trim_end());
+            value.push(' ');
+        }
+        assert!(
+            value
+                .replace(' ', "")
+                .starts_with(&format!("{session}1window")),
+            "{cols}x{rows}: {value}\n{out}"
+        );
+    }
+}
