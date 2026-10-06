@@ -104,9 +104,10 @@ against, naming no source file, function, or test.
 - **FR-B28** - A submitted password is held only in process memory, released to ssh only
   through xmux's private askpass broker for the exact account and host, and forgotten on
   refusal, removal from the roster, or exit.
-- **FR-B29** - After a working login, recording writes one xmux-marked stanza with the
-  values that worked at the top of `~/.ssh/config`, replacing an earlier xmux stanza and
-  never storing the password.
+- **FR-B29** - The login pane offers recording only while an entered address, port, or
+  username differs from what ssh resolves for the host; after a working login, recording
+  writes one xmux-marked stanza with the values that worked at the top of
+  `~/.ssh/config`, replacing an earlier xmux stanza and never storing the password.
 - **FR-B30** - After a working login, registering adds this machine's public key to the
   host's authorized keys file with the `xmux-registered` mark and reports registered
   only when a key-only login then succeeds.

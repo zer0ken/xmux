@@ -37,6 +37,10 @@ pub struct LoginDefaults {
     pub address: LoginValue,
     pub port: LoginValue,
     pub username: LoginValue,
+    /// What ssh resolves for the host on its own: OpenSSH's effective configuration, else
+    /// the matching stanza. A value neither supplies is `None`, so nothing is taken to
+    /// match it.
+    pub resolved: crate::transport::Login,
 }
 
 impl LoginDefaults {
@@ -54,6 +58,7 @@ impl LoginDefaults {
                 value: String::new(),
                 provenance: "",
             },
+            resolved: crate::transport::Login::default(),
         }
     }
 }
@@ -3015,6 +3020,7 @@ mod tests {
                             value: "dev".into(),
                             provenance: "from ssh config",
                         },
+                        resolved: Default::default(),
                     },
                 )]
                 .into(),

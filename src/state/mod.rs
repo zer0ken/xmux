@@ -176,6 +176,9 @@ pub struct LoginDraft {
     pub default_address: String,
     pub default_port: String,
     pub default_username: String,
+    /// What ssh resolves for the host on its own, which the entered values are compared
+    /// with to decide whether recording them would change anything.
+    pub resolved: crate::transport::Login,
 }
 
 impl std::fmt::Debug for LoginDraft {
@@ -192,30 +195,61 @@ impl std::fmt::Debug for LoginDraft {
             .field("default_address", &self.default_address)
             .field("default_port", &self.default_port)
             .field("default_username", &self.default_username)
+            .field("resolved", &self.resolved)
             .finish()
     }
 }
 
 impl LoginDraft {
-    /// The pane's focus stops in reading order. The details choice appears only while
-    /// the pane states a failure.
+    /// The pane's focus stops in reading order. The ssh config choice appears only while
+    /// recording would change something, and the details choice only while the pane
+    /// states a failure.
     pub fn stops(&self, details: bool) -> Vec<LoginFocus> {
         let mut v = vec![
             LoginFocus::Address,
             LoginFocus::Port,
             LoginFocus::Username,
             LoginFocus::Password,
-        ];
-        v.extend([
             LoginFocus::AfterNothing,
-            LoginFocus::AfterSshConfig,
-            LoginFocus::AfterPublicKey,
-        ]);
+        ];
+        if self.offers_ssh_config() {
+            v.push(LoginFocus::AfterSshConfig);
+        }
+        v.push(LoginFocus::AfterPublicKey);
         v.push(LoginFocus::Submit);
         if details {
             v.push(LoginFocus::Details);
         }
         v
+    }
+
+    /// The connection values a submit hands to ssh, and the ones recording writes. A
+    /// blank field or a port that is not a number names nothing, so ssh resolves it.
+    pub fn login(&self) -> crate::transport::Login {
+        let named = |v: &str| (!v.trim().is_empty()).then(|| v.trim().to_string());
+        crate::transport::Login {
+            address: named(&self.address),
+            port: self.port.trim().parse::<u16>().ok(),
+            user: named(&self.username),
+        }
+    }
+
+    /// Whether recording the entered values in ssh config would change what ssh uses:
+    /// some value the login names differs from what ssh resolves on its own. A host
+    /// whose stanza already holds these values, xmux's own included, is not offered a
+    /// recording that writes them again. ssh compares host names without case.
+    pub fn offers_ssh_config(&self) -> bool {
+        let login = self.login();
+        let resolved = &self.resolved;
+        login.address.is_some_and(|a| {
+            !resolved
+                .address
+                .as_deref()
+                .is_some_and(|r| r.eq_ignore_ascii_case(&a))
+        }) || login.port.is_some_and(|p| resolved.port != Some(p))
+            || login
+                .user
+                .is_some_and(|u| resolved.user.as_deref() != Some(u.as_str()))
     }
 
     /// Moves the focus `delta` stops, wrapping.
@@ -403,6 +437,7 @@ impl State {
                     default_address: address,
                     default_port: port,
                     default_username: username,
+                    resolved: defaults.resolved,
                     ..Default::default()
                 });
                 self.login.as_mut().unwrap()
@@ -430,6 +465,11 @@ impl State {
                 }
             }
         }
+        // A pick the pane no longer shows is not a pick: editing a value back to what ssh
+        // resolves hides the ssh config choice, and the follow-up returns to doing nothing.
+        if draft.after_login == AfterLogin::SshConfig && !draft.offers_ssh_config() {
+            draft.after_login = AfterLogin::Nothing;
+        }
         if !submit {
             return None;
         }
@@ -437,14 +477,9 @@ impl State {
             draft.focus = LoginFocus::Username;
             return None;
         }
-        let port = draft.port.trim().parse::<u16>().ok();
         Some(crate::model::Command::RunLogin {
             source: draft.source.clone(),
-            login: crate::transport::Login {
-                address: (!draft.address.trim().is_empty()).then(|| draft.address.trim().into()),
-                port,
-                user: (!draft.username.trim().is_empty()).then(|| draft.username.trim().into()),
-            },
+            login: draft.login(),
             password: std::mem::take(&mut draft.password),
             after_login: draft.after_login,
         })

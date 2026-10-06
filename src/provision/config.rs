@@ -1062,7 +1062,8 @@ pub fn login_defaults(
     config_text: &str,
 ) -> crate::provision::env::LoginDefaults {
     let stanza = stanza_login(config_text, alias);
-    let configured = effective.cloned().unwrap_or_else(|| stanza.clone());
+    let resolved = effective.cloned().unwrap_or_else(|| stanza.clone());
+    let configured = resolved.clone();
     let configured_address = configured.address;
     let address_from_ssh = configured_address
         .as_ref()
@@ -1102,6 +1103,7 @@ pub fn login_defaults(
             },
             value: user,
         },
+        resolved,
     }
 }
 
