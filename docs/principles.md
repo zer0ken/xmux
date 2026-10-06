@@ -170,7 +170,9 @@ so the selection follows it.
 The one automatic move is upward. When the context itself is lost, as when a logout or a
 network failure drops a session or a host, the selection and the view move up to the
 nearest level that still exists, session to host and host to machine. They never move
-down or sideways, and a lost context that returns does not take the selection back.
+down or sideways, and a lost context that returns does not take the selection back. The
+upward move is the lineage of Selection by Interest, so the two principles name one rule
+for the selection.
 
 The user reads the screen to choose the next input, so a context that moves on its own
 turns a key the user already decided on into an action on something else. A machine

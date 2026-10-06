@@ -2782,6 +2782,77 @@ mod tests {
             .collect()
     }
 
+    /// Background answers never move the focus or close a popup the user opened, and a
+    /// host that is lost moves the selection up to its machine, which its return does not
+    /// undo.
+    #[test]
+    fn background_events_keep_the_focus_and_the_popup_and_a_lost_host_moves_up() {
+        let mut m = AppModel::from_hosts(vec!["box".to_owned(), "gpu".to_owned()]);
+        answer(&mut m, "box", &["work"], None);
+        answer(&mut m, "gpu", &["train"], None);
+        m.switcher
+            .select_address(&crate::session::Address::new("box", "work"));
+        update(&mut m, Msg::Focus(crate::model::FocusTarget::Terminal));
+        m.switcher.toggle_help(&mut m.state);
+        let focus = m.state.focus.view_is_nav();
+        let started = std::time::Instant::now();
+        let background = [
+            Msg::HostEvent {
+                event: crate::link::HostEvent::Sessions {
+                    host: "gpu".to_owned(),
+                    sessions: sessions("gpu", &["eval", "train"]),
+                    err: None,
+                },
+                logged_in: HashSet::new(),
+            },
+            Msg::HostEvent {
+                event: crate::link::HostEvent::MuxesFound {
+                    machine: "gpu".to_owned(),
+                    muxes: Ok(vec!["zellij".to_owned()]),
+                },
+                logged_in: HashSet::new(),
+            },
+            Msg::Tick {
+                now: started,
+                spinner: HashSet::new(),
+            },
+            Msg::Tick {
+                now: started + std::time::Duration::from_secs(30),
+                spinner: HashSet::new(),
+            },
+        ];
+        for msg in background {
+            update(&mut m, msg);
+            assert_eq!(m.state.focus.view_is_nav(), focus, "the focus stays");
+            assert!(
+                matches!(m.state.modal, Some(crate::state::Modal::Help { .. })),
+                "the popup stays open"
+            );
+            assert_eq!(
+                m.switcher.selected_node(),
+                Some(crate::model::Node::Session(crate::session::Address::new(
+                    "box", "work"
+                )))
+            );
+        }
+        answer(&mut m, "box", &[], Some("connection refused"));
+        assert_eq!(
+            m.switcher.selected_node(),
+            Some(crate::model::Node::Machine("box".into())),
+            "the lost host moves the selection up"
+        );
+        assert!(matches!(
+            m.state.modal,
+            Some(crate::state::Modal::Help { .. })
+        ));
+        answer(&mut m, "box", &["work"], None);
+        assert_eq!(
+            m.switcher.selected_node(),
+            Some(crate::model::Node::Machine("box".into())),
+            "the host's return moves nothing down"
+        );
+    }
+
     #[test]
     fn a_rescan_reports_one_summary_once_every_host_has_answered() {
         let mut m = AppModel::from_hosts(vec!["a".to_owned(), "b".to_owned()]);
