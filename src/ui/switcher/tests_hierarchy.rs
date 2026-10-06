@@ -941,3 +941,24 @@ fn a_switch_closes_the_landing_even_onto_the_card_already_selected() {
     assert!(!h.sw.landing_open());
     assert_eq!(h.sw.terminal_view_target().target, "train");
 }
+
+#[test]
+fn the_landing_counts_a_host_serving_several_muxes_once() {
+    let mut h = H::new(&[
+        ("gpu", &["train"], None),
+        ("db:tmux", &["pg-primary"], None),
+        ("db:zellij", &["scratch"], None),
+    ]);
+    h.sw.open_landing();
+    assert_eq!(
+        h.state.chrome.scan_progress(&h.state),
+        "2 of 2 hosts scanned"
+    );
+    h.sw.mark_scanning("db:zellij", &mut h.state);
+    let spinner = crate::ui::spinner_glyph(h.state.chrome.spinner_frame);
+    assert_eq!(
+        h.state.chrome.scan_progress(&h.state),
+        format!("{spinner} 1 of 2 hosts scanned"),
+        "a host is scanned only once every source of it answered"
+    );
+}

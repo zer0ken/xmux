@@ -657,11 +657,23 @@ impl Chrome {
 
     /// How far the scan has come, as the landing screen states it under its headline: how
     /// many hosts answered out of all of them, turning the spinner the cards turn while
-    /// any is still scanning.
-    fn scan_progress(&self, state: &crate::state::State) -> String {
-        let total = state.groups.len();
-        let done = total.saturating_sub(state.scanning.len());
-        if state.scanning.is_empty() {
+    /// any is still scanning. A host serving several muxes counts once, and only once
+    /// none of its sources is still scanning.
+    pub(crate) fn scan_progress(&self, state: &crate::state::State) -> String {
+        let machines: std::collections::BTreeSet<&str> = state
+            .groups
+            .iter()
+            .map(|g| crate::session::machine_of(&g.source))
+            .collect();
+        let scanning: std::collections::BTreeSet<&str> = state
+            .groups
+            .iter()
+            .filter(|g| state.scanning.contains(&g.source))
+            .map(|g| crate::session::machine_of(&g.source))
+            .collect();
+        let total = machines.len();
+        let done = total - scanning.len();
+        if scanning.is_empty() {
             format!("{done} of {total} hosts scanned")
         } else {
             let sp = crate::ui::spinner_glyph(self.spinner_frame);
