@@ -15,7 +15,7 @@ use super::{HostClient, HostEvent};
 
 /// The `-CC` control child's argv for `host`, composed across the two orthogonal axes:
 /// the MUX supplies the control payload via `Mux::control_argv` (never a hardcoded
-/// `-CC attach` literal), and the MACHINE wraps it via `Transport::control_argv` (local
+/// `-u -CC attach` literal), and the MACHINE wraps it via `Transport::control_argv` (local
 /// `-S` splice, or `ssh -tt … <payload>`). `None` for a mux with no host-level control
 /// stream (it is polled), so a Poll host produces no argv.
 fn control_argv(host: &crate::model::Host) -> Option<crate::transport::CommandSpec> {
@@ -398,12 +398,13 @@ mod tests {
 
     #[test]
     fn control_argv_local_default_socket_is_bare_cc_attach() {
-        // A local Control host (tmux, default socket) spawns `[bin, -CC, attach]`.
+        // A local Control host (tmux, default socket) spawns `[bin, -u, -CC, attach]`.
         let host = local_host("tmux", None);
         assert_eq!(
             control_argv(&host),
             Some(crate::transport::CommandSpec::from_argv(vec![
                 "tmux".to_string(),
+                "-u".into(),
                 "-CC".into(),
                 "attach".into(),
             ]))
@@ -420,6 +421,7 @@ mod tests {
                 "tmux".to_string(),
                 "-S".into(),
                 "/tmp/tmux-1000/work".into(),
+                "-u".into(),
                 "-CC".into(),
                 "attach".into()
             ]))
@@ -428,7 +430,7 @@ mod tests {
 
     #[test]
     fn control_argv_remote_forces_pty_over_batch_ssh() {
-        // A remote Control host forces a pty (`-tt`) and runs `<bin> -CC attach` through
+        // A remote Control host forces a pty (`-tt`) and runs `<bin> -u -CC attach` through
         // a quiet login shell over a BatchMode ssh connection.
         let host = ssh_host("prod", "tmux", "linux", "");
         let got = control_argv(&host).expect("a Control host has a control argv");
@@ -440,7 +442,7 @@ mod tests {
         );
         assert_eq!(
             got.last().unwrap(),
-            "sh -lc '{ tmux -CC attach\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+            "sh -lc '{ tmux -u -CC attach\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null"
         );
     }
 
