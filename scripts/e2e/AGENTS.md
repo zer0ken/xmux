@@ -3,8 +3,10 @@
 ## Purpose
 
 The end-to-end suite: real xmux builds driven through a pseudo terminal against Docker
-hosts, one table cell per scenario, mux, and host system. The README lists the
-scenarios, the hosts, and the known cells.
+hosts, one table cell per scenario, mux, and host system. It answers two questions, one
+table group each: whether xmux's own behavior works, and whether each mux's native
+workflow survives inside xmux. The README lists the scenarios, the hosts, and the known
+cells.
 
 ## Module Seams
 
@@ -21,5 +23,5 @@ scenarios, the hosts, and the known cells.
   object it creates carries the `xmux-e2e` prefix.
 - Every wait has a timeout and every command a time limit, so a hung app fails its
   cell instead of the run.
-- A cell that fails because of an xmux defect is marked known only with the issue that
-  tracks it, and still runs.
+- A cell that fails because of an xmux defect, including a native workflow xmux breaks,
+  is marked known only with the issue that tracks it, and still runs.
