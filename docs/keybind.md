@@ -150,10 +150,11 @@ and it reports in one toast titled `rescan machine <machine>`. It is refused whi
 machine is still scanning and while another re-scan has not reported; a `prefix R`
 pressed meanwhile takes over.
 
-`prefix L` asks for `logout` typed in full. It removes the lines of the machine's key files
+`prefix L` asks for `logout` typed in full; `Enter` on any other word states so beside
+the field and leaves the confirm open with the field empty. It removes the lines of the machine's key files
 that hold this PC's public key and carry the `xmux-registered` mark. A matching line
-without the mark opens a second confirmation, where `remove` typed in full removes it too
-and anything else keeps it. The ssh config stanza a login saved for the machine goes
+without the mark opens a second confirmation, where `remove` typed in full removes it too,
+any other word is stated beside the field the same way, and `Esc` keeps it. The ssh config stanza a login saved for the machine goes
 next. Any other ssh config `Host` entry naming the machine is listed in that same second
 confirmation, and `remove` takes the machine off it too: an entry naming only this machine
 goes, and an entry naming others too keeps them. The held password and the connections are cleared after
@@ -198,7 +199,9 @@ the window's bottom left.
 Every popup opens where the key list opens and is moved by dragging it. Its rows wrap
 to its width rather than being cut, and only a text field stays on one row. In a popup
 with items to pick, the arrows move its selection, the pointer underlines an item without
-moving that selection, and a click executes the item as `Enter` would.
+moving that selection, and a click executes the item as `Enter` would. A popup that
+cannot accept what was typed in it says so beside its field in the error colour, led by
+`✗`, until the next key, and stays open for the correction; it raises no toast.
 
 - **Help** (`prefix ?`): typing searches it, ignoring case; `Backspace` shortens the
   query and `Ctrl-U` clears it. A row of tabs names the sections: `←`/`→` or a click

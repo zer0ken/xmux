@@ -3280,8 +3280,44 @@ async fn a_refused_key_is_a_notification_and_the_hint_bar_keeps_its_advice() {
         "local is still being scanned",
     );
     h.state.scanning.clear();
+}
 
-    // A logout confirm Entered without its word keeps the confirm open.
+/// The open popup's row holding `text`, its top border being row 0, and the colour of
+/// the cell `text` starts at.
+fn popup_line_of(h: &Harness, text: &str) -> Option<(String, Option<Color>)> {
+    let r = h.plan.popup_rect;
+    (0..r.height).find_map(|i| {
+        let row = h.popup_row(i);
+        let at = row.find(text)?;
+        let col = r.x + row[..at].chars().count() as u16;
+        Some((row, Some(h.buf()[(col, r.y + i)].fg)))
+    })
+}
+
+/// Asserts that the open popup states `error` in the error colour, that the popup is
+/// still open on `mode`, and that nothing reached the notifications.
+fn assert_popup_error(h: &Harness, mode: crate::state::InputMode, error: &str) {
+    assert!(
+        matches!(&h.state.modal, Some(Modal::Input(i)) if i.mode == mode),
+        "the popup stays open"
+    );
+    let (row, fg) = popup_line_of(h, &format!("✗ {error}"))
+        .unwrap_or_else(|| panic!("the popup states {error:?}"));
+    assert_eq!(
+        fg,
+        Some(h.sw.palette().error),
+        "in the error colour: {row:?}"
+    );
+    assert!(h.state.notify.toasts.is_empty(), "no toast");
+    assert!(h.state.notify.history.is_empty(), "nothing in the history");
+}
+
+/// Feedback on what the user typed into a popup stays inside that popup, beside its
+/// field, with the popup open for the correction: notifications carry only the results
+/// of actions.
+#[tokio::test]
+async fn a_wrong_confirm_word_is_stated_inside_the_confirm() {
+    use crate::state::InputMode;
     let mut h = Harness::from_hosts(&["box"]);
     h.state.chrome.host_reach.insert(
         "box".into(),
@@ -3300,10 +3336,41 @@ async fn a_refused_key_is_a_notification_and_the_hint_bar_keeps_its_advice() {
     for c in "nope".chars() {
         h.ch(c).await;
     }
-    let bar = h.hint_bar_text();
     h.key(KeyCode::Enter).await;
-    assert!(h.state.is_inputting(), "the confirm stays open");
-    assert_refused(&h, &bar, "logout box", "type logout to confirm");
+    assert_popup_error(&h, InputMode::Logout, "type logout to confirm");
+    assert_eq!(h.input_buffer(), "", "the field is empty for a new word");
+
+    // The next key takes the error down, and the right word confirms.
+    for c in "logout".chars() {
+        h.ch(c).await;
+    }
+    assert!(popup_line_of(&h, "✗").is_none(), "a key clears the error");
+    let commands = h.sw.handle_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut h.state,
+    );
+    assert!(h.state.modal.is_none(), "the confirm closes");
+    assert!(
+        matches!(commands.as_slice(), [Command::Logout(machine)] if machine == "box"),
+        "the logout runs: {commands:?}"
+    );
+
+    // The second confirm, for the key lines xmux did not add, answers the same way.
+    h.state.modal = Some(Modal::Input(Box::new(crate::state::Input::new(
+        InputMode::LogoutKeys,
+        String::new(),
+        Some("box".into()),
+    ))));
+    h.draw();
+    h.ch('x').await;
+    h.key(KeyCode::Enter).await;
+    assert_popup_error(&h, InputMode::LogoutKeys, "type remove to confirm");
+
+    // The jump popup states a number no card carries the same way.
+    h.key(KeyCode::Esc).await;
+    h.ch('9').await;
+    h.key(KeyCode::Enter).await;
+    assert_popup_error(&h, InputMode::Jump, "no card 9");
 }
 
 #[test]
@@ -5641,7 +5708,7 @@ async fn a_jump_holds_out_of_range_numbers_and_vets_at_enter() {
     h.key(KeyCode::Enter).await;
     assert!(h.state.is_inputting(), "the popup stays open");
     assert!(
-        matches!(&h.state.modal, Some(Modal::Input(i)) if i.refused.is_some()),
+        matches!(&h.state.modal, Some(Modal::Input(i)) if i.error.is_some()),
         "the popup refuses the dead number"
     );
     let row = h.popup_row(1);
@@ -5781,7 +5848,7 @@ async fn a_jump_on_0_opens_the_input_and_names_no_card() {
     h.key(KeyCode::Enter).await;
     assert!(h.state.is_inputting(), "the popup stays open");
     assert!(
-        matches!(&h.state.modal, Some(Modal::Input(i)) if matches!(i.refused.as_deref(), Some("0"))),
+        matches!(&h.state.modal, Some(Modal::Input(i)) if i.error.as_deref() == Some("no card 0")),
         "the popup refuses the dead number"
     );
 }
@@ -5876,7 +5943,7 @@ async fn the_two_digit_boundary_starts_at_exactly_ten_cards() {
     h.key(KeyCode::Enter).await;
     assert!(h.state.is_inputting(), "the popup stays open");
     assert!(
-        matches!(&h.state.modal, Some(Modal::Input(i)) if matches!(i.refused.as_deref(), Some("11"))),
+        matches!(&h.state.modal, Some(Modal::Input(i)) if i.error.as_deref() == Some("no card 11")),
         "the popup refuses the dead number"
     );
 }
@@ -8264,7 +8331,7 @@ async fn a_jump_lands_by_the_fixed_number_and_refuses_a_vacant_one() {
         "Enter on a vacant number keeps the input"
     );
     assert!(
-        matches!(&h.state.modal, Some(Modal::Input(i)) if matches!(i.refused.as_deref(), Some("2"))),
+        matches!(&h.state.modal, Some(Modal::Input(i)) if i.error.as_deref() == Some("no card 2")),
         "the popup refuses the dead number"
     );
     h.key(KeyCode::Esc).await;

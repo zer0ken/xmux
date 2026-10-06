@@ -859,21 +859,20 @@ pub(crate) fn filter_popup(
 }
 
 /// The jump popup at `width` outer cells: `card 4▌` and, muted, the card the number names
-/// now, with the numbers there are as the meta. `refused` is a number Enter found no card
-/// for: the row then states that in the error colour.
+/// now, with the numbers there are as the meta. When Enter found no card for the number,
+/// the row states the input's error in the error colour instead.
 pub(crate) fn jump_popup(
     input: &Input,
     target: Option<&str>,
-    refused: bool,
     last: usize,
     width: u16,
     palette: &palette::Palette,
 ) -> (PopupFrame, Vec<Line<'static>>) {
     let muted = Style::default().fg(palette.decoration);
     let inner = (width as usize).saturating_sub(2);
-    let rows = if refused {
+    let rows = if let Some(error_text) = &input.error {
         let error = Style::default().fg(palette.error);
-        let text = format!("✗ no card {}", input.buffer.trim());
+        let text = format!("✗ {error_text}");
         wrap_text(&text, inner.saturating_sub(2).max(1) as u16)
             .into_iter()
             .map(|c| Line::from(Span::styled(format!(" {c}"), error)))
@@ -1072,7 +1071,8 @@ fn logout_fact_rows(input: &Input, width: u16) -> Vec<(&'static str, Vec<Span<'s
         .collect()
 }
 
-/// The rows a logout confirm keeps under its facts: a blank row and the field.
+/// The rows a logout confirm keeps under its facts: the row its input error is stated in,
+/// blank while there is none, and the field.
 const LOGOUT_FIELD_ROWS: usize = 2;
 
 /// The furthest a logout confirm `width` outer cells wide with `visible` inner rows
@@ -1083,9 +1083,20 @@ pub(crate) fn logout_max_scroll(input: &Input, width: u16, visible: u16) -> usiz
         .saturating_sub((visible as usize).saturating_sub(LOGOUT_FIELD_ROWS))
 }
 
+/// An input's error as one span in the error colour, led by `✗`, or nothing when Enter
+/// found nothing wrong.
+fn input_error(input: &Input, palette: &palette::Palette) -> Vec<Span<'static>> {
+    input
+        .error
+        .as_ref()
+        .map(|e| Span::styled(format!("✗ {e}"), Style::default().fg(palette.error)))
+        .into_iter()
+        .collect()
+}
+
 /// A logout confirm popover at `width` outer cells with `visible` inner rows: the facts as
-/// rows, a blank row, and the field the confirming word is typed in. The blank row and the
-/// field stay at the bottom; when the facts do not fit above them, they scroll from
+/// rows, the error row, and the field the confirming word is typed in. The error row and
+/// the field stay at the bottom; when the facts do not fit above them, they scroll from
 /// `input.scroll` and the top border counts the fact rows shown.
 pub(crate) fn logout_popover(
     input: &Input,
@@ -1106,7 +1117,9 @@ pub(crate) fn logout_popover(
     }
     let mut rows: Vec<(&'static str, Vec<Span<'static>>)> =
         facts.into_iter().skip(offset).take(window).collect();
-    rows.push(("", Vec::new()));
+    // The row above the field is blank until Enter finds the field without its word,
+    // and then states that beside the field, in the jump popup's error style.
+    rows.push(("", input_error(input, palette)));
     rows.push((field, input_field(input, room, word, palette)));
     (
         PopupFrame {
@@ -2269,7 +2282,7 @@ mod tests {
 
         let input = Input::new(InputMode::Jump, "4".into(), None);
         let name = "gpu-02/tmux/a-session-with-a-name-longer-than-the-popup";
-        let (_, lines) = jump_popup(&input, Some(name), false, 9, 30, &p);
+        let (_, lines) = jump_popup(&input, Some(name), 9, 30, &p);
         assert!(lines.len() > 1 && lines.iter().all(|l| l.width() <= 28));
         assert!(squeezed(&lines).contains(name));
         assert!(caret_offset(&lines[0]).is_some());
