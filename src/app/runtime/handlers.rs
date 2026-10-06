@@ -924,7 +924,7 @@ impl Runtime {
         // A portable-pty child spawn clears ENABLE_MOUSE_INPUT on the parent CONIN,
         // killing mouse capture; re-assert it whenever it drifts off.
         crate::display::term::ensure_mouse_capture();
-        // An `r` re-scan also re-attaches the CURRENT display: tear the (possibly dead)
+        // An `R` re-scan also re-attaches the CURRENT display: tear the (possibly dead)
         // attachment down and clear its latch so the attach below re-creates a fresh
         // client for the viewed session.
         let effects = update(

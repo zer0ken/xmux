@@ -673,13 +673,21 @@ fn the_prefix_key_list_opens_toward_the_terminal_and_the_indicator_keeps_the_pre
                 assert_eq!(list.right(), r.terminal.right(), "{position:?}: {list:?}");
                 assert_eq!(list.bottom(), r.hint_bar.bottom(), "{position:?}: {list:?}");
             }
+            // A list that would leave a sliver of one or two cells at the left edge
+            // snaps to that edge instead.
             NavPosition::Top => {
                 assert_eq!(list.y, r.view_border.bottom(), "{position:?}: {list:?}");
-                assert_eq!(list.right(), W, "{position:?}: {list:?}");
+                assert!(
+                    list.right() == W || (list.x == 0 && list.width + 2 >= W),
+                    "{position:?}: {list:?}"
+                );
             }
             NavPosition::Bottom => {
                 assert_eq!(list.bottom(), r.view_border.y, "{position:?}: {list:?}");
-                assert_eq!(list.right(), W, "{position:?}: {list:?}");
+                assert!(
+                    list.right() == W || (list.x == 0 && list.width + 2 >= W),
+                    "{position:?}: {list:?}"
+                );
             }
         }
         assert!(

@@ -243,7 +243,7 @@ mod tests {
         );
         let dump = dump_screen(&switcher, None, area.width, area.height, &state, &previous);
         assert!(dump.contains("no sessions"));
-        assert!(dump.contains("re-scan every host"));
+        assert!(dump.contains("rescan all hosts"));
         assert!(dump.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)));
     }
 

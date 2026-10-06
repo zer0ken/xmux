@@ -338,8 +338,8 @@ impl Switcher {
                 }
                 '/' => self.open_input(InputMode::Filter, state),
                 'n' => self.open_new(state),
-                'r' => return vec![Command::Rescan],
-                'R' => return self.rescan_host(state),
+                'r' => return self.rescan_host(state),
+                'R' => return vec![Command::Rescan],
                 'L' => self.open_logout(state),
                 'i' => self.select_host_section(),
                 // Jump: the digit opens the jump popup already holding it, so the
@@ -352,7 +352,7 @@ impl Switcher {
         Vec::new()
     }
 
-    /// The `prefix R` re-scan of the selected card's host alone. Refused while any source
+    /// The `prefix r` re-scan of the selected card's host alone. Refused while any source
     /// of that machine is still scanning, since a machine is asked one thing at a time.
     fn rescan_host(&mut self, state: &mut crate::state::State) -> Vec<Command> {
         let Some(source) = self.current_source() else {
@@ -477,9 +477,9 @@ impl Switcher {
         state.modal = Some(Modal::Input(Box::new(input)));
     }
 
-    // --- the hosts to check -------------------------------------------------
+    // --- the host problems -------------------------------------------------
 
-    /// Toggles the table of the hosts to check (`prefix h`) in either focus.
+    /// Toggles the table of host problems (`prefix h`) in either focus.
     pub fn toggle_check(&mut self, state: &mut crate::state::State) {
         if matches!(state.modal, Some(Modal::Check { .. })) {
             state.modal = None;
@@ -546,7 +546,7 @@ impl Switcher {
         self.open_host(&entry.source, state)
     }
 
-    /// Selects the card standing for `source` from the hosts to check: the source's own
+    /// Selects the card standing for `source` from the host problems: the source's own
     /// card, or its host's card while the host is down. A login answers a failure that is
     /// not a listing failure, so the host's screen then opens its login pane.
     pub(crate) fn open_host(&mut self, source: &str, state: &mut crate::state::State) -> bool {

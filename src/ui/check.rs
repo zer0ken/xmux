@@ -1,4 +1,4 @@
-//! Hosts to check, grouped by cause with the reason each host last reported.
+//! Host problems, grouped by cause with the reason each host last reported.
 //! Lines are built from the entries the switcher derives.
 
 use ratatui::style::{Modifier, Style};

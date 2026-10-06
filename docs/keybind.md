@@ -20,8 +20,8 @@ single control byte, so it never collides with typed text, and a prefix pasted a
 | `k` / `j`, `h` / `l` | the same as `↑` / `↓` and `←` / `→` in the nav |
 | `Ctrl-↑` / `Ctrl-↓` | move up a level (session, source, host) / back down to the child |
 | `prefix i` (bare `i` in the nav) | select the current source and show its screen |
-| `prefix R` | re-scan the selected card's host alone |
-| `prefix h` | open the table of hosts to check |
+| `prefix r` | rescan this host: the selected card's host alone |
+| `prefix h` | open the table of host problems |
 | `prefix :` | open the command palette |
 | `prefix t` | toggle auto-hide-nav |
 | `prefix z` | collapse or expand the nav |
@@ -99,10 +99,10 @@ session card alike, and is refused under an unreachable host. An empty name is a
 by the mux where it names its own sessions, otherwise by xmux as an
 `<adjective>-<noun>` no session on that host holds.
 
-`prefix R` asks the selected card's machine again and nothing else: its reachability
+`prefix r` asks the selected card's machine again and nothing else: its reachability
 probe, then every source it serves. Its cards keep their sessions and numbers meanwhile,
-and it reports in one toast titled `re-scan <host>`. It is refused while that host is
-still scanning and while another re-scan has not reported; a `prefix r` pressed
+and it reports in one toast titled `rescan <host>`. It is refused while that host is
+still scanning and while another re-scan has not reported; a `prefix R` pressed
 meanwhile takes over.
 
 `prefix L` asks for `logout` typed in full. It removes the lines of the host's key files
@@ -160,7 +160,7 @@ moving that selection, and a click executes the item as `Enter` would.
   row. `↑`/`↓`, `PgUp`/`PgDn`, and `Home`/`End` scroll. `Esc` or `prefix ?` closes it.
 - **History** (`prefix m`): newest first, with how long ago each record happened.
   Opening it takes every toast down. `q`, `Esc`, or `prefix m` closes it.
-- **Hosts to check** (`prefix h`): `Enter` or a click selects the host's card, filtering
+- **Host problems** (`prefix h`): `Enter` or a click selects the host's card, filtering
   to its name when it has no card, and focuses its login pane when it needs a login.
 - **Filter** (`prefix /`): the list re-filters as you type, and the selection moves to
   the nearest visible card related to its card when that card is hidden. `Enter` keeps

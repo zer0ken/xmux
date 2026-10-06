@@ -870,7 +870,7 @@ fn inventory_rename_precedes_display_session_sync() {
 }
 
 #[tokio::test]
-async fn prefix_capital_r_probes_the_selected_machine_without_a_discovery_pass() {
+async fn prefix_r_probes_the_selected_machine_without_a_discovery_pass() {
     // The one-machine re-scan asks that machine alone: one reachability probe, no roster
     // resolution and no probe of any other machine.
     use crate::session::Session;
@@ -898,7 +898,7 @@ async fn prefix_capital_r_probes_the_selected_machine_without_a_discovery_pass()
     let selected = rt.model.switcher.current_source().unwrap();
 
     let mut width_changed = false;
-    let _ = rt.handle_nav_bytes(b"\x07R", &mut width_changed);
+    let _ = rt.handle_nav_bytes(b"\x07r", &mut width_changed);
 
     assert_eq!(rt.host_rescans, std::slice::from_ref(&selected));
     assert_eq!(rt.discovery_runs, 0, "no full discovery pass");
@@ -914,9 +914,9 @@ async fn prefix_capital_r_probes_the_selected_machine_without_a_discovery_pass()
 }
 
 #[tokio::test]
-async fn r_rescan_rebuilds_nav_and_kicks_discovery() {
-    // The client-initiated `r` re-scan resets the nav to its scanning skeleton and
-    // re-lists each host. Repeated `r` keys in one stdin read still form one pass.
+async fn capital_r_rescan_rebuilds_nav_and_kicks_discovery() {
+    // The client-initiated `R` re-scan resets the nav to its scanning skeleton and
+    // re-lists each host. Repeated `R` keys in one stdin read still form one pass.
     use crate::session::Session;
     use crate::ui::switcher::{Scan, Switcher};
     use crate::ui::tree::Group;
@@ -953,7 +953,7 @@ async fn r_rescan_rebuilds_nav_and_kicks_discovery() {
     rt.model.switcher = switcher;
 
     let mut width_changed = false;
-    let _ = rt.handle_nav_bytes(b"\x07r", &mut width_changed);
+    let _ = rt.handle_nav_bytes(b"\x07R", &mut width_changed);
 
     assert!(
         rt.model.state.groups.iter().all(|g| g.sessions.is_empty()),
@@ -966,7 +966,7 @@ async fn r_rescan_rebuilds_nav_and_kicks_discovery() {
     assert_eq!(rt.discovery_runs, 1, "one read starts one discovery pass");
 
     rt.discovery_runs = 0;
-    let _ = rt.handle_nav_bytes(b"\x07r\x07r", &mut width_changed);
+    let _ = rt.handle_nav_bytes(b"\x07R\x07R", &mut width_changed);
     assert_eq!(
         rt.discovery_runs, 1,
         "repeated rescan keys in one read share one discovery pass"
@@ -3283,8 +3283,8 @@ fn rt_terminal_focus_with_session() -> Runtime {
 // A re-scan starts roster resolution off the loop, so the harness needs the runtime
 // that the real loop always runs inside.
 #[tokio::test]
-async fn prefix_r_in_terminal_focus_kicks_rescan() {
-    // prefix r is focus-independent: from the terminal view it re-scans every host. The
+async fn prefix_capital_r_in_terminal_focus_kicks_rescan() {
+    // prefix R is focus-independent: from the terminal view it re-scans every host. The
     // re-scan clears each group's sessions, re-arms scanning, and flushes one discovery
     // pass after the terminal input batch.
     let mut rt = rt_terminal_focus_with_session();
@@ -3292,10 +3292,10 @@ async fn prefix_r_in_terminal_focus_kicks_rescan() {
         !rt.model.state.groups[0].sessions.is_empty(),
         "precondition: a session exists before the re-scan"
     );
-    rt.handle_stdin_bytes(b"\x07r", &Selection::default());
+    rt.handle_stdin_bytes(b"\x07R", &Selection::default());
     assert!(
         rt.model.state.groups[0].sessions.is_empty(),
-        "prefix r in terminal focus cleared sessions for a re-scan"
+        "prefix R in terminal focus cleared sessions for a re-scan"
     );
     assert!(
         rt.model.state.scanning.contains("jup"),

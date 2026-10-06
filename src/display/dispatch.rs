@@ -31,7 +31,7 @@ pub enum Action {
     ShowHelp,
     /// `prefix m`: toggle the history. Focus stays where it is.
     ShowHistory,
-    /// `prefix h`: toggle the table of the hosts to check. Focus stays where it is.
+    /// `prefix h`: toggle the table of host problems. Focus stays where it is.
     ShowCheck,
     /// Open the searchable command palette.
     ShowPalette,

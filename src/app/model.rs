@@ -97,7 +97,7 @@ pub(crate) struct RescanInFlight {
     /// The machines whose held password ssh refused during this re-scan. Their cards keep
     /// no failure of their own, so the summary is told here.
     locked: HashSet<String>,
-    /// The one machine a `prefix R` re-scan asked, or `None` for a full re-scan. The
+    /// The one machine a `prefix r` re-scan asked, or `None` for a full re-scan. The
     /// summary of a one-machine re-scan compares that machine's sources alone.
     machine: Option<String>,
     /// A full re-scan can use an already running one-machine probe instead of asking
@@ -1291,8 +1291,8 @@ fn settle_rescan(model: &mut AppModel) {
         state.chrome.source_label_when(source, answered)
     });
     let title = match &machine {
-        Some(machine) => format!("re-scan {machine}"),
-        None => "re-scan".to_string(),
+        Some(machine) => format!("rescan {machine}"),
+        None => "rescan all hosts".to_string(),
     };
     model.state.notify.toast(title, notes);
 }
@@ -1370,8 +1370,8 @@ fn run_palette_choice(model: &mut AppModel, choice: crate::state::PaletteChoice)
                 let key = match command {
                     KeyCommand::Filter => '/',
                     KeyCommand::NewSession => 'n',
-                    KeyCommand::Rescan => 'r',
-                    KeyCommand::RescanHost => 'R',
+                    KeyCommand::RescanHost => 'r',
+                    KeyCommand::Rescan => 'R',
                     KeyCommand::Logout => 'L',
                     _ => unreachable!(),
                 };
@@ -2233,7 +2233,7 @@ mod tests {
         let hint = model.state.chrome.selection_hint.clone().expect("a hint");
         assert_eq!(
             hint_text(&model),
-            " Enter focus the terminal · C-g n new session · 1 window",
+            " Enter focus terminal view · C-g n new session · 1 window",
             "the session's keys, from the key table, and its windows"
         );
         assert!(hint.until >= start + std::time::Duration::from_secs(3));
@@ -2268,7 +2268,7 @@ mod tests {
         update(&mut model, down());
         assert_eq!(
             hint_text(&model),
-            " Enter focus the terminal · C-g R re-scan this host · unreachable: ssh: connect to host prod port 22: Connection refused"
+            " Enter focus terminal view · C-g r rescan this host · unreachable: ssh: connect to host prod port 22: Connection refused"
         );
         // Any key read ends it before the key is applied; a key that moves nothing
         // raises nothing new.
@@ -2297,7 +2297,7 @@ mod tests {
         );
         assert!(!model.state.focus.view_is_nav());
         let text = hint_text(&model);
-        assert!(text.contains("C-g R"), "{text}");
+        assert!(text.contains("C-g r"), "{text}");
         assert!(
             !text.contains("Enter"),
             "Enter would reach the pane, so it is not offered: {text}"
@@ -2321,7 +2321,7 @@ mod tests {
     fn key_rescan_and_ctl_rescan_produce_the_same_effects() {
         let key = update(
             &mut model(),
-            Msg::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+            Msg::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)),
         );
         let ctl = update(&mut model(), Msg::Action(crate::model::Action::Rescan));
 
@@ -2573,7 +2573,7 @@ mod tests {
         );
         answer(&mut m, "b", &[], Some("ssh: connect to host b: timed out"));
         assert_eq!(m.state.notify.toasts.len(), 1, "one toast for the re-scan");
-        assert_eq!(m.state.notify.toasts[0].title, "re-scan");
+        assert_eq!(m.state.notify.toasts[0].title, "rescan all hosts");
         assert_eq!(
             note_texts(&m),
             ["1 session started: a/y", "b unreachable"],
@@ -3994,18 +3994,18 @@ mod tests {
         assert!(m.state.login_reports.contains_key("pwbox"));
     }
 
-    fn capital_r() -> Msg {
-        Msg::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE))
+    fn lower_r() -> Msg {
+        Msg::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE))
     }
 
     #[test]
-    fn prefix_capital_r_rescans_the_selected_machine_and_reports_it_alone() {
+    fn prefix_r_rescans_the_selected_machine_and_reports_it_alone() {
         let mut m = AppModel::from_sources(vec!["a".to_owned(), "b".to_owned()]);
         answer(&mut m, "a", &["x"], None);
         answer(&mut m, "b", &["y"], None);
         assert_eq!(m.switcher.current_source().as_deref(), Some("a"));
 
-        let effects = update(&mut m, capital_r());
+        let effects = update(&mut m, lower_r());
         assert!(
             matches!(
                 effects.as_slice(),
@@ -4023,11 +4023,11 @@ mod tests {
         assert!(m.state.notify.toasts.is_empty());
         answer(&mut m, "a", &["w", "x"], None);
         assert_eq!(m.state.notify.toasts.len(), 1);
-        assert_eq!(m.state.notify.toasts[0].title, "re-scan a");
+        assert_eq!(m.state.notify.toasts[0].title, "rescan a");
         assert_eq!(note_texts(&m), ["1 session started: a/w"]);
 
         // Nothing changed is said for that machine alone.
-        update(&mut m, capital_r());
+        update(&mut m, lower_r());
         answer(&mut m, "a", &["w", "x"], None);
         assert_eq!(
             m.state.notify.toasts[1].notes[0].text,
@@ -4040,7 +4040,7 @@ mod tests {
         let mut m = AppModel::from_sources(vec!["a".to_owned(), "b".to_owned()]);
         answer(&mut m, "a", &["x"], None);
         answer(&mut m, "b", &["y"], None);
-        update(&mut m, capital_r());
+        update(&mut m, lower_r());
         let effects = update(
             &mut m,
             Msg::Commands(vec![crate::model::Command::RescanHost("b".to_owned())]),
@@ -4057,7 +4057,7 @@ mod tests {
         answer(&mut m, "b", &["y"], None);
         assert_eq!(m.state.notify.toasts.len(), 1);
         assert_eq!(
-            m.state.notify.toasts[0].title, "re-scan",
+            m.state.notify.toasts[0].title, "rescan all hosts",
             "the full summary"
         );
     }

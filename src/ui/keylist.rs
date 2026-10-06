@@ -435,13 +435,13 @@ mod tests {
         assert!(w <= 160 && h <= 30);
         assert!(
             list.columns.iter().flatten().any(
-                |c| matches!(c, Cell::Key { key, desc } if key == "/" && desc == "filter the list")
+                |c| matches!(c, Cell::Key { key, desc } if key == "/" && desc == "filter cards")
             ),
             "{list:?}"
         );
         assert!(
             list.columns.iter().flatten().any(
-                |c| matches!(c, Cell::Key { key, desc } if key == "C-g" && desc == "send the prefix")
+                |c| matches!(c, Cell::Key { key, desc } if key == "C-g" && desc == "send prefix key")
             ),
             "the literal prefix row writes the configured prefix"
         );
@@ -522,10 +522,13 @@ mod tests {
                 _ => None,
             })
         };
-        assert_eq!(desc_of(&left, "→/↓").as_deref(), Some("focus the terminal"));
+        assert_eq!(
+            desc_of(&left, "→/↓").as_deref(),
+            Some("focus terminal view")
+        );
         assert_eq!(
             desc_of(&right, "←/↑").as_deref(),
-            Some("focus the terminal")
+            Some("focus terminal view")
         );
     }
 }

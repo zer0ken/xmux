@@ -47,9 +47,9 @@ view follows each selection.](docs/assets/xmux-nav-switch.gif)
 ![Holding prefix Ctrl-→ widens the nav one column per press, and Ctrl-← narrows
 it back.](docs/assets/xmux-nav-resize.gif)
 
-**Move the nav**
+**Place the nav**
 
-![Each prefix p moves the nav to the next side of the terminal view: top, right,
+![Each prefix p places the nav on the next side of the terminal view: top, right,
 bottom, then back to the left.](docs/assets/xmux-nav-move.gif)
 
 **Auto-hide the nav**
@@ -196,22 +196,23 @@ The nav takes these keys while it holds focus:
 | `Home` / `End`           | jump to the first / last card                                            |
 | `PageUp` / `PageDown`    | jump ten cards                                                           |
 | `Enter`                  | move focus into the selected session's terminal view                     |
-| `prefix 1`-`prefix 9`    | jump to a session by the number in its left column (keep typing for 10+) |
-| `prefix n`               | start a new session on the selected host                                 |
-| `prefix /`               | fuzzy-filter the cards                                                   |
-| `prefix r`               | re-scan: refresh which machines exist, and every source's sessions       |
-| `prefix L`               | log out of the selected SSH host                                         |
+| `prefix 1`-`prefix 9`    | jump to card number (keep typing for 10+)                                |
+| `prefix n`               | new session on the selected host                                         |
+| `prefix /`               | filter cards (fuzzy)                                                     |
+| `prefix r`               | rescan this host: the selected card's machine and its sources            |
+| `prefix R`               | rescan all hosts: refresh which machines exist, and every source's sessions |
+| `prefix L`               | log out of this host (an SSH host)                                       |
 
 xmux has its own prefix, like tmux's `set -g prefix`. The default is `Ctrl-g`,
 and `[ui] prefix` replaces it. A chord is the prefix followed by one key:
 
-| Chord        | Action                                           |
-| ------------ | ------------------------------------------------ |
-| `prefix q`   | quit                                             |
-| `prefix ?`   | toggle the help (type to search keys and glyphs) |
-| `prefix m`   | toggle the history of results and events         |
-| `prefix Tab` | move focus between the nav and the terminal view |
-| `prefix p`   | move the nav to the next side of the view        |
+| Chord        | Action                                                  |
+| ------------ | ------------------------------------------------------- |
+| `prefix q`   | quit xmux                                               |
+| `prefix ?`   | help and glyphs (type to search)                        |
+| `prefix m`   | message history of results and events                   |
+| `prefix Tab` | toggle focus between the nav and the terminal view      |
+| `prefix p`   | place nav on the next side of the view                  |
 
 Pressing the prefix opens a box beside the prefix indicator that lists every key it
 unlocks. A click on a card selects it, and a click on the terminal view focuses it.
@@ -391,10 +392,10 @@ mux = "tmux"          # omitted or "auto": every mux the host answers it has
   - braille-animation
   - nav-position
 
-  Host and roster edits take effect on a `prefix r` rescan.
+  Host and roster edits take effect on a `prefix R` rescan.
 - **Nav position.** The nav rides on one of the four sides of the terminal view
   (a left or right column, a top or bottom band). `[ui] nav-position` picks the
-  default, and the nav never moves on its own. `prefix p` moves it one side
+  default, and the nav never moves on its own. `prefix p` places it one side
   clockwise (left → top → right → bottom → default) and remembers the choice in
   `~/.xmux/nav_position`, which wins over the setting until the key cycles back
   to the default.

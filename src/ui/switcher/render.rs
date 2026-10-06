@@ -1834,7 +1834,7 @@ impl Switcher {
         )
     }
 
-    /// The body lines of the open list popup (the hosts to check or the command palette)
+    /// The body lines of the open list popup (the host problems or the command palette)
     /// in the popup `rect`, each with the item it belongs to, and the popup's frame. The
     /// paint and the pointer's hit-test both read this one answer.
     pub(super) fn list_popup_lines(
@@ -1863,7 +1863,7 @@ impl Switcher {
                 } else {
                     modal::CHECK_HINTS
                 };
-                Some((framed("hosts to check", meta, hints), lines))
+                Some((framed("host problems", meta, hints), lines))
             }
             Some(Modal::Palette {
                 query,
@@ -1984,7 +1984,7 @@ impl Switcher {
                     rect.width.saturating_sub(2),
                     palette,
                 );
-                (framed("history", meta, modal::HISTORY_HINTS), lines)
+                (framed("message history", meta, modal::HISTORY_HINTS), lines)
             }
             Some(Modal::Check { .. } | Modal::Palette { .. }) => {
                 let Some((chrome, lines)) = self.list_popup_lines(state, rect) else {
