@@ -7185,3 +7185,84 @@ fn a_wrapped_screen_value_keeps_every_character_in_the_view() {
         );
     }
 }
+
+/// What one palette execution left behind, as far as the user can see it: whether the
+/// read quits xmux, which view holds the focus, which popup is open, and the nav layout.
+fn palette_outcome(rt: &Runtime, out: &StdinOutcome) -> String {
+    use crate::state::{InputMode, Modal};
+    let modal = match &rt.model.state.modal {
+        None => "none",
+        Some(Modal::Help { .. }) => "help",
+        Some(Modal::History { .. }) => "history",
+        Some(Modal::Check { .. }) => "check",
+        Some(Modal::Palette { .. }) => "palette",
+        Some(Modal::Input(input)) => match input.mode {
+            InputMode::Filter => "filter",
+            InputMode::New => "new",
+            InputMode::Logout => "logout",
+            InputMode::LogoutKeys => "logout keys",
+            InputMode::Jump => "jump",
+        },
+    };
+    format!(
+        "quit={} focus={:?} modal={modal} collapsed={} auto_hide={} position={:?}",
+        out.quit,
+        rt.model.state.focus,
+        rt.model.nav_collapsed,
+        rt.model.auto_hide_nav,
+        rt.model.nav_position,
+    )
+}
+
+/// A runtime with the palette open in the given view's focus, laid out as a frame
+/// paints it so a click is hit-tested against the drawn popup.
+fn palette_rt(focus: crate::model::FocusTarget) -> Runtime {
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    let _ = update(&mut rt.model, Msg::Focus(focus));
+    let _ = update(&mut rt.model, Msg::TogglePalette);
+    sync_test_render_plan(&mut rt);
+    rt
+}
+
+#[tokio::test]
+async fn a_click_on_every_palette_entry_does_what_enter_on_it_does() {
+    use crate::model::FocusTarget;
+    for focus in [FocusTarget::Nav, FocusTarget::Terminal] {
+        let probe = palette_rt(focus);
+        let entries = probe.model.switcher.palette_entries(&probe.model.state, "");
+        assert!(entries.len() > 1, "the palette lists its commands");
+        for (index, (name, _)) in entries.iter().enumerate() {
+            let mut keyed = palette_rt(focus);
+            let mut keys = b"\x1b[B".repeat(index);
+            keys.push(b'\r');
+            let enter = keyed.handle_stdin_bytes(&keys, &Selection::default());
+            let enter = palette_outcome(&keyed, &enter);
+
+            let mut clicked = palette_rt(focus);
+            // The cell the click lands on is found by the same hit test the hover uses.
+            let popup = clicked.model.render_plan.popup_rect;
+            let cell = (popup.y..popup.bottom())
+                .flat_map(|row| (popup.x..popup.right()).map(move |col| (col, row)))
+                .find(|&(col, row)| {
+                    let _ = update(&mut clicked.model, Msg::HoverPopup { col, row });
+                    matches!(
+                        clicked.model.state.modal,
+                        Some(crate::state::Modal::Palette { hover: Some(h), .. }) if h == index
+                    )
+                })
+                .unwrap_or_else(|| panic!("{name} is drawn in the palette"));
+            let (col, row) = (cell.0 + 1, cell.1 + 1);
+            let press = clicked.handle_stdin_bytes(
+                format!("\x1b[<0;{col};{row}M").as_bytes(),
+                &Selection::default(),
+            );
+            assert!(!press.quit, "{name}: a press alone runs nothing");
+            let release = clicked.handle_stdin_bytes(
+                format!("\x1b[<0;{col};{row}m").as_bytes(),
+                &Selection::default(),
+            );
+            let click = palette_outcome(&clicked, &release);
+            assert_eq!(click, enter, "{name} from {focus:?} focus");
+        }
+    }
+}
