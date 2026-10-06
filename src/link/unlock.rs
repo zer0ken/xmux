@@ -373,7 +373,7 @@ fn classify_failure_with_host_key(
         FailureKind::Unreachable if lower.contains("could not resolve hostname") => {
             "the host name could not be resolved"
         }
-        FailureKind::Unreachable => "the host could not be reached",
+        FailureKind::Unreachable => "the machine could not be reached",
         FailureKind::Timeout => "timed out",
         FailureKind::Cancelled => "cancelled",
         FailureKind::Other if broker_unavailable => "xmux could not provide the held password",

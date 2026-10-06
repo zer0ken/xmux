@@ -674,10 +674,10 @@ impl Chrome {
         let total = machines.len();
         let done = total - scanning.len();
         if scanning.is_empty() {
-            format!("{done} of {total} hosts scanned")
+            format!("{done} of {total} machines scanned")
         } else {
             let sp = crate::ui::spinner_glyph(self.spinner_frame);
-            format!("{sp} {done} of {total} hosts scanned")
+            format!("{sp} {done} of {total} machines scanned")
         }
     }
 
@@ -753,6 +753,34 @@ impl Chrome {
                 matches!(kind, ViewScreen::Empty | ViewScreen::HostInfo),
             ),
         }
+    }
+
+    /// The ssh config entry the host of `source` matches, one row per line, or the row
+    /// saying none matches.
+    fn ssh_config_rows(&self, source: &str) -> Vec<(ScreenCell, String)> {
+        let stanza = self
+            .ssh_stanzas
+            .get(crate::session::machine_of(source))
+            .map(String::as_str)
+            .unwrap_or_default();
+        if stanza.is_empty() {
+            return vec![(
+                ScreenCell::Label("ssh config"),
+                "(no matching entry)".into(),
+            )];
+        }
+        stanza
+            .lines()
+            .enumerate()
+            .map(|(i, l)| {
+                let cell = if i == 0 {
+                    ScreenCell::Label("ssh config")
+                } else {
+                    ScreenCell::Continued
+                };
+                (cell, l.trim_end().to_string())
+            })
+            .collect()
     }
 
     /// The lines of [`render_view_screen`](Self::render_view_screen), and the row and
@@ -847,22 +875,25 @@ impl Chrome {
                 rows.push((ScreenCell::Label("failures"), failure_run_words(*runs)));
             }
             rows.push((ScreenCell::Gap, String::new()));
-            // What was asked, and of what. The mux and the machine are separate rows
-            // because they are the two independent things that can be wrong: the box may
-            // be up with no such mux on it, or the mux fine behind a box that cannot be
-            // reached.
+            // What was asked, and of what. The mux and the machine are the two
+            // independent things that can be wrong: the box may be up with no such mux
+            // on it, or the mux fine behind a box that cannot be reached. Each screen
+            // states its own half, and the other half is one link away.
             if let Some(reach) = self.source_reach.get(source) {
-                if !reach.mux.is_empty() {
-                    rows.push((ScreenCell::Label("mux"), reach.mux.clone()));
-                }
-                if !reach.machine.is_empty() {
-                    rows.push((ScreenCell::Label("machine"), reach.machine.clone()));
-                }
-                if !reach.socket.is_empty() {
-                    rows.push((ScreenCell::Label("socket"), reach.socket.clone()));
-                }
-                if !reach.probe.is_empty() {
-                    rows.push((ScreenCell::Label("probe"), reach.probe.clone()));
+                let level_rows = if host {
+                    [("machine", &reach.machine)].to_vec()
+                } else {
+                    [
+                        ("mux", &reach.mux),
+                        ("socket", &reach.socket),
+                        ("probe", &reach.probe),
+                    ]
+                    .to_vec()
+                };
+                for (label, value) in level_rows {
+                    if !value.is_empty() {
+                        rows.push((ScreenCell::Label(label), value.clone()));
+                    }
                 }
             }
             // WHERE this host came from, between what failed and how it is configured. A
@@ -873,28 +904,12 @@ impl Chrome {
             if let Some(provider) = self
                 .roster_providers
                 .get(crate::session::machine_of(source))
+                .filter(|_| host)
             {
                 rows.push((ScreenCell::Label("provider"), provider.clone()));
             }
-            let stanza = self
-                .ssh_stanzas
-                .get(crate::session::machine_of(source))
-                .map(String::as_str)
-                .unwrap_or_default();
-            if stanza.is_empty() {
-                rows.push((
-                    ScreenCell::Label("ssh config"),
-                    "(no matching entry)".into(),
-                ));
-            } else {
-                for (i, l) in stanza.lines().enumerate() {
-                    let cell = if i == 0 {
-                        ScreenCell::Label("ssh config")
-                    } else {
-                        ScreenCell::Continued
-                    };
-                    rows.push((cell, l.trim_end().to_string()));
-                }
+            if host {
+                rows.extend(self.ssh_config_rows(source));
             }
             // The other muxes on the SAME machine, each with what it answered. This is
             // the one row that tells the user which half is broken without leaving the
@@ -940,6 +955,7 @@ impl Chrome {
                     .map(|method| method.label())
                     .unwrap_or("not observed");
                 rows.push((ScreenCell::Label("SSH login"), method.into()));
+                rows.extend(self.ssh_config_rows(source));
             } else if let Some(reach) = reach.filter(|reach| !reach.machine.is_empty()) {
                 rows.push((ScreenCell::Label("machine"), reach.machine.clone()));
             }
@@ -1026,14 +1042,20 @@ impl Chrome {
             kind,
             ViewScreen::SelfSession | ViewScreen::Scanning | ViewScreen::Landing
         ) {
-            rows.push((ScreenCell::Key(format!("{p} r")), "rescan this host".into()));
-            rows.push((ScreenCell::Key(format!("{p} R")), "rescan all hosts".into()));
+            rows.push((
+                ScreenCell::Key(format!("{p} r")),
+                "rescan this machine".into(),
+            ));
+            rows.push((
+                ScreenCell::Key(format!("{p} R")),
+                "rescan all machines".into(),
+            ));
         }
         if kind == ViewScreen::Host && self.source_reach.get(source).is_some_and(|reach| reach.ssh)
         {
             rows.push((
                 ScreenCell::Key(format!("{p} L")),
-                "log out of this host".into(),
+                "log out of this machine".into(),
             ));
         }
 
@@ -1071,8 +1093,14 @@ impl Chrome {
             rows.push((ScreenCell::Label("status"), failure_run_words(failures)));
             rows.push((ScreenCell::Gap, String::new()));
             rows.push((ScreenCell::Label("What to do"), String::new()));
-            rows.push((ScreenCell::Key(format!("{p} r")), "rescan this host".into()));
-            rows.push((ScreenCell::Key(format!("{p} R")), "rescan all hosts".into()));
+            rows.push((
+                ScreenCell::Key(format!("{p} r")),
+                "rescan this machine".into(),
+            ));
+            rows.push((
+                ScreenCell::Key(format!("{p} R")),
+                "rescan all machines".into(),
+            ));
             rows.push((ScreenCell::Gap, String::new()));
             rows.push((
                 ScreenCell::Label("d details"),
@@ -1123,7 +1151,7 @@ impl Chrome {
         // which the headline carries.
         let landing = kind == ViewScreen::Landing;
         let listed = if host || landing { 0 } else { 1 };
-        let name = if host { "sources" } else { "sessions" };
+        let name = if host { "muxes" } else { "sessions" };
         // Card numbers line up by units place, as they do in the nav's address column.
         let number_w = view
             .links
@@ -1202,6 +1230,20 @@ impl Chrome {
             .fg(pal.secondary)
             .add_modifier(Modifier::BOLD);
         let mut links: Vec<LinkCell> = Vec::new();
+        // A host's and a source's screen look alike, so the headline names the level
+        // before the path: the user reads `machine db-01` or `mux db-01/tmux` and knows
+        // which one every row and key below it is about.
+        let level = match kind {
+            ViewScreen::SelfSession | ViewScreen::Landing => "",
+            _ if headline.is_empty() => "",
+            _ if host => "machine ",
+            _ => "mux ",
+        };
+        let lead = vec![
+            Span::raw(" "),
+            Span::styled(level, Style::default().fg(pal.decoration)),
+        ];
+        let path_col = 1 + level.len() as u16;
         // A source's headline is its path, and the host half of the path is the link up
         // to the host's screen.
         let headline_line = match view.links.first() {
@@ -1214,19 +1256,24 @@ impl Chrome {
                 links.push((
                     0,
                     1,
-                    1,
+                    path_col,
                     unicode_width::UnicodeWidthStr::width(up.label.as_str()) as u16,
                 ));
-                Line::from(vec![
-                    Span::raw(" "),
-                    Span::styled(
-                        up.label.clone(),
-                        link_style(pal, 0, marks).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(rest, bold),
-                ])
+                Line::from(
+                    [
+                        lead,
+                        vec![
+                            Span::styled(
+                                up.label.clone(),
+                                link_style(pal, 0, marks).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(rest, bold),
+                        ],
+                    ]
+                    .concat(),
+                )
             }
-            _ => Line::from(Span::styled(format!(" {headline}"), bold)),
+            _ => Line::from([lead, vec![Span::styled(headline, bold)]].concat()),
         };
         let mut out = vec![
             Line::from(""),
@@ -1689,7 +1736,7 @@ impl Chrome {
             let sp = crate::ui::spinner_glyph(self.spinner_frame);
             fit(
                 &[
-                    format!(" {sp} scanning hosts {done}/{total}…"),
+                    format!(" {sp} scanning muxes {done}/{total}…"),
                     format!(" {sp} scanning {done}/{total}…"),
                     format!(" {sp} {done}/{total}"),
                     format!(" {sp}{done}/{total}"),
@@ -2096,7 +2143,11 @@ mod tests {
                     "focus terminal view".into(),
                     "terminal".into(),
                 ),
-                ("C-g r".into(), "rescan this host".into(), "rescan".into()),
+                (
+                    "C-g r".into(),
+                    "rescan this machine".into(),
+                    "rescan".into(),
+                ),
             ],
             "unreachable: Connection refused".into(),
             now,
@@ -2104,7 +2155,7 @@ mod tests {
         let wide = c.hint_bar_text(200, &state);
         assert_eq!(
             wide,
-            " Enter focus terminal view · C-g r rescan this host · unreachable: Connection refused"
+            " Enter focus terminal view · C-g r rescan this machine · unreachable: Connection refused"
         );
         // Shorter descriptions first, then the reason behind the state word, then keys.
         let short = c.hint_bar_text(70, &state);
