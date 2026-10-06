@@ -237,6 +237,14 @@ impl Chrome {
         self.ssh_stanzas = stanzas;
     }
 
+    /// Sets one machine's login values and ssh stanza, read again after its ssh config
+    /// changed.
+    pub(crate) fn set_ssh_facts(&mut self, machine: &str, facts: crate::provision::env::SshFacts) {
+        self.login_defaults
+            .insert(machine.to_string(), facts.defaults);
+        self.ssh_stanzas.insert(machine.to_string(), facts.stanza);
+    }
+
     /// What ssh WOULD use to reach `host`, as the login pane's starting values: the
     /// address, the port, and the username, as provisioning resolved them.
     ///

@@ -320,6 +320,7 @@ impl Runtime {
                         });
                     });
                 }
+                Effect::ReadSshFacts { machine } => self.read_ssh_facts(machine),
                 Effect::LogoutMachine {
                     machine,
                     cancel_login,
@@ -367,6 +368,7 @@ impl Runtime {
                     Command::RescanMachine(machine) => {
                         #[cfg(test)]
                         self.machine_rescans.push(machine.clone());
+                        self.read_ssh_facts(machine.clone());
                         probe_machine(
                             &machine,
                             &self.hosts,

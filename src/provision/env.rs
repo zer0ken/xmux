@@ -63,6 +63,32 @@ impl LoginDefaults {
     }
 }
 
+/// What ssh config says about one machine: the login pane's starting values and the
+/// stanza the machine screen shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SshFacts {
+    pub defaults: LoginDefaults,
+    pub stanza: String,
+}
+
+/// Reads `machine`'s [`SshFacts`] from the ssh config file as it is now, with OpenSSH's
+/// effective configuration. The roster resolution reads them for every machine at once;
+/// this reads one machine's after xmux edits the file, and on a machine rescan, so the
+/// login pane and the machine screen follow the file instead of an earlier resolution.
+pub async fn read_ssh_facts(machine: String, provider_address: Option<String>) -> SshFacts {
+    let (text, _) = config::read_ssh_config(&ssh_config_path());
+    let profile = resolve_ssh_profile(&machine, &crate::transport::Login::default()).await;
+    SshFacts {
+        defaults: config::login_defaults(
+            &machine,
+            provider_address.as_deref(),
+            profile.as_ref().map(|profile| &profile.login),
+            &text,
+        ),
+        stanza: config::host_stanza(&text, &machine),
+    }
+}
+
 #[cfg(test)]
 mod login_defaults_tests {
     use super::*;
@@ -588,6 +614,18 @@ impl Env {
     /// caller use [`Env::with_roster`], which cannot leak it.
     pub fn roster(&self) -> std::sync::RwLockReadGuard<'_, Roster> {
         self.roster.read().expect("roster lock")
+    }
+
+    /// Records `machine`'s freshly read [`SshFacts`] in the roster, so a later reader of
+    /// the roster, a probe-carried machine included, starts from them.
+    pub fn set_ssh_facts(&self, machine: &str, facts: &SshFacts) {
+        let mut roster = self.roster.write().expect("roster lock");
+        roster
+            .login_defaults
+            .insert(machine.to_string(), facts.defaults.clone());
+        roster
+            .ssh_stanzas
+            .insert(machine.to_string(), facts.stanza.clone());
     }
 
     /// Reads the roster and returns whatever the closure takes from it. The guard cannot

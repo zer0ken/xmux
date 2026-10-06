@@ -428,6 +428,44 @@ impl State {
         modal_kind(&self.modal)
     }
 
+    /// Takes what ssh config now says about `machine`. The chrome renders the new values,
+    /// and an open login draft on the machine follows them: a field still at its old
+    /// starting value takes the new one, so only what the user typed is kept, and the
+    /// ssh config choice is offered against what ssh now uses.
+    pub(crate) fn set_ssh_facts(&mut self, machine: &str, facts: crate::provision::env::SshFacts) {
+        if let Some(draft) = self
+            .login
+            .as_mut()
+            .filter(|draft| crate::session::machine_of(&draft.host) == machine)
+        {
+            let defaults = &facts.defaults;
+            for (value, start, fresh) in [
+                (
+                    &mut draft.address,
+                    &mut draft.default_address,
+                    &defaults.address.value,
+                ),
+                (
+                    &mut draft.port,
+                    &mut draft.default_port,
+                    &defaults.port.value,
+                ),
+                (
+                    &mut draft.username,
+                    &mut draft.default_username,
+                    &defaults.username.value,
+                ),
+            ] {
+                if value == start {
+                    value.clone_from(fresh);
+                }
+                start.clone_from(fresh);
+            }
+            draft.ssh_effective.clone_from(&defaults.ssh_effective);
+        }
+        self.chrome.set_ssh_facts(machine, facts);
+    }
+
     /// Feeds terminal-view keystrokes into the login pane for `host`.
     ///
     /// The pane is a form: printable characters land in the focused text field, Tab and
@@ -862,12 +900,13 @@ impl State {
                 }
                 OpFollow::Nothing
             }
-            // A logout's steps are no inventory mutation: the application update
-            // transition reads them before the switcher sees any result.
+            // A logout's steps and re-read ssh facts are no inventory mutation: the
+            // application update transition reads them before the switcher sees any result.
             OpResult::MachineKeysFound { .. }
             | OpResult::MachineKeysRemoved { .. }
             | OpResult::SshConfigEntriesFound { .. }
-            | OpResult::SshConfigEntriesRemoved { .. } => OpFollow::Nothing,
+            | OpResult::SshConfigEntriesRemoved { .. }
+            | OpResult::SshFactsRead { .. } => OpFollow::Nothing,
         }
     }
 

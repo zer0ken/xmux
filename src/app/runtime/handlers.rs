@@ -1638,6 +1638,9 @@ impl Runtime {
     /// connected), so re-probe just it - over what the login left behind - instead of the
     /// whole roster. The re-probe is what turns the pane back into the host's sessions.
     pub(super) fn on_op_result(&mut self, result: crate::ui::switcher::OpResult) {
+        if let crate::ui::switcher::OpResult::SshFactsRead { machine, facts } = &result {
+            self.env.set_ssh_facts(machine, facts);
+        }
         let effects = update(
             &mut self.model,
             Msg::OpResult {
@@ -1646,6 +1649,27 @@ impl Runtime {
             },
         );
         let _ = self.execute_effects(effects);
+    }
+
+    /// Reads what ssh config says about `machine` off the loop, and answers through the
+    /// op channel. Only a machine reached over ssh has any: a local machine or a WSL
+    /// distribution is not looked up in ssh config.
+    pub(super) fn read_ssh_facts(&self, machine: String) {
+        if !self
+            .hosts
+            .machine_transport(&machine)
+            .is_some_and(|transport| transport.is_remote())
+        {
+            return;
+        }
+        let address = self
+            .env
+            .with_roster(|roster| roster.machine_addresses.get(&machine).cloned());
+        let tx = self.op_tx.clone();
+        tokio::spawn(async move {
+            let facts = crate::provision::env::read_ssh_facts(machine.clone(), address).await;
+            let _ = tx.send(crate::ui::switcher::OpResult::SshFactsRead { machine, facts });
+        });
     }
 
     /// Drives one debounce beat: folds the clock and the runtime attach facts into
