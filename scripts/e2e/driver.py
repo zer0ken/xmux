@@ -23,6 +23,11 @@ KEYS = {
     "Home": "\x1b[H", "End": "\x1b[F", "C-g": "\x07", "C-u": "\x15",
 }
 
+# The background of the hard selection under xmux's default theme: the LightGreen accent,
+# as pyte reads the 256-colour index crossterm writes for it, or as the 16-colour code a
+# ConPTY may re-encode it to.
+ACCENT_BG = frozenset({"00ff00", "brightgreen"})
+
 QUERIES = re.compile(r"\x1b\[6n|\x1b\[0?c|\x1b\[\?u|\x1b\](1[01]);\?(?:\x07|\x1b\\)")
 
 
@@ -100,7 +105,9 @@ class Term:
             rows = []
             for y, text in enumerate(self.screen.display):
                 row = Row(text)
-                row.reversed = frozenset(x for x, ch in self.screen.buffer[y].items() if ch.reverse)
+                row.selected = frozenset(
+                    x for x, ch in self.screen.buffer[y].items() if ch.bg in ACCENT_BG
+                )
                 rows.append(row)
             return rows
 
@@ -151,15 +158,15 @@ class Term:
 
 
 class Row(str):
-    """A screen row's text and the columns whose cell is reverse video, the look of the
-    hard selection."""
+    """A screen row's text and the columns whose cell has the accent background, the look
+    of the hard selection."""
 
-    reversed = frozenset()
+    selected = frozenset()
 
 
 # The nav is the left column up to its view border. A section title is `host/mux` at
 # column 0 and its session cards follow it; a card is a number and a name, and the
-# selected card's cells are reversed. The host cards come after a blank row, outside any
+# selected card's cells have the accent background. The host cards come after a blank row, outside any
 # section.
 BORDER = "│"
 CARD = re.compile(r"^\s*(\d+)\s+(\S+)")
@@ -188,7 +195,7 @@ def nav_cards(lines):
             continue
         m = CARD.match(ln)
         if m:
-            selected = m.start(1) in getattr(lines[i], "reversed", ())
+            selected = m.start(1) in getattr(lines[i], "selected", ())
             num = None if selected else int(m.group(1))
             cards.append((num, section, m.group(2)))
     return cards

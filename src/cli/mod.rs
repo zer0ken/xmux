@@ -397,7 +397,7 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
     let config_broken = cfg_err.is_some();
     // Taken from the roster in one read, as owned values: the probes below are awaited,
     // and a lock guard has no business spanning an ssh round trip.
-    let (warnings, mux_source, local_muxes, selection_bg, theme) = env.with_roster(|r| {
+    let (warnings, mux_source, local_muxes, palette, theme) = env.with_roster(|r| {
         (
             r.cfg_warnings.clone(),
             // Where the list came from matters when it is short a mux the user expected:
@@ -409,7 +409,10 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
                 "from config.toml"
             },
             r.local_muxes.join(", "),
-            crate::ui::chrome::parse_selection_bg(&r.cfg.ui.selection_style),
+            crate::ui::palette::resolve_output(
+                &r.cfg.ui.theme,
+                crate::ui::chrome::palette_overrides(&r.cfg.ui),
+            ),
             r.cfg.ui.theme.clone(),
         )
     });
@@ -428,7 +431,7 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
         Some((name, _)) => println!("theme: {theme} (resolved to {name})"),
         None => println!("theme: {theme} — UNKNOWN, falling back to auto-dark"),
     }
-    println!("{}", crate::ui::palette::selection_report(selection_bg));
+    println!("{}", crate::ui::palette::selection_report(&palette));
     if ssh_on_path() {
         println!("ssh: ok");
     } else {

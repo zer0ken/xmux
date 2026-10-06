@@ -27,7 +27,7 @@ layer reads and paints them and owns only transient popup geometry.
 ## Invariants
 
 - The selection is a node (machine, host, or session), not a row; a row is only where
-  the node stands. Only the selected half of a section title inverts.
+  the node stands. Only the selected half of a section title is highlighted.
 - A machine and its mux are one label, and the mux in it is resolved once per card, so a
   session card, its host's card, and the screen behind either cannot spell one mux
   three ways.

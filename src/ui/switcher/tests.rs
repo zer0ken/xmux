@@ -9,6 +9,12 @@ use unicode_width::UnicodeWidthStr;
 
 use super::tests_support::auto_nav;
 
+/// A cell painted in the hard selection's look under the default `auto-dark` theme: the
+/// LightGreen accent behind it.
+fn on_accent(cell: &ratatui::buffer::Cell) -> bool {
+    cell.bg == Color::LightGreen
+}
+
 // --- mock ops -----------------------------------------------------------
 
 #[derive(Default)]
@@ -368,7 +374,7 @@ fn sess(host: &str, name: &str, windows: i64, attached: bool) -> Session {
 }
 
 /// Adds a decoy session on a host whose name sorts first, so the card under test is
-/// NOT the selected one. The selected card is painted in reverse video, which flattens
+/// NOT the selected one. The selected card is painted in the accent pair, which flattens
 /// every level colour on it by design, so a colour assertion has to read an unselected
 /// card. The decoy's own words (`aaa`, `parked`, `psmux`) collide with no needle in
 /// these tests.
@@ -1568,7 +1574,7 @@ async fn interaction_screens_render_key_tokens_in_one_shape() {
 #[tokio::test]
 async fn an_unselected_unreachable_card_keeps_the_warning_mark() {
     // The ▲ mark keeps the error colour. The SELECTED card is painted in
-    // reverse video, which flattens every level colour on it by design, so the colour
+    // the accent pair, which flattens every level colour on it by design, so the colour
     // assertion reads an UNSELECTED unreachable card.
     let scan = selection_parked_elsewhere(Scan {
         groups: vec![Group {
@@ -2516,7 +2522,7 @@ async fn a_step_note_over_several_lines_renders_one_line_each() {
 }
 
 #[tokio::test]
-async fn login_inputs_are_grouped_and_the_focused_value_inverts() {
+async fn login_inputs_are_grouped_and_the_focused_value_is_highlighted() {
     let mut h = refused_login_harness();
     h.state.login = Some(crate::state::LoginDraft {
         host: "pwbox".into(),
@@ -2544,37 +2550,32 @@ async fn login_inputs_are_grouped_and_the_focused_value_inverts() {
         "{out}"
     );
 
-    let reversed = |h: &Harness, text: &str| {
-        h.view_cell_of(text)
-            .unwrap()
-            .1
-            .add_modifier
-            .contains(Modifier::REVERSED)
-    };
-    assert!(reversed(&h, "alice"), "the focused value inverts:\n{out}");
-    assert!(!reversed(&h, "username*"), "the label stays plain");
-    assert!(!reversed(&h, "address*"), "other names do not");
+    let lit =
+        |h: &Harness, text: &str| h.view_cell_of(text).unwrap().1.bg == Some(Color::LightGreen);
+    assert!(lit(&h, "alice"), "the focused value is highlighted:\n{out}");
+    assert!(!lit(&h, "username*"), "the label stays plain");
+    assert!(!lit(&h, "address*"), "other names do not");
     assert!(
-        !reversed(&h, " username*"),
+        !lit(&h, " username*"),
         "the padding before the name stays plain"
     );
 
     h.state.login.as_mut().unwrap().focus = crate::state::LoginFocus::AfterSshConfig;
     h.draw_terminal_focused();
-    assert!(reversed(&h, "( ) save connection"));
+    assert!(lit(&h, "( ) save connection"));
     assert!(h
         .view_text()
         .contains(" ( ) save connection to ssh config "));
 
-    // A stop without a name inverts its own text.
+    // A stop without a name is highlighted over its own text.
     h.state.login.as_mut().unwrap().focus = crate::state::LoginFocus::Submit;
     h.draw_terminal_focused();
-    assert!(reversed(&h, "Log in"));
-    assert!(!reversed(&h, "username*"));
+    assert!(lit(&h, "Log in"));
+    assert!(!lit(&h, "username*"));
 
     // The pane takes keys only while the terminal view is focused, and says so.
     h.draw();
-    assert!(!reversed(&h, "Log in"));
+    assert!(!lit(&h, "Log in"));
 }
 
 #[tokio::test]
@@ -3154,48 +3155,51 @@ fn hint_bar_text_reflects_configured_prefix() {
 }
 
 #[tokio::test]
-async fn the_selected_card_is_painted_in_the_terminals_own_reverse_video() {
-    // With no `[ui] selection-style` set, xmux picks no colour for the selection at all:
-    // the row carries REVERSED and the terminal swaps its own pair, so the selection is
-    // as legible as that theme's text on every theme. Both the fg and the bg are pinned
-    // to Reset, which is what stops the swap from striping the row in the card's level
-    // colours cell by cell.
+async fn the_selected_card_is_painted_in_the_themes_accent() {
+    // With no `[ui] selection-style` set, the selected card is the theme's on-accent text
+    // on its accent, over every cell: the dim number and the level-coloured name alike,
+    // so no colour of the card survives inside the highlight.
     let mut h = Harness::new(sample());
     h.key(KeyCode::Down).await; // step onto local/editor's card
     let sel = h.nav_row_of("editor").expect("editor row");
     let other = h.nav_row_of("inference").expect("inference row");
-    let cell = h.buf()[(4, sel)].clone();
+    for x in [CARD_INDENT, 4] {
+        let cell = h.buf()[(x, sel)].clone();
+        assert!(
+            on_accent(&cell),
+            "the selected row is on the accent: {cell:?}"
+        );
+        assert_eq!(cell.fg, Color::Black, "in the on-accent text: {cell:?}");
+        assert!(
+            !cell.modifier.intersects(Modifier::REVERSED | Modifier::DIM),
+            "neither swapped nor dimmed: {cell:?}"
+        );
+    }
     assert!(
-        cell.modifier.contains(Modifier::REVERSED),
-        "the selected row inverts: {cell:?}"
-    );
-    assert_eq!(cell.fg, Color::Reset, "no colour of xmux's own under it");
-    assert_eq!(cell.bg, Color::Reset, "nor behind it");
-    assert!(
-        !h.buf()[(4, other)].modifier.contains(Modifier::REVERSED),
-        "and only that row inverts: {other}"
+        !on_accent(&h.buf()[(4, other)]),
+        "and only that row is: {other}"
     );
     assert_eq!(
         h.buf()[(CARD_INDENT, sel)].symbol(),
         "2",
-        "the selected card keeps its number; the reversal alone marks it"
+        "the selected card keeps its number; the highlight alone marks it"
     );
 }
 
 #[tokio::test]
-async fn selected_card_stays_reversed_with_terminal_focus() {
+async fn selected_card_stays_highlighted_with_terminal_focus() {
     let mut h = Harness::new(sample());
     h.key(KeyCode::Down).await;
     h.sw.sync_view_focus(true);
     h.draw_terminal_focused();
     let selected = h.nav_row_of("editor").expect("editor row");
     let other = h.nav_row_of("inference").expect("inference row");
-    assert!(h.buf()[(4, selected)].modifier.contains(Modifier::REVERSED));
-    assert!(!h.buf()[(4, other)].modifier.contains(Modifier::REVERSED));
+    assert!(on_accent(&h.buf()[(4, selected)]));
+    assert!(!on_accent(&h.buf()[(4, other)]));
 }
 
 #[tokio::test]
-async fn selected_host_card_stays_reversed_with_terminal_focus() {
+async fn selected_host_card_stays_highlighted_with_terminal_focus() {
     let mut h = Harness::new_sized(scan_with_a_host_band(), 60, 70);
     h.key(KeyCode::Right).await;
     h.key(KeyCode::Right).await;
@@ -3212,11 +3216,11 @@ async fn selected_host_card_stays_reversed_with_terminal_focus() {
         .find(|(i, _)| *i == h.sw.selected)
         .expect("selected host card");
     assert!(
-        (rect.x..rect.right()).all(|x| h.buf()[(x, rect.y)].modifier.contains(Modifier::REVERSED)),
-        "rect={rect:?} row={:?} modifiers={:?}",
+        (rect.x..rect.right()).all(|x| on_accent(&h.buf()[(x, rect.y)])),
+        "rect={rect:?} row={:?} backgrounds={:?}",
         nav_line(&h, rect.y),
         (rect.x..rect.right())
-            .map(|x| h.buf()[(x, rect.y)].modifier)
+            .map(|x| h.buf()[(x, rect.y)].bg)
             .collect::<Vec<_>>()
     );
 }
@@ -4514,10 +4518,10 @@ async fn a_split_sections_cards_read_at_one_offset_in_every_column() {
 }
 
 #[tokio::test]
-async fn the_selections_inversion_stops_at_the_card_and_spares_the_indent() {
+async fn the_selections_highlight_stops_at_the_card_and_spares_the_indent() {
     // The indent is the title's, not the card's. The selection paints a card by
-    // inverting its whole rect, so the rect starts past the indent and the indent stays
-    // blank on the selected card's row.
+    // highlighting its whole rect, so the rect starts past the indent and the indent
+    // stays blank on the selected card's row.
     let h = Harness::new_sized(sample(), 60, 70);
     assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
     let sel = h.sw.selected;
@@ -4533,15 +4537,12 @@ async fn the_selections_inversion_stops_at_the_card_and_spares_the_indent() {
     );
     let buf = h.buf();
     assert!(
-        buf[(rect.x, rect.y)].modifier.contains(Modifier::REVERSED),
-        "the card itself is painted in the terminal's own reverse video"
+        on_accent(&buf[(rect.x, rect.y)]),
+        "the card itself is painted on the accent"
     );
     let strip = &buf[(rect.x - CARD_INDENT, rect.y)];
     assert_eq!(strip.symbol(), " ", "the indent is blank");
-    assert!(
-        !strip.modifier.contains(Modifier::REVERSED),
-        "and the inversion does not reach it"
-    );
+    assert!(!on_accent(strip), "and the highlight does not reach it");
 }
 
 #[tokio::test]
@@ -6967,7 +6968,7 @@ fn hovering_a_help_tab_shows_its_section_until_the_pointer_leaves() {
     let (lit_col, _) = h.tab_cell(0, false);
     assert!(
         !buf[(lit_col, row)].modifier.contains(Modifier::UNDERLINED)
-            && buf[(lit_col, row)].modifier.contains(Modifier::REVERSED),
+            && on_accent(&buf[(lit_col, row)]),
         "the hard-selected tab keeps its own look"
     );
     // The pointer moves down onto the body: the body returns to the hard selection.
@@ -7741,7 +7742,7 @@ fn portrait_scanning_hosts_start_at_the_left_until_found() {
 }
 
 #[test]
-fn floating_host_status_has_reversed_padding_on_both_sides() {
+fn floating_host_status_has_highlighted_padding_on_both_sides() {
     let scan = Scan {
         groups: vec![Group {
             host: "local".into(),
@@ -7762,9 +7763,8 @@ fn floating_host_status_has_reversed_padding_on_both_sides() {
         })
         .expect("the status has one space on each side");
     assert!(
-        (start..start + label.len() as u16)
-            .all(|x| buf[(x, card.y)].modifier.contains(Modifier::REVERSED)),
-        "both spaces belong to the reversed status"
+        (start..start + label.len() as u16).all(|x| on_accent(&buf[(x, card.y)])),
+        "both spaces belong to the highlighted status"
     );
     assert!(card.width < 20, "the status does not widen the card");
 }
@@ -7784,9 +7784,7 @@ fn floating_host_status_preserves_the_selected_card_in_a_narrow_band() {
         .map(|x| term.backend().buffer()[(x, card.y)].symbol())
         .collect::<String>();
     assert!(
-        (0..24).any(|x| term.backend().buffer()[(x, card.y)]
-            .modifier
-            .contains(Modifier::REVERSED)),
+        (0..24).any(|x| on_accent(&term.backend().buffer()[(x, card.y)])),
         "the selected card remains identifiable: {row}"
     );
     assert!(
@@ -7808,9 +7806,8 @@ fn floating_host_status_preserves_the_selected_card_in_a_narrow_band() {
         })
         .expect("the narrow status fits inside the nav");
     assert!(
-        (start..start + label.len() as u16)
-            .all(|x| buf[(x, card.y)].modifier.contains(Modifier::REVERSED)),
-        "both spaces stay inside the reversed label"
+        (start..start + label.len() as u16).all(|x| on_accent(&buf[(x, card.y)])),
+        "both spaces stay inside the highlighted label"
     );
 }
 
@@ -7974,10 +7971,8 @@ fn the_side_lists_overflow_thickens_the_seam_and_spares_every_card() {
         "the selected card reaches the nav's last column"
     );
     assert!(
-        buf[(sel_rect.x, sel_rect.y)]
-            .modifier
-            .contains(Modifier::REVERSED),
-        "the selected card itself is still inverted"
+        on_accent(&buf[(sel_rect.x, sel_rect.y)]),
+        "the selected card itself is still highlighted"
     );
 }
 

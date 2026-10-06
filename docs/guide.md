@@ -182,8 +182,9 @@ nav-position = "left"                 # the nav's default side (left|top|right|b
 max-fps = 30                          # maximum xmux draws per second (10 to 120)
 view-active-border-style = "green"    # focused view-border colour
 hint-bar-style = "bg=blue,fg=white"   # hint bar colour (tmux status-style)
+selection-style = ""                  # selection background; empty: the theme's accent
 primary = "brightwhite"               # per-role colour overrides: primary, secondary,
-accent = "lightgreen"                 # accent, decoration, warning, error, disabled,
+accent = "brightgreen"                # accent, decoration, warning, error, disabled,
 bar-bg = "colour235"                  # and the hint bar's bar-bg / bar-fg / bar-accent
 
 [update]
