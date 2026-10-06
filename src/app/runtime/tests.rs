@@ -4776,6 +4776,103 @@ fn feed_login_after_login_radio_keeps_one_choice() {
     );
 }
 
+/// A state whose login pane for `prod` starts at what its ssh config already resolves:
+/// 192.0.2.7, port 2222, user dev.
+fn state_with_saved_login() -> State {
+    use crate::provision::env::{LoginDefaults, LoginValue};
+    let mut s = State::default();
+    let value = |value: &str| LoginValue {
+        value: value.into(),
+        provenance: "from ssh config",
+    };
+    s.chrome.set_login_defaults(
+        [(
+            "prod".to_string(),
+            LoginDefaults {
+                address: value("192.0.2.7"),
+                port: value("2222"),
+                username: value("dev"),
+                resolved: crate::transport::Login {
+                    address: Some("192.0.2.7".into()),
+                    port: Some(2222),
+                    user: Some("dev".into()),
+                },
+            },
+        )]
+        .into(),
+        Default::default(),
+    );
+    s.feed_login("prod", b"");
+    s
+}
+
+#[test]
+fn feed_login_hides_the_ssh_config_choice_when_ssh_already_resolves_the_values() {
+    let s = state_with_saved_login();
+    let d = s.login.as_ref().unwrap();
+    assert!(!d.offers_ssh_config());
+    assert!(!d.stops(false).contains(&LoginFocus::AfterSshConfig));
+    // ssh compares host names without case, so a differently cased address is the same.
+    let mut upper = d.clone();
+    upper.address = "HOST.EXAMPLE".into();
+    upper.resolved.address = Some("host.example".into());
+    assert!(!upper.offers_ssh_config());
+}
+
+#[test]
+fn feed_login_offers_the_ssh_config_choice_when_any_value_differs() {
+    let s = state_with_saved_login();
+    let d = s.login.as_ref().unwrap();
+    for edit in [
+        |d: &mut LoginDraft| d.address = "192.0.2.8".into(),
+        |d: &mut LoginDraft| d.port = "22".into(),
+        |d: &mut LoginDraft| d.username = "root".into(),
+    ] {
+        let mut changed = d.clone();
+        edit(&mut changed);
+        assert!(changed.offers_ssh_config(), "{changed:?}");
+        assert!(changed.stops(false).contains(&LoginFocus::AfterSshConfig));
+    }
+    // A value ssh does not resolve cannot be known to match.
+    let mut unresolved = d.clone();
+    unresolved.resolved.user = None;
+    assert!(unresolved.offers_ssh_config());
+}
+
+#[test]
+fn feed_login_focus_skips_the_hidden_ssh_config_choice() {
+    let mut s = state_with_saved_login();
+    for _ in 0..4 {
+        s.feed_login("prod", b"\t");
+    }
+    assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::AfterNothing);
+    s.feed_login("prod", b"\t");
+    assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::AfterPublicKey);
+    s.feed_login("prod", b"\x1b[A");
+    assert_eq!(s.login.as_ref().unwrap().focus, LoginFocus::AfterNothing);
+}
+
+#[test]
+fn feed_login_drops_the_ssh_config_pick_once_the_choice_hides() {
+    let mut s = state_with_saved_login();
+    // Port 22 differs from the saved 2222, so the choice appears and is picked.
+    s.feed_login("prod", b"\t\x7f\x7f\x7f\x7f22\t\t\t\t ");
+    let d = s.login.as_ref().unwrap();
+    assert_eq!(d.focus, LoginFocus::AfterSshConfig);
+    assert_eq!(d.after_login, crate::model::AfterLogin::SshConfig);
+    // Editing the port back to the saved value hides the choice and the pick with it.
+    s.feed_login("prod", b"\x1b[A\x1b[A\x1b[A\x1b[A\x7f\x7f2222");
+    let d = s.login.as_ref().unwrap();
+    assert_eq!(d.focus, LoginFocus::Port);
+    assert_eq!(d.after_login, crate::model::AfterLogin::Nothing);
+    match s.feed_login("prod", b"\t\t\t\t\t\r") {
+        Some(crate::model::Command::RunLogin { after_login, .. }) => {
+            assert_eq!(after_login, crate::model::AfterLogin::Nothing)
+        }
+        other => panic!("expected RunLogin, got {other:?}"),
+    }
+}
+
 #[test]
 fn feed_login_backspace_edits_and_a_new_source_resets_the_draft() {
     let mut s = State::default();

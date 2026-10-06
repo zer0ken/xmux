@@ -1220,6 +1220,7 @@ impl Chrome {
                 default_address: defaults.address.value.clone(),
                 default_port: defaults.port.value.clone(),
                 default_username: defaults.username.value.clone(),
+                resolved: defaults.resolved.clone(),
                 ..Default::default()
             };
             let d = draft.unwrap_or(&fallback);
@@ -1309,7 +1310,7 @@ impl Chrome {
             // stop's value is reversed (a stop with no value reverses its own text), only
             // while the pane takes keys. One radio choice under "After login" selects doing
             // nothing, saving the connection values, or registering this machine's public
-            // key.
+            // key. Saving is offered only while it would change what ssh uses.
             let choice = |name: &str, mark: &str, text: &str, active: bool| {
                 let style = if active {
                     Style::default().fg(pal.secondary)
@@ -1412,16 +1413,18 @@ impl Chrome {
                 "do nothing",
                 d.focus == LoginFocus::AfterNothing,
             ));
-            out.push(choice(
-                "",
-                if d.after_login == AfterLogin::SshConfig {
-                    "(*)"
-                } else {
-                    "( )"
-                },
-                "save connection to ssh config",
-                d.focus == LoginFocus::AfterSshConfig,
-            ));
+            if d.offers_ssh_config() {
+                out.push(choice(
+                    "",
+                    if d.after_login == AfterLogin::SshConfig {
+                        "(*)"
+                    } else {
+                        "( )"
+                    },
+                    "save connection to ssh config",
+                    d.focus == LoginFocus::AfterSshConfig,
+                ));
+            }
             out.push(choice(
                 "",
                 if d.after_login == AfterLogin::RegisterKey {

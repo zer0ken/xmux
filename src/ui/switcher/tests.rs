@@ -1653,8 +1653,28 @@ async fn login_pane_marks_required_fields_and_hints_the_optional_one() {
 }
 
 #[tokio::test]
-async fn login_pane_always_offers_the_ssh_config_choice() {
+async fn login_pane_hides_the_ssh_config_choice_when_the_values_are_already_saved() {
     let mut h = Harness::from_sources(&["pwbox"]);
+    let value = |value: &str| crate::provision::env::LoginValue {
+        value: value.into(),
+        provenance: "from ssh config",
+    };
+    h.state.chrome.set_login_defaults(
+        std::collections::HashMap::from([(
+            "pwbox".into(),
+            crate::provision::env::LoginDefaults {
+                address: value("192.0.2.7"),
+                port: value("2222"),
+                username: value("alice"),
+                resolved: crate::transport::Login {
+                    address: Some("192.0.2.7".into()),
+                    port: Some(2222),
+                    user: Some("alice".into()),
+                },
+            },
+        )]),
+        Default::default(),
+    );
     h.sw.apply_source_result(
         "pwbox".into(),
         vec![],
@@ -1662,9 +1682,20 @@ async fn login_pane_always_offers_the_ssh_config_choice() {
         &mut h.state,
     );
     h.draw();
+    let screen = h.text();
     assert!(
-        h.text().contains("save connection to ssh config"),
-        "the choice is present before editing:\n{}",
+        !screen.contains("save connection to ssh config"),
+        "{screen}"
+    );
+    assert!(screen.contains("(*) do nothing"), "{screen}");
+    assert!(screen.contains("( ) register my public key"), "{screen}");
+
+    // A changed value makes recording meaningful again.
+    h.state.feed_login("pwbox", b"\t9");
+    h.draw();
+    assert!(
+        h.text().contains("( ) save connection to ssh config"),
+        "{}",
         h.text()
     );
 }
@@ -1688,6 +1719,7 @@ async fn login_pane_prefills_all_values_from_ssh_config() {
                     value: "dev".into(),
                     provenance: "from ssh config",
                 },
+                resolved: Default::default(),
             },
         )]),
         Default::default(),
