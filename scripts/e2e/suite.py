@@ -35,8 +35,6 @@ COLS, ROWS = 140, 60
 # reports KNOWN when it fails and PASS when it passes.
 KNOWN = {
     (None, "screen", "alpine"): "#588",
-    ("new-session", "zellij", None): "#584",
-    ("new-session", "abduco", None): "#584",
     ("switch", "abduco", None): "#585",
     ("in-client-switch", "tmux", None): "#586",
     ("in-client-switch", "zellij", None): "#587",

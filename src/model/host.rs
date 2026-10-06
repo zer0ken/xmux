@@ -1193,7 +1193,7 @@ mod tests {
         assert!(got.iter().any(|s| s == "-t"), "{got:?}");
         assert_eq!(
             got.last().unwrap(),
-            "sh -lc '{ exec tmux attach -t api\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+            "sh -lc '{ exec tmux attach -t api\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null"
         );
     }
 
@@ -1208,7 +1208,7 @@ mod tests {
         assert!(got.iter().any(|s| s == "-t"), "{got:?}");
         assert_eq!(
             got.last().unwrap(),
-            "sh -lc '{ exec psmux new-session -A -s api\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+            "sh -lc '{ exec psmux new-session -A -s api\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null"
         );
     }
 
