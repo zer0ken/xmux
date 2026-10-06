@@ -571,7 +571,7 @@ def native_keys(c):
 
 # How each mux starts a detached session for a scenario that needs one of its own.
 CREATE = {"tmux": "tmux new-session -d -s {s} -x 100 -y 30", "screen": "screen -dmS {s}",
-          "zellij": "zellij attach -b {s}", "tuios": "tuios new {s} --detach",
+          "zellij": "zellij-new {s}", "tuios": "tuios new {s} --detach",
           "herdr": "nohup herdr --session {s} server >/dev/null 2>&1 &"}
 
 # Two groups: whether xmux's own behavior works, and whether each mux's native workflow

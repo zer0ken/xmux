@@ -15,7 +15,7 @@ for mux in "$@"; do
     case "$mux" in
       tmux) tmux has-session -t "=$s" 2>/dev/null || tmux new-session -d -s "$s" -x 100 -y 30 ;;
       screen) screen -ls | grep "[0-9]\.$s[[:space:]]" | grep -qiv dead || screen -dmS "$s" ;;
-      zellij) zellij ls -n 2>/dev/null | grep "^$s " | grep -qv EXITED || zellij attach -b "$s" ;;
+      zellij) zellij ls -n 2>/dev/null | grep "^$s " | grep -qv EXITED || zellij-new "$s" ;;
       abduco) abduco | awk -v s="$s" '$NF == s' | grep -q . || abduco -n "$s" "$shell" ;;
       tuios) tuios new "$s" --detach >/dev/null 2>&1 || tuios ls --json | grep -q "\"name\": \"$s\"" ;;
       herdr) herdr session list --json | grep -q "\"name\":\"$s\",\"running\":true" \

@@ -10,6 +10,8 @@ The host images the suite reaches over ssh, one per host system, and what runs o
   versions.
 - `sessions.sh` starts the sessions every scenario expects, and `whereami` names the
   session a shell runs in.
+- `zellij-new` starts every zellij session the suite needs and returns once its server
+  has set the session up.
 
 ## Invariants
 
@@ -17,3 +19,5 @@ The host images the suite reaches over ssh, one per host system, and what runs o
   login profile.
 - Every mux runs on both systems, or the README table says why it cannot.
 - `sessions.sh` is safe to run again on a host whose sessions partly survive a restart.
+- No zellij command runs while a zellij server the suite started is still setting up its
+  session: zellij 0.45 panics such a server when any zellij command reaches it.
