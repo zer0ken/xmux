@@ -8,20 +8,20 @@ fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
 
-/// `screen -ls` — lists this user's screen sessions. Exits 0 with sockets present,
+/// `screen -ls` - lists this user's screen sessions. Exits 0 with sockets present,
 /// 1 (stdout `No Sockets found`) when empty.
 pub fn list_sessions(bin: &str) -> Vec<String> {
     argv(&[bin, "-ls"])
 }
 
-/// `screen -x <name>` — attach in multi-display mode. Unlike `-r` (detached-only) it
+/// `screen -x <name>` - attach in multi-display mode. Unlike `-r` (detached-only) it
 /// attaches whether the session is detached or already attached elsewhere, which is
 /// the attach a switcher needs: xmux adds its own display client without kicking one.
 pub fn attach(bin: &str, name: &str) -> Vec<String> {
     argv(&[bin, "-x", name])
 }
 
-/// `screen -dmS <name>` — start a DETACHED session. Prints nothing, so its stdout is
+/// `screen -dmS <name>` - start a DETACHED session. Prints nothing, so its stdout is
 /// never a name (`assigns_new_session_name` is false and the manage layer names an
 /// empty request before building this plan).
 pub fn new_session(bin: &str, name: &str) -> Vec<String> {
@@ -32,16 +32,17 @@ pub fn new_session(bin: &str, name: &str) -> Vec<String> {
     }
 }
 /// Parses `screen -ls` output into sessions tagged with `source`/`mux`. Each socket
-/// line is `\t<pid>.<name>\t(<date> <time> <ampm>)\t(<state>)`; the name is everything
-/// after the first dot, and `attached` is read from the state column. Lines that carry
-/// no socket id (header/footer) or a non-numeric pid are skipped so banners cannot
-/// poison the list. `windows` is unknown from `-ls`, so it is 0.
+/// line is `\t<pid>.<name>\t(<state>)`, with an optional date column before the state;
+/// the name is everything after the first dot, and `attached` is read from the final
+/// state column. Lines that carry no socket id (header/footer) or a non-numeric pid
+/// are skipped so banners cannot poison the list. `windows` is unknown from `-ls`,
+/// so it is 0.
 pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in out.split('\n') {
         let ln = ln.strip_suffix('\r').unwrap_or(ln);
         let fields: Vec<&str> = ln.split('\t').collect();
-        if fields.len() < 4 {
+        if fields.len() < 3 {
             continue;
         }
         let id = fields[1];
@@ -51,7 +52,7 @@ pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
         if pid.is_empty() || name.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
             continue;
         }
-        let state = fields[3].to_lowercase();
+        let state = fields.last().unwrap().to_lowercase();
         let attached = state.contains("attached") && !state.contains("detached");
         sessions.push(Session {
             source: source.to_string(),
@@ -130,6 +131,49 @@ mod tests {
         let got = parse_sessions("local", "screen", out);
         assert_eq!(got[0].name, "foo.bar");
         assert_eq!(got[1].name, "my sess");
+    }
+
+    #[test]
+    fn parse_sessions_reads_the_screen_5_listing() {
+        // Verbatim `screen -ls` from screen 5.0.2 on Alpine: no date column, and the
+        // session lines end in a bare LF while the banner and footer end in CRLF.
+        let out = "There are screens on:\r\n\t12.a\t(Detached)\n\t15.b.c\t(Detached)\n2 Sockets in /root/.screen.\r\n";
+        let got = parse_sessions("alp", "screen", out);
+        assert_eq!(
+            got.iter()
+                .map(|s| (s.name.as_str(), s.attached))
+                .collect::<Vec<_>>(),
+            vec![("a", false), ("b.c", false)]
+        );
+    }
+
+    #[test]
+    fn parse_sessions_reads_listing_with_and_without_dates() {
+        for date in ["\t(08/25/2026 11:05:05 PM)", ""] {
+            let out = format!(
+                "There are screens on:\r\n\
+                 \t2589.work{date}\t(Detached)\r\n\
+                 \t4190.foo.bar{date}\t(Attached)\r\n\
+                 \t4191.my sess{date}\t(Multi, attached)\r\n\
+                 \t4192.shared{date}\t(Multi, detached)\r\n\
+                 4 Sockets in /run/screen/S-hrlee.\r\n"
+            );
+            let got = parse_sessions("jup", "screen", &out);
+            assert_eq!(
+                got.iter()
+                    .map(|s| (s.name.as_str(), s.attached))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("work", false),
+                    ("foo.bar", true),
+                    ("my sess", true),
+                    ("shared", false),
+                ]
+            );
+            assert!(got
+                .iter()
+                .all(|s| s.source == "jup" && s.mux == "screen" && s.windows == 0));
+        }
     }
 
     #[test]
