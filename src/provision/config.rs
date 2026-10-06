@@ -972,38 +972,56 @@ pub fn upsert_managed_stanza(
         out.push_str(&format!("    User {user}\n"));
     }
     out.push('\n');
-    out.push_str(strip_managed(config_text, &marker).trim_start_matches('\n'));
+    out.push_str(
+        strip_managed(config_text, &marker)
+            .0
+            .trim_start_matches(['\r', '\n']),
+    );
     out
 }
 
-/// `config_text` without the stanza `marker` opens: the marker line, the `Host` line
-/// under it, and everything up to the next stanza header.
-fn strip_managed(config_text: &str, marker: &str) -> String {
+/// `config_text` without the xmux-managed stanza for `alias`, or `None` when it holds
+/// none. What the user wrote stays byte for byte, so a logout takes back only what the
+/// login recorded.
+pub fn remove_managed_stanza(config_text: &str, alias: &str) -> Option<String> {
+    let (rest, found) = strip_managed(config_text, &managed_marker(alias));
+    found.then_some(rest)
+}
+
+/// `config_text` without the stanza `marker` opens, and whether there was one.
+///
+/// The stanza is the marker line, the `Host` line under it, and the directive and blank
+/// lines after it. A comment line ends it as a header does: a comment above the next
+/// header, another host's marker among them, belongs to that next stanza. Every other
+/// line is carried across with its own line ending.
+fn strip_managed(config_text: &str, marker: &str) -> (String, bool) {
     let is_header = |l: &str| {
         l.split_whitespace()
             .next()
             .is_some_and(|w| w.eq_ignore_ascii_case("Host") || w.eq_ignore_ascii_case("Match"))
     };
-    let mut out: Vec<&str> = Vec::new();
-    let mut lines = config_text.lines().peekable();
+    let is_comment = |l: &str| l.trim_start().starts_with('#');
+    let mut out = String::with_capacity(config_text.len());
+    let mut found = false;
+    let mut lines = config_text.split_inclusive('\n').peekable();
     while let Some(line) = lines.next() {
         if line.trim() != marker {
-            out.push(line);
+            out.push_str(line);
             continue;
         }
-        // The marker's own stanza header, then its body up to the next header.
+        found = true;
+        // The marker's own stanza header, then its body up to the next header or comment.
         if lines.peek().is_some_and(|l| is_header(l)) {
             lines.next();
         }
-        while lines.peek().is_some_and(|l| !is_header(l)) {
+        while lines
+            .peek()
+            .is_some_and(|l| !is_header(l) && !is_comment(l))
+        {
             lines.next();
         }
     }
-    let mut s = out.join("\n");
-    if !s.is_empty() && !s.ends_with('\n') {
-        s.push('\n');
-    }
-    s
+    (out, found)
 }
 
 /// The `User` an `~/.ssh/config` stanza names for `alias`, or `None` when none does.
@@ -1224,6 +1242,49 @@ mod tests {
         assert!(got.contains("    User hrlee"), "{got}");
         assert!(!got.contains("HostName"), "{got}");
         assert!(!got.contains("Port"), "{got}");
+    }
+
+    /// A logout takes back only what the login recorded: the rest of the file, its own
+    /// comments, its own stanza for the same host, and its line endings, comes back byte
+    /// for byte.
+    #[test]
+    fn removing_the_managed_stanza_restores_the_file_the_login_recorded_into() {
+        for user_text in [
+            "# my hosts\r\nHost db-01\r\n    User admin\r\n\r\nHost *\r\n    ServerAliveInterval 30",
+            "# my hosts\nHost db-01\n    User admin\n",
+            "",
+        ] {
+            let recorded = upsert_managed_stanza(user_text, "db-01", &login("10.0.0.5", 22, "dev"));
+            assert_eq!(
+                remove_managed_stanza(&recorded, "db-01").as_deref(),
+                Some(user_text),
+                "{recorded:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn removing_one_hosts_managed_stanza_keeps_another_hosts() {
+        let a = upsert_managed_stanza("Host web\n", "jupiter00", &login("100.88.0.0", 22, "hrlee"));
+        let b = upsert_managed_stanza(&a, "mars01", &login("100.77.0.1", 22, "hrlee"));
+        assert_eq!(
+            remove_managed_stanza(&b, "mars01").as_deref(),
+            Some(a.as_str())
+        );
+        let relogin = upsert_managed_stanza(&b, "mars01", &login("100.77.0.2", 22, "hrlee"));
+        assert!(
+            relogin.contains("# xmux: jupiter00\nHost jupiter00\n"),
+            "{relogin}"
+        );
+    }
+
+    #[test]
+    fn a_file_without_the_managed_stanza_has_nothing_to_remove() {
+        let user_text = "Host db-01\n    User admin\n";
+        assert_eq!(remove_managed_stanza(user_text, "db-01"), None);
+        let other = upsert_managed_stanza(user_text, "web-01", &login("10.0.0.6", 22, "dev"));
+        assert_eq!(remove_managed_stanza(&other, "db-01"), None);
+        assert_eq!(remove_managed_stanza("", "db-01"), None);
     }
 
     #[test]

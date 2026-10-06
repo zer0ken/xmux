@@ -1316,6 +1316,25 @@ fn write_ssh_config_stanza(
     std::fs::write(&path, next)
 }
 
+/// Removes the xmux-managed stanza for `machine` from the ssh config at `path`, and says
+/// whether there was one. A missing file holds none; a file that cannot be read is left
+/// as it is and the reason returned. Nothing outside the stanza changes.
+pub(crate) fn remove_ssh_config_stanza(
+    path: &std::path::Path,
+    machine: &str,
+) -> Result<bool, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.to_string()),
+    };
+    let Some(next) = crate::provision::config::remove_managed_stanza(&text, machine) else {
+        return Ok(false);
+    };
+    std::fs::write(path, next).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 /// The word the registration puts at the end of the comment of every key line it appends.
 /// sshd reads the comment as free text, so the line authenticates exactly as the bare key
 /// does, and a logout can tell the lines xmux added from lines someone else put there.
@@ -2599,6 +2618,34 @@ mod tests {
     use crate::model::source::{RunError, Runner};
     use crate::provision::config::Config;
     use crate::session::Session;
+
+    /// A logout removes the stanza the login recorded and leaves the rest of the file as
+    /// it was; a file with no stanza, a missing file, and one that cannot be read are
+    /// all left alone.
+    #[test]
+    fn a_logout_removes_only_the_recorded_ssh_config_stanza() {
+        let root = std::env::temp_dir().join(format!("xmux-env-ssh-config-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("config");
+        let user_text = "Host db-01\r\n    User admin\r\n";
+        let login = crate::transport::Login {
+            user: Some("dev".into()),
+            ..Default::default()
+        };
+        let recorded = crate::provision::config::upsert_managed_stanza(user_text, "db-01", &login);
+        std::fs::write(&path, &recorded).unwrap();
+        assert_eq!(remove_ssh_config_stanza(&path, "db-01"), Ok(true));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), user_text);
+        assert_eq!(remove_ssh_config_stanza(&path, "db-01"), Ok(false));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), user_text);
+        assert_eq!(
+            remove_ssh_config_stanza(&root.join("missing"), "db-01"),
+            Ok(false)
+        );
+        assert!(!root.join("missing").exists());
+        assert!(remove_ssh_config_stanza(&root, "db-01").is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn env_carries_configured_prefix() {

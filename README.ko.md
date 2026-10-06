@@ -279,8 +279,10 @@ key 파일에서 이 PC의 공개키와 key 종류, key 본문이 같은 줄을 
 xmux가 추가하지 않은 줄이고, 그 줄을 제거하면 xmux 밖의 ssh도 그 key를 사용하지 못한다.
 그래서 xmux는 같은 위치에 확인 창을 한 번 더 연다. `remove`를 입력하면 그 줄도 제거하고,
 Esc를 누르면 그 줄은 남긴다. host에 연결할 수 없거나 제거에 실패해도 로그아웃은 비밀번호와
-연결 정리를 계속하고, toast로 key가 남았다는 사실과 이유를 알린다. ssh config는 바꾸지
-않는다. 다시 스캔하면 host가 아직 받아들이는 key로만 다시 접속하고, 그런 key가 없으면 다시
+연결 정리를 계속하고, toast로 key가 남았다는 사실과 이유를 알린다. key 다음으로 xmux는
+로그인이 `~/.ssh/config`에 저장한 그 host의 stanza, 즉 `# xmux: <host>` 줄로 시작하는
+stanza를 제거하고, 파일의 나머지 줄은 그대로 둔다. toast는 그 stanza의 제거 여부도 알린다.
+다시 스캔하면 host가 아직 받아들이는 key로만 다시 접속하고, 그런 key가 없으면 다시
 로그인해야 한다.
 
 Windows host의 요구 사항과 Entra 전용 계정의 제약은

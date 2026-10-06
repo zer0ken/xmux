@@ -132,8 +132,9 @@ against, naming no source file, function, or test.
 - **FR-B41** - Every popup body row wraps to the popup's width, except a text field, and
   a popup too tall for the window scrolls.
 - **FR-B39** - Logging out of an SSH host (`prefix L`, confirmed by typing `logout`)
-  removes this PC's matching public keys from the host's key files, then drops the held
-  password and the host's connections without changing ssh config.
+  removes this PC's matching public keys from the host's key files and the ssh config
+  stanza a login saved for the host, then drops the held password and the host's
+  connections. Every other line of ssh config stays as it was.
 - **FR-B40** - When the selected card leaves the list, the selection moves to the
   nearest remaining node up its lineage, and a new card takes the selection only when
   the user asked for it (Selection by Interest in docs/principles.md).

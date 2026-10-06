@@ -175,5 +175,6 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   top of `~/.ssh/config`.
 - **registering a key** - appending this machine's public key, marked
   `xmux-registered`, to the host's key files, then proving a key-only login works.
-- **logging out** - `prefix L`: removing this machine's key from the host, then
-  forgetting the held password and closing the machine's connections.
+- **logging out** - `prefix L`: removing this machine's key from the host and the
+  stanza a login recorded, then forgetting the held password and closing the machine's
+  connections.
