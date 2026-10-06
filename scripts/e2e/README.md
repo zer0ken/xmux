@@ -98,6 +98,7 @@ issue is fixed.
 | Cell | Result | Reason |
 | --- | --- | --- |
 | `in-client-switch`, zellij | `KNOWN #670` | zellij can drop the client right after `switch-session` moves it |
+| `switch`, zellij | `KNOWN #675` | zellij can drop a client that attaches right after another client of the session ended, and the reattach with it |
 | `in-client-switch`, tuios | `KNOWN #333` | tuios gives no signal that its client moved |
 | `in-client-switch`, screen, abduco, and herdr | `n/a` | a client belongs to one session's server and cannot move |
 | `native-keys`, abduco | `n/a` | abduco has no keys besides detach |
