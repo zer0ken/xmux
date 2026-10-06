@@ -167,6 +167,9 @@ moving that selection, and a click executes the item as `Enter` would.
   an applied filter.
 - **Logout** (`prefix L`): states the session, the observed SSH login, what happens to a
   held password and to this machine's key, and the machine whose connections close.
+  Typing `logout` and `Enter` confirms it, and `Esc` cancels. When the window is too short
+  for these rows, `↑`/`↓` and `PgUp`/`PgDn` scroll them above the field, and the key
+  removal confirm that can follow scrolls the same way.
 
 A terminal smaller than 24 columns by 4 rows shows the required and current size in
 place of the split view.

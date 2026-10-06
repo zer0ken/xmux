@@ -1366,6 +1366,16 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         Msg::Key(key) => {
             let before = model.switcher.selected_node();
             let commands = model.switcher.handle_key(key, &mut model.state);
+            // A logout confirm scrolls no further than the offset that shows its last fact
+            // row in the popup as last painted, so a scroll back up moves the view at once.
+            let popup = model.render_plan.popup_rect;
+            if let Some(crate::state::Modal::Input(input)) = model.state.modal.as_mut() {
+                input.scroll = input.scroll.min(crate::ui::modal::logout_max_scroll(
+                    input,
+                    popup.width,
+                    popup.height.saturating_sub(2),
+                ));
+            }
             hint_selection_move(model, &before);
             commands
                 .into_iter()
@@ -4021,6 +4031,90 @@ mod tests {
             [Effect::Command(crate::model::Command::Quit)]
         ));
         assert!(m.state.modal.is_none());
+    }
+
+    /// The screen `m` paints at 40x12 as text, its plan kept for the keys that follow.
+    fn paint_small(m: &mut AppModel) -> String {
+        let area = ratatui::layout::Rect::new(0, 0, 40, 12);
+        let nav = crate::ui::switcher::NavSize::hidden(crate::ui::switcher::NAV_WIDTH);
+        m.render_plan = m.switcher.layout(area, nav, &m.state, &m.render_plan);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        term.draw(|f| m.switcher.render_test(f, None, true, nav, &m.state))
+            .unwrap();
+        let buf = term.backend().buffer();
+        (0..12)
+            .map(|y| (0..40).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn both_logout_confirms_scroll_every_fact_into_a_40_by_12_window() {
+        for mode in [
+            crate::state::InputMode::Logout,
+            crate::state::InputMode::LogoutKeys,
+        ] {
+            let mut m = AppModel::from_sources(vec!["box".to_owned()]);
+            let mut input = crate::state::Input::new(mode, String::new(), Some("box".into()));
+            input.facts = vec![
+                ("session", "box/a-session-with-a-rather-long-name".into()),
+                ("SSH login", "password".into()),
+                ("password", "held password is cleared".into()),
+                (
+                    "key",
+                    "removed from box; asks first if xmux did not add it".into(),
+                ),
+                ("connections", "closes box connections".into()),
+            ];
+            m.state.modal = Some(crate::state::Modal::Input(Box::new(input)));
+            let first = paint_small(&mut m);
+            assert!(
+                first.contains(" of "),
+                "the border counts the rows: {first}"
+            );
+            let mut seen = first.clone();
+            for _ in 0..12 {
+                update(
+                    &mut m,
+                    Msg::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+                );
+                let screen = paint_small(&mut m);
+                assert!(screen.contains("type "), "the field stays: {screen}");
+                seen.push_str(&screen);
+            }
+            let squeezed: String = seen.replace('│', " ").split_whitespace().collect();
+            for word in ["rather-long-name", "held", "xmux", "closesboxconnections"] {
+                assert!(squeezed.contains(word), "{word} is reachable: {seen}");
+            }
+            // The scroll stops at the last row, so one step back up moves the view.
+            let bottom = paint_small(&mut m);
+            update(
+                &mut m,
+                Msg::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            );
+            assert_ne!(paint_small(&mut m), bottom);
+            update(
+                &mut m,
+                Msg::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
+            );
+            assert_eq!(paint_small(&mut m), first);
+            // Typing still reaches the field, and Esc still cancels.
+            for c in "logout".chars() {
+                update(
+                    &mut m,
+                    Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+                );
+            }
+            match &m.state.modal {
+                Some(crate::state::Modal::Input(input)) => assert_eq!(input.buffer, "logout"),
+                _ => panic!("the confirm stays open"),
+            }
+            update(
+                &mut m,
+                Msg::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            );
+            assert!(m.state.modal.is_none());
+        }
     }
 
     #[test]

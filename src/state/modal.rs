@@ -30,6 +30,9 @@ pub(crate) struct Input {
     /// [`InputMode::Logout`] and [`InputMode::LogoutKeys`] only: what the confirm decides,
     /// as `(label, value)` rows the confirm states above its field. Captured when it opens, like `source`.
     pub(crate) facts: Vec<(&'static str, String)>,
+    /// [`InputMode::Logout`] and [`InputMode::LogoutKeys`] only: the first fact row shown
+    /// when the confirm is too short for every fact row.
+    pub(crate) scroll: usize,
     pub(crate) buffer: String,
     /// Caret position as a char index into `buffer` (`0..=buffer char count`). Every
     /// edit and movement keeps it in range; the entry line renders a block caret at
@@ -62,6 +65,7 @@ impl Input {
         Input {
             mode,
             facts: Vec::new(),
+            scroll: 0,
             buffer,
             cursor,
             source,

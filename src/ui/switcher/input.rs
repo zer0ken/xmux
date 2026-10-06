@@ -847,6 +847,22 @@ impl Switcher {
                 }
                 Vec::new()
             }
+            // A logout confirm's facts scroll above its field. Its field is one row, so
+            // the arrows and the page keys have nothing to move there.
+            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
+                if let Some(Modal::Input(input)) = state.modal.as_mut() {
+                    if matches!(input.mode, InputMode::Logout | InputMode::LogoutKeys) {
+                        let step: isize = match ev.code {
+                            KeyCode::Up => -1,
+                            KeyCode::Down => 1,
+                            KeyCode::PageUp => -10,
+                            _ => 10,
+                        };
+                        input.scroll = input.scroll.saturating_add_signed(step);
+                    }
+                }
+                Vec::new()
+            }
             // All other keys edit the buffer at the caret. Grab the input once so each
             // editing key routes through the same borrow. The byte decoder delivers
             // Ctrl-letters as their control char (like the C-g prefix), so Ctrl-U / Ctrl-W
