@@ -251,10 +251,52 @@ class WindowsClient:
                 f.write(f"  IdentityFile {key}\n  IdentitiesOnly yes\n  IdentityAgent none\n")
         with open(os.path.join(home, ".config", "xmux", "config.toml"), "w") as f:
             f.write(XMUX_CONFIG)
-        env = dict(os.environ, HOME=home, USERPROFILE=home, TERM="xterm-256color",
-                   XMUX_E2E_SSH_CONFIG=config,
-                   PATH=self.bin + os.pathsep + os.environ.get("PATH", ""))
-        return App(driver.Term([self.xmux, "--name", f"e2e{n}"], env, COLS, ROWS, cwd=home), home)
+        return App(driver.Term([self.xmux, "--name", f"e2e{n}"], self.env(home, config), COLS,
+                               ROWS, cwd=home), home)
+
+    def env(self, home, ssh_config):
+        return dict(os.environ, HOME=home, USERPROFILE=home, TERM="xterm-256color",
+                    XMUX_E2E_SSH_CONFIG=ssh_config,
+                    PATH=self.bin + os.pathsep + os.environ.get("PATH", ""))
+
+    def check_home(self):
+        """Stops the run unless the xmux under test keeps its config and state in the home
+        it is given.
+
+        `xmux doctor` reports an unknown key of the config it read and writes its log into
+        its state directory, so a key only the temporary config holds and a log in the
+        temporary home show which home it resolved.
+        """
+        home = os.path.join(self.workdir, "probe")
+        os.makedirs(os.path.join(home, ".config", "xmux"))
+        key = f"e2e_probe_{random.randrange(10**6)}"
+        with open(os.path.join(home, ".config", "xmux", "config.toml"), "w") as f:
+            f.write(XMUX_CONFIG + f"{key} = true\n")
+        r = subprocess.run([self.xmux, "doctor"], env=self.env(home, os.devnull), cwd=home,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60)
+        if f'unknown key "update.{key}"' not in r.stdout:
+            sys.exit(f"{self.xmux} did not read its config from the temporary home:\n{r.stdout}")
+        state = os.path.join(home, ".xmux")
+        if not (os.path.isdir(state) and os.listdir(state)):
+            sys.exit(f"{self.xmux} did not write its state into the temporary home")
+
+
+# The xmux and ssh directories of the person running the Windows client run, which the
+# run leaves as it found them.
+REAL_DIRS = [os.path.join(os.path.expanduser("~"), *d) for d in
+             [(".xmux",), (".config", "xmux"), (".ssh",)]]
+
+
+def snapshot(dirs):
+    """Every entry under `dirs`, the directories included, with its size and mtime."""
+    entries = {}
+    for top in dirs:
+        for root, subdirs, files in os.walk(top):
+            for p in [root] + [os.path.join(root, n) for n in subdirs + files]:
+                st = os.lstat(p)
+                entries[p] = (st.st_size, st.st_mtime_ns)
+    return entries
 
 
 # ------------------------------------------------------------------------------- app
@@ -655,18 +697,17 @@ def main():
     scenarios = (args.scenario or default).split(",")
     os.makedirs(args.out, exist_ok=True)
 
-    if args.client == "windows" and os.name == "nt":
-        sys.exit("the Windows client run is blocked by #581: xmux on Windows keeps its config "
-                 "and state in the profile folder whatever HOME says, so a run would use the "
-                 "real ~/.xmux")
-
+    real = snapshot(REAL_DIRS) if args.client == "windows" else None
     workdir = tempfile.mkdtemp(prefix="xmux-e2e-")
     hosts = Hosts(systems, publish=args.client == "windows",
                   attach_self=os.environ.get("XMUX_E2E_SELF"))
     t0 = time.monotonic()
     try:
-        client = (LinuxClient(args.xmux, workdir) if args.client == "linux"
-                  else WindowsClient(args.xmux, workdir, hosts))
+        if args.client == "linux":
+            client = LinuxClient(args.xmux, workdir)
+        else:
+            client = WindowsClient(args.xmux, workdir, hosts)
+            client.check_home()
         log(f"starting hosts for {', '.join(systems)}")
         hosts.up(client.pubkey())
         log(f"hosts up in {time.monotonic() - t0:.0f}s")
@@ -693,6 +734,13 @@ def main():
         f.write(report + "\n")
     failed = [k for k, v in results.items() if v == "FAIL"]
     print(f"\n{len(failed)} failed, {time.monotonic() - t0:.0f}s")
+    if real is not None:
+        after = snapshot(REAL_DIRS)
+        changed = sorted(p for p in real.keys() | after.keys() if real.get(p) != after.get(p))
+        if changed:
+            print("the run changed the home of the person running it:\n  " + "\n  ".join(changed))
+            sys.exit(1)
+        print(f"{len(after)} entries under {', '.join(REAL_DIRS)} unchanged")
     sys.exit(1 if failed else 0)
 
 
