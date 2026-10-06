@@ -429,6 +429,11 @@ def password_login(c):
     app.tab_to("[ Log in ]")
     app.t.send("Enter")
     app.card(f"{c.pw}/{m}", f"{m}1", 40)
+    # The hosts the login found replace the machine's card, but the machine keeps the
+    # selection, so its screen stays and no host screen opens on its own.
+    app.t.wait(lambda ls: any(re.search(rf"\bmachine {re.escape(c.pw)}\b", l) for l in ls)
+               and not any(f"host {c.pw}/" in l for l in ls),
+               f"the machine screen of {c.pw} after the login", 10)
     app.open(f"{c.pw}/{m}", f"{m}1")
     app.whereami(c.path(c.pw, f"{m}1"))
     app.t.send("C-g", gap=0.3)

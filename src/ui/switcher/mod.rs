@@ -761,9 +761,9 @@ impl Switcher {
     ///   has no session to show);
     /// - a host goes to its machine (the machine's card when the machine is down, else the machine
     ///   half of the row the host stood on, else of the machine's first row);
-    /// - the card of a machine (its card while it was down, or while no host of it
-    ///   was known) that resolved into hosts hands the selection to the first of them
-    ///   by name;
+    /// - a machine whose card gave way to the cards of its hosts (its card while it was
+    ///   down, or while no host of it was known) stays selected on the machine half of
+    ///   its first row, so its screen stays and lists the hosts as links;
     /// - when nothing of the machine survives, the selection goes to the card that now holds
     ///   the vanished card's place: the first card after it in the prior card order that
     ///   survived, else the last surviving card before it.
@@ -781,32 +781,6 @@ impl Switcher {
         let mut node = prior.node.clone()?;
         let near = prior.row.as_ref().and_then(row_host).map(str::to_owned);
         loop {
-            if let Node::Machine(machine) = &node {
-                // The card that stood for the whole machine: its card while it was down, or
-                // while no host of it was known.
-                let card =
-                    |r: &RowRef| matches!(r, RowRef::Machine { machine: m, .. } if m == machine);
-                if prior.row.as_ref().is_some_and(card)
-                    && !self.rows.iter().any(|r| card(&r.reference))
-                {
-                    let hosts: std::collections::BTreeSet<&str> = state
-                        .groups
-                        .iter()
-                        .map(|g| g.host.as_str())
-                        .filter(|s| crate::session::machine_of(s) == machine)
-                        .collect();
-                    if let Some((row, part)) = hosts
-                        .into_iter()
-                        .find_map(|host| self.target_of(&Node::Host(host.into()), None))
-                    {
-                        return Some(Target {
-                            row,
-                            part,
-                            deep: None,
-                        });
-                    }
-                }
-            }
             if let Some((row, part)) = self.target_of(&node, near.as_deref()) {
                 return Some(Target {
                     row,
@@ -1984,9 +1958,9 @@ impl Switcher {
     }
 
     /// Adds every host of `hosts` the nav does not show yet, then rebuilds once, so
-    /// the card a machine stood on before any host of it was known hands its selection
-    /// to the first of them by name. The host named by the machine alone keeps that
-    /// card's number.
+    /// the card a machine stood on before any host of it was known gives way to all of
+    /// them at once while the selection stays on the machine. The host named by the
+    /// machine alone keeps that card's number.
     pub fn add_hosts(&mut self, hosts: Vec<String>, state: &mut crate::state::State) {
         let mut added = false;
         for host in hosts {

@@ -247,7 +247,7 @@ pub(crate) enum Msg {
         scanning: bool,
     },
     /// Hosts one machine answered it serves, added together so the card the machine
-    /// stood on hands its selection to the first of them by name.
+    /// stood on gives way to all of them in one rebuild.
     AddHosts {
         hosts: Vec<String>,
     },

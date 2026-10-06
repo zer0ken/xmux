@@ -296,8 +296,8 @@ impl Runtime {
                     let effects = update(model, Msg::SetHostReach(reach_map(env, hosts)));
                     debug_assert!(effects.is_empty());
                     // Every host the machine answered joins at once, so the card the
-                    // machine stood on hands its selection to the first of them by name;
-                    // each one's first listing is now in flight.
+                    // machine stood on gives way to all of them in one rebuild; each
+                    // one's first listing is now in flight.
                     let effects = update(
                         model,
                         Msg::AddHosts {

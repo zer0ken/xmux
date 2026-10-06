@@ -651,7 +651,7 @@ fn a_logout_gathers_the_selection_onto_the_machines_one_card() {
 }
 
 #[test]
-fn a_machine_card_that_logs_back_in_hands_the_selection_to_its_first_host() {
+fn a_machine_card_that_logs_back_in_keeps_the_selection_on_the_machine() {
     let mut h = H::new(&[
         ("gpu", &["train"], None),
         ("db:zellij", &[], Some(LOGGED_OUT)),
@@ -661,7 +661,28 @@ fn a_machine_card_that_logs_back_in_hands_the_selection_to_its_first_host() {
     h.sw.set_selected(card);
     assert_eq!(h.node(), machine("db"));
     h.sw.mark_machine_scanning("db", &mut h.state);
-    assert_eq!(h.node(), host("db:tmux"), "the first host by name");
+    assert!(
+        !h.sw
+            .rows
+            .iter()
+            .any(|r| matches!(r.reference, RowRef::Machine { .. })),
+        "the machine's card gave way to its hosts' cards"
+    );
+    assert_eq!(h.node(), machine("db"), "the machine stays selected");
+    for id in ["db:tmux", "db:zellij"] {
+        h.sw.apply_host_result(id.into(), vec![sess(id, "work")], None, &mut h.state);
+    }
+    h.terminal_focused = true;
+    h.draw();
+    assert_eq!(h.node(), machine("db"));
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        Some(ViewScreen::Machine)
+    );
+    let view = h.view();
+    assert!(view.contains("machine db"), "{view}");
+    assert!(view.contains("tmux  1 session"), "{view}");
+    assert!(view.contains("zellij  1 session"), "{view}");
 }
 
 #[test]
