@@ -1873,8 +1873,14 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                     .switcher
                     .apply_host_result(host.clone(), sessions, None, &mut model.state);
             renamed
-                .map(|(from, to)| Effect::Event(EventEffect::RenameDisplayed { host, from, to }))
                 .into_iter()
+                .map(|(from, to)| {
+                    Effect::Event(EventEffect::RenameDisplayed {
+                        host: host.clone(),
+                        from,
+                        to,
+                    })
+                })
                 .collect()
         }
         Msg::AddHost { host, scanning } => {
@@ -2008,12 +2014,12 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                             None
                         } else {
                             let mut effects: Vec<EventEffect> = renamed
+                                .into_iter()
                                 .map(|(from, to)| EventEffect::RenameDisplayed {
                                     host: host.clone(),
                                     from,
                                     to,
                                 })
-                                .into_iter()
                                 .collect();
                             effects.push(EventEffect::SyncPollSessions { host, sessions });
                             Some(Effect::EventBatch(effects))
@@ -2753,6 +2759,7 @@ mod tests {
                 host: host.to_owned(),
                 name: (*name).to_owned(),
                 mux: "tmux".to_owned(),
+                id: String::new(),
                 windows: 1,
                 attached: false,
             })

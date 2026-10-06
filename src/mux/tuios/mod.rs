@@ -20,6 +20,10 @@ pub struct Tuios {
 #[derive(Deserialize)]
 struct ListedSession {
     name: String,
+    /// The daemon's id for the session, which `rename-session` keeps. A daemon that
+    /// lists none leaves the session without an identity.
+    #[serde(default)]
+    id: String,
     #[serde(default)]
     window_count: i64,
     #[serde(default)]
@@ -136,6 +140,7 @@ fn parse_sessions(host: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, Run
             host: host.to_string(),
             name: session.name,
             mux: mux.to_string(),
+            id: session.id,
             windows: session.window_count,
             attached: session.attached,
         })
@@ -238,6 +243,7 @@ mod tests {
         assert_eq!(sessions[0].host, "jup");
         assert_eq!(sessions[0].mux, "tuios");
         assert_eq!(sessions[0].name, "session-0");
+        assert_eq!(sessions[0].id, "2569c353-385d-40e3-842a-3d58ded8a03e");
         assert_eq!(sessions[0].windows, 1);
         assert!(sessions[0].attached);
     }

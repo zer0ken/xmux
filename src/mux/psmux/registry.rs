@@ -66,6 +66,8 @@ pub(crate) fn merge_psmux_sessions(
                 host: host.to_string(),
                 name,
                 mux: "psmux".to_string(),
+                // A registry file names a session only.
+                id: String::new(),
                 windows: 1,
                 attached: false,
             });
@@ -143,6 +145,7 @@ mod tests {
             host: "local".into(),
             name: "editor".into(),
             mux: "psmux".into(),
+            id: String::new(),
             windows: 3,
             attached: true,
         }];
@@ -168,6 +171,7 @@ mod tests {
             host: "local".into(),
             name: "only".into(),
             mux: "psmux".into(),
+            id: String::new(),
             windows: 1,
             attached: false,
         }];

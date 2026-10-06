@@ -60,6 +60,9 @@ pub fn parse_sessions(host: &str, out: &str) -> Vec<Session> {
             host: host.to_string(),
             name: name.to_string(),
             mux: "zellij".to_string(),
+            // The listing names a session only, so a rename cannot be told from a kill
+            // plus a create.
+            id: String::new(),
             // The session listing carries no count; enumeration fills it from list-tabs.
             windows: 0,
             attached: suffix.contains(CURRENT_MARKER),

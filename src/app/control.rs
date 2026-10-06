@@ -154,6 +154,7 @@ mod tests {
                     host: "local".into(),
                     name: "editor".into(),
                     mux: "tmux".into(),
+                    id: String::new(),
                     windows: 1,
                     attached: false,
                 }],

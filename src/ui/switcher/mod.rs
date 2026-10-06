@@ -1985,24 +1985,25 @@ impl Switcher {
     /// not this function's concern: `rebuild` applies the deterministic display
     /// order, which a scan result and a routine poll reproduce exactly.
     ///
-    /// A result that RENAMED one session ([`tree::renamed_session`]) carries the selection
-    /// and the displayed record across to the new name, so the card the user is on stays
+    /// A result that RENAMED sessions ([`tree::renamed_sessions`]) carries the selection
+    /// and the displayed record across to each new name, so the card the user is on stays
     /// the card they are on and nothing reads the rename as a move to another session.
-    /// The rename is returned so the loop can carry its own display record across too.
+    /// The renames are returned so the loop can carry its own display record across too.
     pub fn apply_host_result(
         &mut self,
         host: String,
         sessions: Vec<Session>,
         err: Option<String>,
         state: &mut crate::state::State,
-    ) -> Option<(String, String)> {
+    ) -> Vec<(String, String)> {
         let renamed = state
             .groups
             .iter()
             .find(|g| g.host == host)
             .filter(|_| err.is_none())
-            .and_then(|g| tree::renamed_session(&g.sessions, &sessions));
-        if let Some((from, to)) = &renamed {
+            .map(|g| tree::renamed_sessions(&g.sessions, &sessions))
+            .unwrap_or_default();
+        for (from, to) in &renamed {
             // The card is the same card under its new name, so it keeps its number.
             let old = CardId::Session(host.clone(), from.clone());
             if let Some(n) = self.numbers.remove(&old) {

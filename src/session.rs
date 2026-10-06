@@ -163,6 +163,10 @@ pub struct Session {
     /// the path that enumerated it. Empty when unknown (a parsed target, or a
     /// just-created session awaiting re-enumeration); the nav omits it then.
     pub mux: String,
+    /// The mux's own identity for the session, which a rename keeps and a kill followed
+    /// by a create never repeats. Empty when the mux's listing carries none, and a
+    /// session without one is never read as renamed.
+    pub id: String,
     pub windows: i64,
     pub attached: bool,
 }

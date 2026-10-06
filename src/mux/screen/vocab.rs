@@ -38,7 +38,8 @@ pub fn new_session(bin: &str, name: &str) -> Vec<String> {
 /// are skipped so banners cannot poison the list. A socket whose state names it dead
 /// (`Dead ???`, `Remote or dead`) is skipped too: its process is gone, so nothing can
 /// attach to it, and xmux leaves the `screen -wipe` cleanup to the user. `windows` is
-/// unknown from `-ls`, so it is 0.
+/// unknown from `-ls`, so it is 0. The pid is the session's identity: `sessionname`
+/// renames the socket and keeps its pid.
 pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in out.split('\n') {
@@ -63,6 +64,7 @@ pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
             host: host.to_string(),
             name: name.to_string(),
             mux: mux.to_string(),
+            id: pid.to_string(),
             windows: 0,
             attached,
         });
@@ -112,6 +114,7 @@ mod tests {
         let got = parse_sessions("jup", "screen", out);
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].name, "parsetest");
+        assert_eq!(got[0].id, "2589", "the pid, which a rename keeps");
         assert!(!got[0].attached);
         assert_eq!(got[1].name, "alpha");
         assert!(got[1].attached);

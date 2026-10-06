@@ -1525,7 +1525,7 @@ Usage: zellij [OPTIONS]",
             crate::model::host_def::runner_spec_via_argv!();
             async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
                 // session row parsed by mux::parse_sessions.
-                Ok(b"1:1:work\n".to_vec())
+                Ok(b"1:1::work\n".to_vec())
             }
         }
 

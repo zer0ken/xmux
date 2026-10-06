@@ -1054,6 +1054,7 @@ fn inventory_rename_precedes_display_session_sync() {
         host: "jup".into(),
         name: "renamed".into(),
         mux: "tmux".into(),
+        id: "7$0".into(),
         windows: 2,
         attached: false,
     }];
@@ -1095,6 +1096,7 @@ async fn prefix_r_probes_the_selected_machine_without_a_discovery_pass() {
         err: None,
         sessions: vec![Session {
             mux: String::new(),
+            id: String::new(),
             host: host.into(),
             name: "api".into(),
             windows: 1,
@@ -1140,6 +1142,7 @@ async fn capital_r_rescan_rebuilds_nav_and_kicks_discovery() {
             err: None,
             sessions: vec![Session {
                 mux: String::new(),
+                id: String::new(),
                 host: "jup".into(),
                 name: "api".into(),
                 windows: 1,
@@ -2774,6 +2777,7 @@ fn two_session_scan() -> crate::ui::switcher::Scan {
     use crate::ui::tree::Group;
     let sess = |name: &str, windows: i64| Session {
         mux: String::new(),
+        id: String::new(),
         host: "jup".into(),
         name: name.into(),
         windows,
@@ -2866,6 +2870,7 @@ fn jup_sessions(names: &[&str]) -> Vec<crate::session::Session> {
         .iter()
         .map(|name| crate::session::Session {
             mux: String::new(),
+            id: String::new(),
             host: "jup".into(),
             name: (*name).into(),
             windows: 1,
@@ -2991,6 +2996,7 @@ fn psmux_scan() -> crate::ui::switcher::Scan {
     use crate::ui::tree::Group;
     let sess = |name: &str| Session {
         mux: String::new(),
+        id: String::new(),
         host: "local".into(),
         name: name.into(),
         windows: 1,
@@ -3099,6 +3105,7 @@ fn zellij_scan() -> crate::ui::switcher::Scan {
         host: "local".into(),
         name: name.into(),
         mux: "zellij".into(),
+        id: String::new(),
         windows: 1,
         attached: false,
     };
@@ -3588,6 +3595,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
             sessions: vec![
                 Session {
                     mux: String::new(),
+                    id: String::new(),
                     host: "jup".into(),
                     name: "api".into(),
                     windows: 1,
@@ -3595,6 +3603,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
                 },
                 Session {
                     mux: String::new(),
+                    id: String::new(),
                     host: "jup".into(),
                     name: "db".into(),
                     windows: 1,
@@ -3648,6 +3657,7 @@ fn status_line_names_the_listed_mux_before_the_reach_resolves() {
             err: None,
             sessions: vec![Session {
                 mux: "psmux".into(),
+                id: String::new(),
                 host: "jup".into(),
                 name: "api".into(),
                 windows: 1,
@@ -3671,6 +3681,7 @@ fn status_line_reports_focus_and_address() {
             err: None,
             sessions: vec![Session {
                 mux: String::new(),
+                id: String::new(),
                 host: "jup".into(),
                 name: "api".into(),
                 windows: 1,
@@ -3720,6 +3731,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
             sessions: vec![
                 Session {
                     mux: String::new(),
+                    id: String::new(),
                     host: "jup".into(),
                     name: "api".into(),
                     windows: 1,
@@ -3727,6 +3739,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
                 },
                 Session {
                     mux: String::new(),
+                    id: String::new(),
                     host: "jup".into(),
                     name: "db".into(),
                     windows: 1,
@@ -3890,6 +3903,7 @@ fn rt_terminal_focus_with_session() -> Runtime {
             err: None,
             sessions: vec![Session {
                 mux: String::new(),
+                id: String::new(),
                 host: "jup".into(),
                 name: "api".into(),
                 windows: 1,
@@ -5048,6 +5062,7 @@ fn poll_rename_precedes_display_session_sync() {
                     host: "jup".into(),
                     name: "renamed".into(),
                     mux: "tmux".into(),
+                    id: "7$0".into(),
                     windows: 2,
                     attached: false,
                 }],
@@ -5080,6 +5095,7 @@ fn one_session_scan() -> Scan {
                 host: "jup".into(),
                 name: "api".into(),
                 mux: "tmux".into(),
+                id: "7$0".into(),
                 windows: 2,
                 attached: false,
             }],
@@ -5288,6 +5304,7 @@ fn host_event_sessions_applies_tree_and_emits_sync_on_success() {
         host: "local".into(),
         name: "work".into(),
         mux: "tmux".into(),
+        id: String::new(),
         windows: 1,
         attached: false,
     }];
@@ -7070,6 +7087,7 @@ fn headline_rt(machine: &str, session: &str, cols: u16, rows: u16) -> Runtime {
                 host: host.clone(),
                 name: session.into(),
                 mux: "tmux".into(),
+                id: String::new(),
                 windows: 1,
                 attached: false,
             }],
