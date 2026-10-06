@@ -285,9 +285,9 @@ class App:
         """
         num = self.card(section, name)
         if num is None:
-            if any("hosts scanned" in l for l in self.t.lines()):
+            if any("machines scanned" in l for l in self.t.lines()):
                 self.t.send("Enter")
-                self.t.wait_gone("hosts scanned", 10)
+                self.t.wait_gone("machines scanned", 10)
             return
         # A card's number changes while sources are still arriving or a host returns, so
         # a jump that lands elsewhere is repeated when the card's number moved meanwhile.
@@ -377,10 +377,10 @@ class Cell:
 def first_launch(c):
     m = c.mux
     app = c.launch(c.h1, c.h2)
-    app.t.wait(lambda ls: any("hosts scanned" in l for l in ls), "the landing screen", 30)
+    app.t.wait(lambda ls: any("machines scanned" in l for l in ls), "the landing screen", 30)
     app.t.wait_text(c.path(c.h1, f"{m}1"), 40)
     app.open(f"{c.h1}/{m}", f"{m}1")
-    app.t.wait_gone("hosts scanned", 10)
+    app.t.wait_gone("machines scanned", 10)
     app.whereami(c.path(c.h1, f"{m}1"))
 
 
@@ -407,7 +407,8 @@ def new_session(c):
     app.whereami(c.path(c.h1, f"{m}1"))
     app.t.send("C-g", gap=0.3)
     app.t.send("n", gap=0.3)
-    app.t.wait_text(f"host  {c.h1}/{m}", 10)
+    app.t.wait(lambda ls: any(re.search(rf"mux {{2,}}{re.escape(c.h1)}/{m}", l) for l in ls),
+               f"the new-session popover on {c.h1}/{m}", 10)
     app.t.send(name, "Enter")
     app.selected(f"{c.h1}/{m}", name, 40)
     app.whereami(c.path(c.h1, name))
