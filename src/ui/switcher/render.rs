@@ -1667,6 +1667,8 @@ impl Switcher {
         }
 
         // Session card: the address column + the session name on a single detail line.
+        // It carries no state glyph or spinner: a session is a plain card from the
+        // moment its host resolves.
         // The `{host}/{mux}` it used to restate now lives on the section title above it.
         // The session name is normal weight between the bold title and dim number.
         //

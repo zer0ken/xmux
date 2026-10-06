@@ -49,6 +49,10 @@ const BROKER_RETRY_MIN: Duration = Duration::from_millis(50);
 const BROKER_RETRY_MAX: Duration = Duration::from_secs(1);
 const MAX_BROKER_SESSIONS: usize = 16;
 
+/// The one prompt the helper answers: an OpenSSH password or keyboard-interactive prompt
+/// whose account is the held user at the target alias, a resolved host name, or the
+/// host-key alias. Any other prompt (a host-key question, a key passphrase, a passcode, a
+/// one-time code) is refused before the token is claimed, so a refusal consumes nothing.
 #[derive(Clone)]
 struct ExpectedPrompt {
     user: Option<String>,
@@ -128,6 +132,9 @@ struct Credential {
     key_opens_no_session: AtomicBool,
 }
 
+/// A held password. Its whole allocation is overwritten when it is released. Transient
+/// terminal and IPC buffers stay ordinary process memory, and crash dump policy belongs to
+/// the operating system.
 #[derive(Clone)]
 struct Secret(String);
 
@@ -155,6 +162,8 @@ pub(crate) fn zero_string(value: &mut String) {
     value.clear();
 }
 
+/// One ssh child's askpass token. It stays valid while the command holding it lives, which
+/// is until the child is reaped, and `claimed` lets it return the password at most once.
 struct Attempt {
     credential: Weak<Credential>,
     claimed: AtomicBool,
@@ -201,6 +210,8 @@ pub struct SshProfile {
     pub login: super::Login,
     pub host_names: Vec<String>,
     pub strict_host_key_checking: Option<String>,
+    /// Reached through `ProxyJump` or `ProxyCommand`. Such a destination requires key
+    /// authentication, because the proxy would inherit the target's askpass state.
     pub proxied: bool,
 }
 
@@ -330,7 +341,8 @@ impl Credentials {
     }
 
     /// Starts one unvalidated login. The credential is visible only to the login
-    /// command until that exact token is promoted after a successful exit.
+    /// command until that exact token is promoted after a successful exit. Any credential
+    /// the machine held before is removed first, so changed values replace it.
     pub fn begin(
         &self,
         machine: &str,
@@ -819,6 +831,7 @@ fn bump_generation(inner: &Inner, machine: &str) -> u64 {
 }
 
 impl Credential {
+    /// Invalidates every outstanding command token at once and releases the plaintext.
     fn revoke(&self) {
         self.revoked.send_replace(true);
         self.password.lock().expect("secret lock").take();
@@ -892,6 +905,8 @@ impl CommandAuth {
         true
     }
 
+    /// Removes this command's exact credential, pending or held, on a failed or replaced
+    /// login. A newer credential for the machine stays.
     pub fn discard(&self) {
         let removed_pending =
             remove_matching(&self.inner.pending, &self.machine, &self.credential_token);
@@ -948,6 +963,9 @@ struct Request {
     secret_prompt: bool,
 }
 
+/// Answers askpass requests. After any accept failure the endpoint is recreated with
+/// backoff; while it is down the failure is recorded, so commands run in batch mode and
+/// report that password login is unavailable.
 async fn serve(
     mut listener: Option<Listener>,
     path: PathBuf,

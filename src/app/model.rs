@@ -52,7 +52,8 @@ pub(crate) struct AppModel {
     /// The re-scan whose summary toast is still owed, held until every source it asked
     /// and, for a full re-scan, the roster have answered.
     pub(crate) rescan: Option<RescanInFlight>,
-    /// The logout still taking this machine's key off its host.
+    /// The logout still taking this machine's key off its host. One runs at a time: a
+    /// second logout is refused while this one is set.
     pub(crate) logout: Option<LogoutRun>,
     /// A cancel handle for every login whose result has not arrived, whichever machine it
     /// is on. The pane's handle names only the latest submission, so a logout of another
@@ -1036,6 +1037,8 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                     } else {
                         Vec::new()
                     };
+                    // Only a refusal of the held password leaves the cards to the login
+                    // pane; a refusal that never received it stays visible on them.
                     if credential_held && password_supplied && auth_refused {
                         model
                             .state

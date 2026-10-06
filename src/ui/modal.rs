@@ -103,7 +103,7 @@ impl PopupGeometry {
 /// (Unicode-aware), breaking on spaces; a word longer than `width` is hard-split so
 /// nothing is ever clipped. Always returns at least one line. Every popup row wraps
 /// through it, so a popup narrower than its text shows the text on more rows instead of
-/// cutting it.
+/// cutting it. A popup's height and its scroll window count these wrapped rows.
 pub(crate) fn wrap_text(text: &str, width: u16) -> Vec<String> {
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
     let width = (width as usize).max(1);

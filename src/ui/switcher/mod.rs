@@ -547,7 +547,9 @@ impl Switcher {
     ///
     /// That session has a live grid like any other, and showing it is still refused:
     /// attaching to it puts a second client on the session that holds xmux, which moves
-    /// the user's own client and paints xmux inside itself.
+    /// the user's own client and paints xmux inside itself. The match is on this one
+    /// address, so a session running a DIFFERENT xmux mirrors like any other, showing
+    /// that xmux's screen, and the refused card itself stays selectable.
     fn is_own_session(&self, source: &str, target: &str) -> bool {
         match &self.own_session {
             Some(own) => !target.is_empty() && own.source == source && own.session == target,
@@ -663,7 +665,8 @@ impl Switcher {
             Interest::FirstSession => {
                 // A session answering later than the first one does not take the cursor:
                 // the interest is settled by the first, so the launch attaches one session
-                // rather than one per answer.
+                // rather than one per answer, and the terminal view shows the session
+                // the cursor names throughout the scan.
                 match self
                     .rows
                     .iter()
@@ -716,8 +719,8 @@ impl Switcher {
     ///
     /// A node the selection reached with no nav target of its own (a screen link opened
     /// it) stays selected while the inventory still holds it. A node that HAD a target
-    /// and lost it walks up instead, which is how a host going down gathers the selection
-    /// from its sources and sessions onto its one card.
+    /// and lost it walks up instead, which is how a host going down or logged out gathers
+    /// the selection from its sources and sessions onto its one card.
     fn lineage_target(
         &self,
         prior: &Prior,

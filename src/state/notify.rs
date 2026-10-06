@@ -331,7 +331,8 @@ impl ScanSnapshot {
     /// answering. `label` names a source the way its card does. A session is named under
     /// its machine, and under the machine and its mux when the machine serves several. A
     /// re-scan that changed nothing says so, with the counts it found. Every host count
-    /// counts machines, not the muxes they serve.
+    /// counts machines, not the muxes they serve. A source whose login was refused reads
+    /// as needing a login, never as its sessions ending.
     pub(crate) fn summary(
         &self,
         after: &ScanSnapshot,

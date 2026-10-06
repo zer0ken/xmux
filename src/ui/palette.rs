@@ -44,6 +44,8 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+/// The one bold shape every interaction screen paints a key token in, so a key reads as
+/// a key wherever it is offered.
 pub(crate) fn interaction_key_style() -> Style {
     Style::default().add_modifier(Modifier::BOLD)
 }
@@ -56,7 +58,7 @@ pub(crate) fn interaction_key_style() -> Style {
 pub(crate) struct Palette {
     /// The whole view border while the nav holds focus. Its own role, apart from the
     /// card accent, so the divider is tuned independently of the selection mark and
-    /// session name.
+    /// session name. Also the list-failed glyph `✗` on a host-state card.
     pub primary: Color,
     /// The host/mux text of a host-state card and the state word beside it. A section
     /// title over a group of session cards uses `decoration`, so the
@@ -75,7 +77,8 @@ pub(crate) struct Palette {
     /// In-flight and actionable-state marks: the scanning spinner and login-needed
     /// glyph.
     pub warning: Color,
-    /// Failure state: error text and the refusal bar's background.
+    /// Failure state: error text, the unreachable glyph `▲`, and the refusal bar's
+    /// background.
     pub error: Color,
     /// The whole view border while the terminal holds focus.
     pub disabled: Color,

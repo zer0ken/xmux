@@ -187,6 +187,8 @@ fn current_os() -> &'static str {
     std::env::consts::OS
 }
 
+/// Reads each alias's effective ssh configuration (`ssh -G`), at most
+/// [`SSH_PROFILE_CONCURRENCY`] at a time; a resolver past [`SSH_PROFILE_TIMEOUT`] is killed.
 async fn resolve_ssh_profiles(
     aliases: &[String],
 ) -> HashMap<String, crate::transport::auth::SshProfile> {

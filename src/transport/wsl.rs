@@ -105,7 +105,8 @@ impl Transport for Wsl {
     /// allocates inside the distribution, so the mux sees a terminal while xmux still
     /// reads plain pipes. `-q` drops the banner, `-f` flushes every line so the stream
     /// stays live, and the typescript is written to `/dev/null` because only the stream
-    /// is wanted.
+    /// is wanted. Only a push-channel mux needs this pty; a polled mux in the same
+    /// distribution never takes this path.
     fn control_argv(&self, mux_control_argv: &[String]) -> super::CommandSpec {
         let inner = remote_command(mux_control_argv);
         let script = remote_command(&[
