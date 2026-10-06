@@ -35,6 +35,7 @@ COLS, ROWS = 140, 60
 # reports KNOWN when it fails and PASS when it passes.
 KNOWN = {
     ("in-client-switch", "tuios", None): "#333",
+    ("in-client-switch", "zellij", None): "#670",
 }
 # Cells that do not apply: the mux cannot move a client between sessions (a screen,
 # abduco, or herdr client belongs to one session's server), and abduco has no keys of its
