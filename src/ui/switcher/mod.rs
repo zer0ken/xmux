@@ -1561,19 +1561,17 @@ impl Switcher {
                 .groups
                 .iter()
                 .filter(|g| crate::session::machine_of(&g.source) == machine)
-                .map(|g| {
+                .filter_map(|g| {
                     // A source is named by its mux, and only by a mux an answer
-                    // confirmed, as its card and its own screen name it: otherwise by
-                    // its id.
+                    // confirmed. A source with no confirmed mux is linked nowhere: it is
+                    // the placeholder that stands for the whole machine until its mux is
+                    // known, so its link would open the screen it is listed on.
                     let answered = g.err.is_none() && !state.scanning.contains(&g.source);
                     let mux = state.chrome.source_mux(&g.source);
-                    let label = if mux.is_empty()
-                        || !crate::session::mux_may_be_named(&g.source, answered)
-                    {
-                        g.source.clone()
-                    } else {
-                        mux.to_string()
-                    };
+                    if mux.is_empty() || !crate::session::mux_may_be_named(&g.source, answered) {
+                        return None;
+                    }
+                    let label = mux.to_string();
                     let value = if state.scanning.contains(&g.source) {
                         "scanning".to_string()
                     } else if let Some(kind) = g.failure() {
@@ -1592,12 +1590,12 @@ impl Switcher {
                             n => format!("{n} sessions"),
                         }
                     };
-                    ScreenLink {
+                    Some(ScreenLink {
                         node: Node::Source(g.source.clone()),
                         label,
                         value,
                         number: None,
-                    }
+                    })
                 })
                 .collect(),
             Node::Source(source) => {

@@ -877,11 +877,17 @@ impl Chrome {
             rows.push((ScreenCell::Gap, String::new()));
             // What was asked, and of what. The mux and the machine are the two
             // independent things that can be wrong: the box may be up with no such mux
-            // on it, or the mux fine behind a box that cannot be reached. Each screen
-            // states its own half, and the other half is one link away.
+            // on it, or the mux fine behind a box that cannot be reached. The machine
+            // screen states how the machine was asked, which is all an unresolved machine
+            // has; the mux row belongs to the host screen.
             if let Some(reach) = self.source_reach.get(source) {
                 let level_rows = if host {
-                    [("machine", &reach.machine)].to_vec()
+                    [
+                        ("machine", &reach.machine),
+                        ("socket", &reach.socket),
+                        ("probe", &reach.probe),
+                    ]
+                    .to_vec()
                 } else {
                     [
                         ("mux", &reach.mux),

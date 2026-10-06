@@ -7576,16 +7576,9 @@ async fn a_host_that_answered_nothing_headlines_without_a_mux() {
         !out.contains("prod/tmux"),
         "no mux is claimed for a host that answered nothing:\n{out}"
     );
-    // What was ASKED is still stated, on the screen of the source that was asked.
-    assert!(h.sw.open_link(0, &h.state));
-    h.draw();
-    let out = h.view_text();
+    // What was ASKED is still stated, in the probe the machine was sent.
     assert!(
-        out.lines().any(|l| l.trim() == "mux prod"),
-        "the source's headline claims no mux either:\n{out}"
-    );
-    assert!(
-        out.contains("tmux"),
+        out.contains("prod tmux ls"),
         "the diagnostic still says what it tried:\n{out}"
     );
 }
@@ -7673,32 +7666,18 @@ async fn unreachable_host_screen_states_what_was_asked_and_over_what() {
     );
     h.key(KeyCode::Char('d')).await;
     h.draw();
-    // The machine's screen states the machine half, the source's screen the mux half.
-    let out = h.view_text();
-    assert!(
-        out.contains("ssh to prod, given 5s to connect"),
-        "the machine screen states how the machine is reached:\n{out}"
-    );
-    for gone in ["socket", "probe", "list-sessions"] {
-        assert!(
-            !out.contains(gone),
-            "the machine screen omits {gone:?}:\n{out}"
-        );
-    }
-    assert!(h.sw.open_link(0, &h.state));
-    h.draw();
+    // An unresolved machine has no host screen to link to, so its own screen states
+    // everything that was asked of it.
     let out = h.view_text();
     for want in [
-        "tmux",
+        "machine",
+        "ssh to prod, given 5s to connect",
         "socket",
         "/tmp/cm-prod.sock",
         "probe",
         "prod tmux list-sessions",
     ] {
-        assert!(out.contains(want), "the mux screen states {want:?}:\n{out}");
-    }
-    for gone in ["ssh to prod", "ssh config", "provider"] {
-        assert!(!out.contains(gone), "the mux screen omits {gone:?}:\n{out}");
+        assert!(out.contains(want), "the screen states {want:?}:\n{out}");
     }
 }
 

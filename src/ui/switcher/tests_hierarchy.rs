@@ -640,23 +640,48 @@ fn a_host_card_that_logs_back_in_hands_the_selection_to_its_first_source() {
 }
 
 #[test]
-fn a_link_opens_a_source_the_nav_has_no_card_for() {
+fn an_unresolved_machine_screen_links_to_nothing() {
     let mut h = H::new(&[("gpu", &["train"], None), ("db", &[], Some(LOGGED_OUT))]);
     let card = h.card_row(|r| matches!(r, RowRef::Machine { .. }));
     h.sw.set_selected(card);
     h.terminal_focused = true;
     h.draw();
+    assert_eq!(h.node(), host("db"));
     assert!(
-        !h.sw.login_pane_shown(&h.state) || h.view().contains("muxes"),
-        "the host's screen lists its sources"
+        h.sw.screen_links(&Node::Host("db".into()), &h.state)
+            .is_empty(),
+        "the placeholder source stands for this machine, so it is no link"
+    );
+    let view = h.view();
+    assert!(
+        !view.lines().any(|l| l.trim_start().starts_with("hosts")),
+        "no link list without a confirmed mux:\n{view}"
+    );
+    assert!(view.contains("Log in ]"), "{view}");
+}
+
+#[test]
+fn a_link_opens_a_source_the_nav_has_no_card_for() {
+    let mut h = H::new(&[
+        ("gpu", &["train"], None),
+        ("db:tmux", &[], Some(LOGGED_OUT)),
+    ]);
+    let card = h.card_row(|r| matches!(r, RowRef::Machine { .. }));
+    h.sw.set_selected(card);
+    h.terminal_focused = true;
+    h.draw();
+    assert!(
+        h.view().contains("hosts"),
+        "the machine's screen lists its hosts:\n{}",
+        h.view()
     );
     let links = h.sw.screen_links(&Node::Host("db".into()), &h.state);
-    assert_eq!(links[0].node, Node::Source("db".into()));
+    assert_eq!(links[0].node, Node::Source("db:tmux".into()));
     assert!(h.sw.open_link(0, &h.state));
     h.draw();
     assert_eq!(
         h.node(),
-        source("db"),
+        source("db:tmux"),
         "the source is selected without a card"
     );
     assert_eq!(h.sw.selected, card, "the nav stands on its host's card");
@@ -675,9 +700,14 @@ fn a_link_opens_a_source_the_nav_has_no_card_for() {
     // The selection holds while the inventory lists the source, and lands on the source's
     // own card once it has one.
     h.sw.rebuild(&mut h.state);
-    assert_eq!(h.node(), source("db"));
-    h.sw.apply_source_result("db".into(), vec![sess("db", "pg")], None, &mut h.state);
-    assert_eq!(h.node(), source("db"));
+    assert_eq!(h.node(), source("db:tmux"));
+    h.sw.apply_source_result(
+        "db:tmux".into(),
+        vec![sess("db:tmux", "pg")],
+        None,
+        &mut h.state,
+    );
+    assert_eq!(h.node(), source("db:tmux"));
     assert!(h.sw.deep.is_none());
     assert_eq!(h.sw.part, Part::Source);
 }
