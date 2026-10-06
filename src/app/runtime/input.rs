@@ -707,7 +707,9 @@ impl Runtime {
             // FocusTerminal/quit and the focus toggles below never fire mid-modal.
             let (ft, q, wd, hd, th, cp) = self.handle_nav_bytes(&non_mouse, width_changed);
             *focus_terminal = ft;
-            *quit = q;
+            // A click earlier in this read may already have quit (a popup item run by
+            // the mouse arm above), so the keys' verdict adds to it, never replaces it.
+            *quit |= q;
             // A prefix-driven resize: width (Ctrl-←/→) or height (Ctrl-↑/↓); each applies only in
             // its layout, and opens the bare-Ctrl-arrow repeat window.
             let rw = self.resize_and_repeat(true, wd);
