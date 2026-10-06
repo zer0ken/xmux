@@ -523,10 +523,15 @@ impl Switcher {
     }
 
     /// Closes the landing screen for the rest of the run, so the selection drives the
-    /// terminal view from here on. Returns whether it was open.
+    /// terminal view from here on. Returns whether it was open. Closing it is the first
+    /// execution, so the card it executed is a choice from here on: a session card that
+    /// appears later no longer takes the selection as the first session.
     pub(crate) fn close_landing(&mut self) -> bool {
         if !std::mem::take(&mut self.landing) {
             return false;
+        }
+        if self.interest == Interest::FirstSession {
+            self.interest = Interest::Selected;
         }
         self.link_hover = None;
         self.on_focus_changed();

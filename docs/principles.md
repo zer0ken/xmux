@@ -176,7 +176,9 @@ or resizes, the wheel scrolls, and typing edits a text field.
 
 The landing screen is the one surface on which a selection shows nothing: from launch
 until the first execution the hard selection only highlights and a hover previews
-nothing, so nothing attaches before the user has chosen.
+nothing, so nothing attaches before the user has chosen. The target the first execution
+opens is the user's choice from then on, so a session card that appears later does not
+take the selection from it.
 
 ## Results as Notifications
 

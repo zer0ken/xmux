@@ -2085,6 +2085,34 @@ async fn a_login_from_the_landing_that_reveals_hosts_keeps_the_machine_selected(
 }
 
 #[tokio::test]
+async fn a_login_on_the_preselected_landing_card_keeps_the_machine_selected() {
+    // The machine is the only card, so the launch preselects it and Enter executes it
+    // without a move: the execution, not a move, makes it the user's choice, and the
+    // first session card the login reveals does not take the selection.
+    let mut roster = auto_roster(&[], &["win"]);
+    roster.local_muxes.clear();
+    let mut rt = test_rt(fake_env_from(roster));
+    rt.model.switcher.apply_machine_result(
+        "win",
+        Some("alice@win: Permission denied (publickey,password).".into()),
+        &mut rt.model.state,
+    );
+    rt.model.switcher.open_landing();
+    sync_test_render_plan(&mut rt);
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        Some(crate::model::Node::Machine("win".into()))
+    );
+    rt.handle_stdin_bytes(b"\r", &Selection::default());
+    assert!(
+        !rt.model.switcher.landing_open(),
+        "Enter executes the machine"
+    );
+    log_in_and_discover_two_hosts(&mut rt);
+    assert_on_the_machine_screen_with_both_hosts(&mut rt);
+}
+
+#[tokio::test]
 async fn a_logout_gathers_the_hosts_back_onto_the_machine_card() {
     let mut rt = hostless_machine_needing_login_rt();
     rt.model.switcher.open_host("win", &mut rt.model.state);
