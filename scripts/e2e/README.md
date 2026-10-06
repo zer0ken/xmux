@@ -71,7 +71,6 @@ issue is fixed.
 
 | Cell | Result | Reason |
 | --- | --- | --- |
-| every scenario, abduco on Alpine | `KNOWN #578` | the 0.6 listing yields no sessions |
 | every scenario, screen on Alpine | `KNOWN #588` | the screen 5 listing yields no sessions |
 | `new-session`, zellij and abduco | `KNOWN #584` | the create over ssh times out although the session starts |
 | `switch`, abduco | `KNOWN #585` | keys typed right after returning to an abduco source are lost |
