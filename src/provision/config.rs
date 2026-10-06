@@ -1233,6 +1233,9 @@ pub fn stanza_login(config_text: &str, alias: &str) -> crate::transport::Login {
 /// The address and port the login pane starts with. Only an exact host stanza supplies
 /// the username; without one, the user enters it.
 ///
+/// The values ssh effectively uses are kept only for a host a `Host` block names, from
+/// OpenSSH's effective configuration, else the stanza when OpenSSH could not report it.
+///
 /// A field counts as set by ssh config when the stanza naming the host sets it, or when
 /// OpenSSH's effective value differs from what OpenSSH fills in for a host no block
 /// configures (the alias as the host name, port 22). `ssh -G` reports every field for
@@ -1246,6 +1249,8 @@ pub fn login_defaults(
     config_text: &str,
 ) -> crate::provision::env::LoginDefaults {
     let stanza = stanza_login(config_text, alias);
+    let ssh_effective = names_host(config_text, alias)
+        .then(|| effective.cloned().unwrap_or_else(|| stanza.clone()));
     let effective = effective.cloned().unwrap_or_default();
     let user = stanza_user(config_text, alias);
     let configured = crate::transport::Login {
@@ -1292,8 +1297,20 @@ pub fn login_defaults(
             },
             value: user.unwrap_or_default(),
         },
-        configured,
+        ssh_effective,
     }
+}
+
+/// Whether a `Host` line in `config_text` names `alias` exactly, ignoring ASCII case as
+/// ssh does. xmux's own stanza is such a block; a pattern or a `Match` block is not.
+fn names_host(config_text: &str, alias: &str) -> bool {
+    config_text.lines().any(|line| {
+        host_names(line).is_some_and(|names| {
+            names
+                .iter()
+                .any(|(_, name)| name.trim_matches('"').eq_ignore_ascii_case(alias))
+        })
+    })
 }
 
 fn ssh_directive(line: &str) -> Option<(&str, String)> {

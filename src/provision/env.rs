@@ -37,9 +37,10 @@ pub struct LoginDefaults {
     pub address: LoginValue,
     pub port: LoginValue,
     pub username: LoginValue,
-    /// The values ssh config sets for the host. A field no block sets is `None`, even
-    /// though OpenSSH fills in a default for it, so nothing is taken to match it.
-    pub configured: crate::transport::Login,
+    /// The values ssh effectively uses for the host when a `Host` block names it, or
+    /// `None` when no block does. A field neither OpenSSH nor the block reports is
+    /// `None`, so nothing is taken to match it.
+    pub ssh_effective: Option<crate::transport::Login>,
 }
 
 impl LoginDefaults {
@@ -57,7 +58,7 @@ impl LoginDefaults {
                 value: String::new(),
                 provenance: "",
             },
-            configured: crate::transport::Login::default(),
+            ssh_effective: None,
         }
     }
 }
@@ -2985,7 +2986,7 @@ mod tests {
                             value: "dev".into(),
                             provenance: "from ssh config",
                         },
-                        configured: Default::default(),
+                        ssh_effective: None,
                     },
                 )]
                 .into(),
