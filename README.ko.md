@@ -283,6 +283,9 @@ Esc를 누르면 그 줄은 남긴다. host에 연결할 수 없거나 제거에
 않는다. 다시 스캔하면 host가 아직 받아들이는 key로만 다시 접속하고, 그런 key가 없으면 다시
 로그인해야 한다.
 
+Windows host의 요구 사항과 Entra 전용 계정의 제약은
+[`INSTALL.md`](INSTALL.md#windows-hosts)를 참조한다.
+
 ## roster
 
 roster는 xmux가 host로 제공할 머신을 조립한다. roster는 provider 세 개에서 ssh

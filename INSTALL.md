@@ -18,6 +18,53 @@ Remote hosts need `ssh` on the machine that runs xmux, and a supported mux on ea
 host: `tmux`, GNU `screen`, `zellij`, `abduco`, or `tuios` on unix-likes, `psmux`
 on Windows, and `herdr` on either.
 
+## Windows Hosts
+
+A Windows machine can be a remote host once it runs OpenSSH Server and a mux
+(`psmux` or `herdr`). OpenSSH Server reads a user's keys from the user's
+`authorized_keys` file. For a member of the Administrators group it reads the
+machine-wide `administrators_authorized_keys` file instead, so key registration
+from xmux writes the key to both files.
+
+### Entra-Only Accounts
+
+A host whose accounts are all Entra ID accounts cannot offer password login and
+key login from one `sshd`, so xmux cannot register a key through a password
+login on it. The two ways to run `sshd` each lose one of the two logins:
+
+| How `sshd` runs | Password login | Key login |
+| --- | --- | --- |
+| SYSTEM `sshd` service (default) | Works | Fails for Entra accounts |
+| `sshd` run under the user account | Fails with error 1314 | Works |
+
+The SYSTEM service builds a logon token for the connecting user. A password
+supplies what that needs. A public key supplies nothing, so for an Entra account
+the service reports `unable to get security token for user` right after
+`Accepted publickey` and closes the connection.
+
+An `sshd` run under the user account needs no token for its own user, so key
+login works. It has no right to create a new logon session for a password
+login: the password is accepted, then the host logs `CreateProcessAsUserW failed
+error:1314` and `fork of unprivileged child failed`, and the client exits with
+255. Key registration runs a command inside an authenticated session, so it
+fails at the same point.
+
+Local accounts and Active Directory domain accounts work for both logins under
+the SYSTEM service, so they do not have this limit. A local account or a
+hybrid/AD account is the way to get password login and key login on one host.
+
+Under the SYSTEM service the username takes the form `azuread\<UPN>`; with the
+UPN alone, `sshd` rejects it as `Invalid user`. An `sshd` run under the user
+account accepts the UPN alone.
+
+An Entra-only host takes its first key in one of two ways:
+
+- Write the public key into `~/.ssh/authorized_keys` on the host directly.
+- Run the SYSTEM service on a second port with a separate `sshd_config` that
+  allows passwords only, log in on that port, and register the key.
+
+After the key is in place, key login needs an `sshd` run under the user account.
+
 ## Install Script Layout
 
 The CMD script installs nothing of its own: it hands the install to the PowerShell
