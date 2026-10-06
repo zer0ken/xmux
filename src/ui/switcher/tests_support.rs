@@ -7,18 +7,18 @@ use std::sync::Arc;
 struct NoopOps;
 #[async_trait::async_trait]
 impl Ops for NoopOps {
-    fn sources(&self) -> Vec<String> {
+    fn hosts(&self) -> Vec<String> {
         unreachable!("noop_ops is only constructed, never called")
     }
-    async fn list_sessions(&self, _source: &str) -> anyhow::Result<Vec<Session>> {
+    async fn list_sessions(&self, _host: &str) -> anyhow::Result<Vec<Session>> {
         unreachable!("noop_ops is only constructed, never called")
     }
-    async fn new_session(&self, _source: &str, _name: &str) -> anyhow::Result<Session> {
+    async fn new_session(&self, _host: &str, _name: &str) -> anyhow::Result<Session> {
         unreachable!("noop_ops is only constructed, never called")
     }
     async fn login_command(
         &self,
-        _source: &str,
+        _host: &str,
         _login: &crate::transport::Login,
         _password: String,
     ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
@@ -26,14 +26,14 @@ impl Ops for NoopOps {
     }
     fn write_login_stanza(
         &self,
-        _source: &str,
+        _host: &str,
         _login: &crate::transport::Login,
     ) -> Result<(), String> {
         unreachable!("noop_ops is only constructed, never called")
     }
     async fn register_login_key(
         &self,
-        _source: &str,
+        _host: &str,
         _login: &crate::transport::Login,
         _register: crate::ui::ops::KeyRegistration,
     ) -> crate::ui::ops::RegistrationOutcome {

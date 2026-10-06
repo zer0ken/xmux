@@ -7,13 +7,13 @@ one update transition, the runtime that owns the terminal for the whole session,
 ctl socket server, and preference persistence. The runtime is a persistent supervisor:
 it keeps one attached mux client per session alive in a PTY across selections and
 draws the selected session's live grid beside the nav. The update transition keeps
-domain state, switcher state, geometry, interaction state, source tracking, and the
+domain state, switcher state, geometry, interaction state, host tracking, and the
 render plan coherent, then returns ordered effects for the runtime to execute.
 
 ## Module Seams
 
 - The application model owns domain state, switcher interaction state, nav geometry
-  and preference values, mouse state, the connected and detecting source sets, the
+  and preference values, mouse state, the connected and detecting host sets, the
   re-scan and logout in flight, the running logins, and the last render plan.
 - `runtime/` owns the event loop, the I/O resources, and the effect executor; its
   own Working Notes describe it.

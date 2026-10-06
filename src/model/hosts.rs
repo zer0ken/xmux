@@ -1,43 +1,43 @@
-//! `Hosts`: the runtime source registry - every source keyed by id, in display order
-//! (local first). The single owner of each source's `Host`, and the one registry every
+//! `Hosts`: the runtime host registry - every host keyed by id, in display order
+//! (local first). The single owner of each host's `Host`, and the one registry every
 //! consumer reads: the event loop drives the `Host`s, and the off-loop operations, the
-//! CLI, and the scan read the [`SourceSet`] it publishes, so no two consumers can
-//! disagree about which sources exist.
+//! CLI, and the scan read the [`HostDefs`] it publishes, so no two consumers can
+//! disagree about which hosts exist.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::source::{Runner, Source, SourceSet};
+use crate::model::host_def::{HostDef, HostDefs, Runner};
 use crate::model::{Host, Liveness};
 use crate::mux::for_binary;
 use crate::provision::config::Config;
-use crate::session::LOCAL_SOURCE;
+use crate::session::LOCAL_MACHINE;
 use crate::transport::Transport;
 
 /// Every host, keyed by host id, in display order (local first). The single owner of
-/// each machine's `Host` for the app loop, so a host is present here or nowhere.
+/// each host's `Host` for the app loop, so a host is present here or nowhere.
 ///
-/// A host whose muxes are xmux's to decide has no source until the host itself answers
-/// which muxes it serves, so it is also held as a HOST: its name and the transport that
-/// reaches it. That transport is what probes the host and asks it for its muxes, and every
-/// source found on it is built from it.
+/// A machine whose muxes are xmux's to decide has no host until the machine itself answers
+/// which muxes it serves, so it is also held as a MACHINE: its name and the transport that
+/// reaches it. That transport is what probes the machine and asks it for its muxes, and
+/// every host found on it is built from it.
 ///
-/// Every change to the sources republishes `sources`, the [`SourceSet`] handed to the
-/// work that runs off the event loop, so a source added here is operable everywhere and
+/// Every change to the hosts republishes `hosts`, the [`HostDefs`] handed to the
+/// work that runs off the event loop, so a host added here is operable everywhere and
 /// no caller has a second registry to keep in step.
 #[derive(Default)]
 pub struct Hosts {
     order: Vec<String>,
     map: HashMap<String, Host>,
     auto: Vec<(String, Box<dyn Transport>)>,
-    sources: SourceSet,
+    hosts: HostDefs,
     credentials: crate::transport::auth::Credentials,
-    remote_shells: crate::model::source::RemoteShells,
-    /// The runner every published source runs its commands through; `None` is the real
+    remote_shells: crate::model::host_def::RemoteShells,
+    /// The runner every published host runs its commands through; `None` is the real
     /// exec runner.
     runner: Option<std::sync::Arc<dyn Runner>>,
 }
 
-/// What one [`Hosts::reconcile`] changed: the source ids it added, the ids it dropped
+/// What one [`Hosts::reconcile`] changed: the host ids it added, the ids it dropped
 /// because the fresh roster no longer names their machine, and the machines that joined
 /// and left the roster. The loop acts on all four, so the registry, the nav, and the live
 /// connections stay one answer.
@@ -71,16 +71,16 @@ impl Hosts {
         self.map.insert(id, host);
     }
 
-    /// Derives one [`Source`] from each runtime source, in display order, and publishes
+    /// Derives one [`HostDef`] from each runtime host, in display order, and publishes
     /// them. The definition is read off the `Host` itself (its id, its mux binary, and
     /// the construction data of its transport), so it cannot name a machine or a mux the
     /// loop does not drive.
     fn publish(&self) {
-        let sources = self
+        let hosts = self
             .order
             .iter()
             .filter_map(|id| self.map.get(id))
-            .map(|host| Source {
+            .map(|host| HostDef {
                 alias: host.id().to_string(),
                 binary: host.mux.bin().to_string(),
                 kind: host.transport.machine_kind(),
@@ -89,26 +89,26 @@ impl Hosts {
                 credentials: self.credentials.clone(),
             })
             .collect();
-        self.sources.replace(sources);
+        self.hosts.replace(hosts);
     }
 
-    /// The published sources, shared with the work that runs off the event loop.
-    pub fn sources(&self) -> SourceSet {
-        self.sources.clone()
+    /// The published hosts, shared with the work that runs off the event loop.
+    pub fn defs(&self) -> HostDefs {
+        self.hosts.clone()
     }
 
-    /// The source answering as `id`, if this registry holds one.
-    pub fn source(&self, id: &str) -> Option<Source> {
-        self.sources.get(id)
+    /// The host answering as `id`, if this registry holds one.
+    pub fn def(&self, id: &str) -> Option<HostDef> {
+        self.hosts.get(id)
     }
 
-    /// Every source, in display order.
-    pub fn source_list(&self) -> Vec<Source> {
-        self.sources.list()
+    /// Every host, in display order.
+    pub fn def_list(&self) -> Vec<HostDef> {
+        self.hosts.list()
     }
 
     /// Shares the run's machine credential store with every transport this registry holds
-    /// and every source it publishes.
+    /// and every host it publishes.
     pub(crate) fn set_credentials(&mut self, credentials: crate::transport::auth::Credentials) {
         for host in self.map.values_mut() {
             host.transport.set_credentials(credentials.clone());
@@ -120,10 +120,13 @@ impl Hosts {
         self.publish();
     }
 
-    /// Shares the record of each machine's shell family with every source this registry
+    /// Shares the record of each machine's shell family with every host this registry
     /// publishes, so an off-loop operation composes its command for the shell that reads
     /// it.
-    pub(crate) fn set_remote_shells(&mut self, remote_shells: crate::model::source::RemoteShells) {
+    pub(crate) fn set_remote_shells(
+        &mut self,
+        remote_shells: crate::model::host_def::RemoteShells,
+    ) {
         self.remote_shells = remote_shells;
         self.publish();
     }
@@ -134,7 +137,7 @@ impl Hosts {
         self.publish();
     }
 
-    /// Holds a machine as an unresolved host card until its mux list arrives.
+    /// Holds a machine as an unresolved machine card until its mux list arrives.
     pub(crate) fn hold_unresolved(&mut self, machine: String, mut transport: Box<dyn Transport>) {
         if !self.serves_any(&machine) && !self.auto.iter().any(|(name, _)| *name == machine) {
             transport.set_credentials(self.credentials.clone());
@@ -143,11 +146,11 @@ impl Hosts {
     }
 
     /// Assembles the hosts for a config: this machine's hosts first (one per entry of the
-    /// RESOLVED `local_muxes`, its socket from `$TMUX`), then each ssh host in order,
+    /// RESOLVED `local_muxes`, its socket from `$TMUX`), then each ssh machine in order,
     /// then each WSL distribution. WSL comes last so adding the implementation leaves every
     /// id an existing install already had in the position it had.
-    /// A host whose muxes are xmux's to decide is held by name and transport, with no
-    /// source until it answers.
+    /// A machine whose muxes are xmux's to decide is held by name and transport, with no
+    /// host until it answers.
     /// `xmux_dir` seeds each ssh transport's ControlMaster socket path. OpenSSH expands
     /// its `%C` component from the connection.
     pub fn build(
@@ -164,9 +167,9 @@ impl Hosts {
         // One host per (machine, mux): this machine contributes one for each mux it serves.
         let qualified = local_muxes.len() > 1;
         for bin in local_muxes {
-            let id = crate::session::source_id(LOCAL_SOURCE, bin, qualified);
+            let id = crate::session::host_id(LOCAL_MACHINE, bin, qualified);
             hosts.insert_unpublished(host_for(
-                LOCAL_SOURCE,
+                LOCAL_MACHINE,
                 bin,
                 id,
                 os,
@@ -180,8 +183,8 @@ impl Hosts {
             .into_iter()
             .chain(cfg.wsl_specs(wsl_distros))
         {
-            if spec.alias == LOCAL_SOURCE {
-                continue; // "local" is reserved for this machine's sources.
+            if spec.alias == LOCAL_MACHINE {
+                continue; // "local" is reserved for this machine's hosts.
             }
             hosts.insert_unpublished(host_for(
                 &spec.alias,
@@ -192,7 +195,7 @@ impl Hosts {
                 local_socket.clone(),
             ));
         }
-        for machine in cfg.auto_hosts(ssh_aliases, wsl_distros) {
+        for machine in cfg.auto_machines(ssh_aliases, wsl_distros) {
             let kind = crate::transport::kind_for(&machine, machine.clone(), os, xmux_dir, None);
             hosts.auto.push((machine, kind.transport()));
         }
@@ -209,7 +212,7 @@ impl Hosts {
     ///
     /// Removal is decided by MACHINE, never by id. Which muxes a machine serves is
     /// answered by PROBING the machine, and building a registry probes nothing, so a
-    /// source that async mux discovery added is absent from `fresh` while its machine is
+    /// host that async mux discovery added is absent from `fresh` while its machine is
     /// perfectly well named. Dropping by id would tear those cards down on every re-scan
     /// and re-find them a moment later.
     ///
@@ -223,7 +226,7 @@ impl Hosts {
     /// A surviving host keeps the display position it had and an added one appends, so a
     /// card the user is looking at does not move because another machine answered.
     ///
-    /// A host whose muxes are xmux's to decide survives on its NAME, and keeps the
+    /// A machine whose muxes are xmux's to decide survives on its NAME, and keeps the
     /// transport it had, which holds what its probe and login established.
     pub fn reconcile(&mut self, mut fresh: Hosts) -> RosterDelta {
         let before = self.machines();
@@ -236,8 +239,8 @@ impl Hosts {
         // This box always exists. The local machine's presence in `fresh` depends on a
         // probe (the resolved local mux list), and a probe result is a verdict on which
         // muxes are here, never on whether the machine exists - so it must not be able
-        // to reap every local source on a re-scan where the probe failed to answer.
-        machines.insert(LOCAL_SOURCE);
+        // to reap every local host on a re-scan where the probe failed to answer.
+        machines.insert(LOCAL_MACHINE);
         let removed: Vec<String> = self
             .order
             .iter()
@@ -294,7 +297,7 @@ impl Hosts {
         }
     }
 
-    /// Whether `machine` already serves a source running the mux binary `bin`. The
+    /// Whether `machine` already serves a host running the mux binary `bin`. The
     /// discovery add path asks before adding, so a mux the machine was already
     /// configured to run is never duplicated under a second id.
     pub fn machine_serves(&self, machine: &str, bin: &str) -> bool {
@@ -304,15 +307,15 @@ impl Hosts {
         })
     }
 
-    /// Whether `machine` serves any source at all.
+    /// Whether `machine` serves any host at all.
     pub fn serves_any(&self, machine: &str) -> bool {
         self.order
             .iter()
             .any(|id| crate::session::machine_of(id) == machine)
     }
 
-    /// Every host, once each: the machines the sources name, then the hosts that serve
-    /// no source yet.
+    /// Every machine, once each: the machines the hosts name, then the machines that serve
+    /// no host yet.
     pub fn machines(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         let named = self
@@ -328,9 +331,9 @@ impl Hosts {
         out
     }
 
-    /// The transport that reaches `machine`: its own, when it is a host whose muxes xmux
-    /// asks for, and otherwise that of the first source it serves.
-    pub fn host_transport(&self, machine: &str) -> Option<&dyn Transport> {
+    /// The transport that reaches `machine`: its own, when it is a machine whose muxes xmux
+    /// asks for, and otherwise that of the first host it serves.
+    pub fn machine_transport(&self, machine: &str) -> Option<&dyn Transport> {
         if let Some((_, t)) = self.auto.iter().find(|(m, _)| m == machine) {
             return Some(t.as_ref());
         }
@@ -343,7 +346,7 @@ impl Hosts {
 
     /// Applies `f` to every transport that reaches `machine`, so a fact the machine
     /// established (the shell family its probe read, the values a login authenticated
-    /// with) holds for every command sent to it, and for every source found on it later.
+    /// with) holds for every command sent to it, and for every host found on it later.
     pub fn for_each_transport_of(&mut self, machine: &str, mut f: impl FnMut(&mut dyn Transport)) {
         for (m, t) in self.auto.iter_mut() {
             if m == machine {
@@ -358,13 +361,13 @@ impl Hosts {
     }
 
     /// A host for the mux binary `bin` that `machine` answered it serves, answering as
-    /// the source `id`, reached exactly as the machine is reached now. `None` for a
+    /// the host `id`, reached exactly as the machine is reached now. `None` for a
     /// machine this registry does not reach or a name no kind owns.
     ///
     /// It is DETECTED already: the answer came from the mux's own identity probe, the
     /// same one detection would run again.
     pub fn discovered_host(&self, machine: &str, bin: &str, id: &str) -> Option<Host> {
-        let transport = self.host_transport(machine)?.clone_as(id);
+        let transport = self.machine_transport(machine)?.clone_as(id);
         let mut host = Host::new(transport, for_binary(bin)?);
         host.detected = true;
         Some(host)
@@ -424,7 +427,7 @@ impl Hosts {
             }
             // Poll-host data carriers (enumeration results), the detection probe, a
             // machine's mux-discovery answer, and a machine's reachability probe. Their
-            // sessions/mux/source set are applied by the caller (apply_source_result /
+            // sessions/mux/host set are applied by the caller (apply_host_result /
             // apply_scan_result / the discovery-add and machine-probe effects); they fold
             // no Host-owned liveness here. A discovery or machine-probe answer names a
             // MACHINE, not a host in this map, so it could not route here anyway.
@@ -440,7 +443,7 @@ impl Hosts {
     }
 }
 
-/// One [`Host`] for the mux binary `bin` on `machine`, answering as the source `id`.
+/// One [`Host`] for the mux binary `bin` on `machine`, answering as the host `id`.
 /// The transport comes from [`crate::transport::kind_for`], the one place a machine's
 /// construction data is assembled.
 pub fn host_for(
@@ -501,12 +504,12 @@ mod tests {
         );
     }
 
-    /// A config in which every host named writes `tmux` as its mux.
+    /// A config in which every machine named writes `tmux` as its mux.
     fn tmux_on(aliases: &[&str]) -> Config {
         Config {
-            hosts: aliases
+            machines: aliases
                 .iter()
-                .map(|a| crate::provision::config::HostConfig {
+                .map(|a| crate::provision::config::MachineConfig {
                     ssh: a.to_string(),
                     mux: "tmux".into(),
                 })
@@ -571,24 +574,24 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_names_the_machines_it_adds_and_drops_apart_from_their_sources() {
+    fn reconcile_names_the_machines_it_adds_and_drops_apart_from_their_hosts() {
         let mut hosts = built_with_auto(&["prod", "web"], &["prod"]);
         assert!(
             !hosts.ids().contains(&"web".to_string()),
-            "a machine whose muxes are not known has no source"
+            "a machine whose muxes are not known has no host"
         );
         let delta = hosts.reconcile(built_with_auto(&["prod", "db"], &["prod", "db"]));
         assert_eq!(
             delta.added,
             vec!["db".to_string()],
-            "db's written mux is a source"
+            "db's written mux is a host"
         );
-        assert!(delta.removed.is_empty(), "web never had a source to drop");
+        assert!(delta.removed.is_empty(), "web never had a host to drop");
         assert_eq!(delta.machines_added, vec!["db".to_string()]);
         assert_eq!(delta.machines_removed, vec!["web".to_string()]);
 
         let delta = hosts.reconcile(built_with_auto(&["prod", "db", "api"], &["prod", "db"]));
-        assert!(delta.added.is_empty(), "api has no mux known, so no source");
+        assert!(delta.added.is_empty(), "api has no mux known, so no host");
         assert_eq!(delta.machines_added, vec!["api".to_string()]);
         assert!(delta.machines_removed.is_empty());
         assert!(hosts.machines().contains(&"api".to_string()));
@@ -646,13 +649,13 @@ mod tests {
         assert_eq!(
             delta.removed,
             vec!["prod".to_string(), "prod:zellij".to_string()],
-            "the machine is gone, so every source it served goes with it"
+            "the machine is gone, so every host it served goes with it"
         );
         assert_eq!(hosts.ids(), &["local".to_string()]);
     }
 
     #[test]
-    fn a_host_that_writes_no_mux_is_held_without_a_source() {
+    fn a_machine_that_writes_no_mux_is_held_without_a_host() {
         let hosts = Hosts::build(
             &Config::default(),
             &["win".to_string()],
@@ -668,15 +671,15 @@ mod tests {
             "no mux is assumed for it"
         );
         assert_eq!(hosts.machines(), vec!["local", "win"]);
-        let t = hosts.host_transport("win").expect("it is still reached");
+        let t = hosts.machine_transport("win").expect("it is still reached");
         assert!(t.is_remote());
         assert_eq!(t.host_id(), "win");
     }
 
     #[test]
-    fn reconcile_keeps_the_transport_a_host_that_writes_no_mux_already_has() {
-        // The transport holds what the host's probe and login established, so a re-scan
-        // that still names the host must not swap in a fresh one.
+    fn reconcile_keeps_the_transport_a_machine_that_writes_no_mux_already_has() {
+        // The transport holds what the machine's probe and login established, so a re-scan
+        // that still names the machine must not swap in a fresh one.
         let build = || {
             Hosts::build(
                 &Config::default(),
@@ -695,7 +698,7 @@ mod tests {
         let delta = hosts.reconcile(build());
         assert_eq!(delta, RosterDelta::default());
         assert_eq!(
-            hosts.host_transport("win").unwrap().remote_shell(),
+            hosts.machine_transport("win").unwrap().remote_shell(),
             crate::transport::vocab::RemoteShell::Other
         );
     }
@@ -704,7 +707,7 @@ mod tests {
     fn reconcile_keeps_local_when_the_fresh_roster_fails_to_name_it() {
         // A roster resolution whose local mux probe answered nothing names no `local`
         // machine at all. That probe result is a verdict on which muxes are installed,
-        // never on whether this machine exists, so the standing local sources must survive
+        // never on whether this machine exists, so the standing local hosts must survive
         // it instead of being reaped on the re-scan.
         let mut hosts = Hosts::build(
             &Config::default(),
@@ -757,7 +760,7 @@ mod tests {
             None,
         );
         let delta = hosts.reconcile(fresh);
-        assert!(delta.removed.is_empty(), "no source dropped: {delta:?}");
+        assert!(delta.removed.is_empty(), "no host dropped: {delta:?}");
         assert!(
             delta.added.is_empty(),
             "no duplicate spelling added: {delta:?}"
@@ -905,13 +908,13 @@ mod tests {
     }
 
     #[test]
-    fn build_orders_local_then_ssh_aliases_then_config_only_hosts() {
+    fn build_orders_local_then_ssh_aliases_then_config_only_machines() {
         // Local first, then ssh specs in config order (ssh-config aliases, then
-        // config-only hosts). The cards `State` is seeded with lead with these ids, and
-        // the published sources list them in the same order.
-        // A config-only host (declared in config.toml, not ssh-config) with a mux override.
+        // config-only machines). The cards `State` is seeded with lead with these ids, and
+        // the published hosts list them in the same order.
+        // A config-only machine (declared in config.toml, not ssh-config) with a mux override.
         let mut cfg = tmux_on(&["prod", "db"]);
-        cfg.hosts.push(crate::provision::config::HostConfig {
+        cfg.machines.push(crate::provision::config::MachineConfig {
             ssh: "cfgonly".into(),
             mux: "psmux".into(),
         });
@@ -919,21 +922,21 @@ mod tests {
         let os = "linux";
         let dir = std::path::Path::new("/home/u/.xmux");
         let hosts = Hosts::build(&cfg, &aliases, &[], os, &local(), dir, None);
-        let src_order: Vec<String> = hosts.source_list().into_iter().map(|s| s.alias).collect();
+        let host_order: Vec<String> = hosts.def_list().into_iter().map(|s| s.alias).collect();
         assert_eq!(
             hosts.ids(),
-            src_order.as_slice(),
-            "the published sources follow the registry's order"
+            host_order.as_slice(),
+            "the published hosts follow the registry's order"
         );
         assert_eq!(
-            src_order,
+            host_order,
             vec![
                 "local".to_string(),
                 "prod".to_string(),
                 "db".to_string(),
                 "cfgonly".to_string(),
             ],
-            "local first, ssh-config aliases in order, then config-only hosts"
+            "local first, ssh-config aliases in order, then config-only machines"
         );
     }
 
@@ -950,7 +953,7 @@ mod tests {
         let distros = vec!["wsl.Ubuntu-24.04".to_string()];
         let dir = std::path::Path::new("/x");
         let hosts = Hosts::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
-        let src_order: Vec<String> = hosts.source_list().into_iter().map(|s| s.alias).collect();
+        let src_order: Vec<String> = hosts.def_list().into_iter().map(|s| s.alias).collect();
         assert_eq!(
             src_order,
             vec![
@@ -997,7 +1000,7 @@ mod tests {
         // End to end on the registry side: the command the scan runs carries no `-S`, so
         // the listing reaches zellij's own argument parsing instead of dying before it.
         let h = host_for(
-            crate::session::LOCAL_SOURCE,
+            crate::session::LOCAL_MACHINE,
             "zellij",
             "local:zellij".to_string(),
             "linux",
@@ -1012,7 +1015,7 @@ mod tests {
 
         // And the tmux implementation keeps addressing the server it was given.
         let t = host_for(
-            crate::session::LOCAL_SOURCE,
+            crate::session::LOCAL_MACHINE,
             "psmux",
             "local:psmux".to_string(),
             "linux",
@@ -1029,16 +1032,11 @@ mod tests {
 
     /// The aliases the registry publishes, in order.
     fn published(hosts: &Hosts) -> Vec<String> {
-        hosts
-            .sources()
-            .list()
-            .into_iter()
-            .map(|s| s.alias)
-            .collect()
+        hosts.defs().list().into_iter().map(|s| s.alias).collect()
     }
 
     #[test]
-    fn a_source_found_at_runtime_is_published_to_every_holder_of_the_set() {
+    fn a_host_found_at_runtime_is_published_to_every_holder_of_the_set() {
         // The set is handed to the off-loop operations once, at construction. A mux that
         // answers later is added to the registry alone, and it has to reach the set they
         // already hold, or it paints and scans but refuses every operation.
@@ -1052,29 +1050,29 @@ mod tests {
             std::path::Path::new("/x"),
             None,
         );
-        let held = hosts.sources();
+        let held = hosts.defs();
         assert_eq!(published(&hosts), vec!["local".to_string()], "precondition");
         let host = hosts
             .discovered_host("win", "psmux", "win")
             .expect("the host the registry reaches");
         hosts.insert(host);
-        let source = held.get("win").expect("the set handed out earlier has it");
-        assert_eq!(source.binary, "psmux");
+        let def = held.get("win").expect("the set handed out earlier has it");
+        assert_eq!(def.binary, "psmux");
         assert!(matches!(
-            source.kind,
+            def.kind,
             crate::transport::MachineKind::Ssh { ref id, ref alias, .. } if id == "win" && alias == "win"
         ));
         assert_eq!(
-            source.host().transport.host_id(),
+            def.host().transport.host_id(),
             hosts.get("win").unwrap().transport.host_id(),
-            "the published source reaches the machine as the loop's host does"
+            "the published host reaches the machine as the loop's host does"
         );
     }
 
     #[test]
     fn reconcile_publishes_what_it_adds_and_drops() {
         let mut hosts = built(&["prod", "stage"]);
-        let held = hosts.sources();
+        let held = hosts.defs();
         hosts.reconcile(built(&["prod", "db"]));
         assert_eq!(
             held.list().into_iter().map(|s| s.alias).collect::<Vec<_>>(),
@@ -1083,9 +1081,9 @@ mod tests {
     }
 
     #[test]
-    fn a_local_zellij_source_is_published_without_the_tmux_socket() {
+    fn a_local_zellij_host_is_published_without_the_tmux_socket() {
         // The socket comes from `$TMUX`, which is set whenever xmux runs inside a mux -
-        // the normal case. Handing it to zellij made every local zellij source fail its
+        // the normal case. Handing it to zellij made every local zellij host fail its
         // listing on argument parsing, so it never reaches the machine at all.
         let sock = Some("/tmp/psmux-1/default".to_string());
         let hosts = Hosts::build(
@@ -1097,9 +1095,9 @@ mod tests {
             std::path::Path::new("/tmp/xmux"),
             sock.clone(),
         );
-        let z = hosts.source("local:zellij").expect("the zellij source");
+        let z = hosts.def("local:zellij").expect("the zellij host");
         assert_eq!(z.kind.local_socket(), None, "no socket reaches zellij");
-        let p = hosts.source("local:psmux").expect("the psmux source");
+        let p = hosts.def("local:psmux").expect("the psmux host");
         assert_eq!(p.kind.local_socket(), sock, "psmux targets its server");
     }
 }

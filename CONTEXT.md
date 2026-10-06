@@ -11,39 +11,42 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **Module Seam** - where a module's interface lives: what callers may rely on, what
   the module hides, and which dependencies may cross into it.
 
-## Hosts and Sources
+## Machines and Hosts
 
-- **host** - in the code, a machine that hosts muxes and that xmux can reach; the
-  roster decides the set. A sentence about a host must stay true when one host serves
-  two muxes; one that does not is about a source. Every surface calls it a machine.
-- **machine** - the word every surface uses for what the code calls a host, and the
-  plain word for the computer in the world.
-- **source** - in the code, one mux on one host, and what every session address names.
-  Its id is the bare host alias when the host serves one mux and `<host>:<mux>` when it
-  serves several. A source exists only for a mux the host is confirmed to serve, one
-  the config writes or mux discovery found, so a host whose muxes are not known yet has
-  none. Every surface calls it a host and writes it as its source label.
-- **level words** - `machine`, `host`, and `session`, the words every surface uses for
-  the three levels a session lives in: on a surface, `host` always names one mux on a
-  machine (`db-01/tmux`) and never the machine (`db-01`).
-- **`Transport`** - the HOST axis trait (local, ssh, WSL): where a command runs and how
-  its argv is executed. A transport reaches a host; it is not one.
+- **machine** - a computer xmux can reach (`db-01`, `local`, `wsl.Ubuntu`); the roster
+  decides the set. A sentence about a machine must stay true when one machine serves
+  two muxes; one that does not is about a host.
+- **host** - one mux on one machine (`db-01/tmux`), and what every session address
+  names. Its id is the bare machine name when the machine serves one mux and
+  `<machine>:<mux>` when it serves several. A host exists only for a mux the machine is
+  confirmed to serve, one the config writes or mux discovery found, so a machine whose
+  muxes are not known yet has none. Every surface writes it as its host label.
+- **session** - one session of a host's mux (`db-01/tmux/pg-primary`).
+- **level words** - `machine`, `host`, and `session`, the three levels a session lives
+  in, one word for each level in the code, the docs, and every surface: `host` always
+  names one mux on a machine and never the machine.
+- **interfaces** - the config keys, CLI flags, ctl verbs, and their argument formats are
+  accepted unchanged under these words: a `[[hosts]]` entry configures a machine, and
+  an argument that names a session's host (`xmux attach <host> <name>`, `switch <host>
+  <session>`) takes the host id.
+- **`Transport`** - the MACHINE axis trait (local, ssh, WSL): where a command runs and
+  how its argv is executed. A transport reaches a machine; it is not one.
 - **`Mux`** - the MUX axis trait (tmux, psmux, zellij, abduco, screen, tuios, herdr):
   the per-mux metadata, command plans, and display driver.
 - **`MuxDriver`** - a mux's display driver, built by the mux itself.
 - **window** - a mux's subdivision of a session. xmux uses one set of words for every
   mux, so a zellij tab is a window and a mux's own naming stops at its implementation.
 - **pane** - a mux window's terminal split, never a screen region.
-- **roster** - which hosts xmux offers, assembled from providers that `[discovery]`
+- **roster** - which machines xmux offers, assembled from providers that `[discovery]`
   switches: ssh config aliases, neighbours, and WSL distributions.
 - **neighbour** - a machine this box reaches in one hop, found in the operating
   system's own network state, that answers ssh.
 - **reachability** - a machine's connect state from one bounded probe: `connected`,
   `blocked`, or `unreachable`. Only a connected machine is asked anything further.
-- **mux discovery** - asking a host that named no mux which supported muxes it has;
-  each one that answers becomes a source.
-- **discovery** - scanning a source for its sessions.
-- **blocked** - a host ssh refused for a reason the submitted login can answer: an
+- **mux discovery** - asking a machine that names no mux which supported muxes it has;
+  each one that answers becomes a host.
+- **discovery** - scanning a host for its sessions.
+- **blocked** - a machine ssh refused for a reason the submitted login can answer: an
   authentication refusal, or a first-seen host key under an `ask` policy.
 - **nesting** - xmux running inside a mux session. It is allowed because mux clients
   are PTY children, and it costs only the own session.
@@ -84,20 +87,21 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 
 ## Nav Content
 
-- **card** - one numbered nav entry: a session, a source's host-state card, or one card
-  for a host that has no source yet or none of whose sources connected. A card states
+- **card** - one numbered nav entry: a session, a host's host-state card, or one card
+  for a machine that has no host yet or none of whose hosts connected. A card states
   what something is, never why.
-- **section** - one source's session cards under its section title, or the band of
-  host cards.
-- **section title** - the `{host}/{mux}` header over a source's session cards. It is
-  not a card; its `{host}` part stands for the host and its `{mux}` part for the source.
+- **section** - one host's session cards under its section title, or the band of
+  host-state and machine cards.
+- **section title** - the `{machine}/{mux}` header over a host's session cards. It is
+  not a card; its `{machine}` part stands for the machine and its `{mux}` part for the
+  host.
 - **card and section navigation** - how the nav itself is walked: `↑`/`↓` between
   numbered cards, `←`/`→` between sections, independent of the hierarchy.
-- **source label** - `{host}/{mux}`, how a host and its mux are shown wherever the pair
-  is read. Both halves always, parted by `/`, never by the id's separator.
+- **host label** - `{machine}/{mux}`, how a machine and its mux are shown wherever the
+  pair is read. Both halves always, parted by `/`, never by the id's separator.
 - **nav groups** - the session cards, then reachable hosts with no sessions, then hosts
-  whose connection or inventory is unresolved.
-- **card order** - local, then WSL, then remote, each by source name, sessions by name.
+  and machines whose connection or inventory is unresolved.
+- **card order** - local, then WSL, then remote, each by host id, sessions by name.
   A re-enumeration reproduces it exactly.
 - **address column** - the leftmost cells of every card: its number, or the selection
   mark on the selected card.
@@ -113,16 +117,16 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 
 ## Selection
 
-- **hierarchy** - session, source, and host, the levels a session lives in. It is
+- **hierarchy** - session, host, and machine, the levels a session lives in. It is
   reached through `Ctrl+↑`/`Ctrl+↓`, the parts of a section title, and screen links,
   never through the card step.
-- **selection** - the hard selection: the node (host, source, or session) the arrows
+- **selection** - the hard selection: the node (machine, host, or session) the arrows
   and execution move and the terminal view shows.
 - **soft selection** - the target under the pointer. It previews without moving the
   selection and paints as an underline.
 - **interest** - what the user is on or asked for, the one value the selection is
   resolved from on every rebuild.
-- **selection lineage** - session, source, host: the chain a selection walks up when its
+- **selection lineage** - session, host, machine: the chain a selection walks up when its
   node loses its card.
 - **selection highlight** - reverse video over the selected card's rect plus the `❯`
   mark in its address column.
@@ -144,7 +148,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **selection hint** - what the hint bar says for three seconds after the user moves the
   selection: the card's next keys and one fact about it.
 - **scan indicator** - the `scanning hosts n/m…` progress in the hint bar, counting
-  sources and the hosts that have no source yet.
+  hosts and the machines that have no host yet.
 - **flash** - the reason a key did nothing, shown in the hint bar. A refusal, never the
   result of work.
 - **toast** - the result of work the user started, in a box in the terminal view's
@@ -156,7 +160,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **jump** - the digits-only input `prefix <digit>` opens, which moves the selection
   while its number names a card.
 - **filter** - the type-to-filter input over the nav list (`prefix /`).
-- **machine problems** - the table of hosts in a problem state, grouped by cause
+- **machine problems** - the table of hosts and machines in a problem state, grouped by cause
   (`prefix h`).
 - **command palette** - the searchable list of named actions (`prefix :`).
 - **one-machine re-scan** - `prefix r`: the selected card's machine asked again alone.
@@ -177,7 +181,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 ## Login
 
 - **login pane** - the form on the machine screen of a blocked or chosen unreachable
-  host: address, port, username, an optional masked password, and what to do once it
+  machine: address, port, username, an optional masked password, and what to do once it
   works.
 - **running a login** - one bounded ssh command whose password is reachable only through
   xmux's private credential broker.
@@ -185,8 +189,8 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   key, password, or `not observed`.
 - **recording a login** - writing an xmux-marked stanza with the working values at the
   top of `~/.ssh/config`.
-- **registering a key** - appending this machine's public key, marked
-  `xmux-registered`, to the host's key files, then proving a key-only login works.
-- **logging out** - `prefix L`: removing this machine's key from the host and the
+- **registering a key** - appending this PC's public key, marked `xmux-registered`, to
+  the machine's key files, then proving a key-only login works.
+- **logging out** - `prefix L`: removing this PC's key from the machine and the
   stanza a login recorded, then forgetting the held password and closing the machine's
   connections.

@@ -2,7 +2,7 @@
 
 use crate::session::Session;
 
-/// How a source's failure classifies. Whether ssh refused for a reason a login can answer
+/// How a host's failure classifies. Whether ssh refused for a reason a login can answer
 /// is the transport's ssh diagnostic, read here once; presentation filtering and row
 /// construction consume this typed result and never classify a failure themselves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,25 +26,25 @@ impl FailureKind {
     }
 }
 
-/// The sessions of one source. A non-`None` `err` means the host was
+/// The sessions of one host. A non-`None` `err` means the host was
 /// unreachable, in which case `sessions` carries no meaning.
 #[derive(Debug, Clone)]
 pub struct Group {
-    pub source: String,
+    pub host: String,
     pub err: Option<String>,
     pub sessions: Vec<Session>,
 }
 
-/// Returns groups with `session` placed in the group whose source matches its source,
+/// Returns groups with `session` placed in the group whose host matches its host,
 /// replacing any existing session of the same name in place (dedup by name) or, when
 /// new, appending it at the group's end. It does NOT sort here: a session created
 /// mid-session is placed by the next rebuild's deterministic order, not by this
-/// mutation. If no group has the source, a new group is appended. Inputs are not
+/// mutation. If no group has the host, a new group is appended. Inputs are not
 /// mutated.
 pub fn add_session(groups: &[Group], session: Session) -> Vec<Group> {
     let mut out = groups.to_vec();
     for group in &mut out {
-        if group.source != session.source {
+        if group.host != session.host {
             continue;
         }
         let mut replaced = false;
@@ -60,7 +60,7 @@ pub fn add_session(groups: &[Group], session: Session) -> Vec<Group> {
         return out;
     }
     out.push(Group {
-        source: session.source.clone(),
+        host: session.host.clone(),
         err: None,
         sessions: vec![session],
     });
@@ -110,9 +110,9 @@ pub fn sort_by_name(sessions: &mut [Session]) {
 mod tests {
     use super::*;
 
-    fn session(source: &str, name: &str) -> Session {
+    fn session(host: &str, name: &str) -> Session {
         Session {
-            source: source.into(),
+            host: host.into(),
             name: name.into(),
             ..Default::default()
         }
@@ -135,14 +135,14 @@ mod tests {
     fn sort_by_name_stable_for_equal_names() {
         let mut sessions = vec![session("h1", "x"), session("h2", "x"), session("h3", "x")];
         sort_by_name(&mut sessions);
-        let sources: Vec<&str> = sessions.iter().map(|s| s.source.as_str()).collect();
-        assert_eq!(sources, vec!["h1", "h2", "h3"]);
+        let hosts: Vec<&str> = sessions.iter().map(|s| s.host.as_str()).collect();
+        assert_eq!(hosts, vec!["h1", "h2", "h3"]);
     }
 
     #[test]
     fn group_classifies_failures_for_domain_callers() {
         let group = |err: &str| Group {
-            source: "prod".into(),
+            host: "prod".into(),
             err: Some(err.into()),
             sessions: Vec::new(),
         };
@@ -164,7 +164,7 @@ mod tests {
         );
         assert_eq!(
             Group {
-                source: "prod".into(),
+                host: "prod".into(),
                 err: None,
                 sessions: Vec::new(),
             }

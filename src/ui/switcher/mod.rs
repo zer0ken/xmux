@@ -316,22 +316,22 @@ pub(crate) enum Interest {
     /// `prefix n` created, or the session under the selection when a full re-scan
     /// cleared every session. The selection waits on that session's lineage card and
     /// moves to the session when its card appears. The interest ends when the user
-    /// moves the selection or the session's source answers without it.
+    /// moves the selection or the session's host answers without it.
     Awaiting(Address),
 }
 
 /// Which part of a nav row a selection or the pointer is on. A card is one target. A
-/// section title and a source card's `{host}/{mux}` each read as two: the host half names
-/// the host and the rest names the source, so the title of `db-01/tmux` opens the screen
+/// section title and a host card's `{machine}/{mux}` each read as two: the machine half names
+/// the machine and the rest names the host, so the title of `db-01/tmux` opens the screen
 /// of `db-01` from one half and of `db-01/tmux` from the other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Part {
-    /// The whole card: a session, a source's card, or a host's card.
+    /// The whole card: a session, a host's card, or a machine's card.
     Card,
-    /// The host half of a section title or of a source card.
+    /// The machine half of a section title or of a host card.
+    Machine,
+    /// The host half of a section title.
     Host,
-    /// The source half of a section title.
-    Source,
 }
 
 /// Where the hard selection stands: a row, the part of it, and a node deeper than any
@@ -347,7 +347,7 @@ struct Target {
 /// The terminal-view target whose active pane attaching here would land on.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct TerminalViewTarget {
-    pub source: String,
+    pub host: String,
     pub target: String, // empty ⇒ no terminal view
 }
 
@@ -380,7 +380,7 @@ pub struct Switcher {
     /// the focus, as a row identity and the part of it. The terminal view shows its
     /// screen; nothing else follows it.
     hover: Option<(RowRef, Part)>,
-    /// The hard-selected link on the shown host or source screen, by index and by the
+    /// The hard-selected link on the shown machine or host screen, by index and by the
     /// node it names, so a rebuild that adds or drops links keeps the same node selected.
     link: usize,
     link_node: Option<Node>,
@@ -400,8 +400,8 @@ pub struct Switcher {
     numbers: std::collections::HashMap<CardId, usize>,
     next_number: usize,
     numbers_fixed: bool,
-    /// Whether the full scan still waits on its roster answer, which can add hosts after
-    /// every source on the list has answered. The numbers are not fixed while it does.
+    /// Whether the full scan still waits on its roster answer, which can add machines after
+    /// every host on the list has answered. The numbers are not fixed while it does.
     numbers_held: bool,
     terminal_view: bool,
     /// Whether host cards are omitted after leaving nav from a session card.
@@ -410,7 +410,7 @@ pub struct Switcher {
     /// The session whose card a full re-scan turned into its host card, held until the
     /// selection moves. While it holds, the scanning host card keeps that session's
     /// confirmed grid instead of its scanning screen, and only when the session is on
-    /// the card's own source, so a scanning host card never shows another source's grid.
+    /// the card's own host, so a scanning host card never shows another host's grid.
     rescan_collapse: Option<Address>,
     /// The transient offset and in-flight border drag of the active modal popup. Its
     /// frame geometry belongs to the render plan shared with mouse input.
@@ -475,12 +475,12 @@ impl Switcher {
         s
     }
 
-    /// Seeds the switcher from the resolved source list alone - no probing - so
+    /// Seeds the switcher from the resolved host list alone - no probing - so
     /// the first frame paints host-skeleton rows, each in a scanning state, in
-    /// tens of milliseconds. Streamed [`apply_source_result`]
+    /// tens of milliseconds. Streamed [`apply_host_result`]
     /// calls fill the tree in afterward. The caller seeds `state` via
-    /// [`crate::state::State::from_sources`].
-    pub fn from_sources(state: &mut crate::state::State) -> Self {
+    /// [`crate::state::State::from_hosts`].
+    pub fn from_hosts(state: &mut crate::state::State) -> Self {
         let mut s = Switcher::blank();
         s.rebuild(state);
         s
@@ -571,16 +571,16 @@ impl Switcher {
             )
     }
 
-    /// Whether `(source, target)` addresses the session xmux is ITSELF running in.
+    /// Whether `(host, target)` addresses the session xmux is ITSELF running in.
     ///
     /// That session has a live grid like any other, and showing it is still refused:
     /// attaching to it puts a second client on the session that holds xmux, which moves
     /// the user's own client and paints xmux inside itself. The match is on this one
     /// address, so a session running a DIFFERENT xmux mirrors like any other, showing
     /// that xmux's screen, and the refused card itself stays selectable.
-    fn is_own_session(&self, source: &str, target: &str) -> bool {
+    fn is_own_session(&self, host: &str, target: &str) -> bool {
         match &self.own_session {
-            Some(own) => !target.is_empty() && own.source == source && own.session == target,
+            Some(own) => !target.is_empty() && own.host == host && own.session == target,
             None => false,
         }
     }
@@ -603,7 +603,7 @@ impl Switcher {
         if self
             .login_target
             .as_ref()
-            .is_some_and(|source| !login_answers(state, source))
+            .is_some_and(|host| !login_answers(state, host))
         {
             self.login_target = None;
         }
@@ -614,7 +614,7 @@ impl Switcher {
             index: self.selected,
         };
 
-        // The deterministic display order (groups local→WSL→remote then by source name,
+        // The deterministic display order (groups local→WSL→remote then by host name,
         // sessions by name) is applied here, once, so every mutation path lands on it and
         // a routine poll reproduces the same order exactly - there is nothing to freeze.
         // Pure row generation lives in `tree::flatten`; rebuild orchestrates order →
@@ -625,7 +625,7 @@ impl Switcher {
         state.groups = tree::order_groups(&state.groups);
         // The mux each card NAMES comes from one resolver, so a session card, its host's
         // card and the screen behind either cannot spell one mux three ways.
-        let named_mux = |source: &str| state.chrome.source_mux(source).to_string();
+        let named_mux = |host: &str| state.chrome.host_mux(host).to_string();
         let hostless = state.hostless_machines();
         let flat = |filter: &str| {
             tree::flatten(
@@ -724,13 +724,13 @@ impl Switcher {
                     self.rescan_collapse = None;
                     return Target::card(i);
                 }
-                // The interest ends only when the source answered without the session.
+                // The interest ends only when the host answered without the session.
                 // A session the filter hides is still in the answer, so its card appears
                 // the moment the filter lets it through.
                 let listed = state.groups.iter().any(|g| {
-                    g.source == address.source && g.sessions.iter().any(|s| s.address() == address)
+                    g.host == address.host && g.sessions.iter().any(|s| s.address() == address)
                 });
-                if !listed && !state.scanning.contains(&address.source) {
+                if !listed && !state.scanning.contains(&address.host) {
                     self.interest = Interest::Selected;
                 }
                 self.lineage_target(&prior, old_rows, state)
@@ -745,21 +745,21 @@ impl Switcher {
     /// Where the selection on `prior` goes on the rebuilt rows: `prior` itself while it
     /// has a target, otherwise the nearest node up its lineage that has one.
     ///
-    /// - a session goes to its source (its section title, or the source's card once it
+    /// - a session goes to its host (its section title, or the host's card once it
     ///   has no session to show);
-    /// - a source goes to its host (the host's card when the host is down, else the host
-    ///   half of the row the source stood on, else of the host's first row);
-    /// - the card of a machine (its card while it was down, or while no source of it
-    ///   was known) that resolved into sources hands the selection to the first of them
+    /// - a host goes to its machine (the machine's card when the machine is down, else the machine
+    ///   half of the row the host stood on, else of the machine's first row);
+    /// - the card of a machine (its card while it was down, or while no host of it
+    ///   was known) that resolved into hosts hands the selection to the first of them
     ///   by name;
-    /// - when nothing of the host survives, the selection goes to the card that now holds
+    /// - when nothing of the machine survives, the selection goes to the card that now holds
     ///   the vanished card's place: the first card after it in the prior card order that
     ///   survived, else the last surviving card before it.
     ///
     /// A node the selection reached with no nav target of its own (a screen link opened
     /// it) stays selected while the inventory still holds it. A node that HAD a target
-    /// and lost it walks up instead, which is how a host going down or logged out gathers
-    /// the selection from its sources and sessions onto its one card.
+    /// and lost it walks up instead, which is how a machine going down or logged out gathers
+    /// the selection from its hosts and sessions onto its one card.
     fn lineage_target(
         &self,
         prior: &Prior,
@@ -767,25 +767,25 @@ impl Switcher {
         state: &crate::state::State,
     ) -> Option<Target> {
         let mut node = prior.node.clone()?;
-        let near = prior.row.as_ref().and_then(row_source).map(str::to_owned);
+        let near = prior.row.as_ref().and_then(row_host).map(str::to_owned);
         loop {
-            if let Node::Host(machine) = &node {
+            if let Node::Machine(machine) = &node {
                 // The card that stood for the whole machine: its card while it was down, or
-                // while no source of it was known.
+                // while no host of it was known.
                 let card =
                     |r: &RowRef| matches!(r, RowRef::Machine { machine: m, .. } if m == machine);
                 if prior.row.as_ref().is_some_and(card)
                     && !self.rows.iter().any(|r| card(&r.reference))
                 {
-                    let sources: std::collections::BTreeSet<&str> = state
+                    let hosts: std::collections::BTreeSet<&str> = state
                         .groups
                         .iter()
-                        .map(|g| g.source.as_str())
+                        .map(|g| g.host.as_str())
                         .filter(|s| crate::session::machine_of(s) == machine)
                         .collect();
-                    if let Some((row, part)) = sources
+                    if let Some((row, part)) = hosts
                         .into_iter()
-                        .find_map(|source| self.target_of(&Node::Source(source.into()), None))
+                        .find_map(|host| self.target_of(&Node::Host(host.into()), None))
                     {
                         return Some(Target {
                             row,
@@ -826,38 +826,38 @@ impl Switcher {
     }
 
     /// The nav target that stands for `node`: its own card or title half, `None` when the
-    /// list has none. A host stands on its card while it is down, otherwise on the host
-    /// half of one of its rows: the row of `near` (the source the selection comes from)
+    /// list has none. A machine stands on its card while it is down, otherwise on the machine
+    /// half of one of its rows: the row of `near` (the host the selection comes from)
     /// when that is one of its, else its first row.
     fn target_of(&self, node: &Node, near: Option<&str>) -> Option<(usize, Part)> {
         match node {
             Node::Session(address) => self.row_of_session(address).map(|i| (i, Part::Card)),
-            Node::Source(source) => {
+            Node::Host(host) => {
                 self.rows
                     .iter()
                     .enumerate()
                     .find_map(|(i, r)| match &r.reference {
-                        RowRef::Section { source: s } if s == source => Some((i, Part::Source)),
-                        RowRef::Host { source: s, .. } if s == source => Some((i, Part::Card)),
+                        RowRef::Section { host: s } if s == host => Some((i, Part::Host)),
+                        RowRef::Host { host: s, .. } if s == host => Some((i, Part::Card)),
                         _ => None,
                     })
             }
-            Node::Host(machine) => {
+            Node::Machine(machine) => {
                 if let Some(i) = self.rows.iter().position(
                     |r| matches!(&r.reference, RowRef::Machine { machine: m, .. } if m == machine),
                 ) {
                     return Some((i, Part::Card));
                 }
                 let halved = |r: &Row, want: Option<&str>| match &r.reference {
-                    RowRef::Section { source } | RowRef::Host { source, .. } => {
-                        crate::session::machine_of(source) == machine
-                            && want.is_none_or(|w| w == source)
+                    RowRef::Section { host } | RowRef::Host { host, .. } => {
+                        crate::session::machine_of(host) == machine
+                            && want.is_none_or(|w| w == host)
                     }
                     _ => false,
                 };
                 near.and_then(|n| self.rows.iter().position(|r| halved(r, Some(n))))
                     .or_else(|| self.rows.iter().position(|r| halved(r, None)))
-                    .map(|i| (i, Part::Host))
+                    .map(|i| (i, Part::Machine))
             }
         }
     }
@@ -867,7 +867,7 @@ impl Switcher {
     fn deep_target(&self, node: Node) -> Target {
         let mut up = node.parent();
         while let Some(ancestor) = up {
-            if let Some((row, part)) = self.target_of(&ancestor, node.source()) {
+            if let Some((row, part)) = self.target_of(&ancestor, node.host()) {
                 return Target {
                     row,
                     part,
@@ -895,7 +895,7 @@ impl Switcher {
     }
 
     /// Whether card `i` opens a new unit in the portrait column flow: a section title
-    /// (its session cards hang under it), a source's card or a host's card. A session
+    /// (its session cards hang under it), a host's card or a machine's card. A session
     /// card hangs under its section and starts nothing.
     fn starts_run(&self, i: usize) -> bool {
         matches!(
@@ -954,7 +954,7 @@ impl Switcher {
     }
 
     /// Holds the numbering open until the full scan's roster has answered (`true`), or
-    /// releases it (`false`). A release fixes the numbers at once when every source has
+    /// releases it (`false`). A release fixes the numbers at once when every host has
     /// already answered, since the last rebuild dealt them in list order.
     pub fn hold_numbers(&mut self, held: bool, state: &crate::state::State) {
         self.numbers_held = held;
@@ -1045,7 +1045,7 @@ impl Switcher {
     /// The index of the section title the SELECTED row hangs under: the Section row
     /// directly above a selected session card, `None` when the selection is a host-state
     /// card or no section heads it. A section title is the row its group of cards reads
-    /// its `{host}/{mux}` from, and it scrolls off the top edge with the cards it heads;
+    /// its `{machine}/{mux}` from, and it scrolls off the top edge with the cards it heads;
     /// the side placement pulls the list back to show a title when the card under it and
     /// the title fit on screen together.
     fn selected_section_title(&self) -> Option<usize> {
@@ -1059,15 +1059,15 @@ impl Switcher {
             .rposition(|r| matches!(r.reference, RowRef::Section { .. }))
     }
 
-    /// Puts the hard selection on card `idx` as a whole (the source half of a section
+    /// Puts the hard selection on card `idx` as a whole (the host half of a section
     /// title, which is no card).
     fn set_selected(&mut self, idx: usize) {
         self.set_target(Target::card(idx));
     }
 
     /// Puts the hard selection on `target`. A section title is never selected whole: its
-    /// source half stands for it. The login a host's screen was opened for ends when the
-    /// selection leaves that host, and the screen's link selection starts over when the
+    /// host half stands for it. The login a machine's screen was opened for ends when the
+    /// selection leaves that machine, and the screen's link selection starts over when the
     /// selection names another node.
     fn set_target(&mut self, target: Target) {
         if self.rows.is_empty() {
@@ -1077,23 +1077,23 @@ impl Switcher {
         let before = self.selected_node();
         let row = target.row.min(self.rows.len() - 1);
         let part = match (&self.rows[row].reference, target.part) {
-            (RowRef::Section { .. }, Part::Card) => Part::Source,
+            (RowRef::Section { .. }, Part::Card) => Part::Host,
             (RowRef::Section { .. }, part) => part,
-            (RowRef::Host { .. }, Part::Host) => Part::Host,
+            (RowRef::Host { .. }, Part::Machine) => Part::Machine,
             _ => Part::Card,
         };
         self.selected = row;
         self.part = part;
         self.deep = target.deep;
         let after = self.selected_node();
-        let host = match &after {
-            Some(Node::Host(machine)) => Some(machine.as_str()),
+        let selected_machine = match &after {
+            Some(Node::Machine(machine)) => Some(machine.as_str()),
             _ => None,
         };
         if self
             .login_target
             .as_deref()
-            .is_some_and(|source| Some(crate::session::machine_of(source)) != host)
+            .is_some_and(|host| Some(crate::session::machine_of(host)) != selected_machine)
         {
             self.login_target = None;
         }
@@ -1123,12 +1123,12 @@ impl Switcher {
     }
 
     /// Moves the hard selection to `node`: onto its nav target, or onto the nearest
-    /// ancestor's target as a node the nav has no target for. A host keeps the row the
+    /// ancestor's target as a node the nav has no target for. A machine keeps the row the
     /// selection leaves when that row is one of its. A move from a node to its parent
     /// records the child, so a step down returns to it.
     fn select_node(&mut self, node: Node) {
         let before = self.selected_node();
-        let near = self.current_ref().and_then(row_source).map(str::to_owned);
+        let near = self.current_ref().and_then(row_host).map(str::to_owned);
         if let Some(child) = before.filter(|b| b.parent().as_ref() == Some(&node)) {
             self.trail.insert(node.clone(), child);
         }
@@ -1143,7 +1143,7 @@ impl Switcher {
         self.set_target(target);
     }
 
-    /// `Ctrl+↑`: the selection walks up a level, session to source to host.
+    /// `Ctrl+↑`: the selection walks up a level, session to host to machine.
     fn ascend(&mut self) {
         let Some(parent) = self.selected_node().and_then(|node| node.parent()) else {
             return;
@@ -1153,8 +1153,8 @@ impl Switcher {
     }
 
     /// `Ctrl+↓`: the selection walks down a level, to the child it last came up from
-    /// while that is still a child, else to the first child: a host's sources by name, a
-    /// source's sessions in card order.
+    /// while that is still a child, else to the first child: a machine's hosts by name, a
+    /// host's sessions in card order.
     fn descend(&mut self, state: &crate::state::State) {
         let Some(node) = self.selected_node() else {
             return;
@@ -1219,7 +1219,7 @@ impl Switcher {
     /// hosts is crossed without stepping over every session between them.
     /// Wraps at both ends, as the vertical step does.
     ///
-    /// A category is a source that has sessions, the no-session group, or the disconnected group
+    /// A category is a host that has sessions, the no-session group, or the disconnected group
     /// ([`category_of_row`]). Landing is always on the category's first card: its first
     /// session, or the band's first host card. Leaving is from ANY card of it, so a
     /// selection deep inside the band steps straight out.
@@ -1246,7 +1246,7 @@ impl Switcher {
 
     /// Each category in list order paired with its first selectable card - the landing
     /// points of a horizontal step. The cards of one category are contiguous (the
-    /// flatten emits a section and its sessions together, and sinks every source with
+    /// flatten emits a section and its sessions together, and sinks every host with
     /// nothing to show to the host band at the end), so one entry per category is one
     /// place to land.
     fn category_heads(&self) -> Vec<(NavCategory, usize)> {
@@ -1281,10 +1281,10 @@ impl Switcher {
         self.rows.get(self.selected).map(|r| &r.reference)
     }
 
-    /// The row of the session card `source/name`.
+    /// The row of the session card `host/name`.
     #[cfg(test)]
-    pub(crate) fn session_row(&self, source: &str, name: &str) -> Option<usize> {
-        self.row_of_session(&Address::new(source, name))
+    pub(crate) fn session_row(&self, host: &str, name: &str) -> Option<usize> {
+        self.row_of_session(&Address::new(host, name))
     }
 
     /// The card the selection is on, as an identity a later look can compare with: the
@@ -1301,9 +1301,9 @@ impl Switcher {
 
     /// What the hint bar offers about the selected node after a selection move: its most
     /// relevant keys, read from the key table, and one fact about it. A session offers its
-    /// terminal and a sibling session and states its windows; a source offers its screen
-    /// (or a new session when it is empty) and a re-scan of its host, and states its
-    /// sessions or its state word with the reason behind it; a host offers its screen and
+    /// terminal and a sibling session and states its windows; a host offers its screen
+    /// (or a new session when it is empty) and a re-scan of its machine, and states its
+    /// sessions or its state word with the reason behind it; a machine offers its screen and
     /// a re-scan and states its state word; anything still scanning offers the filter and
     /// says so. With `nav_focused` false the terminal view holds the focus, where a bare key
     /// goes to the pane, so only the prefix keys are offered.
@@ -1317,15 +1317,15 @@ impl Switcher {
         nav_focused: bool,
     ) -> Option<(Vec<crate::state::chrome::HintKey>, String)> {
         use crate::model::keys::{entry_for, KeyCommand};
-        let first_line = |source: &str| {
+        let first_line = |host: &str| {
             state
                 .groups
                 .iter()
-                .find(|g| g.source == source)
+                .find(|g| g.host == host)
                 .and_then(|g| g.err.as_deref())
                 .or_else(|| {
                     state
-                        .machine(source)
+                        .machine(host)
                         .filter(|m| !state.has_hosts(&m.name))
                         .and_then(|m| m.err.as_deref())
                 })
@@ -1345,16 +1345,16 @@ impl Switcher {
                 let sess = state
                     .groups
                     .iter()
-                    .find(|g| g.source == address.source)
+                    .find(|g| g.host == address.host)
                     .and_then(|g| g.sessions.iter().find(|s| s.name == address.session));
                 (
                     &[KeyCommand::FocusTerminal, KeyCommand::NewSession],
                     sess.map(session_facts).unwrap_or_default(),
                 )
             }
-            Node::Source(source) => {
-                let group = state.groups.iter().find(|g| g.source == source);
-                if state.scanning.contains(&source) {
+            Node::Host(host) => {
+                let group = state.groups.iter().find(|g| g.host == host);
+                if state.scanning.contains(&host) {
                     (&[KeyCommand::Filter], "scanning".into())
                 } else if let Some(kind) = group.and_then(crate::model::Group::failure) {
                     use crate::model::FailureKind;
@@ -1365,52 +1365,55 @@ impl Switcher {
                         true,
                     );
                     (
-                        &[KeyCommand::FocusTerminal, KeyCommand::RescanHost],
-                        with_reason(word, first_line(&source)),
+                        &[KeyCommand::FocusTerminal, KeyCommand::RescanMachine],
+                        with_reason(word, first_line(&host)),
                     )
                 } else {
                     let count = group.map_or(0, |g| g.sessions.len());
                     if count == 0 {
                         (
-                            &[KeyCommand::NewSession, KeyCommand::RescanHost],
+                            &[KeyCommand::NewSession, KeyCommand::RescanMachine],
                             tree::host_state_word(false, false, false, false).into(),
                         )
                     } else {
-                        let method = state.refresh_words(&source);
+                        let method = state.refresh_words(&host);
                         (
-                            &[KeyCommand::FocusTerminal, KeyCommand::RescanHost],
+                            &[KeyCommand::FocusTerminal, KeyCommand::RescanMachine],
                             format!("{count} sessions, {method}"),
                         )
                     }
                 }
             }
-            Node::Host(machine) => {
-                let fact = match host_failure(state, &machine) {
+            Node::Machine(machine) => {
+                let fact = match machine_failure(state, &machine) {
                     Some(kind) => {
-                        let source = self.current_source().unwrap_or_default();
+                        let host = self.current_host().unwrap_or_default();
                         let word = tree::host_state_word(
                             false,
                             kind == crate::model::FailureKind::Blocked,
                             false,
                             true,
                         );
-                        with_reason(word, first_line(&source))
+                        with_reason(word, first_line(&host))
                     }
-                    None if host_scanning(state, &machine) => "scanning".into(),
+                    None if is_machine_scanning(state, &machine) => "scanning".into(),
                     None => {
                         let n = state
                             .groups
                             .iter()
-                            .filter(|g| crate::session::machine_of(&g.source) == machine)
+                            .filter(|g| crate::session::machine_of(&g.host) == machine)
                             .count();
                         format!(
                             "{}, {n} {}",
-                            tree::HOST_REACHABLE,
+                            tree::MACHINE_REACHABLE,
                             if n == 1 { "host" } else { "hosts" }
                         )
                     }
                 };
-                (&[KeyCommand::FocusTerminal, KeyCommand::RescanHost], fact)
+                (
+                    &[KeyCommand::FocusTerminal, KeyCommand::RescanMachine],
+                    fact,
+                )
             }
         };
         let keys = commands
@@ -1428,18 +1431,18 @@ impl Switcher {
         Some((keys, fact))
     }
 
-    /// The source the selection acts on. A session's and a source's own; for a host, the
-    /// source the row standing for it names (its card's login source, or the source of
-    /// the title or card whose host half is selected), which is what a login, a host
-    /// re-scan and a logout address. `None` for a host with no row on the list.
-    pub(crate) fn current_source(&self) -> Option<String> {
+    /// The host the selection acts on. A session's and a host's own; for a machine, the
+    /// host the row standing for it names (its card's login host, or the host of
+    /// the title or card whose machine half is selected), which is what a login, a machine
+    /// re-scan and a logout address. `None` for a machine with no row on the list.
+    pub(crate) fn current_host(&self) -> Option<String> {
         match self.selected_node()? {
-            Node::Session(address) => Some(address.source),
-            Node::Source(source) => Some(source),
-            Node::Host(machine) => self
+            Node::Session(address) => Some(address.host),
+            Node::Host(host) => Some(host),
+            Node::Machine(machine) => self
                 .current_ref()
-                .and_then(row_source)
-                .filter(|source| crate::session::machine_of(source) == machine)
+                .and_then(row_host)
+                .filter(|host| crate::session::machine_of(host) == machine)
                 .map(str::to_owned),
         }
     }
@@ -1448,27 +1451,27 @@ impl Switcher {
         self.current_view_screen(state) == Some(ViewScreen::Unreachable)
     }
 
-    /// True when the selected host's screen carries the login pane: the host is down and
-    /// a login answers it, or its pane was opened from the host problems. A keystroke
+    /// True when the selected machine's screen carries the login pane: the machine is down and
+    /// a login answers it, or its pane was opened from the machine problems. A keystroke
     /// typed while the terminal view is focused then drives that pane rather than
     /// reaching a session.
-    pub(crate) fn current_host_blocked(&self) -> bool {
-        let Some(Node::Host(machine)) = self.selected_node() else {
+    pub(crate) fn current_machine_blocked(&self) -> bool {
+        let Some(Node::Machine(machine)) = self.selected_node() else {
             return false;
         };
         matches!(self.current_ref(), Some(RowRef::Machine { blocked: true, machine: m, .. }) if *m == machine)
             || self
                 .login_target
                 .as_deref()
-                .is_some_and(|source| crate::session::machine_of(source) == machine)
+                .is_some_and(|host| crate::session::machine_of(host) == machine)
     }
 
-    /// Whether the selected host's screen carries the login pane, which then takes the keys
-    /// typed while the terminal view holds the focus. Only a host's screen carries it: a
-    /// source refused until a login states its failure and leaves the login to its host.
+    /// Whether the selected machine's screen carries the login pane, which then takes the keys
+    /// typed while the terminal view holds the focus. Only a machine's screen carries it: a
+    /// host refused until a login states its failure and leaves the login to its machine.
     pub(crate) fn login_pane_shown(&self, state: &crate::state::State) -> bool {
-        matches!(self.selected_node(), Some(Node::Host(_)))
-            && (self.current_host_blocked()
+        matches!(self.selected_node(), Some(Node::Machine(_)))
+            && (self.current_machine_blocked()
                 || self.current_view_screen(state) == Some(ViewScreen::Login))
     }
 
@@ -1479,21 +1482,21 @@ impl Switcher {
         if self.landing {
             return Some(ViewScreen::Landing);
         }
-        let displayed = (!state.displayed.source.is_empty() && !state.displayed.session.is_empty())
-            .then(|| Address::new(&state.displayed.source, &state.displayed.session));
+        let displayed = (!state.displayed.host.is_empty() && !state.displayed.session.is_empty())
+            .then(|| Address::new(&state.displayed.host, &state.displayed.session));
         let node = self.shown_node();
-        if let Some(Node::Host(machine)) = &node {
+        if let Some(Node::Machine(machine)) = &node {
             let login_open = self
                 .login_target
                 .as_deref()
-                .is_some_and(|source| crate::session::machine_of(source) == machine)
+                .is_some_and(|host| crate::session::machine_of(host) == machine)
                 && (state.groups.iter().any(|g| {
-                    crate::session::machine_of(&g.source) == machine && g.failure().is_some()
+                    crate::session::machine_of(&g.host) == machine && g.failure().is_some()
                 }) || machine_failure_alone(state, machine).is_some());
             let login_reported = state
                 .login
                 .as_ref()
-                .is_some_and(|draft| crate::session::machine_of(&draft.source) == machine)
+                .is_some_and(|draft| crate::session::machine_of(&draft.host) == machine)
                 && state
                     .login_reports
                     .get(machine.as_str())
@@ -1502,28 +1505,28 @@ impl Switcher {
             if login_open || login_reported {
                 return Some(ViewScreen::Login);
             }
-            return Some(crate::model::choose_host_screen(
-                host_failure(state, machine),
-                host_scanning(state, machine),
+            return Some(crate::model::choose_machine_screen(
+                machine_failure(state, machine),
+                is_machine_scanning(state, machine),
             ));
         }
-        let selected_source = match &node {
-            Some(Node::Source(source)) => Some(source.as_str()),
+        let selected_host = match &node {
+            Some(Node::Host(host)) => Some(host.as_str()),
             _ => None,
         };
         let selected_address = match &node {
             Some(Node::Session(address)) => Some(address.clone()),
             _ => None,
         };
-        let group = selected_source
-            .and_then(|source| state.groups.iter().find(|group| group.source == source));
+        let group =
+            selected_host.and_then(|host| state.groups.iter().find(|group| group.host == host));
         let scanning = match &node {
-            Some(Node::Source(source)) => state.scanning.contains(source),
+            Some(Node::Host(host)) => state.scanning.contains(host),
             None => state.scanning_any(),
             _ => false,
         };
         crate::model::choose_view_screen(
-            selected_source,
+            selected_host,
             selected_address.as_ref(),
             group.and_then(crate::model::Group::failure),
             scanning,
@@ -1534,34 +1537,34 @@ impl Switcher {
                 .map(|address| crate::model::ConfirmedDisplay {
                     address,
                     collapsed_into_selection: self.rescan_collapse.as_ref() == Some(address)
-                        && selected_source == Some(address.source.as_str())
+                        && selected_host == Some(address.host.as_str())
                         && matches!(self.current_ref(), Some(RowRef::Host { .. })),
                 }),
         )
     }
 
     /// The node a view screen of `kind` is about, and the address it is reached by: the
-    /// session for the self-session state, a source with an empty session half for a
-    /// source's states, and for a host the source its login and probes address. `None`
+    /// session for the self-session state, a host with an empty session half for a
+    /// host's states, and for a machine the host its login and probes address. `None`
     /// before anything is selected.
     pub(crate) fn view_subject(&self, kind: ViewScreen) -> Option<(Node, Address)> {
         let node = self.shown_node()?;
         let address = match (&node, kind) {
             (Node::Session(address), _) => address.clone(),
-            (Node::Source(source), _) => Address::new(source, ""),
-            (Node::Host(machine), _) => {
-                let source = match &self.hover {
-                    Some((reference, _)) => row_source(reference).map(str::to_owned),
-                    None => self.current_source(),
+            (Node::Host(host), _) => Address::new(host, ""),
+            (Node::Machine(machine), _) => {
+                let host = match &self.hover {
+                    Some((reference, _)) => row_host(reference).map(str::to_owned),
+                    None => self.current_host(),
                 };
-                Address::new(source.unwrap_or_else(|| machine.clone()), "")
+                Address::new(host.unwrap_or_else(|| machine.clone()), "")
             }
         };
         Some((node, address))
     }
 
     /// The links the screen of `node` offers, in the order the arrow keys walk them: a
-    /// host's sources by name, each with its session count or state; a source's host and
+    /// machine's hosts by name, each with its session count or state; a host's machine and
     /// then its sessions in card order. A session's grid offers none.
     pub(crate) fn screen_links(
         &self,
@@ -1570,21 +1573,21 @@ impl Switcher {
     ) -> Vec<crate::ui::chrome::ScreenLink> {
         use crate::ui::chrome::ScreenLink;
         match node {
-            Node::Host(machine) => state
+            Node::Machine(machine) => state
                 .groups
                 .iter()
-                .filter(|g| crate::session::machine_of(&g.source) == machine)
+                .filter(|g| crate::session::machine_of(&g.host) == machine)
                 .filter_map(|g| {
-                    // A source is named by its mux, and only by a mux an answer
-                    // confirmed, so a source whose mux no answer has confirmed yet is not
+                    // A host is named by its mux, and only by a mux an answer
+                    // confirmed, so a host whose mux no answer has confirmed yet is not
                     // linked.
-                    let answered = g.err.is_none() && !state.scanning.contains(&g.source);
-                    let mux = state.chrome.source_mux(&g.source);
-                    if mux.is_empty() || !crate::session::mux_may_be_named(&g.source, answered) {
+                    let answered = g.err.is_none() && !state.scanning.contains(&g.host);
+                    let mux = state.chrome.host_mux(&g.host);
+                    if mux.is_empty() || !crate::session::mux_may_be_named(&g.host, answered) {
                         return None;
                     }
                     let label = mux.to_string();
-                    let value = if state.scanning.contains(&g.source) {
+                    let value = if state.scanning.contains(&g.host) {
                         "scanning".to_string()
                     } else if let Some(kind) = g.failure() {
                         use crate::model::FailureKind;
@@ -1603,17 +1606,17 @@ impl Switcher {
                         }
                     };
                     Some(ScreenLink {
-                        node: Node::Source(g.source.clone()),
+                        node: Node::Host(g.host.clone()),
                         label,
                         value,
                         number: None,
                     })
                 })
                 .collect(),
-            Node::Source(source) => {
-                let machine = crate::session::machine_of(source);
+            Node::Host(host) => {
+                let machine = crate::session::machine_of(host);
                 let mut links = vec![ScreenLink {
-                    node: Node::Host(machine.to_string()),
+                    node: Node::Machine(machine.to_string()),
                     label: machine.to_string(),
                     value: String::new(),
                     number: None,
@@ -1621,7 +1624,7 @@ impl Switcher {
                 if let Some(g) = state
                     .groups
                     .iter()
-                    .find(|g| g.source == *source && g.err.is_none())
+                    .find(|g| g.host == *host && g.err.is_none())
                 {
                     links.extend(g.sessions.iter().map(|sess| ScreenLink {
                         node: Node::Session(sess.address()),
@@ -1677,7 +1680,7 @@ impl Switcher {
     }
 
     /// What the screen of `kind` paints: the address it is reached by, whether it is a
-    /// host's, its links, and which link is hard-selected and which is under the pointer.
+    /// machine's, its links, and which link is hard-selected and which is under the pointer.
     /// `None` when the screen is about no node.
     pub(crate) fn screen_parts(
         &self,
@@ -1694,17 +1697,17 @@ impl Switcher {
                 .position(|l| Some(&l.node) == selected.as_ref());
             return Some(ScreenParts {
                 address: Address::new("", ""),
-                host: false,
+                machine_screen: false,
                 links,
                 marks: (link, self.link_hover),
             });
         }
         let (node, address) = self
             .view_subject(kind)
-            .filter(|(_, address)| !address.source.is_empty())?;
+            .filter(|(_, address)| !address.host.is_empty())?;
         Some(ScreenParts {
             address,
-            host: matches!(node, Node::Host(_)),
+            machine_screen: matches!(node, Node::Machine(_)),
             links: self.screen_links(&node, state),
             marks: self.link_marks(state),
         })
@@ -1751,7 +1754,7 @@ impl Switcher {
         (nav, self.link_hover)
     }
 
-    /// The arrow keys on a host's or a source's screen while the terminal view holds the
+    /// The arrow keys on a machine's or a host's screen while the terminal view holds the
     /// focus: they walk its links, stopping at both ends.
     pub(crate) fn step_link(&mut self, delta: isize, state: &crate::state::State) {
         let n = self.shown_links(state).len();
@@ -1812,10 +1815,10 @@ impl Switcher {
         // why a selection made on it attaches nothing.
         self.terminal_view_target = match self.shown_node() {
             Some(Node::Session(address))
-                if !self.landing && !self.is_own_session(&address.source, &address.session) =>
+                if !self.landing && !self.is_own_session(&address.host, &address.session) =>
             {
                 TerminalViewTarget {
-                    source: address.source,
+                    host: address.host,
                     target: address.session,
                 }
             }
@@ -1823,7 +1826,7 @@ impl Switcher {
         };
     }
 
-    /// The session the shown node attaches to, `None` for a host or a source.
+    /// The session the shown node attaches to, `None` for a machine or a host.
     pub fn current_attach_target(
         &self,
         _state: &crate::state::State,
@@ -1832,14 +1835,7 @@ impl Switcher {
         (!target.target.is_empty()).then_some(target)
     }
 
-    /// The source the selection is on, whose control-mode client the app keeps connected
-    /// on every selection move, so its `list-sessions` populates the nav even before any
-    /// session is selected.
-    pub fn current_host(&self) -> Option<String> {
-        self.current_source()
-    }
-
-    /// Moves the tree selection to the session row whose address (`source/session`)
+    /// Moves the tree selection to the session row whose address (`host/session`)
     /// is `address`. The semantic target of `Action::Switch` - addresses a row by
     /// identity, not a screen position or a relative step, so an agent driving ctl
     /// lands on the right session regardless of how the tree is currently ordered.
@@ -1872,8 +1868,8 @@ impl Switcher {
     /// re-kick the streaming probes (the `R` re-scan) - sessions and panes stream
     /// back in exactly as on first launch. The selection does not drift: the session
     /// under it becomes the awaited [`Interest`], so the selection rests on that
-    /// session's source card through the skeleton phase (the lineage of a vanished
-    /// session) and returns to the session the instant its source re-streams it.
+    /// session's host card through the skeleton phase (the lineage of a vanished
+    /// session) and returns to the session the instant its host re-streams it.
     pub fn request_rescan(&mut self, state: &mut crate::state::State) {
         let selected = match self.selected_node() {
             Some(Node::Session(address)) => Some(address),
@@ -1884,7 +1880,7 @@ impl Switcher {
             self.interest = Interest::Awaiting(address);
         }
         self.reopen_numbers();
-        state.scanning = state.groups.iter().map(|g| g.source.clone()).collect();
+        state.scanning = state.groups.iter().map(|g| g.host.clone()).collect();
         for g in state.groups.iter_mut() {
             g.err = None;
             g.sessions.clear();
@@ -1906,7 +1902,7 @@ impl Switcher {
         self.rebuild(state);
     }
 
-    /// Streams in one source's `list-sessions` outcome: clears its scanning
+    /// Streams in one host's `list-sessions` outcome: clears its scanning
     /// state and replaces that host's sessions (reachable) or records its failure
     /// (unreachable). The host authoritatively owns its session list. Ordering is
     /// not this function's concern: `rebuild` applies the deterministic display
@@ -1916,9 +1912,9 @@ impl Switcher {
     /// and the displayed record across to the new name, so the card the user is on stays
     /// the card they are on and nothing reads the rename as a move to another session.
     /// The rename is returned so the loop can carry its own display record across too.
-    pub fn apply_source_result(
+    pub fn apply_host_result(
         &mut self,
-        source: String,
+        host: String,
         sessions: Vec<Session>,
         err: Option<String>,
         state: &mut crate::state::State,
@@ -1926,58 +1922,58 @@ impl Switcher {
         let renamed = state
             .groups
             .iter()
-            .find(|g| g.source == source)
+            .find(|g| g.host == host)
             .filter(|_| err.is_none())
             .and_then(|g| tree::renamed_session(&g.sessions, &sessions));
         if let Some((from, to)) = &renamed {
             // The card is the same card under its new name, so it keeps its number.
-            let old = CardId::Session(source.clone(), from.clone());
+            let old = CardId::Session(host.clone(), from.clone());
             if let Some(n) = self.numbers.remove(&old) {
                 self.numbers
-                    .insert(CardId::Session(source.clone(), to.clone()), n);
+                    .insert(CardId::Session(host.clone(), to.clone()), n);
             }
             for row in self.rows.iter_mut() {
                 if let RowRef::Session { sess } = &mut row.reference {
-                    if sess.source == source && sess.name == *from {
+                    if sess.host == host && sess.name == *from {
                         sess.name = to.clone();
                     }
                 }
             }
             for sel in [&mut state.selection, &mut state.displayed] {
-                if sel.source == source && sel.session == *from {
+                if sel.host == host && sel.session == *from {
                     sel.session = to.clone();
                 }
             }
         }
-        state.scanning.remove(&source);
-        state.scan_deadlines.remove(&source);
+        state.scanning.remove(&host);
+        state.scan_deadlines.remove(&host);
         // The failure run, counted where every result lands so no path can skip it: a
         // result that failed lengthens it, one that answered clears it. It is shown, not
         // acted on - see `State::failure_runs`.
         match &err {
-            Some(_) => *state.failure_runs.entry(source.clone()).or_insert(0) += 1,
+            Some(_) => *state.failure_runs.entry(host.clone()).or_insert(0) += 1,
             None => {
-                state.failure_runs.remove(&source);
+                state.failure_runs.remove(&host);
                 state
                     .last_reached
-                    .insert(source.clone(), std::time::SystemTime::now());
+                    .insert(host.clone(), std::time::SystemTime::now());
             }
         }
-        // The mux search a working login started ends with the first source answer after
+        // The mux search a working login started ends with the first host answer after
         // the login's own probe, whichever way that answer went.
         let answer = match &err {
             None => crate::model::MuxAnswer::Found,
             Some(reason) => crate::model::MuxAnswer::Failed(reason.clone()),
         };
-        state.login_mux_answered(crate::session::machine_of(&source), &answer);
-        let existing = state.groups.iter().position(|g| g.source == source);
+        state.login_mux_answered(crate::session::machine_of(&host), &answer);
+        let existing = state.groups.iter().position(|g| g.host == host);
         match existing {
             Some(i) => {
                 state.groups[i].err = err;
                 state.groups[i].sessions = sessions;
             }
             None => state.groups.push(Group {
-                source,
+                host,
                 err,
                 sessions,
             }),
@@ -1986,31 +1982,31 @@ impl Switcher {
         renamed
     }
 
-    /// Adds a source that was not there at launch (a mux discovery answered) as a
+    /// Adds a host that was not there at launch (a mux discovery answered) as a
     /// SCANNING host card, so it appears the moment it is found instead of at the next
-    /// run. Idempotent: a source already in the nav is left exactly as it is.
+    /// run. Idempotent: a host already in the nav is left exactly as it is.
     ///
     /// It APPENDS the new host to `state.groups`; `rebuild` then places it in the
     /// deterministic order.
-    pub fn add_source(&mut self, source: String, state: &mut crate::state::State) {
-        self.add_sources(vec![source], state);
+    pub fn add_host(&mut self, host: String, state: &mut crate::state::State) {
+        self.add_hosts(vec![host], state);
     }
 
-    /// Adds every source of `sources` the nav does not show yet, then rebuilds once, so
-    /// the card a machine stood on before any source of it was known hands its selection
-    /// to the first of them by name. The source named by the machine alone keeps that
+    /// Adds every host of `hosts` the nav does not show yet, then rebuilds once, so
+    /// the card a machine stood on before any host of it was known hands its selection
+    /// to the first of them by name. The host named by the machine alone keeps that
     /// card's number.
-    pub fn add_sources(&mut self, sources: Vec<String>, state: &mut crate::state::State) {
+    pub fn add_hosts(&mut self, hosts: Vec<String>, state: &mut crate::state::State) {
         let mut added = false;
-        for source in sources {
-            if state.groups.iter().any(|g| g.source == source) {
+        for host in hosts {
+            if state.groups.iter().any(|g| g.host == host) {
                 continue;
             }
-            let machine = crate::session::machine_of(&source).to_string();
+            let machine = crate::session::machine_of(&host).to_string();
             if !state.has_hosts(&machine) {
                 if let Some(n) = self.numbers.remove(&CardId::Machine(machine.clone())) {
-                    if source == machine {
-                        self.numbers.insert(CardId::Host(source.clone()), n);
+                    if host == machine {
+                        self.numbers.insert(CardId::Host(host.clone()), n);
                     }
                 }
                 state.machine_scanning.remove(&machine);
@@ -2019,10 +2015,10 @@ impl Switcher {
             if state.machine(&machine).is_none() {
                 state.machines.push(crate::model::Machine::new(machine));
             }
-            state.scanning.insert(source.clone());
-            state.scan_deadlines.remove(&source);
+            state.scanning.insert(host.clone());
+            state.scan_deadlines.remove(&host);
             state.groups.push(Group {
-                source,
+                host,
                 err: None,
                 sessions: Vec::new(),
             });
@@ -2033,31 +2029,31 @@ impl Switcher {
         }
     }
 
-    /// Puts the card of `source` back in flight: it spins and carries no failure, for an
-    /// answer that is on its way. Idempotent, and a source the nav does not show is left
+    /// Puts the card of `host` back in flight: it spins and carries no failure, for an
+    /// answer that is on its way. Idempotent, and a host the nav does not show is left
     /// alone.
-    pub fn mark_scanning(&mut self, source: &str, state: &mut crate::state::State) {
-        let Some(g) = state.groups.iter_mut().find(|g| g.source == source) else {
+    pub fn mark_scanning(&mut self, host: &str, state: &mut crate::state::State) {
+        let Some(g) = state.groups.iter_mut().find(|g| g.host == host) else {
             return;
         };
-        if g.err.is_none() && state.scanning.contains(source) {
+        if g.err.is_none() && state.scanning.contains(host) {
             return;
         }
         g.err = None;
-        state.scanning.insert(source.to_string());
-        state.scan_deadlines.remove(source);
+        state.scanning.insert(host.to_string());
+        state.scan_deadlines.remove(host);
         self.rebuild(state);
     }
 
-    /// Puts every source `machine` serves in flight for a re-scan of that machine alone.
+    /// Puts every host `machine` serves in flight for a re-scan of that machine alone.
     /// Each card spins or keeps the sessions it lists until its answer lands, so the
     /// list and its numbers hold still while the machine is asked again.
     pub fn mark_machine_scanning(&mut self, machine: &str, state: &mut crate::state::State) {
         for g in state.groups.iter_mut() {
-            if crate::session::machine_of(&g.source) == machine {
+            if crate::session::machine_of(&g.host) == machine {
                 g.err = None;
-                state.scanning.insert(g.source.clone());
-                state.scan_deadlines.remove(&g.source);
+                state.scanning.insert(g.host.clone());
+                state.scan_deadlines.remove(&g.host);
             }
         }
         if !state.has_hosts(machine) {
@@ -2070,15 +2066,15 @@ impl Switcher {
         self.rebuild(state);
     }
 
-    /// Puts `machine` on the roster, its card spinning while no source of it is known.
+    /// Puts `machine` on the roster, its card spinning while no host of it is known.
     /// Idempotent.
     pub fn add_machine(&mut self, machine: String, state: &mut crate::state::State) {
         state.add_machine(machine);
         self.rebuild(state);
     }
 
-    /// Drops a machine the roster no longer names. Its sources leave through
-    /// [`Switcher::remove_source`]. Idempotent.
+    /// Drops a machine the roster no longer names. Its hosts leave through
+    /// [`Switcher::remove_host`]. Idempotent.
     pub fn remove_machine(&mut self, machine: &str, state: &mut crate::state::State) {
         if state.machine(machine).is_none() {
             return;
@@ -2089,7 +2085,7 @@ impl Switcher {
     }
 
     /// Records the answer `machine` gave as a whole: `Some` why it could not be asked,
-    /// `None` that it answered. The card of a machine with no source known states it, and
+    /// `None` that it answered. The card of a machine with no host known states it, and
     /// its answer is no longer on its way.
     pub fn apply_machine_result(
         &mut self,
@@ -2106,7 +2102,7 @@ impl Switcher {
         m.err = err.clone();
         state.machine_scanning.remove(machine);
         state.machine_scan_deadlines.remove(machine);
-        // The failure run, counted under the machine's name the way a source counts its
+        // The failure run, counted under the machine's name the way a host counts its
         // own, and the end of the mux search a working login started.
         match &err {
             Some(reason) => {
@@ -2120,7 +2116,7 @@ impl Switcher {
         self.rebuild(state);
     }
 
-    /// Settles `machine` as serving no mux xmux supports: with no source known, it has
+    /// Settles `machine` as serving no mux xmux supports: with no host known, it has
     /// nothing to show, so its card goes.
     pub fn settle_muxless(&mut self, machine: &str, state: &mut crate::state::State) {
         let Some(m) = state.machine_mut(machine) else {
@@ -2133,28 +2129,28 @@ impl Switcher {
         self.rebuild(state);
     }
 
-    /// Drops a source whose MACHINE the roster no longer names, and everything the nav
-    /// held for it, the machine with its last source. Idempotent: a source the nav does
+    /// Drops a host whose MACHINE the roster no longer names, and everything the nav
+    /// held for it, the machine with its last host. Idempotent: a host the nav does
     /// not show is left alone.
     ///
     /// A selection on the dropped card moves along its lineage, as on every rebuild.
-    pub fn remove_source(&mut self, source: &str, state: &mut crate::state::State) {
-        if !state.groups.iter().any(|g| g.source == source) {
+    pub fn remove_host(&mut self, host: &str, state: &mut crate::state::State) {
+        if !state.groups.iter().any(|g| g.host == host) {
             return;
         }
-        state.groups.retain(|g| g.source != source);
-        let machine = crate::session::machine_of(source);
+        state.groups.retain(|g| g.host != host);
+        let machine = crate::session::machine_of(host);
         if !state.has_hosts(machine) {
             state.machines.retain(|m| m.name != machine);
             state.machine_scanning.remove(machine);
             state.machine_scan_deadlines.remove(machine);
         }
-        state.scanning.remove(source);
-        state.scan_deadlines.remove(source);
-        state.failure_runs.remove(source);
-        state.last_reached.remove(source);
-        state.live_sources.remove(source);
-        state.host_details.remove(source);
+        state.scanning.remove(host);
+        state.scan_deadlines.remove(host);
+        state.failure_runs.remove(host);
+        state.last_reached.remove(host);
+        state.live_hosts.remove(host);
+        state.host_details.remove(host);
         self.rebuild(state);
     }
 
@@ -2168,19 +2164,19 @@ impl Switcher {
     }
 }
 
-/// One row of the table of host problems: a host in a problem state, the cause, the
+/// One row of the table of machine problems: a host in a problem state, the cause, the
 /// reason its last answer gave, and whether the hiding leaves it without a card.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CheckEntry {
-    pub(crate) source: String,
+    pub(crate) host: String,
     /// The host as its card names it.
     pub(crate) label: String,
     pub(crate) kind: crate::model::FailureKind,
     pub(crate) reason: String,
 }
 
-/// The card a number is kept for: a session by its address, a source's card by its
-/// source, a host's card by its host. A session that ends and later returns under the
+/// The card a number is kept for: a session by its address, a host's card by its
+/// host, a machine's card by its machine. A session that ends and later returns under the
 /// same address is the same card and takes its number back.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum CardId {
@@ -2192,8 +2188,8 @@ enum CardId {
 /// The card `reference` names, or `None` for a section title, which carries no number.
 fn card_id(reference: &RowRef) -> Option<CardId> {
     match reference {
-        RowRef::Session { sess } => Some(CardId::Session(sess.source.clone(), sess.name.clone())),
-        RowRef::Host { source, .. } => Some(CardId::Host(source.clone())),
+        RowRef::Session { sess } => Some(CardId::Session(sess.host.clone(), sess.name.clone())),
+        RowRef::Host { host, .. } => Some(CardId::Host(host.clone())),
         RowRef::Machine { machine, .. } => Some(CardId::Machine(machine.clone())),
         RowRef::Section { .. } => None,
     }
@@ -2210,32 +2206,28 @@ pub(crate) fn fit(candidates: &[String], width: u16) -> String {
         .unwrap_or_else(|| candidates.last().cloned().unwrap_or_default())
 }
 
-/// The context parts of a row: `(host, mux, session)`. A host-state card and a
-/// section title carry only their host; a session card names its session's host, mux
+/// The context parts of a row: `(machine, mux, session)`. A host-state card and a
+/// section title carry only their machine; a session card names its session's machine, mux
 /// kind (empty when not yet known), and session name.
 fn context_of(row: &Row) -> (&str, &str, &str) {
-    // The MACHINE half, never the whole source id: a source id already carries the mux
+    // The MACHINE half, never the whole host id: a host id already carries the mux
     // when its machine serves several, and the card renders the mux as its own span, so
     // returning the id whole would read `local:zellij/zellij`. The mux comes off the row
-    // itself, resolved once when the row was built, so every row on one source names its
+    // itself, resolved once when the row was built, so every row on one host names its
     // mux the same way whatever each of them had to read it from.
     match &row.reference {
-        RowRef::Host { source, .. } | RowRef::Section { source, .. } => {
-            (crate::session::machine_of(source), &row.mux, "")
+        RowRef::Host { host, .. } | RowRef::Section { host, .. } => {
+            (crate::session::machine_of(host), &row.mux, "")
         }
         RowRef::Machine { machine, .. } => (machine, "", ""),
-        RowRef::Session { sess } => (
-            crate::session::machine_of(&sess.source),
-            &row.mux,
-            &sess.name,
-        ),
+        RowRef::Session { sess } => (crate::session::machine_of(&sess.host), &row.mux, &sess.name),
     }
 }
 
 /// The category reached by a horizontal step. Vertical steps visit every card.
 #[derive(PartialEq, Eq)]
 enum NavCategory {
-    Source(String),
+    Host(String),
     NoSession,
     Disconnected,
 }
@@ -2251,8 +2243,8 @@ fn category_of_row(reference: &RowRef) -> NavCategory {
         | RowRef::Host { scanning: true, .. }
         | RowRef::Machine { .. } => NavCategory::Disconnected,
         RowRef::Host { .. } => NavCategory::NoSession,
-        RowRef::Section { source, .. } => NavCategory::Source(source.clone()),
-        RowRef::Session { sess } => NavCategory::Source(sess.source.clone()),
+        RowRef::Section { host, .. } => NavCategory::Host(host.clone()),
+        RowRef::Session { sess } => NavCategory::Host(sess.host.clone()),
     }
 }
 
@@ -2266,20 +2258,20 @@ fn session_addr_of(reference: &RowRef) -> Option<Address> {
     }
 }
 
-/// The source a row stands on: a session's, a title's or a source card's own, and the
-/// source a host's card logs in through.
-fn row_source(reference: &RowRef) -> Option<&str> {
+/// The host a row stands on: a session's, a title's or a host card's own, and the
+/// host a machine's card logs in through.
+fn row_host(reference: &RowRef) -> Option<&str> {
     match reference {
-        RowRef::Host { source, .. }
-        | RowRef::Section { source }
-        | RowRef::Machine { source, .. } => Some(source),
-        RowRef::Session { sess } => Some(&sess.source),
+        RowRef::Host { host, .. } | RowRef::Section { host } | RowRef::Machine { host, .. } => {
+            Some(host)
+        }
+        RowRef::Session { sess } => Some(&sess.host),
     }
 }
 
 /// Whether two row references name the same row across a rebuild: a session by its
-/// address, a source by its id whether it shows as its section title or its host-state
-/// card, a host's card by its host. The selection holds on that identity, so a source
+/// address, a host by its id whether it shows as its section title or its host-state
+/// card, a machine's card by its machine. The selection holds on that identity, so a host
 /// gaining or losing its sessions keeps it.
 fn same_node(a: &RowRef, b: &RowRef) -> bool {
     match (a, b) {
@@ -2288,74 +2280,74 @@ fn same_node(a: &RowRef, b: &RowRef) -> bool {
         }
         (RowRef::Machine { machine: x, .. }, RowRef::Machine { machine: y, .. }) => x == y,
         (
-            RowRef::Section { source: x } | RowRef::Host { source: x, .. },
-            RowRef::Section { source: y } | RowRef::Host { source: y, .. },
+            RowRef::Section { host: x } | RowRef::Host { host: x, .. },
+            RowRef::Section { host: y } | RowRef::Host { host: y, .. },
         ) => x == y,
         _ => false,
     }
 }
 
-/// The node `part` of a row names: the host half of a title or a source card names the
-/// host, a title's other half and a source card the source, a host's card the host, and a
+/// The node `part` of a row names: the machine half of a title or a host card names the
+/// machine, a title's other half and a host card the host, a machine's card the machine, and a
 /// session card the session.
 fn node_of(reference: &RowRef, part: Part) -> Node {
     match reference {
         RowRef::Session { sess } => Node::Session(sess.address()),
-        RowRef::Section { source } | RowRef::Host { source, .. } if part == Part::Host => {
-            Node::Host(crate::session::machine_of(source).to_string())
+        RowRef::Section { host } | RowRef::Host { host, .. } if part == Part::Machine => {
+            Node::Machine(crate::session::machine_of(host).to_string())
         }
-        RowRef::Section { source } | RowRef::Host { source, .. } => Node::Source(source.clone()),
-        RowRef::Machine { machine, .. } => Node::Host(machine.clone()),
+        RowRef::Section { host } | RowRef::Host { host, .. } => Node::Host(host.clone()),
+        RowRef::Machine { machine, .. } => Node::Machine(machine.clone()),
     }
 }
 
-/// Whether the inventory still holds `node`: a host while any source of it is listed, a
-/// source while it is listed, a session while its source lists it.
+/// Whether the inventory still holds `node`: a machine while any host of it is listed, a
+/// host while it is listed, a session while its host lists it.
 fn node_exists(node: &Node, state: &crate::state::State) -> bool {
     match node {
-        Node::Host(machine) => {
+        Node::Machine(machine) => {
             state.has_hosts(machine) || state.hostless_machines().iter().any(|m| m.name == *machine)
         }
-        Node::Source(source) => state.groups.iter().any(|g| g.source == *source),
+        Node::Host(host) => state.groups.iter().any(|g| g.host == *host),
         Node::Session(address) => state.groups.iter().any(|g| {
-            g.source == address.source
+            g.host == address.host
                 && g.err.is_none()
                 && g.sessions.iter().any(|s| s.name == address.session)
         }),
     }
 }
 
-/// The nodes one level below `node`, in the order a step down picks from: a host's
-/// sources by name, a source's sessions in card order.
+/// The nodes one level below `node`, in the order a step down picks from: a machine's
+/// hosts by name, a host's sessions in card order.
 fn node_children(node: &Node, state: &crate::state::State) -> Vec<Node> {
     match node {
-        Node::Host(machine) => {
-            let mut sources: Vec<&str> = state
+        Node::Machine(machine) => {
+            let mut hosts: Vec<&str> = state
                 .groups
                 .iter()
-                .map(|g| g.source.as_str())
+                .map(|g| g.host.as_str())
                 .filter(|s| crate::session::machine_of(s) == machine)
                 .collect();
-            sources.sort_unstable();
-            sources
+            hosts.sort_unstable();
+            hosts
                 .into_iter()
-                .map(|s| Node::Source(s.to_string()))
+                .map(|s| Node::Host(s.to_string()))
                 .collect()
         }
-        Node::Source(source) => state
+        Node::Host(host) => state
             .groups
             .iter()
-            .filter(|g| g.source == *source && g.err.is_none())
+            .filter(|g| g.host == *host && g.err.is_none())
             .flat_map(|g| g.sessions.iter().map(|s| Node::Session(s.address())))
             .collect(),
         Node::Session(_) => Vec::new(),
     }
 }
 
-/// The failure a host as a whole is in: the failure every one of its sources shares, a
-/// login one when any of them needs a login. `None` while any source answered or is still
-/// waiting on its answer, since a host is down only when none of its sources connected.
-pub(crate) fn host_failure(
+/// The failure a machine as a whole is in: the failure every one of its hosts shares, a
+/// login one when any of them needs a login. `None` while any host answered or is still
+/// waiting on its answer, since a machine is down only when none of its hosts connected.
+pub(crate) fn machine_failure(
     state: &crate::state::State,
     machine: &str,
 ) -> Option<crate::model::FailureKind> {
@@ -2368,11 +2360,11 @@ pub(crate) fn host_failure(
     for g in state
         .groups
         .iter()
-        .filter(|g| crate::session::machine_of(&g.source) == machine)
+        .filter(|g| crate::session::machine_of(&g.host) == machine)
     {
         any = true;
         match g.failure() {
-            _ if state.scanning.contains(&g.source) => return None,
+            _ if state.scanning.contains(&g.host) => return None,
             Some(FailureKind::Blocked) => blocked = true,
             Some(FailureKind::Unreachable) => {}
             _ => return None,
@@ -2385,8 +2377,8 @@ pub(crate) fn host_failure(
     })
 }
 
-/// The failure a machine with no source known is in, read off its own answer, and `None`
-/// while that answer is on its way or for a machine with a source.
+/// The failure a machine with no host known is in, read off its own answer, and `None`
+/// while that answer is on its way or for a machine with a host.
 pub(crate) fn machine_failure_alone(
     state: &crate::state::State,
     machine: &str,
@@ -2397,28 +2389,28 @@ pub(crate) fn machine_failure_alone(
     state.machine(machine)?.failure()
 }
 
-/// Whether the login pane opened for `source` still has a failure to answer: a failed
-/// source of that address, or a machine of that name that failed with no source known.
-fn login_answers(state: &crate::state::State, source: &str) -> bool {
+/// Whether the login pane opened for `host` still has a failure to answer: a failed
+/// host of that address, or a machine of that name that failed with no host known.
+fn login_answers(state: &crate::state::State, host: &str) -> bool {
     state
         .groups
         .iter()
-        .any(|group| group.source == source && group.failure().is_some())
-        || machine_failure_alone(state, source).is_some()
+        .any(|group| group.host == host && group.failure().is_some())
+        || machine_failure_alone(state, host).is_some()
 }
 
-/// Whether every source of a host is still waiting on its answer, or, for a machine with
-/// no source known, whether its own answer is.
-pub(crate) fn host_scanning(state: &crate::state::State, machine: &str) -> bool {
+/// Whether every host of a machine is still waiting on its answer, or, for a machine with
+/// no host known, whether its own answer is.
+pub(crate) fn is_machine_scanning(state: &crate::state::State, machine: &str) -> bool {
     if !state.has_hosts(machine) {
         return state.machine_scanning.contains(machine);
     }
-    let mut sources = state
+    let mut hosts = state
         .groups
         .iter()
-        .filter(|g| crate::session::machine_of(&g.source) == machine)
+        .filter(|g| crate::session::machine_of(&g.host) == machine)
         .peekable();
-    sources.peek().is_some() && sources.all(|g| state.scanning.contains(&g.source))
+    hosts.peek().is_some() && hosts.all(|g| state.scanning.contains(&g.host))
 }
 
 /// What a session's link and hint say about it: its windows and whether a client is on it.
@@ -2437,7 +2429,7 @@ fn session_facts(sess: &Session) -> String {
 /// What a view screen paints besides its kind; see [`Switcher::screen_parts`].
 pub(crate) struct ScreenParts {
     pub(crate) address: Address,
-    pub(crate) host: bool,
+    pub(crate) machine_screen: bool,
     pub(crate) links: Vec<crate::ui::chrome::ScreenLink>,
     pub(crate) marks: (Option<usize>, Option<usize>),
 }

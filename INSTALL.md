@@ -77,7 +77,7 @@ xmux doctor
 ```
 
 `xmux doctor` reports which xmux is running and where it was installed, then
-checks the config and whether each source is reachable.
+checks the config and whether each host is reachable.
 
 ## Platforms
 
@@ -88,13 +88,13 @@ checks the config and whether each source is reachable.
 | Linux | `x86_64`, `aarch64` | glibc 2.35 or newer (Ubuntu 22.04 or a distro of the same age) | |
 | Android (Termux) | `aarch64` | Android 7.0 or later | Linked against Android's own libc, so it runs inside Termux, where the Linux builds cannot load. Termux ships without `ssh`; `pkg install openssh` adds it. |
 
-Remote hosts need `ssh` on the machine that runs xmux, and a supported mux on each
-host: `tmux`, GNU `screen`, `zellij`, `abduco`, or `tuios` on unix-likes, `psmux`
+Remote machines need `ssh` on the machine that runs xmux, and a supported mux on each
+remote machine: `tmux`, GNU `screen`, `zellij`, `abduco`, or `tuios` on unix-likes, `psmux`
 on Windows, and `herdr` on either.
 
-## Windows Hosts
+## Windows Machines
 
-A Windows machine can be a remote host once it runs OpenSSH Server and a mux
+A Windows machine can be a remote machine once it runs OpenSSH Server and a mux
 (`psmux` or `herdr`). OpenSSH Server reads a user's keys from the user's
 `authorized_keys` file. For a member of the Administrators group it reads the
 machine-wide `administrators_authorized_keys` file instead, so key registration
@@ -102,7 +102,7 @@ from xmux writes the key to both files.
 
 ### Entra-Only Accounts
 
-A host whose accounts are all Entra ID accounts cannot offer password login and
+A machine whose accounts are all Entra ID accounts cannot offer password login and
 key login from one `sshd`, so xmux cannot register a key through a password
 login on it. The two ways to run `sshd` each lose one of the two logins:
 
@@ -118,22 +118,22 @@ the service reports `unable to get security token for user` right after
 
 An `sshd` run under the user account needs no token for its own user, so key
 login works. It has no right to create a new logon session for a password
-login: the password is accepted, then the host logs `CreateProcessAsUserW failed
+login: the password is accepted, then the machine logs `CreateProcessAsUserW failed
 error:1314` and `fork of unprivileged child failed`, and the client exits with
 255. Key registration runs a command inside an authenticated session, so it
 fails at the same point.
 
 Local accounts and Active Directory domain accounts work for both logins under
 the SYSTEM service, so they do not have this limit. A local account or a
-hybrid/AD account is the way to get password login and key login on one host.
+hybrid/AD account is the way to get password login and key login on one machine.
 
 Under the SYSTEM service the username takes the form `azuread\<UPN>`; with the
 UPN alone, `sshd` rejects it as `Invalid user`. An `sshd` run under the user
 account accepts the UPN alone.
 
-An Entra-only host takes its first key in one of two ways:
+An Entra-only machine takes its first key in one of two ways:
 
-- Write the public key into `~/.ssh/authorized_keys` on the host directly.
+- Write the public key into `~/.ssh/authorized_keys` on the machine directly.
 - Run the SYSTEM service on a second port with a separate `sshd_config` that
   allows passwords only, log in on that port, and register the key.
 
@@ -314,8 +314,8 @@ both, and the command prints where they are.
 checks again right before each removal. An instance started while the first question
 waited stops the command before anything is removed; one started while the second
 question waited keeps the settings and data, and the confirmed program removal still
-completes. It changes nothing on remote hosts: a key this machine registered on a
-host stays there until `prefix L` in the app removes it.
+completes. It changes nothing on remote machines: a key this machine registered on a
+remote machine stays there until `prefix L` in the app removes it.
 
 On Windows a running executable cannot be deleted, so the files are removed, and a
 package manager's uninstall runs, in the background once every xmux process has

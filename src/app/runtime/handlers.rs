@@ -38,10 +38,10 @@ impl Runtime {
         rearm
     }
 
-    /// Performs the source-specific I/O carried by one nested event effect. The unified
+    /// Performs the host-specific I/O carried by one nested event effect. The unified
     /// effect executor delegates this capability work and places any returned follow-up
     /// effects back on its ordered work queue.
-    pub(super) fn perform_source_effect(
+    pub(super) fn perform_host_effect(
         &mut self,
         effect: crate::model::EventEffect,
     ) -> (bool, Vec<Effect>) {
@@ -70,7 +70,7 @@ impl Runtime {
         let mut followups = Vec::new();
         match effect {
             EventEffect::MarkConnected { .. }
-            | EventEffect::ApplySourceResult { .. }
+            | EventEffect::ApplyHostResult { .. }
             | EventEffect::ApplyPollResult { .. }
             | EventEffect::NoteHostExited { .. } => {
                 unreachable!("state event effects are applied before runtime effects")
@@ -86,13 +86,13 @@ impl Runtime {
                 // Per-host FIFO delivers this inventory before the host's `Exited`/reap, so
                 // `mgr.get` is normally `Some` here; the gate is the backstop that keeps a
                 // broken ordering from reviving a reaped host in the nav
-                // (`apply_source_result`) or resyncing its dead terminals. (`ApplyInventory`
+                // (`apply_host_result`) or resyncing its dead terminals. (`ApplyInventory`
                 // is emitted only for control-mode hosts, so a poll host is never gated out.)
                 let live = mgr.get(&host).is_some();
                 followups = update(
                     model,
                     Msg::ApplyInventory {
-                        source: host.clone(),
+                        host: host.clone(),
                         sessions: sessions.clone(),
                         live,
                     },
@@ -105,7 +105,7 @@ impl Runtime {
                     // result already contains that rename, so append sync behind it on the
                     // unified executor's ordered follow-up queue.
                     followups.push(Effect::Event(EventEffect::SyncInventorySessions {
-                        source: host,
+                        host,
                         sessions,
                     }));
                 }
@@ -119,15 +119,15 @@ impl Runtime {
                 mgr.reap(&host);
             }
             EventEffect::DisconnectMachine { machine } => {
-                let sources: Vec<String> = hosts
+                let host_ids: Vec<String> = hosts
                     .ids()
                     .iter()
-                    .filter(|source| crate::session::machine_of(source) == machine)
+                    .filter(|host_id| crate::session::machine_of(host_id) == machine)
                     .cloned()
                     .collect();
-                for source in &sources {
-                    mgr.reap(source);
-                    if let Some(host) = hosts.get_mut(source) {
+                for host_id in &host_ids {
+                    mgr.reap(host_id);
+                    if let Some(host) = hosts.get_mut(host_id) {
                         host.clear_display_tty();
                         host.liveness = crate::model::Liveness::Unreachable;
                         host.display = Default::default();
@@ -220,18 +220,18 @@ impl Runtime {
                     "display_client_session_changed"
                 );
             }
-            EventEffect::AddDiscoveredSources { machine, muxes } => {
+            EventEffect::AddDiscoveredHosts { machine, muxes } => {
                 if model.state.invalid_auth.contains(&machine) {
                     return (false, Vec::new());
                 }
                 // A machine answered which muxes it has. Every one it does not already
-                // serve becomes a source of its own, RIGHT NOW: the card appears scanning
+                // serve becomes a host of its own, RIGHT NOW: the card appears scanning
                 // and streams its sessions in like any other.
                 //
-                // A machine that serves no source yet names its sources the way a written
+                // A machine that serves no host yet names its hosts the way a written
                 // list would: one mux takes the bare machine name, and several are each
                 // qualified. A machine
-                // that already serves a source adds each new one qualified (`prod:zellij`),
+                // that already serves a host adds each new one qualified (`prod:zellij`),
                 // and the one already served keeps the id it was painted with, because
                 // that id is what the frozen order, the persisted selection, and anything
                 // the user typed are keyed to - renaming it mid-run would break all three.
@@ -241,7 +241,7 @@ impl Runtime {
                     Ok(muxes) => muxes,
                     // The machine could not be asked at all, which says nothing about what
                     // it serves. A machine standing as its own card keeps it and shows the
-                    // failure there; one that serves sources has them report for it.
+                    // failure there; one that serves hosts has them report for it.
                     Err(reason) => {
                         tracing::warn!(machine = %machine, error = %reason, "mux discovery failed");
                         if first {
@@ -270,7 +270,7 @@ impl Runtime {
                     found
                         .into_iter()
                         .map(|bin| {
-                            let id = crate::session::source_id(&machine, &bin, true);
+                            let id = crate::session::host_id(&machine, &bin, true);
                             (bin, id)
                         })
                         .collect()
@@ -283,20 +283,20 @@ impl Runtime {
                     let Some(host) = hosts.discovered_host(&machine, &bin, &id) else {
                         continue;
                     };
-                    tracing::info!(machine = %machine, mux = %bin, source = %id, "mux discovered");
+                    tracing::info!(machine = %machine, mux = %bin, host_id = %id, "mux discovered");
                     hosts.insert(host);
                     added.push(id);
                 }
                 if !added.is_empty() {
-                    let effects = update(model, Msg::SetSourceReach(reach_map(env, hosts)));
+                    let effects = update(model, Msg::SetHostReach(reach_map(env, hosts)));
                     debug_assert!(effects.is_empty());
-                    // Every source the machine answered joins at once, so the card the
+                    // Every host the machine answered joins at once, so the card the
                     // machine stood on hands its selection to the first of them by name;
                     // each one's first listing is now in flight.
                     let effects = update(
                         model,
-                        Msg::AddSources {
-                            sources: added.clone(),
+                        Msg::AddHosts {
+                            hosts: added.clone(),
                         },
                     );
                     debug_assert!(effects.is_empty());
@@ -320,20 +320,20 @@ impl Runtime {
                     env.credentials().set_force_askpass(startup.force_askpass);
                     model.switcher.set_own_session(startup.own_session);
                 }
-                // A roster resolution completed. The source registry and the nav have to
+                // A roster resolution completed. The host registry and the nav have to
                 // agree about which machines exist, so both are reconciled from this ONE
                 // answer. Which makes this the one place to settle what the answer even
                 // is: a machine only a PROBE offers is carried back in before anything
                 // reads the roster, so a probe that was too slow cannot reap a card.
                 let mut roster = roster;
                 env.carry_probed(&mut roster);
-                // What offered each host, refreshed with the roster: a host added by this
+                // What offered each machine, refreshed with the roster: a machine added by this
                 // resolution has to be able to name the provider that offered it, exactly
                 // as one present since launch can.
                 let providers = roster
                     .roster_providers
                     .iter()
-                    .map(|(host, provider)| (host.clone(), provider.label().to_owned()))
+                    .map(|(machine, provider)| (machine.clone(), provider.label().to_owned()))
                     .collect();
                 let login_defaults = roster.login_defaults.clone();
                 let ssh_stanzas = roster.ssh_stanzas.clone();
@@ -347,13 +347,13 @@ impl Runtime {
                         login_defaults,
                         ssh_stanzas,
                         held_credentials: held,
-                        source_reach: reach_map(env, hosts),
+                        host_reach: reach_map(env, hosts),
                     },
                 );
                 debug_assert!(effects.is_empty());
                 for id in &delta.removed {
-                    tracing::info!(source = %id, "roster dropped a source");
-                    // Everything this source held: its metadata channel, the live PTY
+                    tracing::info!(host_id = %id, "roster dropped a host");
+                    // Everything this host held: its metadata channel, the live PTY
                     // attachments showing its sessions, and its card. A card left behind
                     // would paint a session nothing can reach any more.
                     mgr.reap(id);
@@ -364,8 +364,8 @@ impl Runtime {
                     }
                     let effects = update(
                         model,
-                        Msg::RemoveSource {
-                            source: id.clone(),
+                        Msg::RemoveHost {
+                            host: id.clone(),
                             clear_tracking: true,
                         },
                     );
@@ -382,17 +382,17 @@ impl Runtime {
                     debug_assert!(effects.is_empty());
                 }
                 for id in &delta.added {
-                    tracing::info!(source = %id, "roster offered a new source");
+                    tracing::info!(host_id = %id, "roster offered a new host");
                     let effects = update(
                         model,
-                        Msg::AddSource {
-                            source: id.clone(),
+                        Msg::AddHost {
+                            host: id.clone(),
                             scanning: launching,
                         },
                     );
                     debug_assert!(effects.is_empty());
                 }
-                // A machine joins after its sources, so one that has a source does not
+                // A machine joins after its hosts, so one that has a host does not
                 // stand on the nav by itself even for a moment.
                 for machine in &delta.machines_added {
                     tracing::info!(machine = %machine, "roster offered a new machine");
@@ -435,17 +435,19 @@ impl Runtime {
                 }
             }
             EventEffect::DispatchScanned {
-                source, detected, ..
+                host: host_id,
+                detected,
+                ..
             } => {
                 if model
                     .state
                     .invalid_auth
-                    .contains(crate::session::machine_of(&source))
+                    .contains(crate::session::machine_of(&host_id))
                 {
                     let effects = update(
                         model,
                         Msg::DetectionFinished {
-                            source: source.clone(),
+                            host: host_id.clone(),
                         },
                     );
                     debug_assert!(effects.is_empty());
@@ -460,14 +462,14 @@ impl Runtime {
                 let effects = update(
                     model,
                     Msg::DetectionFinished {
-                        source: source.clone(),
+                        host: host_id.clone(),
                     },
                 );
                 debug_assert!(effects.is_empty());
-                apply_scan_result(hosts, &source, detected);
-                if hosts.get(&source).is_some_and(|h| h.detected) {
+                apply_scan_result(hosts, &host_id, detected);
+                if hosts.get(&host_id).is_some_and(|h| h.detected) {
                     let (vc, vr) = terminal_view_size(cols, rows, nav);
-                    dispatch_detected_host(mgr, hosts, &source, vc, vr);
+                    dispatch_detected_host(mgr, hosts, &host_id, vc, vr);
                 }
             }
             EventEffect::MachineConnected {
@@ -475,7 +477,7 @@ impl Runtime {
                 shell,
                 rescan,
             } => {
-                // Record the shell family the probe read on every source this machine
+                // Record the shell family the probe read on every host this machine
                 // serves, before a channel opens: the attach shape and the in-place
                 // switch are composed for a shell family, so the first command must
                 // already know which one answered.
@@ -483,38 +485,38 @@ impl Runtime {
                     env.record_remote_shell(&machine, shell);
                     hosts.for_each_transport_of(&machine, |t| t.set_remote_shell(shell));
                 }
-                // The machine's reachability probe connected: resolve every source it
+                // The machine's reachability probe connected: resolve every host it
                 // serves onto its metadata channel (a re-scan re-enumerates a live one; a
                 // launch detects then ensures it), and, when the machine left its mux list
                 // to xmux, ask which muxes it serves so the ones nobody wrote down appear.
                 let (vc, vr) = terminal_view_size(cols, rows, nav);
-                let sources: Vec<String> = hosts
+                let host_ids: Vec<String> = hosts
                     .ids()
                     .iter()
                     .filter(|id| crate::session::machine_of(id) == machine)
                     .cloned()
                     .collect();
-                for source in &sources {
-                    let detected = hosts.get(source).is_some_and(|h| h.detected);
+                for host_id in &host_ids {
+                    let detected = hosts.get(host_id).is_some_and(|h| h.detected);
                     if detected {
                         if rescan {
-                            if let Some(host) = hosts.get(source) {
-                                mgr.rescan(source, host, vc, vr);
+                            if let Some(host) = hosts.get(host_id) {
+                                mgr.rescan(host_id, host, vc, vr);
                             }
                         } else {
-                            dispatch_detected_host(mgr, hosts, source, vc, vr);
+                            dispatch_detected_host(mgr, hosts, host_id, vc, vr);
                         }
                     } else {
-                        scan_or_dispatch_host(mgr, hosts, model, source, vc, vr, scan_pool);
+                        scan_or_dispatch_host(mgr, hosts, model, host_id, vc, vr, scan_pool);
                     }
                 }
                 // Mux discovery is a machine-level question, asked once per connect and
                 // only when the machine left its list to xmux. The startup roster already
                 // resolved this box's muxes, so it is never re-probed here.
-                if !crate::session::is_local_source(&machine)
+                if !crate::session::is_local_host(&machine)
                     && env.roster().cfg.mux_is_auto(&machine)
                 {
-                    if let Some(transport) = hosts.host_transport(&machine) {
+                    if let Some(transport) = hosts.machine_transport(&machine) {
                         spawn_mux_discovery(
                             machine,
                             transport.clone_box(),
@@ -524,12 +526,19 @@ impl Runtime {
                     }
                 }
             }
-            EventEffect::RenameDisplayed { source, from, to } => {
-                if let Some(h) = hosts.get_mut(&source) {
+            EventEffect::RenameDisplayed {
+                host: host_id,
+                from,
+                to,
+            } => {
+                if let Some(h) = hosts.get_mut(&host_id) {
                     h.display.rename_session(&from, &to);
                 }
             }
-            EventEffect::SyncInventorySessions { source, sessions } => {
+            EventEffect::SyncInventorySessions {
+                host: host_id,
+                sessions,
+            } => {
                 // Sync this host's display terminal(s) (per-host for remote tmux).
                 let mut ctx = crate::driver::DriverCtx {
                     registry: &mut *registry,
@@ -541,16 +550,19 @@ impl Runtime {
                     attach_seq: &mut *attach_seq,
                     viewport: terminal_view_size(cols, rows, nav),
                 };
-                sync_source_terminals(&source, &sessions, &mut ctx);
+                sync_host_terminals(&host_id, &sessions, &mut ctx);
             }
-            EventEffect::SyncPollSessions { source, sessions } => {
+            EventEffect::SyncPollSessions {
+                host: host_id,
+                sessions,
+            } => {
                 // A poll host's SUCCESSFUL enumeration (the nav group is already applied).
                 // The enumeration is logged at the producer (`run_poll`), where `err` is in
                 // hand - update drops the error path before reaching here, so logging
                 // here would only ever see successes.
                 // PerSession psmux: a session whose registry .port disappeared is dead even
                 // if its PTY has not EOF'd. Drop the stale attach so it cannot show a dead grid.
-                if let Some(h) = hosts.get(&source) {
+                if let Some(h) = hosts.get(&host_id) {
                     for s in &sessions {
                         if !h.session_is_live(&s.name) {
                             // The host-keyed display attachment (one per-host PTY, reattached).
@@ -568,7 +580,7 @@ impl Runtime {
                     attach_seq: &mut *attach_seq,
                     viewport: terminal_view_size(cols, rows, nav),
                 };
-                sync_source_terminals(&source, &sessions, &mut ctx);
+                sync_host_terminals(&host_id, &sessions, &mut ctx);
             }
             EventEffect::RecordDisplayTty { host, tty } => {
                 // The -CC `list-clients` probe resolved xmux's display-client tty. Record it
@@ -595,7 +607,7 @@ impl Runtime {
 /// Detects a config-file change and, on a real change, reloads the `[ui]` section.
 /// The redraw cadence stats the file rather than watching it, so no watch dependency is
 /// needed, and a malformed edit keeps the previous settings. Only the `[ui]` presentation
-/// settings reload live: re-scanning sources is the `rescan` key's job, and a config edit
+/// settings reload live: re-scanning hosts is the `rescan` key's job, and a config edit
 /// must not reset the user's sessions.
 /// Returns `Some(ui)` only when the file genuinely changed since the last sight;
 /// the first sight just records a baseline and a missing/currently-unwritable file is
@@ -649,7 +661,7 @@ impl Runtime {
         // Restore the band-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
         let nav_height = crate::app::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
-        // The runtime source registry, keyed by id (local first, then each ssh alias in
+        // The runtime host registry, keyed by id (local first, then each ssh alias in
         // config order), built from the roster on `Env`. Every host shares the
         // environment's machine credential store before it can spawn, including one
         // discovered or reconciled after a login, so a held password reaches each command
@@ -685,9 +697,9 @@ impl Runtime {
         let worker = DisplayWorker::new(pty_tx);
         let registry = AttachRegistry::new();
 
-        if env.startup_pending && !hosts.serves_any(crate::session::LOCAL_SOURCE) {
+        if env.startup_pending && !hosts.serves_any(crate::session::LOCAL_MACHINE) {
             hosts.hold_unresolved(
-                crate::session::LOCAL_SOURCE.to_string(),
+                crate::session::LOCAL_MACHINE.to_string(),
                 crate::transport::local(None),
             );
         }
@@ -695,7 +707,7 @@ impl Runtime {
         // The app's runtime state (single source of truth), seeded from the host ids;
         // events stream the nav in.
         let mut state = crate::state::State::from_roster(hosts.ids().to_vec(), hosts.machines());
-        let mut switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
+        let mut switcher = crate::ui::switcher::Switcher::from_hosts(&mut state);
         // The one session the terminal view refuses: the one xmux is running in. Named
         // once here, because the environment that names it cannot change under a run.
         switcher.set_own_session(env.own_session.clone());
@@ -703,7 +715,7 @@ impl Runtime {
         // rather than on whichever session answers first.
         switcher.open_landing();
         switcher.set_renumbering(roster.cfg.ui.renumbering, &mut state);
-        // The launch roster can add hosts after the first sources answer, so the card
+        // The launch roster can add hosts after the first hosts answer, so the card
         // numbers stay open until it is in.
         if env.startup_pending {
             switcher.hold_numbers(true, &state);
@@ -712,26 +724,26 @@ impl Runtime {
         // way.
         state.notify.set_toasts_enabled(roster.cfg.ui.notifications);
         state.chrome.braille_animation = roster.cfg.ui.braille_animation;
-        // And what offered each host, so an unreachable one can name the provider that
+        // And what offered each machine, so an unreachable one can name the provider that
         // put it on the roster. Reduced to words here: the screen prints them and
         // nothing branches on which provider it was.
         state.chrome.set_roster_providers(
             roster
                 .roster_providers
                 .iter()
-                .map(|(host, p)| (host.clone(), p.label().to_string()))
+                .map(|(machine, p)| (machine.clone(), p.label().to_string()))
                 .collect(),
         );
-        // And what the login pane starts from: the address a provider knew for each host,
+        // And what the login pane starts from: the address a provider knew for each machine,
         // and this machine's own account name. Both are what ssh would have used, so a
         // pane that opens on a failure opens showing what just failed.
         state
             .chrome
             .set_login_defaults(roster.login_defaults.clone(), roster.ssh_stanzas.clone());
-        // And how each source is REACHED, so an unreachable one states what was asked of
+        // And how each host is REACHED, so an unreachable one states what was asked of
         // it and over what, not only that it failed. Resolved to words here for the same
         // reason the providers are: the screen prints them and nothing branches on them.
-        state.chrome.set_source_reach(reach_map(&env, &hosts));
+        state.chrome.set_host_reach(reach_map(&env, &hosts));
         // Where the whole history of dispatched commands is written, so the screen can name
         // the file instead of leaving the user to know about it.
         state.chrome.set_log_path(
@@ -755,8 +767,8 @@ impl Runtime {
         drop(roster);
 
         // The live mutate ops (create/rename/kill) - NOT nav probing. They resolve each
-        // source through the registry's published set.
-        let ops = env.ops(hosts.sources());
+        // host through the registry's published set.
+        let ops = env.ops(hosts.defs());
         let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
         let term_input = crate::display::input::TermInput::new(prefix);
         let nav_decoder = crate::display::decode::KeyDecoder::new();
@@ -825,7 +837,7 @@ impl Runtime {
             #[cfg(test)]
             discovery_runs: 0,
             #[cfg(test)]
-            host_rescans: Vec::new(),
+            machine_rescans: Vec::new(),
             // The live config watch records a baseline on its first frame tick, so the
             // startup settings are not re-applied. `None` means no baseline yet.
         };
@@ -1147,7 +1159,7 @@ impl Runtime {
                     let effects = update(
                         &mut self.model,
                         Msg::DisplayAuth {
-                            source: address,
+                            host: address,
                             method: None,
                         },
                     );
@@ -1185,7 +1197,7 @@ impl Runtime {
                     let effects = update(
                         &mut self.model,
                         Msg::DisplayAuth {
-                            source: address,
+                            host: address,
                             method: Some(method),
                         },
                     );
@@ -1281,7 +1293,7 @@ impl Runtime {
         let effects = update(
             &mut self.model,
             Msg::DisplayAuth {
-                source: hid.clone(),
+                host: hid.clone(),
                 method: None,
             },
         );
@@ -1307,7 +1319,7 @@ impl Runtime {
             let effects = update(
                 &mut self.model,
                 Msg::Action(crate::model::Action::ConfirmDisplay(Selection {
-                    source: hid,
+                    host: hid,
                     session: shown,
                 })),
             );
@@ -1544,7 +1556,7 @@ impl Runtime {
                     // ctl raw surface drives the pane the same way a keyboard does, down to
                     // a running login taking no input but the Esc that ends it.
                     let login_running = self.model.state.login_run.as_ref().is_some_and(|l| {
-                        self.model.switcher.current_source().as_deref() == Some(&l.source)
+                        self.model.switcher.current_host().as_deref() == Some(&l.host)
                     });
                     if login_running {
                         if bytes.as_slice() == b"\x1b" {
@@ -1553,8 +1565,8 @@ impl Runtime {
                         }
                         self.dirty = true;
                     } else if self.model.switcher.login_pane_shown(&self.model.state) {
-                        if let Some(source) = self.model.switcher.current_source() {
-                            let effects = update(&mut self.model, Msg::FeedLogin { source, bytes });
+                        if let Some(host) = self.model.switcher.current_host() {
+                            let effects = update(&mut self.model, Msg::FeedLogin { host, bytes });
                             let _ = self.execute_effects(effects);
                             self.dirty = true;
                         }
@@ -1594,7 +1606,7 @@ impl Runtime {
     }
 
     /// The op-result arm: fold a finished create back into the nav/state. A successful
-    /// login returns the source it was for; only THAT machine's reach changed (locked →
+    /// login returns the host it was for; only THAT machine's reach changed (locked →
     /// connected), so re-probe just it - over what the login left behind - instead of the
     /// whole roster. The re-probe is what turns the pane back into the host's sessions.
     pub(super) fn on_op_result(&mut self, result: crate::ui::switcher::OpResult) {
@@ -1660,13 +1672,13 @@ impl Runtime {
         {
             return false;
         }
-        let Some(shown) = display_session(&self.hosts, &self.model.state.selection.source) else {
+        let Some(shown) = display_session(&self.hosts, &self.model.state.selection.host) else {
             return false;
         };
         if shown == self.model.state.selection.session {
             return false;
         }
-        let addr = crate::session::Address::new(&self.model.state.selection.source, shown);
+        let addr = crate::session::Address::new(&self.model.state.selection.host, shown);
         let before = self.model.switcher.terminal_view_target();
         let effects = update(&mut self.model, Msg::FollowDisplay(addr));
         debug_assert!(effects.is_empty());
@@ -1719,8 +1731,8 @@ impl Runtime {
         if self.model.state.selection.is_empty() {
             return false;
         }
-        let source = self.model.state.selection.source.clone();
-        let Some(host) = self.hosts.get(&source) else {
+        let id = self.model.state.selection.host.clone();
+        let Some(host) = self.hosts.get(&id) else {
             return false;
         };
         let key = host_selection_key(host);
@@ -1733,11 +1745,11 @@ impl Runtime {
         if host.display.shows(&key) == Some(session.as_str()) {
             return false;
         }
-        if let Some(h) = self.hosts.get_mut(&source) {
+        if let Some(h) = self.hosts.get_mut(&id) {
             h.display.set_shows(&key, &session);
         }
         tracing::info!(
-            host = %source,
+            host = %id,
             session = %session,
             "display_client_session_changed"
         );
@@ -1761,7 +1773,7 @@ impl Runtime {
         {
             return;
         }
-        let Some(host) = self.hosts.get(&self.model.state.selection.source) else {
+        let Some(host) = self.hosts.get(&self.model.state.selection.host) else {
             return;
         };
         let key = host_selection_key(host);
@@ -1780,8 +1792,8 @@ impl Runtime {
             in_flight: true,
         };
         tokio::spawn(async move {
-            use crate::model::source::Runner;
-            let session = match crate::model::source::ExecRunner.run_spec(&command).await {
+            use crate::model::host_def::Runner;
+            let session = match crate::model::host_def::ExecRunner.run_spec(&command).await {
                 Ok(out) => mux.parse_display_client(&String::from_utf8_lossy(&out)),
                 Err(error) => {
                     tracing::debug!(id, error = %error, "display_client_query_failed");
@@ -1809,8 +1821,8 @@ impl Runtime {
         else {
             return false;
         };
-        let source = host_of_key(&key).to_string();
-        let Some(host) = self.hosts.get_mut(&source) else {
+        let host_id = host_of_key(&key).to_string();
+        let Some(host) = self.hosts.get_mut(&host_id) else {
             return false;
         };
         if host.display.in_flight_contains(&key)
@@ -1821,7 +1833,7 @@ impl Runtime {
         }
         host.display.set_shows(&key, session);
         tracing::info!(
-            host = %source,
+            host = %host_id,
             session = %session,
             "display_client_session_changed"
         );
@@ -1875,13 +1887,13 @@ impl Runtime {
             let key = display_key(&self.hosts, &self.model.state.selection);
             let in_flight_for_key = self
                 .hosts
-                .get(&self.model.state.selection.source)
+                .get(&self.model.state.selection.host)
                 .map(|h| h.display.in_flight_contains(&key))
                 .unwrap_or(false);
             if in_flight_for_key || self.registry.connecting(&key) {
                 sp.insert(
                     crate::session::Address::new(
-                        &self.model.state.selection.source,
+                        &self.model.state.selection.host,
                         &self.model.state.selection.session,
                     )
                     .display(),
@@ -1913,7 +1925,7 @@ impl Runtime {
     /// re-applied so the loop marks the frame dirty.
     ///
     /// A malformed edit keeps the current settings (and logs) rather than blanking the
-    /// UI; the roster and hosts are left alone, because re-scanning sources is the
+    /// UI; the roster and hosts are left alone, because re-scanning hosts is the
     /// `rescan` key's job and a config edit must not reset the user's sessions. The
     /// prefix is input-side and deliberately not re-applied (it needs the key-decoder
     /// rebuild, which is not worth it on a setting that changes rarely).
@@ -1971,24 +1983,24 @@ fn last_pane_line(registry: &crate::display::registry::AttachRegistry, id: u64) 
         .unwrap_or_else(|| "(blank)".to_string())
 }
 
-/// How xmux reaches every card: each source, and each host that serves no source yet.
-/// A host's entry names the machine and its reachability probe, and no mux, because
+/// How xmux reaches every card: each host, and each machine that serves no host yet.
+/// A machine's entry names the machine and its reachability probe, and no mux, because
 /// none has answered for it.
 fn reach_map(
     env: &Env,
     hosts: &crate::model::Hosts,
-) -> std::collections::HashMap<String, crate::state::SourceReach> {
-    let sources = hosts.source_list();
-    let mut reach: std::collections::HashMap<String, crate::state::SourceReach> = sources
+) -> std::collections::HashMap<String, crate::state::HostReach> {
+    let defs = hosts.def_list();
+    let mut reach: std::collections::HashMap<String, crate::state::HostReach> = defs
         .iter()
-        .map(|s| (s.alias.clone(), source_reach(s)))
+        .map(|s| (s.alias.clone(), host_reach(s)))
         .collect();
     let roster = env.roster();
     for machine in roster
         .cfg
-        .auto_hosts(&roster.ssh_aliases, &roster.wsl_distros)
+        .auto_machines(&roster.ssh_aliases, &roster.wsl_distros)
     {
-        if sources
+        if defs
             .iter()
             .any(|s| crate::session::machine_of(&s.alias) == machine)
         {
@@ -2011,7 +2023,7 @@ fn reach_map(
             .unwrap_or_default();
         reach.insert(
             machine,
-            crate::state::SourceReach {
+            crate::state::HostReach {
                 ssh,
                 probe,
                 machine: addressed,
@@ -2029,9 +2041,9 @@ fn reach_map(
 /// reduced here: the screen prints these and branches on none of them, so the UI layer
 /// never learns what a machine kind or a mux binary is. Each field comes from the one
 /// place that owns it - the machine describes its own addressing, the host composes its
-/// own listing command - rather than being re-derived from a source id.
-pub(super) fn source_reach(s: &crate::model::source::Source) -> crate::state::SourceReach {
-    crate::state::SourceReach {
+/// own listing command - rather than being re-derived from a host id.
+pub(super) fn host_reach(s: &crate::model::host_def::HostDef) -> crate::state::HostReach {
+    crate::state::HostReach {
         ssh: s.kind.clone().transport().is_remote(),
         probe: crate::driver::shell_line(&s.host().list_sessions_command()),
         machine: s.kind.addressed_as(),

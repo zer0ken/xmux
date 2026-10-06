@@ -53,7 +53,7 @@ pub(crate) fn read_psmux_registry_dir(dir: &Path) -> Vec<String> {
 /// a minimal placeholder, so a failed/partial `list-sessions` never blanks the
 /// nav. Deduped on name (a session in both sources appears once).
 pub(crate) fn merge_psmux_sessions(
-    source: &str,
+    host: &str,
     names: Vec<String>,
     detail: Vec<Session>,
 ) -> Vec<Session> {
@@ -63,7 +63,7 @@ pub(crate) fn merge_psmux_sessions(
     for name in names {
         if !covered.contains(&name) {
             out.push(Session {
-                source: source.to_string(),
+                host: host.to_string(),
                 name,
                 mux: "psmux".to_string(),
                 windows: 1,
@@ -140,7 +140,7 @@ mod tests {
         // the registry but missing from the (possibly failed/partial) list-sessions
         // output is still surfaced, with minimal placeholder detail.
         let detail = vec![Session {
-            source: "local".into(),
+            host: "local".into(),
             name: "editor".into(),
             mux: "psmux".into(),
             windows: 3,
@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(editor.windows, 3, "detail row wins (full info)");
         assert!(editor.attached);
         let build = got.iter().find(|s| s.name == "build").unwrap();
-        assert_eq!(build.source, "local");
+        assert_eq!(build.host, "local");
         assert_eq!(
             build.windows, 1,
             "registry-only session gets minimal placeholder detail"
@@ -165,7 +165,7 @@ mod tests {
         // If the registry read yields nothing (e.g. unreadable), the list-sessions
         // detail still stands on its own.
         let detail = vec![Session {
-            source: "local".into(),
+            host: "local".into(),
             name: "only".into(),
             mux: "psmux".into(),
             windows: 1,
@@ -183,6 +183,6 @@ mod tests {
         let got = merge_psmux_sessions("local", vec!["a".into(), "b".into()], Vec::new());
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b"]);
-        assert!(got.iter().all(|s| s.source == "local"));
+        assert!(got.iter().all(|s| s.host == "local"));
     }
 }

@@ -1,4 +1,4 @@
-//! Host problems, grouped by cause with the reason each host last reported.
+//! Machine problems, grouped by cause with the reason each host last reported.
 //! Lines are built from the entries the switcher derives.
 
 use ratatui::style::{Modifier, Style};
@@ -142,12 +142,12 @@ pub(crate) fn check_lines(
 mod tests {
     use super::*;
 
-    fn entry(source: &str, kind: FailureKind) -> CheckEntry {
+    fn entry(host: &str, kind: FailureKind) -> CheckEntry {
         CheckEntry {
-            source: source.into(),
-            label: source.into(),
+            host: host.into(),
+            label: host.into(),
             kind,
-            reason: format!("{source} said no"),
+            reason: format!("{host} said no"),
         }
     }
 

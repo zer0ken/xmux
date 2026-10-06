@@ -7,6 +7,7 @@
 pub mod action;
 pub mod death;
 pub mod host;
+pub mod host_def;
 pub mod hosts;
 pub mod inventory;
 pub mod keys;
@@ -16,7 +17,6 @@ pub mod operation;
 pub mod plan;
 pub mod selection;
 pub mod server_model;
-pub mod source;
 pub mod view;
 
 pub use action::{Action, Command, EventEffect, FocusTarget, MuxOp, StartupFacts};
@@ -38,4 +38,4 @@ pub use operation::{KeyRegistration, LoginOutcome, OpResult, Ops, RegistrationOu
 pub use plan::{DeathSignal, DisplayTty, EventSource};
 pub use selection::{Node, Selection};
 pub use server_model::ServerModel;
-pub use view::{choose_host_screen, choose_view_screen, ConfirmedDisplay, ViewScreen};
+pub use view::{choose_machine_screen, choose_view_screen, ConfirmedDisplay, ViewScreen};

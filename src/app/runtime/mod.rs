@@ -7,7 +7,7 @@
 //! with plain commands (it is one-server-per-session, so a host-level control
 //! client cannot see across its sessions).
 //!
-//! State is explicit: [`Selection`] (the canonical `source`/`session`) is
+//! State is explicit: [`Selection`] (the canonical `host`/`session`) is
 //! the single source of truth the display reads - the `Switcher` owns only the nav
 //! and selection. One `select!` loop interleaves stdin, host events, PTY events, the
 //! control socket, terminal resize, and an animation tick. ratatui owns stdout and
@@ -133,7 +133,7 @@ impl Runtime {
     }
 
     #[cfg(test)]
-    fn execute_source_effect_for_test(&mut self, effect: crate::model::EventEffect) -> bool {
+    fn execute_host_effect_for_test(&mut self, effect: crate::model::EventEffect) -> bool {
         self.execute_effects(vec![Effect::Event(effect)]).2
     }
 
@@ -147,7 +147,7 @@ impl Runtime {
         while let Some(effect) = pending.pop_front() {
             match effect {
                 Effect::Event(effect) => {
-                    let (event_rearm, followups) = self.perform_source_effect(effect);
+                    let (event_rearm, followups) = self.perform_host_effect(effect);
                     rearm |= event_rearm;
                     for followup in followups.into_iter().rev() {
                         pending.push_front(followup);
@@ -158,8 +158,8 @@ impl Runtime {
                         pending.push_front(Effect::Event(effect));
                     }
                 }
-                Effect::LoginApplied { source, login } => {
-                    let machine = crate::session::machine_of(&source).to_owned();
+                Effect::LoginApplied { host, login } => {
+                    let machine = crate::session::machine_of(&host).to_owned();
                     self.hosts.for_each_transport_of(&machine, |transport| {
                         transport.set_login(login.clone())
                     });
@@ -168,9 +168,9 @@ impl Runtime {
                     let effects = update(
                         &mut self.model,
                         Msg::LoginSettled {
-                            source,
+                            host,
                             credential_held: self.env.credentials().contains(&machine),
-                            machine_has_sources: self.hosts.serves_any(&machine),
+                            machine_has_hosts: self.hosts.serves_any(&machine),
                             probe,
                         },
                     );
@@ -186,17 +186,17 @@ impl Runtime {
                     self.dirty = true;
                 }
                 Effect::StartLogin {
-                    source,
+                    host,
                     login,
                     password,
                     after_login,
                     attempt,
                     cancel,
                 } => {
-                    let key_gate = self.key_gates.of(crate::session::machine_of(&source));
+                    let key_gate = self.key_gates.of(crate::session::machine_of(&host));
                     start_login(
                         LoginRun {
-                            source,
+                            host,
                             login,
                             attempt,
                             write_config: after_login == crate::model::AfterLogin::SshConfig,
@@ -226,49 +226,57 @@ impl Runtime {
                 Effect::ReattachDisplay(selection) => {
                     let key = display_key(&self.hosts, &selection);
                     self.registry.remove(&key);
-                    if let Some(host) = self.hosts.get_mut(&selection.source) {
+                    if let Some(host) = self.hosts.get_mut(&selection.host) {
                         host.display.clear(&key);
                     }
                 }
                 // Both key steps run over the machine's transport, before the logout
-                // clears it, so they reach the host the way every command has. The
+                // clears it, so they reach the machine the way every command has. The
                 // search waits at the machine's key gate, so a registration already
                 // under way lands first and its line is found, and the logout keeps the
                 // gate until it clears the machine.
-                Effect::FindHostKeys {
+                Effect::FindMachineKeys {
                     machine,
                     cancel_login,
                 } => {
                     for login in cancel_login {
                         login.cancel();
                     }
-                    let transport = self.hosts.host_transport(&machine).map(|t| t.clone_box());
+                    let transport = self
+                        .hosts
+                        .machine_transport(&machine)
+                        .map(|t| t.clone_box());
                     let gates = self.key_gates.clone();
                     let tx = self.op_tx.clone();
                     tokio::spawn(async move {
                         gates.hold(&machine).await;
                         let result = match transport {
                             Some(transport) => {
-                                crate::provision::env::find_host_keys(
-                                    &crate::model::source::ExecRunner,
+                                crate::provision::env::find_machine_keys(
+                                    &crate::model::host_def::ExecRunner,
                                     &transport,
                                 )
                                 .await
                             }
                             None => Err("xmux has no way to reach this machine".into()),
                         };
-                        let _ = tx
-                            .send(crate::ui::switcher::OpResult::HostKeysFound { machine, result });
+                        let _ = tx.send(crate::ui::switcher::OpResult::MachineKeysFound {
+                            machine,
+                            result,
+                        });
                     });
                 }
-                Effect::RemoveHostKeys { machine, lines } => {
-                    let transport = self.hosts.host_transport(&machine).map(|t| t.clone_box());
+                Effect::RemoveMachineKeys { machine, lines } => {
+                    let transport = self
+                        .hosts
+                        .machine_transport(&machine)
+                        .map(|t| t.clone_box());
                     let tx = self.op_tx.clone();
                     tokio::spawn(async move {
                         let result = match transport {
                             Some(transport) => {
-                                crate::provision::env::remove_host_keys(
-                                    &crate::model::source::ExecRunner,
+                                crate::provision::env::remove_machine_keys(
+                                    &crate::model::host_def::ExecRunner,
                                     &transport,
                                     &lines,
                                 )
@@ -276,7 +284,7 @@ impl Runtime {
                             }
                             None => Err("xmux has no way to reach this machine".into()),
                         };
-                        let _ = tx.send(crate::ui::switcher::OpResult::HostKeysRemoved {
+                        let _ = tx.send(crate::ui::switcher::OpResult::MachineKeysRemoved {
                             machine,
                             result,
                         });
@@ -319,11 +327,11 @@ impl Runtime {
                     self.key_gates.release(&machine);
                     let close_master = self
                         .hosts
-                        .host_transport(&machine)
+                        .machine_transport(&machine)
                         .and_then(|transport| transport.close_shared_connection_argv());
                     self.env.credentials().remove(&machine);
                     let (event_rearm, followups) =
-                        self.perform_source_effect(crate::model::EventEffect::DisconnectMachine {
+                        self.perform_host_effect(crate::model::EventEffect::DisconnectMachine {
                             machine: machine.clone(),
                         });
                     rearm |= event_rearm;
@@ -332,7 +340,7 @@ impl Runtime {
                     }
                     if let Some(command) = close_master {
                         tokio::spawn(async move {
-                            if let Err(error) = crate::model::source::ExecRunner
+                            if let Err(error) = crate::model::host_def::ExecRunner
                                 .run_spec_output(&command)
                                 .await
                             {
@@ -351,11 +359,11 @@ impl Runtime {
                         self.rescan_pending = true;
                     }
                     // The machine's reachability probe, marked as a re-scan so a machine
-                    // that answers re-enumerates every source it serves; nothing else is
+                    // that answers re-enumerates every host it serves; nothing else is
                     // asked, and the roster is not re-resolved.
-                    Command::RescanHost(machine) => {
+                    Command::RescanMachine(machine) => {
                         #[cfg(test)]
-                        self.host_rescans.push(machine.clone());
+                        self.machine_rescans.push(machine.clone());
                         probe_machine(
                             &machine,
                             &self.hosts,
@@ -404,7 +412,7 @@ impl Runtime {
                             // is in flight. A pending reattach KEEPS the prior session's grid
                             // (stale-while-revalidate) until the paint gate swaps it in.
                             let reattach_pending =
-                                self.hosts.get(&selection.source).is_some_and(|h| {
+                                self.hosts.get(&selection.host).is_some_and(|h| {
                                     h.display.in_flight_contains(&key)
                                         || h.display.pending_paint_contains(&key)
                                 });
@@ -596,7 +604,7 @@ fn selection_from_target(t: &TerminalViewTarget) -> Selection {
     // The target is the session name as the card carries it, whole - no window suffix
     // to part off, so a session name holding a colon survives as it is.
     Selection {
-        source: t.source.clone(),
+        host: t.host.clone(),
         session: t.target.clone(),
     }
 }
@@ -620,18 +628,18 @@ fn sync_selection_from_switcher(model: &mut AppModel) -> bool {
     model.state.selection != previous
 }
 
-/// The session a source's display client is ON: the one fact the nav selection is held
+/// The session a host's display client is ON: the one fact the nav selection is held
 /// against. It is the host's display record, which each mux keeps true its own way - the
 /// control notice a mux pushes when it moves a client, and, for a mux that moves its
 /// client inside the client process and pushes nothing, the live client read on the
-/// animation beat. `None` while no display has been established for the source, which is
+/// animation beat. `None` while no display has been established for the host, which is
 /// the first attach's own case and not a disagreement.
 ///
 /// It is not what xmux last decided to show: that is `state.displayed`, and a session
 /// change the mux made moves the client without touching it, which is precisely how the
 /// nav and the terminal view came to name different sessions.
-fn display_session<'a>(hosts: &'a crate::model::Hosts, source: &str) -> Option<&'a str> {
-    let host = hosts.get(source)?;
+fn display_session<'a>(hosts: &'a crate::model::Hosts, id: &str) -> Option<&'a str> {
+    let host = hosts.get(id)?;
     host.display.shows(&host_selection_key(host))
 }
 
@@ -664,7 +672,7 @@ fn display_astray(state: &crate::state::State, hosts: &crate::model::Hosts) -> b
     if state.selection.is_empty() || state.focus.is_terminal_focused() {
         return false;
     }
-    display_session(hosts, &state.selection.source)
+    display_session(hosts, &state.selection.host)
         .is_some_and(|shown| shown != state.selection.session)
 }
 
@@ -712,7 +720,7 @@ fn selection_attach_in_flight(hosts: &crate::model::Hosts, selection: &Selection
     }
     let key = display_key(hosts, selection);
     hosts
-        .get(&selection.source)
+        .get(&selection.host)
         .map(|h| h.display.in_flight_contains(&key) || h.display.pending_paint_contains(&key))
         .unwrap_or(false)
 }
@@ -744,7 +752,7 @@ const HELD_INPUT_MAX: std::time::Duration = std::time::Duration::from_secs(5);
 /// Routes terminal input by the SELECTION, not by what is on screen. The display keeps
 /// the previous session until a fresh attachment paints, which for a mux that repaints
 /// nothing on attach is the whole no-output wait, and that previous session may live on
-/// another source. Keys typed after a selection belong to the selected session, so they
+/// another host. Keys typed after a selection belong to the selected session, so they
 /// go to its attachment as soon as one exists and wait for it until then. The stale
 /// attachment under the same key shows another session and never takes them.
 fn input_route(state: &crate::state::State, hosts: &crate::model::Hosts) -> InputRoute {
@@ -753,7 +761,7 @@ fn input_route(state: &crate::state::State, hosts: &crate::model::Hosts) -> Inpu
         return InputRoute::Selected(display_key(hosts, &state.displayed));
     }
     let key = display_key(hosts, selection);
-    let Some(host) = hosts.get(&selection.source) else {
+    let Some(host) = hosts.get(&selection.host) else {
         return InputRoute::Shown(display_key(hosts, &state.displayed));
     };
     let fresh_for_selection = host.display.shows(&key) == Some(selection.session.as_str());
@@ -786,7 +794,7 @@ pub(crate) fn select_attach(sel: &Selection, ctx: &mut DriverCtx) -> bool {
     if sel.is_empty() {
         return false;
     }
-    let Some(host) = ctx.hosts.get(&sel.source) else {
+    let Some(host) = ctx.hosts.get(&sel.host) else {
         return false;
     };
     let mut driver = crate::driver::driver_for(host);
@@ -806,27 +814,27 @@ pub(crate) fn current_grid(
 ) -> Option<Arc<std::sync::Mutex<crate::display::grid::Grid>>> {
     let driver = ctx
         .hosts
-        .get(&displayed.source)
+        .get(&displayed.host)
         .map(crate::driver::driver_for);
     driver.and_then(|driver| driver.grid(displayed, ctx))
 }
 
-/// Keeps a source's display terminal in sync with its sessions by delegating to the
+/// Keeps a host's display terminal in sync with its sessions by delegating to the
 /// host's driver, which owns the warm/reap decision (shared warms one host PTY on the
 /// first session and reaps it when empty; per-session is selected on demand and only
-/// reaps when empty). Called whenever a source's inventory updates (a remote `%`-event
+/// reaps when empty). Called whenever a host's inventory updates (a remote `%`-event
 /// refresh or a local poll), so a new session is reachable and a killed one is torn
 /// down (#5).
-fn sync_source_terminals(
-    source: &str,
+fn sync_host_terminals(
+    id: &str,
     sessions: &[crate::session::Session],
     ctx: &mut crate::driver::DriverCtx,
 ) {
-    let Some(host) = ctx.hosts.get(source) else {
+    let Some(host) = ctx.hosts.get(id) else {
         return;
     };
     let mut driver = crate::driver::driver_for(host);
-    driver.sync(source, sessions, ctx);
+    driver.sync(id, sessions, ctx);
 }
 
 /// (Re)opens the CONTROL metadata channel of the host the selection is on, so its push
@@ -849,10 +857,10 @@ fn ensure_current_host(
     // through every ensure_current_host caller for a size the user never sees.
     let (cols, rows) =
         terminal_view_size(cols, rows, crate::ui::switcher::NavSize::visible(nav_width));
-    // A locked selected host gets no control channel from here: opening a `-CC` that
+    // A locked selected machine gets no control channel from here: opening a `-CC` that
     // dies on auth would overwrite its locked reason with "connection closed". The
     // reconnect sweep re-probes its reachability instead.
-    if switcher.current_host_blocked() {
+    if switcher.current_machine_blocked() {
         return;
     }
     if let Some(id) = switcher.current_host() {
@@ -871,10 +879,10 @@ fn ensure_current_host(
 
 /// Runs a host's mux-detection probe off the loop, cloning the host's transport + mux
 /// (built by `Hosts::build`) so the probe reaches the same machine over the same axes
-/// without re-deriving anything from a `Source`. The resolved mux (or `None` when the
+/// without re-deriving anything from a `HostDef`. The resolved mux (or `None` when the
 /// probe fails) is emitted as `HostEvent::Scanned`.
 fn spawn_host_detection(
-    source: String,
+    id: String,
     transport: Box<dyn crate::transport::Transport>,
     mux: Box<dyn crate::mux::Mux>,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
@@ -886,11 +894,11 @@ fn spawn_host_detection(
         };
         let mut host = crate::model::Host::new(transport, mux);
         let err = host
-            .detect_and_correct(&crate::model::source::ExecRunner)
+            .detect_and_correct(&crate::model::host_def::ExecRunner)
             .await;
         let detected = host.detected.then_some(host.mux);
         let _ = tx.send(HostEvent::Scanned {
-            source,
+            host: id,
             detected,
             err,
         });
@@ -918,9 +926,10 @@ fn spawn_mux_discovery(
         let Ok(_permit) = gate.acquire().await else {
             return;
         };
-        let muxes = crate::mux::host_muxes(&*transport, &crate::model::source::ExecRunner).await;
-        // Every answer is sent, an empty one and a failed one too: a host that serves no
-        // source yet is waiting on it, and either is what settles its card.
+        let muxes =
+            crate::mux::machine_muxes(&*transport, &crate::model::host_def::ExecRunner).await;
+        // Every answer is sent, an empty one and a failed one too: a machine that serves no
+        // host yet is waiting on it, and either is what settles its card.
         let _ = tx.send(HostEvent::MuxesFound { machine, muxes });
     });
 }
@@ -996,7 +1005,7 @@ fn spawn_startup_resolution_with<Q, R>(
 ///
 /// The roster arrives in two answers. The first leaves out the neighbor scan, which
 /// waits out every silent address on the network, so this machine's cards and the
-/// configured hosts do not wait for it. The second is the full roster: the neighbors it
+/// configured machines do not wait for it. The second is the full roster: the neighbors it
 /// adds are probed as they land and every machine already on screen keeps its cards.
 fn spawn_startup_resolution(tx: tokio::sync::mpsc::UnboundedSender<HostEvent>) {
     let quick = async move {
@@ -1052,7 +1061,7 @@ fn spawn_machine_probe(
             return;
         };
         let credential_generation = argv.credential_generation();
-        let (err, shell) = match crate::model::source::ExecRunner
+        let (err, shell) = match crate::model::host_def::ExecRunner
             .run_spec_output(&argv)
             .await
         {
@@ -1076,10 +1085,10 @@ fn spawn_machine_probe(
             Err(e) => (Some(transport.probe_diagnostic(e.to_string())), None),
         };
         // This verdict decides whether the machine has cards at all: a failure makes every
-        // source it serves unreachable, and hiding then takes them off the list. So it is
+        // host it serves unreachable, and hiding then takes them off the list. So it is
         // said out loud. A probe that answered is the routine case and says only what it
         // read; a probe that failed carries the reason, which is otherwise recoverable
-        // only from the host's own unreachable screen.
+        // only from the machine's own unreachable screen.
         match &err {
             Some(reason) => {
                 tracing::warn!(machine = %machine, error = %reason, "machine_probe_failed")
@@ -1112,7 +1121,7 @@ fn probe_machine(
     rescan: bool,
     probe: u64,
 ) {
-    let Some(transport) = hosts.host_transport(machine) else {
+    let Some(transport) = hosts.machine_transport(machine) else {
         return;
     };
     let machine = machine.to_string();
@@ -1168,34 +1177,34 @@ fn probe_machines(
 fn dispatch_detected_host(
     mgr: &mut HostManager,
     hosts: &crate::model::Hosts,
-    source: &str,
+    id: &str,
     cols: u16,
     rows: u16,
 ) {
-    let Some(host) = hosts.get(source) else {
+    let Some(host) = hosts.get(id) else {
         return;
     };
-    let _ = mgr.ensure(source, host, cols, rows);
+    let _ = mgr.ensure(id, host, cols, rows);
 }
 
 fn scan_or_dispatch_host(
     mgr: &mut HostManager,
     hosts: &crate::model::Hosts,
     model: &mut AppModel,
-    source: &str,
+    id: &str,
     cols: u16,
     rows: u16,
     gate: &std::sync::Arc<tokio::sync::Semaphore>,
 ) {
-    let Some(host) = hosts.get(source) else {
+    let Some(host) = hosts.get(id) else {
         return;
     };
     if !host.detected {
-        if !model.detecting.contains(source) {
-            let effects = update(model, Msg::DetectionStarted(source.to_string()));
+        if !model.detecting.contains(id) {
+            let effects = update(model, Msg::DetectionStarted(id.to_string()));
             debug_assert!(effects.is_empty());
             spawn_host_detection(
-                source.to_string(),
+                id.to_string(),
                 host.transport.clone(),
                 host.mux.clone_box(),
                 mgr.events(),
@@ -1204,15 +1213,15 @@ fn scan_or_dispatch_host(
         }
         return;
     }
-    dispatch_detected_host(mgr, hosts, source, cols, rows);
+    dispatch_detected_host(mgr, hosts, id, cols, rows);
 }
 
 fn apply_scan_result(
     hosts: &mut crate::model::Hosts,
-    source: &str,
+    id: &str,
     detected: Option<Box<dyn crate::mux::Mux>>,
 ) {
-    let Some(host) = hosts.get_mut(source) else {
+    let Some(host) = hosts.get_mut(id) else {
         return;
     };
     if let Some(mux) = detected {
@@ -1226,7 +1235,7 @@ fn apply_scan_result(
 /// The re-scan discovery pass: probe every machine's reachability while re-resolving
 /// the roster. A machine's
 /// answer (`HostEvent::MachineProbed`) drives the rest - a connected machine detects and
-/// dispatches its sources and, if auto, discovers its muxes; a locked or unreachable one
+/// dispatches its hosts and, if auto, discovers its muxes; a locked or unreachable one
 /// classifies its cards - so this pass opens no channel itself.
 ///
 /// The roster is re-resolved concurrently; when it lands (`RosterResolved`),
@@ -1585,7 +1594,7 @@ struct Runtime {
     hosts: crate::model::Hosts,
     mgr: HostManager,
     /// Bounds the discovery fan-out - the roster resolve, each machine's reachability
-    /// probe, the mux discovery a connected machine runs, and each source's mux
+    /// probe, the mux discovery a connected machine runs, and each host's mux
     /// detection - at the configured `[discovery] scan-concurrency` (clamped to
     /// [`crate::provision::config::SCAN_CONCURRENCY_MAX`]), shared across the
     /// launch pass, every re-scan, and the roster-add path so they never flood together.
@@ -1622,7 +1631,7 @@ struct Runtime {
     discovery_runs: usize,
     /// The machines a one-machine re-scan probed, in order, for tests.
     #[cfg(test)]
-    host_rescans: Vec<String>,
+    machine_rescans: Vec<String>,
 }
 
 /// The loop's receiver halves, whose send halves `Runtime::new` wired into the world
@@ -1637,7 +1646,7 @@ struct LoopIo {
 
 /// One async gate per machine, taken by a login's follow-ups and by a logout. A
 /// registration appends this machine's key well after the login's verdict, so without the
-/// gate a logout that started meanwhile could search the host, find nothing, and finish,
+/// gate a logout that started meanwhile could search the machine, find nothing, and finish,
 /// and the line would land afterwards and log the machine back in by key. A logout takes
 /// the gate before its key search and keeps it until it clears the machine, so no
 /// follow-up on that machine runs between the search and the removal either.
@@ -1722,7 +1731,7 @@ fn spawn_op(
 /// One submitted login: what it reaches, which submission it is, and what follows a
 /// connection that worked.
 struct LoginRun {
-    source: String,
+    host: String,
     login: crate::transport::Login,
     attempt: u64,
     write_config: bool,
@@ -1737,7 +1746,7 @@ fn start_login(
     op_sink: OpSink<'_>,
 ) {
     let LoginRun {
-        source,
+        host,
         login,
         attempt,
         write_config,
@@ -1748,7 +1757,7 @@ fn start_login(
     let password = password.take_plain();
     tokio::spawn(async move {
         let unavailable = |connect| crate::ui::switcher::OpResult::Login {
-            source: source.clone(),
+            host: host.clone(),
             login: login.clone(),
             attempt,
             outcome: crate::ui::ops::LoginOutcome {
@@ -1759,7 +1768,7 @@ fn start_login(
                 registration: crate::ui::ops::RegistrationOutcome::NotRequested,
             },
         };
-        let command = match ops.login_command(&source, &login, password).await {
+        let command = match ops.login_command(&host, &login, password).await {
             Ok(Some(command)) => command,
             Ok(None) => {
                 let _ = tx.send(unavailable(crate::link::unlock::UnlockOutcome::Unavailable));
@@ -1777,19 +1786,19 @@ fn start_login(
         // in the order they happened and before the result that ends the login.
         let progress = {
             let tx = tx.clone();
-            let source = source.clone();
+            let host = host.clone();
             std::sync::Arc::new(move |event| {
                 let _ = tx.send(crate::ui::switcher::OpResult::LoginProgress {
-                    source: source.clone(),
+                    host: host.clone(),
                     attempt,
                     event,
                 });
             })
         };
         let asked = progress.clone();
-        tracing::info!(source = %source, "login started");
+        tracing::info!(host = %host, "login started");
         let done = crate::link::unlock::start_login_with_cancel(
-            source.clone(),
+            host.clone(),
             command,
             crate::link::unlock::LOGIN_IDLE,
             cancel.clone(),
@@ -1807,13 +1816,13 @@ fn start_login(
                 password_supplied: false,
                 auth_method: None,
             });
-        tracing::info!(source = %source, outcome = ?conversation.outcome, "login finished");
+        tracing::info!(host = %host, outcome = ?conversation.outcome, "login finished");
         progress(crate::model::LoginEvent::Verdict(
             conversation.outcome.clone(),
         ));
         let outcome = follow_ups_at_key_gate(&key_gate, &cancel, |go| {
             crate::ui::switcher::run_login_follow_ups(
-                &source,
+                &host,
                 &login,
                 conversation,
                 write_config && go,
@@ -1824,7 +1833,7 @@ fn start_login(
         })
         .await;
         let _ = tx.send(crate::ui::switcher::OpResult::Login {
-            source,
+            host,
             login,
             attempt,
             outcome,

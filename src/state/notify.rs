@@ -262,9 +262,9 @@ impl Notifications {
     }
 }
 
-/// What one source looked like at a moment, as far as a re-scan summary cares.
+/// What one host looked like at a moment, as far as a re-scan summary cares.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum SourceShape {
+enum HostShape {
     /// Still scanning: nothing is known about it yet, so no change can be claimed.
     Unknown,
     /// Its last answer was a failure.
@@ -276,17 +276,17 @@ enum SourceShape {
     Sessions(BTreeSet<String>),
 }
 
-impl SourceShape {
-    /// Whether the source failed to answer, for either reason.
+impl HostShape {
+    /// Whether the host failed to answer, for either reason.
     fn failed(&self) -> bool {
-        matches!(self, SourceShape::Unreachable | SourceShape::Locked)
+        matches!(self, HostShape::Unreachable | HostShape::Locked)
     }
 }
 
-/// The inventory as a re-scan summary compares it: every source and what it answered.
+/// The inventory as a re-scan summary compares it: every host and what it answered.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ScanSnapshot {
-    sources: BTreeMap<String, SourceShape>,
+    hosts: BTreeMap<String, HostShape>,
 }
 
 /// How many names a summary line spells out before it counts the rest.
@@ -297,57 +297,57 @@ impl ScanSnapshot {
     /// password ssh refused: their cards keep no failure of their own, because the login
     /// owns that diagnosis, so the snapshot cannot read the refusal off the inventory.
     pub(crate) fn of(state: &super::State, locked: &HashSet<String>) -> Self {
-        // A machine with no source known is one entry of its own, under its name.
+        // A machine with no host known is one entry of its own, under its name.
         let machines = state.hostless_machines().into_iter().map(|m| {
             let shape = if state.machine_scanning.contains(&m.name) {
-                SourceShape::Unknown
+                HostShape::Unknown
             } else if locked.contains(&m.name)
                 || m.failure() == Some(crate::model::FailureKind::Blocked)
             {
-                SourceShape::Locked
+                HostShape::Locked
             } else if m.err.is_some() {
-                SourceShape::Unreachable
+                HostShape::Unreachable
             } else {
-                SourceShape::Sessions(Default::default())
+                HostShape::Sessions(Default::default())
             };
             (m.name.clone(), shape)
         });
-        let sources = state
+        let hosts = state
             .groups
             .iter()
             .map(|g| {
-                let shape = if state.scanning.contains(&g.source) {
-                    SourceShape::Unknown
-                } else if locked.contains(crate::session::machine_of(&g.source))
+                let shape = if state.scanning.contains(&g.host) {
+                    HostShape::Unknown
+                } else if locked.contains(crate::session::machine_of(&g.host))
                     || g.failure() == Some(crate::model::FailureKind::Blocked)
                 {
-                    SourceShape::Locked
+                    HostShape::Locked
                 } else if g.err.is_some() {
-                    SourceShape::Unreachable
+                    HostShape::Unreachable
                 } else {
-                    SourceShape::Sessions(g.sessions.iter().map(|s| s.name.clone()).collect())
+                    HostShape::Sessions(g.sessions.iter().map(|s| s.name.clone()).collect())
                 };
-                (g.source.clone(), shape)
+                (g.host.clone(), shape)
             })
             .chain(machines)
             .collect();
-        ScanSnapshot { sources }
+        ScanSnapshot { hosts }
     }
 
-    /// The same snapshot narrowed to the sources `machine` serves, for a re-scan that
+    /// The same snapshot narrowed to the hosts `machine` serves, for a re-scan that
     /// asked that machine alone.
     pub(crate) fn only_machine(mut self, machine: &str) -> Self {
-        self.sources
-            .retain(|source, _| crate::session::machine_of(source) == machine);
+        self.hosts
+            .retain(|host, _| crate::session::machine_of(host) == machine);
         self
     }
 
-    /// One report of what changed between this snapshot and `after`: sources added and
-    /// removed, sessions started and ended, and sources that stopped or started
-    /// answering. `label` names a source the way its card does. A session is named under
+    /// One report of what changed between this snapshot and `after`: hosts added and
+    /// removed, sessions started and ended, and hosts that stopped or started
+    /// answering. `label` names a host the way its card does. A session is named under
     /// its machine, and under the machine and its mux when the machine serves several. A
     /// re-scan that changed nothing says so, with the counts it found. Every host count
-    /// counts machines, not the muxes they serve. A source whose login was refused reads
+    /// counts machines, not the muxes they serve. A host whose login was refused reads
     /// as needing a login, never as its sessions ending.
     pub(crate) fn summary(
         &self,
@@ -360,46 +360,44 @@ impl ScanSnapshot {
         let mut ended = Vec::new();
         let mut reachable = Vec::new();
         let mut lost = Vec::new();
-        for (source, shape) in &after.sources {
-            match (self.sources.get(source), shape) {
-                (None, _) => added.push(source.as_str()),
-                (Some(SourceShape::Sessions(was)), SourceShape::Sessions(now)) => {
-                    let owner = if crate::session::mux_of(source).is_empty() {
-                        crate::session::machine_of(source).to_string()
+        for (host, shape) in &after.hosts {
+            match (self.hosts.get(host), shape) {
+                (None, _) => added.push(host.as_str()),
+                (Some(HostShape::Sessions(was)), HostShape::Sessions(now)) => {
+                    let owner = if crate::session::mux_of(host).is_empty() {
+                        crate::session::machine_of(host).to_string()
                     } else {
-                        label(source)
+                        label(host)
                     };
                     started.extend(now.difference(was).map(|n| format!("{owner}/{n}")));
                     ended.extend(was.difference(now).map(|n| format!("{owner}/{n}")));
                 }
-                (Some(SourceShape::Sessions(_)), SourceShape::Unreachable) => lost.push(Note::new(
+                (Some(HostShape::Sessions(_)), HostShape::Unreachable) => lost.push(Note::new(
                     Level::Warning,
-                    format!("{} unreachable", label(source)),
+                    format!("{} unreachable", label(host)),
                 )),
-                (Some(SourceShape::Sessions(_)), SourceShape::Locked) => lost.push(Note::new(
+                (Some(HostShape::Sessions(_)), HostShape::Locked) => lost.push(Note::new(
                     Level::Warning,
-                    format!("{} login needed", label(source)),
+                    format!("{} login needed", label(host)),
                 )),
-                (Some(was), SourceShape::Sessions(_)) if was.failed() => {
-                    reachable.push(label(source))
-                }
+                (Some(was), HostShape::Sessions(_)) if was.failed() => reachable.push(label(host)),
                 _ => {}
             }
         }
-        for source in self.sources.keys() {
-            if !after.sources.contains_key(source) {
-                removed.push(source.as_str());
+        for host in self.hosts.keys() {
+            if !after.hosts.contains_key(host) {
+                removed.push(host.as_str());
             }
         }
         let mut lines = Vec::new();
-        for (sources, verb) in [(added, "added"), (removed, "removed")] {
-            if !sources.is_empty() {
-                let names: Vec<String> = sources.iter().map(|s| label(s)).collect();
+        for (hosts, verb) in [(added, "added"), (removed, "removed")] {
+            if !hosts.is_empty() {
+                let names: Vec<String> = hosts.iter().map(|s| label(s)).collect();
                 lines.push(Note::new(
                     Level::Info,
                     format!(
                         "{} {verb}: {}",
-                        counted(machines(sources), "machine"),
+                        counted(machines(hosts), "machine"),
                         name_list(&names)
                     ),
                 ));
@@ -426,10 +424,10 @@ impl ScanSnapshot {
         lines.extend(lost);
         if lines.is_empty() {
             let sessions: usize = after
-                .sources
+                .hosts
                 .values()
                 .map(|shape| match shape {
-                    SourceShape::Sessions(names) => names.len(),
+                    HostShape::Sessions(names) => names.len(),
                     _ => 0,
                 })
                 .sum();
@@ -437,10 +435,7 @@ impl ScanSnapshot {
                 Level::Success,
                 format!(
                     "no changes · {}, {}",
-                    counted(
-                        machines(after.sources.keys().map(String::as_str)),
-                        "machine"
-                    ),
+                    counted(machines(after.hosts.keys().map(String::as_str)), "machine"),
                     counted(sessions, "session")
                 ),
             ));
@@ -449,9 +444,9 @@ impl ScanSnapshot {
     }
 }
 
-/// How many machines serve `sources`.
-fn machines<'a>(sources: impl IntoIterator<Item = &'a str>) -> usize {
-    sources
+/// How many machines serve `hosts`.
+fn machines<'a>(hosts: impl IntoIterator<Item = &'a str>) -> usize {
+    hosts
         .into_iter()
         .map(crate::session::machine_of)
         .collect::<BTreeSet<_>>()
@@ -691,16 +686,16 @@ mod tests {
 
     fn shape(entries: &[(&str, Option<&[&str]>)]) -> ScanSnapshot {
         ScanSnapshot {
-            sources: entries
+            hosts: entries
                 .iter()
-                .map(|(source, sessions)| {
+                .map(|(host, sessions)| {
                     let shape = match sessions {
                         Some(names) => {
-                            SourceShape::Sessions(names.iter().map(|n| n.to_string()).collect())
+                            HostShape::Sessions(names.iter().map(|n| n.to_string()).collect())
                         }
-                        None => SourceShape::Unreachable,
+                        None => HostShape::Unreachable,
                     };
-                    (source.to_string(), shape)
+                    (host.to_string(), shape)
                 })
                 .collect(),
         }
@@ -800,7 +795,7 @@ mod tests {
     fn a_refused_login_reads_as_login_needed_not_as_sessions_ending() {
         let before = shape(&[("gpu", Some(&["train", "eval"]))]);
         let mut after = shape(&[("gpu", Some(&[]))]);
-        after.sources.insert("gpu".to_string(), SourceShape::Locked);
+        after.hosts.insert("gpu".to_string(), HostShape::Locked);
         let notes = before.summary(&after, |s| s.to_string());
         assert_eq!(
             texts(&notes),
@@ -814,9 +809,9 @@ mod tests {
     }
 
     #[test]
-    fn a_source_still_scanning_before_the_rescan_claims_no_change() {
+    fn a_host_still_scanning_before_the_rescan_claims_no_change() {
         let mut before = shape(&[("h", Some(&[]))]);
-        before.sources.insert("h".to_string(), SourceShape::Unknown);
+        before.hosts.insert("h".to_string(), HostShape::Unknown);
         let after = shape(&[("h", None)]);
         let notes = before.summary(&after, |s| s.to_string());
         assert_eq!(notes[0].level, Level::Success, "{notes:?}");

@@ -969,7 +969,7 @@ fn wrapped_row(
 pub(crate) const POPOVER_MIN_WIDTH: u16 = 40;
 
 /// The new-session popover at `width` outer cells: its frame and rows. `host` is the
-/// `{host}/{mux}` the session lands on.
+/// `{machine}/{mux}` the session lands on.
 pub(crate) fn new_session_popover(
     host: &str,
     input: &Input,
@@ -1026,7 +1026,7 @@ fn logout_grammar(input: &Input) -> (&'static str, &'static str, &'static str, &
 /// The machine whose connections a logout closes: the popover's meta.
 fn logout_machine(input: &Input) -> String {
     input
-        .source
+        .host
         .as_deref()
         .map(|s| crate::session::machine_of(s).to_string())
         .unwrap_or_default()

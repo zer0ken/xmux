@@ -1,7 +1,7 @@
 # xmux: functional requirements & use cases
 
 xmux is a stateless cross-environment session switcher that brings tmux's `prefix + s`
-experience across hosts: one terminal that sees and switches in place between every
+experience across machines: one terminal that sees and switches in place between every
 reachable tmux, psmux, zellij, screen, tuios, and herdr session, local and over ssh.
 Each requirement has a stable ID and states one behavior the implementation is checked
 against, naming no source file, function, or test.
@@ -10,47 +10,47 @@ against, naming no source file, function, or test.
 
 ## A. Discovery & inventory
 
-- **FR-A1** - `xmux ls` lists every reachable session across all sources as
-  `<source>/<name>` lines.
-- **FR-A2** - A reachable mux with no sessions is reported as empty, a source on a dead
-  host as unreachable, and the case where every source is unreachable is distinguished.
-- **FR-A3** - `xmux doctor` reports config health, ssh availability, and per-source
+- **FR-A1** - `xmux ls` lists every reachable session across all hosts as
+  `<host>/<name>` lines.
+- **FR-A2** - A reachable mux with no sessions is reported as empty, a host on a dead
+  machine as unreachable, and the case where every host is unreachable is distinguished.
+- **FR-A3** - `xmux doctor` reports config health, ssh availability, and per-host
   reachability with session counts.
 - **FR-A4** - Sessions are ordered deterministically (local, then WSL, then remote
-  hosts, each tier by source name, sessions by name), and a re-enumeration reproduces
+  machines, each tier by host name, sessions by name), and a re-enumeration reproduces
   the same order.
-- **FR-A5** - The host roster comes from the providers the `[discovery]` table enables
+- **FR-A5** - The machine roster comes from the providers the `[discovery]` table enables
   (`~/.ssh/config` aliases and one-hop neighbours that answer ssh), is resolved again on
   every re-scan, drops a machine a record stops naming, and keeps a machine only a probe
   offered as an unreachable card.
-- **FR-A6** - A host's mux is identified by what its binary answers as, so tmux, psmux,
-  zellij, abduco, screen, tuios, and herdr mix freely across hosts with no
+- **FR-A6** - A machine's mux is identified by what its binary answers as, so tmux, psmux,
+  zellij, abduco, screen, tuios, and herdr mix freely across machines with no
   configuration.
-- **FR-A7** - A source is one mux on one host, so a host given several muxes (a `mux`
-  list in `[local]` or `[[hosts]]`) contributes one `<host>:<mux>` source per mux, and a
+- **FR-A7** - A host is one mux on one machine, so a machine given several muxes (a `mux`
+  list in `[local]` or `[[hosts]]`) contributes one `<machine>:<mux>` host per mux, and a
   listed mux that is not installed surfaces as unreachable.
 - **FR-A8** - Every command in an enumeration runs under a fixed per-command budget, so
-  a timed-out listing shows that source as unreachable instead of holding it open.
-- **FR-A9** - A host that names no mux is probed for each mux xmux supports and serves
+  a timed-out listing shows that host as unreachable instead of holding it open.
+- **FR-A9** - A machine that names no mux is probed for each mux xmux supports and serves
   exactly the ones that answer, with no card when none does.
-- **FR-A10** - A remote host's muxes are discovered asynchronously after launch, and its
-  answer only adds sources, without renaming or removing any card already shown.
-- **FR-A11** - A mux inside a WSL distribution is a source on its own host
+- **FR-A10** - A remote machine's muxes are discovered asynchronously after launch, and its
+  answer only adds hosts, without renaming or removing any card already shown.
+- **FR-A11** - A mux inside a WSL distribution is a host on its own machine
   `wsl.<distribution>`, offered by the `[discovery] wsl` provider or a `[[wsl]]` entry,
   and behaves as FR-A7 to FR-A10 describe.
 
 ## B. The switcher: "see the list, decide whether & where to move"
 
 - **FR-B1** - The nav renders one single-row card per session, flat with no window or
-  pane rows, grouped under a non-selectable `{host}/{mux}` section title in the
+  pane rows, grouped under a non-selectable `{machine}/{mux}` section title in the
   deterministic order.
-- **FR-B2** - The source skeleton paints instantly and each source's sessions stream in
+- **FR-B2** - The host skeleton paints instantly and each host's sessions stream in
   independently.
 - **FR-B3** - The terminal view shows the confirmed session's live grid, follows the
   cursor, and keeps the prior grid on screen during a switch until the fresh attachment
   paints or its bounded wait ends.
 - **FR-B4** - Up/down step one card, left/right step one category, a fuzzy filter
-  narrows the list over `<source>/<name>`, and `prefix R` re-scans every host.
+  narrows the list over `<host>/<name>`, and `prefix R` re-scans every machine.
 - **FR-B5** - Quitting (`prefix q` or the ctl `quit` verb) leaves every mux session
   untouched.
 - **FR-B6** - Under a filter, `Enter` attaches the visible filtered session, never a
@@ -66,7 +66,7 @@ against, naming no source file, function, or test.
   card with that number.
 - **FR-B11** - Every colour xmux paints is an ANSI-16 slot chosen by the `[ui] theme`
   (`auto-dark` or `auto-light`), so the terminal's own scheme resolves every hue.
-- **FR-B12** - A group is drawn the same way at every nav position, as a `{host}/{mux}`
+- **FR-B12** - A group is drawn the same way at every nav position, as a `{machine}/{mux}`
   title over its indented cards, flowing into whole-section columns in a band.
 - **FR-B13** - The nav marks off-screen cards on its seam line only, with a thickened
   `┃` stretch beside a side list and `‹ N` / `N ›` counts on a band.
@@ -85,9 +85,9 @@ against, naming no source file, function, or test.
 - **FR-B20** - A held prefix key counts as repeated taps, each sending the
   doubled-prefix literal to the pane.
 - **FR-B21** - The nav shows three groups in order (session cards, reachable hosts with
-  no sessions, unresolved hosts) separated by one blank row or column.
-- **FR-B22** - A host and its mux are always shown as one `{host}/{mux}` label, except
-  for a mux not yet known, where the card reads the host alone.
+  no sessions, unresolved machines) separated by one blank row or column.
+- **FR-B22** - A machine and its mux are always shown as one `{machine}/{mux}` label, except
+  for a mux not yet known, where the card reads the machine alone.
 - **FR-B23** - When the mux moves xmux's own display client to another session, the nav
   selection follows in terminal focus and the client is carried back in nav focus.
 - **FR-B24** - `prefix h` opens the table of machine problems, grouped by login needed,
@@ -96,20 +96,20 @@ against, naming no source file, function, or test.
 - **FR-B25** - The nav attaches on the left, top, right, or bottom of the terminal view,
   with `prefix p` cycling the side clockwise and the layout inside the nav identical at
   every side.
-- **FR-B26** - A host ssh refuses for a reason a login can fix is blocked: it shows `?`
+- **FR-B26** - A machine ssh refuses for a reason a login can fix is blocked: it shows `?`
   and the login pane, with the failing input field marked `✗`.
 - **FR-B27** - The login pane takes the address, port, username, and an optional masked
   password prefilled from what ssh would use, and lists each login step's progress after
   submit.
 - **FR-B28** - A submitted password is held only in process memory, released to ssh only
-  through xmux's private askpass broker for the exact account and host, and forgotten on
+  through xmux's private askpass broker for the exact account and machine, and forgotten on
   refusal, removal from the roster, or exit.
 - **FR-B29** - The login pane offers recording only while an entered address, port, or
-  username differs from what ssh resolves for the host; after a working login, recording
+  username differs from what ssh resolves for the machine; after a working login, recording
   writes one xmux-marked stanza with the values that worked at the top of
   `~/.ssh/config`, replacing an earlier xmux stanza and never storing the password.
-- **FR-B30** - After a working login, registering adds this machine's public key to the
-  host's authorized keys file with the `xmux-registered` mark and reports registered
+- **FR-B30** - After a working login, registering adds this PC's public key to the
+  machine's authorized keys file with the `xmux-registered` mark and reports registered
   only when a key-only login then succeeds.
 - **FR-B31** - Persistent UI symbols use only one-cell glyphs that OS default terminal
   fonts render, and a terminal smaller than 24 columns by 4 rows shows only a size
@@ -120,7 +120,7 @@ against, naming no source file, function, or test.
 - **FR-B33** - `prefix m` opens the history of every toast and background event, newest
   first, bounded at 200 records.
 - **FR-B34** - A re-scan ends in one toast stating what changed since the re-scan
-  request, and `prefix r` re-scans only the selected card's host.
+  request, and `prefix r` re-scans only the selected card's machine.
 - **FR-B35** - Every key xmux binds is defined once in one key table that both focus
   paths and every key surface read.
 - **FR-B36** - Pressing the prefix opens the key list at once, naming every key the
@@ -131,17 +131,17 @@ against, naming no source file, function, or test.
   section tabs, scrolling, and case-insensitive search, closed by `Esc` or `prefix ?`.
 - **FR-B41** - Every popup body row wraps to the popup's width, except a text field, and
   a popup too tall for the window scrolls.
-- **FR-B39** - Logging out of an SSH host (`prefix L`, confirmed by typing `logout`)
-  removes this PC's matching public keys from the host's key files and the ssh config
-  stanza a login saved for the host, then drops the held password and the host's
-  connections. A key line or a `Host` entry naming the host exactly that xmux did not
+- **FR-B39** - Logging out of an SSH machine (`prefix L`, confirmed by typing `logout`)
+  removes this PC's matching public keys from the machine's key files and the ssh config
+  stanza a login saved for the machine, then drops the held password and the machine's
+  connections. A key line or a `Host` entry naming the machine exactly that xmux did not
   add changes only after one second confirmation covering both: an entry naming only
-  this host goes with its options, an entry naming other hosts too loses only this
+  this machine goes with its options, an entry naming other machines too loses only this
   name, and every other line of ssh config stays as it was.
 - **FR-B40** - When the selected card leaves the list, the selection moves to the
   nearest remaining node up its lineage, and a new card takes the selection only when
   the user asked for it (Selection by Interest in docs/principles.md).
-- **FR-B42** - Hosts, sources, and sessions each have a view screen linked to one
+- **FR-B42** - Machines, hosts, and sessions each have a view screen linked to one
   another, reached through `Ctrl-↑` / `Ctrl-↓`, the section title parts, and the screen
   links.
 - **FR-B43** - From launch until the first execution the terminal view attaches to no
@@ -160,8 +160,8 @@ against, naming no source file, function, or test.
 - **FR-C1** - A same-server pick lands on the picked session, by `switch-client` when
   the mux can name xmux's own client and otherwise by reattaching by session name.
 - **FR-C2** - A cross-host pick switches entirely in process, with no picker and no
-  detach, by handing the display to the target source's live attachment.
-- **FR-C3** - An unreachable source is marked `▲` with a view screen stating the verdict
+  detach, by handing the display to the target host's live attachment.
+- **FR-C3** - An unreachable host is marked `▲` with a view screen stating the verdict
   and diagnostics, and nothing reconnects until the user re-scans or selects the card.
 - **FR-C4** - Every dispatched switch or select command logs its exact argv and result,
   and a failed attach is logged at warn level and returns to the nav.
@@ -216,7 +216,7 @@ xmux aggregates and switches, so creating a session is the only session change i
   verbs `ping`, `dump`, `status`, `switch`, `focus`, `rescan`, `quit`, `width`,
   `toggle-auto-hide`, `new-session`, and the `raw:` namespace, replying `err: …` on
   failure.
-- **FR-F2** - There is one unified socket, and its `switch <source> <session>` verb runs
+- **FR-F2** - There is one unified socket, and its `switch <host> <session>` verb runs
   the same switch action as a key press.
 - **FR-F3** - Every instance has a name, generated as `<adjective>-<noun>` or given by
   `--name`, which `xmux send` and `xmux instances` resolve against live instances.
@@ -236,7 +236,7 @@ xmux aggregates and switches, so creating a session is the only session change i
   connection, and its password never appears in the terminal view.
 - **FR-G5** - A command bound for a WSL distribution is exec'd there in a login shell
   rather than passed as a command line.
-- **FR-G6** - A remote host's shell family is read during its reachability probe, and a
+- **FR-G6** - A remote machine's shell family is read during its reachability probe, and a
   non-POSIX remote is never sent POSIX-only syntax.
 - **FR-G7** - xmux reaches a machine only for the launch scan, a user action, or an
   already open push stream, and no failure triggers its own retry.
@@ -255,7 +255,7 @@ xmux aggregates and switches, so creating a session is the only session change i
   session untouched. *(FR-B5)*
 - **UC-4, find one session among many then go.** Filter, then press Enter on the visible
   match. *(FR-B4, FR-B6)*
-- **UC-5, the remote is down and I am not left in the dark.** An unreachable source
+- **UC-5, the remote is down and I am not left in the dark.** An unreachable host
   shows `▲` and its reason, and the nav stays usable. *(FR-A2, FR-B7, FR-C4)*
 - **UC-6, deep in a remote, get back home.** Native detach (`prefix d`) returns to the
   split view to pick another session. *(FR-C2, FR-D1)*
@@ -281,5 +281,5 @@ The seamless cross-host switch is bought with these costs, accepted by design:
 - A push-channel mux inside a WSL distribution that cannot allocate a terminal is
   reported unreachable.
 - A zellij client moved to another session from inside itself is followed only on
-  Windows locally and on a Linux host with `ss` reached locally, through WSL, or over a
+  Windows locally and on a Linux machine with `ss` reached locally, through WSL, or over a
   shared ssh connection; elsewhere the nav stays on the card it was on.

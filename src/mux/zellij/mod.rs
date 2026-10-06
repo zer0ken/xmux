@@ -13,9 +13,9 @@ mod parse;
 
 pub use display::ZellijDriver;
 
-/// Where an attach run through the host's shell records its client's process id, keyed
+/// Where an attach run through the machine's shell records its client's process id, keyed
 /// per attachment so a query never reads the record of a client an earlier attach left.
-/// Under `/tmp`, which every POSIX host has and lets its user write.
+/// Under `/tmp`, which every POSIX machine has and lets its user write.
 fn pid_record_path(record_key: &str) -> String {
     let token: String = record_key
         .chars()
@@ -186,7 +186,7 @@ impl Mux for Zellij {
     /// server's end of it carries the session's socket path. The query lists the
     /// client's socket inodes from `/proc/<pid>/fd` and has `ss -xn` print the rows whose
     /// peer is one of them, which leaves that server end. It is one short shell run that
-    /// reads two kernel tables and attaches to nothing. A host without `/proc` or `ss`
+    /// reads two kernel tables and attaches to nothing. A machine without `/proc` or `ss`
     /// prints nothing, which is no signal.
     fn display_client_query(&self, client: &DisplayClient) -> Option<Vec<String>> {
         let pid = match client {
@@ -254,7 +254,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for CannedRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             self.0
                 .lock()
@@ -285,7 +285,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for TabRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             let mut call = vec![name.to_string()];
             call.extend_from_slice(args);
@@ -377,7 +377,7 @@ mod tests {
         struct HungTabs;
         #[async_trait]
         impl Runner for HungTabs {
-            crate::model::source::runner_spec_via_argv!();
+            crate::model::host_def::runner_spec_via_argv!();
             async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
                 if args == ["list-sessions", "-n"] {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -521,7 +521,7 @@ mod tests {
         let got = m.enumerate(&ssh("jup"), &runner).await.unwrap();
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["api", "build"]);
-        assert!(got.iter().all(|s| s.source == "jup" && s.mux == "zellij"));
+        assert!(got.iter().all(|s| s.host == "jup" && s.mux == "zellij"));
     }
 
     #[tokio::test]

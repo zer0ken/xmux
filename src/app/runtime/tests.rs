@@ -1,14 +1,14 @@
 use super::*;
 use crate::state::{LoginDraft, LoginFocus, State};
 
-/// A roster whose every ssh host writes `tmux` as its mux, so the source registry holds
-/// one source for each alias named.
+/// A roster whose every ssh machine writes `tmux` as its mux, so the host registry holds
+/// one host for each alias named.
 fn fake_roster(aliases: &[&str]) -> crate::provision::env::Roster {
     let cfg = crate::provision::config::Config {
-        hosts: aliases
+        machines: aliases
             .iter()
-            .filter(|a| **a != crate::session::LOCAL_SOURCE)
-            .map(|a| crate::provision::config::HostConfig {
+            .filter(|a| **a != crate::session::LOCAL_MACHINE)
+            .map(|a| crate::provision::config::MachineConfig {
                 ssh: a.to_string(),
                 mux: "tmux".into(),
             })
@@ -20,20 +20,20 @@ fn fake_roster(aliases: &[&str]) -> crate::provision::env::Roster {
         local_muxes: vec!["tmux".into()],
         ssh_aliases: aliases
             .iter()
-            .filter(|a| **a != crate::session::LOCAL_SOURCE)
+            .filter(|a| **a != crate::session::LOCAL_MACHINE)
             .map(|a| a.to_string())
             .collect(),
         ..Default::default()
     }
 }
 
-fn fake_env_with_sources(aliases: &[&str]) -> Env {
+fn fake_env_with_machines(aliases: &[&str]) -> Env {
     fake_env_from(fake_roster(aliases))
 }
 
-/// An env over `fake_roster(written)` plus the ssh hosts `auto`, which write no mux and so
-/// have no source until they answer which muxes they serve.
-fn fake_env_with_auto_hosts(written: &[&str], auto: &[&str]) -> Env {
+/// An env over `fake_roster(written)` plus the ssh machines `auto`, which write no mux and
+/// so have no host until they answer which muxes they serve.
+fn fake_env_with_auto_machines(written: &[&str], auto: &[&str]) -> Env {
     fake_env_from(auto_roster(written, auto))
 }
 
@@ -57,14 +57,14 @@ fn fake_env_from(roster: crate::provision::env::Roster) -> Env {
 #[test]
 fn selection_from_session_row_target() {
     let t = TerminalViewTarget {
-        source: "jupiter06".into(),
+        host: "jupiter06".into(),
         target: "api".into(),
     };
     let sel = selection_from_target(&t);
-    assert_eq!(sel.source, "jupiter06");
+    assert_eq!(sel.host, "jupiter06");
     assert_eq!(sel.session, "api");
     assert_eq!(
-        crate::session::Address::new(&sel.source, &sel.session).display(),
+        crate::session::Address::new(&sel.host, &sel.session).display(),
         "jupiter06/api"
     );
     assert!(!sel.is_empty());
@@ -75,12 +75,12 @@ fn selection_keeps_a_colon_inside_the_session_name() {
     // A session name holding a colon (a zellij session may) is the session whole, as
     // the card carries it - no suffix is parted off.
     let t = TerminalViewTarget {
-        source: "local:zellij".into(),
+        host: "local:zellij".into(),
         target: "a:b".into(),
     };
     let sel = selection_from_target(&t);
     assert_eq!(sel.session, "a:b");
-    assert_eq!(sel.source, "local:zellij");
+    assert_eq!(sel.host, "local:zellij");
 }
 
 #[test]
@@ -103,12 +103,12 @@ fn display_key_is_per_host_for_shared_and_reattach_psmux() {
         crate::mux::for_binary("psmux").unwrap(), // PerSession
     ));
     let rsel = Selection {
-        source: "jup".into(),
+        host: "jup".into(),
         session: "api".into(),
     };
     assert_eq!(display_key(&hosts, &rsel), "jup", "shared → per-host key");
     let lsel = Selection {
-        source: "local".into(),
+        host: "local".into(),
         session: "work".into(),
     };
     assert_eq!(
@@ -171,7 +171,7 @@ async fn dispatch_detected_host_connects_remote_hosts() {
     // Control-event (tmux) hosts get a control client at startup; poll hosts
     // enumerate off the loop (no control client). The gate is the host's
     // event_source, read off the Host - not the transport remote flag. The
-    // control child spawns and dies at once on a host that is not there.
+    // control child spawns and dies at once on a machine that is not there.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
     let mut mgr = HostManager::new(tx);
     let mut hosts = crate::model::Hosts::default();
@@ -192,8 +192,8 @@ async fn dispatch_detected_host_connects_remote_hosts() {
 #[tokio::test]
 async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
     // An UNDETECTED host is routed to detection using ONLY the Hosts registry - no
-    // Env/by_alias. The detection branch marks the source in `detecting`; the probe
-    // clones the host's transport + mux rather than re-deriving from a Source.
+    // Env/by_alias. The detection branch marks the host in `detecting`; the probe
+    // clones the host's transport + mux rather than re-deriving from a HostDef.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
     let mut mgr = HostManager::new(tx);
     let mut hosts = crate::model::Hosts::default();
@@ -201,7 +201,7 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
         crate::transport::local(None),
         crate::mux::for_kind("psmux", "psmux-no-such-binary").unwrap(),
     )); // Host::new leaves it undetected
-    let mut model = AppModel::from_sources(vec!["local".to_owned()]);
+    let mut model = AppModel::from_hosts(vec!["local".to_owned()]);
     let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(
         crate::provision::config::SCAN_CONCURRENCY_MAX,
     ));
@@ -214,19 +214,19 @@ async fn scan_or_dispatch_host_detects_from_hosts_without_env() {
 
 #[tokio::test]
 async fn dispatch_scanned_without_a_resolved_mux_opens_no_channel() {
-    // A detection probe that resolved no mux (the host is unreachable or does not run
+    // A detection probe that resolved no mux (the machine is unreachable or does not run
     // the assumed mux) must NOT open a control channel: a doomed child would die and
     // overwrite the machine's real reason (locked / unreachable) with "connection
     // closed". So a `DispatchScanned { detected: None }` leaves the host channel-less.
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
         crate::transport::ssh("jup".into(), String::new(), "linux".into()),
         crate::mux::for_binary("tmux").unwrap(),
     )); // undetected
     rt.hosts = hosts;
-    rt.execute_source_effect_for_test(crate::model::EventEffect::DispatchScanned {
-        source: "jup".into(),
+    rt.execute_host_effect_for_test(crate::model::EventEffect::DispatchScanned {
+        host: "jup".into(),
         detected: None,
         err: None,
     });
@@ -240,7 +240,7 @@ async fn dispatch_scanned_without_a_resolved_mux_opens_no_channel() {
 async fn a_detach_reopens_the_control_channel_once() {
     // tmux detached the control client of a connected host: the runtime reaps it and
     // opens one new channel. That channel's exit before it lists sessions reopens nothing.
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     let mut host = crate::model::Host::new(
         crate::transport::ssh("jup".into(), String::new(), "linux".into()),
         crate::mux::for_binary("tmux").unwrap(),
@@ -270,10 +270,10 @@ async fn a_detach_reopens_the_control_channel_once() {
 
 #[tokio::test]
 async fn machine_connected_dispatches_a_detected_control_host() {
-    // A machine that connected resolves each source it serves onto its metadata channel.
+    // A machine that connected resolves each host it serves onto its metadata channel.
     // A detected tmux host gets a `-CC` control client (the child spawns and dies at once
-    // on a host that is not really there, which is fine for the map-insert check).
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    // on a machine that is not really there, which is fine for the map-insert check).
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     let mut hosts = crate::model::Hosts::default();
     let mut host = crate::model::Host::new(
         crate::transport::ssh("jup".into(), String::new(), "linux".into()),
@@ -282,14 +282,14 @@ async fn machine_connected_dispatches_a_detected_control_host() {
     host.detected = true;
     hosts.insert(host);
     rt.hosts = hosts;
-    rt.execute_source_effect_for_test(crate::model::EventEffect::MachineConnected {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::MachineConnected {
         shell: None,
         machine: "jup".into(),
         rescan: false,
     });
     assert!(
         rt.mgr.get("jup").is_some(),
-        "the connected machine's detected control source got a channel"
+        "the connected machine's detected control host got a channel"
     );
     std::mem::replace(
         &mut rt.mgr,
@@ -309,7 +309,7 @@ async fn a_dropped_channel_is_reopened_by_a_user_action_and_by_nothing_else() {
     // The observable is the reopen path itself. `ensure_current_host` is what a keystroke
     // on the card runs, and it is the only thing left that can open this channel; nothing
     // in the runtime calls it without an input event behind it.
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     let mut hosts = crate::model::Hosts::default();
     let mut host = crate::model::Host::new(
         crate::transport::ssh("jup".into(), String::new(), "linux".into()),
@@ -318,7 +318,7 @@ async fn a_dropped_channel_is_reopened_by_a_user_action_and_by_nothing_else() {
     host.detected = true; // it connected once
     hosts.insert(host);
     rt.hosts = hosts;
-    rt.model.switcher.apply_source_result(
+    rt.model.switcher.apply_host_result(
         "jup".into(),
         vec![],
         Some("hrlee@jup: Permission denied (publickey,password).".into()),
@@ -515,8 +515,8 @@ fn terminal_view_size_clamps_to_at_least_one() {
 async fn host_exited_before_connect_marks_unreachable() {
     use crate::ui::run::dump_screen;
     use crate::ui::switcher::Switcher;
-    let mut state = crate::state::State::from_sources(vec!["jupiter00".into()]);
-    let mut switcher = Switcher::from_sources(&mut state);
+    let mut state = crate::state::State::from_hosts(vec!["jupiter00".into()]);
+    let mut switcher = Switcher::from_hosts(&mut state);
     let mut connected: HashSet<String> = HashSet::new();
     assert!(
         note_host_exited(
@@ -552,9 +552,9 @@ fn a_blocked_host_shows_the_login_view_screen() {
     // A blocked host (reached, credentials refused) shows the login pane: its
     // state word, not the unreachable word, and ssh's own reason. It also
     use crate::ui::switcher::Switcher;
-    let mut state = crate::state::State::from_sources(vec!["pwbox".into()]);
-    let mut switcher = Switcher::from_sources(&mut state);
-    switcher.apply_source_result(
+    let mut state = crate::state::State::from_hosts(vec!["pwbox".into()]);
+    let mut switcher = Switcher::from_hosts(&mut state);
+    switcher.apply_host_result(
         "pwbox".into(),
         Vec::new(),
         Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
@@ -583,14 +583,14 @@ fn a_blocked_host_shows_the_login_view_screen() {
 }
 
 #[test]
-fn a_host_whose_name_did_not_resolve_stays_unreachable() {
+fn a_machine_whose_name_did_not_resolve_stays_unreachable() {
     use crate::ui::run::dump_screen;
     // Name resolution is not an authentication refusal, so it does not invite the
     // user to submit credentials that cannot reach the machine.
     use crate::ui::switcher::Switcher;
-    let mut state = crate::state::State::from_sources(vec!["jupiter00".into()]);
-    let mut switcher = Switcher::from_sources(&mut state);
-    switcher.apply_source_result(
+    let mut state = crate::state::State::from_hosts(vec!["jupiter00".into()]);
+    let mut switcher = Switcher::from_hosts(&mut state);
+    switcher.apply_host_result(
         "jupiter00".into(),
         Vec::new(),
         Some(
@@ -622,10 +622,10 @@ fn a_host_whose_name_did_not_resolve_stays_unreachable() {
 async fn host_exited_with_no_sessions_marks_empty_not_unreachable() {
     use crate::ui::run::dump_screen;
     use crate::ui::switcher::Switcher;
-    let mut state = crate::state::State::from_sources(vec!["jupiter06".into()]);
-    let mut switcher = Switcher::from_sources(&mut state);
+    let mut state = crate::state::State::from_hosts(vec!["jupiter06".into()]);
+    let mut switcher = Switcher::from_hosts(&mut state);
     let mut connected: HashSet<String> = HashSet::new();
-    // A reachable host whose mux has no server is empty, not unreachable.
+    // A reachable machine whose mux has no server is empty, not unreachable.
     assert!(
         !note_host_exited(
             &mut switcher,
@@ -657,8 +657,8 @@ async fn host_exited_with_no_sessions_marks_empty_not_unreachable() {
 #[tokio::test]
 async fn host_exited_after_connect_keeps_tree() {
     use crate::ui::switcher::Switcher;
-    let mut state = crate::state::State::from_sources(vec!["jupiter06".into()]);
-    let mut switcher = Switcher::from_sources(&mut state);
+    let mut state = crate::state::State::from_hosts(vec!["jupiter06".into()]);
+    let mut switcher = Switcher::from_hosts(&mut state);
     let mut connected: HashSet<String> = HashSet::new();
     connected.insert("jupiter06".into());
     assert!(
@@ -680,8 +680,8 @@ async fn refresh_after_a_dropped_host_resolves_instead_of_loading_forever() {
     // sessions) must resolve to "(empty)", not spin.
     use crate::ui::run::dump_screen;
     use crate::ui::switcher::Switcher;
-    let mut state = crate::state::State::from_sources(vec!["jupiter06".into()]);
-    let mut switcher = Switcher::from_sources(&mut state);
+    let mut state = crate::state::State::from_hosts(vec!["jupiter06".into()]);
+    let mut switcher = Switcher::from_hosts(&mut state);
     let mut connected: HashSet<String> = HashSet::new();
     connected.insert("jupiter06".into());
     // First drop of the connected host: keeps last-known tree, clears connected.
@@ -740,8 +740,8 @@ fn prefix_s_toggles_state() {
 // Suppress unused warnings for the test-only env builder kept for future loop tests.
 #[test]
 fn fake_env_builder_constructs() {
-    let env = fake_env_with_sources(&["local", "jupiter06"]);
-    assert_eq!(env.hosts().source_list().len(), 2);
+    let env = fake_env_with_machines(&["local", "jupiter06"]);
+    assert_eq!(env.hosts().def_list().len(), 2);
 }
 
 #[test]
@@ -754,7 +754,7 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
 
     let scan = Scan {
         groups: vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![],
         }],
@@ -766,7 +766,7 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
         crate::transport::ssh("jup".into(), String::new(), "linux".into()),
         crate::mux::for_binary("tmux").unwrap(),
     ));
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.mgr.insert_fake("jup"); // a control client so the display attach has a sink
     rt.hosts = hosts;
     rt.model.state = state;
@@ -774,7 +774,7 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
 
     let sessions = vec![crate::session::Session {
         mux: String::new(),
-        source: "jup".into(),
+        host: "jup".into(),
         name: "api".into(),
         ..Default::default()
     }];
@@ -804,7 +804,7 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
         .state
         .groups
         .iter()
-        .find(|g| g.source == "jup")
+        .find(|g| g.host == "jup")
         .expect("jup group");
     assert_eq!(group.sessions.len(), 1, "tree applied the carried sessions");
     assert_eq!(group.sessions[0].name, "api");
@@ -813,7 +813,7 @@ fn apply_inventory_effect_folds_sessions_into_host_inventory() {
 #[test]
 fn inventory_rename_precedes_display_session_sync() {
     let (state, switcher) = with_switcher(one_session_scan());
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.mgr.insert_fake("jup");
     rt.hosts.insert(crate::model::Host::new(
         crate::transport::ssh("jup".into(), String::new(), "linux".into()),
@@ -822,14 +822,14 @@ fn inventory_rename_precedes_display_session_sync() {
     rt.model.state = state;
     rt.model.switcher = switcher;
     let renamed = vec![crate::session::Session {
-        source: "jup".into(),
+        host: "jup".into(),
         name: "renamed".into(),
         mux: "tmux".into(),
         windows: 2,
         attached: false,
     }];
 
-    let (_, followups) = rt.perform_source_effect(crate::model::EventEffect::ApplyInventory {
+    let (_, followups) = rt.perform_host_effect(crate::model::EventEffect::ApplyInventory {
         host: "jup".into(),
         sessions: renamed,
     });
@@ -838,16 +838,16 @@ fn inventory_rename_precedes_display_session_sync() {
         followups.as_slice(),
         [
             Effect::Event(crate::model::EventEffect::RenameDisplayed {
-                source: renamed_source,
+                host: renamed_host,
                 from,
                 to,
             }),
             Effect::Event(crate::model::EventEffect::SyncInventorySessions {
-                source: synced_source,
+                host: synced_host,
                 ..
             }),
-        ] if renamed_source == "jup"
-            && synced_source == "jup"
+        ] if renamed_host == "jup"
+            && synced_host == "jup"
             && from == "api"
             && to == "renamed"
     ));
@@ -861,12 +861,12 @@ async fn prefix_r_probes_the_selected_machine_without_a_discovery_pass() {
     use crate::ui::switcher::{Scan, Switcher};
     use crate::ui::tree::Group;
 
-    let group = |source: &str| Group {
-        source: source.into(),
+    let group = |host: &str| Group {
+        host: host.into(),
         err: None,
         sessions: vec![Session {
             mux: String::new(),
-            source: source.into(),
+            host: host.into(),
             name: "api".into(),
             windows: 1,
             attached: false,
@@ -876,15 +876,15 @@ async fn prefix_r_probes_the_selected_machine_without_a_discovery_pass() {
         groups: vec![group("jup"), group("sat")],
     });
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.model.state = state;
     rt.model.switcher = switcher;
-    let selected = rt.model.switcher.current_source().unwrap();
+    let selected = rt.model.switcher.current_host().unwrap();
 
     let mut width_changed = false;
     let _ = rt.handle_nav_bytes(b"\x07r", &mut width_changed);
 
-    assert_eq!(rt.host_rescans, std::slice::from_ref(&selected));
+    assert_eq!(rt.machine_rescans, std::slice::from_ref(&selected));
     assert_eq!(rt.discovery_runs, 0, "no full discovery pass");
     assert!(
         rt.model.state.scanning.len() == 1 && rt.model.state.scanning.contains(&selected),
@@ -907,11 +907,11 @@ async fn capital_r_rescan_rebuilds_nav_and_kicks_discovery() {
 
     let scan = Scan {
         groups: vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![Session {
                 mux: String::new(),
-                source: "jup".into(),
+                host: "jup".into(),
                 name: "api".into(),
                 windows: 1,
                 attached: false,
@@ -930,7 +930,7 @@ async fn capital_r_rescan_rebuilds_nav_and_kicks_discovery() {
     host.detected = true;
     hosts.insert(host);
 
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.mgr.insert_fake("jup");
     rt.hosts = hosts;
     rt.model.state = state;
@@ -945,7 +945,7 @@ async fn capital_r_rescan_rebuilds_nav_and_kicks_discovery() {
     );
     assert!(
         rt.model.state.scanning.contains("jup"),
-        "the production nav input path marked the source scanning"
+        "the production nav input path marked the host scanning"
     );
     assert_eq!(rt.discovery_runs, 1, "one read starts one discovery pass");
 
@@ -963,22 +963,18 @@ struct CreateRecordingOps {
 
 #[async_trait::async_trait]
 impl crate::ui::switcher::Ops for CreateRecordingOps {
-    fn sources(&self) -> Vec<String> {
+    fn hosts(&self) -> Vec<String> {
         Vec::new()
     }
 
-    async fn list_sessions(&self, _source: &str) -> anyhow::Result<Vec<crate::session::Session>> {
+    async fn list_sessions(&self, _host: &str) -> anyhow::Result<Vec<crate::session::Session>> {
         Ok(Vec::new())
     }
 
-    async fn new_session(
-        &self,
-        source: &str,
-        name: &str,
-    ) -> anyhow::Result<crate::session::Session> {
-        let _ = self.created.send(format!("{source}/{name}"));
+    async fn new_session(&self, host: &str, name: &str) -> anyhow::Result<crate::session::Session> {
+        let _ = self.created.send(format!("{host}/{name}"));
         Ok(crate::session::Session {
-            source: source.into(),
+            host: host.into(),
             name: name.into(),
             ..Default::default()
         })
@@ -986,7 +982,7 @@ impl crate::ui::switcher::Ops for CreateRecordingOps {
 
     async fn login_command(
         &self,
-        _source: &str,
+        _host: &str,
         _login: &crate::transport::Login,
         _password: String,
     ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
@@ -995,14 +991,14 @@ impl crate::ui::switcher::Ops for CreateRecordingOps {
 
     fn write_login_stanza(
         &self,
-        _source: &str,
+        _host: &str,
         _login: &crate::transport::Login,
     ) -> Result<(), String> {
         Ok(())
     }
     async fn register_login_key(
         &self,
-        _source: &str,
+        _host: &str,
         _login: &crate::transport::Login,
         _register: crate::ui::ops::KeyRegistration,
     ) -> crate::ui::ops::RegistrationOutcome {
@@ -1012,7 +1008,7 @@ impl crate::ui::switcher::Ops for CreateRecordingOps {
 
 #[tokio::test]
 async fn new_session_nav_input_spawns_the_create_op() {
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     let (created_tx, mut created_rx) = tokio::sync::mpsc::unbounded_channel();
     rt.ops = Arc::new(CreateRecordingOps {
         created: created_tx,
@@ -1030,7 +1026,7 @@ async fn new_session_nav_input_spawns_the_create_op() {
 
 #[test]
 fn current_grid_returns_none_for_empty_displayed() {
-    // An empty `displayed` (source "") misses `hosts.get`, so no driver is
+    // An empty `displayed` (host "") misses `hosts.get`, so no driver is
     // built and no grid is produced - the blank-terminal case on first launch.
     let mut hosts = crate::model::Hosts::default();
     let mut registry = AttachRegistry::new();
@@ -1086,11 +1082,11 @@ async fn shared_host_reuses_one_attachment_and_in_flight_guards_current() {
     let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
     let sel_a = Selection {
-        source: "jup".into(),
+        host: "jup".into(),
         session: "a".into(),
     };
     let sel_b = Selection {
-        source: "jup".into(),
+        host: "jup".into(),
         session: "b".into(),
     };
 
@@ -1156,11 +1152,11 @@ async fn psmux_selection_replaces_the_single_display_attachment() {
     let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
     let sel_test2 = Selection {
-        source: "local".into(),
+        host: "local".into(),
         session: "test2".into(),
     };
     let sel_test = Selection {
-        source: "local".into(),
+        host: "local".into(),
         session: "test".into(),
     };
 
@@ -1257,7 +1253,7 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
     let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
     let sel = Selection {
-        source: "local".into(),
+        host: "local".into(),
         session: "target".into(),
     };
 
@@ -1286,7 +1282,7 @@ async fn psmux_select_attach_does_not_trust_stale_display_bookkeeping() {
 #[test]
 fn should_attach_fires_on_change_and_never_storms_in_flight() {
     let a = Selection {
-        source: "h".into(),
+        host: "h".into(),
         session: "api".into(),
     };
     let b = Selection {
@@ -1343,7 +1339,7 @@ async fn psmux_select_attach_supersedes_in_flight_attach() {
     let (pty_tx, _ptx_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
 
     let sel = Selection {
-        source: "local".into(),
+        host: "local".into(),
         session: "target".into(),
     };
 
@@ -1407,13 +1403,13 @@ async fn first_frame_does_not_wait_for_startup_roster_and_applies_its_answer() {
         .expect("startup event");
     rt.on_host_event(event, &mut io.host_rx);
     assert!(
-        rt.hosts.source("stage").is_some(),
+        rt.hosts.def("stage").is_some(),
         "the answer reached the app"
     );
     // The full roster follows the quick one on the same task (one event batch may carry
     // both) and adds what only the neighbor scan names, keeping every machine the quick
     // answer put on screen.
-    while rt.hosts.source("neighbor").is_none() {
+    while rt.hosts.def("neighbor").is_none() {
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), io.host_rx.recv())
             .await
             .expect("full roster completed")
@@ -1421,11 +1417,11 @@ async fn first_frame_does_not_wait_for_startup_roster_and_applies_its_answer() {
         rt.on_host_event(event, &mut io.host_rx);
     }
     assert!(
-        rt.hosts.source("neighbor").is_some(),
+        rt.hosts.def("neighbor").is_some(),
         "the full roster adds the neighbor"
     );
     assert!(
-        rt.hosts.source("stage").is_some(),
+        rt.hosts.def("stage").is_some(),
         "and keeps the quick answer's hosts"
     );
 }
@@ -1433,11 +1429,11 @@ async fn first_frame_does_not_wait_for_startup_roster_and_applies_its_answer() {
 #[tokio::test]
 async fn a_re_scan_roster_adds_a_machine_it_now_names() {
     // The point of re-resolving on a re-scan: a machine that was not reachable at launch
-    // (a tailnet peer that has since come online, a host the user just wrote into the
+    // (a tailnet peer that has since come online, a machine the user just wrote into the
     // config) turns into a card without a restart.
-    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    let mut rt = test_rt(fake_env_with_machines(&["prod"]));
     assert!(rt.hosts.get("stage").is_none(), "nothing knows stage yet");
-    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod", "stage"])),
         startup: None,
         rescan: false,
@@ -1447,11 +1443,11 @@ async fn a_re_scan_roster_adds_a_machine_it_now_names() {
         "the loop's registry has it"
     );
     assert!(
-        rt.hosts.source("stage").is_some(),
-        "and so do the off-loop ops, which resolve a source through the registry"
+        rt.hosts.def("stage").is_some(),
+        "and so do the off-loop ops, which resolve a host through the registry"
     );
     assert!(
-        rt.model.state.groups.iter().any(|g| g.source == "stage"),
+        rt.model.state.groups.iter().any(|g| g.host == "stage"),
         "and it has a card"
     );
     assert!(
@@ -1462,41 +1458,38 @@ async fn a_re_scan_roster_adds_a_machine_it_now_names() {
 
 #[tokio::test]
 async fn a_re_scan_after_a_mux_edit_keeps_the_loop_and_the_operations_on_one_mux() {
-    // Config now names zellij for a source that stands as tmux. A surviving source keeps
-    // its live host, and the operations read that same host, so a new session lands on
+    // Config now names zellij for a host that stands as tmux. A surviving host keeps
+    // its live `Host`, and the operations read that same `Host`, so a new session lands on
     // the mux the card lists rather than on one it never enumerates.
-    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    let mut rt = test_rt(fake_env_with_machines(&["prod"]));
     let mut roster = fake_roster(&["prod"]);
-    roster.cfg.hosts[0].mux = "zellij".into();
-    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
+    roster.cfg.machines[0].mux = "zellij".into();
+    rt.execute_host_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(roster),
         startup: None,
         rescan: false,
     });
     let standing = rt.hosts.get("prod").unwrap().mux.bin().to_string();
-    assert_eq!(rt.hosts.source("prod").unwrap().binary, standing);
+    assert_eq!(rt.hosts.def("prod").unwrap().binary, standing);
 }
 
 #[tokio::test]
 async fn a_re_scan_roster_drops_a_machine_it_stopped_naming() {
     // The mirror case: the config turned a provider off, or a peer went offline. The
     // registry and the nav have to let go, or the nav paints a card nothing can reach.
-    let mut rt = test_rt(fake_env_with_sources(&["prod", "stage"]));
+    let mut rt = test_rt(fake_env_with_machines(&["prod", "stage"]));
     assert!(rt.hosts.get("stage").is_some(), "precondition");
     rt.model.connected.insert("stage".into());
     rt.model.detecting.insert("stage".into());
-    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod"])),
         startup: None,
         rescan: false,
     });
     assert!(rt.hosts.get("stage").is_none(), "the registry let go");
+    assert!(rt.hosts.def("stage").is_none(), "the off-loop ops let go");
     assert!(
-        rt.hosts.source("stage").is_none(),
-        "the off-loop ops let go"
-    );
-    assert!(
-        !rt.model.state.groups.iter().any(|g| g.source == "stage"),
+        !rt.model.state.groups.iter().any(|g| g.host == "stage"),
         "and the card is gone"
     );
     assert!(!rt.model.connected.contains("stage"));
@@ -1505,15 +1498,15 @@ async fn a_re_scan_roster_drops_a_machine_it_stopped_naming() {
 }
 
 #[tokio::test]
-async fn a_discovered_mux_becomes_a_source_on_the_spot() {
+async fn a_discovered_mux_becomes_a_host_on_the_spot() {
     // The whole point of discovering asynchronously: the machine's answer arrives after
     // the app is up, and the mux nobody wrote down turns into a card RIGHT THEN.
-    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    let mut rt = test_rt(fake_env_with_machines(&["prod"]));
     assert!(
         rt.hosts.get("prod:zellij").is_none(),
         "nothing knows about zellij yet"
     );
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "prod".into(),
         muxes: Ok(vec!["tmux".into(), "zellij".into()]),
     });
@@ -1525,16 +1518,16 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
         rt.hosts.get("prod:tmux").is_none(),
         "the mux it already serves is not added a second time"
     );
-    // zellij is new, so it becomes its own source under a qualified id, scanning.
-    let h = rt.hosts.get("prod:zellij").expect("the discovered source");
+    // zellij is new, so it becomes its own host under a qualified id, scanning.
+    let h = rt.hosts.get("prod:zellij").expect("the discovered host");
     assert_eq!(h.mux.kind(), "zellij");
     assert_eq!(h.transport.host_id(), "prod:zellij", "it answers as itself");
-    // And the OFF-LOOP ops resolve it: they look a source up in the set the registry
-    // publishes, so the discovered source is there without a second registration.
+    // And the OFF-LOOP ops resolve it: they look a host up in the set the registry
+    // publishes, so the discovered host is there without a second registration.
     let src = rt
         .hosts
-        .source("prod:zellij")
-        .expect("the off-loop ops know the discovered source");
+        .def("prod:zellij")
+        .expect("the off-loop ops know the discovered host");
     assert_eq!(
         src.binary, "zellij",
         "and reach it with zellij's own binary"
@@ -1549,13 +1542,13 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
             .state
             .groups
             .iter()
-            .any(|g| g.source == "prod:zellij"),
+            .any(|g| g.host == "prod:zellij"),
         "and it has a card: {:?}",
         rt.model
             .state
             .groups
             .iter()
-            .map(|g| &g.source)
+            .map(|g| &g.host)
             .collect::<Vec<_>>()
     );
     assert!(
@@ -1564,7 +1557,7 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
     );
     // Idempotent: the same answer twice adds nothing.
     let before = rt.model.state.groups.len();
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "prod".into(),
         muxes: Ok(vec!["tmux".into(), "zellij".into()]),
     });
@@ -1572,15 +1565,15 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
 }
 
 #[tokio::test]
-async fn a_discovered_source_sorts_into_place_and_leaves_the_selection_put() {
+async fn a_discovered_host_sorts_into_place_and_leaves_the_selection_put() {
     // A card the user is looking at must not move because another machine answered:
     // the discovered card sorts into its name position, and the selection stays put.
-    let mut rt = test_rt(fake_env_with_sources(&["prod", "db"]));
+    let mut rt = test_rt(fake_env_with_machines(&["prod", "db"]));
     let selected = {
         let t = rt.model.switcher.terminal_view_target();
-        (t.source, t.target)
+        (t.host, t.target)
     };
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "db".into(),
         muxes: Ok(vec!["zellij".into()]),
     });
@@ -1589,7 +1582,7 @@ async fn a_discovered_source_sorts_into_place_and_leaves_the_selection_put() {
         .state
         .groups
         .iter()
-        .map(|g| g.source.clone())
+        .map(|g| g.host.clone())
         .collect();
     assert_eq!(
         after,
@@ -1597,21 +1590,17 @@ async fn a_discovered_source_sorts_into_place_and_leaves_the_selection_put() {
         "the discovered card sorts into name order"
     );
     let now = rt.model.switcher.terminal_view_target();
-    assert_eq!(
-        (now.source, now.target),
-        selected,
-        "the selection stays put"
-    );
+    assert_eq!((now.host, now.target), selected, "the selection stays put");
 }
 
-/// Every card id on the nav, in card order: each source, and each machine standing on its
+/// Every card id on the nav, in card order: each host, and each machine standing on its
 /// own under its name.
 fn cards(rt: &Runtime) -> Vec<String> {
     let state = &rt.model.state;
     let mut ids: Vec<String> = state
         .groups
         .iter()
-        .map(|g| g.source.clone())
+        .map(|g| g.host.clone())
         .chain(
             state
                 .hostless_machines()
@@ -1624,50 +1613,50 @@ fn cards(rt: &Runtime) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_host_that_writes_no_mux_is_one_card_with_no_source() {
-    // Nothing is assumed about a host that left its muxes to xmux: it is a card that
-    // reads the host alone and spins, and it has no source for any op to reach.
-    let rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+async fn a_machine_that_writes_no_mux_is_one_card_with_no_host() {
+    // Nothing is assumed about a machine that left its muxes to xmux: it is a card that
+    // reads the machine alone and spins, and it has no host for any op to reach.
+    let rt = test_rt(fake_env_with_auto_machines(&[], &["win"]));
     assert_eq!(cards(&rt), vec!["local", "win"]);
     assert!(
         rt.model.state.machine_scanning.contains("win"),
         "the card spins"
     );
     assert!(
-        rt.model.state.groups.iter().all(|g| g.source != "win"),
-        "the machine is not a source"
+        rt.model.state.groups.iter().all(|g| g.host != "win"),
+        "the machine is not a host"
     );
     assert!(rt.hosts.get("win").is_none(), "no mux is assumed for it");
-    assert!(rt.hosts.source("win").is_none());
+    assert!(rt.hosts.def("win").is_none());
     assert_eq!(
         rt.hosts.machines(),
         vec!["local", "win"],
-        "the host is still probed"
+        "the machine is still probed"
     );
 }
 
 #[tokio::test]
-async fn a_windows_host_serving_psmux_is_one_psmux_card() {
-    // psmux installs a `tmux` alias of itself. Only the host's own answer decides what it
+async fn a_windows_machine_serving_psmux_is_one_psmux_card() {
+    // psmux installs a `tmux` alias of itself. Only the machine's own answer decides what it
     // serves, and it answers psmux alone, so it is one card, on psmux's own binary.
-    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+    let mut rt = test_rt(fake_env_with_auto_machines(&[], &["win"]));
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "win".into(),
         muxes: Ok(vec!["psmux".into()]),
     });
     assert_eq!(
         cards(&rt),
         vec!["local", "win"],
-        "one card, under the host's name"
+        "one card, under the machine's name"
     );
-    let h = rt.hosts.get("win").expect("the answered source");
+    let h = rt.hosts.get("win").expect("the answered host");
     assert_eq!((h.mux.kind(), h.mux.bin()), ("psmux", "psmux"));
     assert!(
         h.detected,
         "the answer came from psmux's own identity probe"
     );
     assert_eq!(
-        rt.hosts.source("win").expect("the ops know it").binary,
+        rt.hosts.def("win").expect("the ops know it").binary,
         "psmux"
     );
     assert!(
@@ -1682,13 +1671,13 @@ struct NamingRunner {
 }
 
 #[async_trait::async_trait]
-impl crate::model::source::Runner for NamingRunner {
-    crate::model::source::runner_spec_via_argv!();
+impl crate::model::host_def::Runner for NamingRunner {
+    crate::model::host_def::runner_spec_via_argv!();
     async fn run(
         &self,
         name: &str,
         args: &[String],
-    ) -> Result<Vec<u8>, crate::model::source::RunError> {
+    ) -> Result<Vec<u8>, crate::model::host_def::RunError> {
         let mut argv = vec![name.to_string()];
         argv.extend(args.iter().cloned());
         self.commands.lock().unwrap().push(argv);
@@ -1699,16 +1688,16 @@ impl crate::model::source::Runner for NamingRunner {
 }
 
 #[tokio::test]
-async fn a_source_mux_discovery_added_accepts_a_new_session() {
-    // The mux answers after the app is up, so the source reaches only the runtime
-    // registry. The off-loop operations resolve sources through that same registry, so
-    // creating a session on it works without the source being registered anywhere else.
-    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+async fn a_host_mux_discovery_added_accepts_a_new_session() {
+    // The mux answers after the app is up, so the host reaches only the runtime
+    // registry. The off-loop operations resolve hosts through that same registry, so
+    // creating a session on it works without the host being registered anywhere else.
+    let mut rt = test_rt(fake_env_with_auto_machines(&[], &["win"]));
     let runner = std::sync::Arc::new(NamingRunner {
         commands: Default::default(),
     });
     rt.hosts.set_runner(runner.clone());
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "win".into(),
         muxes: Ok(vec!["psmux".into()]),
     });
@@ -1716,9 +1705,9 @@ async fn a_source_mux_discovery_added_accepts_a_new_session() {
         .ops
         .new_session("win", "api")
         .await
-        .expect("the discovered source accepts the operation");
+        .expect("the discovered host accepts the operation");
     assert_eq!(
-        (session.source.as_str(), session.name.as_str()),
+        (session.host.as_str(), session.name.as_str()),
         ("win", "api")
     );
     let commands = runner.commands.lock().unwrap();
@@ -1731,42 +1720,42 @@ async fn a_source_mux_discovery_added_accepts_a_new_session() {
 }
 
 #[tokio::test]
-async fn a_host_answering_several_muxes_has_a_card_for_each() {
-    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+async fn a_machine_answering_several_muxes_has_a_card_for_each() {
+    let mut rt = test_rt(fake_env_with_auto_machines(&[], &["win"]));
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "win".into(),
         muxes: Ok(vec!["psmux".into(), "zellij".into()]),
     });
     assert_eq!(
         cards(&rt),
         vec!["local", "win:psmux", "win:zellij"],
-        "each mux names itself, and the card that stood for the host is gone"
+        "each mux names itself, and the card that stood for the machine is gone"
     );
 }
 
 #[tokio::test]
-async fn a_selected_host_card_that_resolves_hands_the_selection_to_its_first_source() {
-    // The card that stood for the host goes only after the sources it resolved into are
-    // on the list, so the selection on it follows its lineage to the host's first source
-    // card instead of passing to another host.
-    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+async fn a_selected_machine_card_that_resolves_hands_the_selection_to_its_first_host() {
+    // The card that stood for the machine goes only after the hosts it resolved into are
+    // on the list, so the selection on it follows its lineage to the machine's first host
+    // card instead of passing to another machine.
+    let mut rt = test_rt(fake_env_with_auto_machines(&[], &["win"]));
     rt.model.switcher.open_host("win", &mut rt.model.state);
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "win".into(),
         muxes: Ok(vec!["zellij".into(), "psmux".into()]),
     });
     assert!(matches!(
         rt.model.switcher.selected_card(),
-        Some(crate::state::RowRef::Host { source, .. }) if source == "win:psmux"
+        Some(crate::state::RowRef::Host { host, .. }) if host == "win:psmux"
     ));
 }
 
 #[tokio::test]
-async fn a_host_where_no_mux_answers_has_no_card() {
-    // The host connected and answered nothing, so there is nothing to show: it has no
+async fn a_machine_where_no_mux_answers_has_no_card() {
+    // The machine connected and answered nothing, so there is nothing to show: it has no
     // card, exactly as this box has no local card when nothing is installed here.
-    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+    let mut rt = test_rt(fake_env_with_auto_machines(&[], &["win"]));
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "win".into(),
         muxes: Ok(Vec::new()),
     });
@@ -1775,12 +1764,12 @@ async fn a_host_where_no_mux_answers_has_no_card() {
 }
 
 #[tokio::test]
-async fn a_host_that_could_not_be_asked_keeps_its_card_with_the_reason() {
-    // A connection that failed while the host was being asked says nothing about what it
-    // serves, so the card stays, settled, and says why; it is not taken for a host with
+async fn a_machine_that_could_not_be_asked_keeps_its_card_with_the_reason() {
+    // A connection that failed while the machine was being asked says nothing about what
+    // it serves, so the card stays, settled, and says why; it is not taken for a machine with
     // nothing installed.
-    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+    let mut rt = test_rt(fake_env_with_auto_machines(&[], &["win"]));
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "win".into(),
         muxes: Err("command failed (exit 255): Connection reset".into()),
     });
@@ -1788,10 +1777,10 @@ async fn a_host_that_could_not_be_asked_keeps_its_card_with_the_reason() {
     assert!(!rt.model.state.machine_scanning.contains("win"), "settled");
     let m = rt.model.state.machine("win").unwrap();
     assert!(m.err.as_deref().unwrap().contains("Connection reset"));
-    assert!(rt.model.state.groups.iter().all(|g| g.source != "win"));
-    // Asked again (a re-scan or a login), it answers, and its source takes the card over
+    assert!(rt.model.state.groups.iter().all(|g| g.host != "win"));
+    // Asked again (a re-scan or a login), it answers, and its host takes the card over
     // as in flight rather than inheriting the failure.
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "win".into(),
         muxes: Ok(vec!["psmux".into()]),
     });
@@ -1800,16 +1789,16 @@ async fn a_host_that_could_not_be_asked_keeps_its_card_with_the_reason() {
         .state
         .groups
         .iter()
-        .find(|g| g.source == "win")
+        .find(|g| g.host == "win")
         .unwrap();
     assert!(g.err.is_none());
     assert!(rt.model.state.scanning.contains("win"));
 }
 
 #[tokio::test]
-async fn a_failed_ask_leaves_a_host_that_serves_sources_alone() {
-    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+async fn a_failed_ask_leaves_a_machine_that_serves_hosts_alone() {
+    let mut rt = test_rt(fake_env_with_machines(&["prod"]));
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "prod".into(),
         muxes: Err("timed out".into()),
     });
@@ -1818,16 +1807,16 @@ async fn a_failed_ask_leaves_a_host_that_serves_sources_alone() {
         .state
         .groups
         .iter()
-        .find(|g| g.source == "prod")
+        .find(|g| g.host == "prod")
         .unwrap();
-    assert!(g.err.is_none(), "its own source reports for it");
+    assert!(g.err.is_none(), "its own host reports for it");
     assert!(rt.model.state.scanning.contains("prod"));
 }
 
 #[tokio::test]
-async fn the_card_of_a_host_with_no_source_says_how_the_host_is_reached() {
-    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
-    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
+async fn the_card_of_a_machine_with_no_host_says_how_the_machine_is_reached() {
+    let mut rt = test_rt(fake_env_with_machines(&["prod"]));
+    rt.execute_host_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(auto_roster(&["prod"], &["win"])),
         startup: None,
         rescan: false,
@@ -1836,9 +1825,9 @@ async fn the_card_of_a_host_with_no_source_says_how_the_host_is_reached() {
         .model
         .state
         .chrome
-        .source_reach
+        .host_reach
         .get("win")
-        .expect("the host has a reach entry");
+        .expect("the machine has a reach entry");
     assert!(reach.machine.contains("win"), "{reach:?}");
     assert!(!reach.probe.is_empty(), "the reachability probe is shown");
     assert!(
@@ -1848,14 +1837,14 @@ async fn the_card_of_a_host_with_no_source_says_how_the_host_is_reached() {
 }
 
 #[tokio::test]
-async fn a_source_found_on_a_host_is_reached_as_the_host_is() {
-    // The host's probe read its shell family before it was asked for its muxes, so the
-    // source it answered with composes its first command for that family.
-    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+async fn a_host_found_on_a_machine_is_reached_as_the_machine_is() {
+    // The machine's probe read its shell family before it was asked for its muxes, so the
+    // host it answered with composes its first command for that family.
+    let mut rt = test_rt(fake_env_with_auto_machines(&[], &["win"]));
     rt.hosts.for_each_transport_of("win", |t| {
         t.set_remote_shell(crate::transport::vocab::RemoteShell::Other)
     });
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "win".into(),
         muxes: Ok(vec!["psmux".into()]),
     });
@@ -1867,40 +1856,40 @@ async fn a_source_found_on_a_host_is_reached_as_the_host_is() {
     assert_eq!(
         h.transport.host_id(),
         "win",
-        "it answers as its own source id"
+        "it answers as its own host id"
     );
 }
 
 #[tokio::test]
-async fn a_re_scan_keeps_what_a_host_that_writes_no_mux_answered() {
-    // The fresh roster names the host and none of its sources, since those came from its
+async fn a_re_scan_keeps_what_a_machine_that_writes_no_mux_answered() {
+    // The fresh roster names the machine and none of its hosts, since those came from its
     // own answer. The registry keeps them, so a re-scan tears no card down.
-    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
-    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+    let mut rt = test_rt(fake_env_with_auto_machines(&[], &["win"]));
+    rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "win".into(),
         muxes: Ok(vec!["psmux".into()]),
     });
-    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(auto_roster(&[], &["win"])),
         startup: None,
         rescan: false,
     });
     assert!(rt.hosts.get("win").is_some(), "the registry keeps it");
-    assert!(rt.hosts.source("win").is_some(), "the off-loop ops keep it");
+    assert!(rt.hosts.def("win").is_some(), "the off-loop ops keep it");
     assert_eq!(cards(&rt), vec!["local", "win"], "and the card stays put");
 }
 
 #[tokio::test]
-async fn a_re_scan_adds_and_drops_the_card_of_a_host_that_writes_no_mux() {
-    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
-    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
+async fn a_re_scan_adds_and_drops_the_card_of_a_machine_that_writes_no_mux() {
+    let mut rt = test_rt(fake_env_with_machines(&["prod"]));
+    rt.execute_host_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(auto_roster(&["prod"], &["win"])),
         startup: None,
         rescan: false,
     });
     assert_eq!(cards(&rt), vec!["local", "prod", "win"]);
     assert!(rt.model.state.machine_scanning.contains("win"));
-    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod"])),
         startup: None,
         rescan: false,
@@ -1933,8 +1922,8 @@ fn test_rt(env: Env) -> Runtime {
     );
     drop(roster);
     let mut state = crate::state::State::from_roster(hosts.ids().to_vec(), hosts.machines());
-    let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
-    let ops = env.ops(hosts.sources());
+    let switcher = crate::ui::switcher::Switcher::from_hosts(&mut state);
+    let ops = env.ops(hosts.defs());
     let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
     let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
     let model = AppModel {
@@ -1993,7 +1982,7 @@ fn test_rt(env: Env) -> Runtime {
         display_probe: DisplayProbe::default(),
         held_input: None,
         discovery_runs: 0,
-        host_rescans: Vec::new(),
+        machine_rescans: Vec::new(),
     };
     sync_test_render_plan(&mut rt);
     rt
@@ -2010,10 +1999,10 @@ fn sync_test_render_plan(rt: &mut Runtime) {
 
 #[test]
 fn execute_commands_runs_quit_and_attach_in_one_batch() {
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.dirty = false;
     let selection = Selection {
-        source: "local".into(),
+        host: "local".into(),
         session: "work".into(),
     };
 
@@ -2029,7 +2018,7 @@ fn execute_commands_runs_quit_and_attach_in_one_batch() {
 
 #[test]
 fn host_event_and_command_run_through_the_same_executor() {
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     let mut effects = update(
         &mut rt.model,
         Msg::HostEvent {
@@ -2056,7 +2045,7 @@ fn host_event_and_command_run_through_the_same_executor() {
 
 #[tokio::test]
 async fn rescan_discovery_waits_for_the_batch_boundary() {
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     let effects = update(
         &mut rt.model,
         Msg::Commands(vec![
@@ -2081,7 +2070,7 @@ async fn rescan_discovery_waits_for_the_batch_boundary() {
 
 #[tokio::test]
 async fn full_scan_uses_the_probe_already_running_for_a_selected_machine() {
-    let rt = test_rt(fake_env_with_sources(&["local"]));
+    let rt = test_rt(fake_env_with_machines(&["local"]));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     probe_machines(&rt.hosts, tx.clone(), &rt.scan_pool, true, Some("local"));
     assert!(rx.try_recv().is_err(), "the machine is not probed twice");
@@ -2094,7 +2083,7 @@ async fn full_scan_uses_the_probe_already_running_for_a_selected_machine() {
 
 #[test]
 fn coalesced_nav_keys_observe_each_preceding_model_transition() {
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     let mut width_changed = false;
 
     let (_, quit, _, _, _, _) = rt.handle_nav_bytes(b"\x07?q", &mut width_changed);
@@ -2117,11 +2106,11 @@ fn tick_commands_persist_and_attach_through_the_runtime_executor() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let mut env = fake_env_with_sources(&["local"]);
+    let mut env = fake_env_with_machines(&["local"]);
     env.xmux_dir = dir.clone();
     let mut rt = test_rt(env);
     let selection = Selection {
-        source: "local".into(),
+        host: "local".into(),
         session: "work".into(),
     };
     let started = std::time::Instant::now();
@@ -2149,7 +2138,7 @@ fn detach_test_hosts(alias: &str) -> crate::model::Hosts {
 
 #[tokio::test(flavor = "current_thread")]
 async fn invalidated_ssh_auth_reaps_display_and_pending_attach() {
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.registry.insert_fake("jup", 7);
     rt.hosts
@@ -2157,7 +2146,7 @@ async fn invalidated_ssh_auth_reaps_display_and_pending_attach() {
         .unwrap()
         .display
         .mark_in_flight("jup", 9);
-    rt.execute_source_effect_for_test(crate::model::EventEffect::DisconnectMachine {
+    rt.execute_host_effect_for_test(crate::model::EventEffect::DisconnectMachine {
         machine: "jup".into(),
     });
     assert!(!rt.registry.contains("jup"));
@@ -2165,8 +2154,8 @@ async fn invalidated_ssh_auth_reaps_display_and_pending_attach() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn display_auth_tracks_the_live_source_connection_across_session_switches() {
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+async fn display_auth_tracks_the_live_host_connection_across_session_switches() {
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.registry.insert_fake("jup", 7);
     let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2258,9 +2247,9 @@ async fn display_tty_event_records_on_the_owning_host() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn client_detached_matching_our_tty_reaps_display_and_rearms() {
-    let mut state = crate::state::State::from_sources(vec!["jup".into()]);
-    let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut state = crate::state::State::from_hosts(vec!["jup".into()]);
+    let switcher = crate::ui::switcher::Switcher::from_hosts(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.model.state = state;
     rt.model.switcher = switcher;
@@ -2308,9 +2297,9 @@ async fn client_session_changed_matching_our_tty_syncs_display_belief() {
     // terminal view). When that client is OUR display attach (its tty == Host.display_tty),
     // sync the display belief so the next reconcile's show() guard dispatches NO switch-client;
     // a third party's own client can never match, so it is inert.
-    let mut state = crate::state::State::from_sources(vec!["jup".into()]);
-    let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut state = crate::state::State::from_hosts(vec!["jup".into()]);
+    let switcher = crate::ui::switcher::Switcher::from_hosts(&mut state);
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.model.state = state;
     rt.model.switcher = switcher;
@@ -2351,11 +2340,11 @@ async fn client_session_changed_matching_our_tty_syncs_display_belief() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_client_session_change_before_the_tty_is_known_lands_once_it_is_captured() {
-    // A remote attach records its tty on the host before it execs the mux client, so the
+    // A remote attach records its tty on the machine before it execs the mux client, so the
     // capture made as the attach starts can find nothing, and the mux reports the client
     // before xmux knows it is its own. The report is kept until the tty is captured; only
     // xmux's own client's report then moves the display belief.
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.registry.insert_fake("jup", 7);
     rt.hosts
@@ -2399,14 +2388,14 @@ fn two_session_scan() -> crate::ui::switcher::Scan {
     use crate::ui::tree::Group;
     let sess = |name: &str, windows: i64| Session {
         mux: String::new(),
-        source: "jup".into(),
+        host: "jup".into(),
         name: name.into(),
         windows,
         attached: false,
     };
     Scan {
         groups: vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![sess("api", 1), sess("db", 2)],
         }],
@@ -2442,7 +2431,7 @@ async fn a_mux_side_switch_in_terminal_focus_moves_the_nav_to_that_session() {
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
     switcher.select_address(&crate::session::Address::new("jup", "api")); // deterministic start (ignore any last_session)
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.hosts.get_mut("jup").unwrap().display_tty =
         crate::model::DisplayTty(Some("/dev/pts/3".into()));
@@ -2491,7 +2480,7 @@ fn jup_sessions(names: &[&str]) -> Vec<crate::session::Session> {
         .iter()
         .map(|name| crate::session::Session {
             mux: String::new(),
-            source: "jup".into(),
+            host: "jup".into(),
             name: (*name).into(),
             windows: 1,
             attached: false,
@@ -2508,7 +2497,7 @@ async fn a_switch_onto_a_session_with_no_card_yet_moves_the_nav_when_its_card_ap
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
     switcher.select_address(&crate::session::Address::new("jup", "api"));
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.hosts.get_mut("jup").unwrap().display_tty =
         crate::model::DisplayTty(Some("/dev/pts/3".into()));
@@ -2540,7 +2529,7 @@ async fn a_switch_onto_a_session_with_no_card_yet_moves_the_nav_when_its_card_ap
     );
 
     rt.handle_host_event(HostEvent::Sessions {
-        source: "jup".into(),
+        host: "jup".into(),
         sessions: jup_sessions(&["api", "db", "ops"]),
         err: None,
     });
@@ -2560,7 +2549,7 @@ async fn a_card_appearing_for_a_session_the_client_has_left_moves_nothing() {
     let mut state = crate::state::State::from_scan(two_session_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
     switcher.select_address(&crate::session::Address::new("jup", "api"));
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = detach_test_hosts("jup");
     rt.hosts.get_mut("jup").unwrap().display_tty =
         crate::model::DisplayTty(Some("/dev/pts/3".into()));
@@ -2594,7 +2583,7 @@ async fn a_card_appearing_for_a_session_the_client_has_left_moves_nothing() {
     );
 
     rt.handle_host_event(HostEvent::Sessions {
-        source: "jup".into(),
+        host: "jup".into(),
         sessions: jup_sessions(&["api", "db", "ops"]),
         err: None,
     });
@@ -2610,20 +2599,20 @@ async fn a_card_appearing_for_a_session_the_client_has_left_moves_nothing() {
 /// it or replaced it.
 const OWN_CLIENT: u64 = 42;
 
-/// A local psmux source holding sessions `a` and `b`.
+/// A local psmux host holding sessions `a` and `b`.
 fn psmux_scan() -> crate::ui::switcher::Scan {
     use crate::session::Session;
     use crate::ui::tree::Group;
     let sess = |name: &str| Session {
         mux: String::new(),
-        source: "local".into(),
+        host: "local".into(),
         name: name.into(),
         windows: 1,
         attached: false,
     };
     crate::ui::switcher::Scan {
         groups: vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![sess("a"), sess("b")],
         }],
@@ -2652,7 +2641,7 @@ fn a_settled_psmux_runtime() -> Runtime {
     let mut state = crate::state::State::from_scan(psmux_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
     switcher.select_address(&crate::session::Address::new("local", "a"));
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
         crate::transport::local(None),
@@ -2721,7 +2710,7 @@ async fn a_settled_display_attaches_nothing_however_long_it_runs() {
 /// A local zellij host with the nav loaded from a scan of `a` and `b`.
 fn zellij_scan() -> crate::ui::switcher::Scan {
     let sess = |name: &str| crate::session::Session {
-        source: "local".into(),
+        host: "local".into(),
         name: name.into(),
         mux: "zellij".into(),
         windows: 1,
@@ -2729,7 +2718,7 @@ fn zellij_scan() -> crate::ui::switcher::Scan {
     };
     crate::ui::switcher::Scan {
         groups: vec![crate::ui::tree::Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![sess("a"), sess("b")],
         }],
@@ -2743,7 +2732,7 @@ fn a_settled_zellij_runtime() -> Runtime {
     let mut state = crate::state::State::from_scan(zellij_scan());
     let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
     switcher.select_address(&crate::session::Address::new("local", "a"));
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
         crate::transport::local(None),
@@ -2765,7 +2754,7 @@ fn a_settled_zellij_runtime() -> Runtime {
     rt
 }
 
-/// Delivers a host-side query's answer about attachment `id`'s client.
+/// Delivers a machine-side query's answer about attachment `id`'s client.
 fn the_query_answers(rt: &mut Runtime, id: u64, session: Option<&str>) {
     let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     rt.on_pty_event(
@@ -2779,8 +2768,8 @@ fn the_query_answers(rt: &mut Runtime, id: u64, session: Option<&str>) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_queried_zellij_switch_in_terminal_focus_moves_the_nav() {
-    // The user ran `zellij action switch-session b` inside xmux's own client on a host
-    // whose client cannot be read here, and the host-side query found that client on
+    // The user ran `zellij action switch-session b` inside xmux's own client on a machine
+    // whose client cannot be read here, and the machine-side query found that client on
     // `b`. The nav goes to `b`, and the client the user moved stays on screen.
     let mut rt = a_settled_zellij_runtime();
     rt.model
@@ -2842,7 +2831,7 @@ async fn a_query_answer_about_another_client_or_mid_reattach_is_not_recorded() {
 #[tokio::test(flavor = "current_thread")]
 async fn one_display_query_runs_at_a_time_on_its_cadence() {
     // A remote zellij client over a shared connection is asked where it is, one query at
-    // a time and no more than once per cadence, so a slow host never stacks queries.
+    // a time and no more than once per cadence, so a slow machine never stacks queries.
     let mut rt = a_settled_zellij_runtime();
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
@@ -3208,19 +3197,19 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
     use crate::ui::tree::Group;
     let scan = Scan {
         groups: vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![
                 Session {
                     mux: String::new(),
-                    source: "jup".into(),
+                    host: "jup".into(),
                     name: "api".into(),
                     windows: 1,
                     attached: false,
                 },
                 Session {
                     mux: String::new(),
-                    source: "jup".into(),
+                    host: "jup".into(),
                     name: "db".into(),
                     windows: 1,
                     attached: false,
@@ -3230,7 +3219,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
     };
     let mut state = crate::state::State::from_scan(scan);
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.ops = crate::ui::switcher::tests_support::noop_ops();
@@ -3267,11 +3256,11 @@ fn status_line_reports_focus_and_address() {
     use crate::ui::tree::Group;
     let scan = Scan {
         groups: vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![Session {
                 mux: String::new(),
-                source: "jup".into(),
+                host: "jup".into(),
                 name: "api".into(),
                 windows: 1,
                 attached: false,
@@ -3304,19 +3293,19 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
 
     let scan = Scan {
         groups: vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![
                 Session {
                     mux: String::new(),
-                    source: "jup".into(),
+                    host: "jup".into(),
                     name: "api".into(),
                     windows: 1,
                     attached: false,
                 },
                 Session {
                     mux: String::new(),
-                    source: "jup".into(),
+                    host: "jup".into(),
                     name: "db".into(),
                     windows: 1,
                     attached: false,
@@ -3326,7 +3315,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
     };
     let mut state = crate::state::State::from_scan(scan);
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.model.state = state;
     rt.model.switcher = switcher;
 
@@ -3339,7 +3328,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
     // apply(Select) - selection becomes jup/db and the attach is marked pending
     // (the deadline is armed by the next Tick, not here).
     assert!(sync_selection_from_switcher(&mut rt.model));
-    assert_eq!(rt.model.state.selection.source, "jup");
+    assert_eq!(rt.model.state.selection.host, "jup");
     assert_eq!(rt.model.state.selection.session, "db");
     assert!(
         rt.model.state.attach_pending,
@@ -3360,7 +3349,7 @@ fn prefix_p_cycles_the_nav_position_and_persists_it() {
     // "auto".
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.model.nav_position = NavPosition::Left; // effective = left (unpinned)
@@ -3396,7 +3385,7 @@ fn handle_stdin_bytes_quit_on_prefix_q_in_tree_focus() {
     let mut state = crate::state::State::from_scan(scan); // nav focus
     let switcher = Switcher::new(&mut state);
     // The default fake env's prefix is "C-g" (0x07), matching this test's `\x07q`.
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.hosts = crate::model::Hosts::default();
     rt.model.state = state;
     rt.model.switcher = switcher;
@@ -3410,7 +3399,7 @@ fn prefix_m_and_prefix_question_close_what_they_opened_in_either_focus() {
     use crate::ui::switcher::{Scan, Switcher};
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.hosts = crate::model::Hosts::default();
     rt.model.state = state;
     rt.model.switcher = switcher;
@@ -3448,7 +3437,7 @@ fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
     let scan = Scan { groups: vec![] };
     let mut state = crate::state::State::from_scan(scan); // nav focus
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.hosts = crate::model::Hosts::default();
     rt.model.state = state;
     rt.model.switcher = switcher;
@@ -3467,7 +3456,7 @@ fn arming_the_prefix_marks_the_frame_dirty_so_the_hint_bar_swaps() {
     assert!(!rt.prefix_active(), "the command consumes the chord");
 }
 
-/// Builds a `Runtime` with one reachable session on source `jup`, focused on the
+/// Builds a `Runtime` with one reachable session on host `jup`, focused on the
 /// TERMINAL view - the setup the focus-independent tree-action tests share.
 fn rt_terminal_focus_with_session() -> Runtime {
     use crate::session::Session;
@@ -3475,11 +3464,11 @@ fn rt_terminal_focus_with_session() -> Runtime {
     use crate::ui::tree::Group;
     let scan = Scan {
         groups: vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![Session {
                 mux: String::new(),
-                source: "jup".into(),
+                host: "jup".into(),
                 name: "api".into(),
                 windows: 1,
                 attached: false,
@@ -3488,7 +3477,7 @@ fn rt_terminal_focus_with_session() -> Runtime {
     };
     let mut state = crate::state::State::from_scan(scan); // launches in nav focus
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["jup"]));
+    let mut rt = test_rt(fake_env_with_machines(&["jup"]));
     rt.hosts = crate::model::Hosts::default();
     rt.model.state = state;
     rt.model.switcher = switcher;
@@ -3523,7 +3512,7 @@ async fn prefix_capital_r_in_terminal_focus_kicks_rescan() {
     );
     assert!(
         rt.model.state.scanning.contains("jup"),
-        "and re-armed scanning for the source"
+        "and re-armed scanning for the host"
     );
     assert_eq!(rt.discovery_runs, 1, "and started one discovery pass");
 }
@@ -3536,7 +3525,7 @@ fn repeated_prefix_bytes_keep_the_nav_steady_in_nav_focus() {
     // and the auto-hide nav show stay put until a command key consumes it.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     assert!(!rt.prefix_active());
@@ -3705,7 +3694,7 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
     ] {
         let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
         let switcher = Switcher::new(&mut state);
-        let mut rt = test_rt(fake_env_with_sources(&["local"]));
+        let mut rt = test_rt(fake_env_with_machines(&["local"]));
         rt.model.state = state;
         rt.model.switcher = switcher;
         rt.model.mouse_state.nav_armed = true;
@@ -3724,7 +3713,7 @@ fn a_mouse_action_disarms_the_prefix_and_a_hover_does_not() {
     // the user is still typing. cb 35 = motion bit with no button held.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.model.mouse_state.nav_armed = true;
@@ -3761,7 +3750,7 @@ fn handle_mouse_event_view_border_grab_sets_dragging() {
     // Landscape enough to keep the side column, whose border this test grabs.
     let mut focus_toggle = false;
     let mut wheel = false;
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     // The handler cuts its own regions from the runtime's size, so the runtime has to be
@@ -3794,7 +3783,7 @@ fn focusing_the_nav_expands_a_collapsed_nav() {
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.model.nav_collapsed = true;
@@ -3816,7 +3805,7 @@ fn a_collapsed_view_border_cannot_start_a_resize_drag() {
 
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.cols = 140;
@@ -3856,7 +3845,7 @@ fn handle_mouse_event_top_layout_border_drag_resizes_height() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let sel = Selection::default();
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.cols = 40;
@@ -3901,7 +3890,7 @@ fn handle_mouse_event_bottom_layout_border_drag_resizes_height() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let sel = Selection::default();
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.cols = 40;
@@ -3946,7 +3935,7 @@ fn handle_mouse_event_right_layout_border_drag_resizes_width() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let sel = Selection::default();
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.cols = 140;
@@ -3988,7 +3977,7 @@ fn resize_keys_adjust_height_in_top_layout() {
     // HEIGHT, not the width - seeded from the auto height the first time.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.cols = 40;
@@ -4034,7 +4023,7 @@ fn resize_keys_flip_direction_on_the_right_and_bottom() {
     // shrinks the height - the same flip as the focus-arrow pair.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.cols = 140;
@@ -4119,7 +4108,7 @@ fn loop_top_resolves_the_pinned_nav_position() {
     // the pinned side and the PTYs are sized for that split.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.model.nav_position_pinned = Some(crate::ui::switcher::NavPosition::Right);
@@ -4146,7 +4135,7 @@ fn loop_top_resolves_the_default_position_when_unpinned() {
     // moves on its own. A portrait backend still gets the left column.
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.cols = 40;
@@ -4175,12 +4164,12 @@ fn forward_to_mux_reasserts_capture_and_encodes_the_sgr_press() {
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
     let sel = Selection {
-        source: "local".into(),
+        host: "local".into(),
         session: "work".into(),
     };
     let nav_width = crate::ui::switcher::NAV_WIDTH;
     let (att, log) = crate::display::attachment::fake_attachment_with_input_log(42);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.model
@@ -4217,7 +4206,7 @@ fn forward_to_mux_reasserts_capture_and_encodes_the_sgr_press() {
 /// move someone else's terminal); such a host learns its tty from the attach's own record.
 #[tokio::test(flavor = "current_thread")]
 async fn ready_adopts_the_pty_name_only_where_the_child_is_the_mux_client() {
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     let mut hosts = crate::model::Hosts::default();
     hosts.insert(crate::model::Host::new(
         crate::transport::local(None),
@@ -4281,7 +4270,7 @@ async fn a_warm_attach_for_another_host_does_not_take_the_terminal_view() {
     });
     assert_eq!(
         (
-            rt.model.state.displayed.source.as_str(),
+            rt.model.state.displayed.host.as_str(),
             rt.model.state.displayed.session.as_str()
         ),
         ("local", "a"),
@@ -4363,7 +4352,7 @@ async fn first_display_installs_immediately_without_a_stale_attachment() {
     let mut rt = a_settled_psmux_runtime();
     rt.registry.remove("local");
     rt.model.state.selection = Selection {
-        source: "local".into(),
+        host: "local".into(),
         session: "b".into(),
     };
     rt.hosts
@@ -4386,7 +4375,7 @@ async fn first_display_installs_immediately_without_a_stale_attachment() {
 async fn pending_exit_retires_the_stale_attachment_and_applies_the_exit() {
     let mut rt = a_settled_psmux_runtime();
     rt.model.state.selection = Selection {
-        source: "local".into(),
+        host: "local".into(),
         session: "b".into(),
     };
     rt.hosts
@@ -4421,7 +4410,7 @@ async fn newer_request_tears_down_the_older_pending_attachment() {
     assert!(rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_some());
 
     let selection = crate::model::Selection {
-        source: "local".into(),
+        host: "local".into(),
         session: "b".into(),
     };
     let id = crate::driver::DriverCtx {
@@ -4438,7 +4427,7 @@ async fn newer_request_tears_down_the_older_pending_attachment() {
         &selection,
         crate::transport::CommandSpec::from_argv(vec!["fake".into()]),
     )
-    .expect("the local source exists");
+    .expect("the local host exists");
 
     assert!(
         rt.registry.pending_address_of_id(OWN_CLIENT + 3).is_none(),
@@ -4488,11 +4477,11 @@ fn a_probe_line_shows_every_word_it_runs() {
 }
 
 #[test]
-fn a_sources_reach_names_its_mux_and_the_machine_it_is_asked_over() {
-    // What the unreachable screen states about a source, resolved from that source's own
+fn a_hosts_reach_names_its_mux_and_the_machine_it_is_asked_over() {
+    // What the unreachable screen states about a host, resolved from that host's own
     // config: the binary asked for, how the machine is addressed, and the listing command
     // itself.
-    let s = crate::model::source::Source {
+    let s = crate::model::host_def::HostDef {
         alias: "prod".into(),
         binary: "tmux".into(),
         kind: crate::transport::MachineKind::Ssh {
@@ -4505,7 +4494,7 @@ fn a_sources_reach_names_its_mux_and_the_machine_it_is_asked_over() {
         remote_shells: Default::default(),
         credentials: Default::default(),
     };
-    let reach = super::handlers::source_reach(&s);
+    let reach = super::handlers::host_reach(&s);
     assert_eq!(reach.mux, "tmux");
     assert_eq!(reach.socket, "/tmp/cm-prod.sock");
     assert!(
@@ -4580,8 +4569,8 @@ fn config_poll_ignores_a_missing_file() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-// --- source event update --------------------------------------------------
-// Source events enter the application update transition. These tests inspect the
+// --- host event update ----------------------------------------------------
+// Host events enter the application update transition. These tests inspect the
 // resulting application state and ordered runtime effects.
 use crate::link::HostEvent;
 use crate::model::EventEffect;
@@ -4597,8 +4586,8 @@ fn host_event_effects_for_test(
     connected: &mut HashSet<String>,
 ) -> Vec<EventEffect> {
     let mut placeholder_state = State::default();
-    let placeholder_switcher = Switcher::from_sources(&mut placeholder_state);
-    let mut model = AppModel::from_sources(Vec::new());
+    let placeholder_switcher = Switcher::from_hosts(&mut placeholder_state);
+    let mut model = AppModel::from_hosts(Vec::new());
     model.state = std::mem::take(state);
     model.switcher = std::mem::replace(switcher, placeholder_switcher);
     model.connected = std::mem::take(connected);
@@ -4617,7 +4606,7 @@ fn host_event_effects_for_test(
         .flat_map(|effect| match effect {
             Effect::Event(effect) => vec![effect],
             Effect::EventBatch(effects) => effects,
-            effect => panic!("source event emitted unrelated effect: {effect:?}"),
+            effect => panic!("host event emitted unrelated effect: {effect:?}"),
         })
         .collect()
 }
@@ -4625,16 +4614,16 @@ fn host_event_effects_for_test(
 #[test]
 fn poll_rename_precedes_display_session_sync() {
     let (state, switcher) = with_switcher(one_session_scan());
-    let mut model = AppModel::from_sources(Vec::new());
+    let mut model = AppModel::from_hosts(Vec::new());
     model.state = state;
     model.switcher = switcher;
     let effects = update(
         &mut model,
         Msg::HostEvent {
             event: HostEvent::Sessions {
-                source: "jup".into(),
+                host: "jup".into(),
                 sessions: vec![Session {
-                    source: "jup".into(),
+                    host: "jup".into(),
                     name: "renamed".into(),
                     mux: "tmux".into(),
                     windows: 2,
@@ -4650,10 +4639,10 @@ fn poll_rename_precedes_display_session_sync() {
         [Effect::EventBatch(effects)] if matches!(
             effects.as_slice(),
             [
-                EventEffect::RenameDisplayed { source: renamed_source, from, to },
-                EventEffect::SyncPollSessions { source: synced_source, .. }
-            ] if renamed_source == "jup"
-                && synced_source == "jup"
+                EventEffect::RenameDisplayed { host: renamed_host, from, to },
+                EventEffect::SyncPollSessions { host: synced_host, .. }
+            ] if renamed_host == "jup"
+                && synced_host == "jup"
                 && from == "api"
                 && to == "renamed"
         )
@@ -4663,10 +4652,10 @@ fn poll_rename_precedes_display_session_sync() {
 fn one_session_scan() -> Scan {
     Scan {
         groups: vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![Session {
-                source: "jup".into(),
+                host: "jup".into(),
                 name: "api".into(),
                 mux: "tmux".into(),
                 windows: 2,
@@ -4690,7 +4679,7 @@ fn host_event_connected_marks_connected_and_emits_apply_inventory() {
     let (mut state, mut sw) = with_switcher(one_session_scan());
     let mut connected = HashSet::new();
     let sessions = vec![crate::session::Session {
-        source: "jup".into(),
+        host: "jup".into(),
         name: "api".into(),
         ..Default::default()
     }];
@@ -4823,7 +4812,7 @@ fn host_event_exited_marks_unreachable_and_emits_reap() {
         matches!(effects.as_slice(), [EventEffect::ReapHost { host }] if host == "jup"),
         "Exited returns one ReapHost effect: {effects:?}"
     );
-    let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+    let g = state.groups.iter().find(|g| g.host == "jup").unwrap();
     assert!(
         g.err.is_some(),
         "the host is marked unreachable in the tree"
@@ -4852,7 +4841,7 @@ fn host_event_exited_of_connected_host_keeps_tree_and_still_reaps() {
         !connected.contains("jup"),
         "the connected mark is cleared so a later failed reconnect resolves"
     );
-    let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+    let g = state.groups.iter().find(|g| g.host == "jup").unwrap();
     assert!(
         g.err.is_none(),
         "a transient drop keeps the last-known tree"
@@ -4864,11 +4853,11 @@ fn host_event_sessions_applies_tree_and_emits_sync_on_success() {
     // A poll host's enumeration is self-contained: update applies the
     // sessions to the tree and hands the sessions back for the stale-attach /
     // sync follow-up the loop owns.
-    let mut state = State::from_sources(vec!["local".into()]);
-    let mut sw = Switcher::from_sources(&mut state);
+    let mut state = State::from_hosts(vec!["local".into()]);
+    let mut sw = Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let sessions = vec![Session {
-        source: "local".into(),
+        host: "local".into(),
         name: "work".into(),
         mux: "tmux".into(),
         windows: 1,
@@ -4877,7 +4866,7 @@ fn host_event_sessions_applies_tree_and_emits_sync_on_success() {
     let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Sessions {
-            source: "local".into(),
+            host: "local".into(),
             sessions: sessions.clone(),
             err: None,
         },
@@ -4886,15 +4875,15 @@ fn host_event_sessions_applies_tree_and_emits_sync_on_success() {
     );
     assert!(
         !state.scanning.contains("local"),
-        "the enumerated source is no longer scanning"
+        "the enumerated host is no longer scanning"
     );
-    let g = state.groups.iter().find(|g| g.source == "local").unwrap();
+    let g = state.groups.iter().find(|g| g.host == "local").unwrap();
     assert_eq!(g.sessions.len(), 1, "the session is in the tree");
     assert!(
         matches!(
             effects.as_slice(),
-            [EventEffect::SyncPollSessions { source, sessions: s }]
-                if source == "local" && s.len() == 1
+            [EventEffect::SyncPollSessions { host, sessions: s }]
+                if host == "local" && s.len() == 1
         ),
         "a successful enumeration syncs terminals: {effects:?}"
     );
@@ -4904,20 +4893,20 @@ fn host_event_sessions_applies_tree_and_emits_sync_on_success() {
 fn host_event_sessions_with_error_applies_tree_but_emits_no_sync() {
     // A transient enumeration failure shows the error in the tree but keeps
     // attachments (the keep-alive guarantee) - no sync effect.
-    let mut state = State::from_sources(vec!["local".into()]);
-    let mut sw = Switcher::from_sources(&mut state);
+    let mut state = State::from_hosts(vec!["local".into()]);
+    let mut sw = Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Sessions {
-            source: "local".into(),
+            host: "local".into(),
             sessions: Vec::new(),
             err: Some("poll failed".into()),
         },
         &mut sw,
         &mut connected,
     );
-    let g = state.groups.iter().find(|g| g.source == "local").unwrap();
+    let g = state.groups.iter().find(|g| g.host == "local").unwrap();
     assert_eq!(g.err.as_deref(), Some("poll failed"));
     assert!(
         effects.is_empty(),
@@ -4962,12 +4951,12 @@ fn feed_login_fills_the_pane_and_submits_from_the_button() {
     let cmd = s.feed_login("prod", b"\r").expect("the button submits");
     match cmd {
         crate::model::Command::RunLogin {
-            source,
+            host,
             password,
             after_login,
             ..
         } => {
-            assert_eq!(source, "prod");
+            assert_eq!(host, "prod");
             assert_eq!(password, "hunter2");
             assert_eq!(after_login, crate::model::AfterLogin::RegisterKey);
         }
@@ -5095,7 +5084,7 @@ fn feed_login_offers_the_ssh_config_choice_when_any_value_differs() {
     let mut unresolved = d.clone();
     unresolved.ssh_effective.as_mut().unwrap().user = None;
     assert!(unresolved.offers_ssh_config());
-    // Without a block naming the host, recording makes it known to ssh.
+    // Without a block naming the machine, recording makes it known to ssh.
     let mut unnamed = d.clone();
     unnamed.ssh_effective = None;
     assert!(unnamed.offers_ssh_config());
@@ -5108,7 +5097,7 @@ fn login_pane_from_ssh_config(config_text: &str) -> LoginDraft {
     discovered_login_pane(config_text, None)
 }
 
-/// [`login_pane_from_ssh_config`] for a host discovery found at `provider_address`.
+/// [`login_pane_from_ssh_config`] for a machine discovery found at `provider_address`.
 fn discovered_login_pane(config_text: &str, provider_address: Option<&str>) -> LoginDraft {
     let stanza = crate::provision::config::stanza_login(config_text, "prod");
     let effective = crate::transport::Login {
@@ -5155,7 +5144,7 @@ fn feed_login_hides_the_ssh_config_choice_when_a_block_sets_only_the_user() {
     assert_eq!(defaults.address.provenance, "host name");
     assert_eq!(defaults.port.provenance, "default");
     assert_eq!(defaults.username.provenance, "from ssh config");
-    // A block reached only through a pattern does not name the host.
+    // A block reached only through a pattern does not name the machine.
     let d = login_pane_from_ssh_config(
         "Host pro*
     User local-user
@@ -5243,7 +5232,7 @@ fn feed_login_drops_the_ssh_config_pick_once_the_choice_hides() {
 }
 
 #[test]
-fn feed_login_backspace_edits_and_a_new_source_resets_the_draft() {
+fn feed_login_backspace_edits_and_a_new_host_resets_the_draft() {
     let mut s = State::default();
     s.feed_login("prod", b"X");
     s.feed_login("prod", b"\x7f");
@@ -5251,7 +5240,7 @@ fn feed_login_backspace_edits_and_a_new_source_resets_the_draft() {
     // Moving to another blocked host starts a fresh draft (no stale value carried).
     s.feed_login("stage", b"");
     let d = s.login.as_ref().unwrap();
-    assert_eq!(d.source, "stage");
+    assert_eq!(d.host, "stage");
     assert_eq!(
         d.address, "stage",
         "the fresh draft starts at its own defaults"
@@ -5271,11 +5260,11 @@ fn feed_login_never_lets_an_escape_sequence_land_in_a_field() {
 
 #[test]
 fn machine_probe_connected_forwards_the_connect_to_the_loop() {
-    // A machine that answered `true` carries no reason; which of its sources to
+    // A machine that answered `true` carries no reason; which of its hosts to
     // resolve, and how, lives in the host registry, so the whole decision is the
     // loop's.
-    let mut state = State::from_sources(vec!["prod".into()]);
-    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut state = State::from_hosts(vec!["prod".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let effects = host_event_effects_for_test(
         &mut state,
@@ -5308,12 +5297,12 @@ fn machine_probe_connected_forwards_the_connect_to_the_loop() {
 }
 
 #[test]
-fn machine_probe_auth_failure_marks_every_source_of_the_machine_locked() {
+fn machine_probe_auth_failure_marks_every_host_of_the_machine_locked() {
     // The reachability probe is the single classification site: an auth failure
-    // (ssh's `Permission denied (` signature) marks EVERY source the machine serves
+    // (ssh's `Permission denied (` signature) marks EVERY host the machine serves
     // locked, and folds nothing itself for the loop to run - no channel is opened.
-    let mut state = State::from_sources(vec!["prod".into(), "prod:zellij".into(), "db".into()]);
-    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut state = State::from_hosts(vec!["prod".into(), "prod:zellij".into(), "db".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let effects = host_event_effects_for_test(
         &mut state,
@@ -5339,28 +5328,28 @@ fn machine_probe_auth_failure_marks_every_source_of_the_machine_locked() {
         effects.is_empty(),
         "a failed probe opens no channel: {effects:?}"
     );
-    for source in ["prod", "prod:zellij"] {
+    for host in ["prod", "prod:zellij"] {
         let g = state
             .groups
             .iter()
-            .find(|g| g.source == source)
-            .unwrap_or_else(|| panic!("{source} group"));
+            .find(|g| g.host == host)
+            .unwrap_or_else(|| panic!("{host} group"));
         assert_eq!(
             g.failure(),
             Some(crate::model::FailureKind::Blocked),
-            "{source} classifies locked: {:?}",
+            "{host} classifies locked: {:?}",
             g.err
         );
     }
-    let other = state.groups.iter().find(|g| g.source == "db").unwrap();
+    let other = state.groups.iter().find(|g| g.host == "db").unwrap();
     assert!(other.err.is_none(), "another machine is untouched");
 }
 
 #[test]
 fn a_refusal_that_did_not_use_the_held_password_is_visible() {
-    let mut state = State::from_sources(vec!["prod".into()]);
+    let mut state = State::from_hosts(vec!["prod".into()]);
     state.logged_in.insert("prod".into());
-    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut sw = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let _ = host_event_effects_for_test(
         &mut state,
@@ -5387,9 +5376,9 @@ fn a_refusal_that_did_not_use_the_held_password_is_visible() {
 
 #[test]
 fn an_auth_refusal_from_an_older_credential_generation_is_ignored() {
-    let mut state = State::from_sources(vec!["prod".into()]);
+    let mut state = State::from_hosts(vec!["prod".into()]);
     state.groups[0].err = None;
-    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut sw = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let _ = host_event_effects_for_test(
         &mut state,
@@ -5413,10 +5402,10 @@ fn an_auth_refusal_from_an_older_credential_generation_is_ignored() {
 
 #[test]
 fn any_probe_result_from_an_older_credential_generation_is_ignored() {
-    let mut state = State::from_sources(vec!["prod".into()]);
+    let mut state = State::from_hosts(vec!["prod".into()]);
     state.groups[0].err = None;
     state.scanning.insert("prod".into());
-    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut sw = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let effects = host_event_effects_for_test(
         &mut state,
@@ -5442,8 +5431,8 @@ fn any_probe_result_from_an_older_credential_generation_is_ignored() {
 
 #[test]
 fn successful_probe_from_an_older_credential_generation_is_ignored() {
-    let mut state = State::from_sources(vec!["prod".into()]);
-    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut state = State::from_hosts(vec!["prod".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let effects = host_event_effects_for_test(
         &mut state,
@@ -5467,8 +5456,8 @@ fn successful_probe_from_an_older_credential_generation_is_ignored() {
 
 #[test]
 fn probe_that_rejected_its_own_credential_is_not_discarded_as_stale() {
-    let mut state = State::from_sources(vec!["prod".into()]);
-    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut state = State::from_hosts(vec!["prod".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let _ = host_event_effects_for_test(
         &mut state,
@@ -5495,9 +5484,9 @@ fn probe_that_rejected_its_own_credential_is_not_discarded_as_stale() {
 
 #[test]
 fn rejected_probe_from_before_a_newer_key_login_is_ignored() {
-    let mut state = State::from_sources(vec!["prod".into()]);
+    let mut state = State::from_hosts(vec!["prod".into()]);
     state.groups[0].err = None;
-    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut sw = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let effects = host_event_effects_for_test(
         &mut state,
@@ -5523,10 +5512,10 @@ fn rejected_probe_from_before_a_newer_key_login_is_ignored() {
 #[test]
 fn machine_probe_unreachable_marks_the_machine_unreachable_not_locked() {
     // A reach failure (refused/timeout/no route) is unreachable, never locked: only
-    // ssh's auth-failure signature earns locked, so a host that merely died stays a
+    // ssh's auth-failure signature earns locked, so a machine that merely died stays a
     // plain unreachable card.
-    let mut state = State::from_sources(vec!["prod".into()]);
-    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut state = State::from_hosts(vec!["prod".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let _ = host_event_effects_for_test(
         &mut state,
@@ -5545,7 +5534,7 @@ fn machine_probe_unreachable_marks_the_machine_unreachable_not_locked() {
         &mut sw,
         &mut connected,
     );
-    let g = state.groups.iter().find(|g| g.source == "prod").unwrap();
+    let g = state.groups.iter().find(|g| g.host == "prod").unwrap();
     assert!(g.err.is_some(), "the card is unreachable");
     assert_eq!(
         g.failure(),
@@ -5565,7 +5554,7 @@ fn host_event_scanned_emits_dispatch_carrying_the_detection() {
     let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Scanned {
-            source: "jup".into(),
+            host: "jup".into(),
             detected: None,
             err: Some("command failed (exit 127): sh: tmux: not found".into()),
         },
@@ -5576,14 +5565,14 @@ fn host_event_scanned_emits_dispatch_carrying_the_detection() {
         matches!(
             effects.as_slice(),
             [EventEffect::DispatchScanned {
-                source,
+                host,
                 detected: None,
                 ..
-            }] if source == "jup"
+            }] if host == "jup"
         ),
         "Scanned forwards a DispatchScanned effect: {effects:?}"
     );
-    let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+    let g = state.groups.iter().find(|g| g.host == "jup").unwrap();
     assert!(
         g.err.is_none(),
         "a settled host keeps its state; a stray detection failure does not touch it"
@@ -5596,14 +5585,14 @@ fn a_connected_machines_failed_detection_settles_the_scanning_card() {
     // inline, or a remote whose machine probe succeeded) but whose mux detection
     // failed must leave the scanning state: it settles as unreachable with the
     // probe's error instead of spinning forever (issue 226).
-    let mut state = State::from_sources(vec!["jup".into()]);
-    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut state = State::from_hosts(vec!["jup".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     assert!(state.scanning.contains("jup"), "precondition: scanning");
     let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Scanned {
-            source: "jup".into(),
+            host: "jup".into(),
             detected: None,
             err: Some("command failed (exit 127): sh: tmux: not found".into()),
         },
@@ -5614,7 +5603,7 @@ fn a_connected_machines_failed_detection_settles_the_scanning_card() {
         !state.scanning.contains("jup"),
         "the failed detection settles the card out of scanning"
     );
-    let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+    let g = state.groups.iter().find(|g| g.host == "jup").unwrap();
     assert_eq!(
         g.err.as_deref(),
         Some("command failed (exit 127): sh: tmux: not found"),
@@ -5625,10 +5614,10 @@ fn a_connected_machines_failed_detection_settles_the_scanning_card() {
         matches!(
             effects.as_slice(),
             [EventEffect::DispatchScanned {
-                source,
+                host,
                 detected: None,
                 ..
-            }] if source == "jup"
+            }] if host == "jup"
         ),
         "the detection box still forwards to the loop: {effects:?}"
     );
@@ -5639,8 +5628,8 @@ fn a_stray_detection_failure_does_not_overwrite_a_settled_card() {
     // The reconnect sweep retries detection for undetected hosts even after they
     // settled unreachable/locked. That later failure must NOT overwrite the card's
     // existing reason - only a still-scanning card settles on detection failure.
-    let mut state = State::from_sources(vec!["jup".into()]);
-    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut state = State::from_hosts(vec!["jup".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let _ = host_event_effects_for_test(
         &mut state,
@@ -5666,14 +5655,14 @@ fn a_stray_detection_failure_does_not_overwrite_a_settled_card() {
     let _ = host_event_effects_for_test(
         &mut state,
         HostEvent::Scanned {
-            source: "jup".into(),
+            host: "jup".into(),
             detected: None,
             err: Some("command failed (exit 255)".into()),
         },
         &mut sw,
         &mut connected,
     );
-    let g = state.groups.iter().find(|g| g.source == "jup").unwrap();
+    let g = state.groups.iter().find(|g| g.host == "jup").unwrap();
     assert_eq!(
         g.err.as_deref(),
         Some("hrlee@jup: Permission denied (publickey,password)."),
@@ -5685,8 +5674,8 @@ fn a_stray_detection_failure_does_not_overwrite_a_settled_card() {
 fn muxes_found_forwards_the_add_to_the_loop() {
     // Which muxes a machine ALREADY serves lives in the host registry, which this
     // layer does not hold, so the whole decision is forwarded rather than folded.
-    let mut state = State::from_sources(vec!["prod".into()]);
-    let mut sw = crate::ui::switcher::Switcher::from_sources(&mut state);
+    let mut state = State::from_hosts(vec!["prod".into()]);
+    let mut sw = crate::ui::switcher::Switcher::from_hosts(&mut state);
     let mut connected = HashSet::new();
     let before = state.groups.len();
     let effects = host_event_effects_for_test(
@@ -5701,7 +5690,7 @@ fn muxes_found_forwards_the_add_to_the_loop() {
     assert!(
         matches!(
             &effects[..],
-            [EventEffect::AddDiscoveredSources { machine, muxes }]
+            [EventEffect::AddDiscoveredHosts { machine, muxes }]
                 if machine == "prod"
                     && muxes == &Ok(vec!["tmux".to_string(), "zellij".to_string()])
         ),
@@ -5751,7 +5740,7 @@ fn collapse_rt(position: crate::ui::switcher::NavPosition) -> Runtime {
     use crate::ui::switcher::{Scan, Switcher};
     let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
     rt.cols = 140;
@@ -6091,31 +6080,31 @@ fn any_key_ends_the_selection_hint_in_either_focus() {
     assert!(rt.model.state.chrome.selection_hint.is_none());
     assert!(out.dirty, "the bar changed, so the frame repaints");
     // Nav focus: a key that moves nothing ends it and raises nothing new.
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     raise(&mut rt);
     rt.handle_stdin_bytes(b"x", &Selection::default());
     assert!(rt.model.state.chrome.selection_hint.is_none());
 }
 
 #[test]
-fn terminal_prefix_info_selects_the_source_screen() {
+fn terminal_prefix_info_selects_the_host_screen() {
     let mut rt = rt_terminal_focus_with_session();
     rt.handle_stdin_bytes(b"\x07i", &Selection::default());
     assert_eq!(
         rt.model.switcher.current_view_screen(&rt.model.state),
-        Some(crate::model::ViewScreen::HostInfo)
+        Some(crate::model::ViewScreen::Host)
     );
 }
 
 #[test]
 fn unreachable_screen_details_take_terminal_input() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    let mut rt = test_rt(fake_env_with_machines(&["prod"]));
     crate::app::model::update(
         &mut rt.model,
         crate::app::model::Msg::HostEvent {
             event: crate::link::HostEvent::Sessions {
-                source: "local".into(),
+                host: "local".into(),
                 sessions: vec![],
                 err: None,
             },
@@ -6126,7 +6115,7 @@ fn unreachable_screen_details_take_terminal_input() {
         &mut rt.model,
         crate::app::model::Msg::HostEvent {
             event: crate::link::HostEvent::Sessions {
-                source: "prod".into(),
+                host: "prod".into(),
                 sessions: vec![],
                 err: Some("connection refused".into()),
             },
@@ -6144,8 +6133,8 @@ fn unreachable_screen_details_take_terminal_input() {
         rt.model
             .switcher
             .current_unreachable_screen(&rt.model.state),
-        "source={:?}, screen={:?}, groups={:?}",
-        rt.model.switcher.current_source(),
+        "host={:?}, screen={:?}, groups={:?}",
+        rt.model.switcher.current_host(),
         rt.model.switcher.current_view_screen(&rt.model.state),
         rt.model.state.groups
     );
@@ -6255,13 +6244,13 @@ async fn a_login_follow_up_waits_until_the_logout_releases_the_gate() {
 /// the nav on the left. The launch selection is `gpu/train`.
 fn hierarchy_rt() -> Runtime {
     use crate::ui::switcher::{Scan, Switcher};
-    let group = |source: &str, names: &[&str]| crate::model::Group {
-        source: source.into(),
+    let group = |host: &str, names: &[&str]| crate::model::Group {
+        host: host.into(),
         err: None,
         sessions: names
             .iter()
             .map(|name| crate::session::Session {
-                source: source.into(),
+                host: host.into(),
                 name: (*name).into(),
                 windows: 1,
                 ..Default::default()
@@ -6272,7 +6261,7 @@ fn hierarchy_rt() -> Runtime {
         groups: vec![group("gpu", &["train"]), group("web", &["api", "deploy"])],
     });
     let switcher = Switcher::new(&mut state);
-    let mut rt = test_rt(fake_env_with_sources(&["local"]));
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.hosts = crate::model::Hosts::default();
     rt.model.state = state;
     rt.model.switcher = switcher;
@@ -6286,9 +6275,9 @@ fn selected(rt: &Runtime) -> Option<crate::model::Node> {
     rt.model.switcher.selected_node()
 }
 
-fn session_node(source: &str, name: &str) -> Option<crate::model::Node> {
+fn session_node(host: &str, name: &str) -> Option<crate::model::Node> {
     Some(crate::model::Node::Session(crate::session::Address::new(
-        source, name,
+        host, name,
     )))
 }
 
@@ -6298,12 +6287,12 @@ fn ctrl_arrows_in_nav_focus_walk_the_hierarchy_and_the_prefix_layer_keeps_its_ow
     let mut rt = hierarchy_rt();
     assert_eq!(selected(&rt), session_node("gpu", "train"));
     rt.handle_stdin_bytes(b"\x1b[1;5A", &Selection::default());
-    assert_eq!(selected(&rt), Some(Node::Source("gpu".into())));
-    rt.handle_stdin_bytes(b"\x1b[1;5A", &Selection::default());
     assert_eq!(selected(&rt), Some(Node::Host("gpu".into())));
+    rt.handle_stdin_bytes(b"\x1b[1;5A", &Selection::default());
+    assert_eq!(selected(&rt), Some(Node::Machine("gpu".into())));
     // Behind the prefix, Ctrl+↑ is the band border, never a level step.
     rt.handle_stdin_bytes(b"\x07\x1b[1;5B", &Selection::default());
-    assert_eq!(selected(&rt), Some(Node::Host("gpu".into())));
+    assert_eq!(selected(&rt), Some(Node::Machine("gpu".into())));
     // A bare Ctrl+arrow right after it repeats the resize; once that window lapses, the
     // bare keys step the levels again.
     rt.model.mouse_state.repeat_until = None;
@@ -6314,14 +6303,14 @@ fn ctrl_arrows_in_nav_focus_walk_the_hierarchy_and_the_prefix_layer_keeps_its_ow
 #[test]
 fn the_arrows_and_enter_walk_and_open_a_screens_links_in_terminal_focus() {
     let mut rt = hierarchy_rt();
-    rt.handle_stdin_bytes(b"\x1b[1;5A", &Selection::default()); // the gpu source
+    rt.handle_stdin_bytes(b"\x1b[1;5A", &Selection::default()); // the gpu host
     rt.model
         .state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     rt.model.switcher.sync_view_focus(true);
     sync_test_render_plan(&mut rt);
-    // The source's links are its host and then its session.
+    // The host's links are its machine and then its session.
     rt.handle_stdin_bytes(b"\x1b[B\r", &Selection::default());
     assert_eq!(selected(&rt), session_node("gpu", "train"));
     rt.handle_stdin_bytes(b"\x1b[1;5A", &Selection::default());
@@ -6386,11 +6375,8 @@ fn hovering_a_nav_card_previews_it_and_a_click_executes_it() {
 #[test]
 fn a_click_on_a_screen_link_opens_it() {
     let mut rt = hierarchy_rt();
-    rt.handle_stdin_bytes(b"\x1b[B\x1b[1;5A", &Selection::default()); // the web source
-    assert_eq!(
-        selected(&rt),
-        Some(crate::model::Node::Source("web".into()))
-    );
+    rt.handle_stdin_bytes(b"\x1b[B\x1b[1;5A", &Selection::default()); // the web host
+    assert_eq!(selected(&rt), Some(crate::model::Node::Host("web".into())));
     rt.model
         .state
         .focus
@@ -6543,7 +6529,7 @@ fn every_key_a_screen_reads_is_in_the_key_table_and_every_screen_entry_is_read()
     }
 }
 
-/// Two remote sources: `deb-1` serving abduco, whose display reattaches on every session
+/// Two remote hosts: `deb-1` serving abduco, whose display reattaches on every session
 /// change, and `deb-2` serving tmux.
 fn abduco_and_tmux_hosts() -> crate::model::Hosts {
     let mut hosts = crate::model::Hosts::default();
@@ -6560,21 +6546,21 @@ fn logged(log: &std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>) -> Vec<u8> {
     log.lock().unwrap().concat()
 }
 
-/// Returning from another source to an abduco session keeps the other source's session
+/// Returning from another host to an abduco session keeps the other host's session
 /// on screen until the fresh abduco attachment paints, and abduco repaints nothing on
 /// attach. Keys typed meanwhile belong to the selected session: they wait while its
 /// attachment spawns and reach it once it exists, never the session still on screen
 /// and never the stale attachment under the same key.
 #[tokio::test(flavor = "current_thread")]
-async fn keys_typed_while_returning_to_a_reattaching_source_reach_the_selected_session() {
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+async fn keys_typed_while_returning_to_a_reattaching_host_reach_the_selected_session() {
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = abduco_and_tmux_hosts();
     let selected = Selection {
-        source: "deb-1".into(),
+        host: "deb-1".into(),
         session: "abduco2".into(),
     };
     let shown = Selection {
-        source: "deb-2".into(),
+        host: "deb-2".into(),
         session: "tmux1".into(),
     };
     let abduco_key = display_key(&rt.hosts, &selected);
@@ -6620,10 +6606,10 @@ async fn keys_typed_while_returning_to_a_reattaching_source_reach_the_selected_s
 /// attachment exists, so it never reaches a session it was not typed for.
 #[tokio::test(flavor = "current_thread")]
 async fn input_held_for_a_selection_left_behind_is_dropped() {
-    let mut rt = test_rt(fake_env_with_sources(&[]));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
     rt.hosts = abduco_and_tmux_hosts();
     let shown = Selection {
-        source: "deb-2".into(),
+        host: "deb-2".into(),
         session: "tmux1".into(),
     };
     let tmux_key = display_key(&rt.hosts, &shown);
@@ -6631,7 +6617,7 @@ async fn input_held_for_a_selection_left_behind_is_dropped() {
     rt.registry.insert(&tmux_key, tmux);
     rt.model.state.displayed = shown.clone();
     rt.model.state.selection = Selection {
-        source: "deb-1".into(),
+        host: "deb-1".into(),
         session: "abduco2".into(),
     };
     rt.model.state.attach_pending = true;

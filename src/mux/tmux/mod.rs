@@ -65,7 +65,7 @@ pub(crate) fn display_tty_key(host_key: &str, instance_name: &str, attach_id: u6
 
 /// The per-host file where tmux's display client records its own tty: one file per
 /// shared host so a switch reads back THIS client's tty and moves only it. Under
-/// `/tmp` (present + writable on every POSIX host).
+/// `/tmp` (present + writable on every POSIX machine).
 fn display_tty_path(host_key: &str) -> String {
     format!("/tmp/.xmux-cli-{}", display_tty_token(host_key))
 }
@@ -173,7 +173,7 @@ impl Mux for Tmux {
         let b = &self.bin;
         let s = mux::quote_target(session);
         // A client tty the caller already knows moves that client with a plain exec, so a
-        // machine that runs no host shell still switches in place. The follow-up
+        // machine that runs no machine shell still switches in place. The follow-up
         // `refresh-client` forces the new session to repaint the whole screen.
         if let Some(tty) = display_tty.filter(|t| !t.is_empty()) {
             return Some(SwitchPlan::Exec(vec![
@@ -196,7 +196,7 @@ impl Mux for Tmux {
         // Otherwise read the tty THIS host's display attach recorded to its file, then
         // move ONLY that client - guarded on a non-empty value so a missing/empty file
         // never runs `switch-client -c ""` (which would move an arbitrary client). The
-        // switch is a raw shell command, so a machine with no host shell cannot run it
+        // switch is a raw shell command, so a machine with no machine shell cannot run it
         // and the driver reattaches.
         let path = display_tty_path(host_key);
         Some(SwitchPlan::Shell(format!(
@@ -413,7 +413,7 @@ mod display_identity_tests {
             .switch_in_place("jup", "test2", None)
             .expect("a shared mux switches in place via its recorded tty")
         else {
-            panic!("tmux switches through the host shell, not an exec plan");
+            panic!("tmux switches through the machine shell, not an exec plan");
         };
         assert!(
             cmd.contains("cat ") && cmd.contains("jup"),
@@ -430,15 +430,15 @@ mod display_identity_tests {
     }
 
     /// A caller that already KNOWS the client tty gets a plain exec plan instead: move
-    /// that client, then force the new session to repaint the whole screen. No host shell
+    /// that client, then force the new session to repaint the whole screen. No machine shell
     /// is involved, so a machine that runs none still switches in place.
     #[test]
-    fn tmux_switch_in_place_takes_a_known_tty_without_a_host_shell() {
+    fn tmux_switch_in_place_takes_a_known_tty_without_a_machine_shell() {
         let SwitchPlan::Exec(argvs) = Tmux { bin: "tmux".into() }
             .switch_in_place("local", "test2", Some("/dev/pts/3"))
             .expect("a known tty switches in place")
         else {
-            panic!("a known tty needs no host shell");
+            panic!("a known tty needs no machine shell");
         };
         let plan: Vec<Vec<&str>> = argvs
             .iter()

@@ -220,10 +220,10 @@ pub struct RenderPlan {
     pub regions: Regions,
     pub nav_inner: Rect,
     pub nav_cells: Vec<(usize, Rect)>,
-    /// The halves of the rows that read as two targets: a section title's host half and
-    /// source half, and a source card's host half, each with the rect it painted in.
+    /// The halves of the rows that read as two targets: a section title's machine half and
+    /// host half, and a host card's machine half, each with the rect it painted in.
     pub(crate) nav_parts: Vec<(usize, Part, Rect)>,
-    /// The links of the shown host or source screen and where each was painted.
+    /// The links of the shown machine or host screen and where each was painted.
     pub(crate) view_links: Vec<(usize, Rect)>,
     pub nav_row_offset: usize,
     pub nav_col_offset: usize,
@@ -471,15 +471,16 @@ impl Switcher {
                 .nav_cells
                 .iter()
                 .flat_map(|&(i, rect)| {
-                    let (host, source) = self.halves(i, rect.width, num_w, column);
+                    let (machine, host) = self.halves(i, rect.width, num_w, column);
                     let at = |(x, w): (u16, u16)| Rect {
                         x: rect.x + x,
                         width: w.min(rect.width.saturating_sub(x)),
                         ..rect
                     };
-                    host.map(|h| (i, Part::Host, at(h)))
+                    machine
+                        .map(|h| (i, Part::Machine, at(h)))
                         .into_iter()
-                        .chain(source.map(|h| (i, Part::Source, at(h))))
+                        .chain(host.map(|h| (i, Part::Host, at(h))))
                 })
                 .filter(|(_, _, rect)| !rect.is_empty())
                 .collect();
@@ -501,7 +502,7 @@ impl Switcher {
                         address: &parts.address,
                         kind,
                         focused: self.terminal_view,
-                        host: parts.host,
+                        machine_screen: parts.machine_screen,
                         links: &parts.links,
                         link: parts.marks.0,
                         link_hover: parts.marks.1,
@@ -514,9 +515,9 @@ impl Switcher {
         plan
     }
 
-    /// Where the host half and the source half of row `i` paint inside a cell `width`
-    /// wide, as (offset, width) pairs: a section title has both, a source card's
-    /// `{host}/{mux}` has its host half (the rest of the card is the card), and any other
+    /// Where the machine half and the host half of row `i` paint inside a cell `width`
+    /// wide, as (offset, width) pairs: a section title has both, a host card's
+    /// `{machine}/{mux}` has its machine half (the rest of the card is the card), and any other
     /// row has neither. Read from the same text the paint writes, so the halves the
     /// pointer finds are the halves on screen.
     fn halves(
@@ -532,25 +533,26 @@ impl Switcher {
                 let (mark, title) = self.title_text(i, width);
                 let lead = w(&mark);
                 match title.split_once('/') {
-                    Some((host, mux)) => {
-                        (Some((lead, w(host))), Some((lead + w(host) + 1, w(mux))))
-                    }
+                    Some((machine, mux)) => (
+                        Some((lead, w(machine))),
+                        Some((lead + w(machine) + 1, w(mux))),
+                    ),
                     None => (None, Some((lead, w(&title)))),
                 }
             }
             RowRef::Host { .. } => {
                 let identity = self.host_identity(i, width, num_w, show_state_word);
-                let host = identity
+                let machine = identity
                     .split_once('/')
                     .map_or(identity.as_str(), |(h, _)| h);
-                (Some((num_w as u16 + 1, w(host))), None)
+                (Some((num_w as u16 + 1, w(machine))), None)
             }
             _ => (None, None),
         }
     }
 
     /// A section title as painted in a cell `width` wide: the selected mark before it, and
-    /// the `{host}/{mux}` shortened to the room left. A `width` of 0 measures it whole.
+    /// the `{machine}/{mux}` shortened to the room left. A `width` of 0 measures it whole.
     fn title_text(&self, i: usize, width: u16) -> (String, String) {
         let selected = self.selected == i;
         let title = self.section_title(i);
@@ -570,15 +572,15 @@ impl Switcher {
         (mark, title)
     }
 
-    /// A source card's `{host}/{mux}` (or its host alone while no mux is confirmed) as
+    /// A host card's `{machine}/{mux}` (or its machine alone while no mux is confirmed) as
     /// painted in a cell `width` wide, shortened to the room its number, glyph and state
     /// word leave.
     fn host_identity(&self, i: usize, width: u16, num_w: usize, show_state_word: bool) -> String {
-        let (host, mux, _) = context_of(&self.rows[i]);
+        let (machine, mux, _) = context_of(&self.rows[i]);
         let identity = if mux.is_empty() {
-            host.to_string()
+            machine.to_string()
         } else {
-            format!("{host}/{mux}")
+            format!("{machine}/{mux}")
         };
         let word_w = match &self.rows[i].reference {
             RowRef::Host {
@@ -712,24 +714,24 @@ impl Switcher {
         })
     }
 
-    /// What a card is called on the jump popup: its session, or its host and mux.
+    /// What a card is called on the jump popup: its session, or its machine and mux.
     fn card_name(&self, i: usize) -> String {
-        let (host, mux, sess) = context_of(&self.rows[i]);
+        let (machine, mux, sess) = context_of(&self.rows[i]);
         if !sess.is_empty() {
             sess.to_string()
         } else if mux.is_empty() {
-            host.to_string()
+            machine.to_string()
         } else {
-            format!("{host}/{mux}")
+            format!("{machine}/{mux}")
         }
     }
 
-    /// The `{host}/{mux}` a new session lands on.
+    /// The `{machine}/{mux}` a new session lands on.
     fn popover_host(&self, input: &Input, state: &crate::state::State) -> String {
         input
-            .source
+            .host
             .as_deref()
-            .map(|s| state.chrome.source_label(s))
+            .map(|s| state.chrome.host_label(s))
             .unwrap_or_default()
     }
 
@@ -749,7 +751,7 @@ impl Switcher {
     }
 
     /// The one line an empty nav body says: how many hosts are hidden and the key that
-    /// lists them, or a re-scan when there are no hosts.
+    /// lists them, or a re-scan when there are no machines.
     fn nav_guidance(&self, state: &crate::state::State) -> String {
         use crate::model::keys::{entry_for, KeyCommand};
         let key = |command| {
@@ -993,7 +995,7 @@ impl Switcher {
                 address: &parts.address,
                 kind,
                 focused,
-                host: parts.host,
+                machine_screen: parts.machine_screen,
                 links: &parts.links,
                 link: parts.marks.0,
                 link_hover: parts.marks.1,
@@ -1407,13 +1409,13 @@ impl Switcher {
         frame.render_widget(Paragraph::new(Line::from(spans)), mark.rect);
     }
 
-    /// A section title's `{host}/{mux}`, or the host alone when no mux is confirmed.
+    /// A section title's `{machine}/{mux}`, or the machine alone when no mux is confirmed.
     fn section_title(&self, i: usize) -> String {
-        let (host, mux, _) = context_of(&self.rows[i]);
+        let (machine, mux, _) = context_of(&self.rows[i]);
         if mux.is_empty() {
-            host.to_string()
+            machine.to_string()
         } else {
-            format!("{host}/{mux}")
+            format!("{machine}/{mux}")
         }
     }
     /// How many columns the card numbers need: the digit count of the highest number a
@@ -1426,7 +1428,7 @@ impl Switcher {
 
     /// One row measured for the column flow: whether it opens a unit, how wide its
     /// content paints, and how many rows it takes. A section title measures its
-    /// `{host}/{mux}` alone, which is the whole of what it paints in the band: the
+    /// `{machine}/{mux}` alone, which is the whole of what it paints in the band: the
     /// trailing rule belongs to the side list.
     fn flow_card(
         &self,
@@ -1463,14 +1465,14 @@ impl Switcher {
     }
 
     /// Builds one navigation row's lines. A session card is the address column + the
-    /// session name on a single detail line; a section title is the `{host}/{mux}`
+    /// session name on a single detail line; a section title is the `{machine}/{mux}`
     /// header (dim, with a rule filling the row's width in the side list) and carries
     /// no address column;
-    /// a host-state card is the host/mux name on its row, with its state glyph in a
+    /// a host-state card is the machine/mux name on its row, with its state glyph in a
     /// fixed slot, or a spinner in
     /// the level a scanning host has not resolved. A host-state card claims a mux only
-    /// when the mux is CONFIRMED - a source whose mux only config names, unreachable or
-    /// still scanning, names none, so the card reads the host alone or spins in the mux
+    /// when the mux is CONFIRMED - a host whose mux only config names, unreachable or
+    /// still scanning, names none, so the card reads the machine alone or spins in the mux
     /// position. A machine's card reads the machine alone with its glyph or spinner.
     ///
     /// The ADDRESS column carries the card's dim number - the thing `prefix <digit>`
@@ -1523,7 +1525,7 @@ impl Switcher {
             }
         };
 
-        // A section title opens its source information screen when selected. It remains
+        // A section title opens its host screen when selected. It remains
         // bold and unnumbered, with its session cards indented below it.
         if let RowRef::Section { .. } = &row.reference {
             let (mark, title) = self.title_text(i, width);
@@ -1536,8 +1538,8 @@ impl Switcher {
                 .add_modifier(Modifier::BOLD);
             let mut spans = vec![Span::styled(mark, style)];
             match title.split_once('/') {
-                Some((host, mux)) => {
-                    spans.push(Span::styled(host.to_string(), style));
+                Some((machine, mux)) => {
+                    spans.push(Span::styled(machine.to_string(), style));
                     spans.push(Span::styled("/", style));
                     spans.push(Span::styled(mux.to_string(), style));
                 }
@@ -1599,7 +1601,7 @@ impl Switcher {
             line.push(Span::raw(" "));
             return vec![Line::from(line)];
         }
-        // Host-state cards keep one fixed glyph slot after the host/mux identity. The
+        // Host-state cards keep one fixed glyph slot after the machine/mux identity. The
         // selected card adds its state word after that slot. Column measurement reserves
         // the word on every host card, so moving the selection changes paint but never
         // moves the columns. A scanning card turns the ONE spinner in that slot, in the
@@ -1616,7 +1618,7 @@ impl Switcher {
             let pending = Style::default().fg(palette.warning);
             let word =
                 crate::ui::tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable);
-            // A host-state card's number sits on the host/mux line: the row is a word
+            // A host-state card's number sits on the machine/mux line: the row is a word
             // about the host, not the thing the number names.
             let (glyph, glyph_style) = if *scanning {
                 (spinner_glyph.to_string(), pending)
@@ -1641,9 +1643,9 @@ impl Switcher {
             let mut line = address();
             let identity = self.host_identity(i, width, num_w, show_state_word);
             let identity = if filter.is_empty() {
-                if let Some((host, mux)) = identity.split_once('/') {
+                if let Some((machine, mux)) = identity.split_once('/') {
                     vec![
-                        Span::styled(host.to_string(), Style::default().fg(palette.secondary)),
+                        Span::styled(machine.to_string(), Style::default().fg(palette.secondary)),
                         Span::styled("/", Style::default().fg(palette.decoration)),
                         Span::styled(mux.to_string(), Style::default().fg(palette.secondary)),
                     ]
@@ -1679,14 +1681,14 @@ impl Switcher {
         // Session card: the address column + the session name on a single detail line.
         // It carries no state glyph or spinner: a session is a plain card from the
         // moment its host resolves.
-        // The `{host}/{mux}` it used to restate now lives on the section title above it.
+        // The `{machine}/{mux}` it used to restate now lives on the section title above it.
         // The session name is normal weight between the bold title and dim number.
         //
         // The indent a session card hangs at under its title is NOT part of the card;
         // what a card holds is what a card holds at every position.
         let (_, _, sess) = context_of(row);
-        let source = match &row.reference {
-            RowRef::Session { sess } => sess.source.as_str(),
+        let host = match &row.reference {
+            RowRef::Session { sess } => sess.host.as_str(),
             _ => "",
         };
         let mut detail = address();
@@ -1698,7 +1700,7 @@ impl Switcher {
         let session_style = accent;
         detail.extend(highlighted(
             middle_ellipsize(sess, available),
-            &remaining_filter(&format!("{source}/"), filter),
+            &remaining_filter(&format!("{host}/"), filter),
             session_style,
         ));
         detail.push(Span::raw(" "));
@@ -1849,7 +1851,7 @@ impl Switcher {
         )
     }
 
-    /// The body lines of the open list popup (the host problems or the command palette)
+    /// The body lines of the open list popup (the machine problems or the command palette)
     /// in the popup `rect`, each with the item it belongs to, and the popup's frame. The
     /// paint and the pointer's hit-test both read this one answer.
     pub(super) fn list_popup_lines(

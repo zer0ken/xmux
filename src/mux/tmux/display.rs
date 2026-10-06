@@ -19,7 +19,7 @@ impl MuxDriver for TmuxDriver {
             return false;
         }
         let key = ctx.display_key(sel);
-        let Some(host) = ctx.hosts.get(&sel.source) else {
+        let Some(host) = ctx.hosts.get(&sel.host) else {
             return false;
         };
         let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
@@ -34,7 +34,7 @@ impl MuxDriver for TmuxDriver {
             // session.
             if !host.display.in_flight_contains(&key) {
                 tracing::info!(
-                    host = %sel.source,
+                    host = %sel.host,
                     model = "shared",
                     decision = "reattach",
                     reason = "no-live-client",
@@ -53,7 +53,7 @@ impl MuxDriver for TmuxDriver {
                         let tty_key = super::display_tty_key(key, instance_name, id);
                         with_display_tty_record(command, runs_through_shell, &tty_key)
                     })
-                    .expect("the selected source exists");
+                    .expect("the selected host exists");
                 tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
             }
         } else if host.display.shows(&key) != Some(sel.session.as_str()) {
@@ -77,7 +77,7 @@ impl MuxDriver for TmuxDriver {
             // rapid jump that is cancelled) never leaves the prior session's stale
             // cells lingering behind the new content.
             //
-            // A machine that runs a host shell reads, in-shell, the tty the attach
+            // A machine that runs a machine shell reads, in-shell, the tty the attach
             // recorded to its per-host file. A machine that runs no shell has no such
             // file, but its attach child IS the mux client and runs in a PTY xmux opened,
             // whose name the supervisor recorded on the host - hand that over instead.
@@ -89,7 +89,7 @@ impl MuxDriver for TmuxDriver {
             // switch can ride the control connection.
             let tty = host.display_tty.0.clone().filter(|t| !t.is_empty());
             if host.transport.runs_through_shell() && tty.is_none() {
-                if let Some(client) = ctx.mgr.get(&sel.source) {
+                if let Some(client) = ctx.mgr.get(&sel.host) {
                     client.capture_display_tty(&tty_key);
                 }
             }
@@ -101,9 +101,9 @@ impl MuxDriver for TmuxDriver {
             // the recorded-tty plan below.
             let over_control = host.transport.runs_through_shell()
                 && tty.as_deref().is_some()
-                && ctx.mgr.get(&sel.source).is_some();
+                && ctx.mgr.get(&sel.host).is_some();
             let (switched, reason) = if over_control {
-                let client = ctx.mgr.get(&sel.source).unwrap();
+                let client = ctx.mgr.get(&sel.host).unwrap();
                 // A control connection whose writer has returned on a broken pipe still
                 // has a live HostClient, so its presence is no proof that a command can
                 // still be sent. Take the send's own answer: a refused send is a switch
@@ -118,7 +118,7 @@ impl MuxDriver for TmuxDriver {
                     && client.refresh_client_on(tty.as_deref().unwrap());
                 if !sent {
                     tracing::warn!(
-                        host = %sel.source,
+                        host = %sel.host,
                         session = %sel.session,
                         tty = tty.as_deref().unwrap_or(""),
                         "control_switch_not_sent"
@@ -129,7 +129,7 @@ impl MuxDriver for TmuxDriver {
                 let switched = host
                     .mux
                     .switch_in_place(&tty_key, &sel.session, tty.as_deref())
-                    .map(|plan| ctx.run_switch_plan(&sel.source, plan))
+                    .map(|plan| ctx.run_switch_plan(&sel.host, plan))
                     .unwrap_or(false);
                 (
                     switched,
@@ -142,7 +142,7 @@ impl MuxDriver for TmuxDriver {
             };
             if switched {
                 tracing::info!(
-                    host = %sel.source,
+                    host = %sel.host,
                     model = "shared",
                     decision = "switch",
                     reason,
@@ -150,8 +150,8 @@ impl MuxDriver for TmuxDriver {
                     "display_show"
                 );
                 ctx.hosts
-                    .get_mut(&sel.source)
-                    .expect("the selected source exists")
+                    .get_mut(&sel.host)
+                    .expect("the selected host exists")
                     .display
                     .set_shows(&key, &sel.session);
             } else if !host.display.in_flight_contains(&key) {
@@ -161,7 +161,7 @@ impl MuxDriver for TmuxDriver {
                 // the held grid stays on screen until the fresh attachment's paint gate
                 // opens after settled output or the bounded wait.
                 tracing::info!(
-                    host = %sel.source,
+                    host = %sel.host,
                     model = "shared",
                     decision = "reattach",
                     reason = "no-switch",
@@ -176,12 +176,12 @@ impl MuxDriver for TmuxDriver {
                         let tty_key = super::display_tty_key(key, instance_name, id);
                         with_display_tty_record(command, runs_through_shell, &tty_key)
                     })
-                    .expect("the selected source exists");
+                    .expect("the selected host exists");
                 tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
             }
         } else {
             tracing::info!(
-                host = %sel.source,
+                host = %sel.host,
                 model = "shared",
                 decision = "warm",
                 reason = "already-on",
@@ -194,15 +194,15 @@ impl MuxDriver for TmuxDriver {
         true
     }
 
-    fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
+    fn sync(&mut self, host_id: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
         // One PTY per host. Warm it on the first session if not yet attached; reap it
         // (and forget its session) when the host has no sessions.
-        let Some(host) = ctx.hosts.get(source) else {
+        let Some(host) = ctx.hosts.get(host_id) else {
             return;
         };
         match sessions.first() {
             Some(first)
-                if !ctx.registry.contains(source) && !host.display.in_flight_contains(source) =>
+                if !ctx.registry.contains(host_id) && !host.display.in_flight_contains(host_id) =>
             {
                 // Compose the two axes: the MUX supplies the attach argv (attach_plan),
                 // the MACHINE dispatches it (ssh -t + exec / local -S) - the same composition
@@ -213,7 +213,7 @@ impl MuxDriver for TmuxDriver {
                 let command = host.transport.interactive_attach_argv(&mux_argv);
                 let runs_through_shell = host.transport.runs_through_shell();
                 let selection = Selection {
-                    source: source.to_string(),
+                    host: host_id.to_string(),
                     session: first.name.clone(),
                 };
                 ctx.request_attach_with_id(&selection, |id, key, instance_name| {
@@ -222,12 +222,12 @@ impl MuxDriver for TmuxDriver {
                 });
             }
             None => {
-                ctx.registry.remove(source);
+                ctx.registry.remove(host_id);
                 ctx.hosts
-                    .get_mut(source)
-                    .expect("the source exists")
+                    .get_mut(host_id)
+                    .expect("the host exists")
                     .display
-                    .clear(source);
+                    .clear(host_id);
             }
             _ => {}
         }
@@ -237,7 +237,7 @@ impl MuxDriver for TmuxDriver {
 /// Folds the tmux record prefix into a shell-based shared attach's command (the last argv
 /// element), so the attach shell records its OWN tty before exec'ing the attach - the
 /// value a later `switch_in_place` reads back to target xmux's own display client, never
-/// the user's own attached client. An attach that does not run through a host shell has
+/// the user's own attached client. An attach that does not run through a machine shell has
 /// nowhere to run the snippet, so it is returned unchanged: folded into a local attach,
 /// the prefix would corrupt the argv's session-name argument. The transport's
 /// `runs_through_shell` answer gates the record here, in the driver, so the mux itself
@@ -344,7 +344,7 @@ mod tests {
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
-            source: "local".into(),
+            host: "local".into(),
             session: "target".into(),
         };
         let mut driver = TmuxDriver;
@@ -413,7 +413,7 @@ mod tests {
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
-            source: "jup".into(),
+            host: "jup".into(),
             session: "target".into(),
         };
         let mut driver = TmuxDriver;
@@ -499,7 +499,7 @@ mod tests {
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
-            source: "local".into(),
+            host: "local".into(),
             session: "target".into(),
         };
         let mut driver = TmuxDriver;
@@ -566,7 +566,7 @@ mod tests {
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
-            source: "jup".into(),
+            host: "jup".into(),
             session: "api".into(),
         };
 

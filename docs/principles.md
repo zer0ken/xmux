@@ -20,7 +20,7 @@ screen keeps it whole.
 ## Asked-for Requests
 
 xmux reaches a machine only when something asked it to: the launch scan, a user action
-(a re-scan, a login, selecting a card, managing host access, or an operation on a
+(a re-scan, a login, selecting a card, managing machine access, or an operation on a
 session), or a push stream that is already open. No failure raises its own retry, and a machine is
 asked one thing at a time.
 
@@ -113,10 +113,10 @@ rather than a matter of screen shape.
 
 ## Cards and Sections
 
-The nav is a list of numbered cards grouped in sections: one source's session cards
-under its `{host}/{mux}` title, or the cards of hosts with no session to show. `↑`/`↓`
+The nav is a list of numbered cards grouped in sections: one host's session cards
+under its `{machine}/{mux}` title, or the cards of machines with no session to show. `↑`/`↓`
 move between numbered cards and `←`/`→` between sections, and neither step depends on
-the hierarchy of hosts, sources, and sessions, which is reached only through
+the hierarchy of machines, hosts, and sessions, which is reached only through
 `Ctrl+↑`/`Ctrl+↓`, the two parts of a section title, and the links on the machine and
 host screens.
 
@@ -124,30 +124,30 @@ Cards and sections are what the user sees and counts, so stepping through them m
 mean the same thing in a column and in a band, whatever hosts the list holds. Folding
 the hierarchy into the ordinary step would turn the list into a tree whose stops change
 with the inventory. Keeping the hierarchy behind its own inputs leaves the card step
-predictable and still lets every host and source be opened.
+predictable and still lets every machine and host be opened.
 
 ## Hierarchy Separator
 
-Wherever the hierarchy is shown, its levels (host, source, session, window) are parted
-by `/` and by nothing else. A source label always shows both halves, `{host}/{mux}`,
-even for a host serving a single mux.
+Wherever the hierarchy is shown, its levels (machine, host, session, window) are parted
+by `/` and by nothing else. A host label always shows both halves, `{machine}/{mux}`,
+even for a machine serving a single mux.
 
 An id is typed and a label is read. The id keeps its own separator because it is what
 the user types and what xmux is sent; a label parts its levels the way the rest of an
 address on screen does, so one grammar covers every level. Both halves stay because a
-host that appears with its mux on one title and without it on the next reads as two
-hosts.
+machine that appears with its mux on one title and without it on the next reads as two
+machines.
 
 ## Selection by Interest
 
-The selection names what the user is interested in, a host, a source, or a session,
+The selection names what the user is interested in, a machine, a host, or a session,
 never a position in the list. Every path that changes the list resolves the selection
 from that interest by one lineage: a node that loses its card moves to the nearest node
 up its lineage that has one, and a card that appears takes the selection only when the
 interest names it.
 
-The list changes under the user without the user doing anything: a scan answers host
-by host, a host goes down, a logout closes connections, a session ends, a filter
+The list changes under the user without the user doing anything: a scan answers machine
+by machine, a machine goes down, a logout closes connections, a session ends, a filter
 narrows the list. If each of those paths chose a fallback of its own, where the cursor
 landed would depend on which path ran, and because the terminal view follows the
 selection, an unrelated session could appear on screen. One lineage keeps the result
@@ -164,7 +164,7 @@ executes it, with the same effect as Enter.
 When one input both looks and acts, the user cannot look at a thing without acting on
 it and cannot tell which inputs are safe to try. A selection may show its target, as a
 hovered card previews its screen, but it never moves the focus, runs a command, or
-changes a host, a mux, or a session, and the soft selection never moves the hard one.
+changes a machine, a mux, or a session, and the soft selection never moves the hard one.
 Executing opens the screen the target names and gives it the focus, or runs the command
 the target stands for. A binding that selects and executes at once is a deliberate
 shortcut that names its target directly, such as a digit jump or a prefix chord, never

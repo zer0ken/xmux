@@ -1,8 +1,8 @@
 //! The resolved runtime: the roster and the lookups the commands share, resolved from
 //! config plus roster providers after the first frame and on every re-scan. Builds the
-//! runtime source registry from the roster, and owns the scan (concurrent reachability
+//! runtime host registry from the roster, and owns the scan (concurrent reachability
 //! probe, used by `ls`) and the switcher's side-effecting [`Ops`] over the live mux -
-//! including the per-source/per-session probes the event loop streams in. Every source
+//! including the per-host/per-session probes the event loop streams in. Every host
 //! these read comes from the registry.
 
 use std::collections::{HashMap, HashSet};
@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::link::manage;
-use crate::model::source::{self, Runner, Source, SourceSet};
+use crate::model::host_def::{self, HostDef, HostDefs, Runner};
 use crate::model::{Group, Hosts, KeyRegistration, Ops, RegistrationOutcome};
 use crate::provision::config::{self, Config};
 use crate::provision::discovery;
@@ -37,17 +37,17 @@ pub struct LoginDefaults {
     pub address: LoginValue,
     pub port: LoginValue,
     pub username: LoginValue,
-    /// The values ssh effectively uses for the host when a `Host` block names it, or
+    /// The values ssh effectively uses for the machine when a `Host` block names it, or
     /// `None` when no block does. A field neither OpenSSH nor the block reports is
     /// `None`, so nothing is taken to match it.
     pub ssh_effective: Option<crate::transport::Login>,
 }
 
 impl LoginDefaults {
-    pub fn fallback(host: &str) -> Self {
+    pub fn fallback(machine: &str) -> Self {
         Self {
             address: LoginValue {
-                value: host.to_string(),
+                value: machine.to_string(),
                 provenance: "host name",
             },
             port: LoginValue {
@@ -75,7 +75,7 @@ mod login_defaults_tests {
     }
 }
 /// Everything a config resolution decides about WHICH machines and muxes exist. The
-/// runtime source registry is built from it ([`Env::hosts`]).
+/// runtime host registry is built from it ([`Env::hosts`]).
 ///
 /// One value because every field answers the same question from the same read of config
 /// plus the roster providers. A re-scan resolves a FRESH one and swaps it in, so a config
@@ -85,18 +85,18 @@ pub struct Roster {
     pub cfg: Config,
     pub cfg_warnings: Vec<String>,
     pub local_muxes: Vec<String>,
-    /// Which provider put each host on the roster, keyed by HOST name (the machine half
-    /// of a source id). Read only to be SHOWN: the unreachable host screen names it, so
-    /// a host that fails is traceable to the thing that offered it. See
+    /// Which provider put each machine on the roster, keyed by MACHINE name (the machine
+    /// half of a host id). Read only to be SHOWN: the unreachable host screen names it, so
+    /// a machine that fails is traceable to the thing that offered it. See
     /// [`crate::provision::roster::Provider`].
     pub roster_providers: HashMap<String, crate::provision::roster::Provider>,
-    /// The address a provider reported for a host, keyed by HOST name. Only a provider
+    /// The address a provider reported for a machine, keyed by MACHINE name. Only a provider
     /// that knows one contributes; an ssh-config alias has no address of its own. Read
-    /// only to be OFFERED: it seeds the login pane, because a host named by a label this
+    /// only to be OFFERED: it seeds the login pane, because a machine named by a label this
     /// machine cannot resolve is reachable only by the address the provider knew.
-    pub host_addresses: HashMap<String, String>,
+    pub machine_addresses: HashMap<String, String>,
     /// The ssh-config host aliases this resolution offered (a config-assembly product).
-    /// `Hosts::build` runs `Config::host_specs` over these to seed the runtime source
+    /// `Hosts::build` runs `Config::host_specs` over these to seed the runtime host
     /// registry.
     pub ssh_aliases: Vec<String>,
     /// The WSL distributions this resolution listed, as MACHINE names. `Hosts::build`
@@ -115,9 +115,9 @@ pub struct Env {
     /// Behind a lock because a re-scan swaps it. Read it through [`Env::roster`] and the
     /// accessors over it; never hold the guard across an await.
     roster: std::sync::RwLock<Roster>,
-    remote_shells: source::RemoteShells,
+    remote_shells: host_def::RemoteShells,
     /// The process-memory credential store for the run. Every configured, discovered, and
-    /// freshly reconciled source receives this same store, keyed by machine, so an
+    /// freshly reconciled host receives this same store, keyed by machine, so an
     /// off-loop operation cannot miss a login or hold its own copy of the password.
     credentials: crate::transport::auth::Credentials,
     pub ui_prefix: String,
@@ -129,7 +129,7 @@ pub struct Env {
     /// that names it cannot change under one.
     pub own_session: Option<crate::session::Address>,
     /// The local mux server socket parsed from `$TMUX` (`-S` target), threaded into
-    /// the local sources' transports by `Hosts::build`. `None` on the default socket.
+    /// the local hosts' transports by `Hosts::build`. `None` on the default socket.
     pub local_socket: Option<String>,
     /// Whether the roster contains only the config facts available for the first frame.
     pub(crate) startup_pending: bool,
@@ -361,7 +361,7 @@ pub async fn resolve_roster_with(with_neighbors: bool) -> (Roster, Option<anyhow
             if cfg.local.mux.is_auto() {
                 crate::mux::installed_muxes(
                     &*crate::transport::local(None),
-                    &crate::model::source::ExecRunner,
+                    &crate::model::host_def::ExecRunner,
                 )
                 .await
             } else {
@@ -409,7 +409,7 @@ pub async fn resolve_roster_with(with_neighbors: bool) -> (Roster, Option<anyhow
             ssh_aliases: aliases,
             wsl_distros,
             roster_providers,
-            host_addresses,
+            machine_addresses: host_addresses,
             ssh_profiles,
             login_defaults,
             ssh_stanzas,
@@ -455,10 +455,10 @@ pub fn build_startup_env() -> (Env, Option<anyhow::Error>) {
 /// the life of the process. The returned error is the config-parse error.
 pub async fn build_env() -> (Env, Option<anyhow::Error>) {
     let xmux_dir = xmux_dir_path();
-    // The local server socket this machine named, handed on RAW: the source registry
-    // filters it per mux. Reading it back off an assembled source would instead make it
-    // depend on WHICH local mux happens to be first, and a first source that takes no
-    // socket (zellij) would drop it for every source behind it.
+    // The local server socket this machine named, handed on RAW: the host registry
+    // filters it per mux. Reading it back off an assembled host would instead make it
+    // depend on WHICH local mux happens to be first, and a first host that takes no
+    // socket (zellij) would drop it for every host behind it.
     let local_socket = local_socket(std::env::var("TMUX").ok().as_deref());
     let (roster, cfg_err) = resolve_roster().await;
     let ui_prefix = roster.cfg.ui_prefix().to_string();
@@ -470,30 +470,30 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
 }
 
 /// The [`crate::session::Address`] of the session xmux is running in, resolved against
-/// the LOCAL sources, one per entry of the resolved `local_muxes`.
+/// the LOCAL hosts, one per entry of the resolved `local_muxes`.
 ///
-/// The mux names the session; this pairs it with the source id that mux answers as on
+/// The mux names the session; this pairs it with the host id that mux answers as on
 /// this machine, because the refusal has to match the card exactly. A mux xmux does not
 /// serve here leaves it unresolved, which blocks nothing - the same as not being inside
 /// a mux at all.
 pub(crate) fn own_session_address(local_muxes: &[String]) -> Option<crate::session::Address> {
     let (kind, session) = crate::display::attach::own_mux_session()?;
     Some(crate::session::Address::new(
-        &own_source_id(local_muxes, &kind)?,
+        &own_host_id(local_muxes, &kind)?,
         &session,
     ))
 }
 
-/// The LOCAL source id serving mux `kind`, as the mux named itself.
+/// The LOCAL host id serving mux `kind`, as the mux named itself.
 ///
-/// A source spells the binary the user CONFIGURED, which need not be what the mux calls
+/// A host spells the binary the user CONFIGURED, which need not be what the mux calls
 /// itself: psmux answers to `tmux` as well, so a box whose config says `tmux` is served
 /// by psmux all the same. The spelling is matched first, then the tmux-compatible
 /// kinds, which is unambiguous while the box serves one of them. Neither matching leaves the
 /// session unresolved, and an unresolved session blocks nothing.
-fn own_source_id(local_muxes: &[String], kind: &str) -> Option<String> {
+fn own_host_id(local_muxes: &[String], kind: &str) -> Option<String> {
     let qualified = local_muxes.len() > 1;
-    let id = |bin: &str| crate::session::source_id(crate::session::LOCAL_SOURCE, bin, qualified);
+    let id = |bin: &str| crate::session::host_id(crate::session::LOCAL_MACHINE, bin, qualified);
     if let Some(bin) = local_muxes.iter().find(|bin| *bin == kind) {
         return Some(id(bin));
     }
@@ -506,13 +506,13 @@ fn own_source_id(local_muxes: &[String], kind: &str) -> Option<String> {
     it.next().is_none().then(|| id(only))
 }
 
-/// Which provider put each host on the roster, keyed by HOST name.
+/// Which provider put each machine on the roster, keyed by MACHINE name.
 ///
 /// `offered` is what the roster providers answered, already deduped in precedence order.
 /// The two implementations that never pass through those providers are added behind it: a WSL
-/// distribution `wsl.exe` listed, and a host the CONFIG named outright, which is a host
-/// no provider offered and `host_specs` / `wsl_specs` append. First entry wins
-/// throughout, so a host that a provider listed keeps that provider even when a
+/// distribution `wsl.exe` listed, and a machine the CONFIG named outright, which is a
+/// machine no provider offered and `host_specs` / `wsl_specs` append. First entry wins
+/// throughout, so a machine that a provider listed keeps that provider even when a
 /// `[[hosts]]` entry also names it - the entry overrides its mux, it did not put it on
 /// the roster.
 fn roster_providers(
@@ -528,7 +528,7 @@ fn roster_providers(
     for machine in wsl_distros {
         out.entry(machine.clone()).or_insert(Provider::Wsl);
     }
-    for h in &cfg.hosts {
+    for h in &cfg.machines {
         out.entry(h.ssh.clone()).or_insert(Provider::Config);
     }
     for w in &cfg.wsl {
@@ -539,7 +539,7 @@ fn roster_providers(
             .or_insert(Provider::Config);
     }
     // This box is on the roster without anything offering it.
-    out.insert(crate::session::LOCAL_SOURCE.to_string(), Provider::Local);
+    out.insert(crate::session::LOCAL_MACHINE.to_string(), Provider::Local);
     out
 }
 
@@ -551,7 +551,7 @@ fn to_groups(results: Vec<discovery::ScanResult>) -> Vec<Group> {
             let mut sessions = r.sessions;
             crate::model::sort_by_name(&mut sessions);
             Group {
-                source: r.source,
+                host: r.host,
                 err: r.err,
                 sessions,
             }
@@ -569,7 +569,7 @@ impl Env {
         own_session: Option<crate::session::Address>,
         local_socket: Option<String>,
     ) -> Self {
-        let remote_shells = source::RemoteShells::default();
+        let remote_shells = host_def::RemoteShells::default();
         let credentials = crate::transport::auth::Credentials::new(xmux_dir.clone());
         credentials.set_profiles(roster.ssh_profiles.clone());
         Env {
@@ -596,10 +596,10 @@ impl Env {
         f(&self.roster())
     }
 
-    /// The runtime source registry for the roster as it stands: every source config and
-    /// the roster providers name, plus each host whose muxes xmux asks for, sharing this
+    /// The runtime host registry for the roster as it stands: every host config and
+    /// the roster providers name, plus each machine whose muxes xmux asks for, sharing this
     /// environment's credential store and shell-family record. A process builds one and
-    /// adds every source to it, and every consumer reads it.
+    /// adds every host to it, and every consumer reads it.
     pub fn hosts(&self) -> Hosts {
         let mut hosts = self.with_roster(|r| {
             Hosts::build(
@@ -617,7 +617,7 @@ impl Env {
         hosts
     }
 
-    /// Records the shell family a machine's probe read, for every source this
+    /// Records the shell family a machine's probe read, for every host this
     /// environment holds.
     pub(crate) fn record_remote_shell(
         &self,
@@ -647,8 +647,8 @@ impl Env {
     ///
     /// Everything the machine had is carried, not just its name: the provider its card
     /// names and the address the login pane offers, both of which came from the answer
-    /// that is now missing. The sources found on it stay in the source registry, which
-    /// keeps every source of a machine the roster still names.
+    /// that is now missing. The hosts found on it stay in the host registry, which
+    /// keeps every host of a machine the roster still names.
     pub fn carry_probed(&self, fresh: &mut Roster) {
         use crate::provision::roster::Provider;
         let cur = self.roster.read().expect("roster lock");
@@ -661,8 +661,10 @@ impl Env {
             .map(|(machine, _)| machine.clone())
             .collect();
         for machine in lost {
-            if let Some(addr) = cur.host_addresses.get(&machine) {
-                fresh.host_addresses.insert(machine.clone(), addr.clone());
+            if let Some(addr) = cur.machine_addresses.get(&machine) {
+                fresh
+                    .machine_addresses
+                    .insert(machine.clone(), addr.clone());
             }
             if let Some(defaults) = cur.login_defaults.get(&machine) {
                 fresh
@@ -680,8 +682,8 @@ impl Env {
     }
 
     /// Swaps in a freshly resolved roster, forgetting the held credentials of every
-    /// machine it no longer names. The sources move with it through the source registry
-    /// ([`Hosts::reconcile`]), which keeps the sources mux discovery found on a machine
+    /// machine it no longer names. The hosts move with it through the host registry
+    /// ([`Hosts::reconcile`]), which keeps the hosts mux discovery found on a machine
     /// the fresh roster still names.
     pub fn replace_roster(&self, fresh: Roster) {
         let machines: HashSet<String> = Hosts::build(
@@ -701,19 +703,19 @@ impl Env {
         *self.roster.write().expect("roster lock") = fresh;
     }
 
-    /// Asks each host on the roster that leaves its muxes to xmux which of them it
-    /// serves, and adds a source to `hosts` for every mux that answered, named the way a
-    /// written list names them. `only` narrows the question to one host. Returns the
-    /// hosts that gained no source, in roster order.
+    /// Asks each machine on the roster that leaves its muxes to xmux which of them it
+    /// serves, and adds a host to `hosts` for every mux that answered, named the way a
+    /// written list names them. `only` narrows the question to one machine. Returns the
+    /// machines that gained no host, in roster order.
     ///
-    /// The app asks this of a host once it connects; a CLI command has no connected host
-    /// to wait on, so it asks here, as part of the one request it is, and in the same
-    /// order: the host's reachability probe first, and its muxes only once it connected.
-    /// Hosts are asked concurrently, and each host one command at a time.
+    /// The app asks this of a machine once it connects; a CLI command has no connected
+    /// machine to wait on, so it asks here, as part of the one request it is, and in the
+    /// same order: the machine's reachability probe first, and its muxes only once it
+    /// connected. Machines are asked concurrently, and each machine one command at a time.
     pub async fn discover_hosts(&self, hosts: &mut Hosts, only: Option<&str>) -> Vec<Unanswered> {
         let machines: Vec<String> = self.with_roster(|r| {
             r.cfg
-                .auto_hosts(&r.ssh_aliases, &r.wsl_distros)
+                .auto_machines(&r.ssh_aliases, &r.wsl_distros)
                 .into_iter()
                 .filter(|m| only.is_none_or(|o| o == m))
                 .filter(|m| !hosts.serves_any(m))
@@ -735,7 +737,7 @@ impl Env {
             transport.set_credentials(self.credentials.clone());
             set.spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore not closed");
-                (i, ask_host(&machine, transport, remote_shells).await)
+                (i, ask_machine(&machine, transport, remote_shells).await)
             });
         }
         let mut answers: Vec<(usize, Result<Vec<String>, String>)> = set.join_all().await;
@@ -747,7 +749,7 @@ impl Env {
                 Ok(found) => found,
                 Err(reason) => {
                     unanswered.push(Unanswered {
-                        host: machine.clone(),
+                        machine: machine.clone(),
                         reason: Some(reason),
                     });
                     continue;
@@ -755,7 +757,7 @@ impl Env {
             };
             if found.is_empty() {
                 unanswered.push(Unanswered {
-                    host: machine.clone(),
+                    machine: machine.clone(),
                     reason: None,
                 });
             }
@@ -771,29 +773,29 @@ impl Env {
         unanswered
     }
 
-    /// Probes every source in `hosts` and returns the merged, name-ordered host/session
+    /// Probes every host in `hosts` and returns the merged, name-ordered host/session
     /// groups (used by `ls`, which needs no window/pane detail).
     pub async fn scan(&self, hosts: &Hosts) -> Vec<Group> {
-        let srcs = hosts.source_list();
-        let results = discovery::scan_all(&srcs, SCAN_TIMEOUT, SCAN_CONCURRENCY).await;
+        let defs = hosts.def_list();
+        let results = discovery::scan_all(&defs, SCAN_TIMEOUT, SCAN_CONCURRENCY).await;
         to_groups(results)
     }
 
-    /// Probes every source in `hosts` and streams each host/session group the moment
-    /// its probe resolves, in completion order. Used by `ls` so it can print a source
+    /// Probes every host in `hosts` and streams each host/session group the moment
+    /// its probe resolves, in completion order. Used by `ls` so it can print a host
     /// as soon as it answers instead of appearing frozen while a dead host is
     /// still timing out. The receiver closes after the last probe resolves.
     pub async fn scan_stream(&self, hosts: &Hosts) -> mpsc::Receiver<Group> {
-        let srcs = hosts.source_list();
-        let mut rx = discovery::scan_stream(&srcs, SCAN_TIMEOUT, SCAN_CONCURRENCY).await;
-        let (tx, out) = mpsc::channel(srcs.len().max(1));
+        let defs = hosts.def_list();
+        let mut rx = discovery::scan_stream(&defs, SCAN_TIMEOUT, SCAN_CONCURRENCY).await;
+        let (tx, out) = mpsc::channel(defs.len().max(1));
         tokio::spawn(async move {
             while let Some(r) = rx.recv().await {
                 let mut sessions = r.sessions;
                 crate::model::sort_by_name(&mut sessions);
                 let _ = tx
                     .send(Group {
-                        source: r.source,
+                        host: r.host,
                         err: r.err,
                         sessions,
                     })
@@ -804,22 +806,22 @@ impl Env {
     }
 
     /// Builds the switcher's side-effecting actions over the live mux, resolving each
-    /// source through `sources`, the source registry's published set. A shared
+    /// host through `hosts`, the host registry's published set. A shared
     /// semaphore bounds the concurrent probes (`list-sessions`) the
     /// event loop streams through these ops.
-    pub fn ops(self: &Arc<Self>, sources: SourceSet) -> Arc<dyn Ops> {
+    pub fn ops(self: &Arc<Self>, hosts: HostDefs) -> Arc<dyn Ops> {
         Arc::new(EnvOps {
             env: self.clone(),
-            sources,
+            hosts,
             sem: Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY)),
         })
     }
 }
 
-/// Renders one scan group for `xmux ls`: the `<source>/<name>` lines of a
-/// reachable source, or a single unreachable line for a dead one. Tabs are not
+/// Renders one scan group for `xmux ls`: the `<host>/<name>` lines of a
+/// reachable host, or a single unreachable line for a dead one. Tabs are not
 /// used as column separators: a tab advances to the next tab stop, so a first
-/// column (`<source>/<name>`) that varies in width pushes every later column
+/// column (`<host>/<name>`) that varies in width pushes every later column
 /// onto a different stop and the rows do not line up. Instead each column is
 /// padded to the widest cell in the group, so the group's rows share one
 /// vertical line regardless of the terminal's tab-stop configuration.
@@ -835,7 +837,7 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
     if let Some(err) = &g.err {
         return (
             Vec::new(),
-            Some(format!("{}  (unreachable: {err})", g.source)),
+            Some(format!("{}  (unreachable: {err})", g.host)),
         );
     }
     let addr_w = g
@@ -865,25 +867,25 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
     (lines, None)
 }
 
-/// A host [`Env::discover_hosts`] added no source for.
+/// A machine [`Env::discover_hosts`] added no host for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unanswered {
-    pub host: String,
-    /// Why the host could not be asked, or `None` when it answered and no mux xmux
+    pub machine: String,
+    /// Why the machine could not be asked, or `None` when it answered and no mux xmux
     /// supports is installed there.
     pub reason: Option<String>,
 }
 
-/// One host's reachability probe, then, once it connected, its mux discovery over the
-/// shell family the probe read. `Err` carries the reason the host could not be asked.
-async fn ask_host(
+/// One machine's reachability probe, then, once it connected, its mux discovery over the
+/// shell family the probe read. `Err` carries the reason the machine could not be asked.
+async fn ask_machine(
     machine: &str,
     mut transport: Box<dyn crate::transport::Transport>,
-    remote_shells: source::RemoteShells,
+    remote_shells: host_def::RemoteShells,
 ) -> Result<Vec<String>, String> {
     if transport.is_remote() {
         if let Some(argv) = transport.raw_shell_argv(crate::transport::vocab::SHELL_PROBE) {
-            let out = source::ExecRunner
+            let out = host_def::ExecRunner
                 .run_spec(&argv)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -892,29 +894,29 @@ async fn ask_host(
             transport.set_remote_shell(shell);
         }
     }
-    crate::mux::host_muxes(&*transport, &source::ExecRunner).await
+    crate::mux::machine_muxes(&*transport, &host_def::ExecRunner).await
 }
 
 /// The live [`Ops`] implementation over a [`Env`].
 struct EnvOps {
     env: Arc<Env>,
-    /// What the source registry holds, read at each operation.
-    sources: SourceSet,
+    /// What the host registry holds, read at each operation.
+    hosts: HostDefs,
     /// Bounds the in-flight probes so a fan-out of ssh connects stays capped.
     sem: Arc<tokio::sync::Semaphore>,
 }
 
 impl EnvOps {
-    fn source(&self, alias: &str) -> anyhow::Result<Source> {
-        self.sources
+    fn host(&self, alias: &str) -> anyhow::Result<HostDef> {
+        self.hosts
             .get(alias)
-            .ok_or_else(|| anyhow::anyhow!("unknown source {alias:?}"))
+            .ok_or_else(|| anyhow::anyhow!("unknown host {alias:?}"))
     }
 }
 
 async fn with_timeout<T>(
     timeout: Duration,
-    fut: impl std::future::Future<Output = Result<T, source::RunError>>,
+    fut: impl std::future::Future<Output = Result<T, host_def::RunError>>,
 ) -> anyhow::Result<T> {
     match tokio::time::timeout(timeout, fut).await {
         Ok(Ok(v)) => Ok(v),
@@ -925,23 +927,23 @@ async fn with_timeout<T>(
 
 #[async_trait::async_trait]
 impl Ops for EnvOps {
-    fn sources(&self) -> Vec<String> {
-        self.sources.list().into_iter().map(|s| s.alias).collect()
+    fn hosts(&self) -> Vec<String> {
+        self.hosts.list().into_iter().map(|s| s.alias).collect()
     }
 
-    async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>> {
-        let src = self.source(source)?;
+    async fn list_sessions(&self, id: &str) -> anyhow::Result<Vec<Session>> {
+        let def = self.host(id)?;
         let _permit = self.sem.acquire().await?;
         let deadline = tokio::time::Instant::now() + SCAN_TIMEOUT;
         let mut host = with_timeout(
             SCAN_TIMEOUT,
-            source::within_deadline(deadline, src.host_for_op()),
+            host_def::within_deadline(deadline, def.host_for_op()),
         )
         .await?;
         with_timeout(
             deadline.saturating_duration_since(tokio::time::Instant::now()),
-            source::within_deadline(deadline, async {
-                host.enumerate_with(src.run_with())
+            host_def::within_deadline(deadline, async {
+                host.enumerate_with(def.run_with())
                     .await
                     .map(|()| host.inventory.sessions)
             }),
@@ -949,13 +951,13 @@ impl Ops for EnvOps {
         .await
     }
 
-    async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
-        let src = self.source(source)?;
-        let host = with_timeout(DETAIL_TIMEOUT, src.host_for_op()).await?;
+    async fn new_session(&self, id: &str, name: &str) -> anyhow::Result<Session> {
+        let def = self.host(id)?;
+        let host = with_timeout(DETAIL_TIMEOUT, def.host_for_op()).await?;
         let assigned =
-            with_timeout(DETAIL_TIMEOUT, manage::create(&host, src.run_with(), name)).await?;
+            with_timeout(DETAIL_TIMEOUT, manage::create(&host, def.run_with(), name)).await?;
         Ok(Session {
-            source: source.to_string(),
+            host: id.to_string(),
             name: assigned,
             mux: host.mux.kind().to_string(),
             windows: 1,
@@ -965,14 +967,14 @@ impl Ops for EnvOps {
 
     async fn login_command(
         &self,
-        source: &str,
+        host: &str,
         login: &crate::transport::Login,
         mut password: String,
     ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
-        // A login authenticates the MACHINE, which may serve no source yet: a host whose
+        // A login authenticates the MACHINE, which may serve no host yet: a machine whose
         // muxes xmux asks for has none until it answers, and it cannot answer until the
         // login lets xmux in.
-        let machine = crate::session::machine_of(source);
+        let machine = crate::session::machine_of(host);
         let mut transport = crate::transport::kind_for(
             machine,
             machine.to_string(),
@@ -1020,20 +1022,19 @@ impl Ops for EnvOps {
 
     fn write_login_stanza(
         &self,
-        source: &str,
+        host: &str,
         login: &crate::transport::Login,
     ) -> Result<(), String> {
-        write_ssh_config_stanza(crate::session::machine_of(source), login)
-            .map_err(|e| e.to_string())
+        write_ssh_config_stanza(crate::session::machine_of(host), login).map_err(|e| e.to_string())
     }
 
     async fn register_login_key(
         &self,
-        source: &str,
+        host: &str,
         login: &crate::transport::Login,
         register: KeyRegistration,
     ) -> RegistrationOutcome {
-        let registration = match self.register_key(source, login, register).await {
+        let registration = match self.register_key(host, login, register).await {
             Ok(()) => RegistrationOutcome::Registered,
             Err(error) if error.starts_with("skipped: ") => {
                 RegistrationOutcome::Skipped(error.trim_start_matches("skipped: ").to_string())
@@ -1042,13 +1043,13 @@ impl Ops for EnvOps {
         };
         match &registration {
             RegistrationOutcome::Registered => {
-                tracing::info!(host = %crate::session::machine_of(source), "public key registered");
+                tracing::info!(machine = %crate::session::machine_of(host), "public key registered");
             }
             RegistrationOutcome::Skipped(reason) => {
-                tracing::warn!(host = %crate::session::machine_of(source), reason = %reason, "public key registration skipped");
+                tracing::warn!(machine = %crate::session::machine_of(host), reason = %reason, "public key registration skipped");
             }
             RegistrationOutcome::Failed(reason) => {
-                tracing::warn!(host = %crate::session::machine_of(source), reason = %reason, "public key registration failed");
+                tracing::warn!(machine = %crate::session::machine_of(host), reason = %reason, "public key registration failed");
             }
             RegistrationOutcome::NotRequested => {}
         }
@@ -1057,11 +1058,11 @@ impl Ops for EnvOps {
 }
 
 impl EnvOps {
-    /// Puts this machine's public key on the host the login just reached, with an ssh of
+    /// Puts this machine's public key on the machine the login just reached, with an ssh of
     /// its own answered the way the login was, then checks that the key logs in alone.
     async fn register_key(
         &self,
-        source: &str,
+        host: &str,
         login: &crate::transport::Login,
         register: KeyRegistration,
     ) -> Result<(), String> {
@@ -1074,7 +1075,7 @@ impl EnvOps {
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
-        let machine = crate::session::machine_of(source);
+        let machine = crate::session::machine_of(host);
         self.env.record_remote_shell(machine, shell);
         let mut transport = crate::transport::kind_for(
             machine,
@@ -1087,7 +1088,7 @@ impl EnvOps {
         transport.set_login(login.clone());
         transport.set_remote_shell(shell);
         transport.set_credentials(self.env.credentials.clone());
-        register_and_verify(&source::ExecRunner, &*transport, shell, &key).await
+        register_and_verify(&host_def::ExecRunner, &*transport, shell, &key).await
     }
 }
 
@@ -1098,7 +1099,7 @@ const KEY_LOGIN_CHECK: &str = "exit 0";
 /// Registers `key` over `transport`, whose commands authenticate the way the login did,
 /// then logs in with nothing but a key.
 ///
-/// Only a key login that runs its command makes the registration a success. A host that
+/// Only a key login that runs its command makes the registration a success. A machine that
 /// accepts the key and then cannot open a session would refuse every later command from
 /// this client, which offers the key first, so the line this registration added is
 /// removed again. A key login that failed before authentication finished proves nothing
@@ -1110,7 +1111,7 @@ async fn register_and_verify(
     key: &str,
 ) -> Result<(), String> {
     let sanitize =
-        |error: source::RunError| crate::link::unlock::sanitize_output(&error.to_string());
+        |error: host_def::RunError| crate::link::unlock::sanitize_output(&error.to_string());
     let command = key_command(shell, key).map_err(|e| e.to_string())?;
     let command = transport
         .raw_shell_argv(&command)
@@ -1148,7 +1149,7 @@ async fn register_and_verify(
                 }
             };
             Err(format!(
-                "the host accepted the key but could not open a session: {reason}\n{kept}"
+                "the machine accepted the key but could not open a session: {reason}\n{kept}"
             ))
         }
     }
@@ -1162,7 +1163,7 @@ enum KeyLogin {
     /// Authentication succeeded and no session followed. Carries what ssh reported after
     /// authenticating.
     NoSession(String),
-    /// The login failed before authentication finished: the host was unreachable, timed
+    /// The login failed before authentication finished: the machine was unreachable, timed
     /// out, or refused the key.
     NotVerified(String),
 }
@@ -1170,12 +1171,12 @@ enum KeyLogin {
 /// Reads a key-only login's result. ssh at `LogLevel=VERBOSE` writes `Authenticated to`
 /// when authentication succeeds, so a failure after that line happened while opening the
 /// session, and the lines after it are how the server's refusal looked from this side.
-fn key_login_verdict(result: Result<Vec<u8>, source::RunError>) -> KeyLogin {
+fn key_login_verdict(result: Result<Vec<u8>, host_def::RunError>) -> KeyLogin {
     let error = match result {
         Ok(_) => return KeyLogin::Works,
         Err(error) => error.to_string(),
     };
-    let text = source::without_exit_line(&error);
+    let text = host_def::without_exit_line(&error);
     let mut lines = text.lines();
     if lines.any(|line| line.contains("Authenticated to ")) {
         let after: Vec<&str> = lines
@@ -1372,12 +1373,12 @@ fn key_body(key: &str) -> Result<(&str, &str), std::io::Error> {
     Ok((kind, body))
 }
 
-/// One line of a host's key files that holds one of this machine's public keys.
+/// One line of a machine's key files that holds one of this machine's public keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostKeyLine {
+pub struct MachineKeyLine {
     pub(crate) file: KeyFile,
     /// The key type and body the line holds, which is what a removal matches. The rest of
-    /// the line never leaves the host, so bytes that are not text cannot change it.
+    /// the line never leaves the machine, so bytes that are not text cannot change it.
     pub(crate) kind: String,
     pub(crate) body: String,
     /// Whether the line's comment ends with [`KEY_MARK`], so the registration appended it.
@@ -1388,13 +1389,13 @@ pub struct HostKeyLine {
 /// `unmarked`, and which of the searched keys the line holds, colon separated.
 const KEY_FOUND: &str = "xmux-key-line:";
 
-/// The lines of the host's key files that hold one of this machine's public keys, found
+/// The lines of the machine's key files that hold one of this machine's public keys, found
 /// over `transport` in one command. A machine with no public key has nothing to find, and
 /// is not asked.
-pub(crate) async fn find_host_keys(
+pub(crate) async fn find_machine_keys(
     runner: &dyn Runner,
     transport: &dyn Transport,
-) -> Result<Vec<HostKeyLine>, String> {
+) -> Result<Vec<MachineKeyLine>, String> {
     let keys = tokio::task::spawn_blocking(this_machine_key_bodies)
         .await
         .map_err(|e| e.to_string())?;
@@ -1405,7 +1406,7 @@ async fn find_key_lines(
     runner: &dyn Runner,
     transport: &dyn Transport,
     keys: &[(String, String)],
-) -> Result<Vec<HostKeyLine>, String> {
+) -> Result<Vec<MachineKeyLine>, String> {
     if keys.is_empty() {
         return Ok(Vec::new());
     }
@@ -1425,10 +1426,10 @@ async fn find_key_lines(
 /// file with an unmarked line among `lines` loses every line holding one of their keys;
 /// any other file loses only the marked ones. The command fails, leaving the file as it
 /// was, unless the rewritten file holds every other line and none of the removed ones.
-pub(crate) async fn remove_host_keys(
+pub(crate) async fn remove_machine_keys(
     runner: &dyn Runner,
     transport: &dyn Transport,
-    lines: &[HostKeyLine],
+    lines: &[MachineKeyLine],
 ) -> Result<(), String> {
     if lines.is_empty() {
         return Ok(());
@@ -1461,9 +1462,9 @@ pub(crate) async fn remove_host_keys(
 }
 
 /// The lines a key search printed, each naming its file, whether it is marked, and the
-/// 1-based index into `keys` of the key it holds. The host compares the key fields itself,
+/// 1-based index into `keys` of the key it holds. The machine compares the key fields itself,
 /// so anything else in its output is noise and is skipped.
-fn found_key_lines(out: &[u8], keys: &[(String, String)]) -> Vec<HostKeyLine> {
+fn found_key_lines(out: &[u8], keys: &[(String, String)]) -> Vec<MachineKeyLine> {
     let text = String::from_utf8_lossy(out);
     text.lines()
         .filter_map(|printed| {
@@ -1479,7 +1480,7 @@ fn found_key_lines(out: &[u8], keys: &[(String, String)]) -> Vec<HostKeyLine> {
             };
             let index: usize = fields.next()?.parse().ok()?;
             let (kind, body) = keys.get(index.checked_sub(1)?)?;
-            Some(HostKeyLine {
+            Some(MachineKeyLine {
                 file,
                 kind: kind.clone(),
                 body: body.clone(),
@@ -1534,8 +1535,8 @@ fn posix_key_awk(keys: &[(String, String)], all: bool) -> String {
     )
 }
 
-/// The remote command that prints a [`KEY_FOUND`] line for every line of the host's key
-/// files holding one of `keys`, compared by key type and body on the host. A file that
+/// The remote command that prints a [`KEY_FOUND`] line for every line of the machine's
+/// key files holding one of `keys`, compared by key type and body on the machine. A file that
 /// does not exist holds nothing; a file that cannot be read fails the command.
 fn find_keys_command(
     shell: crate::transport::vocab::RemoteShell,
@@ -1554,7 +1555,7 @@ fn find_keys_command(
     }
 }
 
-/// The remote command that puts `key` where the host's sshd reads it, written for the
+/// The remote command that puts `key` where the machine's sshd reads it, written for the
 /// shell family the login read. The key goes in marked with [`KEY_MARK`]. Both forms are
 /// idempotent: a file that already holds a key line with the same key type and body,
 /// marked or not, is left as it is, so a second login changes nothing. Each prints a
@@ -1570,7 +1571,7 @@ fn key_command(
 }
 
 /// The remote command that takes the lines holding `keys` out of each of `files`: every
-/// such line when the file's flag is set, only the marked ones otherwise. A POSIX host has
+/// such line when the file's flag is set, only the marked ones otherwise. A POSIX machine has
 /// only the one file.
 ///
 /// Both forms read the file as bytes, so a line in any encoding is kept exactly as it
@@ -1650,7 +1651,7 @@ pub fn authorized_keys_command(key: &str) -> Result<String, std::io::Error> {
     ))
 }
 
-/// The Windows form, for a host whose ssh shell is `cmd.exe` or PowerShell.
+/// The Windows form, for a machine whose ssh shell is `cmd.exe` or PowerShell.
 ///
 /// The script goes to `powershell -EncodedCommand`, which both shells run the same way
 /// and which leaves nothing in it for either shell to parse. Windows PowerShell ships with
@@ -1863,7 +1864,7 @@ fn existing_public_key_line() -> Result<Option<String>, std::io::Error> {
 }
 
 /// The key type and body of every public key the registration could have chosen, so a key
-/// it put on a host is found whichever file held it then.
+/// it put on a machine is found whichever file held it then.
 fn this_machine_key_bodies() -> Vec<(String, String)> {
     let dir = home_dir().join(".ssh");
     PUBLIC_KEY_FILES
@@ -1885,7 +1886,7 @@ mod tests {
 
     /// The login's verdict is its remote command's exit code, so the command must report
     /// the AUTHENTICATION and nothing else, in a word every shell family has: a locked
-    /// host's family is unknown, because the probe that reads it never got past the
+    /// machine's family is unknown, because the probe that reads it never got past the
     /// refusal that locked the card. A login that registers a key reads the family with a
     /// probe that every family answers and exits 0 on.
     /// A second login runs the registration again, so it must change nothing then.
@@ -1975,8 +1976,8 @@ mod tests {
         vec![("ssh-ed25519".to_string(), THIS_BODY.to_string())]
     }
 
-    fn found(file: KeyFile, marked: bool) -> HostKeyLine {
-        HostKeyLine {
+    fn found(file: KeyFile, marked: bool) -> MachineKeyLine {
+        MachineKeyLine {
             file,
             kind: "ssh-ed25519".into(),
             body: THIS_BODY.into(),
@@ -1984,7 +1985,7 @@ mod tests {
         }
     }
 
-    /// The host compares the key fields and prints only which file, whether marked, and
+    /// The machine compares the key fields and prints only which file, whether marked, and
     /// which key; a line naming no searched key, or anything else, is skipped.
     #[test]
     fn the_search_output_names_the_file_the_mark_and_the_key() {
@@ -2025,7 +2026,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_machine_with_no_public_key_asks_the_host_nothing() {
+    async fn a_machine_with_no_public_key_asks_the_remote_machine_nothing() {
         let runner = ScriptedRunner::new(vec![]);
         let found = find_key_lines(&runner, &multiplexing_ssh(), &[])
             .await
@@ -2035,7 +2036,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_host_that_cannot_be_reached_fails_the_search_with_ssh_s_reason() {
+    async fn a_machine_that_cannot_be_reached_fails_the_search_with_ssh_s_reason() {
         let runner = ScriptedRunner::new(vec![Err(RunError::Exit {
             stderr: "ssh: connect to host prod port 22: Connection timed out\n".into(),
             code: 255,
@@ -2051,11 +2052,11 @@ mod tests {
     #[tokio::test]
     async fn the_removal_takes_the_chosen_lines_by_key_in_one_command() {
         let shell = crate::transport::vocab::RemoteShell::Posix;
-        let sent = |lines: &[HostKeyLine]| {
+        let sent = |lines: &[MachineKeyLine]| {
             let runner = ScriptedRunner::new(vec![Ok("")]);
             let lines = lines.to_vec();
             async move {
-                remove_host_keys(&runner, &multiplexing_ssh(), &lines)
+                remove_machine_keys(&runner, &multiplexing_ssh(), &lines)
                     .await
                     .unwrap();
                 let commands = runner.commands();
@@ -2075,7 +2076,7 @@ mod tests {
         assert_eq!(sent(&both).await, expected(true));
         assert_eq!(sent(&both[..1]).await, expected(false));
         let runner = ScriptedRunner::new(vec![]);
-        remove_host_keys(&runner, &multiplexing_ssh(), &[])
+        remove_machine_keys(&runner, &multiplexing_ssh(), &[])
             .await
             .unwrap();
         assert!(runner.commands().is_empty(), "nothing chosen asks nothing");
@@ -2340,7 +2341,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Runner for ScriptedRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             self.commands.lock().unwrap().push(args.to_vec());
             self.answers
@@ -2396,7 +2397,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_host_that_opens_no_session_for_the_key_loses_the_line_this_registration_added() {
+    async fn a_machine_that_opens_no_session_for_the_key_loses_the_line_this_registration_added() {
         let runner = ScriptedRunner::new(vec![Ok(ADDED_USER_FILE), Err(no_session()), Ok("")]);
         let error = register_and_verify(
             &runner,
@@ -2482,7 +2483,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_windows_host_loses_the_line_in_every_file_this_registration_added() {
+    async fn a_windows_machine_loses_the_line_in_every_file_this_registration_added() {
         let runner = ScriptedRunner::new(vec![
             Ok("xmux-key-added:authorized_keys\r\nxmux-key-added:administrators_authorized_keys\r\n"),
             Err(no_session()),
@@ -2559,7 +2560,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::model::source::{RunError, Runner};
+    use crate::model::host_def::{RunError, Runner};
     use crate::provision::config::Config;
     use crate::session::Session;
 
@@ -2634,7 +2635,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Runner for StaticRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             Ok(self.0.clone())
         }
@@ -2669,7 +2670,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Runner for RecordingRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             self.commands
                 .lock()
@@ -2679,12 +2680,12 @@ mod tests {
         }
     }
 
-    fn remote_psmux(runner: std::sync::Arc<dyn Runner>) -> Source {
+    fn remote_psmux(runner: std::sync::Arc<dyn Runner>) -> HostDef {
         remote_psmux_as("prod", runner)
     }
 
-    fn remote_psmux_as(alias: &str, runner: std::sync::Arc<dyn Runner>) -> Source {
-        Source {
+    fn remote_psmux_as(alias: &str, runner: std::sync::Arc<dyn Runner>) -> HostDef {
+        HostDef {
             alias: alias.into(),
             binary: "psmux".into(),
             kind: crate::transport::MachineKind::Ssh {
@@ -2705,7 +2706,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Runner for SlowProbeRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             if args.last().map(String::as_str) == Some(crate::transport::vocab::SHELL_PROBE) {
                 self.probes
@@ -2718,7 +2719,7 @@ mod tests {
         }
     }
 
-    fn test_source(alias: &str, remote: bool, line: &str) -> Source {
+    fn test_host(alias: &str, remote: bool, line: &str) -> HostDef {
         let kind = if remote {
             crate::transport::MachineKind::Ssh {
                 id: String::new(),
@@ -2732,7 +2733,7 @@ mod tests {
                 socket: None,
             }
         };
-        Source {
+        HostDef {
             alias: alias.into(),
             binary: "tmux".into(),
             kind,
@@ -2752,17 +2753,17 @@ mod tests {
         ))
     }
 
-    /// The operations over `sources`, each sharing the environment's credential store and
-    /// shell-family record the way every source the registry publishes does.
-    fn ops_over(env: &Arc<Env>, sources: Vec<Source>) -> Arc<dyn Ops> {
-        let set = SourceSet::default();
+    /// The operations over `hosts`, each sharing the environment's credential store and
+    /// shell-family record the way every host the registry publishes does.
+    fn ops_over(env: &Arc<Env>, hosts: Vec<HostDef>) -> Arc<dyn Ops> {
+        let set = HostDefs::default();
         set.replace(
-            sources
+            hosts
                 .into_iter()
-                .map(|mut source| {
-                    source.remote_shells = env.remote_shells.clone();
-                    source.credentials = env.credentials();
-                    source
+                .map(|mut host| {
+                    host.remote_shells = env.remote_shells.clone();
+                    host.credentials = env.credentials();
+                    host
                 })
                 .collect(),
         );
@@ -2908,17 +2909,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_host_with_no_source_yet_can_be_logged_into() {
-        // A login authenticates the machine, and a host whose muxes xmux asks for has no
-        // source until it answers, which a locked host cannot do before the login.
+    async fn a_machine_with_no_host_yet_can_be_logged_into() {
+        // A login authenticates the machine, and a machine whose muxes xmux asks for has no
+        // host until it answers, which a locked machine cannot do before the login.
         let env = env_with(Roster {
             ssh_aliases: vec!["win".to_string()],
             ..Default::default()
         });
         let hosts = env.hosts();
-        assert!(hosts.source("win").is_none(), "precondition");
+        assert!(hosts.def("win").is_none(), "precondition");
         let command = env
-            .ops(hosts.sources())
+            .ops(hosts.defs())
             .login_command(
                 "win",
                 &crate::transport::Login {
@@ -2929,7 +2930,7 @@ mod tests {
             )
             .await
             .expect("credential accepted")
-            .expect("an ssh host has a login");
+            .expect("an ssh machine has a login");
         assert!(command.iter().any(|a| a == "win"), "{command:?}");
         assert_eq!(
             command.last().unwrap(),
@@ -2946,7 +2947,7 @@ mod tests {
         let env = env_with(Roster::default());
         for machine in ["local", "wsl.Ubuntu"] {
             assert!(env
-                .ops(SourceSet::default())
+                .ops(HostDefs::default())
                 .login_command(
                     machine,
                     &crate::transport::Login::default(),
@@ -2970,7 +2971,7 @@ mod tests {
             Roster {
                 ssh_aliases: vec!["prod".into()],
                 roster_providers: [("prod".to_string(), Provider::Neighbor)].into(),
-                host_addresses: [("prod".to_string(), "100.87.27.26".to_string())].into(),
+                machine_addresses: [("prod".to_string(), "100.87.27.26".to_string())].into(),
                 login_defaults: [(
                     "prod".to_string(),
                     LoginDefaults {
@@ -3013,7 +3014,7 @@ mod tests {
             "the card still names what offered it"
         );
         assert_eq!(
-            fresh.host_addresses.get("prod").map(String::as_str),
+            fresh.machine_addresses.get("prod").map(String::as_str),
             Some("100.87.27.26"),
             "the login pane still offers the address the probe had found"
         );
@@ -3055,19 +3056,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_sessions_probes_one_source() {
-        // EnvOps::list_sessions probes a single source by alias, returning its
+    async fn list_sessions_probes_one_host() {
+        // EnvOps::list_sessions probes a single host by alias, returning its
         // sessions (the per-host streaming probe the event loop fans out).
         let env = env_with(Roster {
             local_muxes: vec!["tmux".into()],
             ..Default::default()
         });
-        let ops = ops_over(&env, vec![test_source("local", false, "2:1:editor\n")]);
-        assert_eq!(ops.sources(), vec!["local".to_string()]);
+        let ops = ops_over(&env, vec![test_host("local", false, "2:1:editor\n")]);
+        assert_eq!(ops.hosts(), vec!["local".to_string()]);
         let sessions = ops.list_sessions("local").await.unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].name, "editor");
-        assert_eq!(sessions[0].source, "local");
+        assert_eq!(sessions[0].host, "local");
     }
 
     #[tokio::test]
@@ -3132,17 +3133,17 @@ mod tests {
         assert_eq!(runner.probes.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
-    fn group(source: &str, err: Option<&str>, sessions: Vec<Session>) -> Group {
+    fn group(host: &str, err: Option<&str>, sessions: Vec<Session>) -> Group {
         Group {
-            source: source.into(),
+            host: host.into(),
             err: err.map(|s| s.to_string()),
             sessions,
         }
     }
 
-    fn sess(source: &str, name: &str, windows: i64, attached: bool) -> Session {
+    fn sess(host: &str, name: &str, windows: i64, attached: bool) -> Session {
         Session {
-            source: source.into(),
+            host: host.into(),
             name: name.into(),
             mux: String::new(),
             windows,
@@ -3197,17 +3198,17 @@ mod tests {
     }
 
     #[test]
-    fn the_roster_records_what_offered_each_host() {
+    fn the_roster_records_what_offered_each_machine() {
         use crate::provision::roster::Provider;
         // `jupiter00` is on the roster twice over: a provider listed it AND a `[[hosts]]`
         // entry names it. The entry overrides its mux, it did not put it on the roster.
         let cfg = Config {
-            hosts: vec![
-                crate::provision::config::HostConfig {
+            machines: vec![
+                crate::provision::config::MachineConfig {
                     ssh: "written-down".into(),
                     mux: Default::default(),
                 },
-                crate::provision::config::HostConfig {
+                crate::provision::config::MachineConfig {
                     ssh: "jupiter00".into(),
                     mux: Default::default(),
                 },
@@ -3223,7 +3224,7 @@ mod tests {
         assert_eq!(got.get("jupiter00"), Some(&Provider::SshConfig));
         assert_eq!(got.get("kyla"), Some(&Provider::Neighbor));
         assert_eq!(got.get("wsl.Ubuntu-24.04"), Some(&Provider::Wsl));
-        // A host no provider listed is offered by the config that names it.
+        // A machine no provider listed is offered by the config that names it.
         assert_eq!(got.get("written-down"), Some(&Provider::Config));
         // This box is on the roster without anything offering it.
         assert_eq!(got.get("local"), Some(&Provider::Local));
@@ -3361,15 +3362,15 @@ mod tests {
     #[tokio::test]
     async fn to_groups_sorts_sessions_by_name() {
         let results = vec![discovery::ScanResult {
-            source: "local".into(),
+            host: "local".into(),
             sessions: vec![
                 Session {
-                    source: "local".into(),
+                    host: "local".into(),
                     name: "old".into(),
                     ..Default::default()
                 },
                 Session {
-                    source: "local".into(),
+                    host: "local".into(),
                     name: "new".into(),
                     ..Default::default()
                 },

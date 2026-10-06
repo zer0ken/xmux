@@ -48,7 +48,7 @@ impl MuxDriver for PsmuxDriver {
             return false;
         }
         let key = ctx.display_key(sel);
-        let Some(host) = ctx.hosts.get(&sel.source) else {
+        let Some(host) = ctx.hosts.get(&sel.host) else {
             return false;
         };
         let live = ctx.registry.contains(&key);
@@ -60,7 +60,7 @@ impl MuxDriver for PsmuxDriver {
             // is nothing to reach and reattaching would kill the client the user just
             // moved with psmux's own key binding.
             tracing::info!(
-                host = %sel.source,
+                host = %sel.host,
                 model = "per-session",
                 decision = "hold",
                 reason = "client-reports-this-session",
@@ -70,8 +70,8 @@ impl MuxDriver for PsmuxDriver {
             // The client's own report is the truth, so record it: the bookkeeping and the
             // client now agree, and the next show reads a belief the client backs.
             ctx.hosts
-                .get_mut(&sel.source)
-                .expect("the selected source exists")
+                .get_mut(&sel.host)
+                .expect("the selected host exists")
                 .display
                 .set_shows(&key, &sel.session);
         } else {
@@ -87,7 +87,7 @@ impl MuxDriver for PsmuxDriver {
             // Ready installs immediately.
             let reason = if live { "reshow" } else { "no-live-client" };
             tracing::info!(
-                host = %sel.source,
+                host = %sel.host,
                 model = "per-session",
                 decision = "reattach",
                 reason,
@@ -97,28 +97,28 @@ impl MuxDriver for PsmuxDriver {
             let command = {
                 let host = ctx
                     .hosts
-                    .get_mut(&sel.source)
-                    .expect("the selected source exists");
+                    .get_mut(&sel.host)
+                    .expect("the selected host exists");
                 host.display.clear(&key);
                 let mux_argv = host.mux.attach_plan(&sel.session);
                 host.transport.exec_argv(true, &mux_argv)
             };
             let id = ctx
                 .request_attach(sel, command)
-                .expect("the selected source exists");
+                .expect("the selected host exists");
             tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
         }
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
     }
 
-    fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
+    fn sync(&mut self, id: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
         // Per-session attaches are selected on demand by `show`, not pre-warmed: sync
         // only tears down the host PTY when the host has no sessions left.
         if sessions.is_empty() {
-            ctx.registry.remove(source);
-            if let Some(host) = ctx.hosts.get_mut(source) {
-                host.display.clear(source);
+            ctx.registry.remove(id);
+            if let Some(host) = ctx.hosts.get_mut(id) {
+                host.display.clear(id);
             }
         }
     }
@@ -216,7 +216,7 @@ mod tests {
         let mut attach_seq = 0u64;
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
         let sel = Selection {
-            source: "local".into(),
+            host: "local".into(),
             session: "vfy-ps-b".into(),
         };
 
@@ -266,7 +266,7 @@ mod tests {
         let mut attach_seq = 0u64;
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
         let sel = Selection {
-            source: "local".into(),
+            host: "local".into(),
             session: "vfy-ps-a".into(),
         };
 
@@ -336,7 +336,7 @@ mod tests {
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
-            source: "local".into(),
+            host: "local".into(),
             session: "target".into(),
         };
 
@@ -478,7 +478,7 @@ mod tests {
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
-            source: "local".into(),
+            host: "local".into(),
             session: "target".into(),
         };
         let mut driver = PsmuxDriver;
@@ -544,7 +544,7 @@ mod tests {
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let sel = Selection {
-            source: "local".into(),
+            host: "local".into(),
             session: "target".into(),
         };
         let mut driver = PsmuxDriver;

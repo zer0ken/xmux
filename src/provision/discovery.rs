@@ -1,6 +1,6 @@
-//! Probes every source concurrently to gather the sessions reachable from this
-//! machine, isolating each source so one unreachable mux never blocks or fails
-//! the rest. It owns the fan-out: bounded concurrency, a per-source timeout, and
+//! Probes every host concurrently to gather the sessions reachable from this
+//! machine, isolating each host so one unreachable mux never blocks or fails
+//! the rest. It owns the fan-out: bounded concurrency, a per-host timeout, and
 //! order-preserving results.
 
 use std::sync::Arc;
@@ -10,15 +10,15 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use crate::model::source::{within_deadline, Source};
+use crate::model::host_def::{within_deadline, HostDef};
 use crate::session::Session;
 
-/// One source's scan outcome. A non-`None` `err` means the source was
+/// One host's scan outcome. A non-`None` `err` means the host was
 /// unreachable, in which case `sessions` is empty.
 #[derive(Debug, Clone)]
 pub struct ScanResult {
-    /// The source alias.
-    pub source: String,
+    /// The host alias.
+    pub host: String,
     /// Empty when unreachable.
     pub sessions: Vec<Session>,
     /// `Some` ⇒ unreachable (the message).
@@ -26,40 +26,36 @@ pub struct ScanResult {
 }
 
 impl ScanResult {
-    /// This source's reachability in the single [`Liveness`](crate::model::Liveness)
+    /// This host's reachability in the single [`Liveness`](crate::model::Liveness)
     /// enum. The message stays in `err`.
     pub fn liveness(&self) -> crate::model::Liveness {
         crate::model::Liveness::from_scan_err(&self.err)
     }
 }
 
-/// Enumerates one source within a single budget shared by first contact and listing.
-async fn scan_one(s: Source, per_source_timeout: Duration) -> ScanResult {
+/// Enumerates one host within a single budget shared by first contact and listing.
+async fn scan_one(s: HostDef, per_host_timeout: Duration) -> ScanResult {
     let alias = s.alias.clone();
-    let deadline = tokio::time::Instant::now() + per_source_timeout;
+    let deadline = tokio::time::Instant::now() + per_host_timeout;
     // The outer timeouts bound a runner that does not limit itself; the deadline
     // makes a real command time out first, so they never drop it mid-read.
-    let mut host = match timeout(
-        per_source_timeout,
-        within_deadline(deadline, s.host_for_op()),
-    )
-    .await
+    let mut host = match timeout(per_host_timeout, within_deadline(deadline, s.host_for_op())).await
     {
         Ok(Ok(host)) => host,
         Ok(Err(e)) => {
             return ScanResult {
-                source: alias,
+                host: alias,
                 sessions: Vec::new(),
                 err: Some(e.to_string()),
             };
         }
         Err(_) => {
             return ScanResult {
-                source: alias,
+                host: alias,
                 sessions: Vec::new(),
                 err: Some(format!(
                     "timed out after {}s",
-                    per_source_timeout.as_secs_f64()
+                    per_host_timeout.as_secs_f64()
                 )),
             };
         }
@@ -71,51 +67,51 @@ async fn scan_one(s: Source, per_source_timeout: Duration) -> ScanResult {
     .await
     {
         Ok(Ok(())) => ScanResult {
-            source: alias,
+            host: alias,
             sessions: host.inventory.sessions,
             err: None,
         },
         Ok(Err(e)) => ScanResult {
-            source: alias,
+            host: alias,
             sessions: Vec::new(),
             err: Some(e.to_string()),
         },
         Err(_) => ScanResult {
-            source: alias,
+            host: alias,
             sessions: Vec::new(),
             err: Some(format!(
                 "timed out after {}s",
-                per_source_timeout.as_secs_f64()
+                per_host_timeout.as_secs_f64()
             )),
         },
     }
 }
 
-/// Probes every source concurrently and returns one [`ScanResult`] per source,
+/// Probes every host concurrently and returns one [`ScanResult`] per host,
 /// in input order. At most `max_concurrent` probes run at once; each probe is
-/// bounded by `timeout`. One unreachable source never blocks or fails the others.
+/// bounded by `timeout`. One unreachable host never blocks or fails the others.
 pub async fn scan_all(
-    srcs: &[Source],
-    per_source_timeout: Duration,
+    defs: &[HostDef],
+    per_host_timeout: Duration,
     max_concurrent: usize,
 ) -> Vec<ScanResult> {
     let max_concurrent = max_concurrent.max(1);
     let sem = Arc::new(Semaphore::new(max_concurrent));
     let mut set: JoinSet<(usize, ScanResult)> = JoinSet::new();
 
-    for (i, s) in srcs.iter().enumerate() {
+    for (i, s) in defs.iter().enumerate() {
         let s = s.clone();
         let sem = sem.clone();
         set.spawn(async move {
-            // Acquire a slot BEFORE starting the timeout so a queued source does
+            // Acquire a slot BEFORE starting the timeout so a queued host does
             // not burn its budget waiting for a free slot.
             let _permit = sem.acquire().await.expect("semaphore not closed");
-            let result = scan_one(s, per_source_timeout).await;
+            let result = scan_one(s, per_host_timeout).await;
             (i, result)
         });
     }
 
-    let mut out: Vec<Option<ScanResult>> = (0..srcs.len()).map(|_| None).collect();
+    let mut out: Vec<Option<ScanResult>> = (0..defs.len()).map(|_| None).collect();
     while let Some(joined) = set.join_next().await {
         let (i, result) = joined.expect("scan task panicked");
         out[i] = Some(result);
@@ -125,31 +121,31 @@ pub async fn scan_all(
         .collect()
 }
 
-/// Streams each source's scan outcome as it completes, in completion order. Like
-/// [`scan_all`] it probes concurrently with bounded concurrency and a per-source
-/// timeout, but it hands each result out the moment that source resolves instead
-/// of withholding everything until the slowest source answers. A caller
+/// Streams each host's scan outcome as it completes, in completion order. Like
+/// [`scan_all`] it probes concurrently with bounded concurrency and a per-host
+/// timeout, but it hands each result out the moment that host resolves instead
+/// of withholding everything until the slowest host answers. A caller
 /// (`xmux ls`) can print what it already knows while a dead host is still timing
 /// out, so the command never appears frozen. The receiver closes once every probe
 /// has produced its result.
 pub async fn scan_stream(
-    srcs: &[Source],
-    per_source_timeout: Duration,
+    defs: &[HostDef],
+    per_host_timeout: Duration,
     max_concurrent: usize,
 ) -> mpsc::Receiver<ScanResult> {
     let max_concurrent = max_concurrent.max(1);
-    let (tx, rx) = mpsc::channel(srcs.len().max(1));
+    let (tx, rx) = mpsc::channel(defs.len().max(1));
     let sem = Arc::new(Semaphore::new(max_concurrent));
     let mut set: JoinSet<()> = JoinSet::new();
 
-    for s in srcs.iter().cloned() {
+    for s in defs.iter().cloned() {
         let sem = sem.clone();
         let tx = tx.clone();
         set.spawn(async move {
-            // Acquire a slot BEFORE starting the timeout so a queued source does
+            // Acquire a slot BEFORE starting the timeout so a queued host does
             // not burn its budget waiting for a free slot.
             let _permit = sem.acquire().await.expect("semaphore not closed");
-            let result = scan_one(s, per_source_timeout).await;
+            let result = scan_one(s, per_host_timeout).await;
             let _ = tx.send(result).await;
         });
     }
@@ -163,7 +159,7 @@ pub async fn scan_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::source::{RunError, Runner};
+    use crate::model::host_def::{RunError, Runner};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -175,7 +171,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for StaticRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             match &self.err_msg {
                 Some(m) => Err(RunError::Other(m.clone())),
@@ -184,17 +180,17 @@ mod tests {
         }
     }
 
-    // A generic source for the scan-behavior tests (ordering, unreachable
-    // propagation, concurrency, timeout) — all source-type-agnostic. Uses `tmux`
+    // A generic host for the scan-behavior tests (ordering, unreachable
+    // propagation, concurrency, timeout) — all host-type-agnostic. Uses `tmux`
     // (the aggregate-server path) so `list_sessions` exercises the runner directly;
-    // local psmux's one-server-per-session registry path is tested in `source`.
-    // Modeled as a REMOTE source so each distinct `alias` is a distinct host id: the
+    // local psmux's one-server-per-session registry path is tested in `host_def`.
+    // Modeled as a REMOTE host so each distinct `alias` is a distinct host id: the
     // session tag is the host id (`transport.host_id()`), which for a remote equals the
-    // alias. (Only one LOCAL source can exist, always with the alias `"local"`, so
+    // alias. (Only one LOCAL host can exist, always with the alias `"local"`, so
     // distinct test hosts are remotes.) The `StaticRunner` ignores the wrapped argv, so
     // remote-vs-local does not change the canned output.
-    fn scan_source(alias: &str, r: Arc<dyn Runner>) -> Source {
-        Source {
+    fn scan_host(alias: &str, r: Arc<dyn Runner>) -> HostDef {
+        HostDef {
             alias: alias.into(),
             binary: "tmux".into(),
             kind: crate::transport::MachineKind::Ssh {
@@ -220,13 +216,13 @@ mod tests {
     fn scan_result_projects_liveness() {
         use crate::model::Liveness;
         let live = ScanResult {
-            source: "a".into(),
+            host: "a".into(),
             sessions: Vec::new(),
             err: None,
         };
         assert_eq!(live.liveness(), Liveness::Live);
         let dead = ScanResult {
-            source: "a".into(),
+            host: "a".into(),
             sessions: Vec::new(),
             err: Some("boom".into()),
         };
@@ -235,38 +231,38 @@ mod tests {
 
     #[tokio::test]
     async fn scan_all_preserves_order_and_content() {
-        let srcs = vec![
-            scan_source("a", static_ok("2:1:editor\n")),
-            scan_source("b", static_ok("1:0:build\n")),
-            scan_source("c", static_ok("3:1:shell\n")),
+        let defs = vec![
+            scan_host("a", static_ok("2:1:editor\n")),
+            scan_host("b", static_ok("1:0:build\n")),
+            scan_host("c", static_ok("3:1:shell\n")),
         ];
-        let got = scan_all(&srcs, Duration::from_secs(1), 4).await;
+        let got = scan_all(&defs, Duration::from_secs(1), 4).await;
         assert_eq!(got.len(), 3);
         let want_alias = ["a", "b", "c"];
         let want_name = ["editor", "build", "shell"];
         for (i, r) in got.iter().enumerate() {
-            assert_eq!(r.source, want_alias[i]);
+            assert_eq!(r.host, want_alias[i]);
             assert!(r.err.is_none());
             assert_eq!(r.sessions.len(), 1);
             assert_eq!(r.sessions[0].name, want_name[i]);
-            assert_eq!(r.sessions[0].source, want_alias[i]);
+            assert_eq!(r.sessions[0].host, want_alias[i]);
         }
     }
 
     #[tokio::test]
     async fn scan_all_one_unreachable_does_not_stop_others() {
-        let srcs = vec![
-            scan_source("a", static_ok("1:1:one\n")),
-            scan_source(
+        let defs = vec![
+            scan_host("a", static_ok("1:1:one\n")),
+            scan_host(
                 "b",
                 Arc::new(StaticRunner {
                     out: Vec::new(),
                     err_msg: Some("ssh: connect to host b port 22: Connection timed out".into()),
                 }),
             ),
-            scan_source("c", static_ok("1:0:two\n")),
+            scan_host("c", static_ok("1:0:two\n")),
         ];
-        let got = scan_all(&srcs, Duration::from_secs(1), 4).await;
+        let got = scan_all(&defs, Duration::from_secs(1), 4).await;
         assert_eq!(got.len(), 3);
         assert!(got[1].err.is_some());
         assert!(got[1].sessions.is_empty());
@@ -278,14 +274,14 @@ mod tests {
 
     #[tokio::test]
     async fn scan_all_reachable_empty() {
-        let srcs = vec![scan_source(
+        let defs = vec![scan_host(
             "a",
             Arc::new(StaticRunner {
                 out: Vec::new(),
                 err_msg: None,
             }),
         )];
-        let got = scan_all(&srcs, Duration::from_secs(1), 4).await;
+        let got = scan_all(&defs, Duration::from_secs(1), 4).await;
         assert_eq!(got.len(), 1);
         assert!(got[0].err.is_none());
         assert!(got[0].sessions.is_empty());
@@ -299,7 +295,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for ConcurrencyRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             let n = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max.fetch_max(n, Ordering::SeqCst);
@@ -315,8 +311,8 @@ mod tests {
             active: AtomicI32::new(0),
             max: AtomicI32::new(0),
         });
-        let srcs: Vec<Source> = (0..5).map(|_| scan_source("s", cr.clone())).collect();
-        let got = scan_all(&srcs, Duration::from_secs(1), 2).await;
+        let defs: Vec<HostDef> = (0..5).map(|_| scan_host("s", cr.clone())).collect();
+        let got = scan_all(&defs, Duration::from_secs(1), 2).await;
         assert_eq!(got.len(), 5);
         assert!(
             cr.max.load(Ordering::SeqCst) <= 2,
@@ -331,8 +327,8 @@ mod tests {
             active: AtomicI32::new(0),
             max: AtomicI32::new(0),
         });
-        let srcs: Vec<Source> = (0..4).map(|_| scan_source("s", cr.clone())).collect();
-        let got = scan_all(&srcs, Duration::from_secs(1), 0).await;
+        let defs: Vec<HostDef> = (0..4).map(|_| scan_host("s", cr.clone())).collect();
+        let got = scan_all(&defs, Duration::from_secs(1), 0).await;
         assert_eq!(got.len(), 4);
         assert!(
             cr.max.load(Ordering::SeqCst) <= 1,
@@ -346,7 +342,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for BlockingRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             tokio::time::sleep(Duration::from_secs(10)).await;
             Ok(b"1:0:s\n".to_vec())
@@ -357,7 +353,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for SlowFirstUseRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             tokio::time::sleep(Duration::from_millis(30)).await;
             if args.last().map(String::as_str) == Some(crate::transport::vocab::SHELL_PROBE) {
@@ -391,7 +387,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for HungExecRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             // A single process, so the post-kill drain reaches EOF at once: a shell
             // wrapper would fork a grandchild holding the pipe write ends.
@@ -410,7 +406,7 @@ mod tests {
                 dropped: self.dropped.clone(),
                 returned: false,
             };
-            let out = crate::model::source::ExecRunner.run(name, &args).await;
+            let out = crate::model::host_def::ExecRunner.run(name, &args).await;
             mark.returned = true;
             out
         }
@@ -419,7 +415,7 @@ mod tests {
     #[tokio::test]
     async fn scan_budget_lets_the_command_tear_itself_down() {
         let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let srcs = vec![scan_source(
+        let defs = vec![scan_host(
             "prod",
             Arc::new(HungExecRunner {
                 dropped: dropped.clone(),
@@ -427,7 +423,7 @@ mod tests {
         )];
 
         let start = std::time::Instant::now();
-        let got = scan_all(&srcs, Duration::from_secs(2), 1).await;
+        let got = scan_all(&defs, Duration::from_secs(2), 1).await;
 
         assert!(got[0].err.is_some());
         assert!(
@@ -443,21 +439,21 @@ mod tests {
 
     #[tokio::test]
     async fn first_shell_probe_and_listing_share_the_scan_timeout() {
-        let srcs = vec![scan_source("prod", Arc::new(SlowFirstUseRunner))];
+        let defs = vec![scan_host("prod", Arc::new(SlowFirstUseRunner))];
 
-        let got = scan_all(&srcs, Duration::from_millis(40), 1).await;
+        let got = scan_all(&defs, Duration::from_millis(40), 1).await;
 
         assert_eq!(got[0].err.as_deref(), Some("timed out after 0.04s"));
     }
 
     #[tokio::test]
-    async fn scan_all_per_source_timeout() {
-        let srcs = vec![scan_source("slow", Arc::new(BlockingRunner))];
+    async fn scan_all_per_host_timeout() {
+        let defs = vec![scan_host("slow", Arc::new(BlockingRunner))];
         let start = std::time::Instant::now();
-        let got = scan_all(&srcs, Duration::from_millis(20), 4).await;
+        let got = scan_all(&defs, Duration::from_millis(20), 4).await;
         assert!(
             start.elapsed() < Duration::from_secs(2),
-            "did not honor per-source timeout"
+            "did not honor per-host timeout"
         );
         assert_eq!(got.len(), 1);
         assert!(got[0].err.is_some());
@@ -465,24 +461,24 @@ mod tests {
 
     #[tokio::test]
     async fn scan_stream_hands_each_result_out_as_it_completes() {
-        // A slow source and a fast one; the fast one must reach the receiver
+        // A slow host and a fast one; the fast one must reach the receiver
         // first, so a caller can print it without waiting on the slow one.
-        let srcs = vec![
-            scan_source("slow", Arc::new(BlockingRunner)),
-            scan_source("fast", static_ok("1:0:ready\n")),
+        let defs = vec![
+            scan_host("slow", Arc::new(BlockingRunner)),
+            scan_host("fast", static_ok("1:0:ready\n")),
         ];
-        let mut rx = scan_stream(&srcs, Duration::from_secs(1), 4).await;
+        let mut rx = scan_stream(&defs, Duration::from_secs(1), 4).await;
         let first = rx.recv().await.expect("a result");
         let second = rx.recv().await.expect("a result");
         assert!(
             rx.recv().await.is_none(),
             "channel closes after every probe"
         );
-        // The fast source completes before the slow one, regardless of input order.
-        assert_eq!(first.source, "fast");
+        // The fast host completes before the slow one, regardless of input order.
+        assert_eq!(first.host, "fast");
         assert!(first.err.is_none());
         assert_eq!(first.sessions[0].name, "ready");
-        assert_eq!(second.source, "slow");
-        assert!(second.err.is_some(), "the slow source times out");
+        assert_eq!(second.host, "slow");
+        assert!(second.err.is_some(), "the slow host times out");
     }
 }

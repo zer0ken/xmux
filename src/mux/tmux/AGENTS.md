@@ -4,11 +4,11 @@
 
 `mux/tmux` is the tmux implementation, the one shared-server mux: one aggregate server
 holds every session and serves a `-CC` control stream. The display driver keeps ONE PTY
-per source, warmed on the first session and MOVED to another session with
+per host, warmed on the first session and MOVED to another session with
 `switch-client`, an in-place move with no teardown. A remote shared attach records its
 OWN controlling tty to a file unique to that process run and attachment before exec, so
 a later switch targets xmux's own display client and never the user's own attached
-client. A LOCAL shared source has no remote shell to record or read the tty, so it
+client. A LOCAL shared host has no remote shell to record or read the tty, so it
 reattaches instead.
 
 ## Module Seams
@@ -23,11 +23,11 @@ reattaches instead.
 
 ## Invariants
 
-- A shared source keeps ONE PTY, keyed by source id; a session change MOVES it rather
+- A shared host keeps ONE PTY, keyed by host id; a session change MOVES it rather
   than tearing it down.
 - A remote in-place switch reads the tty the live attach recorded to its own file and
   never runs with an empty client tty.
-- Sync warms the source PTY on the first session and reaps it when the source has no
+- Sync warms the host PTY on the first session and reaps it when the host has no
   sessions.
 - The `-CC` metadata client sets `ignore-size` and never sends a client size, so it
   cannot shrink the session it lands in, which is often the one xmux itself runs in.
@@ -39,5 +39,5 @@ reattaches instead.
 - Do not read a file back over the control connection with `run-shell`; its output
   lands after the reply block closes. Stage the file in a named buffer and read it with
   `show-buffer`.
-- Do not decide inside the mux whether an attach runs through a host shell; the driver
+- Do not decide inside the mux whether an attach runs through the machine's shell; the driver
   reads that from the transport.

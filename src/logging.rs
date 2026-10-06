@@ -39,7 +39,7 @@ pub struct LogGuard {
 /// How many daily files are kept. A rolling log that only ever rolls is a log that grows
 /// without end: the oldest file goes when a new day opens, so the directory holds a bounded
 /// window rather than every day xmux has ever run. Two weeks, because the window has to be
-/// long enough to answer "when did this host start failing" from what is on disk.
+/// long enough to answer "when did this machine start failing" from what is on disk.
 const KEEP_DAYS: usize = 14;
 
 /// The files this log is written to, as the pattern the appender produces: the daily

@@ -27,10 +27,10 @@ broken config never blocks it.
   list, so a removal is never reported done while its target remains.
 - The Windows uninstall helper reports what it could not remove in a log the command
   names; the command never reports the deferred part as done.
-- `doctor` asks the network nothing and reports a failed source with the same state
+- `doctor` asks the network nothing and reports a failed host with the same state
   word the app's cards use.
 
 ## Verification
 
 - Exercise each subcommand's argv parsing and dispatch from the binary shim, and the
-  update command's method detection on a host that cannot be touched.
+  update command's method detection on a machine that cannot be touched.

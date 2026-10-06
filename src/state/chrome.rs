@@ -8,7 +8,7 @@ use ratatui::style::{Color, Style};
 /// The tree and terminal view border's three colours. `active` marks nav focus,
 /// `inactive` marks terminal focus, and `hover` is the drag-resize grab cue.
 ///
-/// The defaults are xmux's own and the same on every source: the palette's `primary`
+/// The defaults are xmux's own and the same on every host: the palette's `primary`
 /// for nav focus, `disabled` for terminal focus, and `accent` for the grab cue. The
 /// border says which VIEW holds focus, which is a fact about xmux and not about the mux
 /// on the other side of it, so a border that changed hue as the selection moved between
@@ -23,15 +23,15 @@ pub struct ViewBorderColors {
     pub hover: Color,
 }
 
-/// How xmux reaches one source, in the words the unreachable screen prints.
+/// How xmux reaches one host, in the words the unreachable screen prints.
 ///
-/// Resolved once at startup from that source's own config, because how a source is
+/// Resolved once at startup from that host's own config, because how a host is
 /// REACHED cannot change under a run - only whether it answers can. Every field is
 /// already words: the screen prints them and nothing branches on any of them, which is
-/// what keeps this layer blind to which machine kind or which mux a source is.
+/// what keeps this layer blind to which machine kind or which mux a host is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SourceReach {
-    /// Whether the machine is reached over SSH and can use host access actions.
+pub struct HostReach {
+    /// Whether the machine is reached over SSH and can use machine access actions.
     pub ssh: bool,
     /// The command a session listing spawns, spelled so it can be run by hand. The one
     /// datum that turns "it failed" into something the user can reproduce outside xmux.
@@ -48,7 +48,7 @@ pub struct SourceReach {
     /// The socket / ControlMaster path the mux is addressed through. Empty ⇒ no row,
     /// which is the honest answer for a machine addressed without one.
     pub socket: String,
-    /// How the source's session list becomes current.
+    /// How the host's session list becomes current.
     pub refresh: String,
 }
 
@@ -104,14 +104,14 @@ pub struct Chrome {
     pub(crate) braille_animation: bool,
     pub(crate) login_defaults: HashMap<String, crate::provision::env::LoginDefaults>,
     pub(crate) ssh_stanzas: HashMap<String, String>,
-    /// What offered each host to the roster, keyed by HOST name and already reduced to
-    /// the words to print (set once by the app). The unreachable host screen names it.
+    /// What offered each machine to the roster, keyed by MACHINE name and already reduced
+    /// to the words to print (set once by the app). The unreachable machine screen names it.
     /// Empty in tests, where the row is then absent rather than blank.
     pub(crate) roster_providers: HashMap<String, String>,
-    /// How xmux reaches each source, keyed by SOURCE id (set once by the app). The
+    /// How xmux reaches each host, keyed by HOST id (set once by the app). The
     /// unreachable screen states it: a host that failed is worth little without what was
-    /// asked of it and how. See [`SourceReach`].
-    pub(crate) source_reach: HashMap<String, SourceReach>,
+    /// asked of it and how. See [`HostReach`].
+    pub(crate) host_reach: HashMap<String, HostReach>,
     /// The log file every dispatched command and its result is written to (set once by the
     /// app). The unreachable screen names the path, so the full history of what was run
     /// is findable rather than being something the user has to know about.
@@ -257,8 +257,8 @@ impl Chrome {
         self.nav_position = position;
     }
 
-    /// Sets what offered each host to the roster. The app calls this once at startup
-    /// with the assembled roster; a host missing from the map simply shows no such row,
+    /// Sets what offered each machine to the roster. The app calls this once at startup
+    /// with the assembled roster; a machine missing from the map simply shows no such row,
     /// which is the honest answer for one nothing recorded.
     pub(crate) fn set_roster_providers(&mut self, providers: HashMap<String, String>) {
         self.roster_providers = providers;
@@ -274,54 +274,54 @@ impl Chrome {
         self.ssh_stanzas = stanzas;
     }
 
-    /// What ssh WOULD use to reach `source`, as the login pane's starting values: the
+    /// What ssh WOULD use to reach `host`, as the login pane's starting values: the
     /// address, the port, and the username, as provisioning resolved them.
     ///
     /// An effective ssh address, port, or user wins when present. Missing values fall back
     /// to the provider address or host name, port 22, and this machine's account name.
     /// A pane that opened on a failure therefore opens showing the effective connection
     /// values, and the user changes the part that was wrong.
-    pub(crate) fn login_defaults(&self, source: &str) -> crate::provision::env::LoginDefaults {
-        let host = crate::session::machine_of(source);
+    pub(crate) fn login_defaults(&self, host: &str) -> crate::provision::env::LoginDefaults {
+        let machine = crate::session::machine_of(host);
         self.login_defaults
-            .get(host)
+            .get(machine)
             .cloned()
-            .unwrap_or_else(|| crate::provision::env::LoginDefaults::fallback(host))
+            .unwrap_or_else(|| crate::provision::env::LoginDefaults::fallback(machine))
     }
 
-    /// What the mux on `source` is CALLED. The resolved reach answers it; a source id that
+    /// What the mux on `host` is CALLED. The resolved reach answers it; a host id that
     /// carries its own mux (a machine serving several) is the fallback, for the paths that
-    /// have a list of sources and no resolved reach yet. Empty while neither knows, which
+    /// have a list of hosts and no resolved reach yet. Empty while neither knows, which
     /// is the state a card turns a spinner for.
-    pub(crate) fn source_mux<'a>(&'a self, source: &'a str) -> &'a str {
-        match self.source_reach.get(source) {
+    pub(crate) fn host_mux<'a>(&'a self, host: &'a str) -> &'a str {
+        match self.host_reach.get(host) {
             Some(reach) if !reach.kind.is_empty() => &reach.kind,
-            _ => crate::session::mux_of(source),
+            _ => crate::session::mux_of(host),
         }
     }
 
-    /// Formats `source` with the shared `{host}/{mux}` grammar.
-    pub(crate) fn source_label(&self, source: &str) -> String {
-        crate::session::source_label(crate::session::machine_of(source), self.source_mux(source))
+    /// Formats `host` with the shared `{machine}/{mux}` grammar.
+    pub(crate) fn host_label(&self, host: &str) -> String {
+        crate::session::host_label(crate::session::machine_of(host), self.host_mux(host))
     }
 
     /// The same label, for a surface that knows whether the host ANSWERED. A mux no
     /// answer confirmed is left off, so the label never puts a guess where every other
     /// one carries a fact.
-    pub(crate) fn source_label_when(&self, source: &str, answered: bool) -> String {
-        let mux = if crate::session::mux_may_be_named(source, answered) {
-            self.source_mux(source)
+    pub(crate) fn host_label_when(&self, host: &str, answered: bool) -> String {
+        let mux = if crate::session::mux_may_be_named(host, answered) {
+            self.host_mux(host)
         } else {
             ""
         };
-        crate::session::source_label(crate::session::machine_of(source), mux)
+        crate::session::host_label(crate::session::machine_of(host), mux)
     }
 
-    /// Sets how xmux reaches each source, keyed by source id. The app calls this from the
-    /// source registry whenever the sources change; a source missing from the map shows
+    /// Sets how xmux reaches each host, keyed by host id. The app calls this from the
+    /// host registry whenever the hosts change; a host missing from the map shows
     /// the rows it has and no blanks for the rest.
-    pub(crate) fn set_source_reach(&mut self, reach: HashMap<String, SourceReach>) {
-        self.source_reach = reach;
+    pub(crate) fn set_host_reach(&mut self, reach: HashMap<String, HostReach>) {
+        self.host_reach = reach;
     }
 
     /// Sets the log file path the unreachable screen names. The app calls this once at

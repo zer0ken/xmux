@@ -29,7 +29,7 @@ const EXITED_MARKER: &str = "EXITED";
 /// attached is indistinguishable from an idle one.
 const CURRENT_MARKER: &str = "(current)";
 
-/// Parses `zellij list-sessions -n` into sessions tagged with `source`.
+/// Parses `zellij list-sessions -n` into sessions tagged with `host`.
 ///
 /// Each line is `<name> [Created <age> ago] <suffix>`. The ` [Created ` marker
 /// and the ` ago]` suffix part the name from the suffix; the age text between
@@ -39,7 +39,7 @@ const CURRENT_MARKER: &str = "(current)";
 /// session after its server is gone and lists it alongside the live ones, so
 /// including it would offer a row with nothing running behind it: attaching would
 /// resurrect the session rather than show it.
-pub fn parse_sessions(source: &str, out: &str) -> Vec<Session> {
+pub fn parse_sessions(host: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in out.split('\n') {
         let ln = ln.strip_suffix('\r').unwrap_or(ln);
@@ -57,7 +57,7 @@ pub fn parse_sessions(source: &str, out: &str) -> Vec<Session> {
             continue;
         }
         sessions.push(Session {
-            source: source.to_string(),
+            host: host.to_string(),
             name: name.to_string(),
             mux: "zellij".to_string(),
             // The session listing carries no count; enumeration fills it from list-tabs.
@@ -156,7 +156,7 @@ mod tests {
             vec!["hug", "my build", "fresh"],
             "a name may hold a space, so the split is on the Created marker"
         );
-        assert!(got.iter().all(|s| s.source == "jup" && s.mux == "zellij"));
+        assert!(got.iter().all(|s| s.host == "jup" && s.mux == "zellij"));
     }
 
     #[test]
@@ -198,7 +198,7 @@ mod tests {
         }
     }
 
-    /// `ss -xn` rows narrowed to a client's peers, verbatim from a Debian 12 host with
+    /// `ss -xn` rows narrowed to a client's peers, verbatim from a Debian 12 machine with
     /// zellij 0.45.1: the client's internal socket pair, which has no path, and the
     /// server end of its connection to a session whose name holds a space.
     const CONNECTED: &str = "u_str ESTAB 0      0                                                 * 6125772            * 6125773       

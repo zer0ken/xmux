@@ -11,8 +11,8 @@ use serde::Deserialize;
 pub struct Config {
     #[serde(default)]
     pub local: LocalConfig,
-    #[serde(default)]
-    pub hosts: Vec<HostConfig>,
+    #[serde(default, rename = "hosts")]
+    pub machines: Vec<MachineConfig>,
     #[serde(default)]
     pub wsl: Vec<WslConfig>,
     #[serde(default)]
@@ -30,7 +30,7 @@ pub struct Config {
 /// One key, because there is one thing to decide: whether xmux may ask the release
 /// feed which version is newest. It is on by default, since a user who never hears
 /// that a release exists stays on an old build without choosing to. Turning it off is
-/// for a machine that must reach nothing but the hosts it was told about.
+/// for a machine that must reach nothing but the machines it was told about.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateConfig {
     /// Whether xmux may ask GitHub for the newest released version. The answer is
@@ -73,7 +73,7 @@ pub struct DiscoveryConfig {
     #[serde(default = "default_true")]
     pub wsl: bool,
     /// The maximum number of discovery tasks - the roster resolve, each machine's
-    /// reachability probe, the mux discovery a connected machine runs, and each source's
+    /// reachability probe, the mux discovery a connected machine runs, and each host's
     /// mux detection - that may run at once. The pool bounds CONCURRENCY only, never
     /// which task runs. Defaults to 6, hard-capped at [`SCAN_CONCURRENCY_MAX`].
     #[serde(rename = "scan-concurrency", default = "default_scan_concurrency")]
@@ -112,7 +112,7 @@ pub struct LocalConfig {
 
 /// The `mux` value of a machine: ONE mux or SEVERAL. A machine can run more than one
 /// mux at a time (a Windows box with psmux and zellij both up), and each is its own
-/// source, so the value is a list as readily as a name. A bare string stays valid and
+/// host, so the value is a list as readily as a name. A bare string stays valid and
 /// means exactly one.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -347,10 +347,10 @@ impl Default for UiConfig {
     }
 }
 
-/// Overrides the mux for a discovered ssh alias, or adds a host that ssh-config
+/// Overrides the mux for a discovered ssh alias, or adds a machine that ssh-config
 /// discovery did not surface.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct HostConfig {
+pub struct MachineConfig {
     #[serde(default)]
     pub ssh: String,
     #[serde(default)]
@@ -368,9 +368,9 @@ pub struct WslConfig {
     pub mux: MuxSpec,
 }
 
-/// A resolved remote SOURCE: one mux on one machine. `id` is the source id the rest of
+/// A resolved remote HOST: one mux on one machine. `id` is the host id the rest of
 /// the app keys everything by, `alias` is the ssh destination it is reached at (several
-/// sources share it when a machine runs several muxes), and `bin` is the mux binary.
+/// hosts share it when a machine runs several muxes), and `bin` is the mux binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostSpec {
     pub id: String,
@@ -411,7 +411,7 @@ pub fn load_verbose(path: &Path) -> anyhow::Result<(Config, Vec<String>)> {
 impl Config {
     /// The mux binaries to run on the local machine, in order.
     ///
-    /// A written value is taken verbatim, and a LIST yields one source per entry: a name
+    /// A written value is taken verbatim, and a LIST yields one host per entry: a name
     /// the user wrote is a name they meant, even if it is not installed (it then shows as
     /// unreachable rather than vanishing). A written name no kind owns is dropped here
     /// and warned at load: an unknown name is never decoded to a kind that does exist.
@@ -419,8 +419,8 @@ impl Config {
     /// An unset or `"auto"` value means "whatever this machine actually has", so `installed`
     /// (from `mux::installed_muxes`) becomes the list, with the `os`'s conventional mux
     /// first so a single-mux box reads exactly as it always did. A box where discovery
-    /// finds nothing yields an empty list: the local sources name what the box actually
-    /// has, so nothing installed means no local source, not a mux that is not there.
+    /// finds nothing yields an empty list: the local hosts name what the box actually
+    /// has, so nothing installed means no local host, not a mux that is not there.
     pub fn local_muxes(&self, os: &str, installed: &[String]) -> Vec<String> {
         if !self.local.mux.is_auto() {
             return self
@@ -454,15 +454,15 @@ impl Config {
         for name in self.local.mux.names() {
             if name != "auto" && !crate::mux::is_recognized(&name) {
                 warnings.push(format!(
-                    "local mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen/tuios/herdr); no source is created for it"
+                    "local mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen/tuios/herdr); no host is created for it"
                 ));
             }
         }
-        for h in &self.hosts {
+        for h in &self.machines {
             for name in h.mux.names() {
                 if !crate::mux::is_recognized(&name) {
                     warnings.push(format!(
-                        "host {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen/tuios/herdr); no source is created for it",
+                        "machine {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen/tuios/herdr); no host is created for it",
                         h.ssh
                     ));
                 }
@@ -472,7 +472,7 @@ impl Config {
             for name in w.mux.names() {
                 if !crate::mux::is_recognized(&name) {
                     warnings.push(format!(
-                        "wsl {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen/tuios/herdr); no source is created for it",
+                        "wsl {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen/tuios/herdr); no host is created for it",
                         w.distro
                     ));
                 }
@@ -487,7 +487,7 @@ impl Config {
     /// ask for. Answers exactly what the spec merge reads, so a machine is either built
     /// from its written list or asked, never both.
     pub fn mux_is_auto(&self, machine: &str) -> bool {
-        if machine == crate::session::LOCAL_SOURCE {
+        if machine == crate::session::LOCAL_MACHINE {
             return self.local.mux.is_auto();
         }
         if let Some(distro) = crate::session::wsl_distro_of(machine) {
@@ -496,7 +496,7 @@ impl Config {
                 .iter()
                 .all(|w| w.distro != distro || w.mux.is_auto());
         }
-        self.hosts
+        self.machines
             .iter()
             .all(|h| h.ssh != machine || h.mux.is_auto())
     }
@@ -512,39 +512,39 @@ impl Config {
         self.ui.auto_hide_nav
     }
 
-    /// The sources of the ssh hosts whose muxes are WRITTEN: a matching `hosts` entry
+    /// The hosts of the ssh machines whose muxes are WRITTEN: a matching `hosts` entry
     /// names them. Discovered aliases come first in their original order (each deduped
-    /// and skipping any in `exclude`), then the config-only hosts. A host that names no
-    /// mux yields no source here: which muxes it serves is asked of the host itself
+    /// and skipping any in `exclude`), then the config-only machines. A machine that names
+    /// no mux yields no host here: which muxes it serves is asked of the machine itself
     /// ([`auto_hosts`](Self::auto_hosts)), never assumed.
     ///
     /// A machine configured with SEVERAL muxes yields one spec per mux, all sharing the
-    /// ssh alias and each carrying its own qualified source id. `exclude` names
+    /// ssh alias and each carrying its own qualified host id. `exclude` names
     /// MACHINES, so excluding one drops every mux on it.
     pub fn host_specs(&self, ssh_aliases: &[String]) -> Vec<HostSpec> {
-        written_specs(self.merged_ssh_hosts(ssh_aliases))
+        written_specs(self.merged_ssh_machines(ssh_aliases))
     }
 
-    /// The ssh hosts and WSL distributions on the roster whose mux list is xmux's to
+    /// The ssh machines and WSL distributions on the roster whose mux list is xmux's to
     /// decide, in roster order: every one [`host_specs`](Self::host_specs) and
-    /// [`wsl_specs`](Self::wsl_specs) build no source for. The local machine is not one
+    /// [`wsl_specs`](Self::wsl_specs) build no host for. The local machine is not one
     /// of them; its muxes are resolved before the roster is.
-    pub fn auto_hosts(&self, ssh_aliases: &[String], distro_machines: &[String]) -> Vec<String> {
-        self.merged_ssh_hosts(ssh_aliases)
+    pub fn auto_machines(&self, ssh_aliases: &[String], distro_machines: &[String]) -> Vec<String> {
+        self.merged_ssh_machines(ssh_aliases)
             .into_iter()
-            .chain(self.merged_wsl_hosts(distro_machines))
+            .chain(self.merged_wsl_machines(distro_machines))
             .filter(|(_, written)| written.is_none())
             .map(|(machine, _)| machine)
             .collect()
     }
 
-    fn merged_ssh_hosts(&self, ssh_aliases: &[String]) -> Vec<(String, Option<Vec<String>>)> {
+    fn merged_ssh_machines(&self, ssh_aliases: &[String]) -> Vec<(String, Option<Vec<String>>)> {
         let configured: Vec<(&str, &MuxSpec)> = self
-            .hosts
+            .machines
             .iter()
             .map(|h| (h.ssh.as_str(), &h.mux))
             .collect();
-        merge_hosts(
+        merge_machines(
             ssh_aliases,
             &configured,
             &self.excluded(),
@@ -552,17 +552,20 @@ impl Config {
         )
     }
 
-    /// The WSL sources: one spec per written mux on each distribution, merged the same way
-    /// [`host_specs`](Self::host_specs) merges ssh hosts. `distro_machines` are the
+    /// The WSL hosts: one spec per written mux on each distribution, merged the same way
+    /// [`host_specs`](Self::host_specs) merges ssh machines. `distro_machines` are the
     /// MACHINE names `[discovery] wsl` listed (`wsl.Ubuntu-24.04`); a `[[wsl]]` entry
     /// names its distribution bare and is prefixed here, so both halves key alike.
     ///
     /// `exclude` names MACHINES here too, which for this kind is the prefixed name.
     pub fn wsl_specs(&self, distro_machines: &[String]) -> Vec<HostSpec> {
-        written_specs(self.merged_wsl_hosts(distro_machines))
+        written_specs(self.merged_wsl_machines(distro_machines))
     }
 
-    fn merged_wsl_hosts(&self, distro_machines: &[String]) -> Vec<(String, Option<Vec<String>>)> {
+    fn merged_wsl_machines(
+        &self,
+        distro_machines: &[String],
+    ) -> Vec<(String, Option<Vec<String>>)> {
         let prefixed: Vec<String> = self
             .wsl
             .iter()
@@ -581,7 +584,7 @@ impl Config {
             .collect();
         // Nothing to reserve: every name here already carries the WSL prefix, so it can
         // collide with neither `local` nor an ssh alias `host_specs` accepted.
-        merge_hosts(distro_machines, &configured, &self.excluded(), |_| false)
+        merge_machines(distro_machines, &configured, &self.excluded(), |_| false)
     }
 
     /// The machines `exclude` names, as a lookup.
@@ -595,7 +598,7 @@ impl Config {
 /// ssh destination and shadow the machine that owns the name, so an ssh alias spelled
 /// either way is dropped rather than served ambiguously.
 fn is_reserved_alias(machine: &str) -> bool {
-    machine == crate::session::LOCAL_SOURCE || crate::session::wsl_distro_of(machine).is_some()
+    machine == crate::session::LOCAL_MACHINE || crate::session::wsl_distro_of(machine).is_some()
 }
 
 /// The merge every machine kind's roster follows: `discovered` names first, in the
@@ -606,7 +609,7 @@ fn is_reserved_alias(machine: &str) -> bool {
 /// the mux list its config WROTE, or `None` when it wrote none (unset or `"auto"`): the
 /// first entry for a machine that writes muxes decides, and entries that leave the list
 /// to xmux never override one that wrote it.
-fn merge_hosts(
+fn merge_machines(
     discovered: &[String],
     configured: &[(&str, &MuxSpec)],
     excluded: &std::collections::HashSet<&str>,
@@ -642,7 +645,7 @@ fn merge_hosts(
     out
 }
 
-/// The sources of the machines in `merged` whose mux list is written.
+/// The hosts of the machines in `merged` whose mux list is written.
 fn written_specs(merged: Vec<(String, Option<Vec<String>>)>) -> Vec<HostSpec> {
     merged
         .iter()
@@ -664,7 +667,7 @@ pub fn host_specs_for(alias: &str, muxes: &[String]) -> Vec<HostSpec> {
     muxes
         .iter()
         .map(|bin| HostSpec {
-            id: crate::session::source_id(alias, bin, qualified),
+            id: crate::session::host_id(alias, bin, qualified),
             alias: alias.to_string(),
             bin: (*bin).clone(),
         })
@@ -1189,7 +1192,7 @@ fn strip_managed(config_text: &str, marker: &str) -> (String, bool) {
 
 /// The `User` an `~/.ssh/config` stanza names for `alias`, or `None` when none does.
 ///
-/// Read from the same stanza the host screen shows, which is the one whose header names
+/// Read from the same stanza the machine screen shows, which is the one whose header names
 /// the alias exactly. A stanza reached only through a pattern is not consulted, so a
 /// value this returns is one the user wrote against this host by name.
 pub fn stanza_user(config_text: &str, alias: &str) -> Option<String> {
@@ -1233,7 +1236,7 @@ pub fn stanza_login(config_text: &str, alias: &str) -> crate::transport::Login {
 /// The address and port the login pane starts with. Only an exact host stanza supplies
 /// the username; without one, the user enters it.
 ///
-/// The values ssh effectively uses are kept only for a host a `Host` block names, from
+/// The values ssh effectively uses are kept only for a machine a `Host` block names, from
 /// OpenSSH's effective configuration, else the stanza when OpenSSH could not report it.
 ///
 /// A field counts as set by ssh config when the stanza naming the host sets it, or when
@@ -1725,7 +1728,7 @@ mod tests {
     fn load_missing_file() {
         let missing = std::env::temp_dir().join("xmux-does-not-exist-xyz.toml");
         let cfg = load(&missing).unwrap();
-        assert!(cfg.hosts.is_empty());
+        assert!(cfg.machines.is_empty());
         assert!(cfg.exclude.is_empty());
         assert!(cfg.local.mux.names().is_empty());
     }
@@ -1750,11 +1753,11 @@ ssh = "stage"
         );
         let cfg = load(&path).unwrap();
         assert_eq!(cfg.local.mux.names(), vec!["tmux"]);
-        assert_eq!(cfg.hosts.len(), 2);
-        assert_eq!(cfg.hosts[0].ssh, "prod");
-        assert_eq!(cfg.hosts[0].mux.names(), vec!["psmux"]);
-        assert_eq!(cfg.hosts[1].ssh, "stage");
-        assert!(cfg.hosts[1].mux.names().is_empty());
+        assert_eq!(cfg.machines.len(), 2);
+        assert_eq!(cfg.machines[0].ssh, "prod");
+        assert_eq!(cfg.machines[0].mux.names(), vec!["psmux"]);
+        assert_eq!(cfg.machines[1].ssh, "stage");
+        assert!(cfg.machines[1].mux.names().is_empty());
         assert_eq!(cfg.exclude, vec!["foo", "bar"]);
     }
 
@@ -1803,20 +1806,20 @@ bogus = "nope"
     #[test]
     fn host_specs_merge() {
         let cfg = Config {
-            hosts: vec![
-                HostConfig {
+            machines: vec![
+                MachineConfig {
                     ssh: "prod".into(),
                     mux: "psmux".into(),
                 },
-                HostConfig {
+                MachineConfig {
                     ssh: "extra".into(),
                     mux: "zellij".into(),
                 },
-                HostConfig {
+                MachineConfig {
                     ssh: "noMuxOnly".into(),
                     mux: "".into(),
                 },
-                HostConfig {
+                MachineConfig {
                     ssh: "".into(),
                     mux: "ignored".into(),
                 },
@@ -1843,37 +1846,37 @@ bogus = "nope"
             },
         ];
         assert_eq!(got, want);
-        // A host that writes no mux has no source until it answers which it serves:
-        // nothing is assumed for it, and it is on the roster as a host xmux asks.
+        // A machine that writes no mux has no host until it answers which it serves:
+        // nothing is assumed for it, and it is on the roster as a machine xmux asks.
         assert_eq!(
-            cfg.auto_hosts(&ssh_aliases, &[]),
+            cfg.auto_machines(&ssh_aliases, &[]),
             vec!["stage".to_string(), "noMuxOnly".to_string()]
         );
     }
 
     #[test]
-    fn a_host_written_as_auto_is_asked_and_never_dropped() {
-        // `"auto"` is the written form of leaving the list to xmux, so the host is asked
+    fn a_machine_written_as_auto_is_asked_and_never_dropped() {
+        // `"auto"` is the written form of leaving the list to xmux, so the machine is asked
         // exactly as an unset one is, and an entry that leaves it to xmux never overrides
         // one that wrote the list.
         let cfg = Config {
-            hosts: vec![
-                HostConfig {
+            machines: vec![
+                MachineConfig {
                     ssh: "box".into(),
                     mux: "auto".into(),
                 },
-                HostConfig {
+                MachineConfig {
                     ssh: "prod".into(),
                     mux: "auto".into(),
                 },
-                HostConfig {
+                MachineConfig {
                     ssh: "prod".into(),
                     mux: "zellij".into(),
                 },
             ],
             ..Default::default()
         };
-        assert_eq!(cfg.auto_hosts(&[], &[]), vec!["box".to_string()]);
+        assert_eq!(cfg.auto_machines(&[], &[]), vec!["box".to_string()]);
         assert!(cfg.mux_is_auto("box"));
         assert!(!cfg.mux_is_auto("prod"), "a written list decides");
         let specs = cfg.host_specs(&[]);
@@ -1889,12 +1892,12 @@ bogus = "nope"
         // A later [[hosts]] for the same ssh with an empty mux must not erase the
         // explicit mux recorded earlier.
         let cfg = Config {
-            hosts: vec![
-                HostConfig {
+            machines: vec![
+                MachineConfig {
                     ssh: "prod".into(),
                     mux: "psmux".into(),
                 },
-                HostConfig {
+                MachineConfig {
                     ssh: "prod".into(),
                     mux: MuxSpec::default(),
                 },
@@ -1914,10 +1917,10 @@ bogus = "nope"
 
     #[test]
     fn host_specs_excludes_reserved_local_alias() {
-        // "local" is reserved for the local mux source; an ssh alias or a config
-        // host named "local" must never shadow it.
+        // "local" is reserved for the local mux host; an ssh alias or a config
+        // machine named "local" must never shadow it.
         let cfg = Config {
-            hosts: vec![HostConfig {
+            machines: vec![MachineConfig {
                 ssh: "local".into(),
                 mux: "psmux".into(),
             }],
@@ -1929,13 +1932,16 @@ bogus = "nope"
             !got.iter().any(|s| s.alias == "local"),
             "reserved 'local' alias must be excluded: {got:?}"
         );
-        assert_eq!(cfg.auto_hosts(&ssh_aliases, &[]), vec!["prod".to_string()]);
+        assert_eq!(
+            cfg.auto_machines(&ssh_aliases, &[]),
+            vec!["prod".to_string()]
+        );
     }
 
     #[test]
     fn host_specs_excludes_config_only() {
         let cfg = Config {
-            hosts: vec![HostConfig {
+            machines: vec![MachineConfig {
                 ssh: "secret".into(),
                 mux: "psmux".into(),
             }],
@@ -1969,7 +1975,7 @@ bogus = "nope"
 
     #[test]
     fn the_conventional_mux_leads_the_discovered_list() {
-        // The order decides which source paints first and reads as this machine's main one,
+        // The order decides which host paints first and reads as this machine's main one,
         // so a Windows box that has both psmux and tmux leads with psmux and a unix box
         // leads with tmux, exactly as a single-mux box always did.
         let c = Config::default();
@@ -1989,10 +1995,10 @@ bogus = "nope"
     }
 
     #[test]
-    fn a_box_where_nothing_answered_offers_no_local_source() {
-        // Discovery finding nothing is a box with no mux installed: the source list must
+    fn a_box_where_nothing_answered_offers_no_local_host() {
+        // Discovery finding nothing is a box with no mux installed: the host list must
         // say so rather than fabricate the conventional mux. A mux that is not there
-        // must not appear as a local source.
+        // must not appear as a local host.
         let c = Config::default();
         assert!(c.local_muxes("windows", &[]).is_empty());
         assert!(c.local_muxes("linux", &[]).is_empty());
@@ -2004,12 +2010,12 @@ bogus = "nope"
         // name is verbatim, so probing it could only add muxes nobody asked for.
         let cfg = Config {
             local: LocalConfig { mux: "auto".into() },
-            hosts: vec![
-                HostConfig {
+            machines: vec![
+                MachineConfig {
                     ssh: "written".into(),
                     mux: "zellij".into(),
                 },
-                HostConfig {
+                MachineConfig {
                     ssh: "blank".into(),
                     mux: MuxSpec::default(),
                 },
@@ -2032,13 +2038,13 @@ bogus = "nope"
 
     #[test]
     fn a_machine_can_be_given_several_muxes() {
-        // The point of the list: one machine, several muxes, each its own source. The
+        // The point of the list: one machine, several muxes, each its own host. The
         // ids say which mux, and they all reach the same ssh destination.
         let cfg = Config {
             local: LocalConfig {
                 mux: vec!["psmux", "zellij"].into(),
             },
-            hosts: vec![HostConfig {
+            machines: vec![MachineConfig {
                 ssh: "prod".into(),
                 mux: vec!["tmux", "zellij"].into(),
             }],
@@ -2070,7 +2076,7 @@ bogus = "nope"
         // saved state is keyed by.
         for spec in [MuxSpec::from("zellij"), MuxSpec::from(vec!["zellij"])] {
             let cfg = Config {
-                hosts: vec![HostConfig {
+                machines: vec![MachineConfig {
                     ssh: "prod".into(),
                     mux: spec.clone(),
                 }],
@@ -2096,7 +2102,7 @@ bogus = "nope"
         // `exclude` names MACHINES, so it cannot half-exclude one.
         let cfg = Config {
             exclude: vec!["prod".into()],
-            hosts: vec![HostConfig {
+            machines: vec![MachineConfig {
                 ssh: "prod".into(),
                 mux: vec!["tmux", "zellij"].into(),
             }],
@@ -2120,13 +2126,13 @@ mux = "tmux"
         );
         let cfg = load(&path).unwrap();
         assert_eq!(cfg.local.mux.names(), vec!["psmux", "zellij"]);
-        assert_eq!(cfg.hosts[0].mux.names(), vec!["tmux"]);
+        assert_eq!(cfg.machines[0].mux.names(), vec!["tmux"]);
     }
 
     #[test]
     fn a_mux_list_drops_blanks_and_repeats() {
         // A hand-written list picks up empty entries and duplicates; neither may become
-        // a source (a duplicate would collide on its own id).
+        // a host (a duplicate would collide on its own id).
         let spec = MuxSpec::from(vec!["tmux", "", "  ", "tmux", "zellij"]);
         assert_eq!(spec.names(), vec!["tmux", "zellij"]);
         assert!(MuxSpec::from(vec!["", " "]).names().is_empty());
@@ -2156,15 +2162,15 @@ mux = "tmux"
         let w = c.value_warnings();
         assert_eq!(w.len(), 1, "{w:?}");
         assert!(w[0].contains("byobu"), "{w:?}");
-        // A recognized host mux is silent; an unrecognized one warns once and names
-        // both the host alias and the bad value.
+        // A recognized machine mux is silent; an unrecognized one warns once and names
+        // both the machine alias and the bad value.
         let c = Config {
-            hosts: vec![
-                HostConfig {
+            machines: vec![
+                MachineConfig {
                     ssh: "prod".into(),
                     mux: "psmux".into(),
                 },
-                HostConfig {
+                MachineConfig {
                     ssh: "bad".into(),
                     mux: "kitty".into(),
                 },
@@ -2180,7 +2186,7 @@ mux = "tmux"
     fn wsl_specs_merge_listed_distributions_with_config_entries() {
         // The same merge as `host_specs`: listed machines first in the order `wsl.exe`
         // gave them, then a `[[wsl]]` entry that was not listed. A distribution that
-        // writes no mux has no source until it answers which it serves.
+        // writes no mux has no host until it answers which it serves.
         let cfg = Config {
             wsl: vec![
                 WslConfig {
@@ -2222,7 +2228,7 @@ mux = "tmux"
         // Listed but not configured, then configured but not listed: appended, so one
         // distribution is asked without listing every one of them.
         assert_eq!(
-            cfg.auto_hosts(&[], &listed),
+            cfg.auto_machines(&[], &listed),
             vec!["wsl.docker-desktop".to_string(), "wsl.Alpine".to_string()]
         );
     }
@@ -2239,7 +2245,10 @@ mux = "tmux"
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert_eq!(cfg.auto_hosts(&[], &listed), vec!["wsl.Ubuntu".to_string()]);
+        assert_eq!(
+            cfg.auto_machines(&[], &listed),
+            vec!["wsl.Ubuntu".to_string()]
+        );
     }
 
     #[test]
@@ -2253,7 +2262,7 @@ mux = "tmux"
             .map(|s| s.to_string())
             .collect();
         assert_eq!(
-            cfg.auto_hosts(&aliases, &[]),
+            cfg.auto_machines(&aliases, &[]),
             vec!["prod".to_string()],
             "only the plain alias is served"
         );

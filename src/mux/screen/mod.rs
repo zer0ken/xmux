@@ -123,7 +123,7 @@ mod tests {
     }
     #[async_trait]
     impl Runner for CannedRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             self.0
                 .lock()
@@ -188,7 +188,7 @@ mod tests {
         let got = m.enumerate(&ssh("jup"), &runner).await.unwrap();
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["work", "dev"]);
-        assert!(got.iter().all(|s| s.source == "jup" && s.mux == "screen"));
+        assert!(got.iter().all(|s| s.host == "jup" && s.mux == "screen"));
     }
 
     #[tokio::test]
@@ -219,7 +219,7 @@ mod tests {
     #[ignore = "live: needs ssh jupiter00 with screen"]
     #[tokio::test]
     async fn screen_enumerate_live() {
-        use crate::model::source::ExecRunner;
+        use crate::model::host_def::ExecRunner;
         let ssh = crate::transport::ssh("jupiter00".into(), String::new(), "linux".into());
         let got = screen().enumerate(&ssh, &ExecRunner).await;
         eprintln!("jupiter00/screen sessions: {got:?}");
@@ -230,7 +230,7 @@ mod tests {
     #[ignore = "live: needs ssh jupiter00 with screen"]
     #[tokio::test]
     async fn screen_detect_live() {
-        use crate::model::source::ExecRunner;
+        use crate::model::host_def::ExecRunner;
         let ssh = crate::transport::ssh("jupiter00".into(), String::new(), "linux".into());
         let (got, _) = crate::mux::detect_backend(&ssh, "screen", &ExecRunner).await;
         eprintln!(

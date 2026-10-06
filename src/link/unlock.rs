@@ -69,7 +69,7 @@ pub struct Conversation {
 
 #[derive(Clone)]
 pub struct RunningLogin {
-    pub source: String,
+    pub host: String,
     /// The submission this handle runs, so a result from a replaced one is told apart.
     pub attempt: u64,
     cancel: Arc<AtomicBool>,
@@ -81,11 +81,11 @@ impl RunningLogin {
         self.cancel.store(true, Ordering::Release);
     }
 
-    pub(crate) fn pending(source: String, attempt: u64) -> (Self, Arc<AtomicBool>) {
+    pub(crate) fn pending(host: String, attempt: u64) -> (Self, Arc<AtomicBool>) {
         let cancel = Arc::new(AtomicBool::new(false));
         (
             Self {
-                source,
+                host,
                 attempt,
                 cancel: cancel.clone(),
             },
@@ -94,9 +94,9 @@ impl RunningLogin {
     }
 
     #[cfg(test)]
-    pub(crate) fn parked(source: &str) -> Self {
+    pub(crate) fn parked(host: &str) -> Self {
         Self {
-            source: source.to_string(),
+            host: host.to_string(),
             attempt: 0,
             cancel: Arc::new(AtomicBool::new(false)),
         }
@@ -104,12 +104,12 @@ impl RunningLogin {
 }
 
 pub fn start_login(
-    source: String,
+    host: String,
     command: crate::transport::CommandSpec,
     timeout: Duration,
 ) -> (RunningLogin, tokio::sync::oneshot::Receiver<Conversation>) {
-    let (handle, cancel) = RunningLogin::pending(source.clone(), 0);
-    let done_rx = start_login_with_cancel(source, command, timeout, cancel, Box::new(|| {}));
+    let (handle, cancel) = RunningLogin::pending(host.clone(), 0);
+    let done_rx = start_login_with_cancel(host, command, timeout, cancel, Box::new(|| {}));
     (handle, done_rx)
 }
 
@@ -118,7 +118,7 @@ pub fn start_login(
 /// so that moment is the one boundary between connecting and authenticating ssh shows
 /// without raising its log level.
 pub(crate) fn start_login_with_cancel(
-    source: String,
+    host: String,
     command: crate::transport::CommandSpec,
     timeout: Duration,
     cancel: Arc<AtomicBool>,
@@ -126,13 +126,13 @@ pub(crate) fn start_login_with_cancel(
 ) -> tokio::sync::oneshot::Receiver<Conversation> {
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
-        let _ = done_tx.send(run(source, command, timeout, cancel, password_asked));
+        let _ = done_tx.send(run(host, command, timeout, cancel, password_asked));
     });
     done_rx
 }
 
 fn run(
-    source: String,
+    host: String,
     command: crate::transport::CommandSpec,
     timeout: Duration,
     cancel: Arc<AtomicBool>,
@@ -232,11 +232,11 @@ fn run(
     }
     if let Ok(status) = &ended {
         if let Some(retry) = command.password_only_retry(status.code().unwrap_or(-1), &output) {
-            tracing::info!(source = %source, "key opened no session; retrying with the password alone");
+            tracing::info!(host = %host, "key opened no session; retrying with the password alone");
             let retry = retry.clone();
             let remaining = timeout.saturating_sub(started.elapsed());
             let asked = password_asked.unwrap_or_else(|| Box::new(|| {}));
-            let conversation = run(source, retry, remaining, cancel, asked);
+            let conversation = run(host, retry, remaining, cancel, asked);
             if conversation.outcome.is_ok() {
                 command.password_only_worked();
             }
@@ -287,7 +287,7 @@ fn run(
         command.discard_credential();
     }
     if !outcome.is_ok() {
-        tracing::warn!(source = %source, outcome = ?outcome, "login_failed");
+        tracing::warn!(host = %host, outcome = ?outcome, "login_failed");
     }
     Conversation {
         outcome,

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use xmux::model::source::{ExecRunner, Runner};
+use xmux::model::host_def::{ExecRunner, Runner};
 use xmux::transport::{Login, Ssh, Transport};
 
 #[ignore = "requires XMUX_LIVE_PW_HOST, PORT, USER, and PASS"]

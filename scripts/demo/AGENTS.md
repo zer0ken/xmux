@@ -13,4 +13,4 @@ The recording setup for the README demo GIFs.
 ## Invariants
 
 - Demo assets are recorded only in this isolated environment, never on a real machine,
-  so no real host name reaches a public asset.
+  so no real machine name reaches a public asset.

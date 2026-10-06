@@ -132,14 +132,14 @@ pub enum KeyCommand {
     FocusNav,
     /// Start a session on the selected host.
     NewSession,
-    /// Re-scan the selected card's host alone.
-    RescanHost,
-    /// Re-scan every host.
+    /// Re-scan the selected card's machine alone.
+    RescanMachine,
+    /// Re-scan every machine.
     Rescan,
     Logout,
-    /// Select the current source's section information screen.
+    /// Select the current host's screen.
     HostInfo,
-    /// Toggle the table of host problems.
+    /// Toggle the table of machine problems.
     Check,
     /// Search and run a named command.
     Palette,
@@ -169,7 +169,7 @@ pub enum KeyCommand {
 pub enum Section {
     /// Keys the nav reads bare while it holds the focus.
     Move,
-    /// Keys a host's or a source's screen reads in the terminal view.
+    /// Keys a machine's or a host's screen reads in the terminal view.
     Screen,
     Navigate,
     Sessions,
@@ -213,7 +213,7 @@ pub enum Keys {
     /// Keys the nav reads bare while it holds the focus, with `command` when the entry is
     /// a command a hint can offer.
     Bare(Option<KeyCommand>),
-    /// Keys a host's or a source's screen reads bare, by the code each arrives as.
+    /// Keys a machine's or a host's screen reads bare, by the code each arrives as.
     Screen(&'static [KeyCode]),
     /// A mouse gesture.
     Mouse,
@@ -432,7 +432,7 @@ pub static TABLE: &[KeyEntry] = &[
         section: Section::Navigate,
         keys: Keys::Prefix(&[(Chord::Char('/'), KeyCommand::Filter)]),
         label: "/",
-        help: "fuzzy filter <source>/<name>",
+        help: "fuzzy filter <host>/<name>",
         long: "filter cards",
         short: "filter",
         rank: 1,
@@ -488,7 +488,7 @@ pub static TABLE: &[KeyEntry] = &[
     },
     KeyEntry {
         section: Section::Sessions,
-        keys: Keys::Prefix(&[(Chord::Char('r'), KeyCommand::RescanHost)]),
+        keys: Keys::Prefix(&[(Chord::Char('r'), KeyCommand::RescanMachine)]),
         label: "r",
         help: "rescan the selected card's machine only",
         long: "rescan this machine",
@@ -780,7 +780,7 @@ mod tests {
     #[test]
     fn the_nav_structure_keys_are_bound_in_the_table() {
         for position in [NavPosition::Left, NavPosition::Bottom] {
-            for (c, command) in [('h', KeyCommand::Check), ('r', KeyCommand::RescanHost)] {
+            for (c, command) in [('h', KeyCommand::Check), ('r', KeyCommand::RescanMachine)] {
                 assert_eq!(prefix_command(Chord::Char(c), position), Some(command));
                 assert!(entry_for(command).is_some_and(|e| e.prefixed()));
             }
@@ -793,7 +793,7 @@ mod tests {
         for position in [NavPosition::Left, NavPosition::Bottom] {
             assert_eq!(
                 prefix_command(Chord::Char('r'), position),
-                Some(KeyCommand::RescanHost)
+                Some(KeyCommand::RescanMachine)
             );
             assert_eq!(
                 prefix_command(Chord::Char('R'), position),
@@ -801,7 +801,7 @@ mod tests {
             );
         }
         assert_eq!(
-            entry_for(KeyCommand::RescanHost).map(|e| e.label),
+            entry_for(KeyCommand::RescanMachine).map(|e| e.label),
             Some("r")
         );
         assert_eq!(entry_for(KeyCommand::Rescan).map(|e| e.label), Some("R"));

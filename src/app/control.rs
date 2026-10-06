@@ -148,10 +148,10 @@ mod tests {
     fn sample() -> Scan {
         Scan {
             groups: vec![Group {
-                source: "local".into(),
+                host: "local".into(),
                 err: None,
                 sessions: vec![Session {
-                    source: "local".into(),
+                    host: "local".into(),
                     name: "editor".into(),
                     mux: "tmux".into(),
                     windows: 1,
@@ -311,7 +311,7 @@ mod tests {
         );
 
         // A `switch` reply reflects the address resolution: the session the nav
-        // lists answers ok; an unresolved source answers err naming what is missing.
+        // lists answers ok; an unresolved host answers err naming what is missing.
         assert_eq!(
             client.do_cmd("switch local editor").await.unwrap(),
             "ok",
@@ -321,7 +321,7 @@ mod tests {
             .do_cmd("switch nosuchhost nosuchsession")
             .await
             .unwrap();
-        assert!(err.starts_with("err: no such source"), "{err}");
+        assert!(err.starts_with("err: no such host"), "{err}");
         let err = client.do_cmd("switch local nope").await.unwrap();
         assert!(err.starts_with("err: no such session"), "{err}");
 

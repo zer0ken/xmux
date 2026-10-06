@@ -13,7 +13,7 @@ pub(crate) enum InputMode {
     Filter,
     New,
     Logout,
-    /// The logout's second confirmation, open while the host holds this machine's key in
+    /// The logout's second confirmation, open while the machine holds this machine's key in
     /// a line xmux did not add. Closing it any way but confirming keeps that line.
     LogoutKeys,
     /// Jump to a session by its number (the user-facing name: a `card` is the visual
@@ -28,7 +28,7 @@ pub(crate) enum InputMode {
 pub(crate) struct Input {
     pub(crate) mode: InputMode,
     /// [`InputMode::Logout`] and [`InputMode::LogoutKeys`] only: what the confirm decides,
-    /// as `(label, value)` rows the confirm states above its field. Captured when it opens, like `source`.
+    /// as `(label, value)` rows the confirm states above its field. Captured when it opens, like `host`.
     pub(crate) facts: Vec<(&'static str, String)>,
     /// [`InputMode::Logout`] and [`InputMode::LogoutKeys`] only: the first fact row shown
     /// when the confirm is too short for every fact row.
@@ -38,10 +38,10 @@ pub(crate) struct Input {
     /// edit and movement keeps it in range; the entry line renders a block caret at
     /// this column, so editing is no longer append-only.
     pub(crate) cursor: usize,
-    /// The create source captured when the input opened, so the action lands on the
+    /// The create host captured when the input opened, so the action lands on the
     /// host the user was on, not wherever streaming results moved the selection by
     /// the time they pressed Enter.
-    pub(crate) source: Option<String>,
+    pub(crate) host: Option<String>,
     /// [`InputMode::Jump`] only: the node the selection named when the popup opened,
     /// with the card it stood on, held by IDENTITY (not row index) so a rebuild during
     /// the jump cannot restore onto the wrong card or the wrong half of a title. Esc
@@ -60,7 +60,7 @@ impl Input {
     /// Builds an input with the caret at the END of `buffer`, so a prefilled name
     /// (rename / filter) is ready to edit from its tail. The one constructor keeps
     /// the caret-init rule in a single place.
-    pub(crate) fn new(mode: InputMode, buffer: String, source: Option<String>) -> Self {
+    pub(crate) fn new(mode: InputMode, buffer: String, host: Option<String>) -> Self {
         let cursor = buffer.chars().count();
         Input {
             mode,
@@ -68,7 +68,7 @@ impl Input {
             scroll: 0,
             buffer,
             cursor,
-            source,
+            host,
             restore: None,
             refused: None,
             restore_filter: None,
@@ -160,7 +160,7 @@ impl Input {
 /// switcher owns only the behavior and the transient popup geometry (drag offset
 /// / drawn rect).
 ///
-/// The input carries several owned strings (label, buffer, a create source, a
+/// The input carries several owned strings (label, buffer, a create host, a
 /// jump restore reference, a filter restore value), so it is boxed to keep the
 /// enum small; callers pattern-match through the box and never see the pointer.
 pub(crate) enum Modal {
@@ -184,7 +184,7 @@ pub(crate) enum Modal {
     History {
         scroll: usize,
     },
-    /// The table of host problems `prefix h` opens. `selected` is the row the keys
+    /// The table of machine problems `prefix h` opens. `selected` is the row the keys
     /// are on, `hover` the row under the pointer, and `open` records an Enter or a click
     /// the switcher has yet to act on.
     Check {
@@ -193,7 +193,7 @@ pub(crate) enum Modal {
         open: bool,
     },
     /// The command palette `prefix :` opens, with the same `selected`, `hover`, and `open`
-    /// as the host problems.
+    /// as the machine problems.
     Palette {
         query: String,
         selected: usize,
@@ -274,7 +274,7 @@ impl HelpMap {
 /// view to the top of what matches. `←`/`→` move the active tab and scroll its section's
 /// title to the top; `↑`/`↓`, `PgUp`/`PgDn`, and `Home`/`End` scroll and hand the active
 /// tab back to the scroll. A key ends the soft selection of the help, the palette, and the
-/// host problems, until the pointer moves again. `help` lays the help out for a query, so every key is held to
+/// machine problems, until the pointer moves again. `help` lays the help out for a query, so every key is held to
 /// the layout the paint shows. Every other key is swallowed. Returns false when neither
 /// is open, so the read falls through to normal routing.
 pub(crate) fn feed_reader(

@@ -31,7 +31,7 @@ pub(super) const POLL_REFRESH: Duration = Duration::from_secs(3);
 /// only when the user asks ([`HostManager::rescan`](super::HostManager::rescan)). The
 /// task is aborted by a reap or the app exiting.
 pub(super) async fn run_poll(
-    source: String,
+    host: String,
     transport: Box<dyn crate::transport::Transport>,
     mux: Box<dyn crate::mux::Mux>,
     refresh: Option<Duration>,
@@ -44,15 +44,15 @@ pub(super) async fn run_poll(
         // A failed enumeration and a dropped receiver (the app exiting) both end the task.
         let mut stop = false;
         mux.poll_once(
-            &source,
+            &host,
             &transport,
-            &crate::model::source::ExecRunner,
+            &crate::model::host_def::ExecRunner,
             &mut |ev| {
                 // Log at the producer, where `err` is in hand. A success that changed the
                 // session list (or is the first) is INFO carrying that list; an unchanged
                 // one is TRACE. A failure is WARN.
                 if let HostEvent::Sessions {
-                    source: ref host,
+                    ref host,
                     ref sessions,
                     ref err,
                 } = ev
@@ -112,7 +112,7 @@ mod tests {
             .expect("the enumeration answers within its own budget")
             .expect("it emits its result");
         assert!(
-            matches!(&first, HostEvent::Sessions { source, .. } if source == "src"),
+            matches!(&first, HostEvent::Sessions { host, .. } if host == "src"),
             "the spawn's one enumeration lands"
         );
 
@@ -143,7 +143,7 @@ mod tests {
                 .expect("each sweep answers within its own budget")
                 .expect("each sweep emits its result");
             assert!(
-                matches!(&ev, HostEvent::Sessions { source, err: None, .. } if source == "src"),
+                matches!(&ev, HostEvent::Sessions { host, err: None, .. } if host == "src"),
                 "sweep {sweep} lands as an answered enumeration"
             );
         }
@@ -177,7 +177,7 @@ mod tests {
             .expect("the enumeration answers within its own budget")
             .expect("it emits its result");
         assert!(
-            matches!(&first, HostEvent::Sessions { source, err: Some(_), .. } if source == "src"),
+            matches!(&first, HostEvent::Sessions { host, err: Some(_), .. } if host == "src"),
             "the failing sweep lands with its error"
         );
         tokio::time::timeout(std::time::Duration::from_secs(10), task)

@@ -15,7 +15,7 @@ pub use crate::state::OpFollow;
 /// `ops` (no switcher state), so it runs in a detached task off the event loop.
 pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
     match op {
-        MuxOp::Create { source, name } => match ops.new_session(source, name).await {
+        MuxOp::Create { host, name } => match ops.new_session(host, name).await {
             Ok(session) => OpResult::Created { session },
             Err(e) => OpResult::Failed {
                 message: format!("create failed: {e}"),
@@ -31,7 +31,7 @@ pub async fn run_op(op: &MuxOp, ops: &dyn Ops) -> OpResult {
 /// the key registration or the mux search. Pure over `ops` (no switcher
 /// state), so it runs in a detached task off the event loop like [`run_op`].
 pub async fn run_login_follow_ups(
-    source: &str,
+    host: &str,
     login: &crate::transport::Login,
     conversation: crate::link::unlock::Conversation,
     write_config: bool,
@@ -44,7 +44,7 @@ pub async fn run_login_follow_ups(
     let mut registration = RegistrationOutcome::NotRequested;
     if connect.is_ok() {
         if write_config {
-            let result = ops.write_login_stanza(source, login);
+            let result = ops.write_login_stanza(host, login);
             progress(crate::model::LoginEvent::Saved(result.clone()));
             saved = Some(result);
         }
@@ -52,7 +52,7 @@ pub async fn run_login_follow_ups(
             let register = KeyRegistration {
                 shell: conversation.shell,
             };
-            registration = ops.register_login_key(source, login, register).await;
+            registration = ops.register_login_key(host, login, register).await;
         }
     }
     LoginOutcome {

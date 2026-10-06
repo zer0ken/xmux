@@ -398,7 +398,7 @@ impl LoginFailure {
     pub fn of_probe(err: &str) -> Self {
         use crate::link::unlock::UnlockOutcome;
         let explained = crate::transport::diagnostic::split_explained(err.trim());
-        let raw = crate::model::source::without_exit_line(explained.detail).trim();
+        let raw = crate::model::host_def::without_exit_line(explained.detail).trim();
         match crate::link::unlock::classify_probe(raw, explained.password_supplied) {
             UnlockOutcome::Failed { kind, reason } => {
                 let mut failure = Self::split(Some(kind), &reason, raw);

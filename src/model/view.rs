@@ -17,11 +17,11 @@ pub enum ViewScreen {
     ListFailed,
     /// The host answered and serves no session.
     Empty,
-    /// A selected source section with sessions to inspect.
-    HostInfo,
-    /// A host that answered through at least one of its sources: how it is reached and
-    /// which sources it serves.
+    /// A selected host section with sessions to inspect.
     Host,
+    /// A machine that answered through at least one of its hosts: how it is reached and
+    /// which hosts it serves.
+    Machine,
     /// The root of the hierarchy, shown from launch until the user first executes a
     /// target: the scan progress and every card in nav order. The selection highlights on
     /// it and attaches nothing.
@@ -38,13 +38,13 @@ pub struct ConfirmedDisplay<'a> {
 }
 
 /// Chooses the terminal view screen from domain facts; rendering paints the screen this
-/// returns and never chooses one itself. A selection without a session (a source's or
-/// a host's card) gets that card's screen, never a session's grid. A selected host card
-/// that is scanning shows its scanning screen, never another source's grid. The one exception
+/// returns and never chooses one itself. A selection without a session (a host's or
+/// a machine's card) gets that card's screen, never a session's grid. A selected host card
+/// that is scanning shows its scanning screen, never another host's grid. The one exception
 /// is a full re-scan that collapsed the selected session card into its own host card:
 /// that session's grid stays until the selection moves.
 pub fn choose_view_screen(
-    selected_source: Option<&str>,
+    selected_host: Option<&str>,
     selected_address: Option<&Address>,
     failure: Option<FailureKind>,
     scanning: bool,
@@ -55,7 +55,7 @@ pub fn choose_view_screen(
     if selected_address.is_some() && selected_address == own_session {
         return Some(ViewScreen::SelfSession);
     }
-    let Some(source) = selected_source else {
+    let Some(host) = selected_host else {
         return (scanning && displayed.is_none()).then_some(ViewScreen::Scanning);
     };
     match failure {
@@ -68,27 +68,26 @@ pub fn choose_view_screen(
         return None;
     }
     if scanning {
-        let kept =
-            displayed.is_some_and(|d| d.collapsed_into_selection && d.address.source == source);
+        let kept = displayed.is_some_and(|d| d.collapsed_into_selection && d.address.host == host);
         return (!kept).then_some(ViewScreen::Scanning);
     }
     Some(if empty {
         ViewScreen::Empty
     } else {
-        ViewScreen::HostInfo
+        ViewScreen::Host
     })
 }
 
-/// Chooses a host's screen from the state of the host as a whole. `failure` is the
-/// failure every one of its sources shares (a host is down only when none of its sources
-/// connected), and `scanning` says every source is still waiting on its first answer. A
-/// host that is neither is reachable, whatever each source answered.
-pub fn choose_host_screen(failure: Option<FailureKind>, scanning: bool) -> ViewScreen {
+/// Chooses a machine's screen from the state of the machine as a whole. `failure` is the
+/// failure every one of its hosts shares (a machine is down only when none of its hosts
+/// connected), and `scanning` says every host is still waiting on its first answer. A
+/// machine that is neither is reachable, whatever each host answered.
+pub fn choose_machine_screen(failure: Option<FailureKind>, scanning: bool) -> ViewScreen {
     match failure {
         Some(FailureKind::Blocked) => ViewScreen::Login,
         Some(FailureKind::Unreachable | FailureKind::ListFailed) => ViewScreen::Unreachable,
         None if scanning => ViewScreen::Scanning,
-        None => ViewScreen::Host,
+        None => ViewScreen::Machine,
     }
 }
 
@@ -98,8 +97,8 @@ mod tests {
     use crate::model::FailureKind;
     use crate::session::Address;
 
-    fn address(source: &str, session: &str) -> Address {
-        Address::new(source, session)
+    fn address(host: &str, session: &str) -> Address {
+        Address::new(host, session)
     }
 
     fn shown(address: &Address) -> Option<ConfirmedDisplay<'_>> {
@@ -155,7 +154,7 @@ mod tests {
         );
         assert_eq!(
             choose_view_screen(Some("prod"), None, None, false, false, None, shown(&other)),
-            Some(ViewScreen::HostInfo)
+            Some(ViewScreen::Host)
         );
         assert_eq!(
             choose_view_screen(
@@ -227,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scanning_host_card_never_shows_another_sources_grid() {
+    fn a_scanning_host_card_never_shows_another_hosts_grid() {
         let other = address("local", "edit");
         assert_eq!(
             choose_view_screen(Some("prod"), None, None, true, true, None, shown(&other)),
@@ -244,7 +243,7 @@ mod tests {
                 collapsed(&other)
             ),
             Some(ViewScreen::Scanning),
-            "a collapse into another source's card keeps nothing"
+            "a collapse into another host's card keeps nothing"
         );
     }
 
@@ -264,22 +263,22 @@ mod tests {
         assert_eq!(
             choose_view_screen(Some("prod"), None, None, true, true, None, shown(&work)),
             Some(ViewScreen::Scanning),
-            "the same source's grid without the collapse is not kept"
+            "the same host's grid without the collapse is not kept"
         );
     }
 
     #[test]
-    fn a_host_screen_follows_the_host_as_a_whole() {
+    fn a_machine_screen_follows_the_machine_as_a_whole() {
         assert_eq!(
-            choose_host_screen(Some(FailureKind::Blocked), false),
+            choose_machine_screen(Some(FailureKind::Blocked), false),
             ViewScreen::Login
         );
         assert_eq!(
-            choose_host_screen(Some(FailureKind::Unreachable), true),
+            choose_machine_screen(Some(FailureKind::Unreachable), true),
             ViewScreen::Unreachable
         );
-        assert_eq!(choose_host_screen(None, true), ViewScreen::Scanning);
-        assert_eq!(choose_host_screen(None, false), ViewScreen::Host);
+        assert_eq!(choose_machine_screen(None, true), ViewScreen::Scanning);
+        assert_eq!(choose_machine_screen(None, false), ViewScreen::Machine);
     }
 
     #[test]

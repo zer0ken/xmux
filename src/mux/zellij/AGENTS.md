@@ -10,9 +10,9 @@ without a display attachment. JSON counts tabs independently of their names. zel
 moves a client between sessions inside the client process with `switch-session`, so
 the display reattaches on every session change and no zellij command reports where a
 client went. On Windows xmux reads `ZELLIJ_SESSION_NAME` out of its own client. On
-Linux it asks the kernel, once a second over the host's open path, which session's
+Linux it asks the kernel, once a second over the machine's open path, which session's
 server socket is the peer of its client's sockets (`ss -xn`). The client is named by
-process id, which an attach run through a host shell records before `exec`.
+process id, which an attach run through the machine's shell records before `exec`.
 
 ## Module Seams
 

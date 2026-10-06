@@ -10,9 +10,9 @@
 use async_trait::async_trait;
 
 use crate::link::HostEvent;
+use crate::model::host_def::{RunError, Runner};
 use crate::model::plan::{DeathSignal, EventSource};
 use crate::model::server_model::ServerModel;
-use crate::model::source::{RunError, Runner};
 use crate::mux::vocab as mux;
 use crate::session::Session;
 use crate::transport::Transport;
@@ -42,7 +42,7 @@ pub use zellij::Zellij;
 pub use vocab::*;
 
 /// Reports whether `err` means "the mux is reachable but has no sessions" rather
-/// than "the host is unreachable". tmux exits non-zero with a "no server
+/// than "the machine is unreachable". tmux exits non-zero with a "no server
 /// running" message when idle, so this distinguishes an empty-but-alive mux from
 /// a dead one. Only a real command exit (carrying stderr) can be benign; a
 /// missing binary or a connect failure is always unreachable.
@@ -104,7 +104,7 @@ pub(crate) fn reason_is_no_sessions(text: &str) -> bool {
 /// The per-command budget [`ExecRunner`] applies to itself, so a command that never
 /// answers is torn down cleanly (kill → drain → wait) rather than the sweep's
 /// cancellation dropping pipe reads in flight (which crashes on Windows - see
-/// `source.rs`). Exceeds the ssh connect timeout (5s) so a slow remote is not mistaken
+/// `host_def.rs`). Exceeds the ssh connect timeout (5s) so a slow remote is not mistaken
 /// for a hung one.
 pub(crate) const POLL_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
@@ -127,7 +127,7 @@ async fn within_poll_budget<T>(
     // before the sweep cancels it, even when earlier commands spent most of the budget.
     match tokio::time::timeout_at(
         deadline,
-        crate::model::source::within_deadline(deadline, fut),
+        crate::model::host_def::within_deadline(deadline, fut),
     )
     .await
     {
@@ -145,7 +145,7 @@ async fn within_poll_budget<T>(
 pub enum DisplayClient {
     /// The attach child IS the mux client and runs on this machine under this process id.
     Pid(u32),
-    /// The attach ran through the host's shell, which recorded the client's process id
+    /// The attach ran through the machine's shell, which recorded the client's process id
     /// under this record key before it became the client.
     Recorded(String),
 }
@@ -158,8 +158,8 @@ pub enum SwitchPlan {
     /// Mux argv(s) to run non-interactively in order via the exec path (psmux:
     /// `switch-client` then `refresh-client`).
     Exec(Vec<Vec<String>>),
-    /// A raw shell command to run in the host shell (tmux: read the recorded tty file
-    /// and switch+refresh in one shell). A machine with no host shell cannot run it, so
+    /// A raw shell command to run in the machine shell (tmux: read the recorded tty file
+    /// and switch+refresh in one shell). A machine with no machine shell cannot run it, so
     /// the driver falls back to a reattach.
     Shell(String),
 }
@@ -191,10 +191,10 @@ pub trait Mux: Send + Sync {
     /// Which mux the collected probe outputs name, as a registry kind
     /// ([`known_muxes`]). The outputs align one-to-one with
     /// [`Mux::identity_probes`], `None` where a probe errored (an absent command, a
-    /// rejected flag, an unreachable host).
+    /// rejected flag, an unreachable machine).
     ///
     /// `Some(kind)` may name ANOTHER mux: a `tmux` whose `help` names psmux is the
-    /// psmux alias, and the source corrects to psmux with the invoked binary
+    /// psmux alias, and the host corrects to psmux with the invoked binary
     /// preserved. `None` is inconclusive - the caller keeps its current mux and
     /// retries on a later scan; it is never decoded to a fallback kind.
     fn classify_identity(&self, outputs: &[Option<String>]) -> Option<&'static str>;
@@ -207,7 +207,7 @@ pub trait Mux: Send + Sync {
     ///
     /// Deliberately has NO default. A tmux-compatible default is silently wrong for a
     /// mux that refuses tmux's flags outright: zellij exits on an unexpected `-S` before
-    /// it reads the verb, so the source it serves can never answer at all. A mux added
+    /// it reads the verb, so the host it serves can never answer at all. A mux added
     /// later has to answer this itself rather than inherit an answer that breaks it.
     fn takes_server_socket(&self) -> bool;
 
@@ -338,7 +338,7 @@ pub trait Mux: Send + Sync {
     /// event bus.
     async fn poll_once(
         &self,
-        source: &str,
+        host: &str,
         transport: &dyn Transport,
         runner: &dyn Runner,
         emit: &mut (dyn FnMut(HostEvent) + Send),
@@ -349,7 +349,7 @@ pub trait Mux: Send + Sync {
                 Err(e) => (Vec::new(), Some(e.to_string())),
             };
         emit(HostEvent::Sessions {
-            source: source.to_string(),
+            host: host.to_string(),
             sessions,
             err,
         });
@@ -443,18 +443,18 @@ const DETECT_TIMEOUT_REMOTE: std::time::Duration = std::time::Duration::from_sec
 /// help. No classification reads ANOTHER mux's name as its own identity, and the one
 /// name a stage may drop is one that stage itself has a reason to skip.
 ///
-/// Discovery is asked once per host and never per source: for this machine by the
+/// Discovery is asked once per machine and never per host: for this machine by the
 /// environment after the config-only first paint, and for each remote machine by the
 /// runtime after it connects.
 pub async fn installed_muxes(transport: &dyn Transport, runner: &dyn Runner) -> Vec<String> {
-    host_muxes(transport, runner).await.unwrap_or_default()
+    machine_muxes(transport, runner).await.unwrap_or_default()
 }
 
 /// [`installed_muxes`], telling a machine that answered apart from one that could not be
 /// asked: `Err` carries the first failure when not one probe reached the machine (the
 /// connection itself failed or never answered), so an empty `Ok` means the machine
 /// answered and no candidate is installed there.
-pub async fn host_muxes(
+pub async fn machine_muxes(
     transport: &dyn Transport,
     runner: &dyn Runner,
 ) -> Result<Vec<String>, String> {
@@ -538,7 +538,7 @@ pub fn for_binary(bin: &str) -> Option<Box<dyn Mux>> {
 /// The server socket to address the mux binary `bin` over: the one this machine named, or
 /// `None` for a mux that takes no socket flag or a name no kind owns.
 ///
-/// The source registry calls this before handing a socket to the transport axis, so a
+/// The host registry calls this before handing a socket to the transport axis, so a
 /// socket only ever reaches a mux that understands it. The transport axis cannot make
 /// this call itself: it names no mux by design, so it injects the socket it is GIVEN and
 /// asks nothing about it.
@@ -555,7 +555,7 @@ pub fn for_kind(kind: &str, bin: &str) -> Option<Box<dyn Mux>> {
 
 /// True when `name` names a mux xmux actually recognizes: an entry of
 /// [`known_muxes`], which holds every mux xmux drives. Config validation warns on a
-/// written name this refuses, and the source build drops it - a name no kind owns
+/// written name this refuses, and the host build drops it - a name no kind owns
 /// is never decoded to one that does.
 pub fn is_recognized(name: &str) -> bool {
     known_muxes().iter().any(|k| k.name == name)
@@ -578,7 +578,7 @@ const SSH_OWN_FAILURE: i32 = 255;
 
 /// Runs the mux's own identity probes over `transport` and reads the answers. Each
 /// argv is one probe run; a probe that errors (an absent command, a rejected flag, an
-/// unreachable host) collects `None`, and the outputs aligned with
+/// unreachable machine) collects `None`, and the outputs aligned with
 /// [`Mux::identity_probes`] go to [`Mux::classify_identity`]. Output is lowercased,
 /// so a implementation's classify matches case-insensitively. The first probe error
 /// rides along as the reason detection failed when no probe identified the mux, for
@@ -622,7 +622,7 @@ async fn probe_identity(
 /// binary conventionally belongs to supplies its OWN probes
 /// ([`Mux::identity_probes`]) and reads the answers ([`Mux::classify_identity`]),
 /// which may name ANOTHER mux: a `tmux` whose `help` names psmux is that alias, and
-/// the source corrects to psmux with the invoked binary preserved.
+/// the host corrects to psmux with the invoked binary preserved.
 ///
 /// The resolved mux alongside the reason detection failed (the first probe error)
 /// when nothing resolved. `(None, None)` means the binary is unrecognized or every
@@ -797,7 +797,7 @@ mod tests {
     async fn tmux_enumerate_live() {
         let t = crate::transport::local(None);
         let sessions = tmux()
-            .enumerate(&t, &crate::model::source::ExecRunner)
+            .enumerate(&t, &crate::model::host_def::ExecRunner)
             .await
             .expect("reachable tmux (empty is Ok)");
         eprintln!(
@@ -881,7 +881,7 @@ mod tests {
 
     /// Answers the three detection probes (`help`, `-V`, `-v`) independently so a test
     /// can model a real tmux (help fails, `-V` succeeds), a psmux (help names itself),
-    /// an abduco (`-V` fails, `-v` names itself), or an unreachable host (all fail).
+    /// an abduco (`-V` fails, `-v` names itself), or an unreachable machine (all fail).
     /// `None` for a probe ⇒ that probe errors.
     struct ProbeRunner {
         help: Option<Vec<u8>>,
@@ -905,7 +905,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for ProbeRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             // The `-V` probe's arg is `-V` (local) or `<bin> -V` (ssh-wrapped); `-v` is
             // abduco's lower-case version flag; anything else is the `help` probe.
@@ -940,7 +940,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for MachineWith {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             if !self.present.contains(&name) {
                 return Err(RunError::Other("no such binary".into()));
@@ -1020,7 +1020,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for ExitsWith {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             Err(RunError::Exit {
                 stderr: format!("exit {}", self.0),
@@ -1035,8 +1035,8 @@ mod tests {
         // answered: nothing is installed. ssh's own failure means no command ran, which
         // says nothing about what is installed.
         let t = crate::transport::ssh("win".into(), String::new(), "windows".into());
-        assert_eq!(host_muxes(&t, &ExitsWith(127)).await, Ok(Vec::new()));
-        let err = host_muxes(&t, &ExitsWith(255)).await.unwrap_err();
+        assert_eq!(machine_muxes(&t, &ExitsWith(127)).await, Ok(Vec::new()));
+        let err = machine_muxes(&t, &ExitsWith(255)).await.unwrap_err();
         assert!(err.contains("exit 255"), "the reason is ssh's own: {err}");
         assert!(
             installed_muxes(&t, &ExitsWith(255)).await.is_empty(),
@@ -1055,7 +1055,7 @@ mod tests {
     #[tokio::test]
     async fn a_binary_that_answers_as_another_mux_is_not_that_mux() {
         // A `tmux` on the PATH that is really psmux (psmux mimics tmux's `-V`, so only
-        // `help` tells them apart): counting it as tmux would create a source whose every
+        // `help` tells them apart): counting it as tmux would create a host whose every
         // command is aimed at the wrong mux. Present-but-lying is not installed.
         let t = crate::transport::local(None);
         let runner = MachineWith {
@@ -1083,7 +1083,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for HangingRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             std::future::pending::<()>().await;
             unreachable!()
@@ -1132,7 +1132,7 @@ mod tests {
 
     #[tokio::test]
     async fn detect_backend_classifies_a_psmux_binary_as_psmux_despite_tmux_mentions() {
-        // A configured psmux source re-detects through the same classify: the tmux
+        // A configured psmux host re-detects through the same classify: the tmux
         // mentions in psmux's help must not swap it onto a tmux mux over the psmux
         // binary.
         let transport = crate::transport::local(None);
@@ -1197,13 +1197,13 @@ Usage: zellij [OPTIONS]",
         assert_eq!(got.server_model(), ServerModel::Shared);
     }
 
-    // LIVE: probe the REAL detect_backend against the configured hosts. `#[ignore]`
+    // LIVE: probe the REAL detect_backend against the configured machines. `#[ignore]`
     // (needs ssh jupiter00 + a local psmux). Run on demand:
     //   cargo test --lib mux::tests::detect_backend_live -- --ignored --nocapture
     #[ignore = "live: needs ssh jupiter00 and local psmux"]
     #[tokio::test]
     async fn detect_backend_live() {
-        use crate::model::source::ExecRunner;
+        use crate::model::host_def::ExecRunner;
         let ssh = crate::transport::ssh("jupiter00".into(), String::new(), "windows".into());
         let (got, _) = detect_backend(&ssh, "tmux", &ExecRunner).await;
         eprintln!(
@@ -1304,7 +1304,7 @@ Usage: zellij [OPTIONS]",
 
     #[tokio::test]
     async fn detect_backend_both_probes_fail_is_inconclusive() {
-        // Unreachable host / missing binary: both probes error ⇒ None (retry later),
+        // Unreachable machine / missing binary: both probes error ⇒ None (retry later),
         // carrying the first probe's error as the reason detection failed.
         let transport = crate::transport::local(None);
         let runner = ProbeRunner::new(None, None);
@@ -1466,7 +1466,7 @@ Usage: zellij [OPTIONS]",
 
     #[async_trait]
     impl Runner for FailRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             Err(RunError::Other("ssh: connect to host down".into()))
         }
@@ -1494,14 +1494,14 @@ Usage: zellij [OPTIONS]",
             .find(|e| matches!(e, HostEvent::Sessions { .. }))
             .expect("poll_once emits a Sessions event");
         let HostEvent::Sessions {
-            source,
+            host,
             sessions,
             err,
         } = sessions_ev
         else {
             unreachable!()
         };
-        assert_eq!(source, "down-host");
+        assert_eq!(host, "down-host");
         assert!(
             sessions.is_empty(),
             "a failed enumeration yields no sessions"
@@ -1522,7 +1522,7 @@ Usage: zellij [OPTIONS]",
         struct OkRunner;
         #[async_trait]
         impl Runner for OkRunner {
-            crate::model::source::runner_spec_via_argv!();
+            crate::model::host_def::runner_spec_via_argv!();
             async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
                 // session row parsed by mux::parse_sessions.
                 Ok(b"1:1:work\n".to_vec())
@@ -1536,11 +1536,11 @@ Usage: zellij [OPTIONS]",
             .await;
         match &events[0] {
             HostEvent::Sessions {
-                source,
+                host,
                 sessions,
                 err,
             } => {
-                assert_eq!(source, "host");
+                assert_eq!(host, "host");
                 assert_eq!(sessions.len(), 1);
                 assert!(err.is_none());
             }
@@ -1551,7 +1551,7 @@ Usage: zellij [OPTIONS]",
     #[test]
     fn a_socket_reaches_only_a_mux_that_takes_one() {
         // The whole point of asking: zellij exits on an unexpected `-S` before it reads
-        // the verb, so a socket handed to it makes its source permanently unreachable.
+        // the verb, so a socket handed to it makes its host permanently unreachable.
         let sock = || Some("/tmp/psmux/default".to_string());
         assert_eq!(server_socket_for("tmux", sock()), sock());
         assert_eq!(server_socket_for("psmux", sock()), sock());

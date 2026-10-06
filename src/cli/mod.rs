@@ -19,7 +19,7 @@ use clap::{Parser, Subcommand};
 use crate::app::runtime;
 use crate::display::attach::{self, OsExecer};
 use crate::link::control;
-use crate::model::source::Source;
+use crate::model::host_def::HostDef;
 use crate::provision::env::{self, ls_lines_one, Env};
 
 #[derive(Parser)]
@@ -45,12 +45,12 @@ enum Command {
     Ls,
     /// Attach one session directly, e.g. `xmux attach prod api`.
     Attach {
-        /// The source (host) to attach on, e.g. `prod`.
-        source: String,
-        /// The session name on that source, e.g. `api`.
+        /// The host to attach on, e.g. `prod`.
+        host: String,
+        /// The session name on that host, e.g. `api`.
         session: String,
     },
-    /// Diagnose configuration and source reachability.
+    /// Diagnose configuration and host reachability.
     Doctor,
     /// List every running instance (name, pid, cwd, tty, displayed session, focus).
     Instances,
@@ -121,8 +121,8 @@ pub async fn run() -> i32 {
             Ok(env) => run_ls(&env).await,
             Err(code) => code,
         },
-        Some(Command::Attach { source, session }) => match interactive_env().await {
-            Ok(env) => run_direct_attach(&env, &source, &session).await,
+        Some(Command::Attach { host, session }) => match interactive_env().await {
+            Ok(env) => run_direct_attach(&env, &host, &session).await,
             Err(code) => code,
         },
         Some(Command::Doctor) => {
@@ -236,14 +236,14 @@ fn print_stderr(line: &str) {
     eprintln!("{line}");
 }
 
-/// Prints every reachable session as one `<source>/<name>` line; dead sources go
-/// to stderr. Fails only when every source is unreachable.
+/// Prints every reachable session as one `<host>/<name>` line; dead hosts go
+/// to stderr. Fails only when every host is unreachable.
 ///
-/// Results are streamed: each source's block is printed the moment its probe
-/// resolves, so a reachable source shows up immediately instead of the command
+/// Results are streamed: each host's block is printed the moment its probe
+/// resolves, so a reachable host shows up immediately instead of the command
 /// looking frozen while a dead host is still timing out.
 async fn run_ls(env: &Env) -> i32 {
-    // A host that could not be asked which muxes it serves is reported like a source that
+    // A machine that could not be asked which muxes it serves is reported like a host that
     // could not be listed; one that answered with none has nothing to list.
     let mut hosts = env.hosts();
     let unreached: Vec<crate::ui::tree::Group> = env
@@ -252,7 +252,7 @@ async fn run_ls(env: &Env) -> i32 {
         .into_iter()
         .filter_map(|u| {
             Some(crate::ui::tree::Group {
-                source: u.host,
+                host: u.machine,
                 err: Some(u.reason?),
                 sessions: Vec::new(),
             })
@@ -261,9 +261,9 @@ async fn run_ls(env: &Env) -> i32 {
     let mut rx = env.scan_stream(&hosts).await;
     let mut total = 0usize;
     let mut reachable = 0usize;
-    // A blank line between blocks keeps each source readable. The two streams are
-    // separated independently: a dead source prints only to stderr, so its blank
-    // must not open a gap on stdout (and a source with sessions neither on stderr).
+    // A blank line between blocks keeps each host readable. The two streams are
+    // separated independently: a dead host prints only to stderr, so its blank
+    // must not open a gap on stdout (and a host with sessions neither on stderr).
     let mut out_emitted = false;
     let mut err_emitted = false;
     let mut unreached = unreached.into_iter();
@@ -300,16 +300,16 @@ async fn run_ls(env: &Env) -> i32 {
     }
 }
 
-/// Attaches one `source`/`session` without the tree.
-async fn run_direct_attach(env: &Env, source: &str, session: &str) -> i32 {
-    let machine = crate::session::machine_of(source);
+/// Attaches one `host`/`session` without the tree.
+async fn run_direct_attach(env: &Env, host_id: &str, session: &str) -> i32 {
+    let machine = crate::session::machine_of(host_id);
     let mut hosts = env.hosts();
-    let unanswered = if hosts.source(source).is_none() {
+    let unanswered = if hosts.def(host_id).is_none() {
         env.discover_hosts(&mut hosts, Some(machine)).await
     } else {
         Vec::new()
     };
-    let Some(src) = hosts.source(source) else {
+    let Some(def) = hosts.def(host_id) else {
         if let Some(u) = unanswered.first() {
             match &u.reason {
                 Some(reason) => eprintln!("xmux: {machine}: {reason}"),
@@ -318,26 +318,26 @@ async fn run_direct_attach(env: &Env, source: &str, session: &str) -> i32 {
             return 1;
         }
         let served: Vec<String> = hosts
-            .source_list()
+            .def_list()
             .into_iter()
             .map(|s| s.alias)
             .filter(|id| crate::session::machine_of(id) == machine)
             .collect();
         if !served.is_empty() {
             eprintln!(
-                "xmux: unknown source {:?} ({machine} serves {})",
-                source,
+                "xmux: unknown host {:?} ({machine} serves {})",
+                host_id,
                 served.join(", ")
             );
             return 1;
         }
         eprintln!(
-            "xmux: unknown source {:?} (not local or an ssh-config host)",
-            source
+            "xmux: unknown host {:?} (not local or an ssh-config host)",
+            host_id
         );
         return 1;
     };
-    let host = match src.host_for_op().await {
+    let host = match def.host_for_op().await {
         Ok(host) => host,
         Err(e) => {
             eprintln!("xmux: attach failed: {e}");
@@ -384,15 +384,15 @@ fn report_install(env: &Env) {
     }
 }
 
-/// Reports configuration health and per-source reachability. A diagnostic: a
-/// malformed config or a host that did not answer is reported, not fatal. A failure the
+/// Reports configuration health and per-host reachability. A diagnostic: a
+/// malformed config or a machine that did not answer is reported, not fatal. A failure the
 /// user could answer from the app is reported as that, never as unreachable.
 async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
     println!("xmux doctor");
     report_install(env);
 
     // A config that failed to parse is a real error the diagnostic must signal in its
-    // exit code (like `ls` does for all-unreachable); an unreachable source is reported
+    // exit code (like `ls` does for all-unreachable); an unreachable host is reported
     // but not itself a doctor failure.
     let config_broken = cfg_err.is_some();
     // Taken from the roster in one read, as owned values: the probes below are awaited,
@@ -432,13 +432,13 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
     if ssh_on_path() {
         println!("ssh: ok");
     } else {
-        println!("ssh: NOT FOUND on PATH — remote sources unavailable");
+        println!("ssh: NOT FOUND on PATH — remote hosts unavailable");
     }
 
     // Where the neighbour provider found nothing, the reason is in the OS rather than in
     // the network: a record it will not hand over reads exactly like a record with
     // nothing in it, and only this line tells the two apart.
-    let report = crate::provision::neighbor::source_report().await;
+    let report = crate::provision::neighbor::neighbor_report().await;
     println!(
         "neighbours: {}",
         report
@@ -450,14 +450,14 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
 
     let mut hosts = env.hosts();
     let unanswered = env.discover_hosts(&mut hosts, None).await;
-    println!("sources:");
+    println!("hosts:");
     for u in unanswered {
         match u.reason {
-            Some(reason) => print_outcome(&u.host, Err(reason)),
-            None => println!("  {}: no mux answered", u.host),
+            Some(reason) => print_outcome(&u.machine, Err(reason)),
+            None => println!("  {}: no mux answered", u.machine),
         }
     }
-    for s in &hosts.source_list() {
+    for s in &hosts.def_list() {
         // The pair reads as one label, the way every surface shows it. The binary follows
         // only where it is not the mux's own name (an alias, a path), which is a fact the
         // label cannot carry and a diagnostic wants.
@@ -470,8 +470,8 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
             format!(" ({})", s.binary)
         };
         // The probe runs BEFORE the label is written, because whether it answered is what
-        // decides whether the label may name a mux at all: a source that answered
-        // enumerated through the one it names, and one that did not is read as its host.
+        // decides whether the label may name a mux at all: a host that answered
+        // enumerated through the one it names, and one that did not is read as its machine.
         let outcome = probe(s).await;
         let label = {
             let mux = if crate::session::mux_may_be_named(&s.alias, outcome.is_ok()) {
@@ -479,14 +479,14 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
             } else {
                 ""
             };
-            crate::session::source_label(crate::session::machine_of(&s.alias), mux)
+            crate::session::host_label(crate::session::machine_of(&s.alias), mux)
         };
         print_outcome(&format!("{label}{via}"), outcome);
     }
     i32::from(config_broken)
 }
 
-/// One `doctor` source line: what the thing `label` names answered.
+/// One `doctor` host line: what the thing `label` names answered.
 fn print_outcome(label: &str, outcome: Result<usize, String>) {
     // A failure the user could answer inside the app is reported as such, in the
     // word the app's own cards use. A diagnostic that called every failure
@@ -710,7 +710,7 @@ fn format_table<const N: usize>(rows: &[[String; N]]) -> String {
     out
 }
 
-async fn probe(s: &Source) -> Result<usize, String> {
+async fn probe(s: &HostDef) -> Result<usize, String> {
     let mut host = match tokio::time::timeout(crate::mux::POLL_SWEEP_BUDGET, s.host_for_op()).await
     {
         Ok(Ok(host)) => host,

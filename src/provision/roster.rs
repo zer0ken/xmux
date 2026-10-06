@@ -1,4 +1,4 @@
-//! The ROSTER: which machines xmux offers as sources.
+//! The ROSTER: which machines xmux offers.
 //!
 //! Separate from `transport/`, which owns how a command REACHES a machine, and from
 //! `discovery`, which scans a machine for sessions. This module answers only "which
@@ -10,17 +10,17 @@
 //! touches this module and the config, nothing downstream.
 //!
 //! Which provider offered a name is kept ALONGSIDE the name, never inside it, and is
-//! read for one purpose: a host that turns out unreachable names the thing that put it
+//! read for one purpose: a machine that turns out unreachable names the thing that put it
 //! on the roster, so the user knows which provider to look at (or turn off) rather than
-//! hunting for a host they never wrote down.
+//! hunting for a machine they never wrote down.
 //!
 //! A provider that cannot run (the command is missing, the OS will not answer, the
-//! output is unparseable) yields an empty list rather than an error. A host source going quiet
+//! output is unparseable) yields an empty list rather than an error. A machine source going quiet
 //! must not stop xmux from offering the sources that did answer.
 
 use std::collections::HashSet;
 
-/// Which provider put a host on the roster.
+/// Which provider put a machine on the roster.
 ///
 /// It is display-only: nothing branches on it, because a host reaches its machine the
 /// same way whichever provider named it. The unreachable host screen shows it.
@@ -56,7 +56,7 @@ impl Provider {
 
 /// Merges provider lists into one roster, preserving first-seen order and dropping
 /// duplicates, and keeping which provider each name came from. Order is the caller's
-/// precedence: an `~/.ssh/config` alias comes first, so a host the user has configured
+/// precedence: an `~/.ssh/config` alias comes first, so a machine the user has configured
 /// by hand keeps the position they gave it and a provider that reports the same name
 /// adds nothing - including its attribution, since the name is already on the roster
 /// and the FIRST provider is the one that put it there.

@@ -44,7 +44,7 @@ impl Runtime {
                 // its Commands; collect them and dispatch the whole batch below.
                 Some(Action::NavKey(k)) => effects.extend(update(&mut self.model, Msg::Key(k))),
                 Some(Action::FocusTerminal) => {
-                    // Enter focuses the terminal view. For a locked host that view holds
+                    // Enter focuses the terminal view. For a locked machine that view holds
                     // the locked panel, whose own fields take the keys once focused; the
                     // unlock is a feature of that panel, not a modal this opens.
                     focus_terminal = true;
@@ -376,7 +376,7 @@ impl Runtime {
                 dirty = true;
             }
         }
-        // A click on a link of the host or source screen the terminal view shows opens
+        // A click on a link of the machine or host screen the terminal view shows opens
         // it, the same as Enter on the hard-selected link. The landing screen's links
         // take a click from either view's focus.
         let landing = self.model.switcher.landing_open();
@@ -678,7 +678,7 @@ impl Runtime {
             && !non_mouse.is_empty()
             && crate::state::is_reader(&self.model.state.modal)
         {
-            // The table of host problems acts on Enter: it selects a host and may hand
+            // The table of machine problems acts on Enter: it selects a host and may hand
             // the focus to the terminal view, whose login pane then takes the keys.
             let effects = update(
                 &mut self.model,
@@ -739,7 +739,7 @@ impl Runtime {
                     // session, held until its attachment exists (`forward_input`).
                     Action::Forward(f) => {
                         let login_running = self.model.state.login_run.as_ref().is_some_and(|l| {
-                            self.model.switcher.current_source().as_deref() == Some(&l.source)
+                            self.model.switcher.current_host().as_deref() == Some(&l.host)
                         });
                         if login_running {
                             // The login is xmux's own conversation, so nothing typed here
@@ -752,9 +752,9 @@ impl Runtime {
                             }
                             *dirty = true;
                         } else if self.model.switcher.login_pane_shown(&self.model.state) {
-                            if let Some(source) = self.model.switcher.current_source() {
+                            if let Some(host) = self.model.switcher.current_host() {
                                 let effects =
-                                    update(&mut self.model, Msg::FeedLogin { source, bytes: f });
+                                    update(&mut self.model, Msg::FeedLogin { host, bytes: f });
                                 let (cq, cwc, _) = self.execute_effects(effects);
                                 *quit |= cq;
                                 if cwc {
@@ -768,7 +768,7 @@ impl Runtime {
                             .current_view_screen(&self.model.state)
                             .is_some()
                         {
-                            // A host's or a source's screen takes its own keys.
+                            // A machine's or a host's screen takes its own keys.
                             for key in crate::state::decode_keys(&f) {
                                 let unreachable = self
                                     .model
@@ -986,9 +986,9 @@ impl Runtime {
     }
 }
 
-/// What a key does on a host's or a source's screen in the terminal view: the arrows
+/// What a key does on a machine's or a host's screen in the terminal view: the arrows
 /// and the tabs step through its links, Enter opens the selected one, and `d` unfolds an
-/// unreachable host's details. The key table's screen section names every key this reads.
+/// unreachable machine's details. The key table's screen section names every key this reads.
 pub(super) fn screen_msg(key: crate::state::Key, unreachable: bool) -> Option<Msg> {
     use crate::state::Key;
     match key {

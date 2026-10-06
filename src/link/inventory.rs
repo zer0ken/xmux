@@ -103,10 +103,10 @@ pub enum HostEvent {
     /// A machine's MUX DISCOVERY resolved: `muxes` is every mux xmux supports that
     /// answered on `machine` (empty when none did), or the reason the machine could not
     /// be asked at all. Emitted once per machine by a
-    /// fire-and-forget task, AFTER launch, so the app paints its configured sources
+    /// fire-and-forget task, AFTER launch, so the app paints its configured hosts
     /// immediately and the muxes nobody wrote down arrive as they are found. Carries the
-    /// machine (not a source id): the answer is about the machine, and each mux it does
-    /// not already serve becomes a source of its own.
+    /// machine (not a host id): the answer is about the machine, and each mux it does
+    /// not already serve becomes a host of its own.
     MuxesFound {
         machine: String,
         muxes: Result<Vec<String>, String>,
@@ -127,7 +127,7 @@ pub enum HostEvent {
     RosterKept,
     /// The launch roster and startup-only facts resolved after the first frame. The
     /// app applies the roster, arms ssh with the locally detected askpass capability,
-    /// records its own mux session, then starts discovery from the resolved hosts.
+    /// records its own mux session, then starts discovery from the resolved machines.
     StartupResolved {
         roster: Box<crate::provision::env::Roster>,
         own_session: Option<crate::session::Address>,
@@ -139,7 +139,7 @@ pub enum HostEvent {
     /// Folded back via `apply_scan_result`; emitted by the fire-and-forget detection
     /// task.
     Scanned {
-        source: String,
+        host: String,
         detected: Option<Box<dyn crate::mux::Mux>>,
         err: Option<String>,
     },
@@ -148,7 +148,7 @@ pub enum HostEvent {
     /// same bus. `err` carries a transient enumeration failure (shown in the tree; attachments
     /// are kept - the keep-alive guarantee).
     Sessions {
-        source: String,
+        host: String,
         sessions: Vec<Session>,
         err: Option<String>,
     },

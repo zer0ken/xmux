@@ -12,7 +12,7 @@
 //! `host.display`/`AttachRegistry`, borrowed through `DriverCtx`, so the driver owns the
 //! DECISION while that state stays supervisor-owned.
 //!
-//! A driver's `show` is the one site for the per-source display orchestration (which
+//! A driver's `show` is the one site for the per-host display orchestration (which
 //! PTY to use, whether to switch in place or reattach), so the runtime resolves the
 //! driver, calls it, and branches on nothing mux-specific. The dependency runs one way:
 //! a mux implementation imports this seam, and this seam never imports a concrete driver.
@@ -38,9 +38,9 @@ impl Target {
             session: sel.session.clone(),
         }
     }
-    pub fn into_selection(&self, source: &str) -> Selection {
+    pub fn into_selection(&self, host: &str) -> Selection {
         Selection {
-            source: source.to_string(),
+            host: host.to_string(),
             session: self.session.clone(),
         }
     }
@@ -94,7 +94,7 @@ impl DriverCtx<'_> {
         command: impl FnOnce(u64, &str, &str) -> crate::transport::CommandSpec,
     ) -> Option<u64> {
         let key = self.display_key(selection);
-        let display = &mut self.hosts.get_mut(&selection.source)?.display;
+        let display = &mut self.hosts.get_mut(&selection.host)?.display;
         // A new request owns this key. Any fresh attachment still waiting to paint belongs
         // to the superseded selection and must not receive input or survive as an orphan.
         display.cancel_pending_paint(&key);
@@ -126,12 +126,12 @@ impl DriverCtx<'_> {
         Some(id)
     }
 
-    /// Run an opaque mux switch plan through the selected source's transport.
-    pub fn run_switch_plan(&self, source: &str, plan: crate::mux::SwitchPlan) -> bool {
+    /// Run an opaque mux switch plan through the selected host's transport.
+    pub fn run_switch_plan(&self, id: &str, plan: crate::mux::SwitchPlan) -> bool {
         use crate::mux::SwitchPlan;
         use crate::transport::LoweredSwitch;
 
-        let Some(host) = self.hosts.get(source) else {
+        let Some(host) = self.hosts.get(id) else {
             return false;
         };
         match plan {
@@ -157,7 +157,7 @@ impl DriverCtx<'_> {
 }
 
 /// The display key for a host. Every supported server model uses one display PTY per
-/// source, either switching it in place or reattaching it.
+/// host, either switching it in place or reattaching it.
 pub fn host_selection_key(host: &Host) -> String {
     host.id().to_string()
 }
@@ -165,13 +165,13 @@ pub fn host_selection_key(host: &Host) -> String {
 /// The attachment key for a selection.
 pub fn display_key(hosts: &Hosts, selection: &Selection) -> String {
     hosts
-        .get(&selection.source)
+        .get(&selection.host)
         .map(host_selection_key)
-        .unwrap_or_else(|| selection.source.clone())
+        .unwrap_or_else(|| selection.host.clone())
 }
 
 fn run_lowered(lowered: crate::transport::LoweredSwitch) {
-    use crate::model::source::Runner;
+    use crate::model::host_def::Runner;
     use crate::transport::LoweredSwitch;
 
     let command = match lowered {
@@ -182,7 +182,7 @@ fn run_lowered(lowered: crate::transport::LoweredSwitch) {
     }
     tokio::spawn(async move {
         tracing::debug!(cmd = %command.program(), args = ?command.args(), "lowered_run");
-        match crate::model::source::ExecRunner.run_spec(&command).await {
+        match crate::model::host_def::ExecRunner.run_spec(&command).await {
             Ok(output) => {
                 tracing::debug!(cmd = %command.program(), out_bytes = output.len(), "lowered_ok")
             }
@@ -230,7 +230,7 @@ pub trait MuxDriver {
     /// update — a remote `%`-event refresh or a local poll). Shared keeps ONE PTY per
     /// host: warm it on the first session, reap it when the host has no sessions.
     /// PerSession is selected on demand: only reap the host PTY when no sessions remain.
-    fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx);
+    fn sync(&mut self, host: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx);
 }
 
 /// The host's mux driver — the DECISION is a Mux method (`host.mux.driver()`), not a
@@ -322,7 +322,7 @@ pub(crate) fn session_truth_source(host: &Host) -> Option<(String, &str)> {
     Some((host_selection_key(host), var))
 }
 
-/// Whether an attach through `transport` runs in a POSIX host shell, which can record
+/// Whether an attach through `transport` runs in a POSIX machine shell, which can record
 /// the attach's own process id before `exec` makes that process the mux client.
 pub fn attach_records_client(transport: &dyn crate::transport::Transport) -> bool {
     transport.runs_through_shell() && transport.remote_shell().runs_posix_snippets()
@@ -340,7 +340,7 @@ pub fn attach_records_client(transport: &dyn crate::transport::Transport) -> boo
 ///
 /// The client is named by its process id: the attach child's own on this machine,
 /// where the child IS the client, and the one the attach shell recorded where the attach
-/// runs through a host shell, since there the child is the transport's process.
+/// runs through a machine shell, since there the child is the transport's process.
 pub fn display_client_probe(
     host: &Host,
     registry: &AttachRegistry,
@@ -375,9 +375,9 @@ pub(crate) mod tests {
     use super::*;
     use crate::model::Selection;
 
-    pub(crate) fn sess(source: &str, name: &str) -> crate::session::Session {
+    pub(crate) fn sess(host: &str, name: &str) -> crate::session::Session {
         crate::session::Session {
-            source: source.into(),
+            host: host.into(),
             name: name.into(),
             mux: String::new(),
             windows: 1,
@@ -388,7 +388,7 @@ pub(crate) mod tests {
     #[test]
     fn target_round_trips_through_selection() {
         let sel = Selection {
-            source: "jup".into(),
+            host: "jup".into(),
             session: "api".into(),
         };
         let t = Target::from_selection(&sel);
@@ -398,7 +398,7 @@ pub(crate) mod tests {
 
     /// The LOCAL-ONLY gate, for every mux that names a variable. Such a client's session
     /// is read out of the client PROCESS, and a process is readable only on the machine
-    /// it runs on. An ssh host and a WSL distribution both run their client on the far
+    /// it runs on. An ssh machine and a WSL distribution both run their client on the far
     /// side, so neither has a source of truth to read, and this must be decided from the host
     /// alone - never from a value that happens to be readable here, which would report
     /// THIS box's session for a remote one.
@@ -602,7 +602,7 @@ pub(crate) mod tests {
             let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
 
             let sel = Selection {
-                source: "local".into(),
+                host: "local".into(),
                 session: "target".into(),
             };
 

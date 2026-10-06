@@ -1,4 +1,4 @@
-//! Thin per-source data for a mux server reachable from this machine (the local mux, or
+//! Thin per-host data for a mux server reachable from this machine (the local mux, or
 //! a remote one over ssh): alias, mux binary, machine kind (socket / ssh alias, control
 //! path, os), and an injectable runner. The off-loop `Ops`/CLI paths assemble a value
 //! [`Host`](crate::model::Host) from it (`host()`) and drive its enumerate/manage/attach
@@ -7,13 +7,13 @@
 //! `Transport`, built at the single `MachineKind::transport` site. The mux-env rules
 //! live in `mux::vocab`.
 //!
-//! A [`Source`] is never assembled on its own: the runtime source registry
-//! ([`Hosts`](crate::model::Hosts)) derives one from each runtime source it holds and
-//! publishes them through a [`SourceSet`], which the CLI, the scan, and the off-loop
-//! operations read. New execution semantics never go in this adapter: host execution and
+//! A [`HostDef`] is never assembled on its own: the runtime host registry
+//! ([`Hosts`](crate::model::Hosts)) derives one from each runtime host it holds and
+//! publishes them through a [`HostDefs`], which the CLI, the scan, and the off-loop
+//! operations read. New execution semantics never go in this adapter: machine execution and
 //! ssh diagnostics belong to the transport, host failure and screen policy to the model,
 //! mux semantics and protocol classification (attach argv, server model, enumeration) to
-//! the mux, and per-source display orchestration with its switch-or-reattach decision to
+//! the mux, and per-host display orchestration with its switch-or-reattach decision to
 //! the per-mux driver.
 
 use std::sync::Arc;
@@ -25,7 +25,7 @@ use crate::transport::CommandSpec;
 use crate::transport::MachineKind;
 
 /// The shell family each remote machine answered its probe with, keyed by machine and
-/// shared by every [`Source`] the source registry publishes. A value
+/// shared by every [`HostDef`] the host registry publishes. A value
 /// host assembled off the event loop starts from the transport's default family, so
 /// without this record a command composed there would assume POSIX on a machine already
 /// known to answer with PowerShell.
@@ -92,7 +92,7 @@ pub fn without_exit_line(text: &str) -> &str {
     }
 }
 
-/// Runs an external command and returns its stdout. A trait so the source layer
+/// Runs an external command and returns its stdout. A trait so the host layer
 /// is testable without spawning processes.
 #[async_trait]
 pub trait Runner: Send + Sync {
@@ -111,7 +111,7 @@ macro_rules! runner_spec_via_argv {
             command: &'a $crate::transport::CommandSpec,
         ) -> std::pin::Pin<
             Box<
-                dyn std::future::Future<Output = Result<Vec<u8>, $crate::model::source::RunError>>
+                dyn std::future::Future<Output = Result<Vec<u8>, $crate::model::host_def::RunError>>
                     + Send
                     + 'a,
             >,
@@ -312,15 +312,15 @@ impl ExecRunner {
     }
 }
 
-/// One mux server. Remote sources run their mux over ssh.
+/// One mux server. Remote hosts run their mux over ssh.
 #[derive(Clone)]
-pub struct Source {
+pub struct HostDef {
     /// `"local"` or an ssh-config alias.
     pub alias: String,
     /// mux binary name on that machine.
     pub binary: String,
     /// Which machine kind (and its construction data - socket / ssh alias, control
-    /// path, os) this source reaches its mux over. The single representation of transport
+    /// path, os) this host reaches its mux over. The single representation of transport
     /// kind; `transport()` maps it to a concrete `Transport` at one site.
     pub kind: MachineKind,
     /// injectable; `None` ⇒ the real exec runner.
@@ -329,7 +329,7 @@ pub struct Source {
     pub(crate) credentials: crate::transport::auth::Credentials,
 }
 
-impl Source {
+impl HostDef {
     pub(crate) fn run_with(&self) -> &dyn Runner {
         match &self.runner {
             Some(r) => r.as_ref(),
@@ -337,10 +337,10 @@ impl Source {
         }
     }
 
-    /// Assembles a value [`Host`](crate::model::Host) from this source's config -
+    /// Assembles a value [`Host`](crate::model::Host) from this host's config -
     /// transport from [`kind`](Self::kind) at the single `MachineKind::transport` site,
     /// mux from [`binary`](Self::binary) - for the off-loop `Ops`/CLI paths that cannot
-    /// borrow the event loop's live `&mut Host`. The runner stays with the source
+    /// borrow the event loop's live `&mut Host`. The runner stays with the host
     /// (`run_with`), injected into the host's enumerate/manage/attach calls.
     pub(crate) fn host(&self) -> crate::model::Host {
         let mut transport = self.kind.clone().transport();
@@ -353,7 +353,7 @@ impl Source {
         transport.set_credentials(self.credentials.clone());
         crate::model::Host::new(
             transport,
-            crate::mux::for_binary(&self.binary).expect("a source's binary is a registry name"),
+            crate::mux::for_binary(&self.binary).expect("a host's binary is a registry name"),
         )
     }
 
@@ -387,35 +387,35 @@ impl Source {
 }
 
 // The reachable-but-empty classification lives in `mux/`. The app reaches its
-// `%exit`/`%error`-reason check through `crate::model::source::reason_is_no_sessions`, so the
+// `%exit`/`%error`-reason check through `crate::model::host_def::reason_is_no_sessions`, so the
 // name is re-exported here to keep that path resolving.
 pub(crate) use crate::mux::reason_is_no_sessions;
 
-/// The read side of the runtime source registry: every source it holds, in display
+/// The read side of the runtime host registry: every host it holds, in display
 /// order, for the work that cannot borrow the event loop's registry (the off-loop
-/// operations). Only the registry writes it, on every change to its sources, so a reader
-/// never sees a source the registry does not hold or misses one it does.
+/// operations). Only the registry writes it, on every change to its hosts, so a reader
+/// never sees a host the registry does not hold or misses one it does.
 #[derive(Clone, Default)]
-pub struct SourceSet(Arc<std::sync::RwLock<Vec<Source>>>);
+pub struct HostDefs(Arc<std::sync::RwLock<Vec<HostDef>>>);
 
-impl SourceSet {
-    /// A snapshot of every source, in display order.
-    pub fn list(&self) -> Vec<Source> {
-        self.0.read().expect("source set lock").clone()
+impl HostDefs {
+    /// A snapshot of every host, in display order.
+    pub fn list(&self) -> Vec<HostDef> {
+        self.0.read().expect("host set lock").clone()
     }
 
-    /// The source answering as `id`, if the registry holds one.
-    pub fn get(&self, id: &str) -> Option<Source> {
+    /// The host answering as `id`, if the registry holds one.
+    pub fn get(&self, id: &str) -> Option<HostDef> {
         self.0
             .read()
-            .expect("source set lock")
+            .expect("host set lock")
             .iter()
             .find(|s| s.alias == id)
             .cloned()
     }
 
-    pub(crate) fn replace(&self, sources: Vec<Source>) {
-        *self.0.write().expect("source set lock") = sources;
+    pub(crate) fn replace(&self, hosts: Vec<HostDef>) {
+        *self.0.write().expect("host set lock") = hosts;
     }
 }
 
@@ -775,7 +775,7 @@ echo probe-ok
 
     // LIVE: the timeout path runs a real hung command for the full POLL_CMD_TIMEOUT
     // (6s), so it is ignored and run on demand:
-    //   cargo test --lib model::source::tests::exec_runner_times_out_and_kills -- --ignored
+    //   cargo test --lib model::host_def::tests::exec_runner_times_out_and_kills -- --ignored
     // It asserts the command's own budget returns a timeout error AND that the child is
     // reaped (the process is gone) rather than left behind - the teardown that on
     // Windows avoids the "IO is still pending on closed socket" crash (#116).
