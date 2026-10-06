@@ -435,6 +435,20 @@ pub struct Switcher {
     /// first executes a target, and never again in the run. While it is open the
     /// selection highlights and attaches nothing.
     landing: bool,
+    /// Whether the hard selection names nothing: the node it named was lost with nothing
+    /// of its machine left on the list. The selected row then only marks the place the
+    /// lost card stood, which the next arrow key starts from, and the terminal view shows
+    /// the landing list.
+    vacant: bool,
+    /// The node the selection named before it became vacant, which it returns to when
+    /// the user changes the filter so that node is listed again.
+    lost: Option<Node>,
+    /// The card that stood where the lost card stood when the selection became vacant,
+    /// by identity, so the place the next arrow key starts from survives a list change.
+    vacant_place: Option<RowRef>,
+    /// The filter the last rebuild applied, so a rebuild can tell a filter the user
+    /// changed from an answer that arrived.
+    last_filter: String,
 }
 
 mod columns;
@@ -479,6 +493,10 @@ impl Switcher {
             create_host: None,
             popup_geo: PopupGeometry::default(),
             landing: false,
+            vacant: false,
+            lost: None,
+            vacant_place: None,
+            last_filter: String::new(),
         }
     }
 
@@ -524,6 +542,12 @@ impl Switcher {
 
     pub(crate) fn landing_open(&self) -> bool {
         self.landing
+    }
+
+    /// Whether the terminal view shows the landing list: while the landing screen is
+    /// open, and while the selection names nothing and the pointer is on no card.
+    fn landing_shown(&self) -> bool {
+        self.landing || (self.vacant && self.hover.is_none())
     }
 
     /// Closes the landing screen for the rest of the run, so the selection drives the
@@ -668,8 +692,33 @@ impl Switcher {
 
         let old_rows = std::mem::replace(&mut self.rows, rows);
         self.number_cards(unfiltered.as_deref(), settled);
+        let refiltered = state.filter != self.last_filter;
+        self.last_filter = state.filter.clone();
         let before = prior.node.clone();
-        let target = self.resolve_selection(prior, &old_rows, state);
+        let lost = if self.vacant {
+            self.lost.clone()
+        } else {
+            prior.node.clone()
+        };
+        let at = self.place_of(&prior, &old_rows);
+        // A vacant selection returns to the node it lost only when the user changed the
+        // filter so that node is listed again; an answer that lists it moves nothing.
+        let returned = if self.vacant && refiltered {
+            self.lost
+                .as_ref()
+                .and_then(|node| self.target_of(node, None))
+                .map(|(row, part)| Target {
+                    row,
+                    part,
+                    deep: None,
+                })
+        } else {
+            None
+        };
+        let target = match returned {
+            Some(target) => Some(target),
+            None => self.resolve_selection(prior, state),
+        };
         if self
             .hover
             .as_ref()
@@ -677,7 +726,10 @@ impl Switcher {
         {
             self.hover = None;
         }
-        self.place(before, target);
+        match target {
+            Some(target) => self.place(before, target),
+            None => self.vacate(at, lost),
+        }
         self.resolve_link(state);
     }
 
@@ -711,12 +763,7 @@ impl Switcher {
     /// session card while nothing is chosen yet, or the awaited session. Anything else
     /// holds the prior node, and a prior node that DISAPPEARED moves along its lineage
     /// ([`Switcher::lineage_target`]). No path picks a position of its own.
-    fn resolve_selection(
-        &mut self,
-        prior: Prior,
-        old_rows: &[Row],
-        state: &crate::state::State,
-    ) -> Target {
+    fn resolve_selection(&mut self, prior: Prior, state: &crate::state::State) -> Option<Target> {
         let first_selectable = || Target {
             row: self.rows.iter().position(Row::selectable).unwrap_or(0),
             part: Part::Card,
@@ -735,16 +782,16 @@ impl Switcher {
                 {
                     Some(i) => {
                         self.interest = Interest::Selected;
-                        Target::card(i)
+                        Some(Target::card(i))
                     }
-                    None => first_selectable(),
+                    None => Some(first_selectable()),
                 }
             }
             Interest::Awaiting(address) => {
                 if let Some(i) = self.row_of_session(&address) {
                     self.interest = Interest::Selected;
                     self.rescan_collapse = None;
-                    return Target::card(i);
+                    return Some(Target::card(i));
                 }
                 // The interest ends when the host answered without the session, or
                 // failed: a session its host can no longer reach is a lost context, and
@@ -760,12 +807,9 @@ impl Switcher {
                     self.interest = Interest::Selected;
                     self.rescan_collapse = None;
                 }
-                self.lineage_target(&prior, old_rows, state)
-                    .unwrap_or_else(first_selectable)
+                self.lineage_target(&prior, state)
             }
-            Interest::Selected => self
-                .lineage_target(&prior, old_rows, state)
-                .unwrap_or_else(first_selectable),
+            Interest::Selected => self.lineage_target(&prior, state),
         }
     }
 
@@ -779,20 +823,14 @@ impl Switcher {
     /// - a machine whose card gave way to the cards of its hosts (its card while it was
     ///   down, or while no host of it was known) stays selected on the machine half of
     ///   its first row, so its screen stays and lists the hosts as links;
-    /// - when nothing of the machine survives, the selection goes to the card that now holds
-    ///   the vanished card's place: the first card after it in the prior card order that
-    ///   survived, else the last surviving card before it.
+    /// - when nothing of the machine survives, `None`: the selection names nothing, since
+    ///   it never moves down or sideways.
     ///
     /// A node the selection reached with no nav target of its own (a screen link opened
     /// it) stays selected while the inventory still holds it. A node that HAD a target
     /// and lost it walks up instead, which is how a machine going down or logged out gathers
     /// the selection from its hosts and sessions onto its one card.
-    fn lineage_target(
-        &self,
-        prior: &Prior,
-        old_rows: &[Row],
-        state: &crate::state::State,
-    ) -> Option<Target> {
+    fn lineage_target(&self, prior: &Prior, state: &crate::state::State) -> Option<Target> {
         let mut node = prior.node.clone()?;
         let near = prior.row.as_ref().and_then(row_host).map(str::to_owned);
         loop {
@@ -806,10 +844,20 @@ impl Switcher {
             if prior.deep && node_exists(&node, state) {
                 return Some(self.deep_target(node));
             }
-            match node.parent() {
-                Some(parent) => node = parent,
-                None => break,
-            }
+            node = node.parent()?;
+        }
+    }
+
+    /// The row that holds the place of the card the selection stood on: the first card
+    /// after it in the prior card order that survived, else the last surviving card before
+    /// it. A vacant selection keeps it as the place the next arrow key starts from.
+    fn place_of(&self, prior: &Prior, old_rows: &[Row]) -> usize {
+        if self.vacant {
+            return self
+                .vacant_place
+                .as_ref()
+                .and_then(|r| self.row_matching(r))
+                .unwrap_or(self.selected);
         }
         let survivor = |r: &Row| {
             r.selectable()
@@ -823,7 +871,26 @@ impl Switcher {
             .iter()
             .find_map(survivor)
             .or_else(|| old_rows[..at].iter().rev().find_map(survivor))
-            .map(Target::card)
+            .unwrap_or(0)
+    }
+
+    /// Leaves the hard selection naming nothing, at row `at`, remembering `lost`.
+    fn vacate(&mut self, at: usize, lost: Option<Node>) {
+        let was = self.selected_node();
+        self.selected = at.min(self.rows.len().saturating_sub(1));
+        self.part = Part::Card;
+        self.deep = None;
+        if !self.vacant {
+            self.vacant_place = self.rows.get(self.selected).map(|r| r.reference.clone());
+        }
+        self.vacant = true;
+        self.lost = lost;
+        self.login_target = None;
+        if was.is_some() {
+            self.link = 0;
+            self.link_node = None;
+        }
+        self.on_focus_changed();
     }
 
     /// The nav target that stands for `node`: its own card or title half, `None` when the
@@ -1050,7 +1117,7 @@ impl Switcher {
     /// the side placement pulls the list back to show a title when the card under it and
     /// the title fit on screen together.
     fn selected_section_title(&self) -> Option<usize> {
-        let sel = self.selected;
+        let sel = self.hard_row()?;
         let r = self.rows.get(sel)?;
         if !matches!(r.reference, RowRef::Session { .. }) {
             return None;
@@ -1079,6 +1146,9 @@ impl Switcher {
     /// rebuild passes the node the selection named on the rows it replaced, so a list
     /// that changed around an unchanged node keeps that node's selected link.
     fn place(&mut self, before: Option<Node>, target: Target) {
+        self.vacant = false;
+        self.lost = None;
+        self.vacant_place = None;
         if self.rows.is_empty() {
             self.deep = target.deep;
             return;
@@ -1114,6 +1184,9 @@ impl Switcher {
 
     /// The node the hard selection names.
     pub(crate) fn selected_node(&self) -> Option<Node> {
+        if self.vacant {
+            return None;
+        }
         self.deep.clone().or_else(|| {
             self.rows
                 .get(self.selected)
@@ -1195,6 +1268,17 @@ impl Switcher {
             return;
         }
         self.note_user_move();
+        // A selection that names nothing starts on the card standing where the lost card
+        // stood, whichever way the step goes.
+        if self.vacant {
+            let at = sel
+                .iter()
+                .copied()
+                .find(|&i| i >= self.selected)
+                .unwrap_or(sel[sel.len() - 1]);
+            self.set_selected(at);
+            return;
+        }
         // A selected section title is not a card of the step, so the step starts between
         // the cards around it: forward reaches the first card under it, backward the last
         // card above it.
@@ -1287,7 +1371,15 @@ impl Switcher {
     }
 
     fn current_ref(&self) -> Option<&RowRef> {
+        if self.vacant {
+            return None;
+        }
         self.rows.get(self.selected).map(|r| &r.reference)
+    }
+
+    /// The row the hard selection is drawn on, `None` while it names nothing.
+    pub(crate) fn hard_row(&self) -> Option<usize> {
+        (!self.vacant).then_some(self.selected)
     }
 
     /// The row of the session card `host/name`.
@@ -1485,7 +1577,7 @@ impl Switcher {
     /// It is the screen of the shown node: the soft selection's while the pointer is on a
     /// nav target, else the hard selection's.
     pub(crate) fn current_view_screen(&self, state: &crate::state::State) -> Option<ViewScreen> {
-        if self.landing {
+        if self.landing_shown() {
             return Some(ViewScreen::Landing);
         }
         let displayed = (!state.displayed.host.is_empty() && !state.displayed.session.is_empty())
@@ -1703,7 +1795,7 @@ impl Switcher {
         &self,
         state: &crate::state::State,
     ) -> Vec<crate::ui::chrome::ScreenLink> {
-        if self.landing {
+        if self.landing_shown() {
             return self.landing_links();
         }
         match self.shown_node() {

@@ -3822,11 +3822,12 @@ async fn nav_esc_clears_an_applied_filter() {
 }
 
 #[tokio::test]
-async fn filter_keeps_the_selection_on_a_surviving_card_while_typing() {
-    // As the live filter shrinks the list, the selection never sits on a card that
-    // just filtered out: it holds its session while that survives, then lands on the
-    // first card the narrower list still shows. The selection starts on build (the
-    // first card in name-sorted order).
+async fn filter_keeps_the_selection_while_its_card_survives_and_names_nothing_once_hidden() {
+    // As the live filter shrinks the list, the selection holds its session while that
+    // survives. Once nothing of its machine is listed it names nothing rather than
+    // landing on another card, and the edit that lists the session again returns the
+    // selection to it. The selection starts on build (the first card in name-sorted
+    // order).
     let mut h = Harness::new(sample());
     h.ch('/').await;
     h.ch('i').await; // keeps build, editor, inference - the selection's session survives
@@ -3838,12 +3839,19 @@ async fn filter_keeps_the_selection_on_a_surviving_card_while_typing() {
         "the selection holds its card while it survives"
     );
     h.ch('n').await; // "in" keeps only inference
+    assert_eq!(
+        h.sw.selected_node(),
+        None,
+        "a hidden machine leaves nothing selected"
+    );
+    assert_eq!(h.sw.hard_row(), None);
+    h.key(KeyCode::Backspace).await;
     assert!(
         matches!(
             h.sw.current_ref(),
-            Some(RowRef::Session { sess }) if sess.name == "inference"
+            Some(RowRef::Session { sess }) if sess.name == "build"
         ),
-        "a filtered-out card is never the selection; it lands on the survivor"
+        "the edit that lists it again returns the selection"
     );
 }
 
