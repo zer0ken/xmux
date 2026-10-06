@@ -4,24 +4,22 @@
 
 `mux/zellij` is the zellij implementation, the one mux that shares NO argv or output
 shape with tmux: every command plan is overridden and its listing is parsed here. Its
-CLI is one process per query, and every query is addressed with `--session <name>`,
-because zellij's actions otherwise target the session the caller is inside, which xmux
-never is. A zellij tab's position is the window index. zellij moves a client between
+CLI is one process per query, and xmux issues only three: `list-sessions -n`,
+`attach <name>`, and `attach -b <name>` to start a session. It reads no tab listing, so
+each zellij session reports one window. zellij moves a client between
 sessions inside the client process with `switch-session`, so the display reattaches on
 every session change, and `ZELLIJ_SESSION_NAME` in xmux's own client is the only record
 of a user's move, readable only for a client on THIS machine.
 
 ## Module Seams
 
-- The implementation root holds the mux itself and the
-  `--session <name> action <verb>` argv builder.
+- The implementation root holds the mux itself and its command plans.
 - The parsing module holds the session-line grammar, pure and total: anything that
   does not fit is skipped.
 - The driver sits beside them.
 
 ## Invariants
 
-- Every action argv carries `--session <name>`.
 - The attach is plain `attach <name>`, never `attach -c`: showing a session must not
   create or resurrect one.
 - A session listed as exited is a resurrectable record, not a session, and is dropped

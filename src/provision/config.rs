@@ -229,10 +229,9 @@ pub struct UiConfig {
     #[serde(rename = "hint-bar-style", default)]
     pub hint_bar_style: String,
     /// The selected card's background, in the same colour slots as the view border
-    /// (`bg=<colour>`, or a bare colour token). Empty (default) means the surface comes
-    /// from the terminal's reported background, and NOTHING is painted when the terminal
-    /// does not report one. This is how a user on a terminal that answers no colour
-    /// query gets a selection surface at all.
+    /// (`bg=<colour>`, or a bare colour token). Empty (default) paints the selected card
+    /// in reverse video, which needs no colour from the terminal; a named colour gives
+    /// it a surface instead.
     #[serde(rename = "selection-style", default)]
     pub selection_style: String,
     /// Per-role colour overrides for the chosen theme: `primary`, `secondary`,
