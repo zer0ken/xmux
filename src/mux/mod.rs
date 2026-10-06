@@ -407,6 +407,10 @@ const DETECT_TIMEOUT_REMOTE: std::time::Duration = std::time::Duration::from_sec
 /// never counts as tmux, because tmux's own help probe reads the alias's self-naming
 /// help. No classification reads ANOTHER mux's name as its own identity, and the one
 /// name a stage may drop is one that stage itself has a reason to skip.
+///
+/// Discovery is asked once per host and never per source: for this machine by the
+/// environment after the config-only first paint, and for each remote machine by the
+/// runtime after it connects.
 pub async fn installed_muxes(transport: &dyn Transport, runner: &dyn Runner) -> Vec<String> {
     host_muxes(transport, runner).await.unwrap_or_default()
 }
@@ -502,7 +506,9 @@ pub fn for_binary(bin: &str) -> Option<Box<dyn Mux>> {
 /// The two composition sites (the source list and the host registry) call this before
 /// handing a socket to the transport axis, so a socket only ever reaches a mux that
 /// understands it. The transport axis cannot make this call itself: it names no mux by
-/// design, so it injects the socket it is GIVEN and asks nothing about it.
+/// design, so it injects the socket it is GIVEN and asks nothing about it. Both sites
+/// derive their answer from one raw value through this one call, which is what keeps a
+/// source and its host addressing one server.
 pub fn server_socket_for(bin: &str, socket: Option<String>) -> Option<String> {
     socket.filter(|_| for_binary(bin).is_some_and(|m| m.takes_server_socket()))
 }

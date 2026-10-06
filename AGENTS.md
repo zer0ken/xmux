@@ -2,164 +2,59 @@
 
 ## Purpose
 
-This repository is a Rust terminal multiplexer switcher. The running app owns the
-terminal, keeps mux display attachments alive, renders the split view (a nav view
-of session cards plus the selected session's live PTY grid), and exposes a local
-control socket for headless driving. Each instance is addressed by NAME, owning
-`ctl-<name>.sock`, which is what `xmux send <name> <command>` dials.
-
-## Mental Model
-
-Two orthogonal axes describe every connection and no module conflates them:
-`Transport` (HOST, local versus ssh) and `Mux` (MUX, the per-mux behavior
-trait). Attach and command argv are composed from a source's own transport and mux,
-so the two implementations combine without either knowing the other. A HOST is a machine
-that hosts muxes and that the roster names; a SOURCE is one mux on one host, so a
-host serving several muxes is several sources under one host.
-
-There are two mux-facing paths:
-
-- Metadata path: `src/link/` runs control-mode or poll enumeration, tracks
-  inventory, and emits source events.
-- Display path: `src/display/` runs real PTY attachments and feeds grids; the
-  driver seam owns the per-source display decision (which PTY to use and whether to
-  switch in place or reattach) and keeps input and resize work off the async
-  runtime.
-
-The app ties those paths together and branches on nothing mux-specific. Every
-application input converges on one message-driven update transition; raw key and
-text injection is an unstable low-level surface.
+xmux is a Rust terminal multiplexer switcher: the app owns the terminal, keeps mux
+display attachments alive, renders the split view, and serves `ctl-<name>.sock`. Two
+orthogonal axes, `Transport` (HOST) and `Mux` (MUX), describe every connection, and argv
+is composed from a source's own transport and mux, so neither knows the other.
+Vocabulary is in `CONTEXT.md` and design principles in `docs/principles.md`.
 
 ## Module Seams
 
-- `src/app/` - the app: the application model and its single update transition,
-  the runtime loop and unified effect executor, the ctl socket server, and
-  preference persistence.
-- `src/cli/` - the CLI surface: argument parsing and command dispatch, plus the
-  `xmux update` and `xmux uninstall` subcommands. It exposes ONE public entry, which the binary shim calls.
-- `src/provision/` - resolution: the TOML config, the roster of ssh targets, the
-  concurrent source probe, login defaults and host stanzas, and the resolved runtime
-  view over them.
-- `src/transport/` - the TRANSPORT axis: the `Transport` trait, the per-host
-  implementations, and the shared shell helpers. A source builds one at construction.
-- `src/mux/` - the MUX axis: the `Mux` trait, the per-mux implementations (`tmux/`,
-  `psmux/`, `zellij/`, `abduco/`, `screen/`, `tuios/`, `herdr/`) owning metadata,
-  command plans, and a display driver, and
-  the shared mux builders.
-- `src/model/` - runtime domain values: sources, inventory and typed failures, view
-  screen policy, login inputs, nav geometry, the operation port and its exchanged
-  values, and the action and command sets.
-- `src/driver.rs` - the mux-agnostic `MuxDriver` trait and the thin wrapper that
-  resolves a source's driver; it names no concrete mux type.
-- `src/display/` - PTY attachment, the grid, terminal input, and low-level input
-  protocol mechanics.
-- `src/link/` - the live host-facing channels: per-source connection management
-  (control-mode reader and writer, poll tasks, live client ownership), the mux
-  operations xmux issues, and the control-socket protocol.
-- `src/ui/` - nav row transforms, off-loop operation execution, interaction
-  behavior, and rendering.
-- `src/state/` - domain state values and the action reducer used by the app's
-  update transition, including focus, modal, and chrome data.
-- `src/session.rs` - the foundational cross-environment data types (a `Session`,
-  its windows-and-panes detail, and the `<source>/<name>` address) that the axes
-  and the model build on.
+- `src/app/` - the application model and its update transition, the runtime loop, the
+  ctl server, and preference persistence.
+- `src/cli/` - argument parsing and command dispatch, behind one public entry.
+- `src/provision/` - the config, the roster, the source probe, and the resolved view.
+- `src/transport/` - the HOST axis: the `Transport` trait and its implementations.
+- `src/mux/` - the MUX axis: the `Mux` trait and one directory per mux.
+- `src/model/` - runtime domain values, the action and command sets, the operation port.
+- `src/display/` - the display path: PTY attachment, the grid, and terminal input.
+- `src/link/` - the metadata path: per-source channels, mux operations, ctl protocol.
+- `src/ui/` - nav rows, off-loop operations, interaction, and rendering.
+- `src/state/` - domain state and the action reducer the update transition uses.
 
 ## Invariants
 
-### Layer Direction
-
-Backend modules never import the application, presentation, or application-state
-layers. State imports backend modules and itself, never the application or
-presentation layers. Every `crate::<top>` edge follows this table. A file belongs
-to the directory directly below `src/`, or to the root module named by its `.rs`
-file.
+- **Layer Direction.** Every `crate::<top>` edge follows this table; a file belongs to
+  the directory directly below `src/` or to the root module its `.rs` file names. The
+  architecture check covers `#[cfg(test)]` modules and has no known exceptions.
 
 | Importing module | Allowed target modules |
 | --- | --- |
-| `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `transport` | `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `transport` |
-| `state` | `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `state`, `transport` |
-| `app`, `cli`, `lib`, `main`, `ui` | `app`, `cli`, `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `state`, `transport`, `ui` |
+| `display`, `driver`, `link`, `logging`, `model`, `mux`, `provision`, `session`, `transport` | the same set |
+| `state` | the same set plus `state` |
+| `app`, `cli`, `lib`, `main`, `ui` | every module |
 
-The architecture check includes `#[cfg(test)]` modules. The known-exception list
-is empty, and any new edge fails the check.
-
-### View Purity
-
-The View Purity rule requires rendering to read the application model and write
-only the frame. Its required data direction is application model, immutable
-`RenderPlan`, frame. Paint and input hit-testing consume the same plan, and
-neither owns or mutates it. Rendering must not mutate application, layout,
-interaction, or hit-test state.
-
-### Single Update Owner
-
-The Single Update Owner rule permits only the application update transition to
-mutate application state. The application model owns domain state, switcher
-interaction state, navigation geometry and preferences, mouse state, source
-connection tracking, detection tracking, and the last render plan. Key, mouse,
-semantic ctl, source event, operation result, tick, resize, and configuration
-inputs are messages to that transition. It applies domain actions as one part of the
-same flow and emits one effect type, and the runtime handles every effect (command,
-source, persistence, attachment, and login) through one exhaustive executor in the
-order emitted. Raw terminal bytes are the
-only direct input path and go to the selected terminal display.
-
-- Every module follows the design principles in `docs/principles.md`. Asked-for
-  Requests binds every path that reaches a machine: a POLL source that answered is
-  kept current on a cadence only over a path the machine already holds open (the local
-  box, a WSL distribution, or an ssh master this side shares across runs), and a
-  control client the mux itself detaches while it keeps serving is reopened once,
-  because the far side spoke over the open stream.
-- The public control surface should speak semantic operations before raw keys.
-- Metadata and control clients do not own display pixels.
-- Display attachments are real mux clients, not reconstructed output streams.
-- Blocking process, PTY, and pipe operations must stay off the single-threaded
-  runtime path. The rule bans work whose duration ANOTHER PARTY sets: a spawn, a
-  pipe, a PTY close, each of which waits on something that may never answer.
-  Reading a local process's own memory waits on nobody and carries its own bound,
-  and one such read runs on the loop: the session xmux's own display client is on,
-  read once per 120 ms animation beat. Timed on a release build over 500 repeats,
-  it costs a mean in the low tens of microseconds and a worst repeat a few times
-  that. Those figures move with the machine and the run, so the standing claim is
-  the order and not the number: microseconds against a beat of milliseconds, well
-  under a percent of it even at its worst. A read whose cost is not measured and
-  not bounded that far below the beat belongs off the loop like everything else,
-  and a measurement is re-taken on the machine at hand rather than quoted.
-
-## Common Pitfalls
-
-- Do not add another per-source live-process registry without reconciling it with
-  the source manager.
-- Do not put transport decisions into mux methods that are documented as
-  transport-blind.
-- Do not document work history in code comments or durable docs; describe the
-  current invariant instead.
-- Do not describe code in a durable doc. A document states behavior and design
-  rules, and names no test, function, method, field, or library API, so a rename
-  in the source is never a documentation change.
+- **View Purity.** Rendering reads the application model and writes only the frame,
+  through an immutable `RenderPlan` that paint and hit-testing both consume and neither
+  mutates.
+- **Single Update Owner.** Only the update transition mutates application state. Every
+  input except raw terminal bytes is a message to it, and it emits one effect type that
+  one exhaustive executor runs in order.
+- Nothing above the driver seam branches on a mux kind.
+- Blocking process, PTY, and pipe work whose duration another party sets stays off the
+  single-threaded runtime.
+- Public ctl verbs resolve to domain actions; raw key injection stays behind `raw:`.
 
 ## Before Editing
 
-- Identify whether the change touches metadata, display, UI interaction, domain
-  operations, or transport dispatch.
-- Follow the existing seam first; only widen a seam when the current interface
-  cannot represent the behavior.
-- Check `CONTEXT.md` for the vocabulary before naming anything.
-
-## Before PR
-
-- Write commit messages, pull request titles and bodies, issues, and release notes in
-  English (`docs/AGENTS.md`). A pull request title becomes a release note line.
-- Re-review design consistency before creating or merging a PR: confirm the change
-  matches what `CONTEXT.md`, `docs/principles.md`, and the module `AGENTS.md` files already
-  specify, rather than only that it compiles and passes. A change that re-implements
-  or contradicts a documented invariant is wrong even when the tests pass.
-- When the design doc and the code disagree, treat the doc as the intent and fix the
-  code (or, only with the user's sign-off, correct the doc) instead of shipping code
-  that silently deviates.
+- Follow the existing seam before widening it.
+- Check the change against the glossary, the principles, and every touched directory's
+  Working Notes; where docs and code disagree, the docs are the intent, and a doc
+  changes only with the maintainer's sign-off.
+- Write commits, pull requests, issues, and release notes in English
+  (`docs/AGENTS.md`); a pull request title becomes a release note line.
 
 ## Verification
 
-- Exercise the behavior the touched module is responsible for.
-- For app, connection, or display changes, run the whole suite when feasible, because
-  cross-module behavior is heavily coupled.
+- Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and the whole
+  test suite, and exercise the touched behavior from a key and from the ctl verb.

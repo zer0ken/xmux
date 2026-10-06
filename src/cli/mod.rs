@@ -91,6 +91,11 @@ enum Command {
     Version,
 }
 
+/// The single entry the binary shim calls.
+///
+/// Askpass helper mode is detected before logging setup and argument parsing. That
+/// mode performs only the private broker exchange and exits, so no normal command can
+/// observe or print credential context.
 pub async fn run() -> i32 {
     if let Some(code) = crate::transport::auth::run_helper_from_env().await {
         return code;
@@ -121,7 +126,7 @@ pub async fn run() -> i32 {
             Err(code) => code,
         },
         Some(Command::Doctor) => {
-            // Tolerate a malformed config — report it, don't die on it.
+            // Tolerate a malformed config - report it, don't die on it.
             let (env, cfg_err) = env::build_env().await;
             run_doctor(&env, cfg_err).await
         }
@@ -809,7 +814,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // Two markers with no live listener: both undialable, so neither counts. This is
-        // the crux — a pile of crashed-instance markers must resolve to zero live, not
+        // the crux - a pile of crashed-instance markers must resolve to zero live, not
         // to "many".
         std::fs::write(control::socket_path(&dir, "amber-otter"), b"").unwrap();
         std::fs::write(control::socket_path(&dir, "brisk-wren"), b"").unwrap();

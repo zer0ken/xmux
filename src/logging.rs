@@ -1,6 +1,14 @@
 //! Structured logging for xmux: a non-blocking rolling file subscriber backed by
-//! `tracing`. Writing goes exclusively to a file (`xmux_dir/xmux.log`) — never to
-//! stdout or stderr — so ratatui's alt-screen is never corrupted by a stray log line.
+//! `tracing`. Writing goes exclusively to a file (`xmux_dir/xmux.log`), never to
+//! stdout or stderr, because the renderer owns the terminal in alt-screen mode and a
+//! stray byte there corrupts the display.
+//!
+//! The display events are the diagnostic surface for whether a session switch landed.
+//! The first `display_grid_changed` after the displayed session changes is INFO and a
+//! steady-state repaint of the same session is TRACE, so a `display_show decision=switch`
+//! with no INFO grid change after it is a switch that did not change the screen.
+//! `XMUX_LOG=xmux::mux=debug` raises the per-mux display events, which shows whether a
+//! switch request reaches the driver and which decision branch it takes.
 
 use std::path::Path;
 

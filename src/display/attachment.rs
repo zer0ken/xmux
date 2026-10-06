@@ -123,7 +123,9 @@ enum Osc52State {
 /// state it needs across reads so a sequence split at a read boundary is still
 /// found, and it discards anything that is not a complete OSC 52: a non-52 OSC
 /// passes through untouched, and a payload over [`OSC52_MAX`] is dropped rather than
-/// buffered without bound.
+/// buffered without bound. Every other byte of child output reaches the screen only
+/// through the grid. Re-emitting the escape rather than calling a clipboard API keeps
+/// the clipboard working when xmux itself runs over ssh.
 #[derive(Default)]
 pub struct Osc52Scanner {
     state: Osc52State,
@@ -410,11 +412,14 @@ pub struct Attachment {
     /// draws, so the event channel cannot grow unbounded under an output flood.
     pending: Arc<AtomicBool>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
-    /// Keeps the askpass token valid until this child is torn down and reaped.
+    /// Keeps the askpass token valid until this child is torn down and reaped, because a
+    /// long-lived ssh child can invoke askpass after spawn has returned.
     _auth: Option<Box<crate::transport::auth::CommandAuth>>,
     id: u64,
     /// The OS name this attachment's own PTY carries, read when the PTY was opened.
-    /// `None` where the platform's PTY has no name (a Windows ConPTY has none).
+    /// `None` where the platform's PTY has no name (a Windows ConPTY has none). It is a
+    /// plain fact about this PTY: whether it identifies a mux client depends on where the
+    /// attach child actually runs, a transport question this layer never answers.
     child_tty: Option<String>,
     /// The first output an observed ssh child wrote, which carries OpenSSH's report of
     /// the method that authenticated it. The pump drops its handle once the transcript
@@ -431,6 +436,8 @@ pub struct Attachment {
 
 impl Attachment {
     /// Observe the display client's SSH authentication report off the runtime thread.
+    /// The report identifies this attachment alone: a child that writes none leaves its
+    /// method unknown rather than borrowing the machine's last observed method.
     pub fn watch_auth(&mut self, events: tokio::sync::mpsc::UnboundedSender<PtyEvent>) {
         let Some(transcript) = self.auth_transcript.take() else {
             return;

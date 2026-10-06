@@ -102,7 +102,8 @@ pub struct Roster {
     /// reason as `ssh_aliases`: `Hosts::build` reruns `Config::wsl_specs` over them, so
     /// the host registry and the source list are built from one answer rather than two.
     pub wsl_distros: Vec<String>,
-    /// Effective OpenSSH values resolved locally for each ssh destination.
+    /// Effective OpenSSH values resolved locally for each ssh destination: its address and
+    /// port defaults, the identity a prompt names, and its host-key policy.
     pub ssh_profiles: HashMap<String, crate::transport::auth::SshProfile>,
     pub login_defaults: HashMap<String, LoginDefaults>,
     pub ssh_stanzas: HashMap<String, String>,
@@ -115,6 +116,9 @@ pub struct Env {
     /// accessors over it; never hold the guard across an await.
     roster: std::sync::RwLock<Roster>,
     remote_shells: source::RemoteShells,
+    /// The process-memory credential store for the run. Every configured, discovered, and
+    /// freshly reconciled source receives this same store, keyed by machine, so an
+    /// off-loop operation cannot miss a login or hold its own copy of the password.
     credentials: crate::transport::auth::Credentials,
     pub ui_prefix: String,
     pub xmux_dir: PathBuf,

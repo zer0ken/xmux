@@ -238,7 +238,10 @@ impl MuxDriver for TmuxDriver {
 /// element), so the attach shell records its OWN tty before exec'ing the attach - the
 /// value a later `switch_in_place` reads back to target xmux's own display client, never
 /// the user's own attached client. An attach that does not run through a host shell has
-/// nowhere to run the snippet, so it is returned unchanged.
+/// nowhere to run the snippet, so it is returned unchanged: folded into a local attach,
+/// the prefix would corrupt the argv's session-name argument. The transport's
+/// `runs_through_shell` answer gates the record here, in the driver, so the mux itself
+/// stays transport-blind.
 fn with_display_tty_record(
     command: crate::transport::CommandSpec,
     runs_through_shell: bool,

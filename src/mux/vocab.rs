@@ -17,7 +17,8 @@ pub const SESSION_FORMAT: &str = "#{session_windows}:#{session_attached}:#{sessi
 /// inherit (it would mis-target the server or be refused as nesting). This is the
 /// SSOT for the mux env vars: matches exactly tmux's session markers and any
 /// psmux var; tuios's session markers; and herdr's nesting and routing state. This
-/// is NOT a blanket mux prefix, which would also drop unrelated user configuration.
+/// is NOT a blanket mux prefix, which would also drop unrelated user configuration
+/// such as `HERDR_CONFIG_PATH`.
 pub fn is_mux_var(key: &str) -> bool {
     matches!(
         key,

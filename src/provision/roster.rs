@@ -1,6 +1,6 @@
 //! The ROSTER: which machines xmux offers as sources.
 //!
-//! Separate from `machine/`, which owns how a command REACHES a machine, and from
+//! Separate from `transport/`, which owns how a command REACHES a machine, and from
 //! `discovery`, which scans a machine for sessions. This module answers only "which
 //! ssh targets exist", from one or more providers.
 //!

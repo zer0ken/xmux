@@ -6,6 +6,14 @@
 //! and a client cannot be named from outside the session it is in, so every session
 //! change is a fresh `screen -x <name>` attach. The stale attachment is kept until the
 //! new one is ready so the view never blanks between the two.
+//!
+//! There is no session change to follow either. Inside a session `C-a d` detaches the
+//! client, and detaching is the only move screen offers it, so a client reaches another
+//! session only by ending and a new one starting from outside. tmux's
+//! `%client-session-changed` follow therefore has no screen counterpart to wire, and a
+//! nav selection that stays where the user put it is the right answer, not a missed
+//! event. This rests on screen 4.09.00 and 4.9.1, where `select` and `other` under
+//! `C-a` are WINDOW commands and `sessionname` only renames; 5.x is unverified.
 
 use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;

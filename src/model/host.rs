@@ -328,6 +328,11 @@ impl PendingPaint {
 /// liveness — the single owner of all per-machine state, keyed by a stable host id
 /// rather than a bare alias string. The PTYs are NOT here — they live in
 /// `AttachRegistry`/`DisplayWorker`; `Host` owns only the bookkeeping.
+///
+/// A host carries no control client, no display-key derivation, and no attach or reap
+/// plan: the live control client belongs to the source manager (`link::HostManager`),
+/// the live warm and reap to the driver, and the display-key authority to the driver
+/// capability port (`DriverCtx`).
 pub struct Host {
     pub transport: Box<dyn Transport>,
     pub mux: Box<dyn Mux>,

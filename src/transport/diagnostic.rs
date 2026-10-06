@@ -1,3 +1,7 @@
+//! Reading OpenSSH's own diagnostic text: which authentication and host-key failures a
+//! login can answer, and the cleaned, bounded form of ssh's output a screen shows. The
+//! domain model turns this diagnosis into a typed host failure.
+
 pub(crate) const MAX_DIAGNOSTIC: usize = 4096;
 
 /// Restores the bytes OpenSSH renders as octal escapes when its diagnostic locale

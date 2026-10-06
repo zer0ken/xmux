@@ -9,6 +9,11 @@ use crate::session::LOCAL_SOURCE;
 /// parsed from `$TMUX`); `None` ⇒ the default socket. `id` is the SOURCE id this
 /// transport answers as: bare `local` when this machine serves one mux, `local:<mux>` when
 /// it serves several, so two local sources on the same box stay distinct keys.
+///
+/// It injects the socket it is GIVEN and asks nothing about it. Naming no mux, it cannot
+/// know whether the mux it wraps understands a socket flag, so whether a socket is passed
+/// at all is decided by the composition sites that know the mux; a socket that arrives
+/// here is one the mux has already been found to take.
 #[derive(Clone, Debug)]
 pub struct Local {
     pub id: String,

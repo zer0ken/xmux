@@ -89,6 +89,8 @@ impl Mux for Herdr {
         parse_sessions(transport.host_id(), self.kind(), &out)
     }
 
+    /// `herdr session attach <name>` starts a stopped or missing session before attaching,
+    /// so the first display attachment is what completes a create.
     fn attach_plan(&self, session: &str) -> Vec<String> {
         vec![
             self.bin.clone(),
@@ -102,6 +104,8 @@ impl Mux for Herdr {
         None
     }
 
+    /// Each session has its own persistent server, so an attachment ending is not a
+    /// session ending and is never reported as one.
     fn death_signal(&self) -> DeathSignal {
         DeathSignal::None
     }
@@ -113,10 +117,17 @@ impl Mux for Herdr {
     fn new_session_plan(&self, _name: &str) -> Vec<String> {
         // ponytail: herdr has no detached create; this prompt health check is the
         // ceiling until it adds one, and the reselected session's first attach creates it.
+        // `herdr --session <name> server` is no create command: it does not return.
         self.list_sessions_plan()
     }
 }
 
+/// Parses `herdr session list --json`, the complete metadata answer. Only a running entry
+/// without a connection error is offered: a stopped entry (the always-present `default`
+/// among them) is saved state, not a live session, and an entry with a connection error
+/// has no reachable live server to back it. The listing reports no window count or
+/// attachment state, so offered sessions keep the domain defaults for both rather than
+/// invented values.
 fn parse_sessions(source: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, RunError> {
     let listing: SessionListing = serde_json::from_slice(out)
         .map_err(|e| RunError::Other(format!("invalid herdr session listing: {e}")))?;

@@ -2,156 +2,57 @@
 
 ## Purpose
 
-`transport/` is the HOST axis: how a mux argv reaches the server it runs on,
-SEPARATE from which mux runs there (that is `src/mux`). It owns argv assembly and
-the per-implementation execution wrapping only, never a server model and never a mux
-verb.
-
-## Mental Model
-
-A host implementation implements `Transport`. The local implementation runs a command on
-this host, injecting the server socket for a non-default mux server; the
-ssh implementation wraps the command in an ssh connection with the right tty, batch-mode,
-and multiplexing options; the WSL implementation runs it inside a distribution on this
-machine, exec'd through a login shell so the launcher's own command-line parsing
-never re-reads the quoting and the user's own mux is on `PATH`. Which implementation a
-host belongs to is read out of its NAME, so a host named after launch reaches
-its implementation without anything extra being threaded alongside it.
-
-An ssh host also carries WHICH SHELL FAMILY answers it. A POSIX shell is assumed
-until the reachability probe reads otherwise, and that probe asks which shell rather
-than only whether one answers, so the family costs no round trip of its own. The family
-gates the POSIX snippets a command may carry: the `exec` an attach prepends, and a mux's
-shell switch plan.
-
-Each transport also carries the SOURCE ID it answers as, separate from where it
-connects: one host running several muxes is several sources, all reaching the
-same place, so the id cannot be the ssh destination.
-The plain factories derive the id from the destination; their explicit variants
-state it. A source holds one transport and never branches on which implementation it is:
-it calls trait methods. This mirrors the MUX axis, where the mux trait plays the
-same role.
+`transport/` is the HOST axis: how a mux argv reaches the machine it runs on, separate
+from which mux runs there (`src/mux`). It owns argv assembly and per-implementation
+execution wrapping only, never a server model and never a mux verb. The local
+implementation runs a command on this machine, the ssh implementation wraps it in an
+ssh connection, and the WSL implementation runs it inside a distribution on this
+machine. Which implementation a host uses is read out of its name, and each transport
+also carries the source id it answers as, so one machine serving several muxes is
+several sources at one destination.
 
 ## Module Seams
 
-- The module root holds the `Transport` trait, the host kind and its
-  construction method (the single construction-time match mapping a kind to a
-  concrete transport), the factories that method delegates to plus the variants
-  naming the source id explicitly, the switch execution shape, and the
-  boxing impls that let a stored transport pass where a borrowed one is expected.
-- Each host implementation is its own module: the local implementation issues no remote shell
-  command and uses none of the shared helpers; the ssh implementation owns the
-  private option assembly (tty, batch mode, multiplexing); the WSL implementation owns
-  its launcher wrapping, and also the provider that lists this machine's
-  distributions as host names, because listing them is launcher mechanics
-  rather than roster policy.
-- The shared shell helpers renders an argv injection-safe for the POSIX shell
-  an implementation hands its command to. It is the peer of the mux axis's own builders.
-- The shared ssh diagnostic identifies authentication and host-key failures that a login
-  can answer. The domain model turns that diagnosis into a typed host failure.
-
-The dependency is one-way: the shell-based implementations import the shared helpers,
-and nothing in `transport/` imports a mux type or a source.
+- The module root holds the `Transport` trait, the host kind with the one match that
+  maps a kind to a concrete transport, the factories, the switch execution shape, and
+  the boxing impl that lets a stored transport pass where a borrowed one is expected.
+- Each host implementation is its own module. The WSL module also lists this
+  machine's distributions as host names, since that is launcher mechanics rather than
+  roster policy.
+- The shared shell helpers render an argv injection-safe for the POSIX shell an
+  implementation hands its command to, and read which shell family answers a host.
+- The credential broker holds a submitted password in process memory and serves it to
+  ssh children through askpass.
+- The ssh diagnostic reads OpenSSH's own failure text.
+- Nothing in `transport/` imports a mux type or a source.
 
 ## Invariants
 
-- The local implementation injects the server socket it is GIVEN and asks nothing about it. It
-  cannot ask: it names no mux, so it cannot know whether the mux it wraps understands a
-  socket flag. Whether a socket is passed at all is decided by the composition sites that
-  know the mux (see `src/mux/AGENTS.md`); a socket that arrives here is one the mux has
-  already been found to take.
-- `Transport` names no mux and no server model. Remoteness is a semantic
-  ssh-versus-local marker only. What the mux sites actually read are the
-  capability predicates: whether a display attach runs through a host shell (the
-  gate deciding which source names its client's tty), whether this machine's mux
-  registry is authoritative (the registry-merge gate), and which shell family answers
-  the host (the gate on POSIX snippets). None of the four derives from another, and no
-  code reads them to pick a server model. In particular the shell family is NOT the
-  shell-based predicate restated: a PowerShell remote runs its attach through a shell
-  that records no tty for it.
-- A transport composes a command specification containing argv and child environment.
-  An ssh transport consults the process-memory credential store at composition time, so
-  every spawn path and every source on one machine receives current authentication.
-  Submitted connection values are the machine's, not one source's. A source found later
-  and a transport rebuilt from the roster receive the same store before use, so neither
-  can lose the machine credential.
-- Login, machine probe, and display connections ask OpenSSH to report authentication
-  at its verbose level, never a debug level. The report stays on the command's own
-  stderr beside ssh's errors, so a display connection's failure reaches its pane, and no
-  file outlives the command. A persistent master releases an inherited stderr below a
-  debug level, so a probe's pipes close when the probe exits. The verbose level's
-  success reports, the method and the transfer totals, are never part of a failure
-  reason. A host keeps its last observed method; a session reports only its live display
-  connection's method. A reused master may report none.
-- A held ssh password is reached only through a private broker token in the child
-  environment. The token requires an exact target account-and-host match, answers at most once, and lives until the child
-  is reaped. The login uses a pending credential and promotes it only when the broker
-  served it. It may accept a new host key only when the effective policy is `ask`; later
-  commands use only a promoted credential and preserve the user's host-key policy. A
-  command without a credential uses batch mode. Older Unix ssh clients are detached from
-  the controlling terminal for non-interactive work, and older Windows clients do not
-  enter the password path.
-- A command holding a password offers a key first and carries a password-only copy of
-  itself. The copy runs once, within the first attempt's time budget, only when the host dropped
-  the connection before a session started without refusing authentication and askpass
-  never handed over the password. Its success marks the credential so later commands
-  compose without the key.
-- A destination configured with `ProxyJump` or `ProxyCommand` requires key authentication
-  because its hop would inherit target askpass state.
-- A credential generation is captured when a command is composed. A probe result from
-  an older generation cannot undo or reclassify a newer login. Removing a credential
-  invalidates every outstanding token immediately. A broker accept failure makes
-  credentials temporarily unavailable while the endpoint is recreated with backoff.
-- The host kind's own query methods are the ONLY code that matches on the
-  kind: one maps a kind to a concrete transport, another reads its server socket.
-  No match on the kind is scattered across call sites; the trait object carries
-  the choice everywhere else.
+- The mux argv always comes from a mux command plan; a transport decides only HOW to
+  run it, never WHAT.
+- The capability predicates (remoteness, attach through a host shell, local registry
+  authority, connection reuse, shell family) are independent: none derives from
+  another, and no code reads them to pick a server model.
 - The transport dispatches five shapes and no more: a non-interactive command, an
-  attach into the terminal handover (local socket injection, or a shell session that
-  folds the attach argv ahead of the handover, which lives here and never in the mux
-  or the caller), a control-mode child, a raw shell command (which only the
-  shell-based implementations answer), and a key-only login check (which only the ssh
-  implementation answers). The check holds no credential and shares no master, so only
-  a key can make it succeed.
-- An implementation that needs a terminal for the control child arranges one on the HOST
-  side, the way the ssh implementation forces a pty. It never rewrites a mux flag to work
-  around a pipe: which control payload runs is the mux's word, not the
-  transport's.
-- The mux argv always comes from a mux command plan; a transport only decides HOW
-  to run it, never WHAT.
-- Every untrusted argv element crossing into a remote shell passes through the
-  shared quoting, the single injection-safe boundary.
-
-## Common Pitfalls
-
-- Do not add mux-kind knowledge here. If a decision needs the mux, it belongs in
-  `src/mux` or the caller, not the transport.
-- A boxed transport does not coerce to a borrowed trait object on its own; the
-  blanket impl in the module root is what lets a stored transport be passed
-  directly. Removing it forces an explicit reborrow at every call site.
-- The shared quoting renders a POSIX command line. PowerShell reads a single-quoted
-  string as a literal, so that line is safe there as well, and a PowerShell remote is
-  addressed by withholding POSIX snippets from it rather than by re-rendering the line.
-  A `cmd.exe` remote is still NOT a supported target: single quotes are ordinary
-  characters to it, so the line neutralizes nothing. Do not weaken the quoting for it;
-  addressing it means a second rendering, chosen by the same shell family.
+  attach into the terminal handover, a control-mode child, a raw shell command (only
+  the shell-based implementations answer), and a key-only login check (only ssh
+  answers). The check holds no credential and shares no master.
+- Every untrusted argv element crossing into a remote shell passes through the shared
+  quoting, the single injection-safe boundary. A `cmd.exe` remote is not a supported
+  target; supporting it means a second rendering chosen by shell family, never a
+  weaker quoting.
 
 ## Before Editing
 
-- Adding a host implementation: add its module with a type implementing `Transport`,
-  overriding the capability predicates for its own combination rather than
-  deriving them from remoteness, add its factory, and add a host-kind variant
-  plus one arm in each of the kind's methods. The compiler forces every arm, and
-  no match on the kind exists outside the kind itself. If the implementation needs its
-  own host names, make them recognizable from the name alone, the way `local`
-  and the WSL prefix are, and refuse that spelling in the implementations that would
-  otherwise claim it.
-- Adding per-host execution behavior to an existing implementation: edit that implementation
-  and keep the shared shell helpers where it is.
+- A new host implementation is a module implementing `Transport` that overrides the
+  capability predicates for its own combination, a factory, and a host-kind variant
+  with one arm in each of the kind's methods. Its host names are recognizable from the
+  name alone, as `local` and the WSL prefix are, and refused by the implementations
+  that would otherwise claim them.
 
 ## Verification
 
-- Pin the exact argv each dispatch emits, per implementation: that argv is the contract
-  the rest of the app composes against.
-- When touching quoting, exercise it against shell metacharacters and confirm the
-  remote command joins quoted.
+- Pin the exact argv each dispatch emits, per implementation: that argv is the
+  contract the rest of the app composes against.
+- Exercise quoting changes against shell metacharacters and confirm the remote command
+  joins quoted.

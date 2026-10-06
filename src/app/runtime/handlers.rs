@@ -678,6 +678,9 @@ impl Runtime {
                 crate::transport::local(None),
             );
         }
+        // Every host shares the environment's machine credential store before it can
+        // spawn, including one discovered or reconciled after a login, so a held password
+        // reaches each command that host runs.
         hosts.set_credentials(env.credentials());
 
         // The app's runtime state (single source of truth), seeded from the host ids;
@@ -1239,7 +1242,10 @@ impl Runtime {
     }
 
     /// Installs one attachment whose display gate has opened and confirms it only when
-    /// its key is the one the current selection renders through.
+    /// its key is the one the current selection renders through. An attachment for any
+    /// other key installs and stays warm without claiming the terminal view, so a host
+    /// warming a PTY on its own inventory cannot move the view to a machine nobody
+    /// selected.
     fn install_attachment(
         &mut self,
         key: String,
@@ -1682,7 +1688,9 @@ impl Runtime {
     /// client is deliberately kept on screen until the fresh one paints, and it is still
     /// sitting on the session the selection just left - reading it then would report the
     /// old session as where the display is and send the reconcile chasing a client that is
-    /// already on its way somewhere else.
+    /// already on its way somewhere else. A switch the mux pushes over a control channel
+    /// is a fresh fact rather than a re-reading of the stale client, so it is recorded
+    /// even then.
     ///
     /// THE READ RUNS ON THE LOOP, and it is the one process read that may. The rule it
     /// stands against bans work whose duration ANOTHER PARTY sets: a spawn, a pipe, a PTY

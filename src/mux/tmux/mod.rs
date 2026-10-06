@@ -315,7 +315,8 @@ impl ControlProtocol for TmuxControl {
         // `no-output` keeps notifications flowing but stops %output. An older mux that
         // lacks the flag just %errors it (correlated as Ignore) - harmless.
         // `ignore-size` keeps this client out of window sizing: it attaches to whatever
-        // session tmux picks, often the one xmux itself runs in, and must never shrink it.
+        // session tmux picks, often the one xmux itself runs in, and must never shrink it,
+        // so this client also never sends a client size (`refresh-client -C`).
         vec!["refresh-client -f no-output,ignore-size\n".to_string()]
     }
 

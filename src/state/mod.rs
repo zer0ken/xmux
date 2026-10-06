@@ -51,6 +51,9 @@ pub struct State {
     /// Authentication reported by the current live display attachment of each source.
     pub display_auth_methods: HashMap<String, crate::model::AuthMethod>,
     /// Machines whose known authentication was invalidated until the user asks again.
+    /// Losing a held password, or a refusal of a machine whose method was known, lands
+    /// here: the reported method goes and the machine's metadata and display connections
+    /// close, so nothing reconnects it before another explicit connection attempt.
     pub invalid_auth: HashSet<String>,
     /// The last login attempt for each machine. It is separate from probe failures so a
     /// follow-up probe cannot replace the authentication diagnosis the user needs.
@@ -88,7 +91,8 @@ pub struct State {
     /// pending selection so rapid navigation coalesces into one trailing attach
     /// instead of a per-step storm of switch-client repaints (the freeze).
     pub attach_pending: bool,
-    /// The session last persisted as the user's last-selected.
+    /// The session last persisted as the user's last-selected, so stepping within the
+    /// same session does not rewrite the preference file on every settle.
     pub last_saved_session: crate::session::Address,
     /// The app's focus state machine - which pane keys go to and whether a
     /// modal is open. The single source of truth for focus.

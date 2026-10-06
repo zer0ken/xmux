@@ -131,7 +131,9 @@ impl TermInput {
                     // so a held prefix's autorepeat is byte-identical to a second tap and
                     // takes this path too: holding the prefix streams literals and blinks
                     // the hint bar. That is the accepted cost of keeping the input path
-                    // free of the kitty keyboard protocol.
+                    // free of the kitty keyboard protocol: requesting key releases would
+                    // bind behaviour to what the terminal, and every enclosing mux, chooses
+                    // to pass through.
                     KeyCommand::LiteralPrefix => {
                         fwd.push(self.prefix);
                         i += len;

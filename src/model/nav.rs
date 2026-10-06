@@ -16,7 +16,9 @@ pub enum NavPosition {
     Bottom,
 }
 
-/// The nav's live size as one value.
+/// The nav's live size as one value, never loose values: the effective width has a single
+/// owner, and every geometry (the draw, the PTY sizing, the mouse hit-test) is cut from
+/// this one value, so a resize while xmux runs cannot reach one consumer and miss another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NavSize {
     /// The width the user set.
