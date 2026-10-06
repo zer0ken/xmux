@@ -198,7 +198,7 @@ def features(s):
     s.prefix(); s.type("3", KEY); s.key("Enter")
     s.answered("epoch 17/50", 2.0)
 
-    s.caption("Walk up to the source and the host")
+    s.caption("Walk up to the host and the machine")
     s.prefix(); s.key("Left"); s.hold(0.6)
     s.key("Ctrl ↑"); s.answered("live updates", 2.0)
     s.key("Ctrl ↑"); s.answered("last reached", 2.0)
@@ -232,7 +232,8 @@ def features(s):
 
 
 def login(s):
-    """Logs in to the password-only server, registers the key, and opens a session.
+    """Logs in to the password-only server, registers the key, and opens a session
+    through the machine screen's host link.
 
     The server joins the ssh config only here, so the other scenarios never show it.
     """
@@ -240,7 +241,7 @@ def login(s):
     with open(os.path.expanduser("~/.ssh/config"), "a") as f:
         f.write(f"\nHost {PASSWORD_HOST}\n  User dev\n  StrictHostKeyChecking no\n"
                 "  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n")
-    s.caption("Log in to a password host")
+    s.caption("Log in to a password machine")
     s.type("xmux"); s.key("Enter", TYPE)
     s.answered(f"7  {PASSWORD_HOST}  login needed", 1.0)
     s.prefix(); s.type("7", KEY); s.key("Enter")
@@ -252,8 +253,12 @@ def login(s):
         s.key(c, TYPE, "•")
     s.hold(0.4)
     s.key("Tab"); s.key("Tab"); s.key("Space", KEY, "Space"); s.key("Tab"); s.key("Enter")
-    s.answered("public key registered", 2.4)
-    s.key("Down"); s.key("Down"); s.key("Enter")
+    s.answered("✓ public key registered", 2.4)
+    # The machine screen stays; its host link opens the host screen, whose links are
+    # the machine and then each session.
+    s.key("Down"); s.key("Enter")
+    s.answered("host db-01/tmux", 1.4)
+    s.key("Down"); s.key("Down"); s.key("Down"); s.key("Enter")
     s.answered("accepting connections", 2.0)
     s._at_due()
     return s.term.now()

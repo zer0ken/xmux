@@ -8,8 +8,8 @@ release or from a build of the checkout:
 | `docs/assets/xmux-demo.gif` | the same remote tmux session reached by hand (`ssh`, `tmux ls`, `tmux attach`) and from the xmux landing screen with the arrow keys and `Enter`, side by side |
 | `docs/assets/xmux-landing.gif` | the landing screen filling as the hosts answer, and a session opened from it |
 | `docs/assets/xmux-nav-switch.gif` | moving between sessions, by arrow and by number |
-| `docs/assets/xmux-hierarchy.gif` | walking up from a session to its source and host screens with `Ctrl-↑`, and back down with `Ctrl-↓` |
-| `docs/assets/xmux-login.gif` | logging in to a password-only host, registering the key, and opening one of its sessions |
+| `docs/assets/xmux-hierarchy.gif` | walking up from a session to its host and machine screens with `Ctrl-↑`, and back down with `Ctrl-↓` |
+| `docs/assets/xmux-login.gif` | logging in to a password-only machine, registering the key, and opening one of its sessions through the machine screen's host link |
 | `docs/assets/xmux-nav-resize.gif` | widening and narrowing the nav |
 | `docs/assets/xmux-nav-place.gif` | placing the nav on each side of the terminal view |
 | `docs/assets/xmux-nav-autohide.gif` | auto-hiding the nav |
