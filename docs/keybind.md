@@ -141,8 +141,9 @@ meanwhile takes over.
 `prefix L` asks for `logout` typed in full. It removes the lines of the host's key files
 that hold this machine's public key and carry the `xmux-registered` mark. A matching line
 without the mark opens a second confirmation, where `remove` typed in full removes it too
-and anything else keeps it. The stanza a login saved for the host in ssh config goes
-next, and only that stanza. The held password and the connections are cleared after
+and anything else keeps it. The host then comes off every ssh config `Host` entry
+that names it exactly: an entry naming only this host goes, and an entry naming others
+too keeps them. The held password and the connections are cleared after
 that; a host that cannot be reached or a removal that fails still logs out, with a toast
 saying what remains and why.
 
@@ -200,7 +201,7 @@ moving that selection, and a click executes the item as `Enter` would.
   the filter, `Esc` restores the one the popup opened with, and `Esc` in the nav clears
   an applied filter.
 - **Logout** (`prefix L`): states the session, the observed SSH login, what happens to a
-  held password, to this machine's key, and to the ssh config entry xmux saved, and the
+  held password, to this machine's key, and to the ssh config entries naming the host, and the
   machine whose connections close.
   Typing `logout` and `Enter` confirms it, and `Esc` cancels. When the window is too short
   for these rows, `↑`/`↓` and `PgUp`/`PgDn` scroll them above the field, and the key

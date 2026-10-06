@@ -758,7 +758,7 @@ impl State {
             // transition reads them before the switcher sees any result.
             OpResult::HostKeysFound { .. }
             | OpResult::HostKeysRemoved { .. }
-            | OpResult::SshConfigStanzaRemoved { .. } => OpFollow::Nothing,
+            | OpResult::SshConfigEntriesRemoved { .. } => OpFollow::Nothing,
         }
     }
 
