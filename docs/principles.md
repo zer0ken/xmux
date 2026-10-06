@@ -37,8 +37,8 @@ user asks again.
 
 ## Minimal Persistent Surface
 
-The always-visible nav carries names, numbers, one state glyph per card, the selection
-mark, and the resting prefix, and nothing else. A long name keeps its beginning and end
+The always-visible nav carries names, numbers, one state glyph per card, the reversed
+selection, and the resting prefix, and nothing else. A long name keeps its beginning and end
 around a middle ellipsis rather than displacing a state or navigation cell.
 
 The nav is read at a glance between tasks, so every cell it spends on a hint or a
@@ -87,14 +87,14 @@ passes through untouched.
 A hue xmux chose would be chosen for somebody else's terminal and would be wrong on
 every theme it was not chosen for. Slots let the whole UI recolour with whatever scheme
 the user runs, and xmux never fights a theme it cannot see. What the slots cannot say is
-said with an attribute: the selected card is reverse video, the terminal swapping its
+said with an attribute: the selection is reverse video, the terminal swapping its
 own pair, because a computed surface needs the terminal's background colour and a
 terminal is free to answer no colour query at all.
 
 ## Terminal-Safe Shape Vocabulary
 
 Persistent UI symbols are conventional one-cell glyphs that OS-default terminal fonts
-render without emoji presentation: `❯`, `✓`, `✗`, braille spinner frames led by `⠋`,
+render without emoji presentation: `✓`, `✗`, braille spinner frames led by `⠋`,
 box drawing led by `╭`, `▲`, `?`, and `…`.
 
 xmux runs in whatever terminal and font the user has, on every OS it supports. A glyph
@@ -202,3 +202,22 @@ become an action yet: the user is still in the popup and still correcting it, so
 answer belongs where their eyes and the caret already are. A toast would report it in a
 corner away from the field, would close nothing and decide nothing, and would leave a
 typo in the history beside the real results.
+
+## Reversed Selection
+
+A selected item has its background reversed, and nothing else marks it as selected.
+Every surface with a hard selection paints it in this one look: the nav's cards and the
+halves of a section title, the links on the landing, machine, and host screens, the
+rows of a popup list, the help's tabs, and the focused stop of the login pane. The
+soft selection under the pointer is an underline, which reads apart from the reversal
+and lies on top of it when both mark one item. A colour the user names in
+`[ui] selection-style` replaces the reversal with that background on every one of
+these surfaces alike.
+
+The hard selection is where the next key lands, so it has to be found at a glance on
+whatever surface the user has moved to. One look learned on the nav then reads on every
+popup and screen, while a surface that marks its selection with a colour, a weight, or
+a glyph of its own is one more thing to learn and, beside a surface that reverses, reads
+as a different state. A marker glyph beside a reversed item says nothing the reversal
+does not, and takes a cell from the number or the name the item carries. The caret of a
+text field is a reversed cell for the same reason: it is where typing lands.

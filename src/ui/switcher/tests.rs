@@ -703,7 +703,6 @@ async fn a_scanning_host_card_is_one_line_with_a_trailing_spinner() {
     // the confirmed mux, and ONE spinner trailing the line - in the same trailing
     // place whether or not the mux is already known, so all scanning cards read alike
     // and none leaves a blank second row.
-    use super::render::SELECTED_MARK;
     let sp = crate::ui::spinner_glyph(0);
     let non_empty = |h: &Harness| {
         h.nav_cards_text()
@@ -717,16 +716,13 @@ async fn a_scanning_host_card_is_one_line_with_a_trailing_spinner() {
     let h = Harness::from_hosts(&["local"]);
     let rows = non_empty(&h);
     assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
-    assert_eq!(rows[0], format!("{SELECTED_MARK} local {sp} scanning"));
+    assert_eq!(rows[0], format!("1 local {sp} scanning"));
 
     // A qualified id already confirms its mux: same shape, the mux in the middle.
     let h = Harness::from_hosts(&["local:zellij"]);
     let rows = non_empty(&h);
     assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
-    assert_eq!(
-        rows[0],
-        format!("{SELECTED_MARK} local/zellij {sp} scanning")
-    );
+    assert_eq!(rows[0], format!("1 local/zellij {sp} scanning"));
 }
 
 #[tokio::test]
@@ -3056,8 +3052,8 @@ async fn the_selected_card_is_painted_in_the_terminals_own_reverse_video() {
     );
     assert_eq!(
         h.buf()[(CARD_INDENT, sel)].symbol(),
-        super::render::SELECTED_MARK,
-        "the selection mark stands in the selected card's address column"
+        "2",
+        "the selected card keeps its number; the reversal alone marks it"
     );
 }
 
@@ -4810,8 +4806,8 @@ async fn a_hosts_sessions_are_each_a_single_row_under_one_section_title() {
 #[tokio::test]
 async fn focus_changes_only_the_address_column() {
     // Focus does NOT expand a card: the selection landing on a session card leaves its
-    // row count and its content untouched, and only the address column changes - the
-    // number becomes the selection mark. This test keeps the selection on cards.
+    // row count and its content untouched, and its number stays in the address column.
+    // This test keeps the selection on cards.
     let mut h = Harness::new(one_host_scan(
         "srv",
         vec![
@@ -4830,11 +4826,11 @@ async fn focus_changes_only_the_address_column() {
         Some(beta_row),
         "selecting beta does not move or expand it"
     );
-    // The mark stands in the address column, on the same row that carries the session.
+    // The number stays in the address column, on the same row that carries the session.
     assert_eq!(
         h.buf()[(CARD_INDENT, beta_row)].symbol(),
-        super::render::SELECTED_MARK,
-        "the selection mark replaces the number in the address column"
+        "2",
+        "the selected card keeps its number in the address column"
     );
     // Nothing above beta changed: no context line grew, the title row is untouched.
     assert_eq!(
@@ -5576,19 +5572,15 @@ fn every_unselected_card_carries_its_1_based_number_beside_its_session() {
         if matches!(sw.rows[i].reference, RowRef::Section { .. }) {
             assert_ne!(i, selected, "this test selects a session card");
             // The section title is flush left - its machine name occupies the address
-            // column - so it must simply never carry a number or the mark.
+            // column - so it must simply never carry a number.
             let first = read(rect.x, rect.y, num_w).trim().to_string();
             assert!(
-                first.parse::<usize>().is_err() && first != super::render::SELECTED_MARK,
-                "row {i} (a section title) carries no number or mark, got {first:?}"
+                first.parse::<usize>().is_err(),
+                "row {i} (a section title) carries no number, got {first:?}"
             );
             continue;
         }
-        let want = if i == selected {
-            super::render::SELECTED_MARK.to_string()
-        } else {
-            sw.card_number(i).to_string()
-        };
+        let want = sw.card_number(i).to_string();
         // Every card is one row, so the number sits on that single row.
         assert_eq!(
             read(rect.x, rect.y, num_w).trim(),
@@ -5900,8 +5892,8 @@ async fn the_two_digit_boundary_starts_at_exactly_ten_cards() {
     };
     assert_eq!(
         address_of(&h, selectable[0]),
-        format!(" {} ", super::render::SELECTED_MARK),
-        "the selected card's mark sits right-aligned in the two-wide column"
+        " 1 ",
+        "a one-digit number sits right-aligned in the two-wide column"
     );
     assert_eq!(
         address_of(&h, last).trim_end(),
@@ -6767,7 +6759,7 @@ fn hovering_a_help_tab_shows_its_section_until_the_pointer_leaves() {
     let (lit_col, _) = h.tab_cell(0, false);
     assert!(
         !buf[(lit_col, row)].modifier.contains(Modifier::UNDERLINED)
-            && buf[(lit_col, row)].modifier.contains(Modifier::BOLD),
+            && buf[(lit_col, row)].modifier.contains(Modifier::REVERSED),
         "the hard-selected tab keeps its own look"
     );
     // The pointer moves down onto the body: the body returns to the hard selection.
@@ -7478,7 +7470,7 @@ fn floating_host_status_has_reversed_padding_on_both_sides() {
 }
 
 #[test]
-fn floating_host_status_preserves_the_selected_mark_in_a_narrow_band() {
+fn floating_host_status_preserves_the_selected_card_in_a_narrow_band() {
     let scan = Scan {
         groups: vec![Group {
             host: "very-long-host-name".into(),
@@ -7492,7 +7484,9 @@ fn floating_host_status_preserves_the_selected_mark_in_a_narrow_band() {
         .map(|x| term.backend().buffer()[(x, card.y)].symbol())
         .collect::<String>();
     assert!(
-        row.contains(SELECTED_MARK),
+        (0..24).any(|x| term.backend().buffer()[(x, card.y)]
+            .modifier
+            .contains(Modifier::REVERSED)),
         "the selected card remains identifiable: {row}"
     );
     assert!(

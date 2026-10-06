@@ -37,9 +37,8 @@ mod tests {
 
     #[test]
     fn persistent_ui_glyphs_stay_on_the_safe_one_cell_allow_list() {
-        const SAFE: &[char] = &['❯', '✓', '✗', '⠋', '╭', '▲', '?', '…', '·'];
+        const SAFE: &[char] = &['✓', '✗', '⠋', '╭', '▲', '?', '…', '·'];
         let persistent = [
-            crate::ui::switcher::SELECTED_MARK.chars().next().unwrap(),
             crate::ui::chrome::BLOCK_MARK.chars().next().unwrap(),
             crate::ui::chrome::UNREACHABLE_MARK.chars().next().unwrap(),
             crate::ui::chrome::LIST_FAILED_MARK.chars().next().unwrap(),

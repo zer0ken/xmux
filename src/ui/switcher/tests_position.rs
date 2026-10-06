@@ -321,8 +321,8 @@ fn pl2_the_selected_card_reverses_in_both_focus_states() {
         for terminal_focused in [false, true] {
             let shot = Shot::new(two_groups(), nav_at(position), terminal_focused);
             let (x, y) = shot
-                .find_in(shot.nav_area(), "❯ build")
-                .unwrap_or_else(|| panic!("{position:?}: the mark is painted"));
+                .find_in(shot.nav_area(), "1 build")
+                .unwrap_or_else(|| panic!("{position:?}: the card is painted"));
             let reversed = shot.buf[(x + 2, y)].modifier.contains(Modifier::REVERSED);
             assert!(
                 reversed,
@@ -453,7 +453,7 @@ fn pl7_a_one_row_band_runs_title_and_cards_on_one_line() {
         assert_eq!(tree.height, 1, "{position:?}");
         let line = shot.row(tree.y, 0, W);
         assert!(
-            line.contains("local  ❯ build  2 editor"),
+            line.contains("local  1 build  2 editor"),
             "{position:?}: the title runs straight into its cards: {line:?}"
         );
     }
@@ -467,7 +467,7 @@ fn pl7_a_one_row_band_scrolls_to_the_selection() {
         shot.draw(false);
         let tree = shot.plan.regions.tree;
         assert!(
-            shot.row(tree.y, 0, W).contains("❯ 000029"),
+            shot.row(tree.y, 0, W).contains("000029"),
             "{position:?}: the last card scrolled into view"
         );
     }

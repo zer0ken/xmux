@@ -97,7 +97,12 @@ class Term:
 
     def lines(self):
         with self.lock:
-            return list(self.screen.display)
+            rows = []
+            for y, text in enumerate(self.screen.display):
+                row = Row(text)
+                row.reversed = frozenset(x for x, ch in self.screen.buffer[y].items() if ch.reverse)
+                rows.append(row)
+            return rows
 
     def cursor(self):
         with self.lock:
@@ -145,11 +150,19 @@ class Term:
                 pass
 
 
+class Row(str):
+    """A screen row's text and the columns whose cell is reverse video, the look of the
+    hard selection."""
+
+    reversed = frozenset()
+
+
 # The nav is the left column up to its view border. A section title is `host/mux` at
-# column 0 and its session cards follow it; a card is a number (or the selection mark)
-# and a name. The host cards come after a blank row, outside any section.
+# column 0 and its session cards follow it; a card is a number and a name, and the
+# selected card's cells are reversed. The host cards come after a blank row, outside any
+# section.
 BORDER = "│"
-CARD = re.compile(r"^\s*(\d+|❯)\s+(\S+)")
+CARD = re.compile(r"^\s*(\d+)\s+(\S+)")
 
 
 def nav_lines(lines):
@@ -168,18 +181,15 @@ def nav_cards(lines):
         if not ln.strip():
             section = None
             continue
-        # A title sits at column 0 and carries the mark when it is selected, like a host
-        # card; only a title is followed by an indented card.
-        following = rows[i + 1] if i + 1 < len(rows) else ""
+        # A title sits at column 0 and carries no number; a host card at column 0 does.
         words = ln.split()
-        name = words[1] if words[0] == "❯" and len(words) > 1 else words[0]
-        if (not ln[0].isspace() and "/" in name and not words[0].isdigit()
-                and (words[0] != "❯" or (following.startswith(" ") and CARD.match(following)))):
-            section = name
+        if not ln[0].isspace() and "/" in words[0] and not words[0].isdigit():
+            section = words[0]
             continue
         m = CARD.match(ln)
         if m:
-            num = None if m.group(1) == "❯" else int(m.group(1))
+            selected = m.start(1) in getattr(lines[i], "reversed", ())
+            num = None if selected else int(m.group(1))
             cards.append((num, section, m.group(2)))
     return cards
 

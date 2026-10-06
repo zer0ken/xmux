@@ -30,7 +30,7 @@ fn host(id: &str) -> Option<Node> {
     Some(Node::Host(id.into()))
 }
 
-fn session(id: &str, name: &str) -> Option<Node> {
+pub(super) fn session(id: &str, name: &str) -> Option<Node> {
     Some(Node::Session(Address::new(id, name)))
 }
 
@@ -45,16 +45,16 @@ fn mux_named(id: &str) -> &str {
 /// A switcher over `groups`, each `(host, sessions, failure)`, painted on a 140x30
 /// screen with the nav on the left. Every host is reached over ssh through tmux, so its
 /// title and its card read `{machine}/tmux` and its machine's screen states the ssh facts.
-struct H {
-    sw: Switcher,
-    state: State,
-    plan: RenderPlan,
-    term: Terminal<TestBackend>,
-    terminal_focused: bool,
+pub(super) struct H {
+    pub(super) sw: Switcher,
+    pub(super) state: State,
+    pub(super) plan: RenderPlan,
+    pub(super) term: Terminal<TestBackend>,
+    pub(super) terminal_focused: bool,
 }
 
 impl H {
-    fn new(groups: &[(&str, &[&str], Option<&str>)]) -> Self {
+    pub(super) fn new(groups: &[(&str, &[&str], Option<&str>)]) -> Self {
         let groups: Vec<Group> = groups
             .iter()
             .map(|(id, names, err)| Group {
@@ -92,7 +92,7 @@ impl H {
         h
     }
 
-    fn draw(&mut self) {
+    pub(super) fn draw(&mut self) {
         self.sw.sync_view_focus(self.terminal_focused);
         let (sw, state, previous) = (&self.sw, &self.state, self.plan.clone());
         let focused = self.terminal_focused;
@@ -114,11 +114,11 @@ impl H {
         self.draw();
     }
 
-    fn key(&mut self, code: KeyCode) {
+    pub(super) fn key(&mut self, code: KeyCode) {
         self.press(code, KeyModifiers::NONE);
     }
 
-    fn ctrl(&mut self, code: KeyCode) {
+    pub(super) fn ctrl(&mut self, code: KeyCode) {
         self.press(code, KeyModifiers::CONTROL);
     }
 
@@ -126,7 +126,7 @@ impl H {
         self.sw.selected_node()
     }
 
-    fn select(&mut self, id: &str, name: &str) {
+    pub(super) fn select(&mut self, id: &str, name: &str) {
         self.sw.select_address(&Address::new(id, name));
         self.draw();
     }
@@ -160,7 +160,7 @@ impl H {
         out
     }
 
-    fn title_row(&self, id: &str) -> usize {
+    pub(super) fn title_row(&self, id: &str) -> usize {
         self.sw
             .rows
             .iter()
@@ -168,7 +168,7 @@ impl H {
             .expect("the host has a title")
     }
 
-    fn card_row(&self, pick: impl Fn(&RowRef) -> bool) -> usize {
+    pub(super) fn card_row(&self, pick: impl Fn(&RowRef) -> bool) -> usize {
         self.sw
             .rows
             .iter()
@@ -176,7 +176,7 @@ impl H {
             .expect("the card is on the list")
     }
 
-    fn half(&self, row: usize, part: Part) -> Rect {
+    pub(super) fn half(&self, row: usize, part: Part) -> Rect {
         self.plan
             .nav_parts
             .iter()
@@ -185,7 +185,7 @@ impl H {
             .expect("the row paints that half")
     }
 
-    fn card(&self, row: usize) -> Rect {
+    pub(super) fn card(&self, row: usize) -> Rect {
         self.plan
             .nav_cells
             .iter()
@@ -194,7 +194,7 @@ impl H {
             .expect("the card is painted")
     }
 
-    fn link_rect(&self, index: usize) -> Rect {
+    pub(super) fn link_rect(&self, index: usize) -> Rect {
         self.plan
             .view_links
             .iter()
@@ -205,7 +205,7 @@ impl H {
 }
 
 /// `gpu` and `web` serve sessions, `idle` serves none, and `db` refused every login.
-fn fleet() -> H {
+pub(super) fn fleet() -> H {
     H::new(&[
         ("gpu", &["train"], None),
         ("web", &["api", "deploy"], None),
@@ -899,7 +899,7 @@ fn the_section_step_from_a_title_part_goes_to_the_neighbouring_section() {
 }
 
 /// The fleet as it stands at launch: the landing screen up, nothing executed yet.
-fn landed() -> H {
+pub(super) fn landed() -> H {
     let mut h = fleet();
     h.sw.open_landing();
     h.draw();
@@ -907,7 +907,7 @@ fn landed() -> H {
 }
 
 /// Where the landing list painted the link for `node`.
-fn landing_link(h: &H, node: Option<Node>) -> Rect {
+pub(super) fn landing_link(h: &H, node: Option<Node>) -> Rect {
     let i =
         h.sw.landing_links()
             .iter()

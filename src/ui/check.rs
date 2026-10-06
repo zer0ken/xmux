@@ -34,7 +34,7 @@ fn cause(kind: FailureKind, palette: &Palette) -> (&'static str, Style, &'static
 /// title with its glyph in the state's colour, and each host under it a row in the
 /// key-column grammar: the host bold, then its reason muted, wrapped under the reason
 /// column rather than cut. A host wider than its column takes rows of its own above its
-/// reason. The selected row is reversed across the whole width with `❯`, and the rows of
+/// reason. The selected host's rows are reversed across the whole width, and the rows of
 /// the `hover` host, the soft selection, are underlined. Each line comes with the host it
 /// belongs to (none for a cause title), so a click is hit-tested against the rows the
 /// paint shows.
@@ -83,14 +83,7 @@ pub(crate) fn check_lines(
             last = Some(entry.kind);
         }
         let chosen = i == selected;
-        let mark = if chosen {
-            format!(" {} ", crate::ui::switcher::SELECTED_MARK)
-        } else {
-            "   ".to_string()
-        };
-        // The selected row is reversed as one surface, so its spans keep no colour that
-        // the reversal would turn into a second background.
-        let dim = if chosen { Style::default() } else { dim };
+        let mark = "   ".to_string();
         let label_w = UnicodeWidthStr::width(entry.label.as_str());
         let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
         let mut reason = crate::ui::modal::wrap_text(&entry.reason, words).into_iter();
@@ -118,12 +111,15 @@ pub(crate) fn check_lines(
             Style::default()
         };
         for (n, mut spans) in rows.into_iter().enumerate() {
-            if n == 0 && chosen {
-                selected_line = lines.len();
+            if chosen {
+                if n == 0 {
+                    selected_line = lines.len();
+                }
                 let used: usize = spans.iter().map(|s| s.width()).sum();
                 spans.push(Span::raw(" ".repeat((width as usize).saturating_sub(used))));
-                let style = palette::selection_style(palette).patch(soft);
-                lines.push((Some(i), Line::from(spans).style(style)));
+                let line = palette::selected_line(Line::from(spans), palette);
+                let style = line.style.patch(soft);
+                lines.push((Some(i), line.style(style)));
             } else {
                 lines.push((Some(i), Line::from(spans).style(soft)));
             }
@@ -177,7 +173,7 @@ mod tests {
                 " ? login needed",
                 "   gpu-02  gpu-02 said no",
                 " ▲ unreachable",
-                " ❯ web-03  web-03 said no",
+                "   web-03  web-03 said no",
                 "   web-04  web-04 said no",
                 " ✗ list failed",
                 "   db-01   db-01 said no",
