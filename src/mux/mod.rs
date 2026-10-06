@@ -694,7 +694,10 @@ mod tests {
     #[test]
     fn tmux_control_attach_and_event_and_death() {
         let m = tmux();
-        assert_eq!(m.control_argv(), Some(argv(&["tmux", "-CC", "attach"])));
+        assert_eq!(
+            m.control_argv(),
+            Some(argv(&["tmux", "-u", "-CC", "attach"]))
+        );
         assert_eq!(m.event_source(), EventSource::Control);
         assert_eq!(m.death_signal(), DeathSignal::ControlNotice);
     }

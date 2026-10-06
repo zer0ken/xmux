@@ -15,9 +15,19 @@ pub use display::TmuxDriver;
 
 use control_proto::{classify, Line, Notif};
 
-/// The `-CC` control argv `[bin, -CC, attach]`.
+/// The `-CC` control argv `[bin, -u, -CC, attach]`.
+///
+/// `-u` tells tmux that its client reads UTF-8, which xmux does. tmux otherwise decides
+/// from the remote shell's locale, and a shell without a UTF-8 locale (Windows OpenSSH
+/// forwards none) makes tmux print every non-printable byte of a reply as `_`: the
+/// recorded display tty then reads `/dev/pts/3_`, and no `switch-client` can name it.
 fn mux_control_argv(bin: &str) -> Vec<String> {
-    vec![bin.to_string(), "-CC".to_string(), "attach".to_string()]
+    vec![
+        bin.to_string(),
+        "-u".to_string(),
+        "-CC".to_string(),
+        "attach".to_string(),
+    ]
 }
 
 /// `host_key` as a safe filename and buffer-name token, so a host id with shell
