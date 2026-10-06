@@ -306,3 +306,6 @@ The seamless cross-host switch is bought with these costs, accepted by design:
   as typed text in the session: Windows OpenSSH passes the reply on in pieces, and tmux
   before 3.6 ends it at the gap. tmux 3.6 fixes this upstream (tmux/tmux#4411,
   microsoft/terminal#7185).
+- Keys typed into a herdr session in the first moments after it is selected, before herdr
+  draws its screen, are lost: herdr drops what it reads while its startup terminal queries
+  are out, the same as when it is started in any terminal.
