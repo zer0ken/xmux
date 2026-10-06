@@ -189,3 +189,11 @@ action and to a record the user can open again. A result written into the hint b
 would push the advice off the bar while it lasted, could leave on the next key before
 it was read, and would be missing from the history. One surface for every result also
 lets a refusal and a failure read alike, so the user looks for an answer in one place.
+
+Feedback on a value typed into a popup is not a result. When a popup cannot accept what
+was typed, such as a number no card carries or a confirming word that is not the one
+asked for, the popup states that beside its field and stays open. The value has not
+become an action yet: the user is still in the popup and still correcting it, so the
+answer belongs where their eyes and the caret already are. A toast would report it in a
+corner away from the field, would close nothing and decide nothing, and would leave a
+typo in the history beside the real results.

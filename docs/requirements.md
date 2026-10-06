@@ -118,7 +118,8 @@ against, naming no source file, function, or test.
   screen.
 - **FR-B32** - The result of a user action (a login, a new session, a re-scan, or the
   reason an action was refused) and a newer release at launch appear as a toast in the terminal view's corner, which `[ui]
-  notifications` can turn off.
+  notifications` can turn off. A value typed into a popup that the popup cannot accept is
+  stated inside that popup beside its field, and the popup stays open, with no toast.
 - **FR-B33** - `prefix m` opens the history of every toast and background event, newest
   first, bounded at 200 records.
 - **FR-B34** - A re-scan ends in one toast stating what changed since the re-scan

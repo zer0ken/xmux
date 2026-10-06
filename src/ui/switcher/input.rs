@@ -795,11 +795,11 @@ impl Switcher {
     }
 
     fn handle_input_key(&mut self, ev: KeyEvent, state: &mut crate::state::State) -> Vec<Command> {
-        // A jump's refusal lives only until the next key. Clear it here so a key while
-        // the jump is open (a fresh edit, a fresh Enter) restores the popup; an action
+        // An input error lives only until the next key. Clear it here so a key while
+        // the popup is open (a fresh edit, a fresh Enter) restores the popup; an action
         // below may set a fresh one, which survives because this runs first.
         if let Some(Modal::Input(input)) = state.modal.as_mut() {
-            input.refused = None;
+            input.error = None;
         }
         match ev.code {
             KeyCode::Enter => {
@@ -824,17 +824,20 @@ impl Switcher {
                             self.close_landing();
                         } else if !val.is_empty() {
                             if let Some(Modal::Input(input)) = state.modal.as_mut() {
-                                input.refused = Some(val);
+                                input.error = Some(format!("no card {val}"));
                             }
                         }
                         Vec::new()
                     }
+                    // A confirm Entered without its word states that beside the field and
+                    // empties the field for the word, so the confirm stays the place the
+                    // user corrects it.
                     InputMode::Logout if val != "logout" => {
-                        state.refuse(logout_title(host.as_deref()), "type logout to confirm");
+                        reject_word(state, "type logout to confirm");
                         Vec::new()
                     }
                     InputMode::LogoutKeys if val != "remove" => {
-                        state.refuse(logout_title(host.as_deref()), "type remove to confirm");
+                        reject_word(state, "type remove to confirm");
                         Vec::new()
                     }
                     // The filter applied on every edit, so Enter only closes it; the
@@ -1105,11 +1108,10 @@ pub(crate) fn login_notes(outcome: &crate::ui::ops::LoginOutcome) -> Vec<Note> {
     notes
 }
 
-/// The title a logout confirm's refusal is reported under: the logout of the machine the
-/// confirm names.
-fn logout_title(host: Option<&str>) -> String {
-    match host {
-        Some(host) => format!("logout {}", crate::session::machine_of(host)),
-        None => "logout".to_string(),
+/// States `error` in the open input's popup and empties its field for a new value.
+fn reject_word(state: &mut crate::state::State, error: &str) {
+    if let Some(Modal::Input(input)) = state.modal.as_mut() {
+        input.clear_line();
+        input.error = Some(error.to_owned());
     }
 }

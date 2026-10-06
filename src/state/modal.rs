@@ -47,9 +47,11 @@ pub(crate) struct Input {
     /// the jump cannot restore onto the wrong card or the wrong half of a title. Esc
     /// returns here; Enter leaves the selection where the live jump already put it.
     pub(crate) restore: Option<(RowRef, crate::model::Node)>,
-    /// [`InputMode::Jump`] only: the number Enter found no card for, stated in the jump's
-    /// popup until the next key.
-    pub(crate) refused: Option<String>,
+    /// What Enter found wrong with the typed value, stated inside the popup until the
+    /// next key: the number a jump found no card for, or a logout confirm's missing word.
+    /// Feedback on typed input stays beside its field, so the popup stays open for the
+    /// correction and nothing is sent to the notifications.
+    pub(crate) error: Option<String>,
     /// [`InputMode::Filter`] only: the filter the input opened from, restored on Esc.
     /// The filter applies live while the input is open, so cancelling must undo every
     /// edit back to this value.
@@ -70,7 +72,7 @@ impl Input {
             cursor,
             host,
             restore: None,
-            refused: None,
+            error: None,
             restore_filter: None,
         }
     }
