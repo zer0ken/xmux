@@ -59,7 +59,7 @@ The xmux behavior group:
 | Scenario | Passes when |
 | --- | --- |
 | `first-launch` | the landing screen appears, choosing a session attaches it, and typed input runs in that session |
-| `switch` | moving to a session of another mux on another host, and back to a second session, shows each one |
+| `switch` | after both sessions of a mux were shown, moving to a session of another mux on another host and back to the second session shows each one and runs what is typed there |
 | `new-session` | `prefix n` creates a session that becomes selected, attached, and live on the host |
 | `password-login` | logging in to the password-only host lists its sessions, and logging out leaves one host card |
 | `unreachable` | a stopped host shows as one unreachable host card after a re-scan, and returns as sections once it starts again |
@@ -96,7 +96,6 @@ issue is fixed.
 | Cell | Result | Reason |
 | --- | --- | --- |
 | every scenario, screen on Alpine | `KNOWN #588` | the screen 5 listing yields no sessions |
-| `switch`, abduco | `KNOWN #585` | keys typed right after returning to an abduco source are lost |
 | `in-client-switch`, tmux | `KNOWN #586` | a directly attached remote client's move is not followed |
 | `in-client-switch`, zellij | `KNOWN #587` | a remote client's move is not followed |
 | `in-client-switch`, tuios | `KNOWN #333` | tuios gives no signal that its client moved |

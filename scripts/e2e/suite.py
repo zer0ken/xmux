@@ -35,7 +35,6 @@ COLS, ROWS = 140, 60
 # reports KNOWN when it fails and PASS when it passes.
 KNOWN = {
     (None, "screen", "alpine"): "#588",
-    ("switch", "abduco", None): "#585",
     ("in-client-switch", "tmux", None): "#586",
     ("in-client-switch", "tuios", None): "#333",
 }
@@ -387,8 +386,12 @@ def first_launch(c):
 
 
 def switch(c):
+    # The second session is shown once first, so the return attaches at the size it
+    # already has and a mux that repaints only on a resize leaves the view blank.
     m, n = c.mux, c.other
     app = c.launch(c.h1, c.h2)
+    app.open(f"{c.h1}/{m}", f"{m}2")
+    app.whereami(c.path(c.h1, f"{m}2"))
     app.open(f"{c.h1}/{m}", f"{m}1")
     app.whereami(c.path(c.h1, f"{m}1"))
     app.open(f"{c.h2}/{n}", f"{n}1")
