@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Regenerates the README demo GIFs, and a PNG still of the xmux window, in
-# docs/assets from a released xmux.
+# docs/assets from a published xmux release or from a build of this checkout.
 #
-# usage: scripts/demo/make-gifs.sh [version]
-#   version defaults to the one in Cargo.toml; it must be a published release.
+# usage: scripts/demo/make-gifs.sh [version | --local]
+#   version  a published release; defaults to the one in Cargo.toml
+#   --local  builds this checkout for Linux in a Rust container and records that build
 # needs: docker, node
 set -euo pipefail
 export MSYS_NO_PATHCONV=1   # Git Bash would rewrite the container paths below
@@ -12,11 +13,25 @@ export MSYS_NO_PATHCONV=1   # Git Bash would rewrite the container paths below
 native_pwd() { pwd -W 2>/dev/null || pwd; }
 here=$(cd "$(dirname "$0")" && native_pwd)
 root=$(cd "$here/../.." && native_pwd)
-version=${1:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -n 1)}
-image="xmux-demo:$version"
 net=xmux-demo
 machines=(laptop gpu-01 web-01)
 out="$here/out"
+bin="$here/bin"   # the Dockerfile installs an xmux found here instead of downloading one
+
+rm -rf "$bin"
+mkdir -p "$bin"
+if [ "${1:-}" = "--local" ]; then
+  version=local
+  echo "building xmux from $root"
+  # Named volumes keep the build cache and the crate registry between runs, apart from
+  # any other build on the machine.
+  docker run --rm -v "$root:/src" -v xmux-demo-target:/target \
+    -v xmux-demo-cargo:/usr/local/cargo/registry -w /src -e CARGO_TARGET_DIR=/target \
+    rust:1-bookworm sh -c 'cargo build --release --locked && cp /target/release/xmux /src/scripts/demo/bin/xmux'
+else
+  version=${1:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -n 1)}
+fi
+image="xmux-demo:$version"
 
 teardown() {
   for m in "${machines[@]}"; do docker rm -f "xmux-demo-$m" >/dev/null 2>&1 || true; done
@@ -26,6 +41,7 @@ trap teardown EXIT
 
 echo "building $image"
 docker build -q --build-arg XMUX_VERSION="$version" -t "$image" "$here" >/dev/null
+docker run --rm "$image" xmux --version
 
 teardown
 docker network create "$net" >/dev/null

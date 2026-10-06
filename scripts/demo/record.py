@@ -140,7 +140,11 @@ class Script:
 
 
 def fresh_app_state():
-    """Starts xmux with no remembered selection and the demo nav size."""
+    """Starts xmux with no remembered selection and the demo nav size.
+
+    The demo user has seen the first-key introduction, so no scenario depends on
+    which one runs first after the machines start.
+    """
     state = os.path.expanduser("~/.xmux")
     os.makedirs(state, exist_ok=True)
     for name in ("last_session", "nav_position", "auto_hide_nav", "nav_collapsed"):
@@ -148,7 +152,8 @@ def fresh_app_state():
             os.remove(os.path.join(state, name))
         except FileNotFoundError:
             pass
-    for name, value in (("nav_width", NAV_WIDTH), ("nav_height", NAV_HEIGHT)):
+    for name, value in (("nav_width", NAV_WIDTH), ("nav_height", NAV_HEIGHT),
+                        ("first_key_help_seen", 1)):
         with open(os.path.join(state, name), "w") as f:
             f.write(str(value))
 
@@ -165,8 +170,8 @@ def compare_manual(s):
 def compare_xmux(s):
     fresh_app_state()
     s.type("xmux"); s.key("Enter", TYPE)
-    s.answered("my-important-session")
-    s.prefix(); s.type("/my-imp"); s.key("Enter", TYPE)
+    s.answered("3  gpu-01/tmux/my-important-session")
+    s.key("Down"); s.key("Down"); s.key("Enter", TYPE)
     enter = s.term.keys[-1][0]
     return max(s.term.wait("epoch 17/50"), enter)
 
@@ -174,7 +179,11 @@ def compare_xmux(s):
 def features(s):
     fresh_app_state()
     s.type("xmux"); s.key("Enter", TYPE)
-    s.answered("my-important-session", 1.0)
+    s.answered("3  gpu-01/tmux/my-important-session")
+    s.key("Down"); s.key("Down"); s.key("Enter")
+    s.answered("epoch 17/50")
+    s.prefix(); s.key("Tab")
+    s.hold(1.0)
 
     s.caption("Switch sessions")
     s.key("Down"); s.hold(1.8)
@@ -193,7 +202,7 @@ def features(s):
         s.key("Ctrl ←", HOLD)
     s.hold(2.0)
 
-    s.caption("Move the nav")
+    s.caption("Place the nav")
     for _ in range(4):
         s.prefix(); s.type("p", KEY)
         s.hold(2.2)

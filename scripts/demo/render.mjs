@@ -93,7 +93,7 @@ console.log(`  ssh + tmux ${(manual.done - manual.keys[0][0]).toFixed(1)}s, xmux
 const tour = load("features");
 const lead = t => t - tour.keys[0][0] + 0.8;
 const caps = tour.captions.map(([t, c]) => [lead(t), c]);
-const FEATURES = { switch: "Switch sessions", resize: "Resize the nav", move: "Move the nav", autohide: "Auto-hide the nav" };
+const FEATURES = { switch: "Switch sessions", resize: "Resize the nav", place: "Place the nav", autohide: "Auto-hide the nav" };
 for (const [name, label] of Object.entries(FEATURES)) {
   const i = caps.findIndex(([, c]) => c === label);
   if (i < 0 || i + 1 >= caps.length) throw new Error(`features recording has no "${label}" segment`);

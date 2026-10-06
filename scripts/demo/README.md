@@ -1,14 +1,14 @@
 # Demo GIFs
 
 `make-gifs.sh` regenerates the GIFs the READMEs show, from a published xmux
-release:
+release or from a build of the checkout:
 
 | GIF | Shows |
 | --- | --- |
-| `docs/assets/xmux-demo.gif` | the same remote tmux session reached by hand (`ssh`, `tmux ls`, `tmux attach`) and from the xmux nav, side by side |
+| `docs/assets/xmux-demo.gif` | the same remote tmux session reached by hand (`ssh`, `tmux ls`, `tmux attach`) and from the xmux landing screen with the arrow keys and `Enter`, side by side |
 | `docs/assets/xmux-nav-switch.gif` | moving between sessions, by arrow and by number |
 | `docs/assets/xmux-nav-resize.gif` | widening and narrowing the nav |
-| `docs/assets/xmux-nav-move.gif` | moving the nav to each side of the terminal view |
+| `docs/assets/xmux-nav-place.gif` | placing the nav on each side of the terminal view |
 | `docs/assets/xmux-nav-autohide.gif` | auto-hiding the nav |
 | `docs/assets/xmux.png` | the xmux window alone after a session switch, as a still for places that take only an image |
 
@@ -17,10 +17,13 @@ release:
 ```sh
 scripts/demo/make-gifs.sh            # the version in Cargo.toml
 scripts/demo/make-gifs.sh 0.12.3     # any published release
+scripts/demo/make-gifs.sh --local    # a build of the checkout
 ```
 
-The script needs Docker and Node.js on `PATH`. It overwrites the GIFs in
-`docs/assets`; review them before committing.
+The script needs Docker and Node.js on `PATH`. With `--local` it builds the
+checkout for Linux in a Rust container, keeping the build cache and the crate
+registry in Docker volumes of their own, and installs that build in place of a
+download. It overwrites the GIFs in `docs/assets`; review them before committing.
 
 ## How the recording works
 
@@ -41,7 +44,9 @@ Each scenario runs a shell on a pseudo terminal inside `laptop` and types keys a
 a fixed pace. A step that waits on the app waits until the screen shows the
 expected text, so the recording keeps the real latency of ssh, tmux, and xmux.
 Both sides of the comparison type at the same pace. Every xmux scenario starts
-with a nav wide enough to show each demo card whole. The pacing constants and
+with no remembered selection or placement, the first-key introduction already
+seen, and a nav wide enough to show each demo card whole, and reaches its first
+session from the landing screen with the arrow keys and `Enter`. The pacing constants and
 the nav size sit at the top of `record.py`.
 
 The recordings are replayed in a terminal emulator in a headless browser, one
@@ -58,7 +63,7 @@ moves between frames stops the script.
 
 | File | Purpose |
 | --- | --- |
-| `make-gifs.sh` | builds the image, starts the machines, records, renders, encodes, and removes the machines |
+| `make-gifs.sh` | builds xmux for `--local`, builds the image, starts the machines, records, renders, encodes, and removes the machines |
 | `Dockerfile`, `ssh_config`, `xmux.toml` | the demo machines and the demo user's configuration |
 | `sessions.sh` | the tmux sessions on each machine |
 | `record.py` | the scenarios and the recorder |

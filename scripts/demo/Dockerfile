@@ -1,8 +1,11 @@
 # One image serves every demo machine: the laptop that runs xmux and the servers it
 # reaches over ssh. Every machine, user, and session in the recordings comes from here.
+# XMUX_VERSION names a published release, which is downloaded and verified, unless
+# bin/ holds an xmux built from the checkout.
 FROM debian:12
 
 ARG XMUX_VERSION
+COPY bin/ /tmp/bin/
 RUN test -n "$XMUX_VERSION" \
  && apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -11,11 +14,13 @@ RUN test -n "$XMUX_VERSION" \
  && rm -rf /var/lib/apt/lists/* \
  && sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen \
  && cd /tmp \
- && base="https://github.com/zer0ken/xmux/releases/download/v${XMUX_VERSION}" \
- && tarball="xmux-v${XMUX_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
- && curl -fsSLO "$base/$tarball" && curl -fsSLO "$base/SHA256SUMS" \
- && grep " \*\?$tarball\$" SHA256SUMS | sha256sum -c - \
- && tar xzf "$tarball" xmux && install -m 755 xmux /usr/local/bin/xmux && rm -f /tmp/* \
+ && if [ -f bin/xmux ]; then install -m 755 bin/xmux /usr/local/bin/xmux; else \
+      base="https://github.com/zer0ken/xmux/releases/download/v${XMUX_VERSION}" \
+   && tarball="xmux-v${XMUX_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+   && curl -fsSLO "$base/$tarball" && curl -fsSLO "$base/SHA256SUMS" \
+   && grep " \*\?$tarball\$" SHA256SUMS | sha256sum -c - \
+   && tar xzf "$tarball" xmux && install -m 755 xmux /usr/local/bin/xmux; fi \
+ && rm -rf /tmp/* \
  && useradd -m -s /bin/bash dev && mkdir -p /run/sshd /home/dev/.ssh /home/dev/.config/xmux \
  && ssh-keygen -q -t ed25519 -N '' -C dev@laptop -f /home/dev/.ssh/id_ed25519 \
  && cp /home/dev/.ssh/id_ed25519.pub /home/dev/.ssh/authorized_keys \
