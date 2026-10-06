@@ -1070,9 +1070,12 @@ pub fn stanza_login(config_text: &str, alias: &str) -> crate::transport::Login {
 /// The address and port the login pane starts with. Only an exact host stanza supplies
 /// the username; without one, the user enters it.
 ///
-/// OpenSSH's effective configuration wins; the matching stanza stands in when OpenSSH
-/// could not report it. A value neither supplies is the provider's address, else the
-/// host's own name, and port 22.
+/// A field counts as set by ssh config when the stanza naming the host sets it, or when
+/// OpenSSH's effective value differs from what OpenSSH fills in for a host no block
+/// configures (the alias as the host name, port 22). `ssh -G` reports every field for
+/// any name, so its output alone cannot tell a configured value from a default. Where
+/// both set a field, OpenSSH's effective value wins. A field ssh config does not set is
+/// the provider's address, else the host's own name, and port 22.
 pub fn login_defaults(
     alias: &str,
     provider_address: Option<&str>,
@@ -1080,24 +1083,29 @@ pub fn login_defaults(
     config_text: &str,
 ) -> crate::provision::env::LoginDefaults {
     let stanza = stanza_login(config_text, alias);
-    let resolved = effective.cloned().unwrap_or_else(|| stanza.clone());
-    let configured = resolved.clone();
-    let configured_address = configured.address;
-    let address_from_ssh = configured_address
-        .as_ref()
-        .is_some_and(|address| address != alias)
-        || stanza.address.is_some();
-    let address = configured_address
-        .filter(|address| address != alias || provider_address.is_none())
+    let effective = effective.cloned().unwrap_or_default();
+    let user = stanza_user(config_text, alias);
+    let configured = crate::transport::Login {
+        address: match stanza.address {
+            Some(address) => effective.address.or(Some(address)),
+            None => effective.address.filter(|address| address != alias),
+        },
+        port: match stanza.port {
+            Some(port) => effective.port.or(Some(port)),
+            None => effective.port.filter(|port| *port != 22),
+        },
+        user: user.clone(),
+    };
+    let address = configured
+        .address
+        .clone()
         .or_else(|| provider_address.map(str::to_string))
         .unwrap_or_else(|| alias.to_string());
-    let port_from_ssh = configured.port.is_some_and(|port| port != 22) || stanza.port.is_some();
     let port = configured.port.unwrap_or(22).to_string();
-    let user = stanza_user(config_text, alias).unwrap_or_default();
     crate::provision::env::LoginDefaults {
         address: crate::provision::env::LoginValue {
             value: address,
-            provenance: if address_from_ssh {
+            provenance: if configured.address.is_some() {
                 "from ssh config"
             } else if provider_address.is_some() {
                 "from discovery"
@@ -1107,21 +1115,21 @@ pub fn login_defaults(
         },
         port: crate::provision::env::LoginValue {
             value: port,
-            provenance: if port_from_ssh {
+            provenance: if configured.port.is_some() {
                 "from ssh config"
             } else {
                 "default"
             },
         },
         username: crate::provision::env::LoginValue {
-            provenance: if user.is_empty() {
-                ""
-            } else {
+            provenance: if user.is_some() {
                 "from ssh config"
+            } else {
+                ""
             },
-            value: user,
+            value: user.unwrap_or_default(),
         },
-        resolved,
+        configured,
     }
 }
 
