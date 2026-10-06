@@ -1666,11 +1666,11 @@ async fn login_pane_hides_the_ssh_config_choice_when_the_values_are_already_save
                 address: value("192.0.2.7"),
                 port: value("2222"),
                 username: value("alice"),
-                configured: crate::transport::Login {
+                ssh_effective: Some(crate::transport::Login {
                     address: Some("192.0.2.7".into()),
                     port: Some(2222),
                     user: Some("alice".into()),
-                },
+                }),
             },
         )]),
         Default::default(),
@@ -1719,7 +1719,7 @@ async fn login_pane_prefills_all_values_from_ssh_config() {
                     value: "dev".into(),
                     provenance: "from ssh config",
                 },
-                configured: Default::default(),
+                ssh_effective: None,
             },
         )]),
         Default::default(),

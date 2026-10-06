@@ -5050,11 +5050,11 @@ fn state_with_saved_login() -> State {
                 address: value("192.0.2.7"),
                 port: value("2222"),
                 username: value("dev"),
-                configured: crate::transport::Login {
+                ssh_effective: Some(crate::transport::Login {
                     address: Some("192.0.2.7".into()),
                     port: Some(2222),
                     user: Some("dev".into()),
-                },
+                }),
             },
         )]
         .into(),
@@ -5073,7 +5073,7 @@ fn feed_login_hides_the_ssh_config_choice_when_ssh_config_already_sets_the_value
     // ssh compares host names without case, so a differently cased address is the same.
     let mut upper = d.clone();
     upper.address = "HOST.EXAMPLE".into();
-    upper.configured.address = Some("host.example".into());
+    upper.ssh_effective.as_mut().unwrap().address = Some("host.example".into());
     assert!(!upper.offers_ssh_config());
 }
 
@@ -5091,24 +5091,37 @@ fn feed_login_offers_the_ssh_config_choice_when_any_value_differs() {
         assert!(changed.offers_ssh_config(), "{changed:?}");
         assert!(changed.stops(false).contains(&LoginFocus::AfterSshConfig));
     }
-    // A value ssh config does not set cannot be known to match.
+    // A value ssh does not report cannot be known to match.
     let mut unresolved = d.clone();
-    unresolved.configured.user = None;
+    unresolved.ssh_effective.as_mut().unwrap().user = None;
     assert!(unresolved.offers_ssh_config());
+    // Without a block naming the host, recording makes it known to ssh.
+    let mut unnamed = d.clone();
+    unnamed.ssh_effective = None;
+    assert!(unnamed.offers_ssh_config());
 }
 
 /// The login pane `feed_login` opens for `prod` from `config_text`, with `ssh -G`
 /// reporting what it reports for any name: the alias as the host name, port 22 unless a
 /// block sets another, and the local user.
 fn login_pane_from_ssh_config(config_text: &str) -> LoginDraft {
+    discovered_login_pane(config_text, None)
+}
+
+/// [`login_pane_from_ssh_config`] for a host discovery found at `provider_address`.
+fn discovered_login_pane(config_text: &str, provider_address: Option<&str>) -> LoginDraft {
     let stanza = crate::provision::config::stanza_login(config_text, "prod");
     let effective = crate::transport::Login {
         address: stanza.address.or(Some("prod".into())),
         port: stanza.port.or(Some(22)),
         user: stanza.user.or(Some("local-user".into())),
     };
-    let defaults =
-        crate::provision::config::login_defaults("prod", None, Some(&effective), config_text);
+    let defaults = crate::provision::config::login_defaults(
+        "prod",
+        provider_address,
+        Some(&effective),
+        config_text,
+    );
     let mut s = State::default();
     s.chrome
         .set_login_defaults([("prod".to_string(), defaults)].into(), Default::default());
@@ -5125,6 +5138,42 @@ fn feed_login_offers_the_ssh_config_choice_for_a_host_without_a_config_entry() {
     );
     assert!(d.offers_ssh_config(), "{d:?}");
     d.username = "local-user".into();
+    assert!(d.offers_ssh_config(), "{d:?}");
+}
+
+#[test]
+fn feed_login_hides_the_ssh_config_choice_when_a_block_sets_only_the_user() {
+    // The address and port ssh uses are its defaults, the alias and 22, which the pane
+    // starts at too; neither is labelled as coming from ssh config.
+    let text = "Host other prod web
+    User dev
+";
+    let d = login_pane_from_ssh_config(text);
+    assert_eq!((d.address.as_str(), d.port.as_str()), ("prod", "22"));
+    assert!(!d.offers_ssh_config(), "{d:?}");
+    let defaults = crate::provision::config::login_defaults("prod", None, None, text);
+    assert_eq!(defaults.address.provenance, "host name");
+    assert_eq!(defaults.port.provenance, "default");
+    assert_eq!(defaults.username.provenance, "from ssh config");
+    // A block reached only through a pattern does not name the host.
+    let d = login_pane_from_ssh_config(
+        "Host pro*
+    User local-user
+",
+    );
+    assert!(d.offers_ssh_config(), "{d:?}");
+}
+
+#[test]
+fn feed_login_offers_the_ssh_config_choice_for_a_discovered_address() {
+    // ssh would connect to the name itself, not to the address discovery found.
+    let d = discovered_login_pane(
+        "Host prod
+    User dev
+",
+        Some("192.0.2.10"),
+    );
+    assert_eq!(d.address, "192.0.2.10");
     assert!(d.offers_ssh_config(), "{d:?}");
 }
 

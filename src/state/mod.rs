@@ -184,9 +184,10 @@ pub struct LoginDraft {
     pub default_address: String,
     pub default_port: String,
     pub default_username: String,
-    /// What ssh config sets for the host, which the entered values are compared with to
-    /// decide whether recording them would change anything.
-    pub configured: crate::transport::Login,
+    /// What ssh effectively uses for the host when a `Host` block names it, which the
+    /// entered values are compared with to decide whether recording them would change
+    /// anything.
+    pub ssh_effective: Option<crate::transport::Login>,
 }
 
 impl std::fmt::Debug for LoginDraft {
@@ -203,7 +204,7 @@ impl std::fmt::Debug for LoginDraft {
             .field("default_address", &self.default_address)
             .field("default_port", &self.default_port)
             .field("default_username", &self.default_username)
-            .field("configured", &self.configured)
+            .field("ssh_effective", &self.ssh_effective)
             .finish()
     }
 }
@@ -243,22 +244,24 @@ impl LoginDraft {
     }
 
     /// Whether recording the entered values in ssh config would change what ssh uses:
-    /// some value the login names differs from what ssh config sets for the host, or ssh
-    /// config sets no value for it. A host whose stanza already holds these values,
-    /// xmux's own included, is not offered a recording that writes them again. ssh
-    /// compares host names without case.
+    /// no `Host` block names the host, so recording makes it known to ssh, or some value
+    /// the login names differs from what ssh effectively uses. A host whose block already
+    /// leads ssh to these values, xmux's own included, is not offered a recording that
+    /// writes them again. ssh compares host names without case.
     pub fn offers_ssh_config(&self) -> bool {
+        let Some(effective) = &self.ssh_effective else {
+            return true;
+        };
         let login = self.login();
-        let configured = &self.configured;
         login.address.is_some_and(|a| {
-            !configured
+            !effective
                 .address
                 .as_deref()
                 .is_some_and(|r| r.eq_ignore_ascii_case(&a))
-        }) || login.port.is_some_and(|p| configured.port != Some(p))
+        }) || login.port.is_some_and(|p| effective.port != Some(p))
             || login
                 .user
-                .is_some_and(|u| configured.user.as_deref() != Some(u.as_str()))
+                .is_some_and(|u| effective.user.as_deref() != Some(u.as_str()))
     }
 
     /// Moves the focus `delta` stops, wrapping.
@@ -446,7 +449,7 @@ impl State {
                     default_address: address,
                     default_port: port,
                     default_username: username,
-                    configured: defaults.configured,
+                    ssh_effective: defaults.ssh_effective,
                     ..Default::default()
                 });
                 self.login.as_mut().unwrap()

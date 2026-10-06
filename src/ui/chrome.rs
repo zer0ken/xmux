@@ -1339,7 +1339,7 @@ impl Chrome {
                 default_address: defaults.address.value.clone(),
                 default_port: defaults.port.value.clone(),
                 default_username: defaults.username.value.clone(),
-                configured: defaults.configured.clone(),
+                ssh_effective: defaults.ssh_effective.clone(),
                 ..Default::default()
             };
             let d = draft.unwrap_or(&fallback);
