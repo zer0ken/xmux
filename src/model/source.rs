@@ -1,33 +1,31 @@
-//! Thin per-source config/data for a mux server reachable from this machine (the
-//! local mux, or a remote one over ssh): alias, mux binary, machine kind (socket /
-//! ssh alias, control path, os), and an injectable runner. The off-loop `Ops`/CLI
-//! paths assemble a value [`Host`](crate::model::Host) from this config (`host()`)
-//! and drive its enumerate/manage/attach through the `Host`/`Mux`/`Transport` APIs;
-//! the machine boundary itself - argv assembly and the ssh transport (connect-timeout,
-//! injection-safe quoting) - lives entirely in `Transport`, built at the single
-//! `MachineKind::transport` site. The mux-env rules live in `mux::vocab`.
+//! Thin per-source data for a mux server reachable from this machine (the local mux, or
+//! a remote one over ssh): alias, mux binary, machine kind (socket / ssh alias, control
+//! path, os), and an injectable runner. The off-loop `Ops`/CLI paths assemble a value
+//! [`Host`](crate::model::Host) from it (`host()`) and drive its enumerate/manage/attach
+//! through the `Host`/`Mux`/`Transport` APIs; the machine boundary itself - argv assembly
+//! and the ssh transport (connect-timeout, injection-safe quoting) - lives entirely in
+//! `Transport`, built at the single `MachineKind::transport` site. The mux-env rules
+//! live in `mux::vocab`.
 //!
-//! The runtime source registry is the app loop's, every source keyed by id in display
-//! order; the environment keeps this definition's list and its alias index for the
-//! CLI, the scan, and the off-loop operations. New execution semantics never go in this
-//! adapter: host execution and ssh diagnostics belong to the transport, host failure and
-//! screen policy to the model, mux semantics and protocol classification (attach argv,
-//! server model, enumeration) to the mux, and per-source display orchestration with its
-//! switch-or-reattach decision to the per-mux driver.
+//! A [`Source`] is never assembled on its own: the runtime source registry
+//! ([`Hosts`](crate::model::Hosts)) derives one from each runtime source it holds and
+//! publishes them through a [`SourceSet`], which the CLI, the scan, and the off-loop
+//! operations read. New execution semantics never go in this adapter: host execution and
+//! ssh diagnostics belong to the transport, host failure and screen policy to the model,
+//! mux semantics and protocol classification (attach argv, server model, enumeration) to
+//! the mux, and per-source display orchestration with its switch-or-reattach decision to
+//! the per-mux driver.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::io::AsyncReadExt;
 
-use crate::provision::config::Config;
-use crate::session;
 use crate::transport::CommandSpec;
 use crate::transport::MachineKind;
 
 /// The shell family each remote machine answered its probe with, keyed by machine and
-/// shared by every [`Source`] one [`Env`](crate::provision::env::Env) holds. A value
+/// shared by every [`Source`] the source registry publishes. A value
 /// host assembled off the event loop starts from the transport's default family, so
 /// without this record a command composed there would assume POSIX on a machine already
 /// known to answer with PowerShell.
@@ -393,144 +391,37 @@ impl Source {
 // name is re-exported here to keep that path resolving.
 pub(crate) use crate::mux::reason_is_no_sessions;
 
-/// Assembles the source list for a config: local first, then each ssh host
-/// (ssh-config aliases merged with config overrides) in order, then each WSL
-/// distribution. WSL comes last so adding the implementation leaves every id an existing
-/// install already had in the position it had.
-///
-/// `local_muxes` is the RESOLVED local mux list (`Env` resolves it once, discovering
-/// what this machine has when the config says `auto`), passed in rather than re-derived so
-/// the source ids here and the host ids in `Hosts::build` cannot disagree.
-pub fn build(
-    cfg: &Config,
-    ssh_aliases: &[String],
-    wsl_distros: &[String],
-    os: &str,
-    local_muxes: &[String],
-    xmux_dir: &Path,
-    local_socket: Option<String>,
-) -> Vec<Source> {
-    // One source per (machine, mux): this machine contributes one for each mux it serves.
-    let qualified = local_muxes.len() > 1;
-    let mut srcs: Vec<Source> = local_muxes
-        .iter()
-        .map(|bin| {
-            let id = session::source_id(session::LOCAL_SOURCE, bin, qualified);
-            for_machine_mux(
-                session::LOCAL_SOURCE,
-                bin,
-                id,
-                os,
-                xmux_dir,
-                local_socket.clone(),
-            )
-        })
-        .collect();
-    for spec in cfg
-        .host_specs(ssh_aliases)
-        .into_iter()
-        .chain(cfg.wsl_specs(wsl_distros))
-    {
-        srcs.push(for_machine_mux(
-            &spec.alias,
-            &spec.bin,
-            spec.id,
-            os,
-            xmux_dir,
-            None,
-        ));
-    }
-    srcs
-}
+/// The read side of the runtime source registry: every source it holds, in display
+/// order, for the work that cannot borrow the event loop's registry (the off-loop
+/// operations). Only the registry writes it, on every change to its sources, so a reader
+/// never sees a source the registry does not hold or misses one it does.
+#[derive(Clone, Default)]
+pub struct SourceSet(Arc<std::sync::RwLock<Vec<Source>>>);
 
-/// One [`Source`] for the mux binary `bin` on `machine`, answering as the source `id`.
-/// The machine half comes from [`crate::transport::kind_for`], so this source and the
-/// `Host` the loop drives for the same pair reach the machine the same way. A source
-/// DISCOVERED after launch is built here too, which is what makes it as operable as a
-/// configured one (create / panes / border styles all resolve through the source list).
-///
-/// The socket is filtered by what `bin` accepts before the machine is given it: this is
-/// one of the two sites where the mux is known alongside the machine, and the machine
-/// axis names no mux, so the choice can only be made here. Both sites filter the same
-/// raw value the same way, which is what keeps a source and its `Host` on one server.
-pub fn for_machine_mux(
-    machine: &str,
-    bin: &str,
-    id: String,
-    os: &str,
-    xmux_dir: &Path,
-    local_socket: Option<String>,
-) -> Source {
-    let local_socket = crate::mux::server_socket_for(bin, local_socket);
-    Source {
-        alias: id.clone(),
-        binary: bin.to_string(),
-        kind: crate::transport::kind_for(machine, id, os, xmux_dir, local_socket),
-        runner: None,
-        remote_shells: RemoteShells::default(),
-        credentials: crate::transport::auth::Credentials::default(),
+impl SourceSet {
+    /// A snapshot of every source, in display order.
+    pub fn list(&self) -> Vec<Source> {
+        self.0.read().expect("source set lock").clone()
+    }
+
+    /// The source answering as `id`, if the registry holds one.
+    pub fn get(&self, id: &str) -> Option<Source> {
+        self.0
+            .read()
+            .expect("source set lock")
+            .iter()
+            .find(|s| s.alias == id)
+            .cloned()
+    }
+
+    pub(crate) fn replace(&self, sources: Vec<Source>) {
+        *self.0.write().expect("source set lock") = sources;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn build_puts_local_first() {
-        // `db` writes no mux, so it has no source until it answers which it serves.
-        let cfg = Config {
-            hosts: vec![crate::provision::config::HostConfig {
-                ssh: "prod".into(),
-                mux: "tmux".into(),
-            }],
-            ..Config::default()
-        };
-        let aliases: Vec<String> = ["prod", "db"].iter().map(|s| s.to_string()).collect();
-        let srcs = build(
-            &cfg,
-            &aliases,
-            &[],
-            "linux",
-            &["tmux".to_string()],
-            Path::new("/home/u/.xmux"),
-            None,
-        );
-        assert_eq!(srcs.len(), 2);
-        assert_eq!(srcs[0].alias, "local");
-        assert!(matches!(srcs[0].kind, MachineKind::Local { .. }));
-        assert_eq!(srcs[1].alias, "prod");
-        assert!(matches!(srcs[1].kind, MachineKind::Ssh { .. }));
-        assert_eq!(srcs[1].binary, "tmux");
-    }
-    #[test]
-    fn a_local_zellij_source_is_built_without_the_tmux_socket() {
-        // The socket comes from `$TMUX`, which is set whenever xmux runs inside a mux -
-        // the normal case. Handing it to zellij made every local zellij source fail its
-        // listing on argument parsing, so it never reaches the machine at all.
-        let dir = Path::new("/tmp/xmux");
-        let sock = Some("/tmp/psmux-1/default".to_string());
-        let z = for_machine_mux(
-            "local",
-            "zellij",
-            "local:zellij".into(),
-            "linux",
-            dir,
-            sock.clone(),
-        );
-        assert_eq!(z.kind.local_socket(), None, "no socket reaches zellij");
-
-        // The tmux implementation still targets the server it was told to.
-        let p = for_machine_mux(
-            "local",
-            "psmux",
-            "local:psmux".into(),
-            "linux",
-            dir,
-            sock.clone(),
-        );
-        assert_eq!(p.kind.local_socket(), sock);
-    }
 
     /// The echo command for the host platform (test-only): `cmd /C echo` on Windows,
     /// `sh -c` elsewhere - keeps the runner test portable.

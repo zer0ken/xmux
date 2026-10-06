@@ -221,11 +221,10 @@ pub enum EventEffect {
         machine: String,
         muxes: Result<Vec<String>, String>,
     },
-    /// `RosterResolved`: reconcile the freshly resolved roster against the three
-    /// registries that must agree about which machines exist (the host registry, the
-    /// source list the off-loop ops resolve against, and the nav), then scan what was
-    /// added and tear down what was dropped. The loop owns it because every one of those
-    /// lives behind it.
+    /// `RosterResolved`: reconcile the freshly resolved roster against the source
+    /// registry and the nav, which must agree about which machines exist, then scan what
+    /// was added and tear down what was dropped. The loop owns it because both live
+    /// behind it.
     ApplyRoster {
         roster: Box<crate::provision::env::Roster>,
         startup: Option<StartupFacts>,
@@ -364,7 +363,7 @@ impl std::fmt::Debug for EventEffect {
                 rescan,
             } => f
                 .debug_struct("ApplyRoster")
-                .field("sources", &roster.sources.len())
+                .field("ssh_aliases", &roster.ssh_aliases.len())
                 .field("startup", &startup.is_some())
                 .field("rescan", rescan)
                 .finish(),

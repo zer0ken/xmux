@@ -446,7 +446,6 @@ impl Runtime {
         }
         let skip_machine = self.model.take_rescan_skip_machine();
         run_discovery(
-            &self.env,
             &self.hosts,
             &self.mgr,
             &self.scan_pool,
@@ -938,8 +937,6 @@ fn spawn_mux_discovery(
 /// roster to this machine. That answer is dropped rather than applied: a typo must cost the
 /// user a warning, never every remote card on screen.
 fn spawn_roster_resolve(
-    xmux_dir: std::path::PathBuf,
-    local_socket: Option<String>,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
     gate: std::sync::Arc<tokio::sync::Semaphore>,
 ) {
@@ -947,7 +944,7 @@ fn spawn_roster_resolve(
         let Ok(_permit) = gate.acquire().await else {
             return;
         };
-        let (roster, err) = crate::provision::env::resolve_roster(&xmux_dir, local_socket).await;
+        let (roster, err) = crate::provision::env::resolve_roster().await;
         if let Some(e) = err {
             tracing::warn!(error = %e, "config did not parse; keeping the roster as it stands");
             let _ = tx.send(HostEvent::RosterKept);
@@ -1001,23 +998,17 @@ fn spawn_startup_resolution_with<Q, R>(
 /// waits out every silent address on the network, so this machine's cards and the
 /// configured hosts do not wait for it. The second is the full roster: the neighbors it
 /// adds are probed as they land and every machine already on screen keeps its cards.
-fn spawn_startup_resolution(
-    xmux_dir: std::path::PathBuf,
-    local_socket: Option<String>,
-    tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
-) {
-    let quick_dir = xmux_dir.clone();
-    let quick_socket = local_socket.clone();
+fn spawn_startup_resolution(tx: tokio::sync::mpsc::UnboundedSender<HostEvent>) {
     let quick = async move {
         let ((roster, err), force_askpass) = tokio::join!(
-            crate::provision::env::resolve_roster_with(&quick_dir, quick_socket, false),
+            crate::provision::env::resolve_roster_with(false),
             crate::transport::auth::detect_force_askpass(),
         );
         if let Some(e) = err {
             tracing::warn!(error = %e, "config did not parse; keeping the startup roster");
             return None;
         }
-        let own_session = crate::provision::env::own_session_address(&roster.sources);
+        let own_session = crate::provision::env::own_session_address(&roster.local_muxes);
         Some(StartupResolution {
             roster,
             own_session,
@@ -1025,7 +1016,7 @@ fn spawn_startup_resolution(
         })
     };
     let full = async move {
-        let (roster, err) = crate::provision::env::resolve_roster(&xmux_dir, local_socket).await;
+        let (roster, err) = crate::provision::env::resolve_roster().await;
         (err.is_none() && roster.cfg.discovery.neighbors).then_some(roster)
     };
     spawn_startup_resolution_with(tx, quick, full);
@@ -1245,7 +1236,6 @@ fn apply_scan_result(
 /// When a one-machine re-scan is already asking a machine, its probe supplies that
 /// machine's answer to the full re-scan; discovery does not ask it again.
 fn run_discovery(
-    env: &Env,
     hosts: &crate::model::Hosts,
     mgr: &HostManager,
     gate: &std::sync::Arc<tokio::sync::Semaphore>,
@@ -1253,12 +1243,7 @@ fn run_discovery(
     skip_machine: Option<&str>,
 ) {
     if rescan {
-        spawn_roster_resolve(
-            env.xmux_dir.clone(),
-            env.local_socket.clone(),
-            mgr.events(),
-            gate.clone(),
-        );
+        spawn_roster_resolve(mgr.events(), gate.clone());
     }
     probe_machines(hosts, mgr.events(), gate, rescan, skip_machine);
 }
@@ -1439,11 +1424,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         tracing::warn!(error = %e, "term_clear_failed");
     }
     rt.prepare_and_draw(&mut term);
-    spawn_startup_resolution(
-        rt.env.xmux_dir.clone(),
-        rt.env.local_socket.clone(),
-        rt.mgr.events(),
-    );
+    spawn_startup_resolution(rt.mgr.events());
 
     // The picker control socket: serves headless key/text/dump, and IS this instance's
     // identity - `xmux send <name>` dials exactly this path. An explicit `--name` is

@@ -1,23 +1,8 @@
 use super::*;
-use crate::model::source::Source;
 use crate::state::{LoginDraft, LoginFocus, State};
 
-fn fake_source(alias: &str) -> Source {
-    Source {
-        alias: alias.into(),
-        binary: "tmux".into(),
-        kind: crate::transport::MachineKind::Local {
-            id: String::new(),
-            socket: None,
-        },
-        runner: None,
-        remote_shells: Default::default(),
-        credentials: Default::default(),
-    }
-}
-
-/// A roster whose every ssh host writes `tmux` as its mux, so the host registry builds
-/// the same sources the list names.
+/// A roster whose every ssh host writes `tmux` as its mux, so the source registry holds
+/// one source for each alias named.
 fn fake_roster(aliases: &[&str]) -> crate::provision::env::Roster {
     let cfg = crate::provision::config::Config {
         hosts: aliases
@@ -32,7 +17,6 @@ fn fake_roster(aliases: &[&str]) -> crate::provision::env::Roster {
     };
     crate::provision::env::Roster {
         cfg,
-        sources: aliases.iter().map(|a| fake_source(a)).collect(),
         local_muxes: vec!["tmux".into()],
         ssh_aliases: aliases
             .iter()
@@ -757,7 +741,7 @@ fn prefix_s_toggles_state() {
 #[test]
 fn fake_env_builder_constructs() {
     let env = fake_env_with_sources(&["local", "jupiter06"]);
-    assert_eq!(env.source_list().len(), 2);
+    assert_eq!(env.hosts().source_list().len(), 2);
 }
 
 #[test]
@@ -1423,13 +1407,13 @@ async fn first_frame_does_not_wait_for_startup_roster_and_applies_its_answer() {
         .expect("startup event");
     rt.on_host_event(event, &mut io.host_rx);
     assert!(
-        rt.env.source("stage").is_some(),
+        rt.hosts.source("stage").is_some(),
         "the answer reached the app"
     );
     // The full roster follows the quick one on the same task (one event batch may carry
     // both) and adds what only the neighbor scan names, keeping every machine the quick
     // answer put on screen.
-    while rt.env.source("neighbor").is_none() {
+    while rt.hosts.source("neighbor").is_none() {
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), io.host_rx.recv())
             .await
             .expect("full roster completed")
@@ -1437,11 +1421,11 @@ async fn first_frame_does_not_wait_for_startup_roster_and_applies_its_answer() {
         rt.on_host_event(event, &mut io.host_rx);
     }
     assert!(
-        rt.env.source("neighbor").is_some(),
+        rt.hosts.source("neighbor").is_some(),
         "the full roster adds the neighbor"
     );
     assert!(
-        rt.env.source("stage").is_some(),
+        rt.hosts.source("stage").is_some(),
         "and keeps the quick answer's hosts"
     );
 }
@@ -1463,8 +1447,8 @@ async fn a_re_scan_roster_adds_a_machine_it_now_names() {
         "the loop's registry has it"
     );
     assert!(
-        rt.env.source("stage").is_some(),
-        "and so do the off-loop ops, which resolve a source through Env"
+        rt.hosts.source("stage").is_some(),
+        "and so do the off-loop ops, which resolve a source through the registry"
     );
     assert!(
         rt.model.state.groups.iter().any(|g| g.source == "stage"),
@@ -1477,9 +1461,26 @@ async fn a_re_scan_roster_adds_a_machine_it_now_names() {
 }
 
 #[tokio::test]
+async fn a_re_scan_after_a_mux_edit_keeps_the_loop_and_the_operations_on_one_mux() {
+    // Config now names zellij for a source that stands as tmux. A surviving source keeps
+    // its live host, and the operations read that same host, so a new session lands on
+    // the mux the card lists rather than on one it never enumerates.
+    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    let mut roster = fake_roster(&["prod"]);
+    roster.cfg.hosts[0].mux = "zellij".into();
+    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
+        roster: Box::new(roster),
+        startup: None,
+        rescan: false,
+    });
+    let standing = rt.hosts.get("prod").unwrap().mux.bin().to_string();
+    assert_eq!(rt.hosts.source("prod").unwrap().binary, standing);
+}
+
+#[tokio::test]
 async fn a_re_scan_roster_drops_a_machine_it_stopped_naming() {
-    // The mirror case: the config turned a provider off, or a peer went offline. All
-    // three registries have to let go, or the nav paints a card nothing can reach.
+    // The mirror case: the config turned a provider off, or a peer went offline. The
+    // registry and the nav have to let go, or the nav paints a card nothing can reach.
     let mut rt = test_rt(fake_env_with_sources(&["prod", "stage"]));
     assert!(rt.hosts.get("stage").is_some(), "precondition");
     rt.model.connected.insert("stage".into());
@@ -1490,7 +1491,10 @@ async fn a_re_scan_roster_drops_a_machine_it_stopped_naming() {
         rescan: false,
     });
     assert!(rt.hosts.get("stage").is_none(), "the registry let go");
-    assert!(rt.env.source("stage").is_none(), "the off-loop ops let go");
+    assert!(
+        rt.hosts.source("stage").is_none(),
+        "the off-loop ops let go"
+    );
     assert!(
         !rt.model.state.groups.iter().any(|g| g.source == "stage"),
         "and the card is gone"
@@ -1525,11 +1529,10 @@ async fn a_discovered_mux_becomes_a_source_on_the_spot() {
     let h = rt.hosts.get("prod:zellij").expect("the discovered source");
     assert_eq!(h.mux.kind(), "zellij");
     assert_eq!(h.transport.host_id(), "prod:zellij", "it answers as itself");
-    // And the OFF-LOOP ops resolve it: they look a source up in `Env`, so a discovered
-    // source missing from that list scans and paints but refuses `prefix n` with
-    // `unknown source`.
+    // And the OFF-LOOP ops resolve it: they look a source up in the set the registry
+    // publishes, so the discovered source is there without a second registration.
     let src = rt
-        .env
+        .hosts
         .source("prod:zellij")
         .expect("the off-loop ops know the discovered source");
     assert_eq!(
@@ -1618,7 +1621,7 @@ async fn a_host_that_writes_no_mux_is_one_card_with_no_source() {
     assert_eq!(cards(&rt), vec!["local", "win"]);
     assert!(rt.model.state.scanning.contains("win"), "the card spins");
     assert!(rt.hosts.get("win").is_none(), "no mux is assumed for it");
-    assert!(rt.env.source("win").is_none());
+    assert!(rt.hosts.source("win").is_none());
     assert_eq!(
         rt.hosts.machines(),
         vec!["local", "win"],
@@ -1647,12 +1650,66 @@ async fn a_windows_host_serving_psmux_is_one_psmux_card() {
         "the answer came from psmux's own identity probe"
     );
     assert_eq!(
-        rt.env.source("win").expect("the ops know it").binary,
+        rt.hosts.source("win").expect("the ops know it").binary,
         "psmux"
     );
     assert!(
         rt.model.state.scanning.contains("win"),
         "the card spins until its first listing"
+    );
+}
+
+/// Answers every command with one session name and records each argv it ran.
+struct NamingRunner {
+    commands: std::sync::Mutex<Vec<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::model::source::Runner for NamingRunner {
+    crate::model::source::runner_spec_via_argv!();
+    async fn run(
+        &self,
+        name: &str,
+        args: &[String],
+    ) -> Result<Vec<u8>, crate::model::source::RunError> {
+        let mut argv = vec![name.to_string()];
+        argv.extend(args.iter().cloned());
+        self.commands.lock().unwrap().push(argv);
+        Ok(b"api
+"
+        .to_vec())
+    }
+}
+
+#[tokio::test]
+async fn a_source_mux_discovery_added_accepts_a_new_session() {
+    // The mux answers after the app is up, so the source reaches only the runtime
+    // registry. The off-loop operations resolve sources through that same registry, so
+    // creating a session on it works without the source being registered anywhere else.
+    let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
+    let runner = std::sync::Arc::new(NamingRunner {
+        commands: Default::default(),
+    });
+    rt.hosts.set_runner(runner.clone());
+    rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
+        machine: "win".into(),
+        muxes: Ok(vec!["psmux".into()]),
+    });
+    let session = rt
+        .ops
+        .new_session("win", "api")
+        .await
+        .expect("the discovered source accepts the operation");
+    assert_eq!(
+        (session.source.as_str(), session.name.as_str()),
+        ("win", "api")
+    );
+    let commands = runner.commands.lock().unwrap();
+    assert!(
+        commands
+            .last()
+            .is_some_and(|argv| argv.iter().any(|a| a.contains("psmux new-session"))),
+        "the create ran over the discovered mux: {commands:?}"
     );
 }
 
@@ -1805,7 +1862,7 @@ async fn a_source_found_on_a_host_is_reached_as_the_host_is() {
 #[tokio::test]
 async fn a_re_scan_keeps_what_a_host_that_writes_no_mux_answered() {
     // The fresh roster names the host and none of its sources, since those came from its
-    // own answer. Every registry keeps them, so a re-scan tears no card down.
+    // own answer. The registry keeps them, so a re-scan tears no card down.
     let mut rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
     rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
         machine: "win".into(),
@@ -1817,7 +1874,7 @@ async fn a_re_scan_keeps_what_a_host_that_writes_no_mux_answered() {
         rescan: false,
     });
     assert!(rt.hosts.get("win").is_some(), "the registry keeps it");
-    assert!(rt.env.source("win").is_some(), "the off-loop ops keep it");
+    assert!(rt.hosts.source("win").is_some(), "the off-loop ops keep it");
     assert_eq!(cards(&rt), vec!["local", "win"], "and the card stays put");
 }
 
@@ -1865,7 +1922,7 @@ fn test_rt(env: Env) -> Runtime {
     drop(roster);
     let mut state = crate::state::State::from_sources(hosts.card_ids());
     let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
-    let ops = env.ops();
+    let ops = env.ops(hosts.sources());
     let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
     let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
     let model = AppModel {
@@ -4423,7 +4480,7 @@ fn a_sources_reach_names_its_mux_and_the_machine_it_is_asked_over() {
     // What the unreachable screen states about a source, resolved from that source's own
     // config: the binary asked for, how the machine is addressed, and the listing command
     // itself.
-    let s = Source {
+    let s = crate::model::source::Source {
         alias: "prod".into(),
         binary: "tmux".into(),
         kind: crate::transport::MachineKind::Ssh {

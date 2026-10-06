@@ -12,7 +12,9 @@ resize, and tick input into update messages and executes the returned effects in
   arm and stateful helper is a method on it, so each takes a small argument list.
 - Discovery's async half runs here (the per-machine reachability probe, then
   detection, metadata channels, and mux discovery), because only the loop holds the
-  source registry and the manager that starts a new source's first scan.
+  source registry and the manager that starts a new source's first scan. The off-loop
+  operations read the sources the registry publishes, so adding a source to the
+  registry is the whole of adding it.
 
 ## Invariants
 

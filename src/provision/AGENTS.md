@@ -7,7 +7,7 @@ offers, re-resolved on every re-scan. It is distinct from the axes that act on t
 answer: `transport` decides how a command reaches a host and `mux` decides what runs
 there. Config is the on-disk starting point, the roster answers which ssh targets
 exist, discovery enumerates each source in isolation, and the resolved environment
-threads one source-list answer into both the source list and the runtime registry.
+builds the runtime source registry from the roster.
 
 ## Module Seams
 
@@ -23,9 +23,10 @@ threads one source-list answer into both the source list and the runtime registr
   command.
 - Discovery probes every source concurrently with bounded concurrency, one budget per
   source shared by first contact and enumeration, and order-preserving results.
-- The resolved environment owns the source list, the shared lookups, the credential
-  store for the run, the concurrent scan, and the side-effecting operations over the
-  live mux.
+- The resolved environment owns the roster, the shared lookups, the credential store
+  for the run, the concurrent scan, and the side-effecting operations over the live
+  mux. It builds the source registry and holds no sources of its own: the scan, the
+  CLI, and the operations read the sources the registry holds.
 
 ## Invariants
 
@@ -48,8 +49,8 @@ threads one source-list answer into both the source list and the runtime registr
 - A record the OS refuses is reported as refused, never flattened into an empty one.
 - This box is told from its neighbours by the connection, not by a list of its own
   addresses: a connection whose two ends carry the same address reached here.
-- The resolved source list is the single answer threaded into both the source list and
-  the runtime registry.
+- One registry holds every source, so a source added at runtime is operable by every
+  consumer the moment it is added.
 
 ## Common Pitfalls
 

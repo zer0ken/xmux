@@ -465,6 +465,15 @@ impl Transport for Ssh {
         })
     }
 
+    fn machine_kind(&self) -> crate::transport::MachineKind {
+        crate::transport::MachineKind::Ssh {
+            id: self.id.clone(),
+            alias: self.alias.clone(),
+            control_path: self.control_path.clone(),
+            os: self.os.clone(),
+        }
+    }
+
     /// No held credential and no master: a master that a password login opened would
     /// answer for a key that cannot log in. `LogLevel=VERBOSE` makes ssh report when
     /// authentication succeeded, which separates a host that refuses the key from one

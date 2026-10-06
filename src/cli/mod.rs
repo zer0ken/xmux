@@ -245,8 +245,9 @@ fn print_stderr(line: &str) {
 async fn run_ls(env: &Env) -> i32 {
     // A host that could not be asked which muxes it serves is reported like a source that
     // could not be listed; one that answered with none has nothing to list.
+    let mut hosts = env.hosts();
     let unreached: Vec<crate::ui::tree::Group> = env
-        .discover_hosts(None)
+        .discover_hosts(&mut hosts, None)
         .await
         .into_iter()
         .filter_map(|u| {
@@ -257,7 +258,7 @@ async fn run_ls(env: &Env) -> i32 {
             })
         })
         .collect();
-    let mut rx = env.scan_stream().await;
+    let mut rx = env.scan_stream(&hosts).await;
     let mut total = 0usize;
     let mut reachable = 0usize;
     // A blank line between blocks keeps each source readable. The two streams are
@@ -302,12 +303,13 @@ async fn run_ls(env: &Env) -> i32 {
 /// Attaches one `source`/`session` without the tree.
 async fn run_direct_attach(env: &Env, source: &str, session: &str) -> i32 {
     let machine = crate::session::machine_of(source);
-    let unanswered = if env.source(source).is_none() {
-        env.discover_hosts(Some(machine)).await
+    let mut hosts = env.hosts();
+    let unanswered = if hosts.source(source).is_none() {
+        env.discover_hosts(&mut hosts, Some(machine)).await
     } else {
         Vec::new()
     };
-    let Some(src) = env.source(source) else {
+    let Some(src) = hosts.source(source) else {
         if let Some(u) = unanswered.first() {
             match &u.reason {
                 Some(reason) => eprintln!("xmux: {machine}: {reason}"),
@@ -315,7 +317,7 @@ async fn run_direct_attach(env: &Env, source: &str, session: &str) -> i32 {
             }
             return 1;
         }
-        let served: Vec<String> = env
+        let served: Vec<String> = hosts
             .source_list()
             .into_iter()
             .map(|s| s.alias)
@@ -446,7 +448,8 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
             .join(", ")
     );
 
-    let unanswered = env.discover_hosts(None).await;
+    let mut hosts = env.hosts();
+    let unanswered = env.discover_hosts(&mut hosts, None).await;
     println!("sources:");
     for u in unanswered {
         match u.reason {
@@ -454,7 +457,7 @@ async fn run_doctor(env: &Env, cfg_err: Option<anyhow::Error>) -> i32 {
             None => println!("  {}: no mux answered", u.host),
         }
     }
-    for s in &env.source_list() {
+    for s in &hosts.source_list() {
         // The pair reads as one label, the way every surface shows it. The binary follows
         // only where it is not the mux's own name (an alias, a path), which is a fact the
         // label cannot carry and a diagnostic wants.

@@ -13,8 +13,9 @@ remains after the update transition folds an inbound source event into the model
 - The action module holds the action, command, and event-effect sets, the focus
   target, and the slow-operation descriptor a deferred command carries for the UI to
   run off-loop.
-- Hosts and the host registry hold per-source domain state and display bookkeeping;
-  the PTYs themselves stay in `display/`.
+- The source registry holds every source's host with its domain state and display
+  bookkeeping, and publishes the source definitions the CLI, the scan, and the off-loop
+  operations read; the PTYs themselves stay in `display/`.
 - Inventory groups, their deterministic session order, and the typed failure of a
   source are domain values.
 - View screen selection is pure policy over the selection, the typed failure, the
@@ -37,11 +38,14 @@ remains after the update transition folds an inbound source event into the model
 - Transport dispatch preserves mux intent without introducing mux policy.
 - An action or command exists only for a real domain intent; low-level injection is
   the `raw:` ctl namespace.
+- A source exists in the source registry or nowhere. Its definition is derived from the
+  registry's host and republished on every change to the sources, never assembled
+  beside the registry, so no consumer can hold a source another lacks.
 
 ## Common Pitfalls
 
-- Source state already has owners: the host, the host registry, and the source manager
-  in `link/`. Check them before adding another registry.
+- Source state already has owners: the host, the source registry, and the source
+  manager in `link/`. Check them before adding another registry.
 
 ## Before Editing
 

@@ -91,6 +91,13 @@ impl Transport for Local {
             ..self.clone()
         })
     }
+
+    fn machine_kind(&self) -> crate::transport::MachineKind {
+        crate::transport::MachineKind::Local {
+            id: self.id.clone(),
+            socket: self.socket.clone(),
+        }
+    }
 }
 
 #[cfg(test)]
