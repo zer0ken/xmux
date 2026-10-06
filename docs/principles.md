@@ -61,8 +61,8 @@ does something else.
 ## Action Names and Keys
 
 An action name states the action and its object, such as `rescan this machine` or
-`place nav`, and an object at one level of the hierarchy is named by that level, machine
-or mux. A key is the first letter of its action's name where that letter is free. Where
+`place nav`, and an object at one level of the hierarchy is named by that level,
+machine, host, or session. A key is the first letter of its action's name where that letter is free. Where
 one letter serves two actions that differ only in scope, the lowercase key runs the
 smaller-scope action and the uppercase form of the same letter runs the larger-scope
 one: `prefix r` rescans this machine and `prefix R` rescans all machines.
@@ -73,9 +73,9 @@ is recalled from the name the help, the key list, and the hints already show, so
 learning the names is learning the keys. The lowercase key is the easier one to press
 and to press by mistake, so it runs the action that asks the least of the machines
 xmux reaches. A machine and a mux on it share a name and look alike on screen, so a
-word both levels could answer to, such as `host`, leaves the user unable to tell which
-one a key acts on; the same holds for the screens, which is why each opens with its
-level.
+word both levels could answer to leaves the user unable to tell which one a key acts on;
+`host` therefore always names the mux level and never the machine, and each screen
+opens with its level.
 
 ## Terminal-Owned Colour
 
@@ -118,7 +118,7 @@ under its `{host}/{mux}` title, or the cards of hosts with no session to show. `
 move between numbered cards and `←`/`→` between sections, and neither step depends on
 the hierarchy of hosts, sources, and sessions, which is reached only through
 `Ctrl+↑`/`Ctrl+↓`, the two parts of a section title, and the links on the machine and
-mux screens.
+host screens.
 
 Cards and sections are what the user sees and counts, so stepping through them must
 mean the same thing in a column and in a band, whatever hosts the list holds. Folding

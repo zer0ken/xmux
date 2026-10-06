@@ -656,7 +656,7 @@ impl Switcher {
             if host_failure(state, &machine).is_some() {
                 state.flash("machine unreachable, cannot create here");
             } else {
-                state.flash(format!("select a mux of {machine} to start a session"));
+                state.flash(format!("select a host of {machine} to start a session"));
             }
             return;
         }
@@ -675,7 +675,7 @@ impl Switcher {
                     )
                 )
         }) {
-            state.flash("mux unreachable, cannot create here");
+            state.flash("host unreachable, cannot create here");
             return;
         }
         state.modal = Some(Modal::Input(Box::new(Input::new(

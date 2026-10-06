@@ -383,7 +383,7 @@ fn the_host_screen_states_the_machine_and_links_its_sources() {
         "username and password",
         "rescan this machine",
         "log out of this machine",
-        "muxes",
+        "hosts",
         "tmux  2 sessions",
         "zellij  no sessions",
     ] {
@@ -396,7 +396,7 @@ fn the_host_screen_states_the_machine_and_links_its_sources() {
 }
 
 #[test]
-fn the_machine_and_mux_screens_name_their_level_and_keep_to_its_facts() {
+fn the_machine_and_host_screens_name_their_level_and_keep_to_its_facts() {
     let mut h = H::new(&[("box:tmux", &["notes"], None), ("box:zellij", &[], None)]);
     h.state
         .chrome
@@ -408,11 +408,14 @@ fn the_machine_and_mux_screens_name_their_level_and_keep_to_its_facts() {
     let mux = h.view();
     assert_eq!(
         mux.lines().nth(1).map(str::trim_end),
-        Some(" mux box/tmux"),
+        Some(" host box/tmux"),
         "{mux}"
     );
     for gone in ["ssh config", "Host box", "address", "SSH login"] {
-        assert!(!mux.contains(gone), "the mux screen omits {gone:?}:\n{mux}");
+        assert!(
+            !mux.contains(gone),
+            "the host screen omits {gone:?}:\n{mux}"
+        );
     }
     h.ctrl(KeyCode::Up);
     assert_eq!(h.node(), host("box"));
@@ -422,7 +425,7 @@ fn the_machine_and_mux_screens_name_their_level_and_keep_to_its_facts() {
         Some(" machine box"),
         "{machine}"
     );
-    for want in ["ssh config", "Host box", "User dev", "muxes"] {
+    for want in ["ssh config", "Host box", "User dev", "hosts"] {
         assert!(
             machine.contains(want),
             "the machine screen states {want:?}:\n{machine}"
@@ -552,7 +555,7 @@ fn hovering_a_nav_target_shows_its_screen_without_moving_the_hard_selection() {
     h.sw.mouse_hover(&h.plan.clone(), half.x, half.y);
     h.draw();
     assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Host));
-    assert!(h.view().contains("muxes"), "{}", h.view());
+    assert!(h.view().contains("hosts"), "{}", h.view());
 
     // Off every target the hard selection's screen comes back.
     assert!(h.sw.mouse_hover(&h.plan.clone(), 100, 10));
@@ -637,23 +640,74 @@ fn a_host_card_that_logs_back_in_hands_the_selection_to_its_first_source() {
 }
 
 #[test]
-fn a_link_opens_a_source_the_nav_has_no_card_for() {
+fn an_unresolved_machine_screen_links_to_nothing() {
     let mut h = H::new(&[("gpu", &["train"], None), ("db", &[], Some(LOGGED_OUT))]);
     let card = h.card_row(|r| matches!(r, RowRef::Machine { .. }));
     h.sw.set_selected(card);
     h.terminal_focused = true;
     h.draw();
+    assert_eq!(h.node(), host("db"));
     assert!(
-        !h.sw.login_pane_shown(&h.state) || h.view().contains("muxes"),
-        "the host's screen lists its sources"
+        h.sw.screen_links(&Node::Host("db".into()), &h.state)
+            .is_empty(),
+        "the placeholder source stands for this machine, so it is no link"
+    );
+    let view = h.view();
+    assert!(
+        !view.lines().any(|l| l.trim_start().starts_with("hosts")),
+        "no link list without a confirmed mux:\n{view}"
+    );
+    assert!(view.contains("Log in ]"), "{view}");
+}
+
+#[test]
+fn the_login_form_keeps_the_keyboard_from_the_screen_links() {
+    let mut h = H::new(&[
+        ("gpu", &["train"], None),
+        ("db:tmux", &[], Some(LOGGED_OUT)),
+    ]);
+    let card = h.card_row(|r| matches!(r, RowRef::Machine { .. }));
+    h.sw.set_selected(card);
+    h.terminal_focused = true;
+    h.draw();
+    assert!(h.sw.login_pane_shown(&h.state));
+    assert_eq!(
+        h.sw.link_marks(&h.state).0,
+        None,
+        "no link holds the hard selection beside the form"
+    );
+    h.sw.step_link(1, &h.state);
+    assert!(
+        !h.sw.open_selected_link(&h.state),
+        "Enter belongs to the form"
+    );
+    assert_eq!(h.node(), host("db"), "the keys moved nothing");
+    assert!(h.sw.open_link(0, &h.state), "a click still opens the link");
+    assert_eq!(h.node(), source("db:tmux"));
+}
+
+#[test]
+fn a_link_opens_a_source_the_nav_has_no_card_for() {
+    let mut h = H::new(&[
+        ("gpu", &["train"], None),
+        ("db:tmux", &[], Some(LOGGED_OUT)),
+    ]);
+    let card = h.card_row(|r| matches!(r, RowRef::Machine { .. }));
+    h.sw.set_selected(card);
+    h.terminal_focused = true;
+    h.draw();
+    assert!(
+        h.view().contains("hosts"),
+        "the machine's screen lists its hosts:\n{}",
+        h.view()
     );
     let links = h.sw.screen_links(&Node::Host("db".into()), &h.state);
-    assert_eq!(links[0].node, Node::Source("db".into()));
+    assert_eq!(links[0].node, Node::Source("db:tmux".into()));
     assert!(h.sw.open_link(0, &h.state));
     h.draw();
     assert_eq!(
         h.node(),
-        source("db"),
+        source("db:tmux"),
         "the source is selected without a card"
     );
     assert_eq!(h.sw.selected, card, "the nav stands on its host's card");
@@ -672,9 +726,14 @@ fn a_link_opens_a_source_the_nav_has_no_card_for() {
     // The selection holds while the inventory lists the source, and lands on the source's
     // own card once it has one.
     h.sw.rebuild(&mut h.state);
-    assert_eq!(h.node(), source("db"));
-    h.sw.apply_source_result("db".into(), vec![sess("db", "pg")], None, &mut h.state);
-    assert_eq!(h.node(), source("db"));
+    assert_eq!(h.node(), source("db:tmux"));
+    h.sw.apply_source_result(
+        "db:tmux".into(),
+        vec![sess("db:tmux", "pg")],
+        None,
+        &mut h.state,
+    );
+    assert_eq!(h.node(), source("db:tmux"));
     assert!(h.sw.deep.is_none());
     assert_eq!(h.sw.part, Part::Source);
 }

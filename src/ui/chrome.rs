@@ -877,11 +877,17 @@ impl Chrome {
             rows.push((ScreenCell::Gap, String::new()));
             // What was asked, and of what. The mux and the machine are the two
             // independent things that can be wrong: the box may be up with no such mux
-            // on it, or the mux fine behind a box that cannot be reached. Each screen
-            // states its own half, and the other half is one link away.
+            // on it, or the mux fine behind a box that cannot be reached. The machine
+            // screen states how the machine was asked, which is all an unresolved machine
+            // has; the mux row belongs to the host screen.
             if let Some(reach) = self.source_reach.get(source) {
                 let level_rows = if host {
-                    [("machine", &reach.machine)].to_vec()
+                    [
+                        ("machine", &reach.machine),
+                        ("socket", &reach.socket),
+                        ("probe", &reach.probe),
+                    ]
+                    .to_vec()
                 } else {
                     [
                         ("mux", &reach.mux),
@@ -1151,7 +1157,7 @@ impl Chrome {
         // which the headline carries.
         let landing = kind == ViewScreen::Landing;
         let listed = if host || landing { 0 } else { 1 };
-        let name = if host { "muxes" } else { "sessions" };
+        let name = if host { "hosts" } else { "sessions" };
         // Card numbers line up by units place, as they do in the nav's address column.
         let number_w = view
             .links
@@ -1231,13 +1237,13 @@ impl Chrome {
             .add_modifier(Modifier::BOLD);
         let mut links: Vec<LinkCell> = Vec::new();
         // A host's and a source's screen look alike, so the headline names the level
-        // before the path: the user reads `machine db-01` or `mux db-01/tmux` and knows
+        // before the path: the user reads `machine db-01` or `host db-01/tmux` and knows
         // which one every row and key below it is about.
         let level = match kind {
             ViewScreen::SelfSession | ViewScreen::Landing => "",
             _ if headline.is_empty() => "",
             _ if host => "machine ",
-            _ => "mux ",
+            _ => "host ",
         };
         let lead = vec![
             Span::raw(" "),
@@ -1736,7 +1742,7 @@ impl Chrome {
             let sp = crate::ui::spinner_glyph(self.spinner_frame);
             fit(
                 &[
-                    format!(" {sp} scanning muxes {done}/{total}…"),
+                    format!(" {sp} scanning hosts {done}/{total}…"),
                     format!(" {sp} scanning {done}/{total}…"),
                     format!(" {sp} {done}/{total}"),
                     format!(" {sp}{done}/{total}"),

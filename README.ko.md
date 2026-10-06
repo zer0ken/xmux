@@ -19,9 +19,9 @@ ssh로 gpu-01에 접속해 tmux 세션 목록을 확인하고 attach하기까지
 ![xmux는 card 한 개를 내려간 뒤 번호로 5번과 3번 세션으로 이동한다. terminal view는
 선택한 세션을 따라 바뀐다.](docs/assets/xmux-nav-switch.gif)
 
-**mux와 machine으로 올라가기**
+**host와 machine으로 올라가기**
 
-![Ctrl-↑는 세션의 mux를 선택해 그 화면을 표시하고, Ctrl-↑를 한 번 더 누르면 machine을
+![Ctrl-↑는 세션의 host를 선택해 그 화면을 표시하고, Ctrl-↑를 한 번 더 누르면 machine을
 선택해 그 화면을 표시한다. Ctrl-↓는 세션까지 다시 내려간다.](docs/assets/xmux-hierarchy.gif)
 
 **비밀번호 machine 로그인**

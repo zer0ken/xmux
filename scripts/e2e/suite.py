@@ -407,7 +407,7 @@ def new_session(c):
     app.whereami(c.path(c.h1, f"{m}1"))
     app.t.send("C-g", gap=0.3)
     app.t.send("n", gap=0.3)
-    app.t.wait(lambda ls: any(re.search(rf"mux {{2,}}{re.escape(c.h1)}/{m}", l) for l in ls),
+    app.t.wait(lambda ls: any(re.search(rf"host {{2,}}{re.escape(c.h1)}/{m}", l) for l in ls),
                f"the new-session popover on {c.h1}/{m}", 10)
     app.t.send(name, "Enter")
     app.selected(f"{c.h1}/{m}", name, 40)

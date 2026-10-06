@@ -1108,7 +1108,7 @@ fn a_scanning_host_screen_states_its_headline_word_and_facts() {
     let lines: Vec<&str> = view.lines().map(str::trim).collect();
     let headline = lines
         .iter()
-        .position(|l| l.starts_with("mux prod"))
+        .position(|l| l.starts_with("host prod"))
         .unwrap_or_else(|| {
             panic!(
                 "the headline:
@@ -3689,7 +3689,7 @@ async fn both_host_screens_share_one_grammar() {
             "machine prod",
             "unreachable",
         ),
-        ("empty", empty.view_text(), "mux fresh", "no sessions"),
+        ("empty", empty.view_text(), "host fresh", "no sessions"),
     ] {
         let lines: Vec<&str> = view.lines().collect();
         assert_eq!(lines[0].trim(), "", "{label}: opens on a blank row");
@@ -7576,16 +7576,9 @@ async fn a_host_that_answered_nothing_headlines_without_a_mux() {
         !out.contains("prod/tmux"),
         "no mux is claimed for a host that answered nothing:\n{out}"
     );
-    // What was ASKED is still stated, on the screen of the source that was asked.
-    assert!(h.sw.open_link(0, &h.state));
-    h.draw();
-    let out = h.view_text();
+    // What was ASKED is still stated, in the probe the machine was sent.
     assert!(
-        out.lines().any(|l| l.trim() == "mux prod"),
-        "the source's headline claims no mux either:\n{out}"
-    );
-    assert!(
-        out.contains("tmux"),
+        out.contains("prod tmux ls"),
         "the diagnostic still says what it tried:\n{out}"
     );
 }
@@ -7673,32 +7666,18 @@ async fn unreachable_host_screen_states_what_was_asked_and_over_what() {
     );
     h.key(KeyCode::Char('d')).await;
     h.draw();
-    // The machine's screen states the machine half, the source's screen the mux half.
-    let out = h.view_text();
-    assert!(
-        out.contains("ssh to prod, given 5s to connect"),
-        "the machine screen states how the machine is reached:\n{out}"
-    );
-    for gone in ["socket", "probe", "list-sessions"] {
-        assert!(
-            !out.contains(gone),
-            "the machine screen omits {gone:?}:\n{out}"
-        );
-    }
-    assert!(h.sw.open_link(0, &h.state));
-    h.draw();
+    // An unresolved machine has no host screen to link to, so its own screen states
+    // everything that was asked of it.
     let out = h.view_text();
     for want in [
-        "tmux",
+        "machine",
+        "ssh to prod, given 5s to connect",
         "socket",
         "/tmp/cm-prod.sock",
         "probe",
         "prod tmux list-sessions",
     ] {
-        assert!(out.contains(want), "the mux screen states {want:?}:\n{out}");
-    }
-    for gone in ["ssh to prod", "ssh config", "provider"] {
-        assert!(!out.contains(gone), "the mux screen omits {gone:?}:\n{out}");
+        assert!(out.contains(want), "the screen states {want:?}:\n{out}");
     }
 }
 
