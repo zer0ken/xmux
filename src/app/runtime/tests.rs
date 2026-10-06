@@ -6205,8 +6205,9 @@ fn a_popup_takes_hover_and_a_click_on_its_entry_runs_it_as_enter_does() {
     rt.handle_stdin_bytes(b"quit xmux", &sel);
     sync_test_render_plan(&mut rt);
     let r = rt.model.render_plan.popup_rect;
-    // SGR cells are 1-based; the one match is the popup's second inner row.
-    let (col, row) = (r.x + 4, r.y + 3);
+    // SGR cells are 1-based; the one match is the popup's first inner row under the query
+    // field and its rule.
+    let (col, row) = (r.x + 4, r.y + 2 + crate::ui::modal::PALETTE_LEAD);
     let event = |rt: &mut Runtime, ev| {
         let mut quit = false;
         let dirty = rt.handle_mouse_event(&ev, &sel, &mut false, &mut false, &mut quit, &mut false);
@@ -6244,7 +6245,7 @@ fn a_popup_drag_drops_the_soft_selection_it_started_on() {
     rt.handle_stdin_bytes(b"quit xmux", &sel);
     sync_test_render_plan(&mut rt);
     let r = rt.model.render_plan.popup_rect;
-    let (col, row) = (r.x + 4, r.y + 3);
+    let (col, row) = (r.x + 4, r.y + 2 + crate::ui::modal::PALETTE_LEAD);
     let event = |rt: &mut Runtime, ev| {
         rt.handle_mouse_event(&ev, &sel, &mut false, &mut false, &mut false, &mut false)
     };

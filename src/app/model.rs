@@ -4730,8 +4730,8 @@ mod tests {
         );
         lay_out(&mut m);
         let r = m.render_plan.popup_rect;
-        // The query field is the first inner row and the one match the second.
-        let effects = click(&mut m, r.x + 3, r.y + 2);
+        // The query field and its rule are the first inner rows and the one match is next.
+        let effects = click(&mut m, r.x + 3, r.y + 1 + crate::ui::modal::PALETTE_LEAD);
         assert!(matches!(
             effects.as_slice(),
             [Effect::Command(crate::model::Command::Quit)]
@@ -4870,7 +4870,7 @@ mod tests {
             &mut m,
             Msg::HoverPopup {
                 col: r.x + 3,
-                row: r.y + 4,
+                row: r.y + 3 + crate::ui::modal::PALETTE_LEAD,
             },
         );
         assert_eq!(palette_selection(&m), (0, Some(2)), "the third entry");
@@ -4890,7 +4890,7 @@ mod tests {
             &mut m,
             Msg::HoverPopup {
                 col: r.x + 3,
-                row: r.y + 4,
+                row: r.y + 3 + crate::ui::modal::PALETTE_LEAD,
             },
         );
         update(
