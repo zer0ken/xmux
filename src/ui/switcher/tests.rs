@@ -1396,7 +1396,7 @@ async fn filter_highlights_the_session_part_of_the_matched_address() {
     });
     h.key(KeyCode::Char('/')).await;
     h.ch('h').await;
-    h.ch('a').await;
+    h.ch('l').await;
     assert!(
         h.nav_mod_of("h")
             .is_some_and(|m| m.contains(Modifier::BOLD)),
@@ -1404,11 +1404,54 @@ async fn filter_highlights_the_session_part_of_the_matched_address() {
         h.nav_cards_text()
     );
     assert!(
-        h.nav_mod_of("a")
+        h.nav_mod_of("l")
             .is_some_and(|m| m.contains(Modifier::BOLD)),
         "the session character that completes the address match is bold:\n{}",
         h.nav_cards_text()
     );
+}
+
+#[tokio::test]
+async fn filter_matches_and_marks_the_three_level_path_of_a_one_mux_machine() {
+    // A machine serving one mux carries no mux in its host id, yet every surface writes
+    // the session as machine/mux/session. The filter reads that same path: the whole of
+    // it, a prefix of it, or the session name alone, and marks the typed session part.
+    for (typed, kept, marked) in [
+        ("gpu-01/tmux/train-llm", "1 of 2", true),
+        ("gpu-01/tm", "2 of 2", false),
+        ("train-llm", "1 of 2", true),
+    ] {
+        let mut h = Harness::new(Scan {
+            groups: vec![Group {
+                host: "gpu-01".into(),
+                err: None,
+                sessions: vec![
+                    sess("gpu-01", "notebook", 1, false),
+                    sess("gpu-01", "train-llm", 1, false),
+                ],
+            }],
+        });
+        h.state.chrome.set_host_reach(
+            [("gpu-01".to_string(), reach("tmux", "gpu-01", "", "tmux ls"))]
+                .into_iter()
+                .collect(),
+        );
+        h.sw.rebuild(&mut h.state);
+        h.key(KeyCode::Char('/')).await;
+        for ch in typed.chars() {
+            h.ch(ch).await;
+        }
+        let top = h.popup_row(0);
+        assert!(top.contains(&format!(" {kept} ")), "{typed}: {top}");
+        h.key(KeyCode::Enter).await;
+        let buf = h.buf();
+        let (x, y) = locate(buf, "train-llm", NAV_WIDTH)
+            .unwrap_or_else(|| panic!("{typed} keeps train-llm:\n{}", h.nav_cards_text()));
+        let bold: Vec<bool> = (x..x + 9)
+            .map(|x| buf[(x, y)].modifier.contains(Modifier::BOLD))
+            .collect();
+        assert_eq!(bold, vec![marked; 9], "{typed}:\n{}", h.nav_cards_text());
+    }
 }
 
 #[tokio::test]

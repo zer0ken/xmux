@@ -43,19 +43,64 @@ pub fn fuzzy_match(pattern: &str, s: &str) -> bool {
     false
 }
 
+/// Which chars of `text` the filter `pattern` marks, compared case-insensitively. A
+/// pattern found whole in `text` marks its LAST occurrence: a card writes the end of its
+/// path, the session, so a session name typed alone marks the session and not a letter
+/// of the machine before it, and a typed prefix of the path occurs only at its start.
+/// Any other pattern marks its first in-order subsequence, as far as it gets.
+pub(crate) fn match_marks(pattern: &str, text: &str) -> Vec<bool> {
+    let lower = |c: char| c.to_lowercase().next().unwrap_or(c);
+    let t: Vec<char> = text.chars().map(lower).collect();
+    let p: Vec<char> = pattern.chars().map(lower).collect();
+    let mut marks = vec![false; t.len()];
+    if p.is_empty() {
+        return marks;
+    }
+    if let Some(start) = t.windows(p.len()).rposition(|w| w == p.as_slice()) {
+        marks[start..start + p.len()].fill(true);
+        return marks;
+    }
+    let mut wanted = p.iter().peekable();
+    for (mark, c) in marks.iter_mut().zip(&t) {
+        if wanted.next_if(|next| *next == c).is_some() {
+            *mark = true;
+        }
+    }
+    marks
+}
+
+/// The mux a session's card names: the one its listing reported, else its host's.
+pub(crate) fn session_mux(sess: &Session, mux_of_host: &dyn Fn(&str) -> String) -> String {
+    if sess.mux.is_empty() {
+        mux_of_host(&sess.host)
+    } else {
+        sess.mux.clone()
+    }
+}
+
 /// Keeps the groups whose host matches `pattern` or that have at least one
-/// matching session, preserving group order. An empty pattern returns the input
-/// unchanged. A reachable group whose host matches keeps all its sessions;
-/// otherwise only the sessions whose address matches are kept. An unreachable
-/// group (`err` set) is kept only when its host matches, since its sessions
-/// carry no meaning. Inputs are never mutated.
-pub fn filter_groups(groups: &[Group], pattern: &str) -> Vec<Group> {
+/// matching session, preserving group order. A host is matched as its
+/// `{machine}/{mux}` label and a session as its `{machine}/{mux}/{session}` path, the
+/// spellings the cards show, with each mux resolved through `mux_of_host` as the cards
+/// resolve it. An empty pattern returns the input unchanged. A reachable group whose
+/// host matches keeps all its sessions; otherwise only the matching sessions are kept.
+/// An unreachable group (`err` set) is kept only when its host matches, since its
+/// sessions carry no meaning. Inputs are never mutated.
+pub fn filter_groups(
+    groups: &[Group],
+    pattern: &str,
+    mux_of_host: &dyn Fn(&str) -> String,
+) -> Vec<Group> {
     if pattern.is_empty() {
         return groups.to_vec();
     }
     let mut out = Vec::new();
     for g in groups {
-        let host_match = fuzzy_match(pattern, &g.host);
+        let machine = crate::session::machine_of(&g.host);
+        let host_match = fuzzy_match(
+            pattern,
+            &crate::session::host_label(machine, &mux_of_host(&g.host)),
+        );
         if g.err.is_some() {
             if host_match {
                 out.push(g.clone());
@@ -73,7 +118,11 @@ pub fn filter_groups(groups: &[Group], pattern: &str) -> Vec<Group> {
         let kept: Vec<Session> = g
             .sessions
             .iter()
-            .filter(|s| fuzzy_match(pattern, &s.address().display()))
+            .filter(|s| {
+                let path =
+                    crate::session::session_label(machine, &session_mux(s, mux_of_host), &s.name);
+                fuzzy_match(pattern, &path)
+            })
             .cloned()
             .collect();
         if !kept.is_empty() {
@@ -185,11 +234,15 @@ impl Row {
 /// borrows the input unchanged. A non-matching filter must not be a dead end (XM-01):
 /// it falls back to header-only groups (every host, no sessions) so the hosts stay
 /// visible. Inputs are not mutated.
-pub(crate) fn visible_groups<'a>(groups: &'a [Group], filter: &str) -> Cow<'a, [Group]> {
+pub(crate) fn visible_groups<'a>(
+    groups: &'a [Group],
+    filter: &str,
+    mux_of_host: &dyn Fn(&str) -> String,
+) -> Cow<'a, [Group]> {
     if filter.is_empty() {
         Cow::Borrowed(groups)
     } else {
-        let filtered = filter_groups(groups, filter);
+        let filtered = filter_groups(groups, filter, mux_of_host);
         if filtered.is_empty() {
             Cow::Owned(
                 groups
@@ -211,13 +264,8 @@ pub(crate) fn visible_groups<'a>(groups: &'a [Group], filter: &str) -> Cow<'a, [
 /// focused window a card used to name has left the card, so there is no pane state
 /// to wait on and no loading stand-in.
 fn push_session_card(rows: &mut Vec<Row>, sess: &Session, mux_of_host: &dyn Fn(&str) -> String) {
-    let mux = if sess.mux.is_empty() {
-        mux_of_host(&sess.host)
-    } else {
-        sess.mux.clone()
-    };
     rows.push(Row {
-        mux,
+        mux: session_mux(sess, mux_of_host),
         reference: RowRef::Session { sess: sess.clone() },
     });
 }
@@ -324,6 +372,7 @@ pub(crate) fn visible_machines<'a>(
     groups: &[Group],
     machines: &[&'a Machine],
     filter: &str,
+    mux_of_host: &dyn Fn(&str) -> String,
 ) -> Vec<&'a Machine> {
     if filter.is_empty() {
         return machines.to_vec();
@@ -333,7 +382,7 @@ pub(crate) fn visible_machines<'a>(
         .copied()
         .filter(|m| fuzzy_match(filter, &m.name))
         .collect();
-    if kept.is_empty() && filter_groups(groups, filter).is_empty() {
+    if kept.is_empty() && filter_groups(groups, filter, mux_of_host).is_empty() {
         machines.to_vec()
     } else {
         kept
@@ -377,7 +426,7 @@ pub(crate) fn flatten(
     filter: &str,
     mux_of_host: &dyn Fn(&str) -> String,
 ) -> Vec<Row> {
-    let machines = visible_machines(groups, machines, filter);
+    let machines = visible_machines(groups, machines, filter, mux_of_host);
     let down = down_machines(groups, scanning);
     let first_host = |machine: &str| {
         groups
@@ -400,9 +449,9 @@ pub(crate) fn flatten(
     // A machine the filter keeps means the filter matched something, so the groups fall
     // back to their titles only when neither matched.
     let groups = if !filter.is_empty() && machines.iter().any(|m| fuzzy_match(filter, &m.name)) {
-        Cow::Owned(filter_groups(groups, filter))
+        Cow::Owned(filter_groups(groups, filter, mux_of_host))
     } else {
-        visible_groups(groups, filter)
+        visible_groups(groups, filter, mux_of_host)
     };
     let groups: &[Group] = &groups;
     let mut machine_cards: HashSet<&str> = HashSet::new();
@@ -591,7 +640,7 @@ mod tests {
     #[test]
     fn filter_groups_empty_pattern_passthrough() {
         let in_ = sample_groups();
-        let got = filter_groups(&in_, "");
+        let got = filter_groups(&in_, "", &mux_of_host);
         assert_eq!(got.len(), in_.len());
         for i in 0..in_.len() {
             assert_eq!(got[i].host, in_[i].host);
@@ -601,7 +650,7 @@ mod tests {
 
     #[test]
     fn filter_groups_host_match_keeps_all_sessions() {
-        let got = filter_groups(&sample_groups(), "jptr");
+        let got = filter_groups(&sample_groups(), "jptr", &mux_of_host);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].host, "jupiter00");
         assert_eq!(got[0].sessions.len(), 2);
@@ -609,7 +658,7 @@ mod tests {
 
     #[test]
     fn filter_groups_session_only_match() {
-        let got = filter_groups(&sample_groups(), "jupiter00/inference");
+        let got = filter_groups(&sample_groups(), "jupiter00/inference", &mux_of_host);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].host, "jupiter00");
         assert_eq!(got[0].sessions.len(), 1);
@@ -618,20 +667,60 @@ mod tests {
 
     #[test]
     fn filter_groups_unreachable_kept_only_on_host_match() {
-        let got = filter_groups(&sample_groups(), "dead");
+        let got = filter_groups(&sample_groups(), "dead", &mux_of_host);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].host, "deadhost");
         assert!(got[0].err.is_some());
 
-        let got2 = filter_groups(&sample_groups(), "ghost");
+        let got2 = filter_groups(&sample_groups(), "ghost", &mux_of_host);
         assert!(got2.iter().all(|g| g.host != "deadhost"));
     }
 
     #[test]
     fn filter_groups_preserves_order() {
-        let got = filter_groups(&sample_groups(), "e");
+        let got = filter_groups(&sample_groups(), "e", &mux_of_host);
         let order: Vec<&str> = got.iter().map(|g| g.host.as_str()).collect();
         assert_eq!(order, vec!["jupiter00", "local", "deadhost"]);
+    }
+
+    #[test]
+    fn filter_groups_matches_the_path_a_one_mux_machine_shows() {
+        // `gpu-01` serves one mux, so its host id names none; its cards still read
+        // `gpu-01/tmux/...`, and the filter reads that same path.
+        let groups = vec![Group {
+            host: "gpu-01".into(),
+            err: None,
+            sessions: vec![sess("gpu-01", "notebook"), sess("gpu-01", "train-llm")],
+        }];
+        let tmux = |_: &str| "tmux".to_string();
+        let kept = |pattern: &str| -> Vec<String> {
+            filter_groups(&groups, pattern, &tmux)
+                .iter()
+                .flat_map(|g| g.sessions.iter().map(|s| s.name.clone()))
+                .collect()
+        };
+        assert_eq!(kept("gpu-01/tmux/train-llm"), ["train-llm"]);
+        assert_eq!(kept("gpu-01/tmux"), ["notebook", "train-llm"]);
+        assert_eq!(kept("train-llm"), ["train-llm"]);
+    }
+
+    #[test]
+    fn match_marks_prefers_the_typed_text_where_it_stands_whole() {
+        let marked = |pattern: &str, text: &str| -> String {
+            text.chars()
+                .zip(match_marks(pattern, text))
+                .map(|(c, m)| if m { c } else { '.' })
+                .collect()
+        };
+        let path = "gpu-01/tmux/train-llm";
+        assert_eq!(marked(path, path), path);
+        assert_eq!(marked("gpu-01/tm", path), "gpu-01/tm............");
+        assert_eq!(marked("TRAIN", path), "............train....");
+        // The last whole occurrence, so a session name marks the session.
+        assert_eq!(marked("t", path), "............t........");
+        // Not whole anywhere: the first in-order subsequence.
+        assert_eq!(marked("g/tl", path), "g...../t..........l..");
+        assert_eq!(marked("", path), ".".repeat(path.len()));
     }
 
     #[test]
@@ -639,7 +728,7 @@ mod tests {
         let in_ = sample_groups();
         let orig_len = in_[0].sessions.len();
         let orig_first = in_[0].sessions[0].name.clone();
-        let _ = filter_groups(&in_, "jupiter00/inference");
+        let _ = filter_groups(&in_, "jupiter00/inference", &mux_of_host);
         assert_eq!(in_[0].sessions.len(), orig_len);
         assert_eq!(in_[0].sessions[0].name, orig_first);
     }
