@@ -37,6 +37,7 @@ COLS, ROWS = 140, 60
 KNOWN = {
     ("in-client-switch", "tuios", None, None): "#333",
     ("in-client-switch", "zellij", None, None): "#670",
+    ("switch", "zellij", None, None): "#675",
     ("first-launch", "tmux", "alpine", "windows"): "#673",
     ("switch", None, "alpine", "windows"): "#673",
 }
