@@ -96,7 +96,6 @@ issue is fixed.
 | Cell | Result | Reason |
 | --- | --- | --- |
 | every scenario, screen on Alpine | `KNOWN #588` | the screen 5 listing yields no sessions |
-| `in-client-switch`, tmux | `KNOWN #586` | a directly attached remote client's move is not followed |
 | `in-client-switch`, zellij | `KNOWN #587` | a remote client's move is not followed |
 | `in-client-switch`, tuios | `KNOWN #333` | tuios gives no signal that its client moved |
 | `in-client-switch`, screen, abduco, and herdr | `n/a` | a client belongs to one session's server and cannot move |
