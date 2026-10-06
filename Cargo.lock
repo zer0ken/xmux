@@ -2477,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "xmux"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
