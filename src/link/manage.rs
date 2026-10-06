@@ -237,14 +237,19 @@ mod tests {
         // "amber-otter" is taken, so the create gets "amber-heron".
         let fr = SeqRunner::new(vec![
             Ok(b"amber-otter [Created 5s ago] \n".to_vec()),
+            Ok(br#"[{"tab_id":0,"name":"Tab #1"}]"#.to_vec()),
             Ok(Vec::new()),
         ]);
         let got = create(&zellij_host(), &fr, "").await.unwrap();
         assert_eq!(got, "amber-heron");
         let cmds = fr.commands();
-        assert_eq!(cmds.len(), 2, "listing then create: {cmds:?}");
+        assert_eq!(cmds.len(), 3, "enumeration then create: {cmds:?}");
         assert_eq!(cmds[0].1, vec!["list-sessions", "-n"]);
-        assert_eq!(cmds[1].1, vec!["attach", "-b", "amber-heron"]);
+        assert_eq!(
+            cmds[1].1,
+            vec!["--session", "amber-otter", "action", "list-tabs", "--json"]
+        );
+        assert_eq!(cmds[2].1, vec!["attach", "-b", "amber-heron"]);
     }
 
     #[tokio::test]

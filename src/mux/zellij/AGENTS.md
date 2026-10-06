@@ -4,9 +4,10 @@
 
 `mux/zellij` is the zellij implementation, the one mux that shares NO argv or output
 shape with tmux: every command plan is overridden and its listing is parsed here. Its
-CLI is one process per query, and xmux issues only three: `list-sessions -n`,
-`attach <name>`, and `attach -b <name>` to start a session. It reads no tab listing, so
-each zellij session reports one window. zellij moves a client between
+CLI is one process per query. Enumeration runs `list-sessions -n`, then
+`--session <name> action list-tabs --json` for each live session to count its windows
+without a display attachment. JSON counts tabs independently of their names.
+zellij moves a client between
 sessions inside the client process with `switch-session`, so the display reattaches on
 every session change, and `ZELLIJ_SESSION_NAME` in xmux's own client is the only record
 of a user's move, readable only for a client on THIS machine.
@@ -28,8 +29,12 @@ of a user's move, readable only for a client on THIS machine.
 
 ## Common Pitfalls
 
-- Do not parse a window or tab list: a session's cards name the session alone, and the
-  display mirrors whatever tab the attached client lands on.
+- Enumeration costs one listing plus one sequential query per live session, unlike
+  muxes whose session listing includes counts. Zellij 0.45.0 offers no aggregate tab
+  listing, so xmux accepts that poll cost for accurate counts. The shared connection
+  is reused, and all queries share the seven-second sweep budget and six-second
+  command limit. A failed query fails enumeration rather than inventing a count.
+- Tab counts do not select a tab; the display mirrors the attached client's tab.
 - Do not assume an action always answers. On WINDOWS an action addressed at a stale
   session never returns; the per-command poll budget bounds it. Verify zellij behavior
   on Linux, where the same queries answer immediately.
