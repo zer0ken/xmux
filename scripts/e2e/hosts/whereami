@@ -2,12 +2,22 @@
 # Prints which host, mux, and session the calling shell runs in, read from the
 # environment each mux gives its panes, followed by the argument. The scenarios type it
 # with a fresh argument to identify a session.
+#
+# abduco 0.6 exports no session variable, so its session is read from the command line
+# of the abduco server that started the calling shell: the name follows `-n`, `-c`, or
+# `-A`.
+abduco_session() {
+  server=$(cut -d' ' -f4 "/proc/$PPID/stat" 2>/dev/null) || return 1
+  tr '\0' '\n' <"/proc/$server/cmdline" 2>/dev/null \
+    | awk 'NR == 1 && $0 !~ /(^|\/)abduco$/ { exit 1 } f { print; exit } /^-[ncA]$/ { f = 1 }'
+}
 if [ -n "${TMUX:-}" ]; then m=tmux s=$(tmux display-message -p '#S')
 elif [ -n "${STY:-}" ]; then m=screen s=${STY#*.}
 elif [ -n "${ZELLIJ_SESSION_NAME:-}" ]; then m=zellij s=$ZELLIJ_SESSION_NAME
 elif [ -n "${TUIOS_SESSION:-}" ]; then m=tuios s=$TUIOS_SESSION
 elif [ -n "${HERDR_ENV:-}" ]; then m=herdr s=${HERDR_SESSION:-default}
 elif [ -n "${ABDUCO_SESSION:-}" ]; then m=abduco s=$ABDUCO_SESSION
+elif s=$(abduco_session) && [ -n "$s" ]; then m=abduco
 else m=none s=none
 fi
 echo "at=$(hostname)/$m/$s${1:+ $1}"
