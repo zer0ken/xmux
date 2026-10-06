@@ -82,16 +82,31 @@ fn resolve_into_two_muxes(sw: &mut Switcher, state: &mut State) {
 }
 
 #[test]
-fn a_resolved_machine_card_hands_the_selection_to_its_first_host_card() {
+fn a_resolved_machine_card_keeps_the_selection_on_its_machine() {
     let (mut sw, mut state) = on_unreachable_machine();
     resolve_into_two_muxes(&mut sw, &mut state);
-    assert!(on_host(&sw, "mars:screen"), "{}", picked(&sw));
-    // The hosts answer; the selected host gains sessions and keeps the selection as
-    // its section title, whose screen is the host's information, not a session grid.
+    assert_eq!(sw.selected_node(), machine("mars"), "{}", picked(&sw));
+    assert!(
+        on_host(&sw, "mars:screen"),
+        "the machine half of its first card"
+    );
+    // The hosts answer with sessions; the machine keeps the selection on the machine half
+    // of its first title, and its screen links both hosts rather than showing one of them.
     answer(&mut sw, &mut state, "mars:tmux", &["t1"]);
     answer(&mut sw, &mut state, "mars:screen", &["s1"]);
+    assert_eq!(sw.selected_node(), machine("mars"), "{}", picked(&sw));
     assert!(on_section(&sw, "mars:screen"), "{}", picked(&sw));
-    assert_eq!(sw.current_view_screen(&state), Some(ViewScreen::Host));
+    assert_eq!(sw.current_view_screen(&state), Some(ViewScreen::Machine));
+    assert_eq!(
+        sw.screen_links(&Node::Machine("mars".into()), &state)
+            .into_iter()
+            .map(|l| l.node)
+            .collect::<Vec<_>>(),
+        vec![
+            Node::Host("mars:screen".into()),
+            Node::Host("mars:tmux".into())
+        ]
+    );
     assert!(sw.current_attach_target(&state).is_none());
 }
 

@@ -1962,20 +1962,176 @@ async fn a_machine_answering_several_muxes_has_a_card_for_each() {
     );
 }
 
-#[tokio::test]
-async fn a_selected_machine_card_that_resolves_hands_the_selection_to_its_first_host() {
-    // The card that stood for the machine goes only after the hosts it resolved into are
-    // on the list, so the selection on it follows its lineage to the machine's first host
-    // card instead of passing to another machine.
+/// A runtime whose one remote machine `win` has no host known yet and refused its scan
+/// for a reason a login answers.
+fn hostless_machine_needing_login_rt() -> Runtime {
     let mut rt = test_rt(fake_env_with_auto_machines(&[], &["win"]));
-    rt.model.switcher.open_host("win", &mut rt.model.state);
+    rt.model.switcher.apply_machine_result(
+        "win",
+        Some("alice@win: Permission denied (publickey,password).".into()),
+        &mut rt.model.state,
+    );
+    rt
+}
+
+/// The login on `win` works and its machine answers two muxes, each of which lists a
+/// session: the card that stood for the machine gives way to a card per host.
+fn log_in_and_discover_two_hosts(rt: &mut Runtime) {
+    update(
+        &mut rt.model,
+        Msg::LoginSettled {
+            host: "win".into(),
+            credential_held: true,
+            machine_has_hosts: false,
+            probe: 1,
+        },
+    );
     rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
         machine: "win".into(),
         muxes: Ok(vec!["zellij".into(), "psmux".into()]),
     });
+    for (host, name) in [("win:psmux", "api"), ("win:zellij", "logs")] {
+        let session = crate::session::Session {
+            host: host.into(),
+            name: name.into(),
+            windows: 1,
+            ..Default::default()
+        };
+        rt.model
+            .switcher
+            .apply_host_result(host.into(), vec![session], None, &mut rt.model.state);
+    }
+}
+
+/// Asserts the selection is on the machine `win`, whose screen fills the terminal view
+/// and links both hosts the login found.
+fn assert_on_the_machine_screen_with_both_hosts(rt: &mut Runtime) {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let machine = crate::model::Node::Machine("win".into());
+    assert_eq!(rt.model.switcher.selected_node(), Some(machine.clone()));
+    assert_eq!(
+        rt.model.switcher.current_view_screen(&rt.model.state),
+        Some(crate::model::ViewScreen::Machine)
+    );
+    let links: Vec<_> = rt
+        .model
+        .switcher
+        .screen_links(&machine, &rt.model.state)
+        .into_iter()
+        .map(|l| l.node)
+        .collect();
+    assert_eq!(
+        links,
+        vec![
+            crate::model::Node::Host("win:psmux".into()),
+            crate::model::Node::Host("win:zellij".into()),
+        ]
+    );
+    assert!(rt
+        .model
+        .switcher
+        .current_attach_target(&rt.model.state)
+        .is_none());
+    rt.cols = 140;
+    rt.body_rows = 30;
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let mut term = Terminal::new(TestBackend::new(rt.cols, rt.body_rows + 1)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    let out = drawn_text(&term);
+    assert!(
+        out.contains("machine win"),
+        "the machine screen stays:\n{out}"
+    );
+    assert!(!out.contains("host win/"), "no host screen opens:\n{out}");
+    for mux in ["psmux", "zellij"] {
+        assert!(
+            out.lines()
+                .any(|l| l.contains(mux) && l.contains("1 session")),
+            "the screen links the {mux} host:\n{out}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_login_that_reveals_hosts_keeps_the_machine_selected() {
+    let mut rt = hostless_machine_needing_login_rt();
+    assert!(rt.model.switcher.open_host("win", &mut rt.model.state));
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        Some(crate::model::Node::Machine("win".into()))
+    );
+    log_in_and_discover_two_hosts(&mut rt);
+    assert_on_the_machine_screen_with_both_hosts(&mut rt);
+}
+
+#[tokio::test]
+async fn a_login_from_the_landing_that_reveals_hosts_keeps_the_machine_selected() {
+    let mut rt = hostless_machine_needing_login_rt();
+    rt.model.switcher.open_landing();
+    sync_test_render_plan(&mut rt);
+    rt.handle_stdin_bytes(b"\x1b[B", &Selection::default());
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        Some(crate::model::Node::Machine("win".into()))
+    );
+    rt.handle_stdin_bytes(b"\r", &Selection::default());
+    assert!(
+        !rt.model.switcher.landing_open(),
+        "Enter executes the machine"
+    );
+    log_in_and_discover_two_hosts(&mut rt);
+    assert_on_the_machine_screen_with_both_hosts(&mut rt);
+}
+
+#[tokio::test]
+async fn a_login_on_the_preselected_landing_card_keeps_the_machine_selected() {
+    // The machine is the only card, so the launch preselects it and Enter executes it
+    // without a move: the execution, not a move, makes it the user's choice, and the
+    // first session card the login reveals does not take the selection.
+    let mut roster = auto_roster(&[], &["win"]);
+    roster.local_muxes.clear();
+    let mut rt = test_rt(fake_env_from(roster));
+    rt.model.switcher.apply_machine_result(
+        "win",
+        Some("alice@win: Permission denied (publickey,password).".into()),
+        &mut rt.model.state,
+    );
+    rt.model.switcher.open_landing();
+    sync_test_render_plan(&mut rt);
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        Some(crate::model::Node::Machine("win".into()))
+    );
+    rt.handle_stdin_bytes(b"\r", &Selection::default());
+    assert!(
+        !rt.model.switcher.landing_open(),
+        "Enter executes the machine"
+    );
+    log_in_and_discover_two_hosts(&mut rt);
+    assert_on_the_machine_screen_with_both_hosts(&mut rt);
+}
+
+#[tokio::test]
+async fn a_logout_gathers_the_hosts_back_onto_the_machine_card() {
+    let mut rt = hostless_machine_needing_login_rt();
+    rt.model.switcher.open_host("win", &mut rt.model.state);
+    log_in_and_discover_two_hosts(&mut rt);
+    for host in ["win:psmux", "win:zellij"] {
+        rt.model.switcher.apply_host_result(
+            host.into(),
+            Vec::new(),
+            Some(crate::model::LOGGED_OUT.into()),
+            &mut rt.model.state,
+        );
+    }
+    assert_eq!(
+        rt.model.switcher.selected_node(),
+        Some(crate::model::Node::Machine("win".into()))
+    );
     assert!(matches!(
         rt.model.switcher.selected_card(),
-        Some(crate::state::RowRef::Host { host, .. }) if host == "win:psmux"
+        Some(crate::state::RowRef::Machine { machine, .. }) if machine == "win"
     ));
 }
 

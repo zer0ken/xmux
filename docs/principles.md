@@ -144,7 +144,10 @@ The selection names what the user is interested in, a machine, a host, or a sess
 never a position in the list. Every path that changes the list resolves the selection
 from that interest by one lineage: a node that loses its card moves to the nearest node
 up its lineage that has one, and a card that appears takes the selection only when the
-interest names it.
+interest names it. A machine keeps a target while any card of it is listed, its own card
+or the machine part of a title or card of one of its hosts, so a machine whose card gives
+way to the cards of the hosts found on it, as after a login, stays selected and its screen
+lists those hosts as links.
 
 The list changes under the user without the user doing anything: a scan answers machine
 by machine, a machine goes down, a logout closes connections, a session ends, a filter
@@ -173,7 +176,9 @@ or resizes, the wheel scrolls, and typing edits a text field.
 
 The landing screen is the one surface on which a selection shows nothing: from launch
 until the first execution the hard selection only highlights and a hover previews
-nothing, so nothing attaches before the user has chosen.
+nothing, so nothing attaches before the user has chosen. The target the first execution
+opens is the user's choice from then on, so a session card that appears later does not
+take the selection from it.
 
 ## Results as Notifications
 
