@@ -282,12 +282,26 @@ impl Runtime {
                         });
                     });
                 }
-                Effect::RemoveSshConfigEntries { machine } => {
+                Effect::FindSshConfigEntries { machine } => {
+                    let tx = self.op_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let result = crate::provision::env::find_ssh_config_entries(
+                            &crate::provision::env::ssh_config_path(),
+                            &machine,
+                        );
+                        let _ = tx.send(crate::ui::switcher::OpResult::SshConfigEntriesFound {
+                            machine,
+                            result,
+                        });
+                    });
+                }
+                Effect::RemoveSshConfigEntries { machine, unmarked } => {
                     let tx = self.op_tx.clone();
                     tokio::task::spawn_blocking(move || {
                         let result = crate::provision::env::remove_ssh_config_entries(
                             &crate::provision::env::ssh_config_path(),
                             &machine,
+                            unmarked,
                         );
                         let _ = tx.send(crate::ui::switcher::OpResult::SshConfigEntriesRemoved {
                             machine,
@@ -351,7 +365,7 @@ impl Runtime {
                             0,
                         );
                     }
-                    Command::Logout(_) | Command::RemoveUnmarkedKeys(_) => {
+                    Command::Logout(_) | Command::RemoveUnmarked(_) => {
                         unreachable!("logout commands become key and logout effects in update")
                     }
                     Command::AdjustNavWidth(_) => {

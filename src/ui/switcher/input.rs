@@ -416,7 +416,7 @@ impl Switcher {
         ));
         facts.push((
             "ssh config",
-            format!("removes {machine} from every Host entry naming it"),
+            "removes the entry xmux saved; asks first for others naming it".to_owned(),
         ));
         facts.push(("connections", format!("closes {machine} connections")));
         self.dismiss_modals(state);
@@ -425,20 +425,22 @@ impl Switcher {
         state.modal = Some(Modal::Input(Box::new(input)));
     }
 
-    /// Opens the logout's second confirmation for `machine`, whose key files hold this
-    /// machine's key in lines xmux did not add: `unmarked` names the file of each such
-    /// line, and `marked` counts the lines xmux added, which go whatever the answer is.
-    /// The input carries the machine, so the answer lands on the logout that asked.
+    /// Opens the logout's second confirmation for `machine`, over what xmux did not add:
+    /// `unmarked` names the file of each key line holding this machine's key, `marked`
+    /// counts the key lines xmux added, which go whatever the answer is, and `entries` are
+    /// the ssh config entries naming the machine, each with the line it leaves. The input
+    /// carries the machine, so the answer lands on the logout that asked.
     ///
-    /// It opens in the same place and grammar as the first confirm: its rows state how
-    /// many such lines there are and in which file, that removing them affects ssh outside
-    /// xmux, what keeping them leaves, and that the logout goes on either way, and it
-    /// requires typing `remove`. Closing it any other way keeps those lines.
+    /// It opens in the same place and grammar as the first confirm: its rows state the key
+    /// lines and the file they are in, each ssh config line that changes, that removing
+    /// them affects ssh outside xmux, what keeping them leaves, and that the logout goes on
+    /// either way, and it requires typing `remove`. Closing it any other way keeps them.
     pub(crate) fn open_logout_keys(
         &mut self,
         machine: &str,
         unmarked: &[&str],
         marked: usize,
+        entries: &[crate::provision::config::RemovedEntry],
         state: &mut crate::state::State,
     ) {
         let mut files: Vec<&str> = unmarked.to_vec();
@@ -450,26 +452,44 @@ impl Switcher {
                 format!("{n} lines")
             }
         };
-        let facts = vec![
-            (
+        let mut facts = Vec::new();
+        let mut loses = Vec::new();
+        let mut keep = Vec::new();
+        if !unmarked.is_empty() {
+            facts.push((
                 "key",
                 format!(
                     "{} of this PC's key not added by xmux",
                     lines(unmarked.len())
                 ),
-            ),
-            ("file", files.join(", ")),
-            ("remove", "ssh outside xmux loses this key too".to_string()),
-            (
-                "keep",
-                if marked == 0 {
-                    format!("the key stays on {machine}")
-                } else {
-                    format!("only the {} xmux added go", lines(marked))
+            ));
+            facts.push(("file", files.join(", ")));
+            loses.push("this key");
+            keep.push(if marked == 0 {
+                format!("the key stays on {machine}")
+            } else {
+                format!("only the {} xmux added go", lines(marked))
+            });
+        }
+        for entry in entries {
+            facts.push((
+                "ssh config",
+                match &entry.after {
+                    None => format!("{} goes with its options", entry.header),
+                    Some(after) => format!("{} becomes {after}", entry.header),
                 },
-            ),
-            ("logout", "goes on either way".to_string()),
-        ];
+            ));
+        }
+        if !entries.is_empty() {
+            loses.push("these entries");
+            keep.push("the entries stay in ssh config".to_string());
+        }
+        facts.push((
+            "remove",
+            format!("ssh outside xmux loses {} too", loses.join(" and ")),
+        ));
+        facts.push(("keep", keep.join("; ")));
+        facts.push(("logout", "goes on either way".to_string()));
         self.dismiss_modals(state);
         let mut input = Input::new(
             InputMode::LogoutKeys,
@@ -822,10 +842,9 @@ impl Switcher {
                                     crate::session::machine_of(&source).to_owned(),
                                 )]
                             }
-                            InputMode::LogoutKeys => source
-                                .map(Command::RemoveUnmarkedKeys)
-                                .into_iter()
-                                .collect(),
+                            InputMode::LogoutKeys => {
+                                source.map(Command::RemoveUnmarked).into_iter().collect()
+                            }
                         }
                     }
                 }

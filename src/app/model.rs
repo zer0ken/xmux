@@ -63,7 +63,9 @@ pub(crate) struct AppModel {
 
 /// A logout that has not yet cleared its machine. The key comes off the host first, over
 /// the connection the login left, and the ssh config entries naming the machine go
-/// after, so nothing of the machine's is cleared until both settle.
+/// after, so nothing of the machine's is cleared until both settle. What xmux added goes
+/// without asking; a key line or an ssh config entry xmux did not add goes only when one
+/// second confirmation, covering both, is answered yes.
 #[derive(Debug)]
 pub(crate) struct LogoutRun {
     machine: String,
@@ -74,10 +76,22 @@ pub(crate) struct LogoutRun {
 enum LogoutStep {
     /// The host's key files are being searched.
     Finding,
-    /// The second confirmation is open over the lines found, some of them not xmux's.
-    Asking(Vec<crate::provision::env::HostKeyLine>),
-    /// The chosen lines are being removed. Carries whether lines xmux did not add stay.
-    Removing { kept_unmarked: bool },
+    /// The ssh config entries xmux did not write are being looked for. Carries what the
+    /// key search found.
+    FindingEntries(Result<Vec<crate::provision::env::HostKeyLine>, String>),
+    /// The second confirmation is open over the key lines and entries found, some of
+    /// them not xmux's. `notes` report a key search that found nothing to remove.
+    Asking {
+        keys: Vec<crate::provision::env::HostKeyLine>,
+        entries: Vec<crate::provision::config::RemovedEntry>,
+        notes: Vec<crate::state::notify::Note>,
+    },
+    /// The chosen key lines are being removed. `kept` reports what the answer keeps, and
+    /// `unmarked` says whether the entries xmux did not write go next.
+    Removing {
+        kept: Vec<crate::state::notify::Note>,
+        unmarked: bool,
+    },
     /// The machine is being removed from the ssh config entries naming it. Carries what
     /// the key steps reported.
     RemovingEntries {
@@ -372,8 +386,12 @@ pub(crate) enum Effect {
         machine: String,
         lines: Vec<crate::provision::env::HostKeyLine>,
     },
+    FindSshConfigEntries {
+        machine: String,
+    },
     RemoveSshConfigEntries {
         machine: String,
+        unmarked: bool,
     },
     LogoutMachine {
         machine: String,
@@ -428,9 +446,14 @@ impl std::fmt::Debug for Effect {
                 .field("machine", machine)
                 .field("lines", &lines.len())
                 .finish(),
-            Self::RemoveSshConfigEntries { machine } => f
-                .debug_tuple("RemoveSshConfigEntries")
+            Self::FindSshConfigEntries { machine } => f
+                .debug_tuple("FindSshConfigEntries")
                 .field(machine)
+                .finish(),
+            Self::RemoveSshConfigEntries { machine, unmarked } => f
+                .debug_struct("RemoveSshConfigEntries")
+                .field("machine", machine)
+                .field("unmarked", unmarked)
                 .finish(),
             Self::LogoutMachine { machine, .. } => {
                 f.debug_tuple("LogoutMachine").field(machine).finish()
@@ -515,22 +538,18 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                 cancel_login,
             })
         }
-        Command::RemoveUnmarkedKeys(machine) => {
+        Command::RemoveUnmarked(machine) => {
             let run = model.logout.as_mut().filter(|run| {
-                run.machine == machine && matches!(run.step, LogoutStep::Asking(_))
+                run.machine == machine && matches!(run.step, LogoutStep::Asking { .. })
             })?;
-            let LogoutStep::Asking(found) = std::mem::replace(
-                &mut run.step,
-                LogoutStep::Removing {
-                    kept_unmarked: false,
-                },
-            ) else {
+            let LogoutStep::Asking { keys, notes, .. } =
+                std::mem::replace(&mut run.step, LogoutStep::Finding)
+            else {
                 return None;
             };
-            Some(Effect::RemoveHostKeys {
-                machine,
-                lines: found,
-            })
+            remove_logout_keys(model, keys, notes, Vec::new(), true)
+                .into_iter()
+                .next()
         }
         Command::Attach(selection)
             if model
@@ -639,10 +658,9 @@ fn take_login_of(model: &mut AppModel, machine: &str) -> Vec<crate::link::unlock
     taken
 }
 
-/// Reads what the logout's search of the host's key files found. Lines xmux added go at
-/// once; a line it did not add asks first, because that key may be how the user reaches
-/// the host from outside xmux. A search that failed leaves the key where it is, and the
-/// logout goes on without it.
+/// Reads what the logout's search of the host's key files found, then looks for the ssh
+/// config entries naming the machine that xmux did not write, so one confirmation can ask
+/// about both.
 fn logout_keys_found(
     model: &mut AppModel,
     machine: String,
@@ -655,49 +673,100 @@ fn logout_keys_found(
     else {
         return Vec::new();
     };
-    match result {
-        Err(reason) => remove_logout_stanza(
-            model,
+    run.step = LogoutStep::FindingEntries(result);
+    vec![Effect::FindSshConfigEntries { machine }]
+}
+
+/// Reads which ssh config entries xmux did not write name the machine, and decides with
+/// the key search whether to ask. Lines and entries xmux added go at once; a key line or
+/// an entry it did not add asks first, because the user may reach the host through it
+/// from outside xmux. A key search that failed leaves the key where it is, and an ssh
+/// config that cannot be read is reported by the removal step, which reads it again.
+fn logout_entries_found(
+    model: &mut AppModel,
+    machine: String,
+    result: Result<Vec<crate::provision::config::RemovedEntry>, String>,
+) -> Vec<Effect> {
+    let Some(run) = model
+        .logout
+        .as_mut()
+        .filter(|run| run.machine == machine && matches!(run.step, LogoutStep::FindingEntries(_)))
+    else {
+        return Vec::new();
+    };
+    let LogoutStep::FindingEntries(keys) = std::mem::replace(&mut run.step, LogoutStep::Finding)
+    else {
+        return Vec::new();
+    };
+    let entries = result.unwrap_or_default();
+    let (keys, notes) = match keys {
+        Err(reason) => (
+            Vec::new(),
             vec![crate::state::notify::Note::new(
                 crate::state::notify::Level::Warning,
                 format!("this PC's key was not removed from {machine}: {reason}"),
             )],
         ),
-        Ok(found) if found.is_empty() => remove_logout_stanza(
-            model,
+        Ok(found) if found.is_empty() => (
+            Vec::new(),
             vec![crate::state::notify::Note::new(
                 crate::state::notify::Level::Info,
                 format!("{machine} holds no key of this PC"),
             )],
         ),
-        Ok(found) if found.iter().all(|line| line.marked) => {
-            run.step = LogoutStep::Removing {
-                kept_unmarked: false,
-            };
-            vec![Effect::RemoveHostKeys {
-                machine,
-                lines: found,
-            }]
-        }
-        Ok(found) => {
-            let unmarked: Vec<&str> = found
-                .iter()
-                .filter(|line| !line.marked)
-                .map(|line| line.file.label())
-                .collect();
-            let marked = found.iter().filter(|line| line.marked).count();
-            model
-                .switcher
-                .open_logout_keys(&machine, &unmarked, marked, &mut model.state);
-            run.step = LogoutStep::Asking(found);
-            Vec::new()
-        }
+        Ok(found) => (found, Vec::new()),
+    };
+    if entries.is_empty() && keys.iter().all(|line| line.marked) {
+        return remove_logout_keys(model, keys, notes, Vec::new(), false);
     }
+    let unmarked: Vec<&str> = keys
+        .iter()
+        .filter(|line| !line.marked)
+        .map(|line| line.file.label())
+        .collect();
+    let marked = keys.iter().filter(|line| line.marked).count();
+    model
+        .switcher
+        .open_logout_keys(&machine, &unmarked, marked, &entries, &mut model.state);
+    if let Some(run) = model.logout.as_mut() {
+        run.step = LogoutStep::Asking {
+            keys,
+            entries,
+            notes,
+        };
+    }
+    Vec::new()
 }
 
-/// Settles a second confirmation that closed without confirming: the lines xmux did not
-/// add stay, and only the ones it added go. Read on every update, so a confirmation that
-/// closed any way at all, an Esc or another screen taking its place, answers the logout.
+/// Removes `keys` and then the ssh config entries, or goes straight to the entries when
+/// no key line goes. `notes` report the key search, `kept` what the answer keeps, and
+/// `unmarked` whether the entries xmux did not write go too.
+fn remove_logout_keys(
+    model: &mut AppModel,
+    keys: Vec<crate::provision::env::HostKeyLine>,
+    notes: Vec<crate::state::notify::Note>,
+    kept: Vec<crate::state::notify::Note>,
+    unmarked: bool,
+) -> Vec<Effect> {
+    let Some(run) = model.logout.as_mut() else {
+        return Vec::new();
+    };
+    if keys.is_empty() {
+        let mut notes = notes;
+        notes.extend(kept);
+        return remove_logout_stanza(model, notes, unmarked);
+    }
+    run.step = LogoutStep::Removing { kept, unmarked };
+    vec![Effect::RemoveHostKeys {
+        machine: run.machine.clone(),
+        lines: keys,
+    }]
+}
+
+/// Settles a second confirmation that closed without confirming: the key lines and the
+/// ssh config entries xmux did not add stay, and only the ones it added go. Read on every
+/// update, so a confirmation that closed any way at all, an Esc or another screen taking
+/// its place, answers the logout.
 fn settle_logout_choice(model: &mut AppModel) -> Vec<Effect> {
     let asking = matches!(
         model.state.modal.as_ref(),
@@ -707,54 +776,57 @@ fn settle_logout_choice(model: &mut AppModel) -> Vec<Effect> {
     let Some(run) = model
         .logout
         .as_mut()
-        .filter(|run| !asking && matches!(run.step, LogoutStep::Asking(_)))
+        .filter(|run| !asking && matches!(run.step, LogoutStep::Asking { .. }))
     else {
         return Vec::new();
     };
-    let LogoutStep::Asking(found) = std::mem::replace(
-        &mut run.step,
-        LogoutStep::Removing {
-            kept_unmarked: true,
-        },
-    ) else {
+    let LogoutStep::Asking {
+        keys,
+        entries,
+        notes,
+    } = std::mem::replace(&mut run.step, LogoutStep::Finding)
+    else {
         return Vec::new();
     };
     let machine = run.machine.clone();
-    let marked: Vec<_> = found.into_iter().filter(|line| line.marked).collect();
-    if marked.is_empty() {
-        let notes = kept_unmarked_notes(&machine);
-        return remove_logout_stanza(model, notes);
+    let mut kept = Vec::new();
+    if keys.iter().any(|line| !line.marked) {
+        kept.push(crate::state::notify::Note::new(
+            crate::state::notify::Level::Info,
+            format!("this PC's key that xmux did not add stays on {machine}"),
+        ));
     }
-    vec![Effect::RemoveHostKeys {
-        machine,
-        lines: marked,
-    }]
+    if !entries.is_empty() {
+        let headers: Vec<&str> = entries.iter().map(|entry| entry.header.as_str()).collect();
+        kept.push(crate::state::notify::Note::new(
+            crate::state::notify::Level::Info,
+            format!(
+                "ssh config entries xmux did not add stay: {}",
+                headers.join("; ")
+            ),
+        ));
+    }
+    let marked: Vec<_> = keys.into_iter().filter(|line| line.marked).collect();
+    remove_logout_keys(model, marked, notes, kept, false)
 }
 
-fn kept_unmarked_notes(machine: &str) -> Vec<crate::state::notify::Note> {
-    vec![crate::state::notify::Note::new(
-        crate::state::notify::Level::Info,
-        format!("this PC's key that xmux did not add stays on {machine}"),
-    )]
-}
-
-/// Reads what removing the chosen key lines did, then finishes the logout either way.
+/// Reads what removing the chosen key lines did, then goes on to the ssh config either
+/// way.
 fn logout_keys_removed(
     model: &mut AppModel,
     machine: String,
     result: Result<(), String>,
 ) -> Vec<Effect> {
-    let Some(kept_unmarked) = model
+    let Some(LogoutStep::Removing { kept, unmarked }) = model
         .logout
-        .as_ref()
+        .as_mut()
         .filter(|run| run.machine == machine)
-        .and_then(|run| match run.step {
-            LogoutStep::Removing { kept_unmarked } => Some(kept_unmarked),
-            _ => None,
-        })
+        .map(|run| &mut run.step)
     else {
         return Vec::new();
     };
+    let unmarked = *unmarked;
+    let kept = std::mem::take(kept);
     let mut notes = vec![match result {
         Ok(()) => crate::state::notify::Note::new(
             crate::state::notify::Level::Success,
@@ -765,18 +837,18 @@ fn logout_keys_removed(
             format!("this PC's key remains on {machine}: {reason}"),
         ),
     }];
-    if kept_unmarked {
-        notes.extend(kept_unmarked_notes(&machine));
-    }
-    remove_logout_stanza(model, notes)
+    notes.extend(kept);
+    remove_logout_stanza(model, notes, unmarked)
 }
 
 /// Goes on to the ssh config step once the key steps settled. The entries go after the
-/// key, because the key steps reach the host through the values they hold. `notes` report what
-/// happened to the key.
+/// key, because the key steps reach the host through the values they hold. `notes`
+/// report what happened to the key, and `unmarked` says whether the entries xmux did not
+/// write go too.
 fn remove_logout_stanza(
     model: &mut AppModel,
     notes: Vec<crate::state::notify::Note>,
+    unmarked: bool,
 ) -> Vec<Effect> {
     let Some(run) = model.logout.as_mut() else {
         return Vec::new();
@@ -784,6 +856,7 @@ fn remove_logout_stanza(
     run.step = LogoutStep::RemovingEntries { notes };
     vec![Effect::RemoveSshConfigEntries {
         machine: run.machine.clone(),
+        unmarked,
     }]
 }
 
@@ -808,12 +881,9 @@ fn logout_stanza_removed(
         Ok(removed) => {
             let entries: Vec<String> = removed
                 .iter()
-                .map(|entry| {
-                    if entry.whole {
-                        format!("removed {}", entry.header)
-                    } else {
-                        format!("removed {machine} from {}", entry.header)
-                    }
+                .map(|entry| match entry.after {
+                    None => format!("removed {}", entry.header),
+                    Some(_) => format!("removed {machine} from {}", entry.header),
                 })
                 .collect();
             notes.push(crate::state::notify::Note::new(
@@ -1533,6 +1603,13 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         } => {
             model.state.logged_in = logged_in;
             logout_keys_removed(model, machine, result)
+        }
+        Msg::OpResult {
+            result: crate::model::OpResult::SshConfigEntriesFound { machine, result },
+            logged_in,
+        } => {
+            model.state.logged_in = logged_in;
+            logout_entries_found(model, machine, result)
         }
         Msg::OpResult {
             result: crate::model::OpResult::SshConfigEntriesRemoved { machine, result },
@@ -3139,6 +3216,59 @@ mod tests {
         }
     }
 
+    fn entries_found(result: Result<Vec<crate::provision::config::RemovedEntry>, String>) -> Msg {
+        Msg::OpResult {
+            result: crate::ui::switcher::OpResult::SshConfigEntriesFound {
+                machine: "box".into(),
+                result,
+            },
+            logged_in: HashSet::new(),
+        }
+    }
+
+    /// The key search answering `keys`, then the ssh config search answering `entries`:
+    /// both come before anything is removed or asked.
+    fn find_with(
+        m: &mut AppModel,
+        keys: Msg,
+        entries: Vec<crate::provision::config::RemovedEntry>,
+    ) -> Vec<Effect> {
+        let effects = update(m, keys);
+        assert!(
+            matches!(effects.as_slice(), [Effect::FindSshConfigEntries { machine }] if machine == "box"),
+            "{effects:?}"
+        );
+        assert!(m.state.modal.is_none());
+        update(m, entries_found(Ok(entries)))
+    }
+
+    /// The key search answering `keys` on a machine no ssh config entry xmux did not
+    /// write names.
+    fn find(m: &mut AppModel, keys: Msg) -> Vec<Effect> {
+        find_with(m, keys, Vec::new())
+    }
+
+    fn user_entry() -> crate::provision::config::RemovedEntry {
+        crate::provision::config::RemovedEntry {
+            header: "Host gpu-01 box".into(),
+            after: Some("Host gpu-01".into()),
+        }
+    }
+
+    fn unmarked_of(effects: &[Effect]) -> bool {
+        let [Effect::RemoveSshConfigEntries { unmarked, .. }] = effects else {
+            panic!("{effects:?}");
+        };
+        *unmarked
+    }
+
+    fn type_remove(m: &mut AppModel) -> Vec<Effect> {
+        for c in "remove".chars() {
+            assert!(press(m, KeyCode::Char(c)).is_empty());
+        }
+        press(m, KeyCode::Enter)
+    }
+
     fn stanza_removed(result: Result<Vec<crate::provision::config::RemovedEntry>, String>) -> Msg {
         Msg::OpResult {
             result: crate::ui::switcher::OpResult::SshConfigEntriesRemoved {
@@ -3157,7 +3287,7 @@ mod tests {
         result: Result<Vec<crate::provision::config::RemovedEntry>, String>,
     ) -> Vec<Effect> {
         assert!(
-            matches!(effects.as_slice(), [Effect::RemoveSshConfigEntries { machine }] if machine == "box"),
+            matches!(effects.as_slice(), [Effect::RemoveSshConfigEntries { machine, .. }] if machine == "box"),
             "{effects:?}"
         );
         assert!(m.logout.is_some());
@@ -3223,7 +3353,7 @@ mod tests {
         start_logout(&mut m);
         assert_still_logged_in(&m);
         let found = vec![key_line("ssh-ed25519 AAAAkey me xmux-registered", true)];
-        let effects = update(&mut m, keys_found(Ok(found.clone())));
+        let effects = find(&mut m, keys_found(Ok(found.clone())));
         assert!(
             matches!(effects.as_slice(), [Effect::RemoveHostKeys { machine, lines }] if machine == "box" && *lines == found),
             "{effects:?}"
@@ -3253,7 +3383,7 @@ mod tests {
     fn a_host_holding_no_key_of_this_pc_logs_out_at_once() {
         let mut m = logged_in_box();
         start_logout(&mut m);
-        let effects = update(&mut m, keys_found(Ok(Vec::new())));
+        let effects = find(&mut m, keys_found(Ok(Vec::new())));
         let effects = no_stanza(&mut m, effects);
         assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
         assert_logged_out(&m);
@@ -3269,7 +3399,7 @@ mod tests {
             key_line("ssh-ed25519 AAAAkey me xmux-registered", true),
             key_line("no-pty ssh-ed25519 AAAAkey me", false),
         ];
-        let effects = update(&mut m, keys_found(Ok(found.clone())));
+        let effects = find(&mut m, keys_found(Ok(found.clone())));
         assert!(effects.is_empty(), "{effects:?}");
         let Some(crate::state::Modal::Input(input)) = m.state.modal.as_ref() else {
             panic!("the second confirmation opens");
@@ -3311,7 +3441,7 @@ mod tests {
         start_logout(&mut m);
         let marked = key_line("ssh-ed25519 AAAAkey me xmux-registered", true);
         let found = vec![marked.clone(), key_line("ssh-ed25519 AAAAkey me", false)];
-        update(&mut m, keys_found(Ok(found)));
+        find(&mut m, keys_found(Ok(found)));
         let effects = press(&mut m, KeyCode::Esc);
         assert!(
             matches!(effects.as_slice(), [Effect::RemoveHostKeys { lines, .. }] if *lines == vec![marked.clone()]),
@@ -3343,7 +3473,7 @@ mod tests {
     fn a_second_confirmation_another_screen_replaced_keeps_the_key_and_logs_out() {
         let mut m = logged_in_box();
         start_logout(&mut m);
-        update(
+        find(
             &mut m,
             keys_found(Ok(vec![key_line("ssh-ed25519 AAAAkey me", false)])),
         );
@@ -3367,7 +3497,7 @@ mod tests {
     fn an_unreachable_host_still_logs_out_and_reports_the_key_was_not_removed() {
         let mut m = logged_in_box();
         start_logout(&mut m);
-        let effects = update(
+        let effects = find(
             &mut m,
             keys_found(Err(
                 "ssh: connect to host box port 22: Connection timed out".into(),
@@ -3390,7 +3520,7 @@ mod tests {
     fn a_failed_removal_still_logs_out_and_reports_the_key_remains() {
         let mut m = logged_in_box();
         start_logout(&mut m);
-        update(
+        find(
             &mut m,
             keys_found(Ok(vec![key_line(
                 "ssh-ed25519 AAAAkey xmux-registered",
@@ -3416,7 +3546,7 @@ mod tests {
     fn logout_removes_the_ssh_config_entries_after_the_key() {
         let mut m = logged_in_box();
         start_logout(&mut m);
-        update(
+        find(
             &mut m,
             keys_found(Ok(vec![key_line(
                 "ssh-ed25519 AAAAkey xmux-registered",
@@ -3424,18 +3554,16 @@ mod tests {
             )])),
         );
         let effects = update(&mut m, keys_removed(Ok(())));
+        assert!(!unmarked_of(&effects), "only xmux's stanza goes unasked");
         let effects = stanza_step(
             &mut m,
             effects,
             Ok(vec![
                 crate::provision::config::RemovedEntry {
                     header: "Host box".into(),
-                    whole: true,
+                    after: None,
                 },
-                crate::provision::config::RemovedEntry {
-                    header: "Host gpu-01 box".into(),
-                    whole: false,
-                },
+                user_entry(),
             ]),
         );
         assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
@@ -3455,11 +3583,137 @@ mod tests {
         );
     }
 
+    /// An ssh config entry xmux did not write may be how the user reaches the host
+    /// outside xmux, so it changes only after the second confirmation says so.
+    #[test]
+    fn an_ssh_config_entry_xmux_did_not_write_asks_and_confirming_removes_it() {
+        let mut m = logged_in_box();
+        start_logout(&mut m);
+        let effects = find_with(&mut m, keys_found(Ok(Vec::new())), vec![user_entry()]);
+        assert!(effects.is_empty(), "{effects:?}");
+        let Some(crate::state::Modal::Input(input)) = m.state.modal.as_ref() else {
+            panic!("the second confirmation opens");
+        };
+        assert!(input.mode == crate::state::InputMode::LogoutKeys);
+        assert_eq!(
+            input.facts[0],
+            (
+                "ssh config",
+                "Host gpu-01 box becomes Host gpu-01".to_string()
+            )
+        );
+        assert_still_logged_in(&m);
+        let effects = type_remove(&mut m);
+        assert!(unmarked_of(&effects), "{effects:?}");
+        let effects = stanza_step(&mut m, effects, Ok(vec![user_entry()]));
+        assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
+        assert_logged_out(&m);
+        assert_eq!(
+            logout_notes(&m),
+            vec![
+                (
+                    crate::state::notify::Level::Info,
+                    "box holds no key of this PC".to_string()
+                ),
+                (
+                    crate::state::notify::Level::Success,
+                    "ssh config: removed box from Host gpu-01 box".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn declining_keeps_the_ssh_config_entries_xmux_did_not_write() {
+        let mut m = logged_in_box();
+        start_logout(&mut m);
+        find_with(&mut m, keys_found(Ok(Vec::new())), vec![user_entry()]);
+        let effects = press(&mut m, KeyCode::Esc);
+        assert!(!unmarked_of(&effects), "{effects:?}");
+        let effects = no_stanza(&mut m, effects);
+        assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
+        assert_logged_out(&m);
+        assert_eq!(
+            logout_notes(&m),
+            vec![
+                (
+                    crate::state::notify::Level::Info,
+                    "box holds no key of this PC".to_string()
+                ),
+                (
+                    crate::state::notify::Level::Info,
+                    "ssh config entries xmux did not add stay: Host gpu-01 box".to_string()
+                ),
+            ]
+        );
+    }
+
+    /// A key line and an ssh config entry xmux did not add share one confirmation, and
+    /// its answer decides both.
+    #[test]
+    fn keys_and_entries_xmux_did_not_add_share_one_confirmation() {
+        let marked = key_line("ssh-ed25519 AAAAkey me xmux-registered", true);
+        let found = vec![marked.clone(), key_line("ssh-ed25519 AAAAkey me", false)];
+        for confirm in [true, false] {
+            let mut m = logged_in_box();
+            start_logout(&mut m);
+            let effects = find_with(&mut m, keys_found(Ok(found.clone())), vec![user_entry()]);
+            assert!(effects.is_empty(), "{effects:?}");
+            let Some(crate::state::Modal::Input(input)) = m.state.modal.as_ref() else {
+                panic!("one confirmation opens");
+            };
+            let labels: Vec<&str> = input.facts.iter().map(|(label, _)| *label).collect();
+            assert_eq!(
+                labels,
+                vec!["key", "file", "ssh config", "remove", "keep", "logout"]
+            );
+            let effects = if confirm {
+                type_remove(&mut m)
+            } else {
+                press(&mut m, KeyCode::Esc)
+            };
+            let want = if confirm {
+                found.clone()
+            } else {
+                vec![marked.clone()]
+            };
+            assert!(
+                matches!(effects.as_slice(), [Effect::RemoveHostKeys { lines, .. }] if *lines == want),
+                "{effects:?}"
+            );
+            assert!(m.state.modal.is_none(), "no second question follows");
+            let effects = update(&mut m, keys_removed(Ok(())));
+            assert_eq!(unmarked_of(&effects), confirm);
+            let removed = if confirm {
+                vec![user_entry()]
+            } else {
+                Vec::new()
+            };
+            let effects = stanza_step(&mut m, effects, Ok(removed));
+            assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
+            assert_logged_out(&m);
+            let notes: Vec<String> = logout_notes(&m).into_iter().map(|(_, text)| text).collect();
+            let want: Vec<&str> = if confirm {
+                vec![
+                    "this PC's key removed from box",
+                    "ssh config: removed box from Host gpu-01 box",
+                ]
+            } else {
+                vec![
+                    "this PC's key removed from box",
+                    "this PC's key that xmux did not add stays on box",
+                    "ssh config entries xmux did not add stay: Host gpu-01 box",
+                ]
+            };
+            assert_eq!(notes, want);
+        }
+    }
+
     #[test]
     fn an_ssh_config_that_cannot_be_rewritten_still_logs_out_and_says_why() {
         let mut m = logged_in_box();
         start_logout(&mut m);
-        let effects = update(&mut m, keys_found(Ok(Vec::new())));
+        let effects = find(&mut m, keys_found(Ok(Vec::new())));
         let effects = stanza_step(&mut m, effects, Err("Access is denied.".into()));
         assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
         assert_logged_out(&m);
@@ -3508,7 +3762,7 @@ mod tests {
             login_result("box", attempt, crate::link::unlock::UnlockOutcome::Ok),
         );
         assert!(effects.is_empty());
-        let effects = update(&mut m, keys_found(Ok(Vec::new())));
+        let effects = find(&mut m, keys_found(Ok(Vec::new())));
         no_stanza(&mut m, effects);
         assert!(m.state.invalid_auth.contains("box"));
         assert!(!m.state.auth_methods.contains_key("box"));
@@ -3578,7 +3832,7 @@ mod tests {
             crate::ui::ops::RegistrationOutcome::Registered,
         );
         start_logout(&mut m);
-        let effects = update(&mut m, keys_found(Ok(Vec::new())));
+        let effects = find(&mut m, keys_found(Ok(Vec::new())));
         no_stanza(&mut m, effects);
         assert!(m.state.registration_reports.is_empty());
     }
@@ -3599,7 +3853,7 @@ mod tests {
         assert!(effects.is_empty(), "{effects:?}");
         assert_eq!(m.state.chrome.flash, "a logout of box is running");
         assert!(m.running_logins.is_empty());
-        let effects = update(&mut m, keys_found(Ok(Vec::new())));
+        let effects = find(&mut m, keys_found(Ok(Vec::new())));
         no_stanza(&mut m, effects);
         let effects = update(
             &mut m,
@@ -4252,7 +4506,7 @@ mod tests {
                 ),
                 (
                     "ssh config",
-                    "removes box from every Host entry naming it".into(),
+                    "removes the entry xmux saved; asks first for others naming it".into(),
                 ),
                 ("connections", "closes box connections".into()),
             ];

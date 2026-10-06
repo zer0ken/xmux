@@ -1005,10 +1005,19 @@ pub(crate) fn new_session_size(host: &str) -> (u16, u16) {
 
 /// What tells the two logout confirms apart: the title, the word typed in the field, and
 /// the keys on the bottom border. [`InputMode::Logout`] asks to log out at all;
-/// [`InputMode::LogoutKeys`] asks whether a key line xmux did not add goes too.
+/// [`InputMode::LogoutKeys`] asks whether a key line or an ssh config entry xmux did not
+/// add goes too, and its title names which of the two it lists.
 fn logout_grammar(input: &Input) -> (&'static str, &'static str, &'static str, &'static [Hint]) {
     match input.mode {
-        InputMode::LogoutKeys => ("remove key", "type remove", "remove", LOGOUT_KEYS_HINTS),
+        InputMode::LogoutKeys => {
+            let lists = |label: &str| input.facts.iter().any(|(l, _)| *l == label);
+            let title = match (lists("key"), lists("ssh config")) {
+                (true, true) => "remove both",
+                (false, true) => "remove entries",
+                _ => "remove key",
+            };
+            (title, "type remove", "remove", LOGOUT_KEYS_HINTS)
+        }
         _ => ("log out", "type logout", "logout", LOGOUT_HINTS),
     }
 }
@@ -1434,7 +1443,7 @@ mod tests {
             ),
             (
                 "ssh config",
-                "removes gpu-01 from every Host entry naming it".into(),
+                "removes the entry xmux saved; asks first for others naming it".into(),
             ),
             ("connections", "closes gpu-01 connections".into()),
         ];
@@ -1449,7 +1458,7 @@ mod tests {
             "SSH login    not observed",
             "password     held password is cleared",
             "key          removed from gpu-01; asks first if xmux did not add it",
-            "ssh config   removes gpu-01 from every Host entry naming it",
+            "ssh config   removes the entry xmux saved; asks first for others naming it",
             "connections  closes gpu-01 connections",
             "type logout  logo",
         ] {
