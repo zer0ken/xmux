@@ -3065,7 +3065,7 @@ mod tests {
             local_muxes: vec!["tmux".into()],
             ..Default::default()
         });
-        let ops = ops_over(&env, vec![test_host("local", false, "2:1:editor\n")]);
+        let ops = ops_over(&env, vec![test_host("local", false, "2:1::editor\n")]);
         assert_eq!(ops.hosts(), vec!["local".to_string()]);
         let sessions = ops.list_sessions("local").await.unwrap();
         assert_eq!(sessions.len(), 1);
@@ -3148,6 +3148,7 @@ mod tests {
             host: host.into(),
             name: name.into(),
             mux: "tmux".into(),
+            id: String::new(),
             windows,
             attached,
         }

@@ -361,6 +361,7 @@ fn sess(host: &str, name: &str, windows: i64, attached: bool) -> Session {
         host: host.into(),
         name: name.into(),
         mux: String::new(),
+        id: String::new(),
         windows,
         attached,
     }
@@ -4173,6 +4174,7 @@ fn sess_mux(host: &str, name: &str, mux: &str) -> Session {
         host: host.into(),
         name: name.into(),
         mux: mux.into(),
+        id: String::new(),
         windows: 1,
         attached: false,
     }
@@ -7080,16 +7082,21 @@ async fn input_esc_cancels_without_acting() {
     );
 }
 
-#[test]
-fn a_renamed_session_keeps_the_selection_and_the_displayed_record() {
-    // The selected, displayed session is renamed under the user: the card they are on
-    // is still the card they are on, under its new name, and the selection and the
-    // displayed record follow it, so nothing reads the rename as a move elsewhere.
+/// `name` on `jup`, listed under the mux identity `id`.
+fn sess_id(name: &str, id: &str) -> Session {
+    Session {
+        id: id.into(),
+        ..sess("jup", name, 1, false)
+    }
+}
+
+/// A switcher whose selected, displayed card is `jup/api`, listed beside `jup/zeta`.
+fn on_api(api: Session, zeta: Session) -> (crate::state::State, Switcher) {
     let scan = Scan {
         groups: vec![Group {
             host: "jup".into(),
             err: None,
-            sessions: vec![sess("jup", "api", 1, false), sess("jup", "zeta", 1, false)],
+            sessions: vec![api, zeta],
         }],
     };
     let mut state = crate::state::State::from_scan(scan);
@@ -7102,20 +7109,105 @@ fn a_renamed_session_keeps_the_selection_and_the_displayed_record() {
         session: "api".into(),
     };
     state.displayed = state.selection.clone();
+    // Stable numbering, after the full scan: each card keeps its number.
+    sw.set_renumbering(false, &mut state);
+    sw.hold_numbers(false, &state);
+    (state, sw)
+}
+
+#[test]
+fn a_renamed_session_keeps_the_selection_and_the_displayed_record() {
+    // The selected, displayed session is renamed under the user: the mux lists it under
+    // its own identity with a new name. The card they are on is still the card they are
+    // on, under its new name, and the selection and the displayed record follow it, so
+    // nothing reads the rename as a move elsewhere.
+    let (mut state, mut sw) = on_api(sess_id("api", "7$0"), sess_id("zeta", "7$1"));
+    let number = sw
+        .numbers
+        .get(&CardId::Session("jup".into(), "api".into()))
+        .copied();
+    assert!(number.is_some(), "the card has a number");
 
     let renamed = sw.apply_host_result(
         "jup".into(),
-        vec![sess("jup", "web", 1, false), sess("jup", "zeta", 1, false)],
+        vec![sess_id("web", "7$0"), sess_id("zeta", "7$1")],
         None,
         &mut state,
     );
-    assert_eq!(renamed, Some(("api".into(), "web".into())));
+    assert_eq!(renamed, vec![("api".into(), "web".into())]);
     assert!(
         matches!(sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "web"),
         "the selection stays on the renamed card"
     );
     assert_eq!(state.selection.session, "web");
     assert_eq!(state.displayed.session, "web");
+    assert_eq!(
+        sw.numbers
+            .get(&CardId::Session("jup".into(), "web".into()))
+            .copied(),
+        number,
+        "the renamed card keeps its number"
+    );
+}
+
+/// The selected, displayed session is killed and an unrelated one is created between
+/// two listings. By name alone that is a rename; the identities say it is not, so
+/// neither the selection, the displayed record, nor the card number moves to the new
+/// session.
+#[test]
+fn a_kill_plus_a_create_does_not_move_the_selection_to_the_new_session() {
+    let (mut state, mut sw) = on_api(sess_id("api", "7$0"), sess_id("zeta", "7$1"));
+    let number = sw
+        .numbers
+        .get(&CardId::Session("jup".into(), "api".into()))
+        .copied();
+
+    let renamed = sw.apply_host_result(
+        "jup".into(),
+        vec![sess_id("web", "7$2"), sess_id("zeta", "7$1")],
+        None,
+        &mut state,
+    );
+    assert!(renamed.is_empty(), "no rename: {renamed:?}");
+    assert!(
+        !matches!(sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "web"),
+        "the selection does not land on the new session"
+    );
+    assert!(
+        matches!(sw.selected_node(), Some(Node::Host(host)) if host == "jup"),
+        "the lost session's selection moves up to its host"
+    );
+    assert_ne!(state.selection.session, "web");
+    assert_ne!(state.displayed.session, "web");
+    let web = sw
+        .numbers
+        .get(&CardId::Session("jup".into(), "web".into()))
+        .copied();
+    assert!(
+        web.is_none() || web != number,
+        "the new card does not take the lost one's number"
+    );
+}
+
+/// A mux whose listing carries no identity cannot tell a rename from a kill plus a
+/// create, so a name gone and a name new is never followed.
+#[test]
+fn a_listing_without_identities_never_moves_the_selection_by_shape() {
+    let (mut state, mut sw) = on_api(sess_id("api", ""), sess_id("zeta", ""));
+
+    let renamed = sw.apply_host_result(
+        "jup".into(),
+        vec![sess_id("web", ""), sess_id("zeta", "")],
+        None,
+        &mut state,
+    );
+    assert!(renamed.is_empty(), "no rename: {renamed:?}");
+    assert!(
+        matches!(sw.selected_node(), Some(Node::Host(host)) if host == "jup"),
+        "the lost session's selection moves up to its host"
+    );
+    assert_ne!(state.selection.session, "web");
+    assert_ne!(state.displayed.session, "web");
 }
 
 #[test]
@@ -7252,6 +7344,7 @@ fn select_address_moves_cursor_to_named_session() {
                     host: "jup".into(),
                     name: "api".into(),
                     mux: String::new(),
+                    id: String::new(),
                     windows: 1,
                     attached: false,
                 },
@@ -7259,6 +7352,7 @@ fn select_address_moves_cursor_to_named_session() {
                     host: "jup".into(),
                     name: "db".into(),
                     mux: String::new(),
+                    id: String::new(),
                     windows: 1,
                     attached: false,
                 },

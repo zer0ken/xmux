@@ -139,6 +139,8 @@ fn parse_sessions(host: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, Run
             host: host.to_string(),
             name: session.name,
             mux: mux.to_string(),
+            // The listing names a session only; herdr has no rename to tell apart.
+            id: String::new(),
             windows: 0,
             attached: false,
         })

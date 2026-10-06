@@ -38,6 +38,10 @@ against, naming no source file, function, or test.
 - **FR-A11** - A mux inside a WSL distribution is a host on its own machine
   `wsl.<distribution>`, offered by the `[discovery] wsl` provider or a `[[wsl]]` entry,
   and behaves as FR-A7 to FR-A10 describe.
+- **FR-A12** - A re-enumeration reads a session as renamed only when the mux lists the
+  same session identity under a new name, and then the card, its number, the selection,
+  and the display follow the new name; a session killed and another created between two
+  listings are a lost session and a new one.
 
 ## B. The switcher: "see the list, decide whether & where to move"
 
@@ -290,3 +294,7 @@ The seamless cross-host switch is bought with these costs, accepted by design:
 - A zellij client moved to another session from inside itself is followed only on
   Windows locally and on a Linux machine with `ss` reached locally, through WSL, or over a
   shared ssh connection; elsewhere the nav stays on the card it was on.
+- A session listed without an identity, which is every zellij session and every local
+  psmux session its own server does not answer for, is not followed through a rename made
+  inside its mux: the rename reads as a lost session and a new one, and the selection
+  moves up to the host.

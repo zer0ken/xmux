@@ -380,6 +380,7 @@ pub(crate) mod tests {
             host: host.into(),
             name: name.into(),
             mux: String::new(),
+            id: String::new(),
             windows: 1,
             attached: false,
         }

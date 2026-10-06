@@ -9,9 +9,15 @@ use crate::session::Session;
 /// control mode rewrites a TAB in a format reply to `_`, while a `:` survives; tmux
 /// itself replaces `:` and `.` in a session name with `_`, so a tmux name never
 /// contains it. The free-form session name is LAST and [`parse_sessions`] splits at
-/// most three times, so a `:` inside a name from another mux cannot shift the
-/// fixed numeric columns.
-pub const SESSION_FORMAT: &str = "#{session_windows}:#{session_attached}:#{session_name}";
+/// most four times, so a `:` inside a name from another mux cannot shift the
+/// fixed columns.
+///
+/// The third column is the session's identity: the server pid joined to the session id
+/// (`4711$3`). A session id is unique only within one server run, and a restarted server
+/// counts from `$0` again, so the pid keeps a session of a new server from taking the
+/// identity of one the old server had.
+pub const SESSION_FORMAT: &str =
+    "#{session_windows}:#{session_attached}:#{pid}#{session_id}:#{session_name}";
 
 /// Whether `key` is a mux session variable that a child spawned by xmux must not
 /// inherit (it would mis-target the server or be refused as nesting). This is the
@@ -106,13 +112,17 @@ fn split_lines(out: &str) -> Vec<&str> {
 /// Parses `list-sessions` output ([`SESSION_FORMAT`]) into sessions tagged with
 /// `host` and the enumerating mux's `mux` kind. Malformed lines (short,
 /// non-numeric numeric columns, or empty name) are skipped so banners and garbage
-/// cannot poison the list. The name is the whole remainder after the second `:`,
+/// cannot poison the list. The name is the whole remainder after the third `:`,
 /// so any character inside it survives. Order is preserved.
+///
+/// An identity column that is not a pid and a session id (a mux that knows only one of
+/// the two prints the other empty) leaves the session without an identity rather than
+/// with one every session of the server shares.
 pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in split_lines(out) {
-        let fields: Vec<&str> = ln.splitn(3, ':').collect();
-        if fields.len() < 3 {
+        let fields: Vec<&str> = ln.splitn(4, ':').collect();
+        if fields.len() < 4 {
             continue;
         }
         let Ok(windows) = fields[0].parse::<i64>() else {
@@ -121,7 +131,7 @@ pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
         let Ok(attached_n) = fields[1].parse::<i64>() else {
             continue;
         };
-        let name = fields[2];
+        let name = fields[3];
         if name.is_empty() {
             continue;
         }
@@ -129,11 +139,21 @@ pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
             host: host.to_string(),
             name: name.to_string(),
             mux: mux.to_string(),
+            id: session_identity(fields[2]),
             windows,
             attached: attached_n > 0,
         });
     }
     sessions
+}
+
+/// The identity column when it is `<pid>$<session id>`, else empty.
+fn session_identity(field: &str) -> String {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    match field.split_once('$') {
+        Some((pid, id)) if digits(pid) && digits(id) => field.to_string(),
+        _ => String::new(),
+    }
 }
 
 #[cfg(test)]
@@ -148,7 +168,7 @@ mod tests {
     fn session_format_template() {
         assert_eq!(
             SESSION_FORMAT,
-            "#{session_windows}:#{session_attached}:#{session_name}"
+            "#{session_windows}:#{session_attached}:#{pid}#{session_id}:#{session_name}"
         );
     }
 
@@ -274,7 +294,7 @@ mod tests {
 
     #[test]
     fn parse_sessions_basic() {
-        let out = "3:1:main\n2:0:other\n";
+        let out = "3:1:4711$0:main\n2:0:4711$1:other\n";
         let got = parse_sessions("local", "tmux", out);
         assert_eq!(
             got,
@@ -283,6 +303,7 @@ mod tests {
                     host: "local".into(),
                     name: "main".into(),
                     mux: "tmux".into(),
+                    id: "4711$0".into(),
                     windows: 3,
                     attached: true,
                 },
@@ -290,6 +311,7 @@ mod tests {
                     host: "local".into(),
                     name: "other".into(),
                     mux: "tmux".into(),
+                    id: "4711$1".into(),
                     windows: 2,
                     attached: false,
                 },
@@ -299,7 +321,7 @@ mod tests {
 
     #[test]
     fn parse_sessions_crlf() {
-        let out = "1:1:a\r\n1:0:b\r\n";
+        let out = "1:1::a\r\n1:0::b\r\n";
         let got = parse_sessions("local", "tmux", out);
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].name, "a");
@@ -308,13 +330,14 @@ mod tests {
 
     #[test]
     fn parse_sessions_name_with_tab_slash_and_colon() {
-        let out = "4:1:proj/a\tb:c\n";
+        let out = "4:1::proj/a\tb:c\n";
         let got = parse_sessions("ssh-host", "tmux", out);
         assert_eq!(
             got,
             vec![Session {
                 host: "ssh-host".into(),
                 mux: "tmux".into(),
+                id: String::new(),
                 name: "proj/a\tb:c".into(),
                 windows: 4,
                 attached: true,
@@ -327,10 +350,11 @@ mod tests {
         let out = concat!(
             "some random banner text\n",
             "\n",
-            "x:1:badwin\n",
-            "1:nope:badattach\n",
-            "1:1:\n",
-            "2:1:good\n",
+            "x:1::badwin\n",
+            "1:nope::badattach\n",
+            "1:1::\n",
+            "1:1:name-without-identity-column\n",
+            "2:1::good\n",
         );
         let got = parse_sessions("local", "tmux", out);
         assert_eq!(
@@ -339,6 +363,7 @@ mod tests {
                 host: "local".into(),
                 name: "good".into(),
                 mux: "tmux".into(),
+                id: String::new(),
                 windows: 2,
                 attached: true,
             }]
@@ -352,7 +377,7 @@ mod tests {
 
     #[test]
     fn parse_sessions_order_preserved() {
-        let out = "1:0:z\n1:0:a\n1:0:m\n";
+        let out = "1:0::z\n1:0::a\n1:0::m\n";
         let got = parse_sessions("local", "tmux", out);
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["z", "a", "m"]);
@@ -363,13 +388,14 @@ mod tests {
     /// arrives as sent.
     #[test]
     fn parse_sessions_reads_the_tmux_3_3a_control_mode_reply() {
-        let got = parse_sessions("host", "tmux", "1:2:e2e-session\n");
+        let got = parse_sessions("host", "tmux", "1:2::e2e-session\n");
         assert_eq!(
             got,
             vec![Session {
                 host: "host".into(),
                 name: "e2e-session".into(),
                 mux: "tmux".into(),
+                id: String::new(),
                 windows: 1,
                 attached: true,
             }]
@@ -378,11 +404,25 @@ mod tests {
 
     #[test]
     fn parse_sessions_name_with_underscores_and_spaces_is_verbatim() {
-        let got = parse_sessions("host", "tmux", "3:0:my_work session_2\n");
+        let got = parse_sessions("host", "tmux", "3:0::my_work session_2\n");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].name, "my_work session_2");
         assert_eq!(got[0].windows, 3);
         assert!(!got[0].attached);
+    }
+
+    /// The identity column is the server pid and the session id. A mux that prints only
+    /// one of them gives every session of its server the same column, so that column is
+    /// no identity at all.
+    #[test]
+    fn parse_sessions_keeps_only_a_whole_identity() {
+        let got = parse_sessions(
+            "h",
+            "tmux",
+            "1:0:4711$3:a\n1:0:4711:b\n1:0:$3:c\n1:0:x$3:d\n",
+        );
+        let ids: Vec<&str> = got.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["4711$3", "", "", ""]);
     }
 
     #[test]

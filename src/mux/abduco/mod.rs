@@ -139,6 +139,8 @@ pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
             host: host.to_string(),
             name,
             mux: mux.to_string(),
+            // The listing names a session only; abduco has no rename to tell apart.
+            id: String::new(),
             windows: 1,
             attached: status == '*',
         });

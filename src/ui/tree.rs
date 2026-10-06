@@ -10,17 +10,20 @@ pub use crate::model::{add_session, sort_by_name, Group, Machine};
 use crate::session::Session;
 pub(crate) use crate::state::RowRef;
 
-/// The one session a re-enumeration RENAMED, as `(from, to)`: exactly one name left the
-/// list and exactly one name joined it. A listing carries names only, so a rename is
-/// recognised by that shape alone; any other difference (sessions created or killed, or
-/// several changed at once) is not read as a rename.
-pub fn renamed_session(old: &[Session], new: &[Session]) -> Option<(String, String)> {
-    let mut gone = old.iter().filter(|o| !new.iter().any(|n| n.name == o.name));
-    let mut came = new.iter().filter(|n| !old.iter().any(|o| o.name == n.name));
-    match (gone.next(), gone.next(), came.next(), came.next()) {
-        (Some(from), None, Some(to), None) => Some((from.name.clone(), to.name.clone())),
-        _ => None,
-    }
+/// The sessions a re-enumeration RENAMED, as `(from, to)` pairs: a name that left the
+/// list and a name that joined it under the same mux identity. Only the identity proves
+/// a rename. A name gone and a name new with different identities, or without one, is a
+/// kill and a create, which look exactly like a rename by name alone.
+pub fn renamed_sessions(old: &[Session], new: &[Session]) -> Vec<(String, String)> {
+    let gone = old
+        .iter()
+        .filter(|o| !o.id.is_empty() && !new.iter().any(|n| n.name == o.name));
+    gone.filter_map(|o| {
+        new.iter()
+            .find(|n| n.id == o.id && !old.iter().any(|p| p.name == n.name))
+            .map(|n| (o.name.clone(), n.name.clone()))
+    })
+    .collect()
 }
 
 /// Reports whether `pattern` is a case-insensitive subsequence of `s`: every
@@ -564,21 +567,55 @@ mod tests {
         }
     }
 
+    /// `(name, id)` pairs as one host's listing.
+    fn listed(rows: &[(&str, &str)]) -> Vec<Session> {
+        rows.iter()
+            .map(|(name, id)| Session {
+                id: (*id).into(),
+                ..sess("s", name)
+            })
+            .collect()
+    }
+
     #[test]
-    fn a_rename_is_one_name_gone_and_one_name_new() {
-        let names = |ns: &[&str]| ns.iter().map(|n| sess("s", n)).collect::<Vec<_>>();
+    fn a_rename_is_a_new_name_under_the_same_identity() {
         assert_eq!(
-            renamed_session(&names(&["a", "b"]), &names(&["b", "c"])),
-            Some(("a".into(), "c".into()))
+            renamed_sessions(
+                &listed(&[("a", "1$0"), ("b", "1$1")]),
+                &listed(&[("b", "1$1"), ("c", "1$0")])
+            ),
+            vec![("a".into(), "c".into())]
         );
-        // A session made or killed, or two changed at once, is not a rename.
-        assert_eq!(renamed_session(&names(&["a"]), &names(&["a", "b"])), None);
-        assert_eq!(renamed_session(&names(&["a", "b"]), &names(&["a"])), None);
+        // Two renamed between the same listings are both read.
         assert_eq!(
-            renamed_session(&names(&["a", "b"]), &names(&["c", "d"])),
-            None
+            renamed_sessions(
+                &listed(&[("a", "1$0"), ("b", "1$1")]),
+                &listed(&[("c", "1$0"), ("d", "1$1")])
+            ),
+            vec![("a".into(), "c".into()), ("b".into(), "d".into())]
         );
-        assert_eq!(renamed_session(&names(&["a"]), &names(&["a"])), None);
+        assert!(renamed_sessions(&listed(&[("a", "1$0")]), &listed(&[("a", "1$0")])).is_empty());
+    }
+
+    /// A kill and a create between two listings leave one name gone and one name new,
+    /// the same shape a rename leaves. Different identities make it what it is.
+    #[test]
+    fn a_kill_plus_a_create_is_no_rename() {
+        assert!(renamed_sessions(
+            &listed(&[("a", "1$0"), ("b", "1$1")]),
+            &listed(&[("b", "1$1"), ("c", "1$2")])
+        )
+        .is_empty());
+    }
+
+    /// A listing that carries no identity proves no rename, whatever its shape.
+    #[test]
+    fn a_listing_without_identities_is_never_read_as_a_rename() {
+        assert!(renamed_sessions(
+            &listed(&[("a", ""), ("b", "")]),
+            &listed(&[("b", ""), ("c", "")])
+        )
+        .is_empty());
     }
 
     fn sample_groups() -> Vec<Group> {

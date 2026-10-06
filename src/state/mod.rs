@@ -1170,6 +1170,7 @@ mod tests {
                     host: "jup".into(),
                     name: "api".into(),
                     mux: "tmux".into(),
+                    id: String::new(),
                     windows: 2,
                     attached: false,
                 }],

@@ -232,9 +232,9 @@ mod tests {
     #[tokio::test]
     async fn scan_all_preserves_order_and_content() {
         let defs = vec![
-            scan_host("a", static_ok("2:1:editor\n")),
-            scan_host("b", static_ok("1:0:build\n")),
-            scan_host("c", static_ok("3:1:shell\n")),
+            scan_host("a", static_ok("2:1::editor\n")),
+            scan_host("b", static_ok("1:0::build\n")),
+            scan_host("c", static_ok("3:1::shell\n")),
         ];
         let got = scan_all(&defs, Duration::from_secs(1), 4).await;
         assert_eq!(got.len(), 3);
@@ -252,7 +252,7 @@ mod tests {
     #[tokio::test]
     async fn scan_all_one_unreachable_does_not_stop_others() {
         let defs = vec![
-            scan_host("a", static_ok("1:1:one\n")),
+            scan_host("a", static_ok("1:1::one\n")),
             scan_host(
                 "b",
                 Arc::new(StaticRunner {
@@ -260,7 +260,7 @@ mod tests {
                     err_msg: Some("ssh: connect to host b port 22: Connection timed out".into()),
                 }),
             ),
-            scan_host("c", static_ok("1:0:two\n")),
+            scan_host("c", static_ok("1:0::two\n")),
         ];
         let got = scan_all(&defs, Duration::from_secs(1), 4).await;
         assert_eq!(got.len(), 3);
@@ -301,7 +301,7 @@ mod tests {
             self.max.fetch_max(n, Ordering::SeqCst);
             tokio::time::sleep(Duration::from_millis(8)).await;
             self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(b"1:0:s\n".to_vec())
+            Ok(b"1:0::s\n".to_vec())
         }
     }
 
@@ -345,7 +345,7 @@ mod tests {
         crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             tokio::time::sleep(Duration::from_secs(10)).await;
-            Ok(b"1:0:s\n".to_vec())
+            Ok(b"1:0::s\n".to_vec())
         }
     }
 
@@ -359,7 +359,7 @@ mod tests {
             if args.last().map(String::as_str) == Some(crate::transport::vocab::SHELL_PROBE) {
                 Ok(b"\n".to_vec())
             } else {
-                Ok(b"1:0:ready\n".to_vec())
+                Ok(b"1:0::ready\n".to_vec())
             }
         }
     }
@@ -465,7 +465,7 @@ mod tests {
         // first, so a caller can print it without waiting on the slow one.
         let defs = vec![
             scan_host("slow", Arc::new(BlockingRunner)),
-            scan_host("fast", static_ok("1:0:ready\n")),
+            scan_host("fast", static_ok("1:0::ready\n")),
         ];
         let mut rx = scan_stream(&defs, Duration::from_secs(1), 4).await;
         let first = rx.recv().await.expect("a result");
