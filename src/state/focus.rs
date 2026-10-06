@@ -3,8 +3,8 @@
 //! where keys go and which view border rule is highlighted. There are four states
 //! along two dimensions: the VIEW dimension (`Nav` ⇄ `Terminal`, driven by prefix-key
 //! focus moves and a click on the unfocused view) and a MODAL dimension layered on top
-//! (`Popup` for help / inline
-//! input / kill-confirm, `Menu` for the right-click context menu). A modal is a
+//! (`Popup` for every modal popup, and `Menu`, a context-menu state that no input opens:
+//! xmux has no right-click menu). A modal is a
 //! first-class focus state that CARRIES the view it was opened from, so closing it
 //! restores that view structurally, with no external "saved focus" variable. "Is a
 //! modal open?" is therefore a `match` on `Focus`, and the modal/view state cannot
@@ -24,10 +24,10 @@ pub enum Focus {
     Nav,
     /// Terminal view focused: keys forward to the selected session's active pane.
     Terminal,
-    /// A modal (the help popup or the inline input) owns keys;
+    /// A modal popup owns keys;
     /// `prior` is the view to restore when it closes.
     Popup { prior: ViewFocus },
-    /// The right-click context menu owns input; `prior` is the view to restore.
+    /// A context menu owns input; `prior` is the view to restore. No input opens it.
     Menu { prior: ViewFocus },
 }
 

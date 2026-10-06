@@ -33,10 +33,11 @@ several sources at one destination.
 - The capability predicates (remoteness, attach through a host shell, local registry
   authority, connection reuse, shell family) are independent: none derives from
   another, and no code reads them to pick a server model.
-- The transport dispatches five shapes and no more: a non-interactive command, an
-  attach into the terminal handover, a control-mode child, a raw shell command (only
-  the shell-based implementations answer), and a key-only login check (only ssh
-  answers). The check holds no credential and shares no master.
+- The transport composes a fixed set of command shapes: a non-interactive command,
+  an attach into the terminal handover and its command-line form, a control-mode
+  child, a raw shell command (only the shell-based implementations answer), and a
+  login command, a key-only login check, and closing a shared connection (only ssh
+  answers these three). The key-only check holds no credential and shares no master.
 - Every untrusted argv element crossing into a remote shell passes through the shared
   quoting, the single injection-safe boundary. A `cmd.exe` remote is not a supported
   target; supporting it means a second rendering chosen by shell family, never a

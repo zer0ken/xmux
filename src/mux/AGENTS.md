@@ -20,9 +20,9 @@ listing parse with it, since a plan and the shape of what it prints are one deci
   shared enumeration helper in the root, each plan wrapping one. The pure address
   helpers are callable anywhere.
 - Plan methods return mux argv or mux intent and never decide local versus ssh
-  execution. The plan set covers what xmux itself issues: attach, enumerate, read
-  sessions and options, select a window, and start a session. There is no kill,
-  rename, or window-edit plan; the mux owns those.
+  execution. The plan set covers what xmux itself issues: list sessions, attach,
+  switch a client in place, the control-mode argv, and start a session. There is no
+  kill, rename, or window plan; the mux owns those.
 - Drivers reach display resources only through the driver seam's capability port, and
   no code outside the mux tree names a concrete driver type.
 

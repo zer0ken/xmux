@@ -43,7 +43,8 @@ state: the focus and modal state machine lives in `app`.
 
 ## Before Editing
 
-- Preserve the id and address correlation carried on PTY events.
+- PTY events carry only the attachment id; the address behind an id is looked up in
+  the registry, so an event never holds a stale address.
 
 ## Verification
 

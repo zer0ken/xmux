@@ -1,8 +1,8 @@
 //! One mux mux per mux. `Box<dyn Mux>` lives inside a `Host`. The method set is
 //! exactly what the supervisor + control reader + manage layer call - no feature
-//! catalogue. It covers both window operations and session lifecycle (create / kill /
-//! rename), so the manage layer routes every mux argv through the mux rather than
-//! building it off a bare binary name. The mux owns its binary name and
+//! catalogue. Its only session lifecycle plan is create; kill, rename, and window edits
+//! stay with the mux itself. The manage layer routes every mux argv through the mux
+//! rather than building it off a bare binary name. The mux owns its binary name and
 //! `ServerModel`, so nothing above threads a `bin: &str` or branches on a `remote` bool
 //! to pick the model. Every method is transport-blind except `enumerate` (which runs a
 //! probe).
