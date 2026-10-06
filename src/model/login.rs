@@ -40,6 +40,16 @@ impl AuthMethod {
     }
 }
 
+/// The SSH login a machine's shared connection authenticated with, and the identity of
+/// that connection once it is known. A method is true only of the shared connection it
+/// was reported on, so it is shown only while the machine rides that same connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedLogin {
+    pub method: AuthMethod,
+    /// The shared connection's identity, `None` until one is seen after the report.
+    pub connection: Option<String>,
+}
+
 /// One step a login performs, in the order it performs them. Connecting and
 /// authenticating are one ssh child; recording the values and registering the key run
 /// after it; finding the mux is the re-probe a working login starts.

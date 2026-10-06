@@ -61,7 +61,7 @@ pub(crate) struct AppModel {
     pub(crate) running_logins: Vec<crate::link::unlock::RunningLogin>,
     /// The recorded logins as the xmux directory last stored them, so the loop writes
     /// the record only when it changes.
-    pub(crate) saved_logins: HashMap<String, crate::model::AuthMethod>,
+    pub(crate) saved_logins: HashMap<String, crate::model::RecordedLogin>,
 }
 
 /// A logout that has not yet cleared its machine. The key comes off the machine first, over
@@ -397,7 +397,7 @@ pub(crate) enum Effect {
     PersistNavCollapsed(bool),
     PersistNavPosition(Option<NavPosition>),
     PersistFirstKeyHelpSeen,
-    PersistSshLogins(HashMap<String, crate::model::AuthMethod>),
+    PersistSshLogins(HashMap<String, crate::model::RecordedLogin>),
     ReattachDisplay(Selection),
     /// Searches the machine's key files for this machine's public keys, ending first the
     /// login the logout cancelled.
@@ -982,11 +982,22 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
 
     match event {
         HostEvent::AuthObserved {
-            machine, method, ..
+            machine,
+            method,
+            connection,
+            ..
         } => {
             if !model.state.invalid_auth.contains(&machine) {
-                model.state.note_auth(machine, method);
+                model.state.note_auth(machine, method, connection);
             }
+            Vec::new()
+        }
+        HostEvent::SharedConnectionSeen {
+            machine,
+            identity,
+            at,
+        } => {
+            model.state.see_shared_connection(machine, identity, at);
             Vec::new()
         }
         HostEvent::Connected { host, .. } | HostEvent::Inventory { host, .. }
@@ -997,7 +1008,14 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
         {
             Vec::new()
         }
-        HostEvent::Connected { host, sessions } | HostEvent::Inventory { host, sessions } => vec![
+        HostEvent::Connected { host, sessions } => vec![
+            EventEffect::MarkConnected { host: host.clone() },
+            EventEffect::CheckSharedConnection {
+                machine: crate::session::machine_of(&host).to_owned(),
+            },
+            EventEffect::ApplyInventory { host, sessions },
+        ],
+        HostEvent::Inventory { host, sessions } => vec![
             EventEffect::MarkConnected { host: host.clone() },
             EventEffect::ApplyInventory { host, sessions },
         ],
@@ -1683,9 +1701,11 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                         .invalid_auth
                         .remove(crate::session::machine_of(host));
                     if let Some(method) = outcome.auth_method {
-                        model
-                            .state
-                            .note_auth(crate::session::machine_of(host).to_owned(), method);
+                        model.state.note_auth(
+                            crate::session::machine_of(host).to_owned(),
+                            method,
+                            None,
+                        );
                     }
                 }
             }
@@ -2632,8 +2652,9 @@ mod tests {
             connected.as_slice(),
             [
                 crate::model::EventEffect::MarkConnected { host: marked },
+                crate::model::EventEffect::CheckSharedConnection { machine },
                 crate::model::EventEffect::ApplyInventory { host: applied, .. }
-            ] if marked == "jup" && applied == "jup"
+            ] if marked == "jup" && machine == "jup" && applied == "jup"
         ));
 
         let exited = super::host_event_effects(
@@ -3272,13 +3293,17 @@ mod tests {
                     machine: "box".into(),
                     method: crate::model::AuthMethod::PublicKey,
                     credential_generation: 0,
+                    connection: Some("7:100.000000001".into()),
                 },
                 logged_in: HashSet::new(),
             },
         );
         let recorded = std::collections::HashMap::from([(
             "box".to_string(),
-            crate::model::AuthMethod::PublicKey,
+            crate::model::RecordedLogin {
+                method: crate::model::AuthMethod::PublicKey,
+                connection: Some("7:100.000000001".into()),
+            },
         )]);
         assert!(
             matches!(sync_frame(&mut m).as_slice(), [Effect::PersistSshLogins(l)] if *l == recorded)
@@ -3289,10 +3314,79 @@ mod tests {
         );
     }
 
+    fn seen(m: &mut AppModel, identity: &str, at: std::time::Instant) {
+        update(
+            m,
+            Msg::HostEvent {
+                event: crate::link::HostEvent::SharedConnectionSeen {
+                    machine: "box".into(),
+                    identity: identity.into(),
+                    at,
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+    }
+
+    #[test]
+    fn a_login_record_takes_the_shared_connection_seen_after_it() {
+        let mut m = AppModel::from_hosts(vec!["box:tmux".into()]);
+        let start = std::time::Instant::now();
+        m.state
+            .note_auth("box".into(), crate::model::AuthMethod::PublicKey, None);
+        // The re-probe after the login rides the connection the login opened.
+        seen(
+            &mut m,
+            "7:100.000000001",
+            start + std::time::Duration::from_millis(2),
+        );
+        assert_eq!(
+            m.state.ssh_login("box", None),
+            Some(crate::model::AuthMethod::PublicKey)
+        );
+        assert!(matches!(
+            sync_frame(&mut m).as_slice(),
+            [Effect::PersistSshLogins(l)] if l["box"].connection.as_deref() == Some("7:100.000000001")
+        ));
+        // A reading taken before that one, arriving late, does not replace it.
+        seen(
+            &mut m,
+            "7:50.000000001",
+            start + std::time::Duration::from_millis(1),
+        );
+        assert_eq!(m.state.shared_connections["box"].0, "7:100.000000001");
+    }
+
+    #[test]
+    fn a_recorded_login_is_not_shown_for_a_newer_shared_connection() {
+        // An earlier run recorded the method of the shared connection it opened. That
+        // connection closed, and a channel that reports no method opened a new one.
+        let mut m = AppModel::from_hosts(vec!["box:tmux".into()]);
+        m.state.recorded_logins.insert(
+            "box".into(),
+            crate::model::RecordedLogin {
+                method: crate::model::AuthMethod::Password,
+                connection: Some("7:100.000000001".into()),
+            },
+        );
+        seen(&mut m, "7:100.000000001", std::time::Instant::now());
+        assert_eq!(
+            m.state.ssh_login("box", None),
+            Some(crate::model::AuthMethod::Password),
+            "the recorded connection is the one the machine rides"
+        );
+        seen(&mut m, "7:200.000000002", std::time::Instant::now());
+        assert_eq!(
+            m.state.ssh_login("box", None),
+            None,
+            "a new shared connection says nothing about how it authenticated"
+        );
+    }
+
     fn logged_in_box() -> AppModel {
         let mut m = AppModel::from_hosts(vec!["box:tmux".into()]);
         m.state
-            .note_auth("box".into(), crate::model::AuthMethod::Password);
+            .note_auth("box".into(), crate::model::AuthMethod::Password, None);
         m.state
             .display_auth_methods
             .insert("box:tmux".into(), crate::model::AuthMethod::Password);

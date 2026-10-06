@@ -110,6 +110,11 @@ impl Runtime {
                     }));
                 }
             }
+            EventEffect::CheckSharedConnection { machine } => {
+                if let Some(transport) = hosts.machine_transport(&machine) {
+                    spawn_shared_connection_check(machine, transport.clone_box(), mgr.events());
+                }
+            }
             EventEffect::Refetch { host } => {
                 // The server's session/window structure changed (a `%`-notification).
                 // Refetch so the nav and PTY set resync (#5 nav view sync).
@@ -1317,6 +1322,12 @@ impl Runtime {
         attachment.watch_auth(self.driver_pty_tx.clone());
         self.registry.remove(&key);
         self.registry.insert(&key, attachment);
+        // The display may have opened, or be riding, a shared connection other than the
+        // one the machine was last seen on.
+        let machine = crate::session::machine_of(&hid).to_owned();
+        if let Some(transport) = self.hosts.machine_transport(&machine) {
+            spawn_shared_connection_check(machine, transport.clone_box(), self.mgr.events());
+        }
 
         if let Some(h) = self.hosts.get_mut(&hid) {
             if let Some(tty) = child_tty.filter(|_| !h.transport.runs_through_shell()) {

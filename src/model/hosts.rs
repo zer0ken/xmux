@@ -433,6 +433,7 @@ impl Hosts {
             // MACHINE, not a host in this map, so it could not route here anyway.
             Scanned { .. }
             | AuthObserved { .. }
+            | SharedConnectionSeen { .. }
             | Sessions { .. }
             | MuxesFound { .. }
             | RosterResolved { .. }

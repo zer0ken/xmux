@@ -48,6 +48,14 @@ pub enum HostEvent {
         machine: String,
         method: crate::model::AuthMethod,
         credential_generation: u64,
+        /// The identity of the shared connection the reporting connection opened.
+        connection: Option<String>,
+    },
+    /// The identity of the shared SSH connection `machine` rides, read at `at`.
+    SharedConnectionSeen {
+        machine: String,
+        identity: String,
+        at: std::time::Instant,
     },
     /// First list-sessions returned. Carries the parsed sessions so the loop folds
     /// them into `model::Host.inventory` (the single owner) - the reader keeps no

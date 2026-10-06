@@ -62,7 +62,10 @@ pub struct State {
     /// across runs. Every later connection rides that connection while it stays open, and
     /// a riding connection reports nothing, so a run started while it was open learns the
     /// login its sessions use only from here.
-    pub recorded_logins: HashMap<String, crate::model::AuthMethod>,
+    pub recorded_logins: HashMap<String, crate::model::RecordedLogin>,
+    /// The identity of the shared SSH connection each machine was last seen riding, and
+    /// when it was read, so an older reading arriving late does not replace a newer one.
+    pub shared_connections: HashMap<String, (String, std::time::Instant)>,
     /// Machines whose known authentication was invalidated until the user asks again.
     /// Losing a held password, or a refusal of a machine whose method was known, lands
     /// here: the reported method goes and the machine's metadata and display connections
@@ -904,16 +907,50 @@ impl State {
         });
     }
 
-    /// Notes the method a connection that authenticated to `machine` reported.
-    pub(crate) fn note_auth(&mut self, machine: String, method: crate::model::AuthMethod) {
-        self.recorded_logins.insert(machine.clone(), method);
+    /// Notes the method a connection that authenticated to `machine` reported, with the
+    /// identity of the shared connection it opened when that is known.
+    pub(crate) fn note_auth(
+        &mut self,
+        machine: String,
+        method: crate::model::AuthMethod,
+        connection: Option<String>,
+    ) {
+        self.recorded_logins.insert(
+            machine.clone(),
+            crate::model::RecordedLogin { method, connection },
+        );
         self.auth_methods.insert(machine, method);
+    }
+
+    /// Notes the shared connection `machine` rides, read at `at`. A record still waiting
+    /// for its connection takes this one: the connection that reported it opened the
+    /// shared connection every later connection rides.
+    pub(crate) fn see_shared_connection(
+        &mut self,
+        machine: String,
+        identity: String,
+        at: std::time::Instant,
+    ) {
+        if self
+            .shared_connections
+            .get(&machine)
+            .is_some_and(|(_, seen)| *seen > at)
+        {
+            return;
+        }
+        if let Some(record) = self.recorded_logins.get_mut(&machine) {
+            if record.connection.is_none() {
+                record.connection = Some(identity.clone());
+            }
+        }
+        self.shared_connections.insert(machine, (identity, at));
     }
 
     /// Forgets every SSH authentication known for `machine` and its hosts' displays.
     pub(crate) fn forget_auth(&mut self, machine: &str) {
         self.auth_methods.remove(machine);
         self.recorded_logins.remove(machine);
+        self.shared_connections.remove(machine);
         self.display_auth_methods
             .retain(|host, _| crate::session::machine_of(host) != machine);
     }
@@ -922,8 +959,10 @@ impl State {
     /// one is given. A display attachment that rides the machine's shared SSH connection
     /// authenticates nothing itself and reports no method, so the login its session uses
     /// is the one the connection that reached the machine reported, in this run or, when
-    /// an earlier run opened the shared connection, in that one. Without a session, the
-    /// machine's report comes first and any of its displays' reports stands in.
+    /// an earlier run opened the shared connection, in that one. A recorded method counts
+    /// only while the machine rides the shared connection it was reported on. Without a
+    /// session, the machine's report comes first and any of its displays' reports stands
+    /// in.
     pub(crate) fn ssh_login(
         &self,
         machine: &str,
@@ -938,7 +977,15 @@ impl State {
                     .find(|(host, _)| crate::session::machine_of(host) == machine)
                     .map(|(_, method)| *method)
             })
-            .or_else(|| self.recorded_logins.get(machine).copied())
+            .or_else(|| {
+                let riding = self.shared_connections.get(machine).map(|(id, _)| id);
+                self.recorded_logins
+                    .get(machine)
+                    .filter(|record| {
+                        record.connection.is_some() && record.connection.as_ref() == riding
+                    })
+                    .map(|record| record.method)
+            })
     }
 
     /// Whether the user logged out of the machine `host` stands for and nothing has

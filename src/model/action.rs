@@ -212,6 +212,9 @@ pub enum EventEffect {
     /// `Changed`: the server's session/window STRUCTURE changed - refetch `host`'s
     /// inventory (re-run list-sessions).
     Refetch { host: String },
+    /// `Connected`: read which shared SSH connection `machine` rides now that a channel of
+    /// it opened, so a recorded login is shown only for the connection it describes.
+    CheckSharedConnection { machine: String },
     /// `MuxesFound`: add a host for every mux in `muxes` that `machine` does not
     /// already serve, and settle the card of a machine that serves none yet. The loop
     /// owns it because it needs the host registry (to know what
@@ -357,6 +360,10 @@ impl std::fmt::Debug for EventEffect {
                 .field("muxes", muxes)
                 .finish(),
             EventEffect::Refetch { host } => f.debug_struct("Refetch").field("host", host).finish(),
+            EventEffect::CheckSharedConnection { machine } => f
+                .debug_struct("CheckSharedConnection")
+                .field("machine", machine)
+                .finish(),
             EventEffect::ApplyRoster {
                 roster,
                 startup,

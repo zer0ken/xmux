@@ -3338,9 +3338,17 @@ fn logout_states_the_login_an_earlier_run_recorded_for_the_shared_connection() {
         None,
         &mut h.state,
     );
-    h.state
-        .recorded_logins
-        .insert("box".into(), crate::model::AuthMethod::PublicKey);
+    h.state.recorded_logins.insert(
+        "box".into(),
+        crate::model::RecordedLogin {
+            method: crate::model::AuthMethod::PublicKey,
+            connection: Some("7:100.000000001".into()),
+        },
+    );
+    h.state.shared_connections.insert(
+        "box".into(),
+        ("7:100.000000001".into(), std::time::Instant::now()),
+    );
     h.draw();
     h.sw.handle_key(
         KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE),
