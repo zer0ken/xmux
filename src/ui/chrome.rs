@@ -1409,6 +1409,23 @@ impl Chrome {
                 let cause = marked.contains(&which);
                 let mut spans = label(format!("{name}{}", if required { "*" } else { "" }), cause);
                 spans.push(rule.clone());
+                // A value wider than the pane continues on the next rows under the value
+                // column, the caret cell after its last character.
+                let value_col = 3 + fcw + 2;
+                let value_w = (width as usize).saturating_sub(value_col + 1).max(1);
+                let mut parts = wrap_text(&text, value_w.min(u16::MAX as usize) as u16);
+                if parts.is_empty() {
+                    parts.push(String::new());
+                }
+                let text = parts.pop().unwrap_or_default();
+                let mut lines = Vec::new();
+                for part in parts {
+                    spans.push(Span::styled(part, reversed(style, active)));
+                    lines.push(Line::from(std::mem::replace(
+                        &mut spans,
+                        vec![Span::raw(" ".repeat(value_col))],
+                    )));
+                }
                 // The focused value is reversed over its own cells and one caret cell,
                 // and the column keeps its width in plain padding.
                 let pad = 22usize.saturating_sub(text.chars().count());
@@ -1438,40 +1455,75 @@ impl Chrome {
                 if head.width() + tail_w <= width as usize {
                     let mut line = head;
                     line.spans.extend(tail);
-                    vec![line]
+                    lines.push(line);
                 } else if tail.is_empty() {
-                    vec![head]
+                    lines.push(head);
                 } else {
                     // The tail's own two leading cells part it from the value; under the
                     // value column they are the indent.
                     let mut under = vec![Span::raw(" ".repeat(fcw + 3))];
                     under.extend(tail);
-                    vec![head, Line::from(under)]
+                    lines.push(head);
+                    lines.push(Line::from(under));
                 }
+                lines
             };
             // Choice labels stay plain; the value and its padding carry focus. The focused
             // stop's value is reversed (a stop with no value reverses its own text), only
             // while the pane takes keys. One radio choice under "After login" selects doing
             // nothing, saving the connection values, or registering this machine's public
             // key. Saving is offered only while it would change what ssh uses.
+            // A choice too wide for the pane wraps its text under its own first
+            // character, so the mark and every word of the choice stay on screen.
             let choice = |name: &str, mark: &str, text: &str, active: bool| {
+                use unicode_width::UnicodeWidthStr;
                 let style = if active {
                     Style::default().fg(pal.secondary)
                 } else {
                     Style::default().fg(pal.decoration)
                 };
-                let mut spans = label(name.to_string(), false);
-                spans.push(rule.clone());
-                spans.push(Span::styled(
-                    if mark.is_empty() {
-                        text.to_string()
-                    } else {
-                        format!(" {mark} {text} ")
-                    },
-                    reversed(style, active),
-                ));
-                spans.push(Span::styled(cursor(active), style));
-                Line::from(spans)
+                let mut lead = label(name.to_string(), false);
+                lead.push(rule.clone());
+                let lead_w: usize = lead.iter().map(Span::width).sum();
+                let (open, close) = if mark.is_empty() {
+                    (String::new(), "")
+                } else {
+                    (format!(" {mark} "), " ")
+                };
+                let open_w = open.width();
+                // The caret takes one cell after the last row's text.
+                let text_w = (width as usize)
+                    .saturating_sub(lead_w + open_w + close.len() + 1)
+                    .max(1);
+                let mut parts = wrap_text(text, text_w.min(u16::MAX as usize) as u16);
+                if parts.is_empty() {
+                    parts.push(String::new());
+                }
+                let last = parts.len() - 1;
+                parts
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, part)| {
+                        let mut spans = if i == 0 {
+                            lead.clone()
+                        } else {
+                            vec![Span::raw(" ".repeat(lead_w + open_w))]
+                        };
+                        let mut body = if i == 0 {
+                            format!("{open}{part}")
+                        } else {
+                            part
+                        };
+                        if i == last {
+                            body.push_str(close);
+                        }
+                        spans.push(Span::styled(body, reversed(style, active)));
+                        if i == last {
+                            spans.push(Span::styled(cursor(active), style));
+                        }
+                        Line::from(spans)
+                    })
+                    .collect::<Vec<_>>()
             };
             let group = |title: &str| {
                 Line::from(Span::styled(
@@ -1550,12 +1602,20 @@ impl Chrome {
                     | LoginFocus::Username
                     | LoginFocus::Password
             );
-            if let Some(row) = focused_field.filter(|_| taking_keys && field_focused) {
-                caret = crate::ui::modal::caret_offset(&out[row]).map(|col| (row, col));
+            // A wrapped value carries its caret on the last of its rows.
+            if let Some(first) = focused_field.filter(|_| taking_keys && field_focused) {
+                let end = stops
+                    .iter()
+                    .map(|&(_, row)| row)
+                    .find(|&row| row > first)
+                    .unwrap_or(out.len());
+                caret = (first..end).rev().find_map(|row| {
+                    crate::ui::modal::caret_offset(&out[row]).map(|col| (row, col))
+                });
             }
             out.push(Line::from(""));
             out.push(group("After login"));
-            out.push(choice(
+            out.extend(choice(
                 "",
                 if d.after_login == AfterLogin::Nothing {
                     "(*)"
@@ -1567,7 +1627,7 @@ impl Chrome {
             ));
             stops.push((LoginFocus::AfterNothing, out.len() - 1));
             if d.offers_ssh_config() {
-                out.push(choice(
+                out.extend(choice(
                     "",
                     if d.after_login == AfterLogin::SshConfig {
                         "(*)"
@@ -1579,7 +1639,7 @@ impl Chrome {
                 ));
                 stops.push((LoginFocus::AfterSshConfig, out.len() - 1));
             }
-            out.push(choice(
+            out.extend(choice(
                 "",
                 if d.after_login == AfterLogin::RegisterKey {
                     "(*)"
@@ -1597,9 +1657,9 @@ impl Chrome {
             // login. Its verdict brings the button back with the connection values still
             // there; the password is typed again, since it leaves the draft on submit.
             if running {
-                out.push(choice("", "", "logging in…  esc to stop", false));
+                out.extend(choice("", "", "logging in…  esc to stop", false));
             } else {
-                out.push(choice("", "", "[ Log in ]", d.focus == LoginFocus::Submit));
+                out.extend(choice("", "", "[ Log in ]", d.focus == LoginFocus::Submit));
                 stops.push((LoginFocus::Submit, out.len() - 1));
             }
             out.push(Line::from(""));
@@ -1709,7 +1769,7 @@ impl Chrome {
                         )));
                     }
                 }
-                out.push(choice(
+                out.extend(choice(
                     "",
                     if d.details { "[x]" } else { "[ ]" },
                     "details",
@@ -1718,10 +1778,13 @@ impl Chrome {
                 stops.push((LoginFocus::Details, out.len() - 1));
             }
             if taking_keys {
-                focus_line = stops
-                    .iter()
-                    .find(|&&(stop, _)| stop == d.focus)
-                    .map(|&(_, row)| row);
+                // A field's caret row is its last value row.
+                focus_line = caret.map(|(row, _)| row).or_else(|| {
+                    stops
+                        .iter()
+                        .find(|&&(stop, _)| stop == d.focus)
+                        .map(|&(_, row)| row)
+                });
             }
             // The pane's keys, under the form while it takes them.
             if focused {

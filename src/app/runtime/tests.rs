@@ -551,6 +551,62 @@ fn a_small_window_gives_the_focused_login_pane_its_whole_width() {
 }
 
 #[test]
+fn a_narrow_view_wraps_the_login_choices_instead_of_cutting_them() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    // 80x24 keeps the 48-column nav, so the pane has 31 columns.
+    let mut rt = login_pane_rt(80, 24);
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    assert_eq!(rt.model.render_plan.regions.terminal.width, 31);
+    let view: Vec<String> = drawn_text(&term)
+        .lines()
+        .map(|l| l.chars().skip(49).collect::<String>())
+        .collect();
+    let out = view.join("\n");
+    let at = view
+        .iter()
+        .position(|l| l.contains("( ) save connection"))
+        .unwrap_or_else(|| panic!("{out}"));
+    let choice = format!("{} {}", view[at].trim(), view[at + 1].trim());
+    assert_eq!(choice, "( ) save connection to ssh config", "{out}");
+    assert!(
+        view[at + 1].starts_with("        "),
+        "the rest of the choice continues under its text:\n{out}"
+    );
+}
+
+#[test]
+fn a_narrow_view_wraps_a_long_login_value_under_its_column() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let host = "build-runner-07.internal.example.net";
+    let mut rt = login_pane_rt(80, 24);
+    // The prefilled address and what is typed after it are wider than the value column.
+    rt.model.state.feed_login("pwbox", host.as_bytes());
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    let view: Vec<String> = drawn_text(&term)
+        .lines()
+        .map(|l| l.chars().skip(49).collect::<String>())
+        .collect();
+    let out = view.join("\n");
+    let at = view
+        .iter()
+        .position(|l| l.contains("address*"))
+        .unwrap_or_else(|| panic!("{out}"));
+    let value: String = view[at..]
+        .iter()
+        .take_while(|l| !l.contains("port*"))
+        .map(|l| l.chars().skip(14).collect::<String>().trim().to_string())
+        .collect();
+    assert!(
+        value.starts_with(&format!("pwbox{host}")),
+        "the whole address is on screen:\n{out}"
+    );
+}
+
+#[test]
 fn a_window_with_room_for_both_keeps_the_nav_beside_the_focused_pane() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
