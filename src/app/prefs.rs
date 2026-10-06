@@ -1,10 +1,13 @@
 //! Persists lightweight, best-effort UI preferences across runs (the last-selected
-//! session address, nav geometry and mode, and the first-use help marker). Every value is a hint
+//! session address, nav geometry and mode, and the first-use help marker), and the SSH
+//! login each machine's shared connection reported. Every value is a hint
 //! only - a stale, missing, or unparsable file falls back to the built-in default,
 //! so xmux stays stateless about sessions themselves.
 
+use std::collections::HashMap;
 use std::path::Path;
 
+use crate::model::AuthMethod;
 use crate::session::Address;
 use crate::ui::switcher::NavPosition;
 
@@ -32,6 +35,45 @@ const NAV_POSITION_FILE: &str = "nav_position";
 
 /// The file under the xmux dir holding whether the nav is collapsed ("1"/"0").
 const NAV_COLLAPSED_FILE: &str = "nav_collapsed";
+
+/// The file under the xmux dir holding, one machine per line, the SSH login the
+/// connection that last authenticated to it reported (`publickey` or `password`, a
+/// space, the machine).
+const SSH_LOGINS_FILE: &str = "ssh_logins";
+
+/// Reads the recorded SSH logins. A missing file or an unparsable line records nothing.
+pub fn load_ssh_logins(xmux_dir: &Path) -> HashMap<String, AuthMethod> {
+    std::fs::read_to_string(xmux_dir.join(SSH_LOGINS_FILE))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let (word, machine) = line.split_once(' ')?;
+            let method = match word {
+                "publickey" => AuthMethod::PublicKey,
+                "password" => AuthMethod::Password,
+                _ => return None,
+            };
+            (!machine.is_empty()).then(|| (machine.to_owned(), method))
+        })
+        .collect()
+}
+
+/// Persists the recorded SSH logins. Best-effort: a write failure only leaves a later
+/// run that rides an open shared connection without the login it uses.
+pub fn save_ssh_logins(xmux_dir: &Path, logins: &HashMap<String, AuthMethod>) {
+    let mut lines: Vec<String> = logins
+        .iter()
+        .map(|(machine, method)| {
+            let word = match method {
+                AuthMethod::PublicKey => "publickey",
+                AuthMethod::Password => "password",
+            };
+            format!("{word} {machine}\n")
+        })
+        .collect();
+    lines.sort();
+    let _ = std::fs::write(xmux_dir.join(SSH_LOGINS_FILE), lines.concat());
+}
 
 /// A marker written after the first interactive key has introduced the prefix.
 const FIRST_KEY_HELP_FILE: &str = "first_key_help_seen";
@@ -189,6 +231,28 @@ mod tests {
         assert_eq!(load_nav_width(&dir), None, "absent file");
         std::fs::write(dir.join(NAV_WIDTH_FILE), "not-a-number").unwrap();
         assert_eq!(load_nav_width(&dir), None, "unparsable value");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ssh_logins_save_then_load_round_trips_and_skip_garbage() {
+        let dir = temp_dir("sl-roundtrip");
+        assert!(load_ssh_logins(&dir).is_empty(), "absent file");
+        let logins = HashMap::from([
+            ("gpu-01".to_string(), AuthMethod::PublicKey),
+            ("db-01".to_string(), AuthMethod::Password),
+        ]);
+        save_ssh_logins(&dir, &logins);
+        assert_eq!(load_ssh_logins(&dir), logins);
+        std::fs::write(
+            dir.join(SSH_LOGINS_FILE),
+            "kerberos box\npublickey\npassword db\n",
+        )
+        .unwrap();
+        assert_eq!(
+            load_ssh_logins(&dir),
+            HashMap::from([("db".to_string(), AuthMethod::Password)])
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

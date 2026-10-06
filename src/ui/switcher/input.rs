@@ -396,15 +396,11 @@ impl Switcher {
             Some(RowRef::Session { sess }) => Some(sess.address()),
             _ => None,
         };
-        let method = session
-            .as_ref()
-            .and_then(|address| state.display_auth_methods.get(&address.host))
-            .or_else(|| {
-                session
-                    .is_none()
-                    .then(|| state.auth_methods.get(machine))
-                    .flatten()
-            })
+        let method = state
+            .ssh_login(
+                machine,
+                session.as_ref().map(|address| address.host.as_str()),
+            )
             .map(|method| method.label())
             .unwrap_or("not observed");
         // The first row names the machine the logout acts on, whichever of its cards the

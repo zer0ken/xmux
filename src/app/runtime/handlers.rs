@@ -707,6 +707,8 @@ impl Runtime {
         // The app's runtime state (single source of truth), seeded from the host ids;
         // events stream the nav in.
         let mut state = crate::state::State::from_roster(hosts.ids().to_vec(), hosts.machines());
+        state.recorded_logins = crate::app::prefs::load_ssh_logins(&env.xmux_dir);
+        let saved_logins = state.recorded_logins.clone();
         let mut switcher = crate::ui::switcher::Switcher::from_hosts(&mut state);
         // The one session the terminal view refuses: the one xmux is running in. Named
         // once here, because the environment that names it cannot change under a run.
@@ -799,6 +801,7 @@ impl Runtime {
             rescan: None,
             logout: None,
             running_logins: Vec::new(),
+            saved_logins,
         };
         let initial_frame_interval = frame_interval(model.max_fps);
         let rt = Runtime {

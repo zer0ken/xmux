@@ -2083,6 +2083,7 @@ fn test_rt(env: Env) -> Runtime {
         rescan: None,
         logout: None,
         running_logins: Vec::new(),
+        saved_logins: HashMap::new(),
     };
     let mut rt = Runtime {
         login_probes: 0,

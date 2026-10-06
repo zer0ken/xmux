@@ -223,6 +223,9 @@ impl Runtime {
                 Effect::PersistFirstKeyHelpSeen => {
                     crate::app::prefs::mark_first_key_help_seen(&self.env.xmux_dir);
                 }
+                Effect::PersistSshLogins(logins) => {
+                    crate::app::prefs::save_ssh_logins(&self.env.xmux_dir, &logins);
+                }
                 Effect::ReattachDisplay(selection) => {
                     let key = display_key(&self.hosts, &selection);
                     self.registry.remove(&key);

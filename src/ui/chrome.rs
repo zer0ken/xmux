@@ -992,16 +992,7 @@ impl Chrome {
                 rows.push((ScreenCell::Label("user"), defaults.username.value));
                 let machine = crate::session::machine_of(host);
                 let method = state
-                    .auth_methods
-                    .get(machine)
-                    .or_else(|| {
-                        state
-                            .display_auth_methods
-                            .iter()
-                            .filter(|(s, _)| crate::session::machine_of(s) == machine)
-                            .map(|(_, method)| method)
-                            .next()
-                    })
+                    .ssh_login(machine, None)
                     .map(|method| method.label())
                     .unwrap_or("not observed");
                 rows.push((ScreenCell::Label("SSH login"), method.into()));
