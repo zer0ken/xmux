@@ -1410,7 +1410,7 @@ fn settle_rescan(model: &mut AppModel) {
             .groups
             .iter()
             .any(|g| g.host == host && g.err.is_none());
-        state.chrome.host_label_when(host, answered)
+        state.chrome.named_mux(host, answered).to_string()
     });
     let title = match &machine {
         Some(machine) => format!("rescan machine {machine}"),
@@ -2743,7 +2743,7 @@ mod tests {
         assert_eq!(m.state.notify.toasts[0].title, "rescan all machines");
         assert_eq!(
             note_texts(&m),
-            ["1 session started: a/y", "b unreachable"],
+            ["1 session started: a/tmux/y", "b unreachable"],
             "the summary names what changed"
         );
         assert!(
@@ -3232,7 +3232,7 @@ mod tests {
                 logged_in: HashSet::new(),
             },
         );
-        assert_eq!(note_texts(&m), ["a/api created"]);
+        assert_eq!(note_texts(&m), ["a/tmux/api created"]);
         update(
             &mut m,
             Msg::OpResult {
@@ -4355,6 +4355,20 @@ mod tests {
     }
 
     #[test]
+    fn a_rescan_summary_names_the_listed_mux_before_the_reach_resolves() {
+        // No reach yet, so the host names no mux, but its listing does: a started or
+        // ended session is named by the path its card shows.
+        let mut m = AppModel::from_hosts(vec!["a".to_owned()]);
+        answer(&mut m, "a", &["x"], None);
+        update(&mut m, lower_r());
+        answer(&mut m, "a", &["w"], None);
+        assert_eq!(
+            note_texts(&m),
+            ["1 session started: a/tmux/w", "1 session ended: a/tmux/x"]
+        );
+    }
+
+    #[test]
     fn prefix_r_rescans_the_selected_machine_and_reports_it_alone() {
         let mut m = AppModel::from_hosts(vec!["a".to_owned(), "b".to_owned()]);
         answer(&mut m, "a", &["x"], None);
@@ -4380,7 +4394,7 @@ mod tests {
         answer(&mut m, "a", &["w", "x"], None);
         assert_eq!(m.state.notify.toasts.len(), 1);
         assert_eq!(m.state.notify.toasts[0].title, "rescan machine a");
-        assert_eq!(note_texts(&m), ["1 session started: a/w"]);
+        assert_eq!(note_texts(&m), ["1 session started: a/tmux/w"]);
 
         // Nothing changed is said for that machine alone.
         update(&mut m, lower_r());

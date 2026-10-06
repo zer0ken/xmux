@@ -305,25 +305,23 @@ impl Chrome {
         crate::session::host_label(crate::session::machine_of(host), self.host_mux(host))
     }
 
-    /// Formats a session as its `{machine}/{mux}/{session}` path.
-    pub(crate) fn session_label(&self, address: &crate::session::Address) -> String {
-        crate::session::session_label(
-            crate::session::machine_of(&address.host),
-            self.host_mux(&address.host),
-            &address.session,
-        )
-    }
-
-    /// The same label, for a surface that knows whether the host ANSWERED. A mux no
-    /// answer confirmed is left off, so the label never puts a guess where every other
-    /// one carries a fact.
-    pub(crate) fn host_label_when(&self, host: &str, answered: bool) -> String {
-        let mux = if crate::session::mux_may_be_named(host, answered) {
+    /// The mux `host` is NAMED by, for a surface that knows whether the host ANSWERED: its
+    /// mux, or empty while no answer confirmed one, so a label never puts a guess where
+    /// every other one carries a fact.
+    pub(crate) fn named_mux<'a>(&'a self, host: &'a str, answered: bool) -> &'a str {
+        if crate::session::mux_may_be_named(host, answered) {
             self.host_mux(host)
         } else {
             ""
-        };
-        crate::session::host_label(crate::session::machine_of(host), mux)
+        }
+    }
+
+    /// The host's label with the mux [`Self::named_mux`] names.
+    pub(crate) fn host_label_when(&self, host: &str, answered: bool) -> String {
+        crate::session::host_label(
+            crate::session::machine_of(host),
+            self.named_mux(host, answered),
+        )
     }
 
     /// Sets how xmux reaches each host, keyed by host id. The app calls this from the

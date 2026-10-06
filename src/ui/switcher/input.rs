@@ -1011,7 +1011,7 @@ impl Switcher {
                     "new session",
                     vec![Note::new(
                         Level::Success,
-                        format!("{} created", state.chrome.session_label(&addr)),
+                        format!("{} created", state.session_label(&addr)),
                     )],
                 );
                 None

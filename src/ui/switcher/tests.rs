@@ -2556,6 +2556,27 @@ async fn the_session_xmux_runs_in_is_never_a_terminal_view_target() {
 }
 
 #[tokio::test]
+async fn the_created_toast_names_the_listed_mux_before_the_reach_resolves() {
+    // No reach yet, so the host names no mux, but the created session carries one: the
+    // toast names the mux the new session's card names.
+    let mut h = Harness::from_hosts(&["local"]);
+    h.sw.apply_op_result(
+        OpResult::Created {
+            session: sess_mux("local", "serve", "psmux"),
+        },
+        &mut h.state,
+    );
+    let history: Vec<String> = h
+        .state
+        .notify
+        .history
+        .iter()
+        .map(|e| e.note.text.clone())
+        .collect();
+    assert_eq!(history, ["local/psmux/serve created"]);
+}
+
+#[tokio::test]
 async fn the_session_xmux_runs_in_shows_a_screen_instead_of_its_grid() {
     // Refusing silently would leave the last session's grid standing under the wrong
     // card. The screen says whose session it is and why it is not shown.
@@ -8637,7 +8658,9 @@ fn every_rendered_surface_names_a_session_by_its_three_level_path() {
         &mut h.state,
     );
     let after = crate::state::notify::ScanSnapshot::of(&h.state, &std::collections::HashSet::new());
-    let notes = before.summary(&after, |host| h.state.chrome.host_label_when(host, true));
+    let notes = before.summary(&after, |host| {
+        h.state.chrome.named_mux(host, true).to_string()
+    });
     h.state.notify.toast("rescan machine gpu-01", notes);
     h.sw.apply_op_result(
         OpResult::Created {

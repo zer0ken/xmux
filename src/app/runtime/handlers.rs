@@ -1472,7 +1472,7 @@ impl Runtime {
             Cmd::Status(reply) => {
                 let _ = reply.send(status_line(
                     &self.model.switcher,
-                    &self.model.state.chrome,
+                    &self.model.state,
                     &self.instance_name,
                     self.model.state.focus.view_is_nav(),
                     &self_cwd(),

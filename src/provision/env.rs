@@ -841,14 +841,10 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
         );
     }
     // Each session is written as its path, so a line names the machine and the mux it
-    // runs under as every other surface does. The mux a listing stamped wins; the host
-    // id's own mux stands in for a session nothing stamped.
+    // runs under as every other surface does. The host id's own mux is the host's mux
+    // here, since no reach is resolved for a listing printed to stdout.
     let path = |s: &Session| {
-        let mux = if s.mux.is_empty() {
-            crate::session::mux_of(&s.host)
-        } else {
-            &s.mux
-        };
+        let mux = crate::session::session_mux(s, crate::session::mux_of(&s.host));
         crate::session::session_label(crate::session::machine_of(&s.host), mux, &s.name)
     };
     let addr_w = g.sessions.iter().map(|s| path(s).len()).max().unwrap_or(0);

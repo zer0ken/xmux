@@ -272,8 +272,8 @@ enum HostShape {
     /// Its machine refused the login: an authentication failure, or a held password ssh
     /// refused.
     Locked,
-    /// It answered with these sessions.
-    Sessions(BTreeSet<String>),
+    /// It answered with these sessions, by name.
+    Sessions(BTreeMap<String, crate::session::Session>),
 }
 
 impl HostShape {
@@ -325,7 +325,12 @@ impl ScanSnapshot {
                 } else if g.err.is_some() {
                     HostShape::Unreachable
                 } else {
-                    HostShape::Sessions(g.sessions.iter().map(|s| s.name.clone()).collect())
+                    HostShape::Sessions(
+                        g.sessions
+                            .iter()
+                            .map(|s| (s.name.clone(), s.clone()))
+                            .collect(),
+                    )
                 };
                 (g.host.clone(), shape)
             })
@@ -344,16 +349,23 @@ impl ScanSnapshot {
 
     /// One report of what changed between this snapshot and `after`: hosts added and
     /// removed, sessions started and ended, and hosts that stopped or started
-    /// answering. `label` names a host the way its card does, and a session is named by
-    /// its path under that label. A re-scan that changed nothing says so, with the counts
-    /// it found. Every host count
+    /// answering. `named_mux` is the mux a host's card names, so a host is named by its
+    /// label and a session by its path, with the mux its listing reported. A re-scan that
+    /// changed nothing says so, with the counts it found. Every host count
     /// counts machines, not the muxes they serve. A host whose login was refused reads
     /// as needing a login, never as its sessions ending.
     pub(crate) fn summary(
         &self,
         after: &ScanSnapshot,
-        label: impl Fn(&str) -> String,
+        named_mux: impl Fn(&str) -> String,
     ) -> Vec<Note> {
+        let machine = crate::session::machine_of;
+        let label = |host: &str| crate::session::host_label(machine(host), &named_mux(host));
+        let path = |host: &str, sessions: &BTreeMap<String, crate::session::Session>, n: &str| {
+            let host_mux = named_mux(host);
+            let mux = crate::session::session_mux(&sessions[n], &host_mux);
+            crate::session::session_label(machine(host), mux, n)
+        };
         let mut added = Vec::new();
         let mut removed = Vec::new();
         let mut started = Vec::new();
@@ -364,9 +376,16 @@ impl ScanSnapshot {
             match (self.hosts.get(host), shape) {
                 (None, _) => added.push(host.as_str()),
                 (Some(HostShape::Sessions(was)), HostShape::Sessions(now)) => {
-                    let owner = label(host);
-                    started.extend(now.difference(was).map(|n| format!("{owner}/{n}")));
-                    ended.extend(was.difference(now).map(|n| format!("{owner}/{n}")));
+                    started.extend(
+                        now.keys()
+                            .filter(|n| !was.contains_key(*n))
+                            .map(|n| path(host, now, n)),
+                    );
+                    ended.extend(
+                        was.keys()
+                            .filter(|n| !now.contains_key(*n))
+                            .map(|n| path(host, was, n)),
+                    );
                 }
                 (Some(HostShape::Sessions(_)), HostShape::Unreachable) => lost.push(Note::new(
                     Level::Warning,
@@ -686,9 +705,19 @@ mod tests {
                 .iter()
                 .map(|(host, sessions)| {
                     let shape = match sessions {
-                        Some(names) => {
-                            HostShape::Sessions(names.iter().map(|n| n.to_string()).collect())
-                        }
+                        Some(names) => HostShape::Sessions(
+                            names
+                                .iter()
+                                .map(|n| {
+                                    let s = crate::session::Session {
+                                        host: host.to_string(),
+                                        name: n.to_string(),
+                                        ..Default::default()
+                                    };
+                                    (n.to_string(), s)
+                                })
+                                .collect(),
+                        ),
                         None => HostShape::Unreachable,
                     };
                     (host.to_string(), shape)
@@ -715,7 +744,7 @@ mod tests {
             ("db", Some(&["psql"])),
             ("new", Some(&["x"])),
         ]);
-        let notes = before.summary(&after, |s| format!("{s}/tmux"));
+        let notes = before.summary(&after, |_| "tmux".to_string());
         assert_eq!(
             texts(&notes),
             vec![
@@ -735,7 +764,7 @@ mod tests {
     #[test]
     fn a_rescan_that_changed_nothing_says_so_with_its_counts() {
         let before = shape(&[("gpu-01", Some(&["train", "eval"])), ("web-03", None)]);
-        let notes = before.summary(&before.clone(), |s| s.to_string());
+        let notes = before.summary(&before.clone(), |_| String::new());
         assert_eq!(
             texts(&notes),
             vec![(
@@ -749,7 +778,7 @@ mod tests {
     fn a_long_list_of_names_counts_the_rest() {
         let before = shape(&[("h", Some(&[]))]);
         let after = shape(&[("h", Some(&["a", "b", "c", "d", "e", "f"]))]);
-        let notes = before.summary(&after, |s| s.to_string());
+        let notes = before.summary(&after, |_| String::new());
         assert_eq!(
             notes[0].text,
             "6 sessions started: h/a, h/b, h/c, h/d … 2 more"
@@ -763,7 +792,7 @@ mod tests {
             ("local:zellij", Some(&[])),
             ("gpu", Some(&["train"])),
         ]);
-        let notes = before.summary(&before.clone(), |s| s.to_string());
+        let notes = before.summary(&before.clone(), |_| String::new());
         assert_eq!(notes[0].text, "no changes · 2 machines, 2 sessions");
 
         let after = shape(&[
@@ -773,8 +802,7 @@ mod tests {
             ("new:tmux", Some(&[])),
             ("new:zellij", Some(&[])),
         ]);
-        let label = |s: &str| s.replace(':', "/");
-        let notes = before.summary(&after, label);
+        let notes = before.summary(&after, |s| crate::session::mux_of(s).to_string());
         assert_eq!(
             texts(&notes),
             vec![
@@ -795,12 +823,12 @@ mod tests {
         let before = shape(&[("gpu", Some(&["train", "eval"]))]);
         let mut after = shape(&[("gpu", Some(&[]))]);
         after.hosts.insert("gpu".to_string(), HostShape::Locked);
-        let notes = before.summary(&after, |s| s.to_string());
+        let notes = before.summary(&after, |_| String::new());
         assert_eq!(
             texts(&notes),
             vec![(Level::Warning, "gpu login needed".to_string())]
         );
-        let back = after.summary(&before, |s| s.to_string());
+        let back = after.summary(&before, |_| String::new());
         assert_eq!(
             texts(&back),
             vec![(Level::Success, "gpu reachable again".to_string())]
@@ -812,7 +840,7 @@ mod tests {
         let mut before = shape(&[("h", Some(&[]))]);
         before.hosts.insert("h".to_string(), HostShape::Unknown);
         let after = shape(&[("h", None)]);
-        let notes = before.summary(&after, |s| s.to_string());
+        let notes = before.summary(&after, |_| String::new());
         assert_eq!(notes[0].level, Level::Success, "{notes:?}");
     }
 }

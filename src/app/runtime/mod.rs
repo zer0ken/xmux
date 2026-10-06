@@ -470,7 +470,7 @@ impl Runtime {
 /// `control` so producer and parser cannot drift.
 fn status_line(
     switcher: &crate::ui::switcher::Switcher,
-    chrome: &crate::state::chrome::Chrome,
+    state: &crate::state::State,
     name: &str,
     nav_focused: bool,
     cwd: &str,
@@ -482,7 +482,7 @@ fn status_line(
     let target = if shown.target.is_empty() {
         String::new()
     } else {
-        chrome.session_label(&crate::session::Address::new(&shown.host, &shown.target))
+        state.session_label(&crate::session::Address::new(&shown.host, &shown.target))
     };
     crate::link::control::format_status(&crate::link::control::StatusFields {
         name: name.to_string(),
