@@ -607,6 +607,47 @@ fn a_narrow_view_wraps_a_long_login_value_under_its_column() {
 }
 
 #[test]
+fn a_narrow_view_keeps_every_note_of_a_login_field() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut rt = login_pane_rt(80, 24);
+    let value = |value: &str| crate::provision::env::LoginValue {
+        value: value.into(),
+        provenance: "from ssh config",
+    };
+    rt.model.state.chrome.set_login_defaults(
+        std::collections::HashMap::from([(
+            "pwbox".into(),
+            crate::provision::env::LoginDefaults {
+                address: value("pwbox"),
+                port: value("22"),
+                username: value("alice"),
+                ssh_effective: None,
+            },
+        )]),
+        Default::default(),
+    );
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    let view: Vec<String> = drawn_text(&term)
+        .lines()
+        .map(|l| l.chars().skip(49).collect::<String>())
+        .collect();
+    let out = view.join("\n");
+    let at = view
+        .iter()
+        .position(|l| l.contains("username*"))
+        .unwrap_or_else(|| panic!("{out}"));
+    let field: String = view[at..]
+        .iter()
+        .take_while(|l| !l.contains("password"))
+        .cloned()
+        .collect();
+    assert!(field.contains("from ssh config"), "{out}");
+    assert!(field.contains('✗'), "the failure mark is on screen:\n{out}");
+}
+
+#[test]
 fn a_window_with_room_for_both_keeps_the_nav_beside_the_focused_pane() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

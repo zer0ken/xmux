@@ -1450,22 +1450,20 @@ impl Chrome {
                 if cause {
                     tail.push(Span::styled("  ✗", Style::default().fg(pal.error)));
                 }
-                let head = Line::from(spans);
-                let tail_w: usize = tail.iter().map(Span::width).sum();
-                if head.width() + tail_w <= width as usize {
-                    let mut line = head;
-                    line.spans.extend(tail);
-                    lines.push(line);
-                } else if tail.is_empty() {
-                    lines.push(head);
-                } else {
-                    // The tail's own two leading cells part it from the value; under the
-                    // value column they are the indent.
-                    let mut under = vec![Span::raw(" ".repeat(fcw + 3))];
-                    under.extend(tail);
-                    lines.push(head);
-                    lines.push(Line::from(under));
+                // Each note goes on the row before it while it fits there, and on a row
+                // of its own under the value column otherwise. The note's own two leading
+                // cells part it from the value; under the value column they are the indent.
+                let mut line = Line::from(spans);
+                for note in tail {
+                    if line.width() + note.width() > width as usize {
+                        lines.push(std::mem::replace(
+                            &mut line,
+                            Line::from(Span::raw(" ".repeat(fcw + 3))),
+                        ));
+                    }
+                    line.spans.push(note);
                 }
+                lines.push(line);
                 lines
             };
             // Choice labels stay plain; the value and its padding carry focus. The focused
