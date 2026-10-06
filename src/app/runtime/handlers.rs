@@ -811,6 +811,7 @@ impl Runtime {
             last_draw: std::time::Instant::now() - initial_frame_interval,
             rescan_pending: false,
             display_probe: DisplayProbe::default(),
+            held_input: None,
             #[cfg(test)]
             discovery_runs: 0,
             #[cfg(test)]
@@ -1548,24 +1549,8 @@ impl Runtime {
                             self.dirty = true;
                         }
                     } else {
-                        let Some(host) = self.hosts.get(&self.model.state.selection.source) else {
-                            return false;
-                        };
-                        // Follow the selected destination, matching the interactive
-                        // keystroke path. While its fresh client is paint-pending, the
-                        // registry routes input there instead of into the stale frame.
-                        let mut driver = crate::driver::driver_for(host);
-                        let ctx = crate::driver::DriverCtx {
-                            registry: &mut self.registry,
-                            hosts: &mut self.hosts,
-                            instance_name: &self.instance_name,
-                            mgr: &self.mgr,
-                            worker: &self.worker,
-                            pty_tx: &self.driver_pty_tx,
-                            attach_seq: &mut self.attach_seq,
-                            viewport: (0, 0),
-                        };
-                        driver.input(&self.model.state.selection, bytes, &ctx);
+                        // The same route as the interactive keystroke path.
+                        self.forward_input(bytes);
                     }
                 }
             }

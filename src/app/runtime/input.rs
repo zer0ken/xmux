@@ -735,10 +735,8 @@ impl Runtime {
                 match action {
                     // A BLOCKED host has no PTY: its login pane in the terminal view owns the
                     // keys. Route them to that pane (edit a field, walk the stops, or submit
-                    // on Enter) instead of a session. Otherwise forward to the
-                    // VISIBLE session (`displayed`), not the selection: until a new session
-                    // is ready the prior one is on screen, so input must reach what the user
-                    // actually sees (no blind typing).
+                    // on Enter) instead of a session. Otherwise forward to the selected
+                    // session, held until its attachment exists (`forward_input`).
                     Action::Forward(f) => {
                         let login_running = self.model.state.login_run.as_ref().is_some_and(|l| {
                             self.model.switcher.current_source().as_deref() == Some(&l.source)
@@ -795,8 +793,7 @@ impl Runtime {
                                 *dirty = true;
                             }
                         } else {
-                            self.registry
-                                .input(&display_key(&self.hosts, &self.model.state.displayed), f);
+                            self.forward_input(f);
                         }
                     }
                     Action::FocusNav(rest) => {
@@ -940,6 +937,52 @@ impl Runtime {
         }
         self.flush_rescan();
         outcome
+    }
+
+    /// Forwards terminal input to the session [`input_route`] names, behind any input
+    /// still held for the same selection so the order typed is the order delivered.
+    pub(super) fn forward_input(&mut self, bytes: Vec<u8>) {
+        if let Some(held) = self
+            .held_input
+            .as_mut()
+            .filter(|held| held.selection == self.model.state.selection)
+        {
+            held.bytes.extend(bytes);
+            self.flush_held_input();
+            return;
+        }
+        self.flush_held_input();
+        match input_route(&self.model.state, &self.hosts) {
+            InputRoute::Selected(key) | InputRoute::Shown(key) => self.registry.input(&key, bytes),
+            InputRoute::Hold => {
+                self.held_input = Some(HeldInput {
+                    selection: self.model.state.selection.clone(),
+                    since: std::time::Instant::now(),
+                    bytes,
+                });
+            }
+        }
+    }
+
+    /// Delivers held input once the selection's attachment exists, and drops it when
+    /// the selection moved away or the attachment it waits for is not arriving. Runs on
+    /// every loop pass, because an attachment arrives on an event that carries no input.
+    pub(super) fn flush_held_input(&mut self) {
+        let Some(held) = self.held_input.take() else {
+            return;
+        };
+        let current = held.selection == self.model.state.selection;
+        match input_route(&self.model.state, &self.hosts) {
+            InputRoute::Selected(key) if current => self.registry.input(&key, held.bytes),
+            InputRoute::Hold if current && held.since.elapsed() < HELD_INPUT_MAX => {
+                self.held_input = Some(held);
+            }
+            _ => tracing::info!(
+                session = %held.selection.session,
+                bytes = held.bytes.len(),
+                "held_input_dropped"
+            ),
+        }
     }
 }
 

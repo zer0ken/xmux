@@ -226,10 +226,6 @@ pub trait MuxDriver {
     fn grid(&self, sel: &Selection, ctx: &DriverCtx) -> Option<Arc<Mutex<Grid>>> {
         ctx.registry.grid(&ctx.display_key(sel))
     }
-    /// Forward input bytes to the selected session's attachment.
-    fn input(&mut self, sel: &Selection, bytes: Vec<u8>, ctx: &DriverCtx) {
-        ctx.registry.input(&ctx.display_key(sel), bytes);
-    }
     /// Reconcile the host's display terminal with its current `sessions` (an inventory
     /// update — a remote `%`-event refresh or a local poll). Shared keeps ONE PTY per
     /// host: warm it on the first session, reap it when the host has no sessions.
