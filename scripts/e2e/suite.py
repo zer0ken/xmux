@@ -30,12 +30,15 @@ PREFIX = "xmux-e2e-"
 PASSWORD = "e2e-pass"
 COLS, ROWS = 140, 60
 
-# Every cell of a known xmux defect or limitation, by (scenario or None for every
-# scenario, mux, host system or None for every system). Such a cell still runs; it
-# reports KNOWN when it fails and PASS when it passes.
+# Every cell of a known xmux defect or limitation, by (scenario, mux, host system,
+# client), where None matches every value. Such a cell still runs; it reports KNOWN
+# when it fails and PASS when it passes. The Windows client's `switch` cells on Alpine
+# all show Alpine's tmux: the second host's tmux is the other mux of every mux but tmux.
 KNOWN = {
-    ("in-client-switch", "tuios", None): "#333",
-    ("in-client-switch", "zellij", None): "#670",
+    ("in-client-switch", "tuios", None, None): "#333",
+    ("in-client-switch", "zellij", None, None): "#670",
+    ("first-launch", "tmux", "alpine", "windows"): "#673",
+    ("switch", None, "alpine", "windows"): "#673",
 }
 # Cells that do not apply: the mux cannot move a client between sessions (a screen,
 # abduco, or herdr client belongs to one session's server), and abduco has no keys of its
@@ -182,6 +185,8 @@ def ssh_stanza(alias, hostname, port=None):
 class LinuxClient:
     """Runs xmux inside this container as a fresh user, so ssh and xmux share one home."""
 
+    kind = "linux"
+
     def __init__(self, xmux, workdir):
         self.xmux, self.workdir = xmux, workdir
         self.key = os.path.join(workdir, "id_ed25519")
@@ -225,6 +230,8 @@ class WindowsClient:
     the temporary directory inherits that directory's grants, so each key copy is left
     to the current user alone.
     """
+
+    kind = "windows"
 
     def __init__(self, xmux, workdir, hosts):
         self.xmux, self.workdir, self.hosts = xmux, workdir, hosts
@@ -653,9 +660,9 @@ GROUPS = {
 SCENARIOS = {name: run for group in GROUPS.values() for name, run in group.items()}
 
 
-def known(scenario, mux, system):
-    for (s, m, o), reason in KNOWN.items():
-        if s in (None, scenario) and m == mux and o in (None, system):
+def known(scenario, mux, system, client):
+    for key, reason in KNOWN.items():
+        if all(k in (None, v) for k, v in zip(key, (scenario, mux, system, client))):
             return reason
     return None
 
@@ -663,7 +670,7 @@ def known(scenario, mux, system):
 def run_cell(scenario, cell, out):
     if (scenario, cell.mux) in NOT_APPLICABLE:
         return "n/a"
-    reason = known(scenario, cell.mux, cell.system)
+    reason = known(scenario, cell.mux, cell.system, cell.client.kind)
     cell.apps = []
     t0 = time.monotonic()
     try:

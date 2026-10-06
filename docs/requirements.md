@@ -302,3 +302,7 @@ The seamless cross-host switch is bought with these costs, accepted by design:
   psmux session its own server does not answer for, is not followed through a rename made
   inside its mux: the rename reads as a lost session and a new one, and the selection
   moves up to the host.
+- A Windows client attached to tmux older than 3.6 can show the end of a terminal reply
+  as typed text in the session: Windows OpenSSH passes the reply on in pieces, and tmux
+  before 3.6 ends it at the gap. tmux 3.6 fixes this upstream (tmux/tmux#4411,
+  microsoft/terminal#7185).

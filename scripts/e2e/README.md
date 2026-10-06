@@ -101,6 +101,8 @@ issue is fixed.
 | `in-client-switch`, tuios | `KNOWN #333` | tuios gives no signal that its client moved |
 | `in-client-switch`, screen, abduco, and herdr | `n/a` | a client belongs to one session's server and cannot move |
 | `native-keys`, abduco | `n/a` | abduco has no keys besides detach |
+| `first-launch`, tmux, Alpine, Windows client | `KNOWN #673` | the tail of a terminal reply reaches tmux 3.5a as typed text |
+| `switch`, Alpine, Windows client | `KNOWN #673` | each of these cells shows Alpine's tmux, for the same reason |
 
 ## Isolation
 
@@ -132,12 +134,6 @@ The run proves its isolation from both ends:
   `~/.ssh` of the person running it with its size and modification time from before the
   run, and fails when one differs. An xmux of that person's running at the same time
   changes `~/.xmux` too, so the run expects none.
-
-The Windows client run fails the cells that show Alpine's tmux:
-
-| Cell | Issue | Reason |
-| --- | --- | --- |
-| `first-launch`, tmux, Alpine, and every `switch` that shows Alpine's tmux | #673 | the tail of a terminal reply reaches tmux 3.5a as typed text |
 
 psmux, the Windows-only mux, has no cell. Its sessions run on the Windows machine
 itself and register under the user's `~/.psmux`, so a psmux scenario would start
