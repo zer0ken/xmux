@@ -3443,26 +3443,22 @@ mod tests {
     }
 
     #[test]
-    fn home_resolution_preserves_profile_defaults_and_fallbacks() {
-        let profile = std::env::temp_dir().join("xmux-profile");
-        let value = profile.clone().into_os_string();
-        for (home, userprofile) in [
-            (None, None),
-            (Some(value.clone()), None),
-            (None, Some(value.clone())),
-            (Some(value.clone()), Some(value.clone())),
-            (Some("".into()), Some("".into())),
-        ] {
-            assert_eq!(
-                resolve_home(home, userprofile, Some(profile.clone())),
-                Some(profile.clone())
-            );
+    fn home_resolution_order() {
+        let home = || Some(std::ffi::OsString::from("h"));
+        let userprofile = || Some(std::ffi::OsString::from("u"));
+        let empty = || Some(std::ffi::OsString::new());
+        let profile = || Some(PathBuf::from("p"));
+        let cases = [
+            (home(), userprofile(), profile(), Some("h")),
+            (None, userprofile(), profile(), Some("u")),
+            (empty(), userprofile(), profile(), Some("u")),
+            (None, None, profile(), Some("p")),
+            (empty(), empty(), profile(), Some("p")),
+            (None, None, None, None),
+        ];
+        for (h, u, p, expected) in cases {
+            assert_eq!(resolve_home(h, u, p), expected.map(PathBuf::from));
         }
-        assert_eq!(resolve_home(None, None, None), None);
-        assert_eq!(
-            resolve_home(Some("".into()), Some(value), None),
-            Some(profile)
-        );
     }
 
     #[test]
