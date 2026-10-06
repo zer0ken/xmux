@@ -3,7 +3,11 @@
 The suite drives the real xmux against real hosts: every host is a Docker container
 reached over ssh, every mux runs real sessions, and xmux runs in a pseudo terminal that
 the driver types into and reads back. One command runs every scenario for every mux and
-host system and prints a pass/fail table.
+host system and prints a pass/fail table in two groups:
+
+- **xmux behavior**: xmux's own features work on every mux and host system.
+- **native workflow**: each mux's own keys, panes, detach, and clients keep working
+  inside xmux's terminal view.
 
 ## Usage
 
@@ -49,6 +53,8 @@ login shell, since no host installs dvtm.
 
 ## Scenarios
 
+The xmux behavior group:
+
 | Scenario | Passes when |
 | --- | --- |
 | `first-launch` | the landing screen appears, choosing a session attaches it, and typed input runs in that session |
@@ -56,9 +62,26 @@ login shell, since no host installs dvtm.
 | `new-session` | `prefix n` creates a session that becomes selected, attached, and live on the host |
 | `password-login` | logging in to the password-only host lists its sessions, and logging out leaves one host card |
 | `unreachable` | a stopped host shows as one unreachable host card after a re-scan, and returns as sections once it starts again |
+
+The native workflow group, typed through xmux's terminal view:
+
+| Scenario | Passes when |
+| --- | --- |
+| `native-keys` | the mux's own keys open and switch its windows, panes, or tabs, and its copy mode or a mouse click works (below) |
 | `detach-inside` | the mux's own detach key leaves the session alive, and selecting it again attaches it |
 | `shared-client` | a client attached directly on the host stays attached while xmux attaches the same session, and shows what was typed through xmux |
 | `in-client-switch` | moving the client to another session with the mux's own input moves the nav selection with it |
+
+`native-keys` runs on a session of its own, and checks each mux this way:
+
+| Mux | Input | Check |
+| --- | --- | --- |
+| tmux | `C-b %`, then `C-b [` and `PgUp` | the window has two panes; copy mode shows its position, and `q` ends it |
+| screen | `C-a c`, then `C-a n` | `$WINDOW` reads 1 in the new window and 0 after moving on |
+| zellij | `C-p n`, a click on the first pane, then `C-t n` | the new pane, then the clicked pane, answers with its id; a second tab opens |
+| tuios | `C-b c` | tuios lists two windows |
+| herdr | `C-b v` | herdr lists two panes |
+| abduco | none | abduco has no keys besides detach, which `detach-inside` covers |
 
 A session proves it is the one expected by answering `whereami`, a host command that
 prints the host, mux, and session its shell runs in.
@@ -79,6 +102,7 @@ issue is fixed.
 | `in-client-switch`, zellij | `KNOWN #587` | a remote client's move is not followed |
 | `in-client-switch`, tuios | `KNOWN #333` | tuios gives no signal that its client moved |
 | `in-client-switch`, screen, abduco, and herdr | `n/a` | a client belongs to one session's server and cannot move |
+| `native-keys`, abduco | `n/a` | abduco has no keys besides detach |
 
 ## Isolation
 
@@ -95,6 +119,11 @@ hosts through published ssh ports, with a temporary home and an `ssh.exe` wrappe
 hands Windows OpenSSH the temporary ssh config. The run stops before it starts xmux
 until #581 is resolved: on Windows, xmux keeps its config and state in the profile folder
 whatever `HOME` and `USERPROFILE` say, so a run would use the real `~/.xmux`.
+
+psmux, the Windows-only mux, has no cell. Its sessions run on the Windows machine
+itself and register under the user's `~/.psmux`, so a psmux scenario would start
+sessions beside the user's own; it needs the Windows client run and a psmux that can be
+pointed at another home.
 
 ## Files
 
