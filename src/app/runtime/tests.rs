@@ -3289,7 +3289,8 @@ fn the_zellij_reattach_lands(rt: &mut Runtime, session: &str) {
 async fn a_detached_zellij_display_serves_its_last_frame_and_reattaches_nothing() {
     // The detach of the mirrored client EOFs its attachment while the session stays
     // selected. The view keeps the last frame it drew and NOTHING reconnects - in either
-    // focus, and however many beats pass.
+    // focus, and however many beats pass. The client has served longer than an early
+    // end, so even zellij's one reattach does not apply.
     //
     // This is the whole reason the automatic re-attach is gone. Every re-attach is a fresh
     // connection to that machine raised by the death of the connection before it, so when
@@ -3367,6 +3368,161 @@ async fn selecting_the_card_again_is_what_reattaches_a_dead_display() {
     );
     the_zellij_reattach_lands(&mut rt, "a");
     assert_eq!(rt.model.state.displayed.session, "a");
+}
+
+/// Moves the nav to `session` on the local host and runs the passes that settle the
+/// selection, arm the debounce, and fire its attach. Returns the clock it ended on.
+fn the_user_selects(rt: &mut Runtime, session: &str, t: std::time::Instant) -> std::time::Instant {
+    rt.model
+        .switcher
+        .select_address(&crate::session::Address::new("local", session));
+    one_pass(rt, t);
+    let fired = t + std::time::Duration::from_millis(200);
+    one_pass(rt, fired);
+    fired
+}
+
+/// Runs passes over the next ten seconds and answers whether any of them started an
+/// attach on the local host.
+fn passes_attach_anything(rt: &mut Runtime, from: std::time::Instant) -> bool {
+    let mut now = from;
+    for _ in 0..50 {
+        now += std::time::Duration::from_millis(200);
+        one_pass(rt, now);
+        if !rt.hosts.get("local").unwrap().display.in_flight_is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+fn local_in_flight(rt: &Runtime) -> bool {
+    rt.hosts
+        .get("local")
+        .unwrap()
+        .display
+        .in_flight_contains("local")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_zellij_client_dropped_right_after_it_attaches_is_reattached_once() {
+    // zellij 0.45 can hand a fresh client the id its own session probe has just freed,
+    // and the probe's late cleanup then removes that client (zellij-org/zellij#5546).
+    // The session is still there, so xmux attaches it once more. A second early end is
+    // the normal ended state: the pane keeps its last frame and nothing reconnects.
+    let mut rt = a_settled_zellij_runtime();
+    let t0 = std::time::Instant::now();
+
+    let t = the_user_selects(&mut rt, "b", t0);
+    assert!(local_in_flight(&rt), "selecting b attaches it");
+    the_zellij_reattach_lands(&mut rt, "b");
+    the_client_detaches(&mut rt, OWN_CLIENT + 1);
+    assert_eq!(rt.model.state.displayed.session, "b");
+
+    assert!(
+        passes_attach_anything(&mut rt, t),
+        "the client zellij dropped right after it attached is attached once more"
+    );
+    the_zellij_reattach_lands(&mut rt, "b");
+    assert_eq!(rt.model.state.displayed.session, "b");
+    the_client_detaches(&mut rt, OWN_CLIENT + 1);
+
+    assert!(
+        !passes_attach_anything(&mut rt, t + std::time::Duration::from_secs(10)),
+        "a second early end reattaches nothing"
+    );
+    assert!(
+        rt.registry.grid("local").is_some(),
+        "the pane keeps the last frame it drew"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_early_end_on_a_mux_that_keeps_its_clients_reattaches_nothing() {
+    // The reattach answers one zellij defect. Any other mux whose fresh client ends
+    // right away ended for a reason of its own, and the pane shows that end.
+    let mut rt = a_settled_psmux_runtime();
+    let t0 = std::time::Instant::now();
+
+    let t = the_user_selects(&mut rt, "b", t0);
+    assert!(local_in_flight(&rt), "selecting b attaches it");
+    the_reattach_lands(&mut rt, "b");
+    the_client_detaches(&mut rt, OWN_CLIENT + 1);
+    assert_eq!(rt.model.state.displayed.session, "b");
+
+    assert!(
+        !passes_attach_anything(&mut rt, t),
+        "an early end on psmux reattaches nothing"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_attach_waits_for_the_user_to_ask_again() {
+    // An attach whose start failed is not retried by the beat, and the display is not
+    // recorded on a session no client reached. The pane keeps what it shows until the
+    // user asks for the session again, by Enter or by selecting it again, and each ask
+    // starts exactly one attach.
+    for psmux in [true, false] {
+        let mut rt = if psmux {
+            a_settled_psmux_runtime()
+        } else {
+            a_settled_zellij_runtime()
+        };
+        let t0 = std::time::Instant::now();
+
+        let mut t = the_user_selects(&mut rt, "b", t0);
+        let fail = |rt: &mut Runtime| {
+            let seq = rt
+                .hosts
+                .get("local")
+                .unwrap()
+                .display
+                .in_flight_seq("local")
+                .expect("an attach is in flight");
+            rt.on_display_event(DisplayEvent::Failed {
+                seq,
+                key: "local".into(),
+                message: "spawn failed".into(),
+            });
+        };
+        fail(&mut rt);
+        assert!(
+            !passes_attach_anything(&mut rt, t),
+            "the beat does not retry a failed attach (psmux={psmux})"
+        );
+        assert_eq!(
+            rt.model.state.displayed.session, "a",
+            "no client reached b, so b is not confirmed (psmux={psmux})"
+        );
+        t += std::time::Duration::from_secs(10);
+
+        let _ = update(
+            &mut rt.model,
+            Msg::Focus(crate::model::FocusTarget::Terminal),
+        );
+        assert!(
+            passes_attach_anything(&mut rt, t),
+            "Enter on the card asks for the attach again (psmux={psmux})"
+        );
+        t += std::time::Duration::from_secs(10);
+        fail(&mut rt);
+        assert!(
+            !passes_attach_anything(&mut rt, t),
+            "that ask is answered once (psmux={psmux})"
+        );
+        t += std::time::Duration::from_secs(10);
+
+        rt.model
+            .state
+            .focus
+            .set_view_focus(crate::app::focus::ViewFocus::Nav);
+        let _ = the_user_selects(&mut rt, "a", t);
+        let _ = the_user_selects(&mut rt, "b", t + std::time::Duration::from_secs(1));
+        assert!(
+            local_in_flight(&rt),
+            "selecting the card again asks for the attach again (psmux={psmux})"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

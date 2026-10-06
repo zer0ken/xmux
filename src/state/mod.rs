@@ -107,6 +107,17 @@ pub struct State {
     /// pending selection so rapid navigation coalesces into one trailing attach
     /// instead of a per-step storm of switch-client repaints (the freeze).
     pub attach_pending: bool,
+    /// The selection whose attach did not carry the display: its start failed, or its
+    /// client ended before it confirmed. The beat attaches nothing for it until the user
+    /// asks again, by moving the selection, focusing the terminal view, or re-scanning.
+    pub(crate) attach_held: Option<Selection>,
+    /// The selection that has spent its one reattach after its mux dropped a fresh
+    /// client. Cleared only when the selection moves, so the reattach is once per
+    /// selection however its attaches end.
+    pub(crate) reattach_spent: Option<Selection>,
+    /// The selection's mux dropped its fresh client and the one reattach is owed; the
+    /// beat fires it even though the display is confirmed on the selection.
+    pub(crate) reattach_owed: bool,
     /// The session last persisted as the user's last-selected, so stepping within the
     /// same session does not rewrite the preference file on every settle.
     pub last_saved_session: crate::session::Address,
@@ -704,6 +715,9 @@ impl State {
         match action {
             Action::Switch(address) => vec![Command::SelectAddress(address)],
             Action::Focus(FocusTarget::Terminal) => {
+                // Moving into the terminal view executes the selection, so it is the
+                // user asking for its session again.
+                self.attach_held = None;
                 self.focus.set_view_focus(ViewFocus::Terminal);
                 Vec::new()
             }
@@ -736,6 +750,23 @@ impl State {
                 // The trailing Tick arms the debounce, so rapid navigation coalesces.
                 self.selection = target;
                 self.attach_pending = true;
+                self.attach_held = None;
+                self.reattach_spent = None;
+                self.reattach_owed = false;
+                Vec::new()
+            }
+            Action::AttachFailed => {
+                self.attach_held = Some(self.selection.clone());
+                Vec::new()
+            }
+            Action::FreshClientDropped { now } => {
+                if self.reattach_spent.as_ref() == Some(&self.selection) {
+                    self.attach_held = Some(self.selection.clone());
+                } else {
+                    self.reattach_spent = Some(self.selection.clone());
+                    self.reattach_owed = true;
+                    self.attach_deadline = Some(now);
+                }
                 Vec::new()
             }
             Action::Tick {
@@ -765,13 +796,18 @@ impl State {
                 // flight, so the attach already carrying the display there is not
                 // restarted under itself.
                 //
-                // A display PTY that DIED while the selection stands arms nothing. Every
+                // A display PTY that DIED while the selection stands arms nothing, and
+                // neither does an attach whose start failed (the held selection). Every
                 // re-attach is a fresh connection to that machine, and an attach that
-                // answers a death that the attach itself caused is a loop the machine sees
-                // as a client hammering it. The pane keeps what it last drew and the user
-                // decides, by selecting the card again or re-scanning.
-                let display_needs_carry = display_astray || self.selection != self.displayed;
+                // answers a death or a failure the attach itself caused is a loop the
+                // machine sees as a client hammering it. The pane keeps what it last drew
+                // and the user decides, by selecting the card again or re-scanning. The
+                // one exception is the reattach owed after the selection's mux dropped a
+                // fresh client, which is owed at most once per selection.
+                let display_needs_carry =
+                    display_astray || self.selection != self.displayed || self.reattach_owed;
                 if display_needs_carry
+                    && !self.attach_held()
                     && !self.selection.is_empty()
                     && self.attach_deadline.is_none()
                     && !in_flight
@@ -802,6 +838,7 @@ impl State {
                 // confirmed display, or the display is astray) and nothing is in flight -
                 // the freeze invariant depends on this gate, so it stays exactly as is.
                 if self.should_attach(in_flight, display_astray) {
+                    self.reattach_owed = false;
                     cmds.push(Command::Attach(self.selection.clone()));
                 }
                 cmds
@@ -834,9 +871,18 @@ impl State {
     /// is exactly what it looks like when the session is gone and every attempt dies
     /// the same way. The pane keeps what it last drew until the user selects the card
     /// again or re-scans, so recovering is something the user asks for.
+    ///
+    /// Two facts adjust that. A held selection, whose attach failed to start, is not
+    /// attached again until the user asks. A reattach owed after the selection's mux
+    /// dropped a fresh client fires even with the display confirmed, once per selection.
     pub(crate) fn should_attach(&self, in_flight: bool, display_astray: bool) -> bool {
-        let owed = self.selection != self.displayed || display_astray;
-        owed && !in_flight
+        let owed = self.selection != self.displayed || display_astray || self.reattach_owed;
+        owed && !self.attach_held() && !in_flight
+    }
+
+    /// Whether the selection's attach waits for the user to ask again.
+    fn attach_held(&self) -> bool {
+        self.attach_held.as_ref() == Some(&self.selection)
     }
 
     /// Folds a completed [`MuxOp`](crate::model::MuxOp)'s [`OpResult`] into the

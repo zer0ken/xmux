@@ -75,6 +75,16 @@ impl Mux for Zellij {
         false
     }
 
+    /// zellij 0.45 can give an attaching client the id its own session probe has just
+    /// released, and the probe's late cleanup then removes the new client while the
+    /// session stays up (zellij-org/zellij#5270, zellij-org/zellij#5546). The CLI runs
+    /// the probe and the connection back to back in one process, so xmux cannot order
+    /// its attach around it. zellij `main` allocates ids without reuse, but no release
+    /// carries that yet.
+    fn drops_fresh_client(&self) -> bool {
+        true
+    }
+
     fn kind(&self) -> &str {
         "zellij"
     }

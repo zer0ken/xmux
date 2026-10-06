@@ -177,7 +177,8 @@ against, naming no source file, function, or test.
 - **FR-C3** - An unreachable host is marked `▲` with a view screen stating the verdict
   and diagnostics, and nothing reconnects until the user re-scans or selects the card.
 - **FR-C4** - Every dispatched switch or select command logs its exact argv and result,
-  and a failed attach is logged at warn level and returns to the nav.
+  and a failed attach is logged at warn level, returns to the nav, and is not attached
+  again until the user selects the card, executes it, or re-scans.
 
 ## D. App lifecycle
 
@@ -252,7 +253,8 @@ xmux aggregates and switches, so creating a session is the only session change i
 - **FR-G6** - A remote machine's shell family is read during its reachability probe, and a
   non-POSIX remote is never sent POSIX-only syntax.
 - **FR-G7** - xmux reaches a machine only for the launch scan, a user action, or an
-  already open push stream, and no failure triggers its own retry.
+  already open push stream, and no failure triggers its own retry except the one
+  reattach per selection of a display client that zellij drops right after attaching.
 - **FR-G8** - A machine is asked one thing at a time, while separate machines are asked
   in parallel.
 
