@@ -35,8 +35,10 @@ pub fn new_session(bin: &str, name: &str) -> Vec<String> {
 /// line is `\t<pid>.<name>\t(<state>)`, with an optional date column before the state;
 /// the name is everything after the first dot, and `attached` is read from the final
 /// state column. Lines that carry no socket id (header/footer) or a non-numeric pid
-/// are skipped so banners cannot poison the list. `windows` is unknown from `-ls`,
-/// so it is 0.
+/// are skipped so banners cannot poison the list. A socket whose state names it dead
+/// (`Dead ???`, `Remote or dead`) is skipped too: its process is gone, so nothing can
+/// attach to it, and xmux leaves the `screen -wipe` cleanup to the user. `windows` is
+/// unknown from `-ls`, so it is 0.
 pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in out.split('\n') {
@@ -53,6 +55,9 @@ pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
             continue;
         }
         let state = fields.last().unwrap().to_lowercase();
+        if state.contains("dead") {
+            continue;
+        }
         let attached = state.contains("attached") && !state.contains("detached");
         sessions.push(Session {
             host: host.to_string(),
@@ -174,6 +179,33 @@ mod tests {
                 .iter()
                 .all(|s| s.host == "jup" && s.mux == "screen" && s.windows == 0));
         }
+    }
+
+    #[test]
+    fn parse_sessions_skips_dead_sockets() {
+        // Verbatim `screen -ls` from screen 5 on Alpine after the host restarted.
+        let dead = "There is a screen on:
+	48.screen1	(Dead ???)
+Remove dead screens with 'screen -wipe'.
+";
+        assert!(parse_sessions("alp", "screen", dead).is_empty());
+        let out = concat!(
+            "There are screens on:
+",
+            "	17.screen1	(Remote or dead)
+",
+            "	18.dead end	(10/06/2026 01:47:00 PM)	(Dead ???)
+",
+            "	30.screen1	(Detached)
+",
+            "3 Sockets in /home/dev/.screen.
+",
+        );
+        let got = parse_sessions("alp", "screen", out);
+        assert_eq!(
+            got.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["screen1"]
+        );
     }
 
     #[test]
