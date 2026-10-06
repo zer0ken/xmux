@@ -1026,14 +1026,8 @@ impl Chrome {
             kind,
             ViewScreen::SelfSession | ViewScreen::Scanning | ViewScreen::Landing
         ) {
-            rows.push((
-                ScreenCell::Key(format!("{p} R")),
-                "re-scan this host".into(),
-            ));
-            rows.push((
-                ScreenCell::Key(format!("{p} r")),
-                "re-scan every host".into(),
-            ));
+            rows.push((ScreenCell::Key(format!("{p} r")), "rescan this host".into()));
+            rows.push((ScreenCell::Key(format!("{p} R")), "rescan all hosts".into()));
         }
         if kind == ViewScreen::Host && self.source_reach.get(source).is_some_and(|reach| reach.ssh)
         {
@@ -1077,14 +1071,8 @@ impl Chrome {
             rows.push((ScreenCell::Label("status"), failure_run_words(failures)));
             rows.push((ScreenCell::Gap, String::new()));
             rows.push((ScreenCell::Label("What to do"), String::new()));
-            rows.push((
-                ScreenCell::Key(format!("{p} R")),
-                "check this host again".into(),
-            ));
-            rows.push((
-                ScreenCell::Key(format!("{p} r")),
-                "re-scan every host".into(),
-            ));
+            rows.push((ScreenCell::Key(format!("{p} r")), "rescan this host".into()));
+            rows.push((ScreenCell::Key(format!("{p} R")), "rescan all hosts".into()));
             rows.push((ScreenCell::Gap, String::new()));
             rows.push((
                 ScreenCell::Label("d details"),
@@ -2105,10 +2093,10 @@ mod tests {
             vec![
                 (
                     "Enter".into(),
-                    "focus the terminal".into(),
+                    "focus terminal view".into(),
                     "terminal".into(),
                 ),
-                ("C-g r".into(), "re-scan every host".into(), "rescan".into()),
+                ("C-g r".into(), "rescan this host".into(), "rescan".into()),
             ],
             "unreachable: Connection refused".into(),
             now,
@@ -2116,7 +2104,7 @@ mod tests {
         let wide = c.hint_bar_text(200, &state);
         assert_eq!(
             wide,
-            " Enter focus the terminal · C-g r re-scan every host · unreachable: Connection refused"
+            " Enter focus terminal view · C-g r rescan this host · unreachable: Connection refused"
         );
         // Shorter descriptions first, then the reason behind the state word, then keys.
         let short = c.hint_bar_text(70, &state);

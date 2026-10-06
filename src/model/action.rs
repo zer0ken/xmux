@@ -38,7 +38,7 @@ pub enum Action {
     /// During a modal it flips the carried `prior` so the modal stays open and restores
     /// onto the flipped view.
     FocusToggle,
-    /// Re-enumerate every host (the `r` re-scan).
+    /// Re-enumerate every host (the `R` re-scan).
     Rescan,
     /// Adjust the nav width by a signed delta.
     NavWidth(i32),
@@ -94,9 +94,9 @@ pub enum Action {
 pub enum Command {
     /// Move the switcher selection to this session's row.
     SelectAddress(Address),
-    /// Re-enumerate every host (the `r` re-scan), via the switcher.
+    /// Re-enumerate every host (the `R` re-scan), via the switcher.
     Rescan,
-    /// Re-scan one machine alone (the `R` re-scan): its reachability probe, then every
+    /// Re-scan one machine alone (the `r` re-scan): its reachability probe, then every
     /// source it serves.
     RescanHost(String),
     /// Take this machine's public key off the host, then discard xmux's held credential

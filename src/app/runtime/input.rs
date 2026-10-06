@@ -7,7 +7,7 @@ impl Runtime {
     /// the nav width following the placement),
     /// Enter → focus terminal (unless an input popup is open),
     /// ←/→ navigate the nav; then the off-loop op dispatch, ensure-current-host, and
-    /// the `r` re-scan. Returns `(focus_terminal, quit, width_delta, toggle_auto_hide)`.
+    /// the `R` re-scan. Returns `(focus_terminal, quit, width_delta, toggle_auto_hide)`.
     /// The selection is committed at the loop top, so this only drives navigation +
     /// metadata, not the display. `width_changed` is the caller's out-flag.
     pub(super) fn handle_nav_bytes(
@@ -678,7 +678,7 @@ impl Runtime {
             && !non_mouse.is_empty()
             && crate::state::is_reader(&self.model.state.modal)
         {
-            // The table of the hosts to check acts on Enter: it selects a host and may hand
+            // The table of host problems acts on Enter: it selects a host and may hand
             // the focus to the terminal view, whose login pane then takes the keys.
             let effects = update(
                 &mut self.model,

@@ -1544,10 +1544,10 @@ mod tests {
                 .unwrap()
         };
         let left = rows(crate::ui::switcher::NavPosition::Left);
-        assert_eq!(row(&left, "focus the terminal ("), "C-g →/↓");
+        assert_eq!(row(&left, "focus the terminal view ("), "C-g →/↓");
         assert_eq!(row(&left, "focus the nav"), "C-g ←/↑");
         let right = rows(crate::ui::switcher::NavPosition::Right);
-        assert_eq!(row(&right, "focus the terminal ("), "C-g ←/↑");
+        assert_eq!(row(&right, "focus the terminal view ("), "C-g ←/↑");
         assert_eq!(row(&right, "focus the nav"), "C-g →/↓");
         let (t, _) = help_lines(
             "C-g",

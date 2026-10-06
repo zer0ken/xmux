@@ -363,7 +363,7 @@ pub struct Switcher {
     rescan_kick: bool,
     /// Signals the event loop to re-attach the CURRENT display: tear the (possibly
     /// detached / dead) attachment down so the next attach re-creates a fresh client.
-    /// Set on an `r` re-scan - explicit, on-demand recovery for the viewed session.
+    /// Set on an `R` re-scan - explicit, on-demand recovery for the viewed session.
     reattach_kick: bool,
 
     rows: Vec<Row>,
@@ -591,7 +591,7 @@ impl Switcher {
         std::mem::take(&mut self.rescan_kick)
     }
 
-    /// Consumes the re-attach kick (set by an `r` re-scan): the loop tears down the
+    /// Consumes the re-attach kick (set by an `R` re-scan): the loop tears down the
     /// current display attachment so the next attach re-creates a fresh client.
     pub fn take_reattach_kick(&mut self) -> bool {
         std::mem::take(&mut self.reattach_kick)
@@ -1433,7 +1433,7 @@ impl Switcher {
     }
 
     /// True when the selected host's screen carries the login pane: the host is down and
-    /// a login answers it, or its pane was opened from the hosts to check. A keystroke
+    /// a login answers it, or its pane was opened from the host problems. A keystroke
     /// typed while the terminal view is focused then drives that pane rather than
     /// reaching a session.
     pub(crate) fn current_host_blocked(&self) -> bool {
@@ -1847,7 +1847,7 @@ impl Switcher {
     // --- refresh ------------------------------------------------------------
 
     /// Resets every host to its scanning skeleton and signals the event loop to
-    /// re-kick the streaming probes (the `r` re-scan) - sessions and panes stream
+    /// re-kick the streaming probes (the `R` re-scan) - sessions and panes stream
     /// back in exactly as on first launch. The selection does not drift: the session
     /// under it becomes the awaited [`Interest`], so the selection rests on that
     /// session's source card through the skeleton phase (the lineage of a vanished
@@ -2030,7 +2030,7 @@ impl Switcher {
     }
 }
 
-/// One row of the table of the hosts to check: a host in a problem state, the cause, the
+/// One row of the table of host problems: a host in a problem state, the cause, the
 /// reason its last answer gave, and whether the hiding leaves it without a card.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CheckEntry {

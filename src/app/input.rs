@@ -298,7 +298,7 @@ mod tests {
         assert_eq!(
             rt(b"\x07h", false),
             vec![Action::ShowCheck],
-            "prefix h opens the hosts to check"
+            "prefix h opens the host problems"
         );
         assert_eq!(
             rt(b"\x07s", false),
@@ -594,7 +594,11 @@ mod tests {
             );
         }
         // The prefix arms them → they resolve to the nav executor (NavKey).
-        assert_eq!(rt(b"\x07r", false), vec![tk('r')], "prefix r arms rescan");
+        assert_eq!(
+            rt(b"\x07r", false),
+            vec![tk('r')],
+            "prefix r arms the one-host rescan"
+        );
         assert_eq!(rt(b"\x07n", false), vec![tk('n')], "prefix n arms new");
         assert_eq!(rt(b"L", false), vec![tk('L')], "prefix L arms logout");
         assert_eq!(
@@ -880,7 +884,7 @@ mod tests {
                 crate::ui::switcher::NavPosition::Left
             ),
             Some(Action::ShowCheck),
-            "the key opens the hosts to check"
+            "the key opens the host problems"
         );
         assert!(!armed, "a key while ready consumes ready");
         assert!(

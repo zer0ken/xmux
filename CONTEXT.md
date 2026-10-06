@@ -146,15 +146,15 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   corner. Never a "notice".
 - **history** - the bounded record of every toast and background event (`prefix m`).
 - **`Modal`** - the one focus-grabbing UI a prefix key opens: an input, the command
-  palette, the help, the hosts to check, or the history.
+  palette, the help, the host problems, or the history.
 - **popup** - the rounded box every modal draws, opened where the key list opens.
 - **jump** - the digits-only input `prefix <digit>` opens, which moves the selection
   while its number names a card.
 - **filter** - the type-to-filter input over the nav list (`prefix /`).
-- **hosts to check** - the table of hosts in a problem state, grouped by cause
+- **host problems** - the table of hosts in a problem state, grouped by cause
   (`prefix h`).
 - **command palette** - the searchable list of named actions (`prefix :`).
-- **one-host re-scan** - `prefix R`: the selected card's machine asked again alone.
+- **one-host re-scan** - `prefix r`: the selected card's machine asked again alone.
 - **view screen** - what the terminal view shows in place of a grid: a host screen, a
   source screen, a scanning or settled state, the own session, or the landing screen.
 - **landing screen** - the view screen from launch until the first execution: the scan

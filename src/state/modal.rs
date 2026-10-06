@@ -184,7 +184,7 @@ pub(crate) enum Modal {
     History {
         scroll: usize,
     },
-    /// The table of the hosts to check `prefix h` opens. `selected` is the row the keys
+    /// The table of host problems `prefix h` opens. `selected` is the row the keys
     /// are on, `hover` the row under the pointer, and `open` records an Enter or a click
     /// the switcher has yet to act on.
     Check {
@@ -193,7 +193,7 @@ pub(crate) enum Modal {
         open: bool,
     },
     /// The command palette `prefix :` opens, with the same `selected`, `hover`, and `open`
-    /// as the hosts to check.
+    /// as the host problems.
     Palette {
         query: String,
         selected: usize,
@@ -274,7 +274,7 @@ impl HelpMap {
 /// view to the top of what matches. `←`/`→` move the active tab and scroll its section's
 /// title to the top; `↑`/`↓`, `PgUp`/`PgDn`, and `Home`/`End` scroll and hand the active
 /// tab back to the scroll. A key ends the soft selection of the help, the palette, and the
-/// hosts to check, until the pointer moves again. `help` lays the help out for a query, so every key is held to
+/// host problems, until the pointer moves again. `help` lays the help out for a query, so every key is held to
 /// the layout the paint shows. Every other key is swallowed. Returns false when neither
 /// is open, so the read falls through to normal routing.
 pub(crate) fn feed_reader(

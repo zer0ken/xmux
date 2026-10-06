@@ -50,7 +50,7 @@ against, naming no source file, function, or test.
   cursor, and keeps the prior grid on screen during a switch until the fresh attachment
   paints or its bounded wait ends.
 - **FR-B4** - Up/down step one card, left/right step one category, a fuzzy filter
-  narrows the list over `<source>/<name>`, and `prefix r` re-scans.
+  narrows the list over `<source>/<name>`, and `prefix R` re-scans every host.
 - **FR-B5** - Quitting (`prefix q` or the ctl `quit` verb) leaves every mux session
   untouched.
 - **FR-B6** - Under a filter, `Enter` attaches the visible filtered session, never a
@@ -90,7 +90,7 @@ against, naming no source file, function, or test.
   for a mux not yet known, where the card reads the host alone.
 - **FR-B23** - When the mux moves xmux's own display client to another session, the nav
   selection follows in terminal focus and the client is carried back in nav focus.
-- **FR-B24** - `prefix h` opens the table of hosts to check, grouped by login needed,
+- **FR-B24** - `prefix h` opens the table of host problems, grouped by login needed,
   unreachable, and inventory failure, where Enter or a click selects the host and opens
   its login pane.
 - **FR-B25** - The nav attaches on the left, top, right, or bottom of the terminal view,
@@ -120,7 +120,7 @@ against, naming no source file, function, or test.
 - **FR-B33** - `prefix m` opens the history of every toast and background event, newest
   first, bounded at 200 records.
 - **FR-B34** - A re-scan ends in one toast stating what changed since the re-scan
-  request, and `prefix R` re-scans only the selected card's host.
+  request, and `prefix r` re-scans only the selected card's host.
 - **FR-B35** - Every key xmux binds is defined once in one key table that both focus
   paths and every key surface read.
 - **FR-B36** - Pressing the prefix opens the key list at once, naming every key the

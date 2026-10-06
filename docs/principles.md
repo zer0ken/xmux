@@ -58,6 +58,21 @@ selected card's next keys for three seconds, and a host screen keeps the failure
 whole. Every one of these reads the one key table, so a surface never names a key that
 does something else.
 
+## Action Names and Keys
+
+An action name states the action and its object, such as `rescan this host` or
+`place nav`. A key is the first letter of its action's name where that letter is free.
+Where one letter serves two actions that differ only in scope, the lowercase key runs
+the smaller-scope action and the uppercase form of the same letter runs the larger-scope
+one: `prefix r` rescans this host and `prefix R` rescans all hosts.
+
+A name that states only an object, such as `history`, or only a place, such as `side`,
+leaves the user to guess what pressing the key does. A key that starts its action's name
+is recalled from the name the help, the key list, and the hints already show, so
+learning the names is learning the keys. The lowercase key is the easier one to press
+and to press by mistake, so it runs the action that asks the least of the machines
+xmux reaches.
+
 ## Terminal-Owned Colour
 
 The terminal theme owns every colour xmux paints: xmux names ANSI-16 slots and the

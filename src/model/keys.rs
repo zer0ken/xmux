@@ -132,14 +132,14 @@ pub enum KeyCommand {
     FocusNav,
     /// Start a session on the selected host.
     NewSession,
-    /// Re-scan every host.
-    Rescan,
     /// Re-scan the selected card's host alone.
     RescanHost,
+    /// Re-scan every host.
+    Rescan,
     Logout,
     /// Select the current source's section information screen.
     HostInfo,
-    /// Toggle the table of the hosts to check.
+    /// Toggle the table of host problems.
     Check,
     /// Search and run a named command.
     Palette,
@@ -147,7 +147,7 @@ pub enum KeyCommand {
     Collapse,
     /// Toggle auto-hide-nav.
     AutoHide,
-    /// Move the nav one side clockwise.
+    /// Place the nav one side clockwise.
     Position,
     /// Move the side view border by this many columns (positive is right).
     Width(i32),
@@ -370,7 +370,7 @@ pub static TABLE: &[KeyEntry] = &[
         keys: Keys::Bare(Some(KeyCommand::FocusTerminal)),
         label: "Enter",
         help: "focus the terminal view",
-        long: "focus the terminal",
+        long: "focus terminal view",
         short: "terminal",
         rank: 0,
     },
@@ -379,8 +379,8 @@ pub static TABLE: &[KeyEntry] = &[
         keys: Keys::Bare(None),
         label: "i",
         help: "select the current source and show its screen",
-        long: "host information",
-        short: "host info",
+        long: "info screen of this host",
+        short: "info",
         rank: 0,
     },
     KeyEntry {
@@ -415,7 +415,7 @@ pub static TABLE: &[KeyEntry] = &[
         keys: Keys::Screen(&[KeyCode::Char('d')]),
         label: "d",
         help: "unfold / fold an unreachable host's full diagnostic (either focus)",
-        long: "diagnostic",
+        long: "diagnostic details",
         short: "details",
         rank: 0,
     },
@@ -424,7 +424,7 @@ pub static TABLE: &[KeyEntry] = &[
         keys: Keys::Prefix(&[(Chord::Digit, KeyCommand::Jump)]),
         label: "1-9",
         help: "jump to a card by its number (keep typing for 10+)",
-        long: "jump to a card",
+        long: "jump to card number",
         short: "jump",
         rank: 0,
     },
@@ -433,7 +433,7 @@ pub static TABLE: &[KeyEntry] = &[
         keys: Keys::Prefix(&[(Chord::Char('/'), KeyCommand::Filter)]),
         label: "/",
         help: "fuzzy filter <source>/<name>",
-        long: "filter the list",
+        long: "filter cards",
         short: "filter",
         rank: 1,
     },
@@ -442,7 +442,7 @@ pub static TABLE: &[KeyEntry] = &[
         keys: Keys::Prefix(&[(Chord::Tab, KeyCommand::FocusToggle)]),
         label: "Tab",
         help: "toggle focus between the nav and the terminal",
-        long: "switch focus",
+        long: "toggle focus",
         short: "focus",
         rank: 2,
     },
@@ -452,8 +452,8 @@ pub static TABLE: &[KeyEntry] = &[
             toward_terminal: true,
         },
         label: "",
-        help: "focus the terminal (the pair facing the terminal's side)",
-        long: "focus the terminal",
+        help: "focus the terminal view (the pair facing the terminal's side)",
+        long: "focus terminal view",
         short: "terminal",
         rank: 2,
     },
@@ -464,7 +464,7 @@ pub static TABLE: &[KeyEntry] = &[
         },
         label: "",
         help: "focus the nav (the pair facing the nav's side)",
-        long: "focus the nav",
+        long: "focus nav",
         short: "nav",
         rank: 3,
     },
@@ -473,8 +473,8 @@ pub static TABLE: &[KeyEntry] = &[
         keys: Keys::Prefix(&[(Chord::Char('i'), KeyCommand::HostInfo)]),
         label: "i",
         help: "select the current source and show its screen",
-        long: "host information",
-        short: "host info",
+        long: "info screen of this host",
+        short: "info",
         rank: 2,
     },
     KeyEntry {
@@ -488,20 +488,20 @@ pub static TABLE: &[KeyEntry] = &[
     },
     KeyEntry {
         section: Section::Sessions,
-        keys: Keys::Prefix(&[(Chord::Char('r'), KeyCommand::Rescan)]),
+        keys: Keys::Prefix(&[(Chord::Char('r'), KeyCommand::RescanHost)]),
         label: "r",
-        help: "re-scan every host",
-        long: "re-scan every host",
+        help: "rescan the selected card's host only",
+        long: "rescan this host",
         short: "rescan",
         rank: 1,
     },
     KeyEntry {
         section: Section::Sessions,
-        keys: Keys::Prefix(&[(Chord::Char('R'), KeyCommand::RescanHost)]),
+        keys: Keys::Prefix(&[(Chord::Char('R'), KeyCommand::Rescan)]),
         label: "R",
-        help: "re-scan the selected card's host only",
-        long: "re-scan this host",
-        short: "host",
+        help: "rescan every host",
+        long: "rescan all hosts",
+        short: "rescan all",
         rank: 2,
     },
     KeyEntry {
@@ -510,16 +510,16 @@ pub static TABLE: &[KeyEntry] = &[
         label: "L",
         help: "log out of the selected SSH machine",
         long: "log out of this host",
-        short: "logout",
+        short: "log out",
         rank: 3,
     },
     KeyEntry {
         section: Section::Sessions,
         keys: Keys::Prefix(&[(Chord::Char('h'), KeyCommand::Check)]),
         label: "h",
-        help: "hosts to check, by cause: ↑/↓ move, Enter opens the host, Esc closes",
-        long: "hosts to check",
-        short: "check",
+        help: "host problems, by cause: ↑/↓ move, Enter opens the host, Esc closes",
+        long: "host problems",
+        short: "problems",
         rank: 2,
     },
     KeyEntry {
@@ -527,7 +527,7 @@ pub static TABLE: &[KeyEntry] = &[
         keys: Keys::Prefix(&[(Chord::Char(':'), KeyCommand::Palette)]),
         label: ":",
         help: "command palette: type to search, Enter runs, Esc closes",
-        long: "find a command",
+        long: "command palette",
         short: "commands",
         rank: 2,
     },
@@ -536,7 +536,7 @@ pub static TABLE: &[KeyEntry] = &[
         keys: Keys::Prefix(&[(Chord::Char('z'), KeyCommand::Collapse)]),
         label: "z",
         help: "collapse / expand the nav",
-        long: "collapse the nav",
+        long: "collapse nav",
         short: "collapse",
         rank: 3,
     },
@@ -545,17 +545,17 @@ pub static TABLE: &[KeyEntry] = &[
         keys: Keys::Prefix(&[(Chord::Char('t'), KeyCommand::AutoHide)]),
         label: "t",
         help: "toggle auto-hide-nav (║ view border = on)",
-        long: "auto-hide the nav",
-        short: "hide",
+        long: "toggle nav auto-hide",
+        short: "auto-hide",
         rank: 4,
     },
     KeyEntry {
         section: Section::View,
         keys: Keys::Prefix(&[(Chord::Char('p'), KeyCommand::Position)]),
         label: "p",
-        help: "move the nav one side clockwise (left · top · right · bottom · default)",
-        long: "move the nav",
-        short: "side",
+        help: "place the nav one side clockwise (left · top · right · bottom · default)",
+        long: "place nav",
+        short: "place",
         rank: 4,
     },
     KeyEntry {
@@ -565,9 +565,9 @@ pub static TABLE: &[KeyEntry] = &[
             (Chord::CtrlArrow(Arrow::Right), KeyCommand::Width(1)),
         ]),
         label: "C-←/→",
-        help: "move the side view border; a bare C-←/→ repeats for a moment",
-        long: "border, repeating",
-        short: "border",
+        help: "resize the nav width; a bare C-←/→ repeats for a moment",
+        long: "resize nav width",
+        short: "width",
         rank: 6,
     },
     KeyEntry {
@@ -577,17 +577,17 @@ pub static TABLE: &[KeyEntry] = &[
             (Chord::CtrlArrow(Arrow::Down), KeyCommand::Height(1)),
         ]),
         label: "C-↑/↓",
-        help: "move the band view border; a bare C-↑/↓ repeats for a moment",
-        long: "band border",
-        short: "band",
+        help: "resize the nav height; a bare C-↑/↓ repeats for a moment",
+        long: "resize nav height",
+        short: "height",
         rank: 6,
     },
     KeyEntry {
         section: Section::App,
         keys: Keys::Prefix(&[(Chord::Char('m'), KeyCommand::History)]),
         label: "m",
-        help: "history of results and background events",
-        long: "history",
+        help: "message history of results and background events",
+        long: "message history",
         short: "history",
         rank: 2,
     },
@@ -614,7 +614,7 @@ pub static TABLE: &[KeyEntry] = &[
         keys: Keys::Prefix(&[(Chord::Prefix, KeyCommand::LiteralPrefix)]),
         label: "",
         help: "send one literal prefix to the pane (terminal focus)",
-        long: "send the prefix",
+        long: "send prefix key",
         short: "send",
         rank: 5,
     },
@@ -780,11 +780,30 @@ mod tests {
     #[test]
     fn the_nav_structure_keys_are_bound_in_the_table() {
         for position in [NavPosition::Left, NavPosition::Bottom] {
-            for (c, command) in [('h', KeyCommand::Check), ('R', KeyCommand::RescanHost)] {
+            for (c, command) in [('h', KeyCommand::Check), ('r', KeyCommand::RescanHost)] {
                 assert_eq!(prefix_command(Chord::Char(c), position), Some(command));
                 assert!(entry_for(command).is_some_and(|e| e.prefixed()));
             }
             assert_eq!(prefix_command(Chord::Char('l'), position), None);
         }
+    }
+
+    #[test]
+    fn the_lowercase_rescan_key_asks_this_host_and_the_uppercase_one_every_host() {
+        for position in [NavPosition::Left, NavPosition::Bottom] {
+            assert_eq!(
+                prefix_command(Chord::Char('r'), position),
+                Some(KeyCommand::RescanHost)
+            );
+            assert_eq!(
+                prefix_command(Chord::Char('R'), position),
+                Some(KeyCommand::Rescan)
+            );
+        }
+        assert_eq!(
+            entry_for(KeyCommand::RescanHost).map(|e| e.label),
+            Some("r")
+        );
+        assert_eq!(entry_for(KeyCommand::Rescan).map(|e| e.label), Some("R"));
     }
 }

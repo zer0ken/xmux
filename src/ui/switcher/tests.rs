@@ -930,7 +930,7 @@ async fn rescan_reapplies_name_order() {
         vec!["db", "web"],
         "the poll held the order"
     );
-    // The `r` re-scan clears sessions + re-seeds scanning; the next result re-applies
+    // The `R` re-scan clears sessions + re-seeds scanning; the next result re-applies
     // the deterministic name order, identical to the poll's.
     h.sw.request_rescan(&mut h.state);
     h.sw.apply_source_result(
@@ -2170,7 +2170,7 @@ async fn a_login_failure_reads_verdict_marked_field_dim_ssh_line_then_details() 
     for folded in ["Warning: Permanently added", "ssh output"] {
         assert!(!out.contains(folded), "{folded:?} is folded:\n{out}");
     }
-    assert!(out.contains("re-scan every host"), "{out}");
+    assert!(out.contains("rescan all hosts"), "{out}");
     assert!(
         !out.contains(" reason "),
         "the verdict replaces the reason row:\n{out}"
@@ -2729,7 +2729,7 @@ async fn streaming_holds_the_first_session_that_answered() {
 
 #[tokio::test]
 async fn request_rescan_arms_a_display_reattach() {
-    // The `r` re-scan also arms an explicit re-attach of the current display, so a
+    // The `R` re-scan also arms an explicit re-attach of the current display, so a
     // detached / dead display client is re-created on demand (the loop consumes it).
     let mut state = crate::state::State::from_sources(vec!["h".into()]);
     let mut sw = Switcher::from_sources(&mut state);
@@ -2740,7 +2740,7 @@ async fn request_rescan_arms_a_display_reattach() {
     sw.request_rescan(&mut state);
     assert!(
         sw.take_reattach_kick(),
-        "an r re-scan arms a display re-attach"
+        "an R re-scan arms a display re-attach"
     );
     assert!(!sw.take_reattach_kick(), "the kick is consumed once");
 }
@@ -3638,7 +3638,7 @@ async fn both_host_screens_share_one_grammar() {
             "{label}: the rows use whitespace: {view}"
         );
         assert!(
-            view.contains("re-scan every host"),
+            view.contains("rescan all hosts"),
             "{label}: both screens offer the rescan key:\n{view}"
         );
     }
@@ -3673,7 +3673,7 @@ fn an_empty_host_animates_only_below_its_screen_content_when_it_fits() {
             (view.x..view.right())
                 .map(|x| tall.buf()[(x, y)].symbol())
                 .collect::<String>()
-                .contains("re-scan every host")
+                .contains("rescan all hosts")
         })
         .expect("the screen actions");
     let braille_rows = |h: &Harness| -> Vec<u16> {
@@ -3701,7 +3701,7 @@ fn an_empty_host_animates_only_below_its_screen_content_when_it_fits() {
     tall.state.chrome.braille_animation = false;
     tall.draw();
     assert!(braille_rows(&tall).is_empty());
-    assert!(tall.view_text().contains("re-scan every host"));
+    assert!(tall.view_text().contains("rescan all hosts"));
 
     let short = Harness::new_sized(scan, 100, 20);
     assert!(
@@ -7636,7 +7636,7 @@ async fn unreachable_screen_keeps_last_success_and_folds_diagnostics() {
         folded.contains("last reached") && folded.contains("UTC"),
         "{folded}"
     );
-    assert!(folded.contains("check this host again"), "{folded}");
+    assert!(folded.contains("rescan this host"), "{folded}");
     assert!(!folded.contains("/tmp/cm-prod.sock"), "{folded}");
     assert_eq!(h.state.last_reached["prod"], last);
     h.key(KeyCode::Char('d')).await;
@@ -8133,7 +8133,7 @@ async fn the_check_table_groups_problem_hosts_by_cause() {
     h.sw.toggle_check(&mut h.state);
     h.draw();
     let text = h.text();
-    assert!(text.contains("╭ hosts to check "), "{text}");
+    assert!(text.contains("╭ host problems "), "{text}");
     assert!(
         text.contains(" 4 ╮"),
         "the count is the top border's meta: {text}"
@@ -8206,7 +8206,7 @@ async fn command_palette_searches_commands_and_host_login() {
         .sw
         .palette_entries(&h.state, query)
         .iter()
-        .any(|(name, _)| name.contains("re-scan")));
+        .any(|(name, _)| name.contains("rescan")));
     h.sw.feed_reader_key(
         b"\x15login dead-2",
         0x07,
@@ -8250,13 +8250,13 @@ async fn the_check_table_closes_on_esc_and_its_selection_stays_on_a_row() {
 }
 
 #[tokio::test]
-async fn prefix_capital_r_asks_for_the_selected_host_alone_unless_it_is_scanning() {
+async fn prefix_r_asks_for_the_selected_host_alone_unless_it_is_scanning() {
     let mut h = Harness::new(sources_scan(vec![
         ("alpha", host_with("alpha", &["a"])),
         ("beta", host_with("beta", &["b"])),
     ]));
     let cmds = h.sw.handle_key(
-        KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
         &mut h.state,
     );
     let machine = crate::session::machine_of(&h.sw.current_source().unwrap()).to_string();
@@ -8272,7 +8272,7 @@ async fn prefix_capital_r_asks_for_the_selected_host_alone_unless_it_is_scanning
         "and the cards stay on the list"
     );
     let cmds = h.sw.handle_key(
-        KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
         &mut h.state,
     );
     assert!(cmds.is_empty(), "a machine is asked one thing at a time");

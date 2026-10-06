@@ -45,7 +45,7 @@ ssh로 gpu-01에 접속해 tmux 세션 목록을 확인하고 attach하기까지
 ![xmux는 prefix 뒤 Ctrl-→를 누를 때마다 nav의 폭을 한 열씩 넓히고, Ctrl-←를 누를
 때마다 한 열씩 좁힌다.](docs/assets/xmux-nav-resize.gif)
 
-**nav 위치 이동**
+**nav 배치**
 
 ![xmux는 prefix p를 누를 때마다 nav를 terminal view의 다음 변으로 옮긴다. nav는 위,
 오른쪽, 아래를 거쳐 왼쪽으로 돌아온다.](docs/assets/xmux-nav-move.gif)
@@ -198,7 +198,8 @@ nav에 포커스가 있을 때 nav가 받는 키는 다음과 같다.
 | `prefix 1`-`prefix 9`      | 왼쪽 열의 번호로 세션을 선택한다 (10 이상은 계속 입력한다)            |
 | `prefix n`                 | 선택한 host에 새 세션을 만든다                                        |
 | `prefix /`                 | card를 퍼지 필터로 좁힌다                                             |
-| `prefix r`                 | 다시 스캔한다. 머신 목록과 각 source의 세션을 모두 갱신한다           |
+| `prefix r`                 | 이 host를 다시 스캔한다. 선택한 card의 머신과 그 source만 갱신한다    |
+| `prefix R`                 | 모든 host를 다시 스캔한다. 머신 목록과 각 source의 세션을 모두 갱신한다 |
 | `prefix L`                 | 선택한 SSH host에서 로그아웃한다                                      |
 
 xmux에는 tmux의 `set -g prefix`처럼 자체 prefix가 있다. 기본값은 `Ctrl-g`이며,
@@ -208,9 +209,9 @@ xmux에는 tmux의 `set -g prefix`처럼 자체 prefix가 있다. 기본값은 `
 | ------------ | ----------------------------------------- |
 | `prefix q`   | 종료                                      |
 | `prefix ?`   | 키와 기호 도움말 토글 (입력으로 검색)     |
-| `prefix m`   | 작업 결과와 배경 사건 기록 토글           |
+| `prefix m`   | 작업 결과와 배경 사건의 메시지 기록 토글  |
 | `prefix Tab` | nav와 terminal view 사이의 포커스 이동    |
-| `prefix p`   | nav를 terminal view의 다음 변으로 옮긴다  |
+| `prefix p`   | nav를 terminal view의 다음 변에 배치한다  |
 
 prefix를 누르면 prefix 표시 옆에 그 prefix로 쓸 수 있는 키 전체를 나열한 상자가
 열린다. 마우스로 card를 클릭하면 그 card가 선택되고, terminal view를 클릭하면 포커스가
@@ -383,7 +384,7 @@ mux = "tmux"          # 생략하거나 "auto"이면 호스트가 답한 mux 전
   - braille-animation
   - nav-position
 
-  host와 roster 변경은 `prefix r`로 다시 스캔해야 반영된다.
+  host와 roster 변경은 `prefix R`로 다시 스캔해야 반영된다.
 - **nav 위치.** nav는 terminal view의 네 변 중 한 곳에 붙는다(왼쪽이나 오른쪽의
   세로 열, 위나 아래의 가로 띠). `[ui] nav-position`이 기본 위치를 정하며, nav는
   스스로 움직이지 않는다. `prefix p`는 nav를 시계 방향으로 한 변 옮기고(left →

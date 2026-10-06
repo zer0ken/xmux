@@ -381,7 +381,7 @@ fn the_host_screen_states_the_machine_and_links_its_sources() {
         "user",
         "SSH login",
         "username and password",
-        "re-scan this host",
+        "rescan this host",
         "log out of this host",
         "sources",
         "tmux  2 sessions",

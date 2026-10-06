@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(
             t.feed(b"h", NavPosition::Left),
             vec![Action::ShowCheck],
-            "the key opens the hosts to check"
+            "the key opens the host problems"
         );
         assert!(!t.is_armed(), "a key while ready consumes ready");
         assert_eq!(
