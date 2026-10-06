@@ -507,6 +507,37 @@ fn a_small_window_gives_the_focused_login_pane_its_whole_width() {
         assert!(out.contains(row), "the pane shows `{row}` whole:\n{out}");
     }
 
+    // What a field states beside its value continues under the value column rather
+    // than being cut at the window's edge.
+    let rows: Vec<&str> = out.lines().collect();
+    let address = rows
+        .iter()
+        .position(|l| l.contains("address*   pwbox"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(rows[address + 1].trim(), "host name", "{out}");
+
+    // Every stop the form takes keys at scrolls into a window too short for the form.
+    for stop in [
+        "port*",
+        "username*",
+        "password",
+        "(*) do nothing",
+        "( ) save connection to ssh config",
+        "( ) register my public key",
+        "[ Log in ]",
+        "[ ] details",
+    ] {
+        rt.model.state.feed_login("pwbox", b"\t");
+        rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        rt.dirty = true;
+        rt.prepare_and_draw(&mut term);
+        let out = drawn_text(&term);
+        assert!(
+            out.contains(stop),
+            "the focused `{stop}` is on screen:\n{out}"
+        );
+    }
+
     // Focusing the nav brings it back at the same size: the small window then belongs
     // to the view the user moved to.
     rt.model
@@ -664,7 +695,7 @@ fn a_blocked_host_shows_the_login_view_screen() {
     let out = dump_screen(
         &switcher,
         None,
-        80,
+        100,
         24,
         &state,
         &crate::ui::switcher::RenderPlan::default(),

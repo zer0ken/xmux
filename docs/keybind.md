@@ -127,7 +127,8 @@ either screen, `↑`/`↓` (and `Tab`) step through its links and `Enter` opens 
 selected one. A machine screen links each of its hosts whose mux is confirmed, and
 none while no mux is; a host screen links its machine and each of its sessions. While
 a machine screen shows the login pane, the pane takes those keys and its links answer
-only a click.
+only a click. A screen too short for its selected link or the pane's focused stop scrolls
+just far enough to show it on its last row.
 
 At launch the terminal view shows the landing screen in place of a session: how many
 machines the scan has reached, and every nav card under its number as a
