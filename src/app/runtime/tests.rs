@@ -1461,6 +1461,23 @@ async fn a_re_scan_roster_adds_a_machine_it_now_names() {
 }
 
 #[tokio::test]
+async fn a_re_scan_after_a_mux_edit_keeps_the_loop_and_the_operations_on_one_mux() {
+    // Config now names zellij for a source that stands as tmux. A surviving source keeps
+    // its live host, and the operations read that same host, so a new session lands on
+    // the mux the card lists rather than on one it never enumerates.
+    let mut rt = test_rt(fake_env_with_sources(&["prod"]));
+    let mut roster = fake_roster(&["prod"]);
+    roster.cfg.hosts[0].mux = "zellij".into();
+    rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
+        roster: Box::new(roster),
+        startup: None,
+        rescan: false,
+    });
+    let standing = rt.hosts.get("prod").unwrap().mux.bin().to_string();
+    assert_eq!(rt.hosts.source("prod").unwrap().binary, standing);
+}
+
+#[tokio::test]
 async fn a_re_scan_roster_drops_a_machine_it_stopped_naming() {
     // The mirror case: the config turned a provider off, or a peer went offline. The
     // registry and the nav have to let go, or the nav paints a card nothing can reach.
