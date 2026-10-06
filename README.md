@@ -7,7 +7,7 @@ English · [한국어](README.ko.md)
 ![Two terminals recorded side by side at the same typing speed. On the left,
 ssh gpu-01, tmux ls and tmux attach reach a remote tmux session in 7.1
 seconds; on the right, xmux opens the same session from its landing screen with
-two arrow keys and Enter in 2.3 seconds.](docs/assets/xmux-demo.gif)
+two arrow keys and Enter in 2.4 seconds.](docs/assets/xmux-demo.gif)
 
 **Open a session from the landing screen**
 
@@ -30,7 +30,8 @@ session.](docs/assets/xmux-hierarchy.gif)
 
 ![A machine that takes only a password shows login needed. Its login pane takes the
 password, registers this PC's public key on the machine, and the machine's sessions
-join the nav.](docs/assets/xmux-login.gif)
+join the nav. The machine screen stays, and its host link leads to the host screen,
+where a session opens.](docs/assets/xmux-login.gif)
 
 **Resize the nav**
 

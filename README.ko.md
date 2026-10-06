@@ -7,7 +7,7 @@
 ![이 GIF는 같은 키 입력 속도로 나란히 녹화한 두 터미널을 보여준다. 왼쪽 터미널에서는
 ssh로 gpu-01에 접속해 tmux 세션 목록을 확인하고 attach하기까지 7.1초가 걸린다.
 오른쪽 터미널에서는 xmux가 landing 화면에서 화살표 키 두 번과 Enter로 같은 세션을
-열기까지 2.3초가 걸린다.](docs/assets/xmux-demo.gif)
+열기까지 2.4초가 걸린다.](docs/assets/xmux-demo.gif)
 
 **landing 화면에서 세션 열기**
 
@@ -28,7 +28,8 @@ ssh로 gpu-01에 접속해 tmux 세션 목록을 확인하고 attach하기까지
 
 ![비밀번호만 받는 machine은 login needed로 표시된다. 그 machine의 로그인 패널이
 비밀번호를 받아 이 PC의 공개키를 machine에 등록하고, machine의 세션이 nav에
-추가된다.](docs/assets/xmux-login.gif)
+추가된다. 로그인 뒤에도 machine 화면이 유지되고, 그 화면의 host 링크가 host 화면을
+열며, host 화면에서 세션을 연다.](docs/assets/xmux-login.gif)
 
 **nav 폭 조절**
 
