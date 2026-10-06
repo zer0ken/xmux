@@ -77,7 +77,7 @@ impl AttachRegistry {
     /// Marks `addr`'s grid to wipe at the start of its next feed (a no-op if not
     /// attached). Called when the displayed session switches so the previous content
     /// stays on screen until the mux's fresh repaint lands, then clears just before
-    /// the new content is applied — no blank window between switch and repaint, and
+    /// the new content is applied - no blank window between switch and repaint, and
     /// no residue behind the repaint.
     pub fn clear_grid_on_next_feed(&self, addr: &str) {
         if let Some(att) = self.map.get(addr) {
@@ -104,6 +104,15 @@ impl AttachRegistry {
             Some(att) => att.connecting.load(std::sync::atomic::Ordering::Acquire),
             None => true,
         }
+    }
+
+    /// Whether the attachment [`input`](Self::input) reaches under `addr` has drawn
+    /// anything yet. `false` when nothing is attached there.
+    pub fn input_target_painted(&self, addr: &str) -> bool {
+        self.pending
+            .get(addr)
+            .or_else(|| self.map.get(addr))
+            .is_some_and(|att| att.output_times().is_some())
     }
 
     /// Queue input bytes to `addr`'s child (a no-op if it is not attached).
@@ -138,7 +147,7 @@ impl AttachRegistry {
         addresses
     }
 
-    /// Issues the next attachment id WITHOUT spawning — for the off-loop path where the
+    /// Issues the next attachment id WITHOUT spawning - for the off-loop path where the
     /// worker spawns and the app inserts the finished attachment under this id.
     pub fn alloc_id(&mut self) -> u64 {
         let id = self.next_id;

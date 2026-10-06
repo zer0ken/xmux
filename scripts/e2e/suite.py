@@ -57,10 +57,6 @@ INSIDE_SWITCH = {"tmux": ["\x02", ")"], "zellij": ["zellij action switch-session
 DIRECT_ATTACH = {"tmux": "tmux attach -t {s}", "screen": "screen -x {s}",
                  "zellij": "zellij attach {s}", "abduco": "abduco -a {s}",
                  "tuios": "tuios attach {s}", "herdr": "herdr session attach {s}"}
-# Text a mux's own client draws once it takes input. herdr drops every key it reads
-# while its startup terminal queries are out, as it does in any terminal, so the suite
-# types only once herdr has drawn its screen.
-DRAWN = {"herdr": " spaces"}
 LISTING = {"tmux": "tmux ls -F '#S'", "screen": "screen -ls", "zellij": "zellij ls -n",
            "abduco": "abduco", "tuios": "tuios ls --json", "herdr": "herdr session list --json"}
 
@@ -400,9 +396,6 @@ class App:
         """Types into the shown session and waits for its answer naming `path`."""
         self.tokens += 1
         token = f"t{self.tokens}x{random.randrange(1000, 9999)}"
-        drawn = DRAWN.get(path.split("/")[1])
-        if drawn:
-            self.t.wait_text(drawn, timeout)
         self.focus_terminal()
         self.t.send(f"whereami {token}", "Enter")
         self.t.wait_text(f"at={path} {token}", timeout)

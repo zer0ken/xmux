@@ -59,6 +59,11 @@ impl Mux for Herdr {
         ServerModel::PerSession
     }
 
+    /// herdr queries the terminal at startup and drops every key it reads until it draws.
+    fn drops_input_before_first_frame(&self) -> bool {
+        true
+    }
+
     fn driver(&self) -> Box<dyn crate::driver::MuxDriver> {
         Box::new(HerdrDriver)
     }

@@ -955,8 +955,11 @@ impl Runtime {
         }
         self.flush_held_input();
         match input_route(&self.model.state, &self.hosts) {
-            InputRoute::Selected(key) | InputRoute::Shown(key) => self.registry.input(&key, bytes),
-            InputRoute::Hold => {
+            InputRoute::Selected(key) if !self.awaits_first_frame(&key) => {
+                self.registry.input(&key, bytes)
+            }
+            InputRoute::Shown(key) => self.registry.input(&key, bytes),
+            InputRoute::Selected(_) | InputRoute::Hold => {
                 self.held_input = Some(HeldInput {
                     selection: self.model.state.selection.clone(),
                     since: std::time::Instant::now(),
@@ -964,6 +967,16 @@ impl Runtime {
                 });
             }
         }
+    }
+
+    /// Whether input for the attachment under `key` waits for its first frame: the host's
+    /// mux drops the keys its client reads before that frame, and the attachment input
+    /// reaches there has drawn nothing yet.
+    fn awaits_first_frame(&self, key: &str) -> bool {
+        self.hosts
+            .get(host_of_key(key))
+            .is_some_and(|h| h.mux.drops_input_before_first_frame())
+            && !self.registry.input_target_painted(key)
     }
 
     /// Delivers held input once the selection's attachment exists, and drops it when
@@ -975,8 +988,12 @@ impl Runtime {
         };
         let current = held.selection == self.model.state.selection;
         match input_route(&self.model.state, &self.hosts) {
-            InputRoute::Selected(key) if current => self.registry.input(&key, held.bytes),
-            InputRoute::Hold if current && held.since.elapsed() < HELD_INPUT_MAX => {
+            InputRoute::Selected(key) if current && !self.awaits_first_frame(&key) => {
+                self.registry.input(&key, held.bytes)
+            }
+            InputRoute::Selected(_) | InputRoute::Hold
+                if current && held.since.elapsed() < HELD_INPUT_MAX =>
+            {
                 self.held_input = Some(held);
             }
             _ => tracing::info!(

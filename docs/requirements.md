@@ -179,6 +179,10 @@ against, naming no source file, function, or test.
 - **FR-C4** - Every dispatched switch or select command logs its exact argv and result,
   and a failed attach is logged at warn level, returns to the nav, and is not attached
   again until the user selects the card, executes it, or re-scans.
+- **FR-C5** - Keys typed after a pick reach the picked session in the order typed: they
+  wait while its attachment starts and, for a mux whose client drops the keys it reads
+  before its first frame, until that attachment draws. Keys still waiting after 5 s, or
+  when the pick moves on, are dropped.
 
 ## D. App lifecycle
 
@@ -306,6 +310,3 @@ The seamless cross-host switch is bought with these costs, accepted by design:
   as typed text in the session: Windows OpenSSH passes the reply on in pieces, and tmux
   before 3.6 ends it at the gap. tmux 3.6 fixes this upstream (tmux/tmux#4411,
   microsoft/terminal#7185).
-- Keys typed into a herdr session in the first moments after it is selected, before herdr
-  draws its screen, are lost: herdr drops what it reads while its startup terminal queries
-  are out, the same as when it is started in any terminal.

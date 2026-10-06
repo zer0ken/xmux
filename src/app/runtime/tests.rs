@@ -7186,6 +7186,41 @@ async fn keys_typed_while_returning_to_a_reattaching_host_reach_the_selected_ses
     assert!(logged(&stale_log).is_empty());
 }
 
+/// herdr drops every key it reads before it draws its first frame. Keys typed into a
+/// fresh herdr attachment that has drawn nothing wait, and reach it in the order typed
+/// once it has drawn.
+#[tokio::test(flavor = "current_thread")]
+async fn keys_typed_before_a_herdr_attachment_draws_reach_it_after_its_first_frame() {
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    let mut hosts = crate::model::Hosts::default();
+    hosts.insert(crate::model::Host::new(
+        crate::transport::ssh("deb-1".into(), String::new(), "linux".into()),
+        crate::mux::for_binary("herdr").unwrap(),
+    ));
+    rt.hosts = hosts;
+    let selected = Selection {
+        host: "deb-1".into(),
+        session: "herdr1".into(),
+    };
+    let key = display_key(&rt.hosts, &selected);
+    let (fresh, log) = crate::display::attachment::fake_attachment_with_input_log(1);
+    rt.registry.insert(&key, fresh);
+    rt.model.state.displayed = selected.clone();
+    rt.model.state.selection = selected;
+
+    rt.forward_input(b"whereami".to_vec());
+    rt.flush_held_input();
+    assert!(logged(&log).is_empty(), "herdr has drawn nothing yet");
+
+    rt.registry
+        .get(&key)
+        .unwrap()
+        .mark_painted_for_test(std::time::Instant::now());
+    rt.flush_held_input();
+    rt.forward_input(b"\r".to_vec());
+    assert_eq!(logged(&log), b"whereami\r");
+}
+
 /// Input held for a selection is dropped when the selection moves on before its
 /// attachment exists, so it never reaches a session it was not typed for.
 #[tokio::test(flavor = "current_thread")]
