@@ -1,0 +1,13 @@
+#!/bin/sh
+# Prints which host, mux, and session the calling shell runs in, read from the
+# environment each mux gives its panes, followed by the argument. The scenarios type it
+# with a fresh argument to identify a session.
+if [ -n "${TMUX:-}" ]; then m=tmux s=$(tmux display-message -p '#S')
+elif [ -n "${STY:-}" ]; then m=screen s=${STY#*.}
+elif [ -n "${ZELLIJ_SESSION_NAME:-}" ]; then m=zellij s=$ZELLIJ_SESSION_NAME
+elif [ -n "${TUIOS_SESSION:-}" ]; then m=tuios s=$TUIOS_SESSION
+elif [ -n "${HERDR_ENV:-}" ]; then m=herdr s=${HERDR_SESSION:-default}
+elif [ -n "${ABDUCO_SESSION:-}" ]; then m=abduco s=$ABDUCO_SESSION
+else m=none s=none
+fi
+echo "at=$(hostname)/$m/$s${1:+ $1}"

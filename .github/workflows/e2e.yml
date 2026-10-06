@@ -1,0 +1,33 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  linux:
+    name: e2e · linux client
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e-musl
+      - name: build
+        run: |
+          sudo apt-get install -y --no-install-recommends musl-tools
+          cargo build --locked --target x86_64-unknown-linux-musl
+      - name: e2e
+        run: scripts/e2e/run.sh
+        env:
+          XMUX_E2E_BIN: target/x86_64-unknown-linux-musl/debug/xmux
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-results
+          path: scripts/e2e/out
