@@ -1,7 +1,9 @@
 # One image serves every demo machine: the laptop that runs xmux and the servers it
 # reaches over ssh. Every machine, user, and session in the recordings comes from here.
 # XMUX_VERSION names a published release, which is downloaded and verified, unless
-# bin/ holds an xmux built from the checkout.
+# bin/ holds an xmux built from the checkout. The demo user's password is for the
+# server that takes only a password (sessions.sh); every machine sits on a private
+# Docker network.
 FROM debian:12
 
 ARG XMUX_VERSION
@@ -21,7 +23,8 @@ RUN test -n "$XMUX_VERSION" \
    && grep " \*\?$tarball\$" SHA256SUMS | sha256sum -c - \
    && tar xzf "$tarball" xmux && install -m 755 xmux /usr/local/bin/xmux; fi \
  && rm -rf /tmp/* \
- && useradd -m -s /bin/bash dev && mkdir -p /run/sshd /home/dev/.ssh /home/dev/.config/xmux \
+ && useradd -m -s /bin/bash dev && echo dev:demo-pass | chpasswd \
+ && mkdir -p /run/sshd /home/dev/.ssh /home/dev/.config/xmux \
  && ssh-keygen -q -t ed25519 -N '' -C dev@laptop -f /home/dev/.ssh/id_ed25519 \
  && cp /home/dev/.ssh/id_ed25519.pub /home/dev/.ssh/authorized_keys \
  && touch /home/dev/.hushlogin

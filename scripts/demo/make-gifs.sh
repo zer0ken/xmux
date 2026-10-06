@@ -14,7 +14,7 @@ native_pwd() { pwd -W 2>/dev/null || pwd; }
 here=$(cd "$(dirname "$0")" && native_pwd)
 root=$(cd "$here/../.." && native_pwd)
 net=xmux-demo
-machines=(laptop gpu-01 web-01)
+machines=(laptop gpu-01 web-01 db-01)
 out="$here/out"
 bin="$here/bin"   # the Dockerfile installs an xmux found here instead of downloading one
 
@@ -53,7 +53,7 @@ for m in "${machines[@]}"; do
 done
 
 rm -rf "$out"
-for scenario in compare-manual compare-xmux features; do
+for scenario in compare-manual compare-xmux features login; do
   docker exec -u dev -w /home/dev xmux-demo-laptop python3 /opt/demo/record.py "$scenario" /tmp/demo
 done
 docker cp xmux-demo-laptop:/tmp/demo/. "$out"

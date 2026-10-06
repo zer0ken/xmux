@@ -93,15 +93,25 @@ console.log(`  ssh + tmux ${(manual.done - manual.keys[0][0]).toFixed(1)}s, xmux
 const tour = load("features");
 const lead = t => t - tour.keys[0][0] + 0.8;
 const caps = tour.captions.map(([t, c]) => [lead(t), c]);
-const FEATURES = { switch: "Switch sessions", resize: "Resize the nav", place: "Place the nav", autohide: "Auto-hide the nav" };
+const FEATURES = {
+  landing: "Open a session from the landing screen", "nav-switch": "Switch sessions",
+  hierarchy: "Walk up to the source and the host", "nav-resize": "Resize the nav",
+  "nav-place": "Place the nav", "nav-autohide": "Auto-hide the nav",
+};
 for (const [name, label] of Object.entries(FEATURES)) {
   const i = caps.findIndex(([, c]) => c === label);
   if (i < 0 || i + 1 >= caps.length) throw new Error(`features recording has no "${label}" segment`);
   const dir = path.join(work, name);
   await capture(browser, [{ title: "xmux", timer: false, pulse: null, rec: tour }],
     caps[i][0] - 0.4, caps[i + 1][0] - 0.06, dir, label);
-  addGif(dir, `xmux-nav-${name}.gif`, HOLD_END);
+  addGif(dir, `xmux-${name}.gif`, HOLD_END);
 }
+
+// The login has a recording of its own, because its server is in no other scenario.
+const login = load("login");
+await capture(browser, [{ title: "xmux", timer: false, pulse: null, rec: login }],
+  null, null, path.join(work, "login"), login.captions[0][1]);
+addGif(path.join(work, "login"), "xmux-login.gif", HOLD_END);
 
 // The xmux window alone, after the session switch settles and before the resize starts.
 const resize = caps.find(([, c]) => c === "Resize the nav");

@@ -26,9 +26,14 @@ NAV_HEIGHT = 4
 
 KEYS = {
     "Enter": b"\r", "Tab": b"\t", "Down": b"\x1b[B", "C-g": b"\x07",
-    "Ctrl →": b"\x1b[1;5C", "Ctrl ←": b"\x1b[1;5D",
+    "Ctrl →": b"\x1b[1;5C", "Ctrl ←": b"\x1b[1;5D", "Ctrl ↑": b"\x1b[1;5A", "Ctrl ↓": b"\x1b[1;5B",
+    "Space": b" ", "Left": b"\x1b[D",
 }
-LABELS = {"Enter": "Enter ⏎", "Down": "↓"}
+LABELS = {"Enter": "Enter ⏎", "Down": "↓", "Left": "←"}
+
+# The password-only server of the login scenario; make-gifs.sh gives it this password.
+PASSWORD_HOST = "db-01"
+PASSWORD = "demo-pass"
 
 QUERIES = re.compile(rb"\x1b\[6n|\x1b\[0?c|\x1b\[\?u|\x1b\](1[01]);\?(?:\x07|\x1b\\)")
 
@@ -178,10 +183,11 @@ def compare_xmux(s):
 
 def features(s):
     fresh_app_state()
+    s.caption("Open a session from the landing screen")
     s.type("xmux"); s.key("Enter", TYPE)
-    s.answered("3  gpu-01/tmux/my-important-session")
-    s.key("Down"); s.key("Down"); s.key("Enter")
-    s.answered("epoch 17/50")
+    s.answered("3  gpu-01/tmux/my-important-session", 1.4)
+    s.key("Down"); s.key("Down"); s.hold(0.6); s.key("Enter")
+    s.answered("epoch 17/50", 1.6)
     s.prefix(); s.key("Tab")
     s.hold(1.0)
 
@@ -191,6 +197,13 @@ def features(s):
     s.answered("listening on :8080", 1.8)
     s.prefix(); s.type("3", KEY); s.key("Enter")
     s.answered("epoch 17/50", 2.0)
+
+    s.caption("Walk up to the source and the host")
+    s.prefix(); s.key("Left"); s.hold(0.6)
+    s.key("Ctrl ↑"); s.answered("live updates", 2.0)
+    s.key("Ctrl ↑"); s.answered("last reached", 2.0)
+    s.key("Ctrl ↓"); s.answered("live updates", 1.4)
+    s.key("Ctrl ↓"); s.answered("epoch 17/50", 2.0)
 
     s.caption("Resize the nav")
     s.prefix()
@@ -218,10 +231,39 @@ def features(s):
     return s.term.now()
 
 
+def login(s):
+    """Logs in to the password-only server, registers the key, and opens a session.
+
+    The server joins the ssh config only here, so the other scenarios never show it.
+    """
+    fresh_app_state()
+    with open(os.path.expanduser("~/.ssh/config"), "a") as f:
+        f.write(f"\nHost {PASSWORD_HOST}\n  User dev\n  StrictHostKeyChecking no\n"
+                "  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n")
+    s.caption("Log in to a password host")
+    s.type("xmux"); s.key("Enter", TYPE)
+    s.answered(f"7  {PASSWORD_HOST}  login needed", 1.0)
+    s.prefix(); s.type("7", KEY); s.key("Enter")
+    s.answered("register my public key", 1.6)
+    # The pane opens on the address; three stops down is the password.
+    for _ in range(3):
+        s.key("Tab", 0.25)
+    for c in PASSWORD:
+        s.key(c, TYPE, "•")
+    s.hold(0.4)
+    s.key("Tab"); s.key("Tab"); s.key("Space", KEY, "Space"); s.key("Tab"); s.key("Enter")
+    s.answered("public key registered", 2.4)
+    s.key("Down"); s.key("Down"); s.key("Enter")
+    s.answered("accepting connections", 2.0)
+    s._at_due()
+    return s.term.now()
+
+
 SCENARIOS = {
     "compare-manual": (80, 22, compare_manual),
     "compare-xmux": (80, 22, compare_xmux),
     "features": (100, 28, features),
+    "login": (100, 28, login),
 }
 
 
