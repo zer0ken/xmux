@@ -44,9 +44,10 @@ KNOWN = {
     ("in-client-switch", "tuios", None): "#333",
 }
 # Cells that do not apply: the mux cannot move a client between sessions (a screen,
-# abduco, or herdr client belongs to one session's server).
+# abduco, or herdr client belongs to one session's server), and abduco has no keys of its
+# own beyond the detach key `detach-inside` covers.
 NOT_APPLICABLE = {("in-client-switch", "screen"), ("in-client-switch", "abduco"),
-                  ("in-client-switch", "herdr")}
+                  ("in-client-switch", "herdr"), ("native-keys", "abduco")}
 
 # The in-client keys that detach a mux's own client, and the input that moves the client
 # from <mux>1 to <mux>2 from inside it: tmux's next-session key, zellij's action, which
@@ -506,16 +507,85 @@ def in_client_switch(c):
     app.whereami(c.path(c.h2, f"{m}2"))
 
 
-SCENARIOS = {
-    "first-launch": first_launch,
-    "switch": switch,
-    "new-session": new_session,
-    "password-login": password_login,
-    "unreachable": unreachable,
-    "detach-inside": detach_inside,
-    "shared-client": shared_client,
-    "in-client-switch": in_client_switch,
+def wait_regex(app, pattern, what, timeout=15):
+    return app.t.wait(lambda ls: next((m for l in ls for m in [re.search(pattern, l)] if m), None),
+                      what, timeout)
+
+
+def click(app, x, y):
+    """A left click at screen cell (x, y), counted from 0, as the terminal reports it."""
+    app.t.send(f"\x1b[<0;{x + 1};{y + 1}M", f"\x1b[<0;{x + 1};{y + 1}m", gap=0.5)
+
+
+def native_keys(c):
+    """The mux's own keys for its windows, panes, and copy mode, typed through xmux."""
+    m = c.mux
+    name = f"nk{random.randrange(1000, 9999)}"
+    c.hosts.sh(c.h1, CREATE[m].format(s=name))
+    app = c.launch(c.h1)
+    app.open(f"{c.h1}/{m}", name)
+    app.whereami(c.path(c.h1, name))
+    t = app.t
+    if m == "tmux":
+        t.send("\x02", "%", gap=0.5)
+        t.send("tmux display -p 'panes=#{window_panes}'", "Enter")
+        t.wait_text("panes=2")
+        t.send("seq 1 300", "Enter", gap=0.5)
+        t.send("\x02", "[", "\x1b[5~", gap=0.5)
+        wait_regex(app, r"\[\d+/\d+\]", "tmux's copy mode position")
+        t.send("q", gap=0.5)
+        t.wait(lambda ls: not any(re.search(r"\[\d+/\d+\]", l) for l in ls), "copy mode to end")
+    elif m == "screen":
+        t.send("\x01", "c", gap=0.5)
+        t.send("echo win=$WINDOW", "Enter")
+        t.wait_text("win=1")
+        t.send("\x01", "n", gap=0.5)
+        t.send("echo win=$WINDOW", "Enter")
+        t.wait_text("win=0")
+    elif m == "zellij":
+        t.send("\x10", "n", gap=1.0)
+        t.wait_text("Pane #2")
+        t.send("echo pane=$ZELLIJ_PANE_ID", "Enter")
+        t.wait_text("pane=1")
+        y, x = next((y, l.find("Pane #1")) for y, l in enumerate(t.lines()) if "Pane #1" in l)
+        click(app, x, y + 3)
+        t.send("echo pane=$ZELLIJ_PANE_ID", "Enter")
+        t.wait_text("pane=0")
+        t.send("\x14", "n", gap=1.0)
+        t.wait_text("Tab #2")
+    elif m == "tuios":
+        t.send("\x02", "c", gap=1.0)
+        t.send("tuios list-windows", "Enter")
+        t.wait_text("2 window(s)")
+    elif m == "herdr":
+        t.send("\x02", "v", gap=1.0)
+        t.send("echo panes=$(herdr pane list | grep -o '\"pane_id\"' | wc -l)", "Enter")
+        t.wait_text("panes=2")
+
+
+# How each mux starts a detached session for a scenario that needs one of its own.
+CREATE = {"tmux": "tmux new-session -d -s {s} -x 100 -y 30", "screen": "screen -dmS {s}",
+          "zellij": "zellij attach -b {s}", "tuios": "tuios new {s} --detach",
+          "herdr": "nohup herdr --session {s} server >/dev/null 2>&1 &"}
+
+# Two groups: whether xmux's own behavior works, and whether each mux's native workflow
+# survives inside xmux's terminal view.
+GROUPS = {
+    "xmux behavior": {
+        "first-launch": first_launch,
+        "switch": switch,
+        "new-session": new_session,
+        "password-login": password_login,
+        "unreachable": unreachable,
+    },
+    "native workflow": {
+        "native-keys": native_keys,
+        "detach-inside": detach_inside,
+        "shared-client": shared_client,
+        "in-client-switch": in_client_switch,
+    },
 }
+SCENARIOS = {name: run for group in GROUPS.values() for name, run in group.items()}
 
 
 def known(scenario, mux, system):
@@ -603,7 +673,9 @@ def main():
         shutil.rmtree(workdir, ignore_errors=True)
 
     columns = [(o, m) for o in systems for m in muxes]
-    report = table(results, scenarios, columns)
+    report = "\n\n".join(
+        f"{group}\n\n" + table(results, [s for s in names if s in scenarios], columns)
+        for group, names in GROUPS.items() if set(names) & set(scenarios))
     print("\n" + report)
     with open(os.path.join(args.out, "results.md"), "w", encoding="utf-8") as f:
         f.write(report + "\n")
