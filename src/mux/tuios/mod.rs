@@ -46,6 +46,7 @@ impl Mux for Tuios {
         &self.bin
     }
 
+    /// tuios identifies itself with `--version`, never `-V`.
     fn identity_probes(&self) -> Vec<Vec<String>> {
         vec![vec![self.bin.clone(), "--version".to_string()]]
     }
@@ -84,6 +85,7 @@ impl Mux for Tuios {
         let command = transport.exec_argv(false, &argv);
         match runner.run_spec(&command).await {
             Ok(out) => parse_sessions(transport.host_id(), self.kind(), &out),
+            // Exit 3 means no live daemon: a reachable host with no live session.
             Err(RunError::Exit { code: 3, .. }) => Ok(Vec::new()),
             Err(e) => Err(e),
         }
@@ -93,10 +95,15 @@ impl Mux for Tuios {
         vec![self.bin.clone(), "attach".to_string(), session.to_string()]
     }
 
+    // No `display_session_env` override: the client does not rewrite `TUIOS_SESSION`
+    // when it moves between sessions, so that variable is no display truth.
+
     fn control_argv(&self) -> Option<Vec<String>> {
         None
     }
 
+    /// Ending an attachment does not end its daemon session, so a detach or a client
+    /// quit has no session-death push; a later asked-for poll supplies the inventory.
     fn death_signal(&self) -> DeathSignal {
         DeathSignal::None
     }
@@ -115,6 +122,10 @@ impl Mux for Tuios {
     }
 }
 
+/// Parses `tuios ls --json`, the complete metadata answer: it carries each session's
+/// window count and attachment state, so no per-session window query exists, and another
+/// command would break the one-command poll. Saved records are not live sessions and are
+/// never offered.
 fn parse_sessions(source: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, RunError> {
     let listed: Vec<ListedSession> = serde_json::from_slice(out)
         .map_err(|e| RunError::Other(format!("invalid tuios session listing: {e}")))?;

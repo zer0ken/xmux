@@ -8,9 +8,14 @@
 //! (`crate::mux::{tmux, psmux}`) and OWN the display decision. Each mux
 //! constructs its own driver via [`Mux::driver`](crate::mux::Mux::driver),
 //! so [`driver_for`] is a thin mux-agnostic wrapper (`host.mux.driver()`) that names no
-//! concrete mux type. Each driver is zero-sized — the per-host display STATE lives in
+//! concrete mux type. Each driver is zero-sized: the per-host display STATE lives in
 //! `host.display`/`AttachRegistry`, borrowed through `DriverCtx`, so the driver owns the
 //! DECISION while that state stays supervisor-owned.
+//!
+//! A driver's `show` is the one site for the per-source display orchestration (which
+//! PTY to use, whether to switch in place or reattach), so the runtime resolves the
+//! driver, calls it, and branches on nothing mux-specific. The dependency runs one way:
+//! a mux implementation imports this seam, and this seam never imports a concrete driver.
 
 use std::sync::{Arc, Mutex};
 

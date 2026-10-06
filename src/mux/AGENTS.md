@@ -2,156 +2,58 @@
 
 ## Purpose
 
-`mux` is the home of the mux implementations. It defines mux-specific behavior behind the `Mux`
-trait AND holds the pure shared builders every mux argv is built from. A mux
-knows the mux binary, server model, enumeration behavior, attach command shape,
-control-channel availability, event source, death signal, and session
-operation plans.
-
-The module root holds the cross-mux surface: the `Mux` trait, the mux registry
-(the single source of truth every factory and predicate reads), identity detection, the factory
-functions, and the control-protocol trait that hides a mux's control-mode wire
-details (line framing and classification, the notification-to-event table, the
-size formatter) from the connection layer. The shared module holds the query format
-templates, the argv builders, the row parsers, and the address utilities; the root
-re-exports it, so one path names a shared builder and a mux factory alike.
-
-Each concrete mux lives in its own sub-directory, owning BOTH its metadata mux
-AND its display driver, and is re-exported from the root:
-
-- `tmux/` owns the tmux mux, the display-tty file helpers, its control argv, its
-  driver with its attach helper, and its pure control-mode wire functions behind
-  the control-protocol trait. See `tmux/AGENTS.md`.
-- `psmux/` owns the psmux mux, the environment variable its own
-  client carries its session in, its driver (which reattaches on every change
-  unless the live client itself reports it is already on the selected session,
-  since it can name no client from outside its own session), and the per-host
-  session registry that backs enumeration (one server per session, so there is no
-  aggregate session listing). See `psmux/AGENTS.md`.
-- `zellij/` owns the zellij mux, the per-session action argv
-  every zellij query is addressed with, the environment variable its own client
-  carries its session in, and its driver (which reattaches on every session change
-  because no client can be named from outside its own session), owning the session
-  listing as its one output shape. See `zellij/AGENTS.md`.
-- `abduco/` owns the abduco mux, its listing parser (the bare
-  binary IS the listing), its driver (which reattaches on every session change),
-  and the one-card-per-session rule. abduco is the simplest implementation: no control
-  stream, no server-socket flag, and no per-session query; a poll enumerates
-  once and resolves each session as the session alone. See `abduco/AGENTS.md`.
-- `screen/` owns the GNU screen mux, its `-ls`
-  parser, and its driver (which reattaches on every session change because
-  screen offers no client switch). See `screen/AGENTS.md`.
-- `tuios/` owns the tuios JSON listing and its driver, which reattaches on every
-  selection because no external command can retarget a named client. One daemon owns
-  every session, but callers use per-session display semantics. See `tuios/AGENTS.md`.
-- `herdr/` owns the herdr JSON listing and its driver, which reattaches on every
-  selection because no external command can retarget a named client. Each session has
-  its own persistent server. See `herdr/AGENTS.md`.
-
-Sub-modules pull the shared trait, value types, and imports from the parent. A
-mux's driver is constructed by the mux itself, so no caller names a concrete
-driver type.
-
-## Mental Model
-
-A mux describes mux semantics and protocol classification. A transport dispatches host
-execution. The `MuxDriver` trait in `src/driver.rs` is the mux-agnostic display
-seam; each mux's concrete driver lives in its own implementation directory and is
-constructed by the mux, so a mux owns BOTH its argv, server model, and
-enumeration AND its display orchestration. Shared muxes such as tmux use one
-aggregate server and a source-level control stream. Per-session muxes such as psmux,
-zellij, abduco, screen, tuios, and herdr enumerate differently and supply a per-session
-attach plan.
-
-The command-plan verbs default to tmux-compatible argv, so a tmux-compatible mux
-is identity plus a few overrides. A mux that shares no argv with tmux overrides
-every verb, and overrides the listing parsing with it: a plan and the shape of what
-it prints are one decision, so they move together.
+`mux` is the MUX axis: the `Mux` trait, the mux registry every factory and predicate
+reads, identity detection, the control-protocol trait that hides a mux's control-mode
+wire details from the connection layer, and the shared argv builders and row parsers.
+Each mux owns its metadata mux AND its `MuxDriver`, and constructs that driver itself.
+tmux keeps one aggregate server, a source-level control stream, and one PTY per source
+moved in place; every other mux reattaches on each session change, because none can
+name a client from outside its own session. The command-plan verbs default to
+tmux-compatible argv; a mux that shares no argv with tmux overrides every verb and its
+listing parse with it, since a plan and the shape of what it prints are one decision.
 
 ## Module Seams
 
-- Enumeration may use the transport, because it executes on a host.
-- Discovery answers "which muxes a host serves", and only ever from the
-  registry: the candidate set is what xmux can drive, and each candidate is
-  confirmed by ITS OWN identity probe answering AS that candidate. It is called
-  once per host, by the environment for this machine after the config-only first paint
-  and by the runtime for each remote after it, never per source. No implementation is
-  the fallback for another, and no name is dropped for another's
-  sake - the psmux alias of tmux never counts as tmux because tmux's own help
-  probe reads the alias's self-naming help.
-- Plan methods return mux argv or mux intent; they do not decide local versus ssh
+- One sub-directory per mux, re-exported from the root, so one path names a shared
+  builder and a mux factory alike.
+- The generic command builders are called ONLY inside the per-mux directories and the
+  shared enumeration helper in the root, each plan wrapping one. The pure address
+  helpers are callable anywhere.
+- Plan methods return mux argv or mux intent and never decide local versus ssh
   execution. The plan set covers what xmux itself issues: attach, enumerate, read
   sessions and options, select a window, and start a session. There is no kill,
-  rename, or window-edit plan; the mux owns those. Every mux argv is built from a
-  mux and dispatched by a transport, never off a bare binary name.
-- The generic command builders from the shared module are called ONLY inside
-  the per-mux directories and the shared enumeration helper in the root, each
-  plan wrapping one. The pure address helpers are callable anywhere.
-- The server model, the event source, and the death signal are the classification
-  values callers use instead of branching on mux names. The mux constructs the
-  source's driver, so mux selection lives in the mux implementation and never in a central
-  match on server model; the wrapper in `src/driver.rs` only resolves it. tmux
-  keeps one PTY per source with an in-place switch; psmux, zellij, abduco, tuios, and
-  herdr reattach on every change, since none can name a client from outside its own
-  session. abduco additionally has no per-session query, so its poll resolves each
-  session as the session alone rather than running one.
-- A mux answers whether its own CLIENT carries the session it is attached to in an
-  environment variable it rewrites in place, and which variable that is. It is a
-  mux fact and lives here; whether that variable can actually be read is the
-  transport's answer, since a process is readable only on the machine it runs on,
-  and the two are composed outside both implementations.
+  rename, or window-edit plan; the mux owns those.
+- Drivers reach display resources only through the driver seam's capability port, and
+  no code outside the mux tree names a concrete driver type.
 
 ## Invariants
 
-- A reachable empty mux enumerates as an empty list, not an error; unreachable
-  sources return an error.
-- Every command in an enumeration runs under a fixed per-command budget, so one command
-  that never answers cannot hold that source's inventory open. A timed-out listing
-  surfaces as the source's error.
-- Mux discovery asks a machine's candidates ONE AT A TIME. Each candidate is one or more
-  commands, and on a remote machine each command is its own connection, so asking them
-  together opens several unauthenticated connections to one machine in the same instant -
-  which is both what makes a legitimate probe get dropped and what the machine's own logs
-  read as an attack.
-- Transport-specific command wrapping belongs to the host axis.
-- A mux that moves its client between sessions INSIDE the client process is
-  invisible to every server, so nothing can be pushed and nothing can be asked:
-  the live client's own environment is the only source of truth. A mux says whether it has
-  one by naming the variable, and says it has none by naming nothing.
-  Naming one is not a promise that an answer will arrive.
-- A mux answers for its OWN flags, and a flag question added to the trait carries no
-  tmux-compatible default. Whether a mux takes a server-socket flag is asked of the mux
-  for exactly this reason: zellij refuses an unexpected flag before it reads the verb, so
-  a default answer inherited from tmux would make a source permanently unreachable, and a
-  mux added later would inherit the same break.
-- Where a machine has to know something mux-specific to address a mux correctly, the
-  answer is computed where BOTH are known - the source list and the host registry - and
-  handed to the machine. The machine axis names no mux, so it can only use what it is
-  given; both sites derive their answer from one raw value the same way, which is what
-  keeps a source and its host addressing one server.
-- Mux methods should stay at the exact behavior surface used by app, source
-  metadata, and management code.
+- A reachable empty mux enumerates as an empty list; an unreachable source is an
+  error, and so is a listing that exceeds the fixed per-command budget.
+- A per-session reattach HOLDS the stale attachment, so its grid stays on screen until
+  the fresh attachment paints or reaches its bounded wait (stale-while-revalidate).
+  Input goes to the fresh attachment while it waits.
+- A per-session driver never pre-warms; sync only reaps the source PTY when the source
+  has no sessions left.
 
 ## Common Pitfalls
 
-- Do not add a broad capability catalog when only one caller needs a concrete
-  plan.
-- Do not thread remoteness booleans through mux methods.
+- Do not put transport decisions into mux methods that are documented as
+  transport-blind, and do not thread remoteness booleans through them.
 - Do not duplicate psmux registry behavior outside the mux and source boundary
   without deciding which module owns it.
 
 ## Before Editing
 
-- Identify whether the new behavior is mux semantics, host transport, or UI
-  policy.
-- Check tmux, psmux, AND zellij behavior when changing trait methods. A new verb
-  with a tmux-compatible default is silently wrong for zellij, which refuses
-  tmux's flags outright.
-- Keep trait additions tied to an end-to-end caller.
+- Check tmux, psmux, AND zellij when changing trait methods, and tie any addition to
+  an end-to-end caller. A flag question or verb with a tmux-compatible default is
+  silently wrong for zellij, which refuses tmux's flags outright.
+- The display decision is the highest-risk surface: which client a command reaches
+  decides whether xmux moves a terminal the user owns.
 
 ## Verification
 
-- Pin the argv a plan emits and the shape it parses back together; they are one
-  decision.
-- Re-check the connection and app surfaces when the event source, death signal, or
-  selection outcome changes.
+- Pin the argv a plan emits and the shape it parses back together.
+- Re-check the connection and app surfaces when the event source, death signal,
+  selection outcome, or display decision changes.
+- Set `XMUX_LOG=xmux::mux::<kind>=debug` to trace a driver's decisions.

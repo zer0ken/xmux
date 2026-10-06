@@ -1,4 +1,7 @@
 //! One bounded, cancellable login attempt and its user-facing diagnosis.
+//!
+//! The login is an ordinary ssh command the transport composes the same way it composes
+//! every later command; only its pending credential and its host-key policy differ.
 
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -111,7 +114,8 @@ pub fn start_login(
 
 /// Runs the login off the calling thread. `password_asked` runs once, the moment askpass
 /// hands the held password to ssh: a server asks only after it accepted the connection,
-/// so that moment is the one boundary between connecting and authenticating ssh shows.
+/// so that moment is the one boundary between connecting and authenticating ssh shows
+/// without raising its log level.
 pub(crate) fn start_login_with_cancel(
     source: String,
     command: crate::transport::CommandSpec,

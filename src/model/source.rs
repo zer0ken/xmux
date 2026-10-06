@@ -9,8 +9,11 @@
 //!
 //! The runtime source registry is the app loop's, every source keyed by id in display
 //! order; the environment keeps this definition's list and its alias index for the
-//! CLI, the scan, and the off-loop operations. New local or ssh execution belongs in
-//! the transport and new mux behavior in the mux, never in this adapter.
+//! CLI, the scan, and the off-loop operations. New execution semantics never go in this
+//! adapter: host execution and ssh diagnostics belong to the transport, host failure and
+//! screen policy to the model, mux semantics and protocol classification (attach argv,
+//! server model, enumeration) to the mux, and per-source display orchestration with its
+//! switch-or-reattach decision to the per-mux driver.
 
 use std::path::Path;
 use std::sync::Arc;

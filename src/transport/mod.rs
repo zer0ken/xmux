@@ -374,6 +374,12 @@ pub trait Transport: Send + Sync {
     /// which is a different account and a refusal.
     fn set_login(&mut self, _login: ssh::Login) {}
 
+    /// Hands this transport the process-memory credential store. An ssh transport
+    /// consults it each time a command is composed, so every spawn path and every source
+    /// on one machine receives current authentication: submitted connection values are
+    /// the machine's, not one source's. A source found later and a transport rebuilt from
+    /// the roster receive the same store before use, so neither can lose the machine
+    /// credential.
     fn set_credentials(&mut self, _credentials: auth::Credentials) {}
 
     fn has_credential(&self) -> bool {
@@ -409,7 +415,9 @@ pub trait Transport: Send + Sync {
     /// allocates for it. The remote path already forces one (`ssh -tt`) and WSL
     /// wraps its child in `script`; a machine that spawns the mux binary directly
     /// on a Unix box (local tmux) has no such flag and the `-CC` client dies on
-    /// pipe stdio, so the spawner must give it a pty itself.
+    /// pipe stdio, so the spawner must give it a pty itself. A machine arranges the
+    /// terminal on the HOST side and never rewrites a mux flag to work around a pipe:
+    /// which control payload runs is the mux's word, not the transport's.
     fn control_needs_pty(&self) -> bool {
         false
     }

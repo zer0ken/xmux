@@ -2,122 +2,50 @@
 
 ## Purpose
 
-`display` is the shared PTY / grid / input display-mechanics layer: PTY
-attachment spawn and lifecycle, the off-runtime attach worker, the attachment
-registry, the grid state, terminal input decoding, mouse parsing, terminal setup,
-and the terminal handover into a session (the exec that hands the controlling
-terminal to the mux client when xmux is not the interactive app). It also names
-xmux's own session so it can refuse to mirror itself. It is mux-agnostic (it names
-no mux verb at all) and application-agnostic (it holds no app UI state; the focus
-and modal state machine lives in `app`).
+`display` is the PTY, grid, and input mechanics layer behind the driver seam. It runs
+real attached mux clients: spawning an attachment opens a PTY-backed attach child, an
+output pump feeds a grid, and the app renders the selected grid. Input and resize go
+to per-attachment control threads, and a worker moves the blocking PTY open and spawn
+off the runtime and hands finished attachments back to the app, which owns the
+registry. The layer also holds terminal setup, input decoding, mouse parsing, and the
+terminal handover into a session when xmux is not the interactive app, and it names
+xmux's own session so it can refuse to mirror itself.
 
-## Mental Model
-
-The display path runs real attached mux clients. Spawning an attachment opens a
-PTY-backed attach child; an output pump feeds a grid; the app renders the
-selected grid. The pump also scans the child's raw output for complete OSC 52
-clipboard writes and hands each whole sequence to the app loop, which re-emits it
-on xmux's own stdout between frames so the enclosing terminal sets the clipboard;
-every other byte of child output reaches the screen only through the grid, and an
-oversized sequence is dropped whole rather than buffered without limit.
-Re-emitting the escape rather than calling a clipboard API keeps the path working
-when xmux runs over ssh. Input and resize commands are queued to per-attachment control
-threads so the async runtime never blocks on PTY operations. The worker moves the
-blocking PTY open and spawn off the runtime thread and hands finished attachments
-back to the app, which owns the registry.
+It is mux-agnostic, naming no mux verb, and application-agnostic, holding no app UI
+state: the focus and modal state machine lives in `app`.
 
 ## Module Seams
 
-- Attachment spawning and management covers one PTY attachment: its handle, its
-  events and commands, its control thread, and its output pump.
-- The worker runs that spawn on a dedicated OS thread and hands the result back;
-  it never owns the registry.
-- The registry maps display keys to live attachments and exposes the grid, input,
-  resize, and reap operations. The registry also serves, for a key whose
-  attachment was reaped, the last grid that attachment fed, until a fresh
-  attachment installs under the key: a display whose client died keeps its last
-  frame on screen across the reattach that replaces it. A session change follows the
-  same stale-while-revalidate rule: the fresh attachment stays off-screen until it shows a
-  visible frame and its output then settles for 50 ms, continuous output after that frame
-  reaches 400 ms, or 3 s pass without a visible frame. Input
-  targets the fresh attachment while it waits, and resize reaches both attachments.
-- The grid owns the terminal-emulation cell state. It also answers a content
-  fingerprint, which the runtime compares across successive frames to decide
-  whether a display transition actually changed the visible screen; the
-  grid-changed log event fires only on a change. It answers its last written line for the
-  same reason: a child that stopped left its account of why on its own screen, and that
-  screen is the only place it exists, so the line is read off the grid BEFORE the reap
-  drops it.
-- An attachment's whole life is on record: the argv it IS when it is asked for, the key it
-  installs under when it is ready, the reason when it fails, and its exit when it goes,
-  with the last line its pane held. The loop reads a missing attachment as a client to
-  replace, so a child that keeps stopping and a reattach decision that keeps firing look
-  identical from the outside; only the exit being on record separates them.
-- An attachment owns its command's authentication guard until its child has been reaped,
-  because a long-lived ssh child can invoke askpass after spawn has returned.
-- An SSH attachment's authentication report is read from the start of its own output
-  off the runtime thread. The report identifies the attachment, and an absent report
-  remains unknown rather than borrowing the machine's last method. A pane showing only
-  ssh's success reports holds no visible frame, so a session change never swaps one in,
-  and the exit on record names the last line that is not one of them.
-- Input decoding, dispatch, and mouse parsing turn terminal input into routing
-  decisions or input actions. Terminal setup holds the prefix parsing, mouse
-  capture, and the terminal guard.
-- Reading one environment variable out of a live attach child is its own seam,
-  beside the attachment. It answers what the running process holds NOW, not what
-  the spawn was given, which is the only way to observe a mux that moves its
-  client between sessions inside the client process. It names no mux and no
-  variable: the caller supplies the variable to ask for.
+- An attachment is one PTY client: its handle, events, commands, control thread, and
+  output pump. It owns its command's authentication guard until its child is reaped.
+- The worker spawns attachments on a dedicated OS thread and never owns the registry.
+- The registry maps display keys to live attachments, parks a fresh attachment while
+  it paints, and serves a reaped attachment's last grid until a fresh one installs.
+- The grid owns the terminal-emulation cell state, a content fingerprint for detecting
+  a visible change, and its last written line for naming why a child stopped.
+- Input decoding, dispatch, and mouse parsing turn terminal bytes into routing
+  decisions or input actions; terminal setup holds prefix parsing, mouse capture, and
+  the terminal guard.
+- The live child-environment read answers one caller-named variable from a running
+  attach child. It names no mux and no variable.
 
 ## Invariants
 
-- Registry methods must not perform blocking PTY work on the event loop.
-- Each attachment coalesces output wakeups so busy sessions cannot enqueue
-  unbounded redraw events.
-- The metadata control path does not supply display pixels.
-- An attachment reports the name its own PTY carries as a plain fact about that
-  PTY. Whether that name identifies a mux client depends on where the attach child
-  actually runs, which is a transport question this layer never answers.
-- The live child-environment read has exactly two answers: a value, or NO SIGNAL.
-  Absence never stands in for a value and a value is never inferred. A platform
-  that exposes only a process's exec-time environment has no signal, because that
-  answer would be stale rather than missing, and a stale answer is worse than
-  none.
-- Teardown must signal child and control resources without blocking the runtime.
-- The pump answers the child's terminal QUERIES (device status, device
-  attributes) itself, since there is no real terminal behind the PTY; otherwise
-  the child stalls on startup and the terminal view stays empty.
-- The input path reads key presses only. A terminal's byte stream carries no
-  key-up, so a held prefix's autorepeat is byte-identical to repeated taps and is
-  handled as such: the doubled-prefix literal fires on each one. Telling them apart
-  would mean requesting key releases through the kitty keyboard protocol, which
-  binds behaviour to what the terminal, and every enclosing mux, chooses to pass
-  through; the input path stays terminal-agnostic instead.
-- Rendering marks each wide (CJK) glyph's trailing cell as always-update so the
-  renderer's incremental diff repaints it on a wide-to-narrow transition;
-  otherwise that trailing cell is skipped and the terminal keeps the old glyph's
-  right half as background residue. This is a paint-layer fix, never a
-  full-screen clear, which would flash on every switch.
-
-## Common Pitfalls
-
-- Do not bypass the registry for input, resize, grid lookup, or reap.
-- Do not write directly to a PTY from app or UI code.
-- Do not treat raw stdout passthrough as compatible with the renderer owning
-  stdout.
-- Do not name a mux verb or an app UI-state type here; this layer is mux-agnostic
-  and app-agnostic.
+- **Real mux clients.** Display attachments are real mux clients, not reconstructed
+  output streams; the metadata control path never supplies display pixels.
+- The registry is the only way to reach an attachment for input, resize, grid lookup,
+  and reap. App and UI code never write to a PTY directly.
+- The renderer owns stdout, so raw stdout passthrough of child output is not an
+  option; the one exception is a whole OSC 52 sequence the loop re-emits between
+  frames.
+- The live child-environment read has two answers, a value or no signal; absence never
+  stands in for a value, and a stale exec-time environment counts as no signal.
 
 ## Before Editing
 
-- Identify whether the change concerns attachment lifecycle, grid rendering,
-  input routing, or terminal protocol parsing.
-- Keep blocking OS calls on dedicated threads or behind existing channels.
 - Preserve the id and address correlation carried on PTY events.
 
 ## Verification
 
-- Exercise the registry, input decoding, grid, attachment lifecycle, and the
-  worker's off-loop responsiveness for the seam you touched.
-- Re-check focus routing, modal routing, and event coalescing from the app side
-  when the change reaches them.
+- A change to input routing is rechecked from the app side for focus routing, modal
+  routing, and event coalescing.

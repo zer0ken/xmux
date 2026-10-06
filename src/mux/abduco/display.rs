@@ -2,6 +2,16 @@
 //! through ONE per-host PTY that is REATTACHED whenever the selected session changes.
 //! `Abduco::driver` constructs it, so mux selection lives in the abduco implementation, not a
 //! central match.
+//!
+//! abduco cannot move an attached client to another session. Its whole option surface
+//! is `-a -A -c -l -n -e -f -p -q -r -v`, and none of those is a switch verb: `-e` only
+//! names the detach key, and pressing that key ends the attachment and leaves every
+//! session running, so the client is gone rather than pointed somewhere else. There is
+//! therefore no session change to follow: the nav follow that tmux's
+//! `%client-session-changed` drives has nothing to fire on here, and the nav selection
+//! standing still after a detach is the correct answer, not a missed update. A
+//! session-follow path would carry a notification abduco cannot send about a move abduco
+//! cannot make.
 
 use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;

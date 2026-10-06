@@ -2,6 +2,9 @@
 
 use crate::session::Session;
 
+/// How a source's failure classifies. Whether ssh refused for a reason a login can answer
+/// is the transport's ssh diagnostic, read here once; presentation filtering and row
+/// construction consume this typed result and never classify a failure themselves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailureKind {
     Blocked,

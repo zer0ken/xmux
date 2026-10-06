@@ -2,90 +2,32 @@
 
 ## Purpose
 
-`mux/abduco` is the abduco implementation: everything mux-specific to abduco lives here so
-no abduco code sits at the `src` root. It owns BOTH sides of the mux:
-
-- the metadata mux: binary name, a per-session server model, listing
-  enumeration (the bare binary IS the listing), attach argv, create argv,
-  death signal, and the one-card-per-session rule;
-- the display driver: the per-source display orchestration for a per-session mux.
-
-The mux constructs its own driver, so abduco selection lives in this implementation and
-never in a central match on server model. abduco has no control stream; it is polled.
-
-## Mental Model
-
-abduco is a PER-SESSION mux: each session is its own server process owning its own
-unix socket under `~/.abduco`. It is the simplest mux xmux drives: it has no
-windows (a session is one PTY running one command), no control-mode channel, and no
-server-socket flag. The display driver holds ONE per-source PTY and REATTACHES it
-with `abduco -a <name>` on every session change, which attaches to that session's
-own server.
-
-abduco also cannot move an attached client to another session. Its whole option
-surface is `-a -A -c -l -n -e -f -p -q -r -v`, and none of those is a switch verb:
-`-e` only names the detach key. Pressing that key ends the attachment and leaves
-every session running, so the client is GONE rather than pointed somewhere else.
-
-Because there is no per-session query, one enumeration is the whole answer and every
-session resolves as a plain session card (the session alone).
-
-The mux supplies the argv, model, and enumeration; the driver consumes it
-and owns the concrete display decision. The transport dispatches the host execution.
+`mux/abduco` is the abduco implementation, the simplest mux xmux drives. Each session
+is its own server process owning its own unix socket under `~/.abduco`, with no windows
+(a session is one PTY running one command), no control-mode channel, no server-socket
+flag, and no per-session query. One listing is the whole answer, and the display
+reattaches with `abduco -a <name>` on every session change.
 
 ## Module Seams
 
-- The implementation root holds the mux itself and the listing parser.
+- The implementation root holds the mux itself and the listing parser; the bare binary
+  is the listing.
 - The driver sits beside it and owns the per-source display orchestration.
-- The driver pulls the mux-agnostic display seam and capability port from
-  `src/driver.rs`. The app fills that port with the supervisor-owned display
-  resources, so the mux never imports the app runtime.
-- Identity detection is this implementation's own `identity_probes` (one `-v` question;
-  `-V` is rejected) and `classify_identity` (the name in the output), implemented
-  beside the rest of the `Mux` surface - no central probe sequence answers for it.
+- Identity detection is this implementation's own: one `-v` question, answered by the
+  name in its output.
 
 ## Invariants
 
 - A per-session attach uses `abduco -a <name>`, which reaches that session's own
   server.
-- A session change ALWAYS reattaches; on a reattach the stale attachment is HELD,
-  not removed, so its grid stays on screen until the fresh attachment paints or
-  reaches its bounded wait (stale-while-revalidate). Input goes to the fresh
-  attachment while it waits.
-- There is no session change to follow. abduco cannot move an attached client from
-  inside a session, so the nav follow that tmux's `%client-session-changed` drives
-  has nothing to fire on here: a detach ends the attachment instead of retargeting
-  it, and the nav selection standing still afterwards is the correct answer, not a
-  missed update.
-- Sync never pre-warms; it only reaps the source PTY when the source has no
-  sessions left.
-- A session resolves as the session alone, never with a per-session command
-  that cannot exist.
+- A session resolves as the session alone, one card per session, never with a
+  per-session command that cannot exist.
+- abduco cannot move an attached client, so there is no session change to follow.
 
 ## Common Pitfalls
 
-- Do not invent a per-session query: abduco has none, and a bogus command
-  would run on every enumeration and fail.
-- Do not add a session-follow path for abduco: it would carry a notification abduco
-  cannot send about a move abduco cannot make.
-- Do not use `-V` (uppercase) anywhere: abduco rejects it; its version flag is
-  `-v` (lowercase).
-- Do not rely on dvtm: abduco's default session command is the user's tool inside
-  the session and is out of xmux's scope; xmux only creates the session.
-- Do not name the concrete driver outside the mux tree; the supervisor resolves it
-  through the mux, never through a match on server model.
-
-## Before Editing
-
-- Decide whether the behavior is abduco argv, display orchestration, or
-  listing enumeration.
-- Check tmux, psmux, AND zellij behavior when changing trait methods; abduco is
-  the simplest implementation and inherits nothing from tmux's argv.
-
-## Verification
-
-- Pin the plan argv and the shape it parses back together; they are one decision.
-- Re-check the connection and app surfaces when the event source, death signal, or
-  display decision changes.
-- Set `XMUX_LOG=xmux::mux::abduco=debug` to trace the driver's show and inventory
-  decisions.
+- Do not invent a per-session query; a bogus command would run on every enumeration
+  and fail.
+- Do not use `-V` anywhere; abduco rejects it and its version flag is `-v`.
+- Do not rely on dvtm: abduco's default session command is the user's tool inside the
+  session, and xmux only creates the session.

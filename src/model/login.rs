@@ -459,6 +459,9 @@ impl LoginFailure {
 
 pub(crate) const SECRET_INPUT_CAPACITY: usize = 16 * 1024;
 
+/// A password typed into the login pane. It holds one allocation of a fixed capacity, so
+/// the text is never copied into a reallocated buffer; its debug form is redacted, and its
+/// storage is zeroed on drop.
 #[derive(PartialEq, Eq)]
 pub struct SecretInput(String);
 

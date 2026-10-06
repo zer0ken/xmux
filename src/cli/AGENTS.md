@@ -2,93 +2,35 @@
 
 ## Purpose
 
-`cli` is the command surface: argument parsing and dispatch for the
-`ls`/`attach`/`doctor`/`instances`/`send`/`version` commands and the default
-interactive app, plus the `uninstall` subcommand that removes xmux the way it was
-installed, and the `update` subcommand that detects how xmux was installed
-and updates it: a cargo install and a binary the user copied onto their PATH are
-replaced with a checksum-verified build from the release, an install the script
-placed re-runs that script, and a winget or Homebrew install runs its package
-manager. This directory exposes ONE entry, which the binary shim calls; everything
-below it is crate-internal.
-
-`doctor` reports a failed source as the state its own failure text proves, in the
-same word the app's cards use: a failure the user could answer inside the app reads
-as one, and only a machine that did not answer reads as unreachable.
-
-## Mental Model
-
-The CLI is the outermost layer. It parses argv, resolves the config, the resolved
-environment, and instance naming, and dispatches each subcommand to the layer
-that owns the behavior: the interactive app (the default), the session listing,
-the attach handover, the headless instance and send commands, the self-update,
-and the uninstall. A command that needs no config or instance (version, update,
-uninstall) runs without one, so a broken config never blocks it.
+`cli` is the outermost layer and the command surface. It parses argv, resolves the
+config, the environment, and instance naming as each command needs, and dispatches to
+the layer that owns the behavior: the interactive app (the default), `ls`, `attach`,
+`doctor`, `instances`, `send`, `update`, `uninstall`, and `version`. A command that
+needs no config or instance (`version`, `update`, `uninstall`) runs without one, so a
+broken config never blocks it.
 
 ## Module Seams
 
-- Dispatch owns parsing and command selection; it composes the config, the
-  resolved environment, and the instance control socket as each command needs.
-- Update owns the update command: install-method detection, the delegation each
-  method needs, in-place replacement with a checksum-verified build, and the recorded
-  answer about which version is newest.
-- Uninstall owns the uninstall command: the removal plan per install method, the two
-  confirmations, and the removal itself. It reads the install method through update's
-  detection, so the two commands never disagree about how xmux was installed.
+- Dispatch owns parsing and command selection and exposes the one public entry the
+  binary shim calls; everything below it is crate-internal.
+- `update/` owns the update command; its own Working Notes describe it.
+- Uninstall owns the removal plan per install method, the two confirmations, and the
+  removal itself. It reads the install method through the update command's detection,
+  so the two commands never disagree about how xmux was installed.
 
 ## Invariants
 
-- Askpass mode is detected before logging setup and command-line parsing. It performs
-  only the private broker exchange and exits, so no normal command can observe or print
-  credential context.
-
-- This directory exposes exactly ONE public entry, which the binary shim calls; the
-  layers below it are crate-internal.
-- A running instance is addressed by NAME (a control socket), never by pid.
-- The steps of an install live in the install script, not here. An install that script
-  placed is updated by running the script again, so the layout it writes is described
-  in one place and cannot drift from what the update does.
-- An install the script placed is recognised by the marker it writes beside its
-  launcher, before the layout is read at all. The launcher may sit outside the versions
-  it points at, and on Windows it is a copy, so its own position leads nowhere. Reading
-  the layout stays as the fallback, which is what recognises an install whose marker
-  was deleted.
-- An install method is decided from the running executable's own path and nothing
-  else. A binary whose path cannot be read is reported as unknown rather than assigned
-  a method, because each method writes somewhere different.
-- Uninstall deletes only paths the install provably owns: version-named directories
-  holding the xmux binary, launchers proven by their marker, their link into those
-  versions, or identical bytes in the root's `bin`, the marked profile block that adds
-  this install's launcher directory, and the one user `PATH` entry the Windows script
-  recorded adding under its header, spelled exactly as recorded. Anything else,
-  including a directory the user chose and every other file in it, stays. Every
-  deleting step takes its paths explicitly, so tests run it against temporary
-  directories. A directory the plan cannot list is an error, never an empty list, so
-  a removal is never reported done while what it should remove is still there.
-- Uninstall removes nothing without a yes. `--yes` answers only the first question, so
-  settings and data go only with `--purge` or a second yes. It refuses while an
-  instance is running, and checks again right before each removal, and it reaches no
-  remote host.
+- Askpass helper mode is handled before logging setup and argument parsing.
+- A running instance is addressed by name (its ctl socket), never by pid.
+- Uninstall deletes only paths the install provably owns, takes every path
+  explicitly, and treats a directory it cannot list as an error rather than an empty
+  list, so a removal is never reported done while its target remains.
 - The Windows uninstall helper reports what it could not remove in a log the command
   names; the command never reports the deferred part as done.
-- `doctor` asks the network nothing. It reports the recorded answer about the newest
-  version; `update --check` is the command that asks.
-- Whether a newer version exists is asked at most once a day, off the app's own path,
-  and a failure to ask leaves the previous answer standing. This is not the roster
-  rule: that rule governs the machines the roster names, which xmux reaches over ssh
-  and which refuse every retry identically once they refuse one.
-
-## Common Pitfalls
-
-- Do not reach below the documented seams from dispatch; route through the config,
-  environment, and control surfaces.
-
-## Before Editing
-
-- Identify whether the change is parsing, dispatch, or a specific subcommand's
-  behavior.
+- `doctor` asks the network nothing and reports a failed source with the same state
+  word the app's cards use.
 
 ## Verification
 
-- Exercise each subcommand's argv parsing and dispatch from the binary shim, and
-  the update command's method detection on a host that cannot be touched.
+- Exercise each subcommand's argv parsing and dispatch from the binary shim, and the
+  update command's method detection on a host that cannot be touched.

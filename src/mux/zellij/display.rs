@@ -14,6 +14,12 @@ use crate::model::Selection;
 
 /// Per-session mux (zellij): one server per session, displayed through ONE per-host
 /// PTY that is REATTACHED whenever the selected session changes.
+///
+/// The display belief is what suspends a reattach: an attachment already recorded as
+/// showing the selected session is left alone. Following a client switch records the
+/// client's own report as that belief BEFORE the nav moves, so the selection arriving
+/// here finds a belief the client backs, and the client the user just moved is never
+/// torn down to reach the session it is already in.
 pub struct ZellijDriver;
 
 impl MuxDriver for ZellijDriver {

@@ -4,7 +4,7 @@
 //! predicates ([`to_grid_local`], [`leading_ctrl_arrow`], [`view_border_drag_width`]),
 //! and the per-read gesture/outcome carriers
 //! ([`MouseState`]/[`StdinOutcome`]). None of these touch app or switcher state, so they
-//! are unit-testable in isolation; the stateful handlers in `runtime.rs` thread the
+//! are unit-testable in isolation; the stateful handlers in `runtime/` thread the
 //! runtime's world and call into this core.
 
 use ratatui::crossterm::event::KeyCode;

@@ -13,6 +13,10 @@
 //! (stale-while-revalidate), the same rule a session change follows by holding the
 //! prior live client until the swap. Each key holds at most one such grid, and any
 //! `insert` or `remove` under the key drops it.
+//!
+//! A parked attachment stays off-screen until its owner swaps it in, but it is already
+//! the session the user is on: input under its key goes to it, and a resize reaches both
+//! it and the installed client.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
