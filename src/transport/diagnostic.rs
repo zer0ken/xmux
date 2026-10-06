@@ -227,7 +227,7 @@ const AUTH_REFUSED: &str = "authentication was refused";
 const HOST_KEY_CHANGED: &str = "the host key changed";
 const HOST_KEY_UNKNOWN: &str = "the host key is not known yet";
 const NAME_UNRESOLVED: &str = "the host name could not be resolved";
-const UNREACHED: &str = "the host could not be reached";
+const UNREACHED: &str = "the machine could not be reached";
 const TIMED_OUT: &str = "timed out";
 const CLOSED_AFTER_PASSWORD: &str =
     "the server accepted the password but closed the session before it started";

@@ -1390,8 +1390,11 @@ impl Switcher {
                             .iter()
                             .filter(|g| crate::session::machine_of(&g.source) == machine)
                             .count();
-                        let s = if n == 1 { "" } else { "s" };
-                        format!("{}, {n} source{s}", tree::HOST_REACHABLE)
+                        format!(
+                            "{}, {n} {}",
+                            tree::HOST_REACHABLE,
+                            if n == 1 { "mux" } else { "muxes" }
+                        )
                     }
                 };
                 (&[KeyCommand::FocusTerminal, KeyCommand::RescanHost], fact)

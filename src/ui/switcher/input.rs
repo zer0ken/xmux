@@ -388,7 +388,7 @@ impl Switcher {
             .or_else(|| state.chrome.source_reach.get(machine))
             .is_some_and(|reach| reach.ssh)
         {
-            state.flash("this host does not use SSH");
+            state.flash("this machine does not use SSH");
             return;
         }
         let session = match self.current_ref() {
@@ -654,9 +654,9 @@ impl Switcher {
         // A session lives in a source, so a host names none to create it in.
         if let Some(Node::Host(machine)) = self.selected_node() {
             if host_failure(state, &machine).is_some() {
-                state.flash("host unreachable, cannot create here");
+                state.flash("machine unreachable, cannot create here");
             } else {
-                state.flash(format!("select a source of {machine} to start a session"));
+                state.flash(format!("select a mux of {machine} to start a session"));
             }
             return;
         }
@@ -675,7 +675,7 @@ impl Switcher {
                     )
                 )
         }) {
-            state.flash("host unreachable, cannot create here");
+            state.flash("mux unreachable, cannot create here");
             return;
         }
         state.modal = Some(Modal::Input(Box::new(Input::new(

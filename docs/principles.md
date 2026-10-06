@@ -54,24 +54,28 @@ its body says in one line why it is empty and which key answers it.
 While the user acts, the question is what to do next, and a surface that answers it
 saves a trip to the help. So the selected card names its state, an open filter counts
 its matches, a live prefix names every key it unlocks, a selection move names the
-selected card's next keys for three seconds, and a host screen keeps the failure reason
-whole. Every one of these reads the one key table, so a surface never names a key that
+selected card's next keys for three seconds, and a machine screen keeps the failure
+reason whole. Every one of these reads the one key table, so a surface never names a key that
 does something else.
 
 ## Action Names and Keys
 
-An action name states the action and its object, such as `rescan this host` or
-`place nav`. A key is the first letter of its action's name where that letter is free.
-Where one letter serves two actions that differ only in scope, the lowercase key runs
-the smaller-scope action and the uppercase form of the same letter runs the larger-scope
-one: `prefix r` rescans this host and `prefix R` rescans all hosts.
+An action name states the action and its object, such as `rescan this machine` or
+`place nav`, and an object at one level of the hierarchy is named by that level, machine
+or mux. A key is the first letter of its action's name where that letter is free. Where
+one letter serves two actions that differ only in scope, the lowercase key runs the
+smaller-scope action and the uppercase form of the same letter runs the larger-scope
+one: `prefix r` rescans this machine and `prefix R` rescans all machines.
 
 A name that states only an object, such as `history`, or only a place, such as `side`,
 leaves the user to guess what pressing the key does. A key that starts its action's name
 is recalled from the name the help, the key list, and the hints already show, so
 learning the names is learning the keys. The lowercase key is the easier one to press
 and to press by mistake, so it runs the action that asks the least of the machines
-xmux reaches.
+xmux reaches. A machine and a mux on it share a name and look alike on screen, so a
+word both levels could answer to, such as `host`, leaves the user unable to tell which
+one a key acts on; the same holds for the screens, which is why each opens with its
+level.
 
 ## Terminal-Owned Colour
 
@@ -113,8 +117,8 @@ The nav is a list of numbered cards grouped in sections: one source's session ca
 under its `{host}/{mux}` title, or the cards of hosts with no session to show. `↑`/`↓`
 move between numbered cards and `←`/`→` between sections, and neither step depends on
 the hierarchy of hosts, sources, and sessions, which is reached only through
-`Ctrl+↑`/`Ctrl+↓`, the two parts of a section title, and the links on the host and
-source screens.
+`Ctrl+↑`/`Ctrl+↓`, the two parts of a section title, and the links on the machine and
+mux screens.
 
 Cards and sections are what the user sees and counts, so stepping through them must
 mean the same thing in a column and in a band, whatever hosts the list holds. Folding

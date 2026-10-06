@@ -357,7 +357,7 @@ impl Credentials {
         let profile = self.profile(machine).unwrap_or_default();
         if profile.proxied {
             return Err(io::Error::other(
-                "password login through ProxyJump or ProxyCommand is unavailable because the proxy inherits askpass; use key authentication for this host",
+                "password login through ProxyJump or ProxyCommand is unavailable because the proxy inherits askpass; use key authentication for this machine",
             ));
         }
         let endpoint = self.ensure_broker()?;

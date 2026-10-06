@@ -742,11 +742,11 @@ mod tests {
         p.found_mux(&MuxAnswer::Found);
         assert_eq!(p.state_of(FindMux), Some(Running));
         // The login's own probe failing settles the search with its reason.
-        assert!(p.probe_answered(4, Some("the host could not be reached\nssh: connect")));
+        assert!(p.probe_answered(4, Some("the machine could not be reached\nssh: connect")));
         assert_eq!(p.state_of(FindMux), Some(Failed));
         assert_eq!(
             p.steps[2].note.as_deref(),
-            Some("the host could not be reached")
+            Some("the machine could not be reached")
         );
     }
 

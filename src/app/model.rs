@@ -1373,8 +1373,8 @@ fn settle_rescan(model: &mut AppModel) {
         state.chrome.source_label_when(source, answered)
     });
     let title = match &machine {
-        Some(machine) => format!("rescan {machine}"),
-        None => "rescan all hosts".to_string(),
+        Some(machine) => format!("rescan machine {machine}"),
+        None => "rescan all machines".to_string(),
     };
     model.state.notify.toast(title, notes);
 }
@@ -2357,7 +2357,7 @@ mod tests {
         update(&mut model, down());
         assert_eq!(
             hint_text(&model),
-            " Enter focus terminal view · C-g r rescan this host · unreachable: ssh: connect to host prod port 22: Connection refused"
+            " Enter focus terminal view · C-g r rescan this machine · unreachable: ssh: connect to host prod port 22: Connection refused"
         );
         // Any key read ends it before the key is applied; a key that moves nothing
         // raises nothing new.
@@ -2662,7 +2662,7 @@ mod tests {
         );
         answer(&mut m, "b", &[], Some("ssh: connect to host b: timed out"));
         assert_eq!(m.state.notify.toasts.len(), 1, "one toast for the re-scan");
-        assert_eq!(m.state.notify.toasts[0].title, "rescan all hosts");
+        assert_eq!(m.state.notify.toasts[0].title, "rescan all machines");
         assert_eq!(
             note_texts(&m),
             ["1 session started: a/y", "b unreachable"],
@@ -2689,7 +2689,7 @@ mod tests {
         assert_eq!(m.state.notify.toasts.len(), 2);
         assert_eq!(
             m.state.notify.toasts[1].notes[0].text,
-            "no changes · 2 hosts, 2 sessions"
+            "no changes · 2 machines, 2 sessions"
         );
     }
 
@@ -2716,7 +2716,7 @@ mod tests {
             "the host the roster added is still scanning"
         );
         answer(&mut m, "b", &[], None);
-        assert_eq!(note_texts(&m), ["1 host added: b"]);
+        assert_eq!(note_texts(&m), ["1 machine added: b"]);
 
         // A roster that could not be read leaves the hosts as they are and still lets the
         // re-scan report.
@@ -4302,7 +4302,7 @@ mod tests {
         assert!(m.state.notify.toasts.is_empty());
         answer(&mut m, "a", &["w", "x"], None);
         assert_eq!(m.state.notify.toasts.len(), 1);
-        assert_eq!(m.state.notify.toasts[0].title, "rescan a");
+        assert_eq!(m.state.notify.toasts[0].title, "rescan machine a");
         assert_eq!(note_texts(&m), ["1 session started: a/w"]);
 
         // Nothing changed is said for that machine alone.
@@ -4310,7 +4310,7 @@ mod tests {
         answer(&mut m, "a", &["w", "x"], None);
         assert_eq!(
             m.state.notify.toasts[1].notes[0].text,
-            "no changes · 1 host, 2 sessions"
+            "no changes · 1 machine, 2 sessions"
         );
     }
 
@@ -4336,7 +4336,7 @@ mod tests {
         answer(&mut m, "b", &["y"], None);
         assert_eq!(m.state.notify.toasts.len(), 1);
         assert_eq!(
-            m.state.notify.toasts[0].title, "rescan all hosts",
+            m.state.notify.toasts[0].title, "rescan all machines",
             "the full summary"
         );
     }

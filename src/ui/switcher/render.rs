@@ -751,7 +751,7 @@ impl Switcher {
                 .map(|e| e.full_label(&state.chrome.ui_prefix, state.chrome.nav_position))
                 .unwrap_or_default()
         };
-        format!("no hosts · {}", key(KeyCommand::Rescan))
+        format!("no machines · {}", key(KeyCommand::Rescan))
     }
 
     fn layout_nav(&self, plan: &mut RenderPlan, state: &crate::state::State, track: Rect) {
@@ -1863,7 +1863,7 @@ impl Switcher {
                 } else {
                     modal::CHECK_HINTS
                 };
-                Some((framed("host problems", meta, hints), lines))
+                Some((framed("machine problems", meta, hints), lines))
             }
             Some(Modal::Palette {
                 query,

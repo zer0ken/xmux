@@ -51,7 +51,7 @@ pub(crate) fn check_lines(
         let room = (width as usize).saturating_sub(2).max(1) as u16;
         return (
             String::new(),
-            crate::ui::modal::wrap_text("nothing to check: every host answered", room)
+            crate::ui::modal::wrap_text("nothing to check: every machine answered", room)
                 .into_iter()
                 .map(|c| (None, Line::from(Span::styled(format!(" {c}"), dim))))
                 .collect(),
@@ -193,11 +193,11 @@ mod tests {
 
     #[test]
     fn an_empty_table_says_every_host_answered() {
-        let (meta, lines) = check_lines(&[], 0, None, 40, usize::MAX, &Palette::default());
+        let (meta, lines) = check_lines(&[], 0, None, 48, usize::MAX, &Palette::default());
         let lines: Vec<Line> = lines.into_iter().map(|(_, l)| l).collect();
         assert_eq!(meta, "");
         assert_eq!(lines.len(), 1);
-        assert!(text(&lines[0]).contains("every host answered"));
+        assert!(text(&lines[0]).contains("every machine answered"));
     }
 
     #[test]

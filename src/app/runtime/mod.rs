@@ -255,7 +255,7 @@ impl Runtime {
                                 )
                                 .await
                             }
-                            None => Err("xmux has no way to reach this host".into()),
+                            None => Err("xmux has no way to reach this machine".into()),
                         };
                         let _ = tx
                             .send(crate::ui::switcher::OpResult::HostKeysFound { machine, result });
@@ -274,7 +274,7 @@ impl Runtime {
                                 )
                                 .await
                             }
-                            None => Err("xmux has no way to reach this host".into()),
+                            None => Err("xmux has no way to reach this machine".into()),
                         };
                         let _ = tx.send(crate::ui::switcher::OpResult::HostKeysRemoved {
                             machine,

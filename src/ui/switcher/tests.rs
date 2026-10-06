@@ -1108,7 +1108,7 @@ fn a_scanning_host_screen_states_its_headline_word_and_facts() {
     let lines: Vec<&str> = view.lines().map(str::trim).collect();
     let headline = lines
         .iter()
-        .position(|l| l.starts_with("prod"))
+        .position(|l| l.starts_with("mux prod"))
         .unwrap_or_else(|| {
             panic!(
                 "the headline:
@@ -2170,7 +2170,7 @@ async fn a_login_failure_reads_verdict_marked_field_dim_ssh_line_then_details() 
     for folded in ["Warning: Permanently added", "ssh output"] {
         assert!(!out.contains(folded), "{folded:?} is folded:\n{out}");
     }
-    assert!(out.contains("rescan all hosts"), "{out}");
+    assert!(out.contains("rescan all machines"), "{out}");
     assert!(
         !out.contains(" reason "),
         "the verdict replaces the reason row:\n{out}"
@@ -3683,8 +3683,13 @@ async fn both_host_screens_share_one_grammar() {
         }],
     });
     for (label, view, name, word) in [
-        ("unreachable", dead.view_text(), "prod", "unreachable"),
-        ("empty", empty.view_text(), "fresh", "no sessions"),
+        (
+            "unreachable",
+            dead.view_text(),
+            "machine prod",
+            "unreachable",
+        ),
+        ("empty", empty.view_text(), "mux fresh", "no sessions"),
     ] {
         let lines: Vec<&str> = view.lines().collect();
         assert_eq!(lines[0].trim(), "", "{label}: opens on a blank row");
@@ -3708,7 +3713,7 @@ async fn both_host_screens_share_one_grammar() {
             "{label}: the rows use whitespace: {view}"
         );
         assert!(
-            view.contains("rescan all hosts"),
+            view.contains("rescan all machines"),
             "{label}: both screens offer the rescan key:\n{view}"
         );
     }
@@ -3743,7 +3748,7 @@ fn an_empty_host_animates_only_below_its_screen_content_when_it_fits() {
             (view.x..view.right())
                 .map(|x| tall.buf()[(x, y)].symbol())
                 .collect::<String>()
-                .contains("rescan all hosts")
+                .contains("rescan all machines")
         })
         .expect("the screen actions");
     let braille_rows = |h: &Harness| -> Vec<u16> {
@@ -3771,7 +3776,7 @@ fn an_empty_host_animates_only_below_its_screen_content_when_it_fits() {
     tall.state.chrome.braille_animation = false;
     tall.draw();
     assert!(braille_rows(&tall).is_empty());
-    assert!(tall.view_text().contains("rescan all hosts"));
+    assert!(tall.view_text().contains("rescan all machines"));
 
     let short = Harness::new_sized(scan, 100, 20);
     assert!(
@@ -5800,7 +5805,7 @@ async fn hint_bar_and_help_reflect_new_model() {
         "help explains the collapse key:\n{view}"
     );
     assert!(
-        help.contains("previous / next host/mux (host cards as one)"),
+        help.contains("previous / next section (the machine cards as one)"),
         "help names what ←/→ walk, since the two steps differ:\n{help}"
     );
     assert!(
@@ -7564,14 +7569,21 @@ async fn a_host_that_answered_nothing_headlines_without_a_mux() {
     h.draw();
     let out = h.view_text();
     assert!(
-        out.lines().any(|l| l.trim() == "prod"),
+        out.lines().any(|l| l.trim() == "machine prod"),
         "the headline is the host alone:\n{out}"
     );
     assert!(
         !out.contains("prod/tmux"),
         "no mux is claimed for a host that answered nothing:\n{out}"
     );
-    // What was ASKED is still stated, in the rows that say what was tried.
+    // What was ASKED is still stated, on the screen of the source that was asked.
+    assert!(h.sw.open_link(0, &h.state));
+    h.draw();
+    let out = h.view_text();
+    assert!(
+        out.lines().any(|l| l.trim() == "mux prod"),
+        "the source's headline claims no mux either:\n{out}"
+    );
     assert!(
         out.contains("tmux"),
         "the diagnostic still says what it tried:\n{out}"
@@ -7661,18 +7673,32 @@ async fn unreachable_host_screen_states_what_was_asked_and_over_what() {
     );
     h.key(KeyCode::Char('d')).await;
     h.draw();
+    // The machine's screen states the machine half, the source's screen the mux half.
+    let out = h.view_text();
+    assert!(
+        out.contains("ssh to prod, given 5s to connect"),
+        "the machine screen states how the machine is reached:\n{out}"
+    );
+    for gone in ["socket", "probe", "list-sessions"] {
+        assert!(
+            !out.contains(gone),
+            "the machine screen omits {gone:?}:\n{out}"
+        );
+    }
+    assert!(h.sw.open_link(0, &h.state));
+    h.draw();
     let out = h.view_text();
     for want in [
-        "mux",
         "tmux",
-        "machine",
-        "ssh to prod, given 5s to connect",
         "socket",
         "/tmp/cm-prod.sock",
         "probe",
         "prod tmux list-sessions",
     ] {
-        assert!(out.contains(want), "the screen states {want:?}:\n{out}");
+        assert!(out.contains(want), "the mux screen states {want:?}:\n{out}");
+    }
+    for gone in ["ssh to prod", "ssh config", "provider"] {
+        assert!(!out.contains(gone), "the mux screen omits {gone:?}:\n{out}");
     }
 }
 
@@ -7706,11 +7732,11 @@ async fn unreachable_screen_keeps_last_success_and_folds_diagnostics() {
         folded.contains("last reached") && folded.contains("UTC"),
         "{folded}"
     );
-    assert!(folded.contains("rescan this host"), "{folded}");
-    assert!(!folded.contains("/tmp/cm-prod.sock"), "{folded}");
+    assert!(folded.contains("rescan this machine"), "{folded}");
+    assert!(!folded.contains("ssh to prod"), "{folded}");
     assert_eq!(h.state.last_reached["prod"], last);
     h.key(KeyCode::Char('d')).await;
-    assert!(h.view_text().contains("/tmp/cm-prod.sock"));
+    assert!(h.view_text().contains("ssh to prod"));
 }
 
 #[tokio::test]
@@ -7728,7 +7754,12 @@ async fn a_source_nothing_was_resolved_for_gets_no_reach_rows() {
     h.draw();
     let out = h.view_text();
     for absent in ["probe", "socket", "machine"] {
-        assert!(!out.contains(absent), "no {absent:?} row:\n{out}");
+        assert!(
+            !out.lines()
+                .skip(2)
+                .any(|l| l.trim_start().starts_with(absent)),
+            "no {absent:?} row:\n{out}"
+        );
     }
     assert!(
         out.contains("connection refused"),
@@ -8203,7 +8234,7 @@ async fn the_check_table_groups_problem_hosts_by_cause() {
     h.sw.toggle_check(&mut h.state);
     h.draw();
     let text = h.text();
-    assert!(text.contains("╭ host problems "), "{text}");
+    assert!(text.contains("╭ machine problems "), "{text}");
     assert!(
         text.contains(" 4 ╮"),
         "the count is the top border's meta: {text}"

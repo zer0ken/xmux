@@ -381,9 +381,9 @@ fn the_host_screen_states_the_machine_and_links_its_sources() {
         "user",
         "SSH login",
         "username and password",
-        "rescan this host",
-        "log out of this host",
-        "sources",
+        "rescan this machine",
+        "log out of this machine",
+        "muxes",
         "tmux  2 sessions",
         "zellij  no sessions",
     ] {
@@ -393,6 +393,47 @@ fn the_host_screen_states_the_machine_and_links_its_sources() {
         );
     }
     assert!(!view.contains("start a new session"), "{view}");
+}
+
+#[test]
+fn the_machine_and_mux_screens_name_their_level_and_keep_to_its_facts() {
+    let mut h = H::new(&[("box:tmux", &["notes"], None), ("box:zellij", &[], None)]);
+    h.state
+        .chrome
+        .ssh_stanzas
+        .insert("box".into(), "Host box\n    User dev".into());
+    h.select("box:tmux", "notes");
+    h.ctrl(KeyCode::Up);
+    assert_eq!(h.node(), source("box:tmux"));
+    let mux = h.view();
+    assert_eq!(
+        mux.lines().nth(1).map(str::trim_end),
+        Some(" mux box/tmux"),
+        "{mux}"
+    );
+    for gone in ["ssh config", "Host box", "address", "SSH login"] {
+        assert!(!mux.contains(gone), "the mux screen omits {gone:?}:\n{mux}");
+    }
+    h.ctrl(KeyCode::Up);
+    assert_eq!(h.node(), host("box"));
+    let machine = h.view();
+    assert_eq!(
+        machine.lines().nth(1).map(str::trim_end),
+        Some(" machine box"),
+        "{machine}"
+    );
+    for want in ["ssh config", "Host box", "User dev", "muxes"] {
+        assert!(
+            machine.contains(want),
+            "the machine screen states {want:?}:\n{machine}"
+        );
+    }
+    for gone in ["start a new session", "last listed", "updates"] {
+        assert!(
+            !machine.contains(gone),
+            "the machine screen omits {gone:?}:\n{machine}"
+        );
+    }
 }
 
 #[test]
@@ -414,7 +455,7 @@ fn the_source_screen_links_its_host_and_its_sessions_and_leaves_the_login_to_the
             "the source screen states {want:?}:\n{view}"
         );
     }
-    for gone in ["SSH login", "log out of this host", "public key"] {
+    for gone in ["SSH login", "log out of this machine", "public key"] {
         assert!(
             !view.contains(gone),
             "the host states {gone:?}, not its source:\n{view}"
@@ -511,7 +552,7 @@ fn hovering_a_nav_target_shows_its_screen_without_moving_the_hard_selection() {
     h.sw.mouse_hover(&h.plan.clone(), half.x, half.y);
     h.draw();
     assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Host));
-    assert!(h.view().contains("sources"), "{}", h.view());
+    assert!(h.view().contains("muxes"), "{}", h.view());
 
     // Off every target the hard selection's screen comes back.
     assert!(h.sw.mouse_hover(&h.plan.clone(), 100, 10));
@@ -603,7 +644,7 @@ fn a_link_opens_a_source_the_nav_has_no_card_for() {
     h.terminal_focused = true;
     h.draw();
     assert!(
-        !h.sw.login_pane_shown(&h.state) || h.view().contains("sources"),
+        !h.sw.login_pane_shown(&h.state) || h.view().contains("muxes"),
         "the host's screen lists its sources"
     );
     let links = h.sw.screen_links(&Node::Host("db".into()), &h.state);
@@ -812,7 +853,7 @@ fn the_landing_lists_every_card_in_nav_order_under_its_number() {
     );
     let view = h.view();
     assert!(view.contains(" xmux"), "{view}");
-    assert!(view.contains("4 of 4 hosts scanned"), "{view}");
+    assert!(view.contains("4 of 4 machines scanned"), "{view}");
     assert!(view.contains("1  gpu/tmux/train"), "{view}");
     assert!(view.contains("5  db  login needed"), "{view}");
 }
@@ -825,7 +866,7 @@ fn the_landing_states_the_scan_progress_with_the_spinner() {
     let spinner = crate::ui::spinner_glyph(h.state.chrome.spinner_frame);
     assert!(
         h.view()
-            .contains(&format!("{spinner} 3 of 4 hosts scanned")),
+            .contains(&format!("{spinner} 3 of 4 machines scanned")),
         "{}",
         h.view()
     );
@@ -952,13 +993,13 @@ fn the_landing_counts_a_host_serving_several_muxes_once() {
     h.sw.open_landing();
     assert_eq!(
         h.state.chrome.scan_progress(&h.state),
-        "2 of 2 hosts scanned"
+        "2 of 2 machines scanned"
     );
     h.sw.mark_scanning("db:zellij", &mut h.state);
     let spinner = crate::ui::spinner_glyph(h.state.chrome.spinner_frame);
     assert_eq!(
         h.state.chrome.scan_progress(&h.state),
-        format!("{spinner} 1 of 2 hosts scanned"),
+        format!("{spinner} 1 of 2 machines scanned"),
         "a host is scanned only once every source of it answered"
     );
 }

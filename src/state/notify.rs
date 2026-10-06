@@ -383,7 +383,7 @@ impl ScanSnapshot {
                     Level::Info,
                     format!(
                         "{} {verb}: {}",
-                        counted(machines(sources), "host"),
+                        counted(machines(sources), "machine"),
                         name_list(&names)
                     ),
                 ));
@@ -421,7 +421,10 @@ impl ScanSnapshot {
                 Level::Success,
                 format!(
                     "no changes · {}, {}",
-                    counted(machines(after.sources.keys().map(String::as_str)), "host"),
+                    counted(
+                        machines(after.sources.keys().map(String::as_str)),
+                        "machine"
+                    ),
                     counted(sessions, "session")
                 ),
             ));
@@ -439,7 +442,7 @@ fn machines<'a>(sources: impl IntoIterator<Item = &'a str>) -> usize {
         .len()
 }
 
-/// `1 host`, `2 hosts`.
+/// `1 machine`, `2 machines`.
 fn counted(n: usize, noun: &str) -> String {
     if n == 1 {
         format!("1 {noun}")
@@ -709,8 +712,8 @@ mod tests {
         assert_eq!(
             texts(&notes),
             vec![
-                (Level::Info, "1 host added: new/tmux".to_string()),
-                (Level::Info, "1 host removed: old/tmux".to_string()),
+                (Level::Info, "1 machine added: new/tmux".to_string()),
+                (Level::Info, "1 machine removed: old/tmux".to_string()),
                 (Level::Info, "1 session started: gpu-01/serve".to_string()),
                 (Level::Info, "1 session ended: gpu-01/eval".to_string()),
                 (Level::Success, "db/tmux reachable again".to_string()),
@@ -727,7 +730,7 @@ mod tests {
             texts(&notes),
             vec![(
                 Level::Success,
-                "no changes · 2 hosts, 2 sessions".to_string()
+                "no changes · 2 machines, 2 sessions".to_string()
             )]
         );
     }
@@ -751,7 +754,7 @@ mod tests {
             ("gpu", Some(&["train"])),
         ]);
         let notes = before.summary(&before.clone(), |s| s.to_string());
-        assert_eq!(notes[0].text, "no changes · 2 hosts, 2 sessions");
+        assert_eq!(notes[0].text, "no changes · 2 machines, 2 sessions");
 
         let after = shape(&[
             ("local:tmux", Some(&["a", "b"])),
@@ -767,7 +770,7 @@ mod tests {
             vec![
                 (
                     Level::Info,
-                    "1 host added: new/tmux, new/zellij".to_string()
+                    "1 machine added: new/tmux, new/zellij".to_string()
                 ),
                 (
                     Level::Info,
