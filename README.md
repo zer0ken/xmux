@@ -12,7 +12,7 @@ two arrow keys and Enter in 2.3 seconds.](docs/assets/xmux-demo.gif)
 **Open a session from the landing screen**
 
 ![xmux starts on the landing screen, which lists every session it finds under its
-number while the hosts answer; two arrow keys and Enter open a session on
+number while the machines answer; two arrow keys and Enter open a session on
 gpu-01.](docs/assets/xmux-landing.gif)
 
 **Switch sessions**
@@ -20,16 +20,16 @@ gpu-01.](docs/assets/xmux-landing.gif)
 ![Moving down one card, then jumping to sessions 5 and 3 by number; the terminal
 view follows each selection.](docs/assets/xmux-nav-switch.gif)
 
-**Walk up to the source and the host**
+**Walk up to the mux and the machine**
 
-![Ctrl-↑ selects the session's source and shows its screen, a second Ctrl-↑ selects
-the host and shows its screen, and Ctrl-↓ walks back down to the
+![Ctrl-↑ selects the session's mux and shows its screen, a second Ctrl-↑ selects the
+machine and shows its screen, and Ctrl-↓ walks back down to the
 session.](docs/assets/xmux-hierarchy.gif)
 
-**Log in to a password host**
+**Log in to a password machine**
 
-![A host that takes only a password shows login needed. Its login pane takes the
-password, registers this machine's public key on the host, and the host's sessions
+![A machine that takes only a password shows login needed. Its login pane takes the
+password, registers this PC's public key on the machine, and the machine's sessions
 join the nav.](docs/assets/xmux-login.gif)
 
 **Resize the nav**
@@ -88,7 +88,7 @@ updating, and removing xmux.
 xmux
 ```
 
-The landing screen lists every session as the hosts answer. In the nav:
+The landing screen lists every session as the machines answer. In the nav:
 
 - `↑` / `↓` move the selection.
 - `Enter` sends the keyboard to the selected session.

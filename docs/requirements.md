@@ -90,9 +90,9 @@ against, naming no source file, function, or test.
   for a mux not yet known, where the card reads the host alone.
 - **FR-B23** - When the mux moves xmux's own display client to another session, the nav
   selection follows in terminal focus and the client is carried back in nav focus.
-- **FR-B24** - `prefix h` opens the table of host problems, grouped by login needed,
-  unreachable, and inventory failure, where Enter or a click selects the host and opens
-  its login pane.
+- **FR-B24** - `prefix h` opens the table of machine problems, grouped by login needed,
+  unreachable, and inventory failure, where Enter or a click selects the machine and
+  opens its login pane.
 - **FR-B25** - The nav attaches on the left, top, right, or bottom of the terminal view,
   with `prefix p` cycling the side clockwise and the layout inside the nav identical at
   every side.
@@ -145,11 +145,14 @@ against, naming no source file, function, or test.
   another, reached through `Ctrl-↑` / `Ctrl-↓`, the section title parts, and the screen
   links.
 - **FR-B43** - From launch until the first execution the terminal view attaches to no
-  session and shows the landing screen: how many hosts the scan has reached, with the
+  session and shows the landing screen: how many machines the scan has reached, with the
   scan spinner, and every nav card in nav order and numbering as its `/`-separated path.
   The landing list and the nav share one hard selection, which only highlights; the
   first execution closes the landing screen for the rest of the run, opens the chosen
   card, and focuses the terminal view.
+- **FR-B44** - Every surface calls a host a machine and a source a mux, a machine screen
+  and a mux screen open with their level and path (`machine db-01`, `mux db-01/tmux`),
+  and each states only the facts of its own level.
 
 ## C. Switching (the keystone)
 

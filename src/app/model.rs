@@ -1373,7 +1373,7 @@ fn settle_rescan(model: &mut AppModel) {
         state.chrome.source_label_when(source, answered)
     });
     let title = match &machine {
-        Some(machine) => format!("rescan {machine}"),
+        Some(machine) => format!("rescan machine {machine}"),
         None => "rescan all machines".to_string(),
     };
     model.state.notify.toast(title, notes);
@@ -4302,7 +4302,7 @@ mod tests {
         assert!(m.state.notify.toasts.is_empty());
         answer(&mut m, "a", &["w", "x"], None);
         assert_eq!(m.state.notify.toasts.len(), 1);
-        assert_eq!(m.state.notify.toasts[0].title, "rescan a");
+        assert_eq!(m.state.notify.toasts[0].title, "rescan machine a");
         assert_eq!(note_texts(&m), ["1 session started: a/w"]);
 
         // Nothing changed is said for that machine alone.

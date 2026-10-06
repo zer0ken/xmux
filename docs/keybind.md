@@ -12,16 +12,16 @@ The nav takes these keys while it holds focus:
 | Key                      | Action                                                                   |
 | ------------------------ | ------------------------------------------------------------------------ |
 | `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends)                                       |
-| `←` / `→` (or `h` / `l`) | previous / next `host/mux` section, the host cards counting as one       |
+| `←` / `→` (or `h` / `l`) | previous / next `machine/mux` section, the machine cards counting as one |
 | `Home` / `End`           | jump to the first / last card                                            |
 | `PageUp` / `PageDown`    | jump ten cards                                                           |
 | `Enter`                  | move focus into the selected session's terminal view                     |
 | `prefix 1`-`prefix 9`    | jump to card number (keep typing for 10+)                                |
-| `prefix n`               | new session on the selected host                                         |
+| `prefix n`               | new session on the selected mux                                          |
 | `prefix /`               | filter cards (fuzzy)                                                     |
-| `prefix r`               | rescan this host: the selected card's machine and its sources            |
-| `prefix R`               | rescan all hosts: refresh which machines exist, and every source's sessions |
-| `prefix L`               | log out of this host (an SSH host)                                       |
+| `prefix r`               | rescan this machine: the selected card's machine and its muxes           |
+| `prefix R`               | rescan all machines: refresh which machines exist, and every mux's sessions |
+| `prefix L`               | log out of this machine (an SSH machine)                                 |
 
 xmux has its own prefix, like tmux's `set -g prefix`. The default is `Ctrl-g`,
 and `[ui] prefix` replaces it. A chord is the prefix followed by one key:
@@ -51,10 +51,10 @@ single control byte, so it never collides with typed text, and a prefix pasted a
 
 | Key | Action |
 |---|---|
-| `Ctrl-↑` / `Ctrl-↓` | move up a level (session, source, host) / back down to the child |
-| `prefix i` (bare `i` in the nav) | select the current source and show its screen |
-| `prefix r` | rescan this host: the selected card's host alone |
-| `prefix h` | open the table of host problems |
+| `Ctrl-↑` / `Ctrl-↓` | move up a level (session, mux, machine) / back down to the child |
+| `prefix i` (bare `i` in the nav) | select the current mux and show its screen |
+| `prefix r` | rescan this machine: the selected card's machine alone |
+| `prefix h` | open the table of machine problems |
 | `prefix :` | open the command palette |
 | `prefix t` | toggle auto-hide-nav |
 | `prefix z` | collapse or expand the nav |
@@ -63,7 +63,7 @@ single control byte, so it never collides with typed text, and a prefix pasted a
 | the prefix arrow pair facing the terminal | focus the terminal view |
 | the other prefix arrow pair | focus the nav |
 | `prefix prefix` | send one literal prefix byte to the focused pane |
-| `d` on an unreachable host's screen | unfold the full diagnostic |
+| `d` on an unreachable screen | unfold the full failure diagnostic |
 
 When the terminal view has focus, every key that is not a prefix chord reaches the
 session's active pane unchanged.
@@ -114,29 +114,33 @@ name or the first session in card order. From a title part, `↑`/`↓` go to th
 card and `←`/`→` to the adjacent section. A bare `Ctrl-↑`/`Ctrl-↓` right after
 `prefix Ctrl-↑`/`prefix Ctrl-↓` still resizes the band.
 
-While the terminal view shows a host or source screen, `↑`/`↓` (and `Tab`) step through
-its links and `Enter` opens the selected one. A host screen links each of its sources;
-a source screen links its host and each of its sessions.
+The terminal view shows a machine screen for a machine and a mux screen for one mux
+on it, each headed by its level and path, such as `machine db-01` or `mux db-01/tmux`.
+A machine screen states how the machine is reached and logged in to; a mux screen
+states the mux's sessions and how they stay current. While the terminal view shows
+either screen, `↑`/`↓` (and `Tab`) step through its links and `Enter` opens the
+selected one. A machine screen links each of its muxes; a mux screen links its machine
+and each of its sessions.
 
 At launch the terminal view shows the landing screen in place of a session: how many
-hosts the scan has reached, and every nav card under its number as a
-`host/mux/session` path. The landing list and the nav share one selection, which only
+machines the scan has reached, and every nav card under its number as a
+`machine/mux/session` path. The landing list and the nav share one selection, which only
 highlights there. The first execution (`Enter`, a click on a nav card or a landing card,
 a landed `prefix <digit>` jump, or a ctl `switch`) closes the landing screen for the
 rest of the run, opens the chosen card, and focuses the terminal view.
 
 ## Commands
 
-`prefix n` starts a session on the host and mux of the selected card, a host card or a
-session card alike, and is refused under an unreachable host. An empty name is assigned
-by the mux where it names its own sessions, otherwise by xmux as an
-`<adjective>-<noun>` no session on that host holds.
+`prefix n` starts a session on the mux of the selected card, a mux's card or a session
+card alike, and is refused under an unreachable machine or mux. An empty name is
+assigned by the mux where it names its own sessions, otherwise by xmux as an
+`<adjective>-<noun>` no session on that mux holds.
 
 `prefix r` asks the selected card's machine again and nothing else: its reachability
-probe, then every source it serves. Its cards keep their sessions and numbers meanwhile,
-and it reports in one toast titled `rescan <host>`. It is refused while that host is
-still scanning and while another re-scan has not reported; a `prefix R` pressed
-meanwhile takes over.
+probe, then every mux it serves. Its cards keep their sessions and numbers meanwhile,
+and it reports in one toast titled `rescan machine <machine>`. It is refused while that
+machine is still scanning and while another re-scan has not reported; a `prefix R`
+pressed meanwhile takes over.
 
 `prefix L` asks for `logout` typed in full. It removes the lines of the host's key files
 that hold this machine's public key and carry the `xmux-registered` mark. A matching line
@@ -195,7 +199,7 @@ moving that selection, and a click executes the item as `Enter` would.
   row. `↑`/`↓`, `PgUp`/`PgDn`, and `Home`/`End` scroll. `Esc` or `prefix ?` closes it.
 - **History** (`prefix m`): newest first, with how long ago each record happened.
   Opening it takes every toast down. `q`, `Esc`, or `prefix m` closes it.
-- **Host problems** (`prefix h`): `Enter` or a click selects the host's card, filtering
+- **Machine problems** (`prefix h`): `Enter` or a click selects the machine's card, filtering
   to its name when it has no card, and focuses its login pane when it needs a login.
 - **Filter** (`prefix /`): the list re-filters as you type, and the selection moves to
   the nearest visible card related to its card when that card is hidden. `Enter` keeps
@@ -218,9 +222,9 @@ the hint, at most 40% of the window wide, up to three at once. A toast of succes
 facts leaves after five seconds, with the time left drawn on its bottom border. One that
 carries a warning (`▲`) or a failure (`✗`) stays until a click on it or opening the
 history takes it down, except a login result, which leaves after five seconds since the
-login pane and the history keep it. Something nobody asked about, such as a host that
-stops answering, goes to the history only. `[ui] notifications = false` turns toasts
-off; the history still records every result.
+login pane and the history keep it. Something nobody asked about, such as a machine
+that stops answering, goes to the history only. `[ui] notifications = false` turns
+toasts off; the history still records every result.
 
 ## Mouse
 
