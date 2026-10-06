@@ -109,7 +109,7 @@ impl TermInput {
                     | KeyCommand::Filter
                     | KeyCommand::NewSession
                     | KeyCommand::Rescan
-                    | KeyCommand::RescanHost
+                    | KeyCommand::RescanMachine
                     | KeyCommand::Logout
                     | KeyCommand::HostInfo => Some(Action::NavKey(KeyEvent::new(
                         KeyCode::Char(bytes[i] as char),
@@ -238,7 +238,7 @@ mod tests {
             | KeyCommand::Filter
             | KeyCommand::NewSession
             | KeyCommand::Rescan
-            | KeyCommand::RescanHost => vec![Action::NavKey(key())],
+            | KeyCommand::RescanMachine => vec![Action::NavKey(key())],
             KeyCommand::Logout => {
                 vec![Action::NavKey(key())]
             }
@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(
             t.feed(b"h", NavPosition::Left),
             vec![Action::ShowCheck],
-            "the key opens the host problems"
+            "the key opens the machine problems"
         );
         assert!(!t.is_armed(), "a key while ready consumes ready");
         assert_eq!(

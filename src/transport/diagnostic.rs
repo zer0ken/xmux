@@ -150,7 +150,7 @@ pub fn contains_auth_refusal(stderr: &str) -> bool {
     stderr.lines().any(is_auth_refusal_line)
 }
 
-/// ssh refused a host whose recorded key no longer matches: its own warning banner
+/// ssh refused a machine whose recorded key no longer matches: its own warning banner
 /// precedes the verification failure.
 pub fn host_key_changed(stderr: &str) -> bool {
     stderr
@@ -158,7 +158,7 @@ pub fn host_key_changed(stderr: &str) -> bool {
         .contains("remote host identification has changed")
 }
 
-/// ssh refused a host it has no recorded key for. Without the changed-key banner, the
+/// ssh refused a machine it has no recorded key for. Without the changed-key banner, the
 /// verification failure means a non-interactive ssh had no way to ask whether to trust
 /// a first-seen key.
 pub fn host_key_unknown(stderr: &str) -> bool {
@@ -185,7 +185,7 @@ pub fn host_key_unknown(stderr: &str) -> bool {
 /// ([`is_auth_refusal_line`]), never from a generic permission error. A first-seen key
 /// qualifies under an effective `ask` policy, where the submitted login may accept it.
 /// Under a strict policy the ssh transport rewrites the probe failure into the command
-/// that shows the fingerprint, so the host stays unreachable. A first-seen key opens the
+/// that shows the fingerprint, so the machine stays unreachable. A first-seen key opens the
 /// login form without a failed-login verdict, and a submitted login that fails keeps its
 /// own verdict (see `State::login_failure`).
 pub fn requires_login(stderr: &str) -> bool {
@@ -194,7 +194,7 @@ pub fn requires_login(stderr: &str) -> bool {
 
 /// True when the server dropped the connection after the version exchange and before a
 /// session started, without refusing authentication. When askpass never handed over the
-/// password, this is how a host that accepts a key but cannot open a session for it reads
+/// password, this is how a machine that accepts a key but cannot open a session for it reads
 /// on the client: a Windows sshd cannot build an Entra account's logon token without the
 /// password.
 ///
@@ -483,9 +483,9 @@ Connection closed by 10.0.0.5 port 22",
 
     #[test]
     fn requires_login_refuses_a_changed_host_key() {
-        // A key that changed under a host is not an answer the user gives in xmux: ssh's
+        // A key that changed under a machine is not an answer the user gives in xmux: ssh's
         // own warning accompanies the same verification-failed line, and that warning is
-        // what keeps the host unreachable.
+        // what keeps the machine unreachable.
         assert!(!requires_login(
             "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
              @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n\

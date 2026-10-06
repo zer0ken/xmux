@@ -32,7 +32,7 @@ impl MuxDriver for ZellijDriver {
             return false;
         }
         let key = ctx.display_key(sel);
-        let Some(host) = ctx.hosts.get(&sel.source) else {
+        let Some(host) = ctx.hosts.get(&sel.host) else {
             return false;
         };
         let live = ctx.registry.contains(&key);
@@ -42,7 +42,7 @@ impl MuxDriver for ZellijDriver {
         if live && already_on {
             // The live attachment already shows this session; nothing to move, no teardown.
             tracing::info!(
-                host = %sel.source,
+                host = %sel.host,
                 model = "per-session",
                 decision = "warm",
                 reason = "already-on",
@@ -63,7 +63,7 @@ impl MuxDriver for ZellijDriver {
             "no-live-client"
         };
         tracing::info!(
-            host = %sel.source,
+            host = %sel.host,
             model = "per-session",
             decision = "reattach",
             reason,
@@ -73,8 +73,8 @@ impl MuxDriver for ZellijDriver {
         let (attach, records, transport) = {
             let host = ctx
                 .hosts
-                .get_mut(&sel.source)
-                .expect("the selected source exists");
+                .get_mut(&sel.host)
+                .expect("the selected host exists");
             host.display.clear(&key);
             (
                 host.mux.attach_plan(&sel.session),
@@ -91,19 +91,19 @@ impl MuxDriver for ZellijDriver {
                     transport.exec_argv(true, &attach)
                 }
             })
-            .expect("the selected source exists");
+            .expect("the selected host exists");
         tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
     }
 
-    fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
+    fn sync(&mut self, id: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
         // Per-session attaches are selected on demand by `show`, not pre-warmed: sync
         // only tears down the host PTY when the host has no sessions left.
         if sessions.is_empty() {
-            ctx.registry.remove(source);
-            if let Some(host) = ctx.hosts.get_mut(source) {
-                host.display.clear(source);
+            ctx.registry.remove(id);
+            if let Some(host) = ctx.hosts.get_mut(id) {
+                host.display.clear(id);
             }
         }
     }
@@ -152,7 +152,7 @@ mod tests {
         let mut attach_seq = 0u64;
         let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
         let sel = Selection {
-            source: "local".into(),
+            host: "local".into(),
             session: session.into(),
         };
         let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);

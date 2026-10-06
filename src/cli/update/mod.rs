@@ -29,7 +29,7 @@ pub struct Args {
 }
 
 /// Which OS family the binary runs on. A parameter (not `cfg`) so detection logic
-/// is unit-testable on any host.
+/// is unit-testable on any machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     Windows,
@@ -175,7 +175,7 @@ pub(super) fn cargo_bins() -> Vec<PathBuf> {
 }
 
 /// Builds the candidates from explicit variables. A parameter (not `cfg`), like
-/// `classify`, so detection logic is unit-testable on any host.
+/// `classify`, so detection logic is unit-testable on any machine.
 fn cargo_bins_from(
     cargo_home: Option<&OsStr>,
     home: Option<&OsStr>,
@@ -421,7 +421,7 @@ fn run_winget_detached() -> Result<(), String> {
 /// Unix stub: never called because `run_winget` only routes here on Windows.
 #[cfg(not(windows))]
 fn run_winget_detached() -> Result<(), String> {
-    unreachable!("Windows-only updater ran on a non-Windows host")
+    unreachable!("Windows-only updater ran on a non-Windows machine")
 }
 
 /// The detached updater script for a winget delegation: wait until no xmux
@@ -466,7 +466,7 @@ pub(crate) fn spawn_detached_cmd(dir: &Path, content: String) -> Result<(), Stri
 /// Unix stub: never called because every caller routes here only on Windows.
 #[cfg(not(windows))]
 pub(crate) fn spawn_detached_cmd(_dir: &Path, _content: String) -> Result<(), String> {
-    unreachable!("Windows-only updater ran on a non-Windows host")
+    unreachable!("Windows-only updater ran on a non-Windows machine")
 }
 
 /// The install script's URL, taken from the LATEST RELEASE rather than from a

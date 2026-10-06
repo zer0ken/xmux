@@ -4,7 +4,7 @@
 use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
-/// herdr display orchestration through one per-source PTY, reattached whenever a
+/// herdr display orchestration through one per-host PTY, reattached whenever a
 /// session is selected.
 pub struct HerdrDriver;
 
@@ -20,7 +20,7 @@ impl MuxDriver for HerdrDriver {
         let key = ctx.display_key(sel);
         let live = ctx.registry.contains(&key);
         let (pre_mismatch, command) = {
-            let Some(host) = ctx.hosts.get_mut(&sel.source) else {
+            let Some(host) = ctx.hosts.get_mut(&sel.host) else {
                 return false;
             };
             let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
@@ -32,7 +32,7 @@ impl MuxDriver for HerdrDriver {
 
         let reason = if live { "reshow" } else { "no-live-client" };
         tracing::info!(
-            host = %sel.source,
+            host = %sel.host,
             model = "per-session",
             decision = "reattach",
             reason,
@@ -41,17 +41,17 @@ impl MuxDriver for HerdrDriver {
         );
         let id = ctx
             .request_attach(sel, command)
-            .expect("the selected source exists");
+            .expect("the selected host exists");
         tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);
         true
     }
 
-    fn sync(&mut self, source: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
+    fn sync(&mut self, id: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx) {
         if sessions.is_empty() {
-            ctx.registry.remove(source);
-            if let Some(host) = ctx.hosts.get_mut(source) {
-                host.display.clear(source);
+            ctx.registry.remove(id);
+            if let Some(host) = ctx.hosts.get_mut(id) {
+                host.display.clear(id);
             }
         }
     }

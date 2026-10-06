@@ -15,7 +15,7 @@ use ratatui::Frame;
 #[cfg(test)]
 use crate::state::chrome::FLASH_TTL;
 use crate::state::Chrome;
-pub use crate::state::{SourceReach, ViewBorderColors};
+pub use crate::state::{HostReach, ViewBorderColors};
 use crate::ui::modal::wrap_text;
 use crate::ui::switcher::fit;
 
@@ -72,7 +72,7 @@ pub fn map_color(s: &str) -> Color {
 /// The tree|terminal view border's three colours: `active` marks nav focus,
 /// `inactive` marks terminal focus, and `hover` is the drag-resize grab cue.
 ///
-/// The defaults are xmux's own and the same on every source: the palette's `primary`
+/// The defaults are xmux's own and the same on every host: the palette's `primary`
 /// for nav focus, `disabled` for terminal focus, and `accent` for the grab cue. The
 /// border says which VIEW holds focus, which is a fact about xmux and not about the mux
 /// on the other side of it, so a border that changed hue as the selection moved between
@@ -255,10 +255,10 @@ pub(crate) struct ViewScreenRender<'a> {
     pub(crate) address: &'a crate::session::Address,
     pub(crate) kind: ViewScreen,
     pub(crate) focused: bool,
-    /// The screen is a host's rather than a source's or a session's.
-    pub(crate) host: bool,
-    /// The links the screen offers, in the order the arrow keys walk them. A source's
-    /// first link is its host, written as the host half of the headline.
+    /// The screen is a machine's rather than a host's or a session's.
+    pub(crate) machine_screen: bool,
+    /// The links the screen offers, in the order the arrow keys walk them. A host's
+    /// first link is its machine, written as the machine half of the headline.
     pub(crate) links: &'a [ScreenLink],
     /// The hard-selected link, drawn while the terminal view holds the focus.
     pub(crate) link: Option<usize>,
@@ -308,14 +308,14 @@ impl ViewScreen {
             ViewScreen::ListFailed => crate::ui::tree::host_state_word(false, false, true, true),
             ViewScreen::Unreachable => crate::ui::tree::host_state_word(false, false, false, true),
             ViewScreen::Empty => crate::ui::tree::host_state_word(false, false, false, false),
-            ViewScreen::HostInfo => "sessions",
-            ViewScreen::Host => crate::ui::tree::HOST_REACHABLE,
+            ViewScreen::Host => "sessions",
+            ViewScreen::Machine => crate::ui::tree::MACHINE_REACHABLE,
             ViewScreen::Landing => "",
         }
     }
 }
 
-/// How many times in a row this source has failed, in words.
+/// How many times in a row this host has failed, in words.
 ///
 /// It separates one failed request from repeated failed requests. The last successful
 /// reach is recorded separately, since a failed host is asked again only on user action.
@@ -335,7 +335,7 @@ fn reached_at(at: std::time::SystemTime) -> String {
 }
 
 fn unreachable_verdict(reason: &str) -> String {
-    let reason = crate::model::source::without_exit_line(reason);
+    let reason = crate::model::host_def::without_exit_line(reason);
     if let Some(first) = reason
         .lines()
         .next()
@@ -382,26 +382,26 @@ mod host_verdict_tests {
     }
 }
 
-/// The OTHER sources on `source`'s machine, each with what it last answered, in the
+/// The OTHER hosts on `host`'s machine, each with what it last answered, in the
 /// inventory's own order.
 ///
-/// A machine serving several muxes gets one source per mux, and they fail
+/// A machine serving several muxes gets one host per mux, and they fail
 /// independently: this is what says whether the machine or the mux is the thing that is
-/// down. Empty when the machine serves this source alone, and then the screen carries no
+/// down. Empty when the machine serves this host alone, and then the screen carries no
 /// such row rather than an empty one.
 fn siblings(
     state: &crate::state::State,
-    source: &str,
+    host: &str,
     label: &dyn Fn(&str) -> String,
 ) -> Vec<String> {
-    let machine = crate::session::machine_of(source);
+    let machine = crate::session::machine_of(host);
     state
         .groups
         .iter()
-        .filter(|g| g.source != source && crate::session::machine_of(&g.source) == machine)
+        .filter(|g| g.host != host && crate::session::machine_of(&g.host) == machine)
         .map(|g| {
             let failure = g.failure();
-            let word = if state.scanning.contains(&g.source) {
+            let word = if state.scanning.contains(&g.host) {
                 "still scanning".to_string()
             } else if g.err.is_some() {
                 crate::ui::tree::host_state_word(
@@ -418,17 +418,17 @@ fn siblings(
                     n => format!("{n} sessions"),
                 }
             };
-            format!("{} · {word}", label(&g.source))
+            format!("{} · {word}", label(&g.host))
         })
         .collect()
 }
 
-/// How xmux reaches one source, in the words the unreachable screen prints.
+/// How xmux reaches one host, in the words the unreachable screen prints.
 ///
-/// Resolved once at startup from that source's own config, because how a source is
+/// Resolved once at startup from that host's own config, because how a host is
 /// REACHED cannot change under a run - only whether it answers can. Every field is
 /// already words: the screen prints them and nothing branches on any of them, which is
-/// what keeps this layer blind to which machine kind or which mux a source is.
+/// what keeps this layer blind to which machine kind or which mux a host is.
 /// The left cell of a host-screen row: what the row is about, and how it reads.
 enum ScreenCell {
     /// A key the user can press on this screen. Bold and nothing else, the help modal's
@@ -501,7 +501,7 @@ impl Default for Chrome {
             login_defaults: HashMap::new(),
             ssh_stanzas: HashMap::new(),
             roster_providers: HashMap::new(),
-            source_reach: HashMap::new(),
+            host_reach: HashMap::new(),
             log_path: String::new(),
             ui_prefix: "C-g".into(),
             armed: false,
@@ -515,7 +515,7 @@ impl Default for Chrome {
 impl Chrome {
     /// Derives the chrome's own styles from the applied palette and the `[ui]` overrides:
     /// the view border colours, which mark the focused view and take no colour from any
-    /// host or mux, and the hint bar style (`[ui] hint-bar-style`, else the tmux default).
+    /// machine or mux, and the hint bar style (`[ui] hint-bar-style`, else the tmux default).
     pub(crate) fn apply_palette(
         &mut self,
         ui: &crate::provision::config::UiConfig,
@@ -656,22 +656,22 @@ impl Chrome {
     }
 
     /// How far the scan has come, as the landing screen states it under its headline: how
-    /// many hosts answered out of all of them, turning the spinner the cards turn while
-    /// any is still scanning. A host serving several muxes counts once, and only once
-    /// none of its sources is still scanning.
+    /// many machines answered out of all of them, turning the spinner the cards turn while
+    /// any is still scanning. A machine serving several muxes counts once, and only once
+    /// none of its hosts is still scanning.
     pub(crate) fn scan_progress(&self, state: &crate::state::State) -> String {
         let hostless = state.hostless_machines();
         let machines: std::collections::BTreeSet<&str> = state
             .groups
             .iter()
-            .map(|g| crate::session::machine_of(&g.source))
+            .map(|g| crate::session::machine_of(&g.host))
             .chain(hostless.iter().map(|m| m.name.as_str()))
             .collect();
         let scanning: std::collections::BTreeSet<&str> = state
             .groups
             .iter()
-            .filter(|g| state.scanning.contains(&g.source))
-            .map(|g| crate::session::machine_of(&g.source))
+            .filter(|g| state.scanning.contains(&g.host))
+            .map(|g| crate::session::machine_of(&g.host))
             .chain(
                 hostless
                     .iter()
@@ -720,28 +720,33 @@ impl Chrome {
     }
 
     /// The name a view screen carries at its top, in the grammar the nav cards use:
-    /// `{host}/{mux}` for a host's screen, and that with the session under it for the
+    /// `{machine}/{mux}` for a host's screen, and that with the session under it for the
     /// session xmux is itself running in. What arrives is the [`crate::session::Address`]
-    /// the screen was reached by, which is the source id and, for the session screen, its
+    /// the screen was reached by, which is the host id and, for the session screen, its
     /// session name - the two halves are already separate, so nothing is re-split.
-    fn headline(&self, address: &crate::session::Address, kind: ViewScreen, host: bool) -> String {
-        if address.source.is_empty() && kind != ViewScreen::Landing {
+    fn headline(
+        &self,
+        address: &crate::session::Address,
+        kind: ViewScreen,
+        machine_screen: bool,
+    ) -> String {
+        if address.host.is_empty() && kind != ViewScreen::Landing {
             return String::new();
         }
-        if host {
-            return crate::session::machine_of(&address.source).to_string();
+        if machine_screen {
+            return crate::session::machine_of(&address.host).to_string();
         }
         match kind {
-            // The root of the hierarchy, above every host.
+            // The root of the hierarchy, above every machine.
             ViewScreen::Landing => "xmux".into(),
-            ViewScreen::Scanning => self.source_label(&address.source),
+            ViewScreen::Scanning => self.host_label(&address.host),
             ViewScreen::SelfSession => {
                 if address.session.is_empty() {
-                    self.source_label(&address.source)
+                    self.host_label(&address.host)
                 } else {
                     format!(
                         "{}{}{}",
-                        self.source_label(&address.source),
+                        self.host_label(&address.host),
                         crate::session::MUX_LABEL_SEP,
                         address.session
                     )
@@ -749,26 +754,26 @@ impl Chrome {
             }
             // An EMPTY host answered - it has no session, which is itself an answer
             // through its mux - so its screen names the pair. An unreachable or blocked
-            // host answered nothing, so its screen reads the host alone unless the id
+            // host answered nothing, so its screen reads the machine alone unless the id
             // names the mux. A listing failure keeps the confirmed mux that answered.
             ViewScreen::Unreachable
             | ViewScreen::Login
             | ViewScreen::ListFailed
             | ViewScreen::Empty
-            | ViewScreen::HostInfo
-            | ViewScreen::Host => self.source_label_when(
-                &address.source,
-                matches!(kind, ViewScreen::Empty | ViewScreen::HostInfo),
+            | ViewScreen::Host
+            | ViewScreen::Machine => self.host_label_when(
+                &address.host,
+                matches!(kind, ViewScreen::Empty | ViewScreen::Host),
             ),
         }
     }
 
-    /// The ssh config entry the host of `source` matches, one row per line, or the row
+    /// The ssh config entry the machine of `host` matches, one row per line, or the row
     /// saying none matches.
-    fn ssh_config_rows(&self, source: &str) -> Vec<(ScreenCell, String)> {
+    fn ssh_config_rows(&self, host: &str) -> Vec<(ScreenCell, String)> {
         let stanza = self
             .ssh_stanzas
-            .get(crate::session::machine_of(source))
+            .get(crate::session::machine_of(host))
             .map(String::as_str)
             .unwrap_or_default();
         if stanza.is_empty() {
@@ -802,15 +807,16 @@ impl Chrome {
         width: u16,
         palette: &crate::ui::palette::Palette,
     ) -> (Vec<Line<'static>>, Option<(usize, u16)>, Vec<LinkCell>) {
-        let (address, kind, focused, host) = (view.address, view.kind, view.focused, view.host);
+        let (address, kind, focused, machine_screen) =
+            (view.address, view.kind, view.focused, view.machine_screen);
         let marks = (view.link, view.link_hover);
-        // The login pane is a host's: a source refused until a login reads its failure,
-        // and its host's screen is where the login is.
-        let pane = kind == ViewScreen::Login && host;
+        // The login pane is a machine's: a host refused until a login reads its failure,
+        // and its machine's screen is where the login is.
+        let pane = kind == ViewScreen::Login && machine_screen;
         let pal = palette;
         let mut caret = None;
         let p = &self.ui_prefix;
-        let source = address.source.as_str();
+        let host = address.host.as_str();
         // The rows in reading order: a reachable empty host offers actions before
         // observation facts; failures explain the reason before their actions.
         let mut rows: Vec<(ScreenCell, String)> = Vec::new();
@@ -850,19 +856,19 @@ impl Chrome {
             // The login pane states its failure above these rows, as a verdict over ssh's
             // own text, so only the other screens carry the reason as a row.
             if !pane {
-                let login_report = state.login_reports.get(crate::session::machine_of(source));
+                let login_report = state.login_reports.get(crate::session::machine_of(host));
                 let reason = login_report
                     .and_then(|report| report.connect.reason().map(str::to_string))
                     .or_else(|| {
                         state
                             .groups
                             .iter()
-                            .find(|g| g.source == source)
+                            .find(|g| g.host == host)
                             .and_then(|g| g.err.clone())
                     })
                     .or_else(|| {
                         state
-                            .machine(source)
+                            .machine(host)
                             .filter(|m| !state.has_hosts(&m.name))
                             .and_then(|m| m.err.clone())
                     })
@@ -871,8 +877,8 @@ impl Chrome {
             }
             if let Some(registration) = state
                 .registration_reports
-                .get(crate::session::machine_of(source))
-                .filter(|_| host)
+                .get(crate::session::machine_of(host))
+                .filter(|_| machine_screen)
             {
                 use crate::ui::ops::RegistrationOutcome;
                 let registration = match registration {
@@ -885,7 +891,7 @@ impl Chrome {
                     rows.push((ScreenCell::Label("public key"), registration));
                 }
             }
-            if let Some(runs) = state.failure_runs.get(source) {
+            if let Some(runs) = state.failure_runs.get(host) {
                 rows.push((ScreenCell::Label("failures"), failure_run_words(*runs)));
             }
             rows.push((ScreenCell::Gap, String::new()));
@@ -894,8 +900,8 @@ impl Chrome {
             // on it, or the mux fine behind a box that cannot be reached. The machine
             // screen states how the machine was asked, which is all an unresolved machine
             // has; the mux row belongs to the host screen.
-            if let Some(reach) = self.source_reach.get(source) {
-                let level_rows = if host {
+            if let Some(reach) = self.host_reach.get(host) {
+                let level_rows = if machine_screen {
                     [
                         ("machine", &reach.machine),
                         ("socket", &reach.socket),
@@ -916,27 +922,27 @@ impl Chrome {
                     }
                 }
             }
-            // WHERE this host came from, between what failed and how it is configured. A
-            // host that fails is worth nothing if the user cannot tell why it is on the
+            // WHERE this machine came from, between what failed and how it is configured. A
+            // machine that fails is worth nothing if the user cannot tell why it is on the
             // list at all: a tailnet peer they never wrote down reads as a mystery until
             // the row names the provider that offered it, which is also the provider
             // they would turn off.
             if let Some(provider) = self
                 .roster_providers
-                .get(crate::session::machine_of(source))
-                .filter(|_| host)
+                .get(crate::session::machine_of(host))
+                .filter(|_| machine_screen)
             {
                 rows.push((ScreenCell::Label("provider"), provider.clone()));
             }
-            if host {
-                rows.extend(self.ssh_config_rows(source));
+            if machine_screen {
+                rows.extend(self.ssh_config_rows(host));
             }
             // The other muxes on the SAME machine, each with what it answered. This is
             // the one row that tells the user which half is broken without leaving the
             // screen: a sibling serving sessions says the box is up and this mux is not.
-            for (i, sib) in siblings(state, source, &|s| self.source_label(s))
+            for (i, sib) in siblings(state, host, &|s| self.host_label(s))
                 .into_iter()
-                .filter(|_| !host)
+                .filter(|_| !machine_screen)
                 .enumerate()
             {
                 let cell = if i == 0 {
@@ -951,16 +957,16 @@ impl Chrome {
             }
             rows.push((ScreenCell::Gap, String::new()));
             facts_end = rows.len();
-        } else if kind == ViewScreen::Host {
-            // How the host is reached, then how it logs in, then when it last answered:
+        } else if kind == ViewScreen::Machine {
+            // How the machine is reached, then how it logs in, then when it last answered:
             // the facts that belong to the machine whichever of its muxes is asked.
-            let reach = self.source_reach.get(source);
+            let reach = self.host_reach.get(host);
             if reach.is_some_and(|reach| reach.ssh) {
-                let defaults = self.login_defaults(source);
+                let defaults = self.login_defaults(host);
                 rows.push((ScreenCell::Label("address"), defaults.address.value));
                 rows.push((ScreenCell::Label("port"), defaults.port.value));
                 rows.push((ScreenCell::Label("user"), defaults.username.value));
-                let machine = crate::session::machine_of(source);
+                let machine = crate::session::machine_of(host);
                 let method = state
                     .auth_methods
                     .get(machine)
@@ -975,13 +981,13 @@ impl Chrome {
                     .map(|method| method.label())
                     .unwrap_or("not observed");
                 rows.push((ScreenCell::Label("SSH login"), method.into()));
-                rows.extend(self.ssh_config_rows(source));
+                rows.extend(self.ssh_config_rows(host));
             } else if let Some(reach) = reach.filter(|reach| !reach.machine.is_empty()) {
                 rows.push((ScreenCell::Label("machine"), reach.machine.clone()));
             }
             if let Some(registration) = state
                 .registration_reports
-                .get(crate::session::machine_of(source))
+                .get(crate::session::machine_of(host))
             {
                 use crate::ui::ops::RegistrationOutcome;
                 let value = match registration {
@@ -994,7 +1000,7 @@ impl Chrome {
                     rows.push((ScreenCell::Label("public key"), value));
                 }
             }
-            let machine = crate::session::machine_of(source);
+            let machine = crate::session::machine_of(host);
             if let Some(reached) = state
                 .last_reached
                 .iter()
@@ -1005,20 +1011,20 @@ impl Chrome {
                 rows.push((ScreenCell::Label("last reached"), reached_at(reached)));
             }
             rows.push((ScreenCell::Gap, String::new()));
-        } else if kind == ViewScreen::HostInfo {
+        } else if kind == ViewScreen::Host {
             let count = state
                 .groups
                 .iter()
-                .find(|g| g.source == source)
+                .find(|g| g.host == host)
                 .map_or(0, |g| g.sessions.len());
             rows.push((ScreenCell::Label("sessions"), count.to_string()));
-            if self.source_reach.contains_key(source) {
+            if self.host_reach.contains_key(host) {
                 rows.push((
                     ScreenCell::Label("updates"),
-                    state.refresh_words(source).into(),
+                    state.refresh_words(host).into(),
                 ));
             }
-            if let Some(reached) = state.last_reached.get(source) {
+            if let Some(reached) = state.last_reached.get(host) {
                 rows.push((ScreenCell::Label("last listed"), reached_at(*reached)));
             }
             rows.push((ScreenCell::Gap, String::new()));
@@ -1031,22 +1037,22 @@ impl Chrome {
         } else if kind == ViewScreen::Scanning {
             // A scan has no answer yet, so the screen states only what earlier answers
             // observed. A key is not offered: the re-scan it would start is under way.
-            if let Some(runs) = state.failure_runs.get(source) {
+            if let Some(runs) = state.failure_runs.get(host) {
                 rows.push((ScreenCell::Label("failures"), failure_run_words(*runs)));
             }
-            if let Some(reached) = state.last_reached.get(source) {
+            if let Some(reached) = state.last_reached.get(host) {
                 rows.push((ScreenCell::Label("last reached"), reached_at(*reached)));
             }
         } else {
             if kind == ViewScreen::Empty {
                 rows.push((ScreenCell::Label("sessions"), "0".into()));
-                if self.source_reach.contains_key(source) {
+                if self.host_reach.contains_key(host) {
                     rows.push((
                         ScreenCell::Label("updates"),
-                        state.refresh_words(source).into(),
+                        state.refresh_words(host).into(),
                     ));
                 }
-                if let Some(reached) = state.last_reached.get(source) {
+                if let Some(reached) = state.last_reached.get(host) {
                     rows.push((ScreenCell::Label("last listed"), reached_at(*reached)));
                 }
                 rows.push((ScreenCell::Gap, String::new()));
@@ -1071,8 +1077,7 @@ impl Chrome {
                 "rescan all machines".into(),
             ));
         }
-        if kind == ViewScreen::Host && self.source_reach.get(source).is_some_and(|reach| reach.ssh)
-        {
+        if kind == ViewScreen::Machine && self.host_reach.get(host).is_some_and(|reach| reach.ssh) {
             rows.push((
                 ScreenCell::Key(format!("{p} L")),
                 "log out of this machine".into(),
@@ -1102,14 +1107,14 @@ impl Chrome {
                 .unwrap_or("connection closed");
             let reached = state
                 .last_reached
-                .get(source)
+                .get(host)
                 .map(|time| format!(" · last reached {}", reached_at(*time)))
                 .unwrap_or_default();
             rows.push((
                 ScreenCell::Label("verdict"),
                 format!("{}{}", unreachable_verdict(reason), reached),
             ));
-            let failures = state.failure_runs.get(source).copied().unwrap_or(1);
+            let failures = state.failure_runs.get(host).copied().unwrap_or(1);
             rows.push((ScreenCell::Label("status"), failure_run_words(failures)));
             rows.push((ScreenCell::Gap, String::new()));
             rows.push((ScreenCell::Label("What to do"), String::new()));
@@ -1124,32 +1129,32 @@ impl Chrome {
             rows.push((ScreenCell::Gap, String::new()));
             rows.push((
                 ScreenCell::Label("d details"),
-                if state.host_details.contains(source) {
+                if state.host_details.contains(host) {
                     "hide diagnostics".into()
                 } else {
                     "show diagnostics".into()
                 },
             ));
-            if state.host_details.contains(source) {
+            if state.host_details.contains(host) {
                 rows.push((ScreenCell::Gap, String::new()));
                 rows.extend(diagnostics);
             }
         }
 
-        // The login pane's failure folds the host facts under its details choice: ssh's
+        // The login pane's failure folds the machine facts under its details choice: ssh's
         // whole text and the facts come back together when the user unfolds them.
-        let failure = pane.then(|| state.login_failure(source)).flatten();
+        let failure = pane.then(|| state.login_failure(host)).flatten();
         let unfolded = state
             .login
             .as_ref()
-            .filter(|d| d.source == source)
+            .filter(|d| d.host == host)
             .is_some_and(|d| d.details);
         // While a login's steps run, the facts describe the probe failure that login is
         // answering, so they stay folded with nothing to unfold them.
         let steps_running = pane
             && state
                 .login_progress
-                .get(source)
+                .get(host)
                 .is_some_and(crate::model::LoginProgress::running);
         match &failure {
             Some(failure) if unfolded => {
@@ -1166,12 +1171,12 @@ impl Chrome {
             None => {}
         }
 
-        // The level below, as links: a host's sources, a source's sessions, and on the
-        // landing screen every card under its number. A source's first link is its host,
+        // The level below, as links: a machine's hosts, a host's sessions, and on the
+        // landing screen every card under its number. A host's first link is its machine,
         // which the headline carries.
         let landing = kind == ViewScreen::Landing;
-        let listed = if host || landing { 0 } else { 1 };
-        let name = if host { "hosts" } else { "sessions" };
+        let listed = if machine_screen || landing { 0 } else { 1 };
+        let name = if machine_screen { "hosts" } else { "sessions" };
         // Card numbers line up by units place, as they do in the nav's address column.
         let number_w = view
             .links
@@ -1241,22 +1246,22 @@ impl Chrome {
             ViewScreen::ListFailed => pal.primary,
             ViewScreen::Empty
             | ViewScreen::SelfSession
-            | ViewScreen::HostInfo
             | ViewScreen::Host
+            | ViewScreen::Machine
             | ViewScreen::Landing => pal.decoration,
         });
-        let headline = self.headline(address, kind, host);
+        let headline = self.headline(address, kind, machine_screen);
         let bold = Style::default()
             .fg(pal.secondary)
             .add_modifier(Modifier::BOLD);
         let mut links: Vec<LinkCell> = Vec::new();
-        // A host's and a source's screen look alike, so the headline names the level
+        // A machine's and a host's screen look alike, so the headline names the level
         // before the path: the user reads `machine db-01` or `host db-01/tmux` and knows
         // which one every row and key below it is about.
         let level = match kind {
             ViewScreen::SelfSession | ViewScreen::Landing => "",
             _ if headline.is_empty() => "",
-            _ if host => "machine ",
+            _ if machine_screen => "machine ",
             _ => "host ",
         };
         let lead = vec![
@@ -1264,11 +1269,11 @@ impl Chrome {
             Span::styled(level, Style::default().fg(pal.decoration)),
         ];
         let path_col = 1 + level.len() as u16;
-        // A source's headline is its path, and the host half of the path is the link up
-        // to the host's screen.
+        // A host's headline is its path, and the machine half of the path is the link up
+        // to the machine's screen.
         let headline_line = match view.links.first() {
             Some(up)
-                if !host
+                if !machine_screen
                     && !matches!(kind, ViewScreen::SelfSession | ViewScreen::Landing)
                     && headline.starts_with(&up.label) =>
             {
@@ -1328,10 +1333,10 @@ impl Chrome {
         if pane {
             use crate::model::{LoginField, LoginStep, StepState};
             use crate::state::{AfterLogin, LoginFocus};
-            let running = state.login_run.as_ref().is_some_and(|l| l.source == source);
+            let running = state.login_run.as_ref().is_some_and(|l| l.host == host);
             let taking_keys = focused && !running;
-            let defaults = self.login_defaults(source);
-            let draft = state.login.as_ref().filter(|d| d.source == source);
+            let defaults = self.login_defaults(host);
+            let draft = state.login.as_ref().filter(|d| d.host == host);
             let fallback = crate::state::LoginDraft {
                 address: defaults.address.value.clone(),
                 port: defaults.port.value.clone(),
@@ -1344,7 +1349,7 @@ impl Chrome {
             };
             let d = draft.unwrap_or(&fallback);
             let marked = failure.as_ref().map(|f| f.fields()).unwrap_or_default();
-            // The inputs keep one column of their own, so unfolding the host facts below
+            // The inputs keep one column of their own, so unfolding the machine facts below
             // the rule never moves a field.
             let fcw = ["address*", "port*", "username*", "password"]
                 .iter()
@@ -1567,14 +1572,14 @@ impl Chrome {
             }
             out.push(Line::from(""));
             out.push(Line::from(""));
-            // The steps of this source's last login, while they run and after one of them
+            // The steps of this machine's last login, while they run and after one of them
             // failed. A login whose every step worked has handed the pane to its sessions,
             // so its steps say nothing more. Each step (connect, authenticate, the selected
             // follow-ups, find mux) carries one state mark: blank for pending, the spinner
             // for running, `✓`, `✗`, or `·` for skipped. A step moves only on an event the
             // login itself reported, never on a timer.
             let wrap_w = width.saturating_sub(4).max(1);
-            let progress = state.login_progress.get(source).filter(|p| !p.succeeded());
+            let progress = state.login_progress.get(host).filter(|p| !p.succeeded());
             if let Some(progress) = progress {
                 out.push(Line::from(""));
                 for row in &progress.steps {
@@ -1750,7 +1755,7 @@ impl Chrome {
             // A subtle global indicator while host probes are in flight; clears
             // (falls through to the resting prefix) once every host has settled. It
             // turns the SAME spinner the scanning cards do, on the same frame, so the
-            // bar and the cards read as one thing still loading. A machine with no source
+            // bar and the cards read as one thing still loading. A machine with no host
             // known counts as one entry of its own.
             let total = state.groups.len() + state.hostless_machines().len();
             let done = total.saturating_sub(state.scanning.len() + state.machine_scanning.len());
@@ -2261,7 +2266,7 @@ mod tests {
 
     #[test]
     fn resolve_layers_the_config_override_over_the_fixed_defaults() {
-        // Unset → xmux's own pair, whatever source is displayed: the palette primary lit
+        // Unset → xmux's own pair, whatever host is displayed: the palette primary lit
         // against its disabled tone, the hover cue on the accent.
         let pal = crate::ui::palette::Palette::default();
         let d = ViewBorderColors::resolve_with_palette("", "", "", &pal);

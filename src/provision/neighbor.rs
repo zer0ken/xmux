@@ -16,7 +16,7 @@
 //! lookup names nothing, and one hardware address answering for many addresses is a
 //! router speaking for a whole subnet rather than a machine of its own. Then every
 //! surviving address is asked whether it answers ssh, because a printer on the same
-//! switch is a neighbour and not a host.
+//! switch is a neighbour and not a machine.
 //!
 //! What answers is then named. The system resolver is asked first, since that is where a
 //! tunnel's own naming already lives; a machine no resolver knows is asked for its own
@@ -40,7 +40,7 @@ use std::time::Duration;
 // Only the platforms that answer through a command need a way to run one; Linux and
 // Android ask the kernel, Windows asks IP Helper.
 #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
-use crate::model::source::{ExecRunner, Runner};
+use crate::model::host_def::{ExecRunner, Runner};
 
 /// How long one address gets to answer on port 22. A neighbour is on this link or one
 /// tunnel hop away, so an answer is tens of milliseconds; the budget is really for the
@@ -55,7 +55,7 @@ const SSH_PROBE_CONCURRENCY: usize = 64;
 /// The neighbours worth offering, each with the address it answers on.
 ///
 /// Returns an empty list rather than an error whenever the OS will not say: a machine
-/// whose network state cannot be read simply contributes no hosts, and the providers
+/// whose network state cannot be read simply contributes no machines, and the providers
 /// that did answer still fill the roster.
 pub async fn neighbors() -> Vec<(String, Option<String>)> {
     let mut candidates: Vec<Ipv4Addr> = Vec::new();
@@ -80,9 +80,9 @@ pub async fn neighbors() -> Vec<(String, Option<String>)> {
             )
         })
         .collect();
-    // A host list that reshuffles between runs is a list the user cannot learn, so the
+    // A machine list that reshuffles between runs is a list the user cannot learn, so the
     // order is the name and then the address: one machine answering on several addresses
-    // (its own link and a tunnel it is on) is ONE host, and which of its addresses it
+    // (its own link and a tunnel it is on) is ONE machine, and which of its addresses it
     // keeps must not change between runs either.
     out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     out.dedup_by(|a, b| a.0 == b.0);
@@ -323,7 +323,7 @@ fn link_addresses(own: &RoutePrefix) -> Vec<Ipv4Addr> {
 /// What each source of addresses has to say, for a diagnostic that must explain a list
 /// that came back empty. It reads the same records the provider reads and probes
 /// nothing, so it costs what one scan's first step costs.
-pub async fn source_report() -> Vec<(&'static str, String)> {
+pub async fn neighbor_report() -> Vec<(&'static str, String)> {
     let routes = route_prefixes().await;
     let table = neighbor_table().await;
     vec![
@@ -427,7 +427,7 @@ pub fn usable_neighbors(entries: &[Neighbor]) -> Vec<Ipv4Addr> {
 
 /// The addresses that answered ssh, asked all at once.
 ///
-/// A neighbour is not a host: the same link carries printers, phones, and appliances,
+/// A neighbour is not a machine: the same link carries printers, phones, and appliances,
 /// and a tunnel's routing table keeps a peer that is switched off. Opening port 22 and
 /// reading what it says is the one question that separates them, and it is asked only
 /// of addresses the OS already says are reachable, so it is not a sweep of anything.
@@ -472,7 +472,7 @@ async fn answers_ssh(ip: Ipv4Addr) -> bool {
 }
 
 /// Whether a connection reached THIS box: the address at both ends is the same one.
-/// This box is the `local` source, reached without ssh, so finding it among its own
+/// This box is the `local` machine, reached without ssh, so finding it among its own
 /// neighbours would offer it twice under two names.
 fn reached_this_box(local: std::net::IpAddr, peer: std::net::IpAddr) -> bool {
     local == peer
@@ -939,12 +939,12 @@ broadcast 143.248.140.255 dev eno1 table local proto kernel scope link src 143.2
         assert!(reverse_names(&[]).await.is_empty());
     }
 
-    /// The gate is what separates a neighbour from a host: a port has to introduce
+    /// The gate is what separates a neighbour from a machine: a port has to introduce
     /// itself as ssh, and a port that says anything else, or nothing, does not.
     #[test]
-    fn only_an_ssh_greeting_makes_a_neighbour_a_host() {
+    fn only_an_ssh_greeting_makes_a_neighbour_a_machine() {
         assert!(is_ssh_banner(b"SSH-"));
-        assert!(!is_ssh_banner(b"HTTP"), "a web server is not a host");
+        assert!(!is_ssh_banner(b"HTTP"), "a web server is not a machine");
         assert!(
             !is_ssh_banner(b""),
             "a port that said nothing is not one either"
@@ -952,7 +952,7 @@ broadcast 143.248.140.255 dev eno1 table local proto kernel scope link src 143.2
         assert!(!is_ssh_banner(b"SS"), "half a greeting is not one");
     }
 
-    /// This box is the `local` source, reached without ssh. It sits in its own routing
+    /// This box is the `local` machine, reached without ssh. It sits in its own routing
     /// table, so it has to be told from its neighbours - by the connection, which comes
     /// back with the same address at both ends, rather than by a list of our addresses
     /// that could go stale.

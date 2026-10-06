@@ -175,7 +175,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for CannedRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             self.0
                 .lock()
@@ -246,7 +246,7 @@ mod tests {
             "exactly the list-sessions rows"
         );
         assert!(
-            got.iter().all(|s| s.source == "prod"),
+            got.iter().all(|s| s.host == "prod"),
             "tagged with the remote host id, not local: {got:?}"
         );
     }

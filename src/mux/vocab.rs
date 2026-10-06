@@ -104,11 +104,11 @@ fn split_lines(out: &str) -> Vec<&str> {
 }
 
 /// Parses `list-sessions` output ([`SESSION_FORMAT`]) into sessions tagged with
-/// `source` and the enumerating mux's `mux` kind. Malformed lines (short,
+/// `host` and the enumerating mux's `mux` kind. Malformed lines (short,
 /// non-numeric numeric columns, or empty name) are skipped so banners and garbage
 /// cannot poison the list. The name is the whole remainder after the second `:`,
 /// so any character inside it survives. Order is preserved.
-pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
+pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in split_lines(out) {
         let fields: Vec<&str> = ln.splitn(3, ':').collect();
@@ -126,7 +126,7 @@ pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
             continue;
         }
         sessions.push(Session {
-            source: source.to_string(),
+            host: host.to_string(),
             name: name.to_string(),
             mux: mux.to_string(),
             windows,
@@ -280,14 +280,14 @@ mod tests {
             got,
             vec![
                 Session {
-                    source: "local".into(),
+                    host: "local".into(),
                     name: "main".into(),
                     mux: "tmux".into(),
                     windows: 3,
                     attached: true,
                 },
                 Session {
-                    source: "local".into(),
+                    host: "local".into(),
                     name: "other".into(),
                     mux: "tmux".into(),
                     windows: 2,
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(
             got,
             vec![Session {
-                source: "ssh-host".into(),
+                host: "ssh-host".into(),
                 mux: "tmux".into(),
                 name: "proj/a\tb:c".into(),
                 windows: 4,
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(
             got,
             vec![Session {
-                source: "local".into(),
+                host: "local".into(),
                 name: "good".into(),
                 mux: "tmux".into(),
                 windows: 2,
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(
             got,
             vec![Session {
-                source: "host".into(),
+                host: "host".into(),
                 name: "e2e-session".into(),
                 mux: "tmux".into(),
                 windows: 1,

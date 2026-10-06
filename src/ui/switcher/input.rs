@@ -6,14 +6,14 @@ use crate::state::PaletteChoice;
 impl Switcher {
     // --- key handling -------------------------------------------------------
 
-    /// The info key: the selection goes to the source the selected card is about, so its
-    /// screen states the source's sessions and how they are kept current.
+    /// The info key: the selection goes to the host the selected card is about, so its
+    /// screen states the host's sessions and how they are kept current.
     fn select_host_section(&mut self) {
-        let Some(source) = self.current_source() else {
+        let Some(host) = self.current_host() else {
             return;
         };
         self.note_user_move();
-        self.select_node(Node::Source(source));
+        self.select_node(Node::Host(host));
     }
 
     /// Open the modal keys help modal. The help is searched by typing, so a printable key
@@ -79,7 +79,7 @@ impl Switcher {
             FocusNav,
             NewSession,
             Rescan,
-            RescanHost,
+            RescanMachine,
             Logout,
             Check,
             Collapse,
@@ -108,7 +108,7 @@ impl Switcher {
                 .map(|entry| {
                     (
                         format!("log in to {}", entry.label),
-                        PaletteChoice::Login(entry.source),
+                        PaletteChoice::Login(entry.host),
                     )
                 }),
         );
@@ -118,8 +118,8 @@ impl Switcher {
             .collect();
         entries.retain(|(name, choice)| {
             let mut text = name.to_lowercase().replace(['-', ' '], "");
-            if let PaletteChoice::Login(source) = choice {
-                text.push_str(&source.to_lowercase().replace(['-', ' '], ""));
+            if let PaletteChoice::Login(host) = choice {
+                text.push_str(&host.to_lowercase().replace(['-', ' '], ""));
             }
             terms.iter().all(|term| text.contains(term))
         });
@@ -306,7 +306,7 @@ impl Switcher {
         match ev.code {
             KeyCode::Enter => {}
             // Ctrl+↑/↓ walk the hierarchy rather than the list: up from a session to its
-            // source and its host, and back down to where the walk came from.
+            // host and its machine, and back down to where the walk came from.
             KeyCode::Up if ctrl => self.ascend(),
             KeyCode::Down if ctrl => self.descend(state),
             // ↑/↓ and ←/→ (and the vim hjkl pair) name the two things the list is made of:
@@ -330,15 +330,15 @@ impl Switcher {
             }
             KeyCode::Char(c) => match c {
                 'd' if self.current_unreachable_screen(state) => {
-                    if let Some(source) = self.current_source() {
-                        if !state.host_details.insert(source.clone()) {
-                            state.host_details.remove(&source);
+                    if let Some(host) = self.current_host() {
+                        if !state.host_details.insert(host.clone()) {
+                            state.host_details.remove(&host);
                         }
                     }
                 }
                 '/' => self.open_input(InputMode::Filter, state),
                 'n' => self.open_new(state),
-                'r' => return self.rescan_host(state),
+                'r' => return self.rescan_machine(state),
                 'R' => return vec![Command::Rescan],
                 'L' => self.open_logout(state),
                 'i' => self.select_host_section(),
@@ -352,13 +352,13 @@ impl Switcher {
         Vec::new()
     }
 
-    /// The `prefix r` re-scan of the selected card's host alone. Refused while any source
+    /// The `prefix r` re-scan of the selected card's machine alone. Refused while any host
     /// of that machine is still scanning, since a machine is asked one thing at a time.
-    fn rescan_host(&mut self, state: &mut crate::state::State) -> Vec<Command> {
-        let Some(source) = self.current_source() else {
+    fn rescan_machine(&mut self, state: &mut crate::state::State) -> Vec<Command> {
+        let Some(host) = self.current_host() else {
             return Vec::new();
         };
-        let machine = crate::session::machine_of(&source).to_string();
+        let machine = crate::session::machine_of(&host).to_string();
         let busy = state
             .scanning
             .iter()
@@ -368,25 +368,25 @@ impl Switcher {
             state.flash(format!("{machine} is still being scanned"));
             return Vec::new();
         }
-        vec![Command::RescanHost(machine)]
+        vec![Command::RescanMachine(machine)]
     }
 
     /// Opens the logout confirm for the selected card's machine. It names the selected
     /// session's observed SSH authentication method and the affected machine, then
-    /// requires typing `logout`. The logout removes this PC's key from the host first,
+    /// requires typing `logout`. The logout removes this PC's key from the machine first,
     /// then the ssh config stanza a login recorded for it, then clears the held password
     /// and closes that machine's connections, including its shared SSH master where
     /// present.
     fn open_logout(&mut self, state: &mut crate::state::State) {
-        let Some(source) = self.current_source() else {
+        let Some(host) = self.current_host() else {
             return;
         };
-        let machine = crate::session::machine_of(&source);
+        let machine = crate::session::machine_of(&host);
         if !state
             .chrome
-            .source_reach
-            .get(&source)
-            .or_else(|| state.chrome.source_reach.get(machine))
+            .host_reach
+            .get(&host)
+            .or_else(|| state.chrome.host_reach.get(machine))
             .is_some_and(|reach| reach.ssh)
         {
             state.flash("this machine does not use SSH");
@@ -398,7 +398,7 @@ impl Switcher {
         };
         let method = session
             .as_ref()
-            .and_then(|address| state.display_auth_methods.get(&address.source))
+            .and_then(|address| state.display_auth_methods.get(&address.host))
             .or_else(|| {
                 session
                     .is_none()
@@ -407,9 +407,14 @@ impl Switcher {
             })
             .map(|method| method.label())
             .unwrap_or("not observed");
-        let subject = session.map_or_else(|| machine.to_owned(), |address| address.display());
+        // The first row names what is selected: the session, or the machine itself when
+        // the selection is on a card that has no session.
+        let subject = session.map_or_else(
+            || ("machine", machine.to_owned()),
+            |address| ("session", address.display()),
+        );
         let password = (method != "public key").then_some("held password is cleared");
-        let mut facts = vec![("session", subject), ("SSH login", method.to_owned())];
+        let mut facts = vec![subject, ("SSH login", method.to_owned())];
         facts.extend(password.map(|p| ("password", p.to_owned())));
         facts.push((
             "key",
@@ -421,7 +426,7 @@ impl Switcher {
         ));
         facts.push(("connections", format!("closes {machine} connections")));
         self.dismiss_modals(state);
-        let mut input = Input::new(InputMode::Logout, String::new(), Some(source));
+        let mut input = Input::new(InputMode::Logout, String::new(), Some(host));
         input.facts = facts;
         state.modal = Some(Modal::Input(Box::new(input)));
     }
@@ -501,9 +506,9 @@ impl Switcher {
         state.modal = Some(Modal::Input(Box::new(input)));
     }
 
-    // --- the host problems -------------------------------------------------
+    // --- the machine problems -------------------------------------------------
 
-    /// Toggles the table of host problems (`prefix h`) in either focus.
+    /// Toggles the table of machine problems (`prefix h`) in either focus.
     pub fn toggle_check(&mut self, state: &mut crate::state::State) {
         if matches!(state.modal, Some(Modal::Check { .. })) {
             state.modal = None;
@@ -528,13 +533,13 @@ impl Switcher {
             FailureKind::Unreachable,
             FailureKind::ListFailed,
         ] {
-            // Each source in a problem state, and each machine with no source known that
+            // Each host in a problem state, and each machine with no host known that
             // failed as a whole, in card order.
             let mut failed: Vec<(&str, &str)> = state
                 .groups
                 .iter()
-                .filter(|g| !state.scanning.contains(&g.source) && g.failure() == Some(kind))
-                .filter_map(|g| Some((g.source.as_str(), g.err.as_deref()?)))
+                .filter(|g| !state.scanning.contains(&g.host) && g.failure() == Some(kind))
+                .filter_map(|g| Some((g.host.as_str(), g.err.as_deref()?)))
                 .chain(
                     state
                         .hostless_machines()
@@ -546,7 +551,7 @@ impl Switcher {
                 )
                 .collect();
             failed.sort_by(|a, b| crate::ui::tree::card_order(a.0, b.0));
-            for (source, err) in failed {
+            for (host, err) in failed {
                 let reason = err
                     .lines()
                     .map(str::trim)
@@ -554,8 +559,8 @@ impl Switcher {
                     .unwrap_or_default()
                     .to_string();
                 entries.push(CheckEntry {
-                    label: state.chrome.source_label_when(source, false),
-                    source: source.to_string(),
+                    label: state.chrome.host_label_when(host, false),
+                    host: host.to_string(),
                     kind,
                     reason,
                 });
@@ -582,26 +587,24 @@ impl Switcher {
             return false;
         };
         state.modal = None;
-        self.open_host(&entry.source, state)
+        self.open_host(&entry.host, state)
     }
 
-    /// Selects the card standing for `source` from the host problems: the source's own
-    /// card, or its host's card while the host is down. A login answers a failure that is
-    /// not a listing failure, so the host's screen then opens its login pane.
-    pub(crate) fn open_host(&mut self, source: &str, state: &mut crate::state::State) -> bool {
+    /// Selects the card standing for `host` from the machine problems: the host's own
+    /// card, or its machine's card while the machine is down. A login answers a failure that is
+    /// not a listing failure, so the machine's screen then opens its login pane.
+    pub(crate) fn open_host(&mut self, host: &str, state: &mut crate::state::State) -> bool {
         let login_needed = state
             .groups
             .iter()
-            .find(|group| group.source == source)
+            .find(|group| group.host == host)
             .and_then(crate::model::Group::failure)
-            .or_else(|| super::machine_failure_alone(state, source))
+            .or_else(|| super::machine_failure_alone(state, host))
             .is_some_and(|kind| kind != crate::model::FailureKind::ListFailed);
-        let machine = crate::session::machine_of(source);
+        let machine = crate::session::machine_of(host);
         let host_row = |sw: &Switcher| {
             sw.rows.iter().position(|r| match &r.reference {
-                RowRef::Host {
-                    source: row_source, ..
-                } => row_source == source,
+                RowRef::Host { host: row_host, .. } => row_host == host,
                 RowRef::Machine { machine: m, .. } => m == machine,
                 _ => false,
             })
@@ -619,17 +622,17 @@ impl Switcher {
         };
         self.note_user_move();
         if login_needed {
-            // The host's own card, or the host half of this source's card while the host
-            // is up, so the pane logs in through the source that was chosen.
-            let host = Node::Host(machine.to_owned());
-            if let Some((row, part)) = self.target_of(&host, Some(source)) {
+            // The machine's own card, or the machine half of this host's card while the machine
+            // is up, so the pane logs in through the host that was chosen.
+            let machine_node = Node::Machine(machine.to_owned());
+            if let Some((row, part)) = self.target_of(&machine_node, Some(host)) {
                 self.set_target(Target {
                     row,
                     part,
                     deep: None,
                 });
             }
-            self.login_target = Some(source.to_owned());
+            self.login_target = Some(host.to_owned());
         } else {
             self.set_selected(i);
         }
@@ -660,31 +663,31 @@ impl Switcher {
     }
 
     /// The `n` action: a new SESSION on the selected card's host/mux. Every card
-    /// names a source - a session or loading card by its session, a host card by
-    /// itself - so `n` adds a session to the source in front of the user, not only
+    /// names a host - a session or loading card by its session, a host card by
+    /// itself - so `n` adds a session to the host in front of the user, not only
     /// to an empty host. (xmux does not edit a session's windows, so there is
-    /// nothing else `n` could add.) The source is captured up front so a streamed
+    /// nothing else `n` could add.) The host is captured up front so a streamed
     /// selection move cannot retarget it.
     pub(super) fn open_new(&mut self, state: &mut crate::state::State) {
         state.chrome.clear_flash();
         self.dismiss_modals(state);
-        // A session lives in a source, so a host names none to create it in.
-        if let Some(Node::Host(machine)) = self.selected_node() {
-            if host_failure(state, &machine).is_some() {
+        // A session lives in a host, so a machine names none to create it in.
+        if let Some(Node::Machine(machine)) = self.selected_node() {
+            if machine_failure(state, &machine).is_some() {
                 state.flash("machine unreachable, cannot create here");
             } else {
                 state.flash(format!("select a host of {machine} to start a session"));
             }
             return;
         }
-        let Some(source) = self.current_source() else {
+        let Some(host) = self.current_host() else {
             return;
         };
-        // A blocked source is unreachable too (its failure is one of unreachable's), so
+        // A blocked host is unreachable too (its failure is one of unreachable's), so
         // the one check covers both: nothing can be created over a connection that is
         // not up.
         if state.groups.iter().any(|g| {
-            g.source == source
+            g.host == host
                 && matches!(
                     g.failure(),
                     Some(
@@ -698,7 +701,7 @@ impl Switcher {
         state.modal = Some(Modal::Input(Box::new(Input::new(
             InputMode::New,
             String::new(),
-            Some(source),
+            Some(host),
         ))));
     }
 
@@ -780,7 +783,7 @@ impl Switcher {
         let Some((row, node)) = restore else {
             return;
         };
-        let near = row_source(&row).map(str::to_owned);
+        let near = row_host(&row).map(str::to_owned);
         let target = match self.target_of(&node, near.as_deref()) {
             Some((row, part)) => Target {
                 row,
@@ -807,14 +810,14 @@ impl Switcher {
         }
         match ev.code {
             KeyCode::Enter => {
-                let (mode, val, source) = {
+                let (mode, val, host) = {
                     let Some(Modal::Input(input)) = &state.modal else {
                         return Vec::new();
                     };
                     (
                         input.mode,
                         input.buffer.trim().to_string(),
-                        input.source.clone(),
+                        input.host.clone(),
                     )
                 };
                 match mode {
@@ -849,18 +852,18 @@ impl Switcher {
                         self.close_input(state);
                         match mode {
                             InputMode::Filter => Vec::new(),
-                            InputMode::New => self.queue_create(source, &val, state),
+                            InputMode::New => self.queue_create(host, &val, state),
                             InputMode::Jump => Vec::new(),
                             InputMode::Logout => {
-                                let Some(source) = source else {
+                                let Some(host) = host else {
                                     return Vec::new();
                                 };
                                 vec![Command::Logout(
-                                    crate::session::machine_of(&source).to_owned(),
+                                    crate::session::machine_of(&host).to_owned(),
                                 )]
                             }
                             InputMode::LogoutKeys => {
-                                source.map(Command::RemoveUnmarked).into_iter().collect()
+                                host.map(Command::RemoveUnmarked).into_iter().collect()
                             }
                         }
                     }
@@ -969,15 +972,15 @@ impl Switcher {
     /// off-loop and [`Switcher::apply_op_result`] folds the result in.
     fn queue_create(
         &mut self,
-        source: Option<String>,
+        host: Option<String>,
         name: &str,
         state: &mut crate::state::State,
     ) -> Vec<Command> {
-        let Some(source) = source else {
+        let Some(host) = host else {
             return Vec::new();
         };
         state.apply(Action::CreateSession {
-            source,
+            host,
             name: name.to_string(),
         })
     }
@@ -989,7 +992,7 @@ impl Switcher {
     /// the switcher only rebuilds its rows + restores the cursor per the returned
     /// [`OpFollow`].
     ///
-    /// Returns the source whose MACHINE the app should re-probe, and the connection
+    /// Returns the host whose MACHINE the app should re-probe, and the connection
     /// values that reached it: `Some` only on a successful unlock, because that machine's
     /// reach state (locked → connected) is the only thing that changed, so re-probing the
     /// whole roster would be wasteful. Every other result returns `None`.
@@ -1011,7 +1014,7 @@ impl Switcher {
                         Level::Success,
                         format!(
                             "{}/{} created",
-                            crate::session::machine_of(&addr.source),
+                            crate::session::machine_of(&addr.host),
                             addr.session
                         ),
                     )],
@@ -1029,13 +1032,13 @@ impl Switcher {
             // machine's reach changed, so the app re-probes just it. Either way one toast
             // reports the login and the follow-ups it ran; the user retypes the password
             // after a failure. A key registration's outcome is also kept per machine, so
-            // the host information still states it after the pane gives way to sessions.
+            // the machine information still states it after the pane gives way to sessions.
             OpFollow::LoginResult {
-                source,
+                host,
                 login,
                 outcome,
             } => {
-                let machine = crate::session::machine_of(&source).to_string();
+                let machine = crate::session::machine_of(&host).to_string();
                 state.login_reports.insert(machine.clone(), outcome.clone());
                 if !matches!(
                     outcome.registration,
@@ -1049,7 +1052,7 @@ impl Switcher {
                     .notify
                     .timed_toast(machine.clone(), login_notes(&outcome));
                 match outcome.connect {
-                    crate::link::unlock::UnlockOutcome::Ok => Some((source, login)),
+                    crate::link::unlock::UnlockOutcome::Ok => Some((host, login)),
                     crate::link::unlock::UnlockOutcome::Unavailable => None,
                     crate::link::unlock::UnlockOutcome::Failed { .. } => {
                         state.logged_in.remove(&machine);

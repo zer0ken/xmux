@@ -12,7 +12,7 @@ reattaches with `abduco -a <name>` on every session change.
 
 - The implementation root holds the mux itself and the listing parser; the bare binary
   is the listing.
-- The driver sits beside it and owns the per-source display orchestration.
+- The driver sits beside it and owns the per-host display orchestration.
 - Identity detection is this implementation's own: one `-v` question, answered by the
   name in its output.
 

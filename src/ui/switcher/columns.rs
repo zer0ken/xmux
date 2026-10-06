@@ -5,7 +5,7 @@
 //! The `Top` nav is a wide, short band, so one vertical list would show three or four
 //! cards and waste the rest of the row. Rows therefore stack down a column until the
 //! next unit would not fit, and that unit starts the next column: a column holds whole
-//! sections (a `{host}/{mux}` title over its session cards), so a source's cards are
+//! sections (a `{machine}/{mux}` title over its session cards), so a host's cards are
 //! never split across a column break and the title naming them stays at the top of
 //! them. Reading order is the fill order: down a column, then right.
 //!
@@ -31,7 +31,7 @@ pub(super) struct Card {
     /// section.
     pub(super) starts_run: bool,
     /// Display width of the card's content (address column included). A section title's
-    /// width is its `{host}/{mux}` alone: in the band a title carries no trailing rule,
+    /// width is its `{machine}/{mux}` alone: in the band a title carries no trailing rule,
     /// so what it measures is what it paints.
     pub(super) width: u16,
     /// The card's natural line count (1, or 2 for a scanning host card).

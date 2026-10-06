@@ -3,7 +3,7 @@
 //! retarget a named client.
 
 use super::*;
-use crate::model::source::RunError;
+use crate::model::host_def::RunError;
 use crate::session::Session;
 use crate::transport::Transport;
 use serde::Deserialize;
@@ -126,14 +126,14 @@ impl Mux for Tuios {
 /// window count and attachment state, so no per-session window query exists, and another
 /// command would break the one-command poll. Saved records are not live sessions and are
 /// never offered.
-fn parse_sessions(source: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, RunError> {
+fn parse_sessions(host: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, RunError> {
     let listed: Vec<ListedSession> = serde_json::from_slice(out)
         .map_err(|e| RunError::Other(format!("invalid tuios session listing: {e}")))?;
     Ok(listed
         .into_iter()
         .filter(|session| !session.saved)
         .map(|session| Session {
-            source: source.to_string(),
+            host: host.to_string(),
             name: session.name,
             mux: mux.to_string(),
             windows: session.window_count,
@@ -161,7 +161,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for CannedRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             self.0.lock().unwrap().take().unwrap()
         }
@@ -235,7 +235,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].source, "jup");
+        assert_eq!(sessions[0].host, "jup");
         assert_eq!(sessions[0].mux, "tuios");
         assert_eq!(sessions[0].name, "session-0");
         assert_eq!(sessions[0].windows, 1);

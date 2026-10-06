@@ -27,7 +27,7 @@ use std::time::Instant;
 /// selection derive.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    /// Move the display target to this `source/session` pair (the ctl `switch` verb -
+    /// Move the display target to this `host/session` pair (the ctl `switch` verb -
     /// its only producer). Selects the addressed SESSION. Moves the selection; the
     /// attach commits on a later `Tick` once the selection settles.
     Switch(Address),
@@ -81,10 +81,10 @@ pub enum Action {
     /// `Tick` re-attaches immediately - the `r` reattach-kick, which re-attaches the
     /// current display with no debounce.
     RearmAttachNow { now: Instant },
-    /// Create a new session named `name` (empty = auto-named) on `source`. The one
+    /// Create a new session named `name` (empty = auto-named) on `host`. The one
     /// mutating intent xmux keeps: a reachable host with no sessions offers nothing to
     /// switch to, so starting the first one is part of switching, not mux editing.
-    CreateSession { source: String, name: String },
+    CreateSession { host: String, name: String },
 }
 
 /// A side effect for the run loop to carry out. `apply` returns these; the loop is
@@ -97,10 +97,10 @@ pub enum Command {
     /// Re-enumerate every host (the `R` re-scan), via the switcher.
     Rescan,
     /// Re-scan one machine alone (the `r` re-scan): its reachability probe, then every
-    /// source it serves.
-    RescanHost(String),
-    /// Take this machine's public key off the host, then discard xmux's held credential
-    /// and close the host's connections.
+    /// host it serves.
+    RescanMachine(String),
+    /// Take this machine's public key off the machine, then discard xmux's held credential
+    /// and close the machine's connections.
     Logout(String),
     /// The logout's second confirmation answered yes: the key lines and the ssh config
     /// entries xmux did not add go with the ones it did.
@@ -124,7 +124,7 @@ pub enum Command {
     /// Run the off-loop ssh login for a blocked host with the pane's submitted values.
     /// An empty `password` keeps the command non-interactive.
     RunLogin {
-        source: String,
+        host: String,
         login: crate::transport::Login,
         password: crate::model::SecretInput,
         after_login: crate::model::AfterLogin,
@@ -136,7 +136,7 @@ impl std::fmt::Debug for Command {
         match self {
             Self::SelectAddress(address) => f.debug_tuple("SelectAddress").field(address).finish(),
             Self::Rescan => f.write_str("Rescan"),
-            Self::RescanHost(machine) => f.debug_tuple("RescanHost").field(machine).finish(),
+            Self::RescanMachine(machine) => f.debug_tuple("RescanMachine").field(machine).finish(),
             Self::Logout(machine) => f.debug_tuple("Logout").field(machine).finish(),
             Self::RemoveUnmarked(machine) => {
                 f.debug_tuple("RemoveUnmarked").field(machine).finish()
@@ -150,13 +150,13 @@ impl std::fmt::Debug for Command {
             Self::Quit => f.write_str("Quit"),
             Self::RunOp(op) => f.debug_tuple("RunOp").field(op).finish(),
             Self::RunLogin {
-                source,
+                host,
                 login,
                 after_login,
                 ..
             } => f
                 .debug_struct("RunLogin")
-                .field("source", source)
+                .field("host", host)
                 .field("login", login)
                 .field("password", &"[redacted]")
                 .field("after_login", after_login)
@@ -170,10 +170,10 @@ impl std::fmt::Debug for Command {
 /// `State::apply` from a session-lifecycle [`Action`]; pure data, no I/O.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MuxOp {
-    Create { source: String, name: String },
+    Create { host: String, name: String },
 }
 
-/// An ordered source-event effect emitted by the application update transition.
+/// An ordered host-event effect emitted by the application update transition.
 /// The sequence preserves state and runtime ordering without letting backend or
 /// domain layers import the application or UI layers. Effects that require host
 /// clients, the attach registry, or the display worker run through the app's unified
@@ -181,18 +181,18 @@ pub enum MuxOp {
 /// Not `Clone`/`Eq`: `DispatchScanned` carries a `Box<dyn Mux>`; tests match
 /// structurally.
 pub enum EventEffect {
-    /// Record that a metadata source has connected before applying its inventory.
+    /// Record that a host's metadata client has connected before applying its inventory.
     MarkConnected { host: String },
-    /// Apply one source result to the navigation model and runtime state.
-    ApplySourceResult {
-        source: String,
+    /// Apply one host result to the navigation model and runtime state.
+    ApplyHostResult {
+        host: String,
         sessions: Vec<Session>,
         err: Option<String>,
     },
     /// Apply a poll result, then reconcile any rename and live display sessions when
     /// the enumeration succeeded.
     ApplyPollResult {
-        source: String,
+        host: String,
         sessions: Vec<Session>,
         err: Option<String>,
     },
@@ -212,16 +212,16 @@ pub enum EventEffect {
     /// `Changed`: the server's session/window STRUCTURE changed - refetch `host`'s
     /// inventory (re-run list-sessions).
     Refetch { host: String },
-    /// `MuxesFound`: add a source for every mux in `muxes` that `machine` does not
+    /// `MuxesFound`: add a host for every mux in `muxes` that `machine` does not
     /// already serve, and settle the card of a machine that serves none yet. The loop
     /// owns it because it needs the host registry (to know what
     /// the machine already serves, and to insert the new hosts) and the manager (to kick
-    /// each new source's first scan).
-    AddDiscoveredSources {
+    /// each new host's first scan).
+    AddDiscoveredHosts {
         machine: String,
         muxes: Result<Vec<String>, String>,
     },
-    /// `RosterResolved`: reconcile the freshly resolved roster against the source
+    /// `RosterResolved`: reconcile the freshly resolved roster against the host
     /// registry and the nav, which must agree about which machines exist, then scan what
     /// was added and tear down what was dropped. The loop owns it because both live
     /// behind it.
@@ -255,47 +255,47 @@ pub enum EventEffect {
         client: String,
         session: String,
     },
-    /// `Scanned`: a detection probe resolved - (re)identify `source`'s mux with
+    /// `Scanned`: a detection probe resolved - (re)identify `host`'s mux with
     /// `detected`, then dispatch the now-detected host onto its metadata channel.
     /// `err` rides along when `detected` is `None`: the reason detection failed, so
     /// the loop settles the undetected card with it.
     DispatchScanned {
-        source: String,
+        host: String,
         detected: Option<Box<dyn crate::mux::Mux>>,
         err: Option<String>,
     },
-    /// A re-enumeration renamed `from` to `to` on `source`: carry the host's display record
+    /// A re-enumeration renamed `from` to `to` on `host`: carry the host's display record
     /// across, so the display reads as still on the session it is on.
     RenameDisplayed {
-        source: String,
+        host: String,
         from: String,
         to: String,
     },
     /// `Connected`/`Inventory` after the navigation model and any display rename have
-    /// been applied: sync `source`'s display terminal(s).
+    /// been applied: sync `host`'s display terminal(s).
     SyncInventorySessions {
-        source: String,
+        host: String,
         sessions: Vec<Session>,
     },
     /// `Sessions` (poll host, no enumeration error): drop any stale attach whose
-    /// registry `.port` vanished, then sync `source`'s display terminal(s).
+    /// registry `.port` vanished, then sync `host`'s display terminal(s).
     /// Emitted by the app after [`Self::ApplyPollResult`] has applied the enumerated
     /// sessions to the navigation model.
     SyncPollSessions {
-        source: String,
+        host: String,
         sessions: Vec<Session>,
     },
     /// `DisplayTty`: record `host`'s display-client tty (probed over the -CC connection
     /// by `list-clients`) on the Host, behind the loop's reach. With the tty known, a
     /// session switch is an in-place `switch-client -c <tty>`. `None` clears a stale tty.
     RecordDisplayTty { host: String, tty: Option<String> },
-    /// `MachineProbed` (connected): resolve every source `machine` serves onto its
+    /// `MachineProbed` (connected): resolve every host `machine` serves onto its
     /// metadata channel and, when the machine left its mux list to xmux, ask which
     /// muxes it serves. The loop owns it because it needs the host registry (the
-    /// machine's sources), the manager (the channels), and the shared probe gate. On a
+    /// machine's hosts), the manager (the channels), and the shared probe gate. On a
     /// re-scan a live channel re-enumerates; at launch it is ensured.
     ///
-    /// `shell` is the family the probe read, recorded on every source the machine
+    /// `shell` is the family the probe read, recorded on every host the machine
     /// serves BEFORE any channel opens, so the first command composed for the machine
     /// is already composed for its shell.
     MachineConnected {
@@ -321,23 +321,23 @@ impl std::fmt::Debug for EventEffect {
             EventEffect::MarkConnected { host } => {
                 f.debug_struct("MarkConnected").field("host", host).finish()
             }
-            EventEffect::ApplySourceResult {
-                source,
+            EventEffect::ApplyHostResult {
+                host,
                 sessions,
                 err,
             } => f
-                .debug_struct("ApplySourceResult")
-                .field("source", source)
+                .debug_struct("ApplyHostResult")
+                .field("host", host)
                 .field("sessions", sessions)
                 .field("err", err)
                 .finish(),
             EventEffect::ApplyPollResult {
-                source,
+                host,
                 sessions,
                 err,
             } => f
                 .debug_struct("ApplyPollResult")
-                .field("source", source)
+                .field("host", host)
                 .field("sessions", sessions)
                 .field("err", err)
                 .finish(),
@@ -351,8 +351,8 @@ impl std::fmt::Debug for EventEffect {
                 .field("host", host)
                 .field("sessions", sessions)
                 .finish(),
-            EventEffect::AddDiscoveredSources { machine, muxes } => f
-                .debug_struct("AddDiscoveredSources")
+            EventEffect::AddDiscoveredHosts { machine, muxes } => f
+                .debug_struct("AddDiscoveredHosts")
                 .field("machine", machine)
                 .field("muxes", muxes)
                 .finish(),
@@ -393,29 +393,29 @@ impl std::fmt::Debug for EventEffect {
                 .field("session", session)
                 .finish(),
             EventEffect::DispatchScanned {
-                source,
+                host,
                 detected,
                 err,
             } => f
                 .debug_struct("DispatchScanned")
-                .field("source", source)
+                .field("host", host)
                 .field("detected_some", &detected.is_some())
                 .field("err", err)
                 .finish(),
-            EventEffect::RenameDisplayed { source, from, to } => f
+            EventEffect::RenameDisplayed { host, from, to } => f
                 .debug_struct("RenameDisplayed")
-                .field("source", source)
+                .field("host", host)
                 .field("from", from)
                 .field("to", to)
                 .finish(),
-            EventEffect::SyncInventorySessions { source, sessions } => f
+            EventEffect::SyncInventorySessions { host, sessions } => f
                 .debug_struct("SyncInventorySessions")
-                .field("source", source)
+                .field("host", host)
                 .field("sessions", sessions)
                 .finish(),
-            EventEffect::SyncPollSessions { source, sessions } => f
+            EventEffect::SyncPollSessions { host, sessions } => f
                 .debug_struct("SyncPollSessions")
-                .field("source", source)
+                .field("host", host)
                 .field("sessions", sessions)
                 .finish(),
             EventEffect::RecordDisplayTty { host, tty } => f
@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn login_command_debug_redacts_the_password() {
         let command = Command::RunLogin {
-            source: "pwbox/tmux".into(),
+            host: "pwbox/tmux".into(),
             login: crate::transport::Login {
                 address: Some("pwbox".into()),
                 port: Some(22),

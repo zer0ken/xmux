@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::link::HostInventory;
-use crate::model::source::Runner;
+use crate::model::host_def::Runner;
 use crate::model::DisplayTty;
 use crate::mux::Mux;
 use crate::transport::Transport;
@@ -43,7 +43,7 @@ impl Liveness {
 #[derive(Default)]
 pub struct HostDisplay {
     /// display_key -> the session it currently shows. `Shared`: one entry keyed by
-    /// the host id. `PerSession`: one per `source/session`.
+    /// the host id. `PerSession`: one per `host/session`.
     current: HashMap<String, String>,
     /// display_key -> in-flight spawn seq.
     in_flight: HashMap<String, u64>,
@@ -325,12 +325,12 @@ impl PendingPaint {
 
 /// A first-class host: one machine reachable by one transport, running one mux,
 /// owning its inventory, its display BOOKKEEPING, its captured display tty, and its
-/// liveness — the single owner of all per-machine state, keyed by a stable host id
+/// liveness — the single owner of all per-host state, keyed by a stable host id
 /// rather than a bare alias string. The PTYs are NOT here — they live in
 /// `AttachRegistry`/`DisplayWorker`; `Host` owns only the bookkeeping.
 ///
 /// A host carries no control client, no display-key derivation, and no attach or reap
-/// plan: the live control client belongs to the source manager (`link::HostManager`),
+/// plan: the live control client belongs to the host manager (`link::HostManager`),
 /// the live warm and reap to the driver, and the display-key authority to the driver
 /// capability port (`DriverCtx`).
 pub struct Host {
@@ -412,7 +412,7 @@ impl Host {
     pub async fn enumerate_with(
         &mut self,
         runner: &dyn Runner,
-    ) -> Result<(), crate::model::source::RunError> {
+    ) -> Result<(), crate::model::host_def::RunError> {
         match self.mux.enumerate(&self.transport, runner).await {
             Ok(sessions) => {
                 self.inventory.sessions = sessions;
@@ -427,8 +427,9 @@ impl Host {
     }
 
     /// [`enumerate_with`](Self::enumerate_with) over the real exec runner.
-    pub async fn enumerate(&mut self) -> Result<(), crate::model::source::RunError> {
-        self.enumerate_with(&crate::model::source::ExecRunner).await
+    pub async fn enumerate(&mut self) -> Result<(), crate::model::host_def::RunError> {
+        self.enumerate_with(&crate::model::host_def::ExecRunner)
+            .await
     }
 
     /// The command a session listing spawns on this host, `argv[0]` first.
@@ -520,7 +521,7 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::source::{RunError, Runner};
+    use crate::model::host_def::{RunError, Runner};
     use crate::model::{DeathSignal, EventSource, ServerModel};
     use crate::mux::Mux;
     use crate::session::Session;
@@ -568,7 +569,7 @@ mod tests {
         async fn enumerate(
             &self,
             _t: &dyn Transport,
-            _r: &dyn crate::model::source::Runner,
+            _r: &dyn crate::model::host_def::Runner,
         ) -> Result<Vec<Session>, RunError> {
             Ok(vec![])
         }
@@ -613,7 +614,7 @@ mod tests {
         }
         fn sync(
             &mut self,
-            _source: &str,
+            _host: &str,
             _sessions: &[crate::session::Session],
             _ctx: &mut crate::driver::DriverCtx,
         ) {
@@ -956,7 +957,7 @@ mod tests {
             let sessions = names
                 .iter()
                 .map(|n| Session {
-                    source: "h".into(),
+                    host: "h".into(),
                     name: (*n).into(),
                     mux: String::new(),
                     windows: 1,
@@ -1016,7 +1017,7 @@ mod tests {
         async fn enumerate(
             &self,
             _t: &dyn Transport,
-            _r: &dyn crate::model::source::Runner,
+            _r: &dyn crate::model::host_def::Runner,
         ) -> Result<Vec<Session>, RunError> {
             self.result.lock().unwrap().take().unwrap_or(Ok(vec![]))
         }
@@ -1093,7 +1094,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Runner for CannedRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             self.0
                 .lock()
@@ -1139,7 +1140,7 @@ mod tests {
         assert_eq!(names, vec!["editor", "build"]);
         assert_eq!(h.inventory.sessions[0].windows, 3);
         assert!(h.inventory.sessions[0].attached);
-        assert_eq!(h.inventory.sessions[0].source, "local");
+        assert_eq!(h.inventory.sessions[0].host, "local");
     }
 
     #[tokio::test]
@@ -1333,7 +1334,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Runner for DetectRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             match &*self.result.lock().unwrap() {
@@ -1369,7 +1370,7 @@ mod tests {
 
         h.detect_and_correct(&runner).await;
         // tmux's probe pair (help, then -V) both run before the classify reads them;
-        // the corrected source never probes again.
+        // the corrected host never probes again.
         h.detect_and_correct(&runner).await;
         assert_eq!(runner.calls(), 2);
     }

@@ -3,12 +3,12 @@
 //! command, so it uses none of `super::vocab`.
 
 use super::Transport;
-use crate::session::LOCAL_SOURCE;
+use crate::session::LOCAL_MACHINE;
 
 /// The local machine. `socket` targets a non-default mux server (`-S <socket>`,
-/// parsed from `$TMUX`); `None` ⇒ the default socket. `id` is the SOURCE id this
+/// parsed from `$TMUX`); `None` ⇒ the default socket. `id` is the HOST id this
 /// transport answers as: bare `local` when this machine serves one mux, `local:<mux>` when
-/// it serves several, so two local sources on the same box stay distinct keys.
+/// it serves several, so two local hosts on the same box stay distinct keys.
 ///
 /// It injects the socket it is GIVEN and asks nothing about it. Naming no mux, it cannot
 /// know whether the mux it wraps understands a socket flag, so whether a socket is passed
@@ -23,7 +23,7 @@ pub struct Local {
 impl Default for Local {
     fn default() -> Self {
         Local {
-            id: LOCAL_SOURCE.to_string(),
+            id: LOCAL_MACHINE.to_string(),
             socket: None,
         }
     }
@@ -149,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn control_needs_pty_is_true_only_for_a_unix_local_host() {
+    fn control_needs_pty_is_true_only_for_a_unix_local_machine() {
         // A local `-CC` control child is spawned with the mux binary directly and
         // on Unix dies on pipe stdio, so it needs a pty of its own; ssh's `-tt`
         // and WSL's `script` wrapper already provide one on their paths.

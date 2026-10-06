@@ -10,7 +10,7 @@
 
 use super::vocab::remote_command;
 use super::Transport;
-use crate::model::source::{ExecRunner, Runner};
+use crate::model::host_def::{ExecRunner, Runner};
 use crate::session;
 
 /// The Windows-side launcher every WSL command goes through. Spelled with `.exe` so it
@@ -18,7 +18,7 @@ use crate::session;
 const WSL_BIN: &str = "wsl.exe";
 
 /// A WSL distribution on this machine. `distro` is the name `wsl.exe -d` takes; `id` is the
-/// SOURCE id this transport answers as - the machine name `wsl.<distro>` when the distro
+/// HOST id this transport answers as - the machine name `wsl.<distro>` when the distro
 /// serves a single mux, and that name qualified by the mux when it serves several.
 #[derive(Clone, Debug)]
 pub struct Wsl {
@@ -61,8 +61,8 @@ impl Wsl {
 
 impl Transport for Wsl {
     fn host_id(&self) -> &str {
-        // The SOURCE id, not the distribution: several muxes in one distro are several
-        // sources reached at the same `distro`.
+        // The HOST id, not the distribution: several muxes in one distro are several
+        // hosts reached at the same `distro`.
         &self.id
     }
 
@@ -180,7 +180,7 @@ fn decode_wsl_output(bytes: &[u8]) -> String {
 /// reported them.
 ///
 /// A name carrying [`session::MUX_SEP`] or `/` is dropped: those two characters are the
-/// source-id and address grammar, so such a name could not be addressed back. Nothing
+/// host-id and address grammar, so such a name could not be addressed back. Nothing
 /// else is filtered - a distribution running no mux answers as unreachable, which is a
 /// legible answer, whereas a hidden one is not.
 fn parse_distros(text: &str) -> Vec<String> {
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn raw_shell_argv_is_some_for_wsl() {
-        // A `SwitchPlan::Shell` needs a host shell to run in; this implementation has one, so an
+        // A `SwitchPlan::Shell` needs a machine shell to run in; this implementation has one, so an
         // in-place switch does not fall back to a full reattach.
         let got = wsl("Ubuntu-24.04")
             .raw_shell_argv("c=$(cat /tmp/.xmux-cli-x); echo $c")
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn a_name_the_id_grammar_cannot_carry_is_dropped() {
-        // `:` separates a machine from its mux and `/` separates a source from a session,
+        // `:` separates a machine from its mux and `/` separates a host from a session,
         // so a distribution named with either could be listed but never addressed back.
         assert_eq!(parse_distros("ok\nbad:name\nbad/name\n\n"), vec!["wsl.ok"]);
     }

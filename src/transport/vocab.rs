@@ -20,7 +20,7 @@
 pub const SHELL_PROBE: &str = "echo $0";
 
 /// [`SHELL_PROBE`] for a stream that carries more than its answer. Login output can also
-/// carry ssh's prompts and the host's banner, and PowerShell's answer is an empty line,
+/// carry ssh's prompts and the machine's banner, and PowerShell's answer is an empty line,
 /// so the answer is found by the marker in front of it rather than by being the last
 /// line. Every family runs `echo` and exits 0, so the command still reports the
 /// authentication and nothing else.
@@ -56,7 +56,7 @@ impl RemoteShell {
     ///
     /// Only the LAST non-empty line counts. A login script that writes to stdout puts
     /// its own lines ahead of the answer, and reading the whole stream would let one
-    /// stray `$` in a host's greeting cost it every POSIX snippet it can in fact run.
+    /// stray `$` in a machine's greeting cost it every POSIX snippet it can in fact run.
     pub fn from_probe(stdout: &[u8]) -> RemoteShell {
         let out = String::from_utf8_lossy(stdout);
         let answer = out
@@ -128,7 +128,7 @@ fn is_shell_safe(s: &str) -> bool {
 /// `cmd.exe` remains an unsupported remote: it treats single quotes as ordinary
 /// characters, so this line's quoting neutralizes nothing there. The probe classifies it
 /// [`RemoteShell::Other`] alongside PowerShell, which withholds every POSIX snippet from
-/// it; making its own quoting safe would be a further per-host shell rendering.
+/// it; making its own quoting safe would be a further per-machine shell rendering.
 pub fn remote_command(argv: &[String]) -> String {
     argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
 }

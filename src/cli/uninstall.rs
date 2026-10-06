@@ -12,8 +12,8 @@
 //! before each removal, so an instance started while a question waited is not run
 //! over.
 //!
-//! The command reaches no other machine. A key this PC registered on a host stays
-//! there, and the app's logout removes it one host at a time.
+//! The command reaches no other machine. A key this PC registered on a machine stays
+//! there, and the app's logout removes it one machine at a time.
 //!
 //! On Windows a running process cannot delete its own image, so the removal of files
 //! (and a package manager's uninstall, which deletes the running image) is handed to
@@ -1003,8 +1003,8 @@ fn run_blocking(args: &Args, handle: tokio::runtime::Handle) -> Result<Outcome, 
         println!("{line}");
     }
     println!(
-        "Remote hosts are not touched: a key this PC registered on a host stays there. \
-         `prefix L` in xmux removes it, one host at a time."
+        "Remote machines are not touched: a key this PC registered on a machine stays there. \
+         `prefix L` in xmux removes it, one machine at a time."
     );
 
     let interactive = std::io::stdin().is_terminal();
@@ -1471,7 +1471,7 @@ mod tests {
     }
 
     /// The unix layout, with the launcher found through its marker on PATH (a
-    /// symlink needs a privilege a Windows test host may lack).
+    /// symlink needs a privilege a Windows test machine may lack).
     fn unix_install(tag: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
         let base = temp(tag);
         let root = base.join("share").join("xmux");

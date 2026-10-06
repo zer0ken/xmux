@@ -5,30 +5,27 @@ use crate::session::Session;
 /// The side-effecting actions delegated to the resolved runtime environment.
 #[async_trait::async_trait]
 pub trait Ops: Send + Sync {
-    /// The resolved source aliases in display order, without probing.
-    fn sources(&self) -> Vec<String>;
-    /// Probes one source's sessions. An empty success is a reachable source with no
-    /// sessions; an error is an unreachable source.
-    async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>>;
-    async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session>;
+    /// The resolved host ids in display order, without probing.
+    fn hosts(&self) -> Vec<String>;
+    /// Probes one host's sessions. An empty success is a reachable host with no
+    /// sessions; an error is an unreachable host.
+    async fn list_sessions(&self, host: &str) -> anyhow::Result<Vec<Session>>;
+    async fn new_session(&self, host: &str, name: &str) -> anyhow::Result<Session>;
     /// Builds the command that validates the supplied login, or returns `None` when the
-    /// source has no remote login.
+    /// host has no remote login.
     async fn login_command(
         &self,
-        source: &str,
+        host: &str,
         login: &crate::transport::Login,
         password: String,
     ) -> anyhow::Result<Option<crate::transport::CommandSpec>>;
     /// Records the values of a successful login in ssh config, or says why it could not.
-    fn write_login_stanza(
-        &self,
-        source: &str,
-        login: &crate::transport::Login,
-    ) -> Result<(), String>;
-    /// Registers this machine's public key on the host a successful login reached.
+    fn write_login_stanza(&self, host: &str, login: &crate::transport::Login)
+        -> Result<(), String>;
+    /// Registers this machine's public key on the machine a successful login reached.
     async fn register_login_key(
         &self,
-        source: &str,
+        host: &str,
         login: &crate::transport::Login,
         register: KeyRegistration,
     ) -> RegistrationOutcome;
@@ -37,7 +34,7 @@ pub trait Ops: Send + Sync {
 /// The key registration requested by a login.
 pub struct KeyRegistration {
     /// The shell family reported by the login command, which reads it because a locked
-    /// host's family is unknown before its login.
+    /// machine's family is unknown before its login.
     pub shell: Option<crate::transport::vocab::RemoteShell>,
 }
 
@@ -71,7 +68,7 @@ pub enum OpResult {
         message: String,
     },
     Login {
-        source: String,
+        host: String,
         login: crate::transport::Login,
         /// The submission this result answers.
         attempt: u64,
@@ -79,18 +76,18 @@ pub enum OpResult {
     },
     /// A step boundary a running login reported before its verdict.
     LoginProgress {
-        source: String,
+        host: String,
         attempt: u64,
         event: crate::model::LoginEvent,
     },
     /// The lines of a machine's key files that hold this machine's public keys, which a
     /// logout looks for before it closes anything.
-    HostKeysFound {
+    MachineKeysFound {
         machine: String,
-        result: Result<Vec<crate::provision::env::HostKeyLine>, String>,
+        result: Result<Vec<crate::provision::env::MachineKeyLine>, String>,
     },
     /// What removing the key lines a logout chose did.
-    HostKeysRemoved {
+    MachineKeysRemoved {
         machine: String,
         result: Result<(), String>,
     },

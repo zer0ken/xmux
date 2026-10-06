@@ -82,8 +82,8 @@ mod tests {
 
     #[test]
     fn scanning_dump_uses_the_same_braille_frame_as_live_render() {
-        let mut state = crate::state::State::from_sources(vec!["pending".into()]);
-        let switcher = Switcher::from_sources(&mut state);
+        let mut state = crate::state::State::from_hosts(vec!["pending".into()]);
+        let switcher = Switcher::from_hosts(&mut state);
         state.chrome.animation_ms = 1_066;
         for (width, height) in [(90, 24), (130, 40)] {
             let previous = crate::ui::switcher::RenderPlan::default();
@@ -113,8 +113,8 @@ mod tests {
 
     #[test]
     fn scanning_dump_advances_and_small_view_clips_safely() {
-        let mut state = crate::state::State::from_sources(vec!["pending".into()]);
-        let switcher = Switcher::from_sources(&mut state);
+        let mut state = crate::state::State::from_hosts(vec!["pending".into()]);
+        let switcher = Switcher::from_hosts(&mut state);
         let previous = crate::ui::switcher::RenderPlan::default();
         let first = dump_screen(&switcher, None, 90, 24, &state, &previous);
         state.chrome.animation_ms = 1_132;
@@ -149,8 +149,8 @@ mod tests {
 
     #[test]
     fn scanning_screen_does_not_inherit_a_stale_grid_cursor() {
-        let mut state = crate::state::State::from_sources(vec!["pending".into()]);
-        let switcher = Switcher::from_sources(&mut state);
+        let mut state = crate::state::State::from_hosts(vec!["pending".into()]);
+        let switcher = Switcher::from_hosts(&mut state);
         let mut grid = crate::display::grid::Grid::new(50, 30);
         grid.feed(b"old session");
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
@@ -171,8 +171,8 @@ mod tests {
 
     #[test]
     fn scanning_dump_matches_a_hidden_nav_frame() {
-        let mut state = crate::state::State::from_sources(vec!["pending".into()]);
-        let switcher = Switcher::from_sources(&mut state);
+        let mut state = crate::state::State::from_hosts(vec!["pending".into()]);
+        let switcher = Switcher::from_hosts(&mut state);
         state.chrome.animation_ms = 1_099;
         let area = ratatui::layout::Rect::new(0, 0, 80, 24);
         let nav = crate::ui::switcher::NavSize::hidden(crate::ui::switcher::NAV_WIDTH);
@@ -193,8 +193,8 @@ mod tests {
 
     #[test]
     fn disabling_braille_hides_scanning_frames_with_visible_or_hidden_nav() {
-        let mut state = crate::state::State::from_sources(vec!["pending".into()]);
-        let switcher = Switcher::from_sources(&mut state);
+        let mut state = crate::state::State::from_hosts(vec!["pending".into()]);
+        let switcher = Switcher::from_hosts(&mut state);
         state.chrome.braille_animation = false;
         for nav in [
             crate::ui::switcher::NavSize::visible(crate::ui::switcher::NAV_WIDTH),
@@ -228,7 +228,7 @@ mod tests {
     fn an_empty_screen_keeps_its_content_and_animation_with_the_nav_hidden() {
         let mut state = crate::state::State::from_scan(Scan {
             groups: vec![crate::ui::tree::Group {
-                source: "fresh".into(),
+                host: "fresh".into(),
                 err: None,
                 sessions: vec![],
             }],
@@ -252,7 +252,7 @@ mod tests {
         let mut state = crate::state::State::from_scan(sample());
         let mut switcher = Switcher::new(&mut state);
         state.displayed = crate::model::Selection {
-            source: "local".into(),
+            host: "local".into(),
             session: "editor".into(),
         };
         switcher.request_rescan(&mut state);
@@ -284,10 +284,10 @@ mod tests {
     fn sample() -> Scan {
         Scan {
             groups: vec![Group {
-                source: "local".into(),
+                host: "local".into(),
                 err: None,
                 sessions: vec![Session {
-                    source: "local".into(),
+                    host: "local".into(),
                     name: "editor".into(),
                     mux: "tmux".into(),
                     windows: 1,

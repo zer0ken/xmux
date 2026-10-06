@@ -148,15 +148,15 @@ impl CommandSpec {
     }
 
     /// Attaches the same command authenticating with the held password alone, run once
-    /// when the host closes the connection after accepting a key.
+    /// when the machine closes the connection after accepting a key.
     pub(crate) fn with_password_only_retry(mut self, retry: CommandSpec) -> Self {
         self.password_only_retry = Some(Box::new(retry));
         self
     }
 
     /// The command to run instead after this one failed, when it held a password that
-    /// askpass never handed over and the host dropped the connection before a session
-    /// started without refusing authentication: the host accepted a key and could not
+    /// askpass never handed over and the machine dropped the connection before a session
+    /// started without refusing authentication: the machine accepted a key and could not
     /// open a session for it. The caller runs it once, inside the time budget the first
     /// run started with, and calls [`CommandSpec::password_only_worked`] when it succeeds.
     pub fn password_only_retry(&self, exit_code: i32, diagnostic: &str) -> Option<&CommandSpec> {
@@ -326,7 +326,7 @@ pub trait Transport: Send + Sync {
         false
     }
 
-    /// True when a display attach on this machine runs THROUGH a host shell (so an attach
+    /// True when a display attach on this machine runs THROUGH a machine shell (so an attach
     /// can prepend a `tty >file` record snippet, and a `SwitchPlan::Shell` can run). A
     /// machine that spawns the mux binary directly is `false` (the default). NOT derived
     /// from `is_remote`: a local-but-shell implementation (WSL) sets this `true` while staying
@@ -346,7 +346,7 @@ pub trait Transport: Send + Sync {
     /// True when running one more command on this machine opens no new connection to it.
     /// The local box and a WSL distribution are reached by a local process, and an ssh
     /// machine is reached over one authenticated master when this side shares it across
-    /// runs. A POLL source refreshes on a cadence only over such a path, because there a
+    /// runs. A POLL host refreshes on a cadence only over such a path, because there a
     /// repeat costs the machine nothing it is not already honouring; anywhere else every
     /// repeat is a fresh login. `false` (the default) is the side that must not repeat.
     fn reuses_connection(&self) -> bool {
@@ -381,9 +381,9 @@ pub trait Transport: Send + Sync {
     fn set_login(&mut self, _login: ssh::Login) {}
 
     /// Hands this transport the process-memory credential store. An ssh transport
-    /// consults it each time a command is composed, so every spawn path and every source
+    /// consults it each time a command is composed, so every spawn path and every host
     /// on one machine receives current authentication: submitted connection values are
-    /// the machine's, not one source's. A source found later and a transport rebuilt from
+    /// the machine's, not one host's. A host found later and a transport rebuilt from
     /// the roster receive the same store before use, so neither can lose the machine
     /// credential.
     fn set_credentials(&mut self, _credentials: auth::Credentials) {}
@@ -451,12 +451,12 @@ pub trait Transport: Send + Sync {
     fn clone_box(&self) -> Box<dyn Transport>;
 
     /// The same machine, reached exactly as this transport reaches it (the recorded
-    /// login and shell family included), answering as the source `id`. A source found on
+    /// login and shell family included), answering as the host `id`. A host found on
     /// a machine after it connected is built from this, so its first command already
     /// knows what the machine's probe and login established.
     fn clone_as(&self, id: &str) -> Box<dyn Transport>;
 
-    /// The construction data that reaches this machine as this source. Rebuilding a
+    /// The construction data that reaches this machine as this host. Rebuilding a
     /// transport from it with [`MachineKind::transport`] reaches the same machine the same
     /// way, without what was recorded on this one since it was built (a login, a shell
     /// family, the credential store).
@@ -565,13 +565,13 @@ pub enum LoweredSwitch {
 #[derive(Clone, Debug)]
 pub enum MachineKind {
     /// The local machine, optionally targeting a non-default mux socket (`-S`). `id` is
-    /// the source id it answers as (empty ⇒ the bare `local`).
+    /// the host id it answers as (empty ⇒ the bare `local`).
     Local {
         #[allow(missing_docs)]
         id: String,
         socket: Option<String>,
     },
-    /// A remote over ssh: the source `id` it answers as (empty ⇒ `alias`), the
+    /// A remote over ssh: the host `id` it answers as (empty ⇒ `alias`), the
     /// destination `alias`, its ControlMaster socket `control_path`, and the LOCAL
     /// platform `os` (gates ControlMaster).
     Ssh {
@@ -580,18 +580,18 @@ pub enum MachineKind {
         control_path: String,
         os: String,
     },
-    /// A WSL distribution on this machine: the source `id` it answers as (empty means the
+    /// A WSL distribution on this machine: the host `id` it answers as (empty means the
     /// bare machine name `wsl.<distro>`) and the `distro` name `wsl.exe -d` takes.
     Wsl { id: String, distro: String },
 }
 
-/// The [`MachineKind`] for `machine`, answering as the source `id`.
+/// The [`MachineKind`] for `machine`, answering as the host `id`.
 ///
-/// The SINGLE place a machine's construction data is assembled, so a source added LATER
+/// The SINGLE place a machine's construction data is assembled, so a host added LATER
 /// (an async mux discovery result) reaches its machine exactly as one built at launch
-/// does, and the `Host` the loop drives and the `Source` the off-loop ops use cannot
+/// does, and the `Host` the loop drives and the `HostDef` the off-loop ops use cannot
 /// disagree about how to get there. The ControlMaster socket is per MACHINE, not per
-/// source: several muxes on one machine share the one multiplexed connection.
+/// host: several muxes on one machine share the one multiplexed connection.
 pub fn kind_for(
     machine: &str,
     id: String,
@@ -599,13 +599,13 @@ pub fn kind_for(
     xmux_dir: &std::path::Path,
     local_socket: Option<String>,
 ) -> MachineKind {
-    if machine == crate::session::LOCAL_SOURCE {
+    if machine == crate::session::LOCAL_MACHINE {
         MachineKind::Local {
             id,
             socket: local_socket,
         }
     } else if let Some(distro) = crate::session::wsl_distro_of(machine) {
-        // The kind is read back OUT of the machine name, so a source added later (an
+        // The kind is read back OUT of the machine name, so a host added later (an
         // async mux-discovery answer carries a bare machine name and nothing else) reaches
         // its distribution the same way one built at launch does.
         MachineKind::Wsl {
@@ -630,7 +630,7 @@ impl MachineKind {
     /// no code outside `MachineKind` matches on the kind.
     /// How this machine is ADDRESSED, in words, with the wait that bounds reaching it.
     ///
-    /// Shown, never parsed: the unreachable screen states it, so a host that failed says
+    /// Shown, never parsed: the unreachable screen states it, so a machine that failed says
     /// what it was asked over. It lives here because this is where a machine implementation's
     /// construction data already lives - the alternative is a caller that matches on the
     /// implementation to describe it, and every such caller drifts from `transport`.
@@ -690,7 +690,7 @@ impl MachineKind {
 }
 
 /// A local machine transport targeting an optional non-default mux socket, answering
-/// as the bare `local` source - this machine serving one mux.
+/// as the bare `local` host - this machine serving one mux.
 pub fn local(socket: Option<String>) -> Box<dyn Transport> {
     Box::new(Local {
         socket,
@@ -698,13 +698,13 @@ pub fn local(socket: Option<String>) -> Box<dyn Transport> {
     })
 }
 
-/// A local machine transport answering as the source `id`. Used when this machine serves
+/// A local machine transport answering as the host `id`. Used when this machine serves
 /// SEVERAL muxes and each needs its own key.
 pub fn local_as(id: String, socket: Option<String>) -> Box<dyn Transport> {
     Box::new(Local { id, socket })
 }
 
-/// A remote (ssh) machine transport answering as the source `alias` - that machine
+/// A remote (ssh) machine transport answering as the host `alias` - that machine
 /// serving one mux.
 pub fn ssh(alias: String, control_path: String, os: String) -> Box<dyn Transport> {
     Box::new(Ssh {
@@ -718,7 +718,7 @@ pub fn ssh(alias: String, control_path: String, os: String) -> Box<dyn Transport
     })
 }
 
-/// A remote (ssh) machine transport answering as the source `id` while still reaching
+/// A remote (ssh) machine transport answering as the host `id` while still reaching
 /// the machine at `alias`. Used when a machine serves SEVERAL muxes.
 pub fn ssh_as(id: String, alias: String, control_path: String, os: String) -> Box<dyn Transport> {
     Box::new(Ssh {
@@ -741,7 +741,7 @@ pub fn wsl(distro: String) -> Box<dyn Transport> {
     })
 }
 
-/// A WSL machine transport answering as the source `id` while still reaching the same
+/// A WSL machine transport answering as the host `id` while still reaching the same
 /// `distro`. Used when a distribution serves SEVERAL muxes.
 pub fn wsl_as(id: String, distro: String) -> Box<dyn Transport> {
     Box::new(Wsl { id, distro })
@@ -753,7 +753,7 @@ mod tests {
 
     #[test]
     fn a_qualified_transport_keeps_reaching_the_same_machine() {
-        // Two muxes on one machine are two SOURCES at one DESTINATION: the id
+        // Two muxes on one machine are two HOSTS at one DESTINATION: the id
         // distinguishes them, the ssh argv must not change.
         let one = ssh("prod".into(), String::new(), "linux".into());
         let two = ssh_as(
@@ -773,7 +773,7 @@ mod tests {
     fn a_qualified_local_transport_is_still_this_box() {
         let l = local_as("local:zellij".into(), None);
         assert_eq!(l.host_id(), "local:zellij");
-        assert!(crate::session::is_local_source(l.host_id()));
+        assert!(crate::session::is_local_host(l.host_id()));
         assert!(l.local_registry_scope(), "still this box's registry scope");
     }
 
@@ -884,7 +884,7 @@ mod tests {
 
     #[test]
     fn a_qualified_wsl_transport_keeps_reaching_the_same_distribution() {
-        // Two muxes in one distribution are two SOURCES at one destination, exactly as
+        // Two muxes in one distribution are two HOSTS at one destination, exactly as
         // for ssh: the id tells them apart and the wsl.exe argv must not change.
         let one = kind_for(
             "wsl.Ubuntu",
@@ -981,7 +981,7 @@ mod describe_tests {
 
     #[test]
     fn each_kind_says_how_it_is_addressed_and_over_what_path() {
-        // Shown on the unreachable screen: what a failed host was asked over. The ssh
+        // Shown on the unreachable screen: what a failed machine was asked over. The ssh
         // wait is the SAME constant the option carries, so the words and the command
         // cannot disagree.
         let ssh = MachineKind::Ssh {

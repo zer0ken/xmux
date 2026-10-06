@@ -26,9 +26,9 @@ layer reads and paints them and owns only transient popup geometry.
 
 ## Invariants
 
-- The selection is a node (host, source, or session), not a row; a row is only where
+- The selection is a node (machine, host, or session), not a row; a row is only where
   the node stands. Only the selected half of a section title inverts.
-- A host and its mux are one label, and the mux in it is resolved once per card, so a
+- A machine and its mux are one label, and the mux in it is resolved once per card, so a
   session card, its host's card, and the screen behind either cannot spell one mux
   three ways.
 - Every in-flight marker reads its glyph from the one spinner helper on the frame the
@@ -44,7 +44,7 @@ layer reads and paints them and owns only transient popup geometry.
 - The words on a screen and the values the code runs come from one place: the ssh
   connect wait is printed from the constant the ssh option is built from, and a status
   word from the one helper the cards read.
-- No UI module manages a source process or writes to a PTY.
+- No UI module manages a host process or writes to a PTY.
 
 ## Before Editing
 

@@ -49,10 +49,10 @@ pub(crate) struct AppModel {
     pub(crate) config_last_mtime: Option<std::time::SystemTime>,
     pub(crate) width_dirty: bool,
     pub(crate) width_flush_at: Option<std::time::Instant>,
-    /// The re-scan whose summary toast is still owed, held until every source it asked
+    /// The re-scan whose summary toast is still owed, held until every host it asked
     /// and, for a full re-scan, the roster have answered.
     pub(crate) rescan: Option<RescanInFlight>,
-    /// The logout still taking this machine's key off its host. One runs at a time: a
+    /// The logout still taking this PC's key off a machine. One runs at a time: a
     /// second logout is refused while this one is set.
     pub(crate) logout: Option<LogoutRun>,
     /// A cancel handle for every login whose result has not arrived, whichever machine it
@@ -61,7 +61,7 @@ pub(crate) struct AppModel {
     pub(crate) running_logins: Vec<crate::link::unlock::RunningLogin>,
 }
 
-/// A logout that has not yet cleared its machine. The key comes off the host first, over
+/// A logout that has not yet cleared its machine. The key comes off the machine first, over
 /// the connection the login left, and the ssh config entries naming the machine go
 /// after, so nothing of the machine's is cleared until both settle. What xmux added goes
 /// without asking; a key line or an ssh config entry xmux did not add goes only when one
@@ -74,15 +74,15 @@ pub(crate) struct LogoutRun {
 
 #[derive(Debug)]
 enum LogoutStep {
-    /// The host's key files are being searched.
+    /// The machine's key files are being searched.
     Finding,
     /// The ssh config entries xmux did not write are being looked for. Carries what the
     /// key search found.
-    FindingEntries(Result<Vec<crate::provision::env::HostKeyLine>, String>),
+    FindingEntries(Result<Vec<crate::provision::env::MachineKeyLine>, String>),
     /// The second confirmation is open over the key lines and entries found, some of
     /// them not xmux's. `notes` report a key search that found nothing to remove.
     Asking {
-        keys: Vec<crate::provision::env::HostKeyLine>,
+        keys: Vec<crate::provision::env::MachineKeyLine>,
         entries: Vec<crate::provision::config::RemovedEntry>,
         notes: Vec<crate::state::notify::Note>,
     },
@@ -106,13 +106,13 @@ pub(crate) struct RescanInFlight {
     /// compares against.
     before: crate::state::notify::ScanSnapshot,
     /// Whether the re-scan's roster answer is still out. The roster names the hosts that
-    /// came and went, so the summary waits for it as it waits for every source.
+    /// came and went, so the summary waits for it as it waits for every host.
     roster: bool,
     /// The machines whose held password ssh refused during this re-scan. Their cards keep
     /// no failure of their own, so the summary is told here.
     locked: HashSet<String>,
     /// The one machine a `prefix r` re-scan asked, or `None` for a full re-scan. The
-    /// summary of a one-machine re-scan compares that machine's sources alone.
+    /// summary of a one-machine re-scan compares that machine's hosts alone.
     machine: Option<String>,
     /// A full re-scan can use an already running one-machine probe instead of asking
     /// that machine twice. The runtime consumes this when it starts discovery.
@@ -125,9 +125,9 @@ impl AppModel {
     }
 
     #[cfg(test)]
-    pub(crate) fn from_sources(sources: Vec<String>) -> Self {
-        let mut state = crate::state::State::from_sources(sources);
-        let switcher = Switcher::from_sources(&mut state);
+    pub(crate) fn from_hosts(hosts: Vec<String>) -> Self {
+        let mut state = crate::state::State::from_hosts(hosts);
+        let switcher = Switcher::from_hosts(&mut state);
         Self {
             state,
             switcher,
@@ -195,7 +195,7 @@ pub(crate) enum Msg {
         col: u16,
         row: u16,
     },
-    /// An arrow key on a host's or a source's screen while the terminal view holds the
+    /// An arrow key on a machine's or a host's screen while the terminal view holds the
     /// focus: the hard-selected link moves by this many.
     StepLink(isize),
     /// Opens a link of the shown screen: the one clicked, or the hard-selected one.
@@ -219,9 +219,9 @@ pub(crate) enum Msg {
         logged_in: HashSet<String>,
     },
     LoginSettled {
-        source: String,
+        host: String,
         credential_held: bool,
-        machine_has_sources: bool,
+        machine_has_hosts: bool,
         /// The machine probe the runtime starts for this login, whose answer alone
         /// settles the login's mux search.
         probe: u64,
@@ -230,25 +230,25 @@ pub(crate) enum Msg {
         held: HashSet<String>,
     },
     DisplayAuth {
-        source: String,
+        host: String,
         method: Option<crate::model::AuthMethod>,
     },
     ApplyInventory {
-        source: String,
+        host: String,
         sessions: Vec<crate::session::Session>,
         live: bool,
     },
-    AddSource {
-        source: String,
+    AddHost {
+        host: String,
         scanning: bool,
     },
-    /// Sources one machine answered it serves, added together so the card the machine
+    /// Hosts one machine answered it serves, added together so the card the machine
     /// stood on hands its selection to the first of them by name.
-    AddSources {
-        sources: Vec<String>,
+    AddHosts {
+        hosts: Vec<String>,
     },
-    RemoveSource {
-        source: String,
+    RemoveHost {
+        host: String,
         clear_tracking: bool,
     },
     /// A machine the roster now names.
@@ -259,7 +259,7 @@ pub(crate) enum Msg {
     RemoveMachine {
         machine: String,
     },
-    /// What a machine answered as a whole while no source of it is known: why it could
+    /// What a machine answered as a whole while no host of it is known: why it could
     /// not be asked.
     ApplyMachineResult {
         machine: String,
@@ -274,15 +274,15 @@ pub(crate) enum Msg {
     /// The launch roster has been reconciled into the registries and the nav.
     LaunchRosterApplied,
     DetectionFinished {
-        source: String,
+        host: String,
     },
-    SetSourceReach(HashMap<String, crate::state::SourceReach>),
+    SetHostReach(HashMap<String, crate::state::HostReach>),
     SetRosterFacts {
         providers: HashMap<String, String>,
         login_defaults: HashMap<String, crate::provision::env::LoginDefaults>,
         ssh_stanzas: HashMap<String, String>,
         held_credentials: HashSet<String>,
-        source_reach: HashMap<String, crate::state::SourceReach>,
+        host_reach: HashMap<String, crate::state::HostReach>,
     },
     HostEvent {
         event: crate::link::HostEvent,
@@ -290,7 +290,7 @@ pub(crate) enum Msg {
     },
     Focus(crate::model::FocusTarget),
     FeedLogin {
-        source: String,
+        host: String,
         bytes: Vec<u8>,
     },
     SetMouseNavArmed(bool),
@@ -376,11 +376,11 @@ pub(crate) enum Effect {
     Event(EventEffect),
     EventBatch(Vec<EventEffect>),
     LoginApplied {
-        source: String,
+        host: String,
         login: crate::transport::Login,
     },
     StartLogin {
-        source: String,
+        host: String,
         login: crate::transport::Login,
         password: crate::model::SecretInput,
         after_login: crate::model::AfterLogin,
@@ -396,13 +396,13 @@ pub(crate) enum Effect {
     ReattachDisplay(Selection),
     /// Searches the machine's key files for this machine's public keys, ending first the
     /// login the logout cancelled.
-    FindHostKeys {
+    FindMachineKeys {
         machine: String,
         cancel_login: Vec<crate::link::unlock::RunningLogin>,
     },
-    RemoveHostKeys {
+    RemoveMachineKeys {
         machine: String,
-        lines: Vec<crate::provision::env::HostKeyLine>,
+        lines: Vec<crate::provision::env::MachineKeyLine>,
     },
     FindSshConfigEntries {
         machine: String,
@@ -424,19 +424,19 @@ impl std::fmt::Debug for Effect {
             Self::Command(command) => f.debug_tuple("Command").field(command).finish(),
             Self::Event(effect) => f.debug_tuple("Event").field(effect).finish(),
             Self::EventBatch(effects) => f.debug_tuple("EventBatch").field(effects).finish(),
-            Self::LoginApplied { source, login } => f
+            Self::LoginApplied { host, login } => f
                 .debug_struct("LoginApplied")
-                .field("source", source)
+                .field("host", host)
                 .field("login", login)
                 .finish(),
             Self::StartLogin {
-                source,
+                host,
                 login,
                 after_login,
                 ..
             } => f
                 .debug_struct("StartLogin")
-                .field("source", source)
+                .field("host", host)
                 .field("login", login)
                 .field("password", &"[redacted]")
                 .field("after_login", after_login)
@@ -456,11 +456,11 @@ impl std::fmt::Debug for Effect {
             Self::ReattachDisplay(selection) => {
                 f.debug_tuple("ReattachDisplay").field(selection).finish()
             }
-            Self::FindHostKeys { machine, .. } => {
-                f.debug_tuple("FindHostKeys").field(machine).finish()
+            Self::FindMachineKeys { machine, .. } => {
+                f.debug_tuple("FindMachineKeys").field(machine).finish()
             }
-            Self::RemoveHostKeys { machine, lines } => f
-                .debug_struct("RemoveHostKeys")
+            Self::RemoveMachineKeys { machine, lines } => f
+                .debug_struct("RemoveMachineKeys")
                 .field("machine", machine)
                 .field("lines", &lines.len())
                 .finish(),
@@ -511,14 +511,14 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                 }
             }
             model.switcher.request_rescan(&mut model.state);
-            // The roster answer can add hosts after every listed source has answered, so
+            // The roster answer can add hosts after every listed host has answered, so
             // the numbers stay open until it is in.
             model.switcher.hold_numbers(true, &model.state);
             let armed = model.switcher.take_rescan_kick();
             debug_assert!(armed);
             Some(Effect::Command(Command::Rescan))
         }
-        Command::RescanHost(machine) => {
+        Command::RescanMachine(machine) => {
             // One re-scan reports at a time: a second one waits for the first one's
             // summary, so each summary says what its own re-scan found.
             if model.rescan.is_some() {
@@ -537,7 +537,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             model
                 .switcher
                 .mark_machine_scanning(&machine, &mut model.state);
-            Some(Effect::Command(Command::RescanHost(machine)))
+            Some(Effect::Command(Command::RescanMachine(machine)))
         }
         Command::Logout(machine) => {
             if model.logout.is_some() {
@@ -551,7 +551,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                 machine: machine.clone(),
                 step: LogoutStep::Finding,
             });
-            Some(Effect::FindHostKeys {
+            Some(Effect::FindMachineKeys {
                 machine,
                 cancel_login,
             })
@@ -573,7 +573,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             if model
                 .state
                 .invalid_auth
-                .contains(crate::session::machine_of(&selection.source)) =>
+                .contains(crate::session::machine_of(&selection.host)) =>
         {
             None
         }
@@ -594,12 +594,12 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
         }
         Command::Quit => Some(Effect::Command(Command::Quit)),
         Command::RunLogin {
-            source,
+            host,
             login,
             password,
             after_login,
         } => {
-            let machine = crate::session::machine_of(&source);
+            let machine = crate::session::machine_of(&host);
             // A login's registration could put the key back right after the logout took
             // it off, so a machine being logged out takes no login until that ends.
             if model
@@ -620,7 +620,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             model.state.login_attempts += 1;
             let attempt = model.state.login_attempts;
             model.state.login_progress.insert(
-                source.clone(),
+                host.clone(),
                 crate::model::LoginProgress::start(
                     attempt,
                     &login,
@@ -630,11 +630,11 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                 ),
             );
             let (running, cancel) =
-                crate::link::unlock::RunningLogin::pending(source.clone(), attempt);
+                crate::link::unlock::RunningLogin::pending(host.clone(), attempt);
             model.running_logins.push(running.clone());
             model.state.login_run = Some(running);
             Some(Effect::StartLogin {
-                source,
+                host,
                 login,
                 password,
                 after_login,
@@ -649,7 +649,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
 fn sync_selection(model: &mut AppModel) {
     let target = model.switcher.terminal_view_target();
     let selection = Selection {
-        source: target.source,
+        host: target.host,
         session: target.target,
     };
     if selection != model.state.selection {
@@ -659,13 +659,12 @@ fn sync_selection(model: &mut AppModel) {
 
 /// Takes every running login on `machine`, whose results a logout must not let reopen it.
 fn take_login_of(model: &mut AppModel, machine: &str) -> Vec<crate::link::unlock::RunningLogin> {
-    let on_machine = |run: &crate::link::unlock::RunningLogin| {
-        crate::session::machine_of(&run.source) == machine
-    };
+    let on_machine =
+        |run: &crate::link::unlock::RunningLogin| crate::session::machine_of(&run.host) == machine;
     model
         .state
         .login_progress
-        .retain(|source, _| crate::session::machine_of(source) != machine);
+        .retain(|host, _| crate::session::machine_of(host) != machine);
     if model.state.login_run.as_ref().is_some_and(on_machine) {
         model.state.login_run = None;
     }
@@ -676,13 +675,13 @@ fn take_login_of(model: &mut AppModel, machine: &str) -> Vec<crate::link::unlock
     taken
 }
 
-/// Reads what the logout's search of the host's key files found, then looks for the ssh
+/// Reads what the logout's search of the machine's key files found, then looks for the ssh
 /// config entries naming the machine that xmux did not write, so one confirmation can ask
 /// about both.
 fn logout_keys_found(
     model: &mut AppModel,
     machine: String,
-    result: Result<Vec<crate::provision::env::HostKeyLine>, String>,
+    result: Result<Vec<crate::provision::env::MachineKeyLine>, String>,
 ) -> Vec<Effect> {
     let Some(run) = model
         .logout
@@ -697,7 +696,7 @@ fn logout_keys_found(
 
 /// Reads which ssh config entries xmux did not write name the machine, and decides with
 /// the key search whether to ask. Lines and entries xmux added go at once; a key line or
-/// an entry it did not add asks first, because the user may reach the host through it
+/// an entry it did not add asks first, because the user may reach the machine through it
 /// from outside xmux. A key search that failed leaves the key where it is, and an ssh
 /// config that cannot be read is reported by the removal step, which reads it again.
 fn logout_entries_found(
@@ -761,7 +760,7 @@ fn logout_entries_found(
 /// `unmarked` whether the entries xmux did not write go too.
 fn remove_logout_keys(
     model: &mut AppModel,
-    keys: Vec<crate::provision::env::HostKeyLine>,
+    keys: Vec<crate::provision::env::MachineKeyLine>,
     notes: Vec<crate::state::notify::Note>,
     kept: Vec<crate::state::notify::Note>,
     unmarked: bool,
@@ -775,7 +774,7 @@ fn remove_logout_keys(
         return remove_logout_stanza(model, notes, unmarked);
     }
     run.step = LogoutStep::Removing { kept, unmarked };
-    vec![Effect::RemoveHostKeys {
+    vec![Effect::RemoveMachineKeys {
         machine: run.machine.clone(),
         lines: keys,
     }]
@@ -860,7 +859,7 @@ fn logout_keys_removed(
 }
 
 /// Goes on to the ssh config step once the key steps settled. The entries go after the
-/// key, because the key steps reach the host through the values they hold. `notes`
+/// key, because the key steps reach the machine through the values they hold. `notes`
 /// report what happened to the key, and `unmarked` says whether the entries xmux did not
 /// write go too.
 fn remove_logout_stanza(
@@ -932,26 +931,26 @@ fn finish_logout(model: &mut AppModel, notes: Vec<crate::state::notify::Note>) -
     model.state.registration_reports.remove(&machine);
     model
         .state
-        .live_sources
-        .retain(|source| crate::session::machine_of(source) != machine);
+        .live_hosts
+        .retain(|host| crate::session::machine_of(host) != machine);
     model
         .connected
-        .retain(|source| crate::session::machine_of(source) != machine);
-    if crate::session::machine_of(&model.state.displayed.source) == machine {
+        .retain(|host| crate::session::machine_of(host) != machine);
+    if crate::session::machine_of(&model.state.displayed.host) == machine {
         model.state.displayed = Default::default();
         model.state.attach_deadline = None;
         model.state.attach_pending = false;
     }
-    let sources: Vec<_> = model
+    let hosts: Vec<_> = model
         .state
         .groups
         .iter()
-        .filter(|group| crate::session::machine_of(&group.source) == machine)
-        .map(|group| group.source.clone())
+        .filter(|group| crate::session::machine_of(&group.host) == machine)
+        .map(|group| group.host.clone())
         .collect();
-    for source in sources {
-        model.switcher.apply_source_result(
-            source,
+    for host in hosts {
+        model.switcher.apply_host_result(
+            host,
             Vec::new(),
             Some("logged out; log in again or re-scan".into()),
             &mut model.state,
@@ -974,7 +973,7 @@ fn finish_logout(model: &mut AppModel, notes: Vec<crate::state::notify::Note>) -
 fn clear_display_auth(state: &mut crate::state::State, machine: &str) {
     state
         .display_auth_methods
-        .retain(|source, _| crate::session::machine_of(source) != machine);
+        .retain(|host, _| crate::session::machine_of(host) != machine);
 }
 
 fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Vec<EventEffect> {
@@ -1032,14 +1031,14 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             detached: true,
             ..
         } if model.connected.remove(&host) => {
-            model.state.live_sources.remove(&host);
+            model.state.live_hosts.remove(&host);
             vec![
                 EventEffect::ReapHost { host: host.clone() },
                 EventEffect::ReopenHost { host },
             ]
         }
         HostEvent::Exited { host, reason, .. } => {
-            model.state.live_sources.remove(&host);
+            model.state.live_hosts.remove(&host);
             vec![
                 EventEffect::NoteHostExited {
                     host: host.clone(),
@@ -1067,7 +1066,7 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             Vec::new()
         }
         HostEvent::MuxesFound { machine, muxes } => {
-            // Discovery that found nothing ends a login's mux search here: no source
+            // Discovery that found nothing ends a login's mux search here: no host
             // result follows it, since the machine's card goes instead.
             match &muxes {
                 Ok(found) if found.is_empty() => model
@@ -1078,7 +1077,7 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                     .login_mux_answered(&machine, &crate::model::MuxAnswer::Failed(reason.clone())),
                 Ok(_) => {}
             }
-            vec![EventEffect::AddDiscoveredSources { machine, muxes }]
+            vec![EventEffect::AddDiscoveredHosts { machine, muxes }]
         }
         HostEvent::RosterResolved { roster, rescan } => vec![EventEffect::ApplyRoster {
             roster,
@@ -1101,21 +1100,21 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             }),
             rescan: false,
         }],
-        HostEvent::Scanned { source, .. }
+        HostEvent::Scanned { host, .. }
             if model
                 .state
                 .invalid_auth
-                .contains(crate::session::machine_of(&source)) =>
+                .contains(crate::session::machine_of(&host)) =>
         {
             Vec::new()
         }
         HostEvent::Scanned {
-            source,
+            host,
             detected,
             err,
         } => {
             // Detection that found no mux ends a login's mux search whether or not a
-            // source result follows: a source no longer scanning gets none.
+            // host result follows: a host no longer scanning gets none.
             if detected.is_none() {
                 let answer = match &err {
                     Some(reason) => crate::model::MuxAnswer::Failed(reason.clone()),
@@ -1123,25 +1122,25 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                 };
                 model
                     .state
-                    .login_mux_answered(crate::session::machine_of(&source), &answer);
+                    .login_mux_answered(crate::session::machine_of(&host), &answer);
             }
-            if detected.is_none() && model.state.scanning.contains(&source) {
+            if detected.is_none() && model.state.scanning.contains(&host) {
                 let reason = err.clone().unwrap_or_else(|| "mux not detected".to_owned());
                 return vec![
-                    EventEffect::ApplySourceResult {
-                        source: source.clone(),
+                    EventEffect::ApplyHostResult {
+                        host: host.clone(),
                         sessions: Vec::new(),
                         err: Some(reason),
                     },
                     EventEffect::DispatchScanned {
-                        source,
+                        host,
                         detected,
                         err,
                     },
                 ];
             }
             vec![EventEffect::DispatchScanned {
-                source,
+                host,
                 detected,
                 err,
             }]
@@ -1179,19 +1178,19 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                             .state
                             .display_auth_methods
                             .keys()
-                            .any(|source| crate::session::machine_of(source) == machine);
+                            .any(|host| crate::session::machine_of(host) == machine);
                     let disconnect = if auth_refused && known_auth {
                         model.state.auth_methods.remove(&machine);
                         clear_display_auth(&mut model.state, &machine);
                         model.state.invalid_auth.insert(machine.clone());
                         model
                             .state
-                            .live_sources
-                            .retain(|source| crate::session::machine_of(source) != machine);
+                            .live_hosts
+                            .retain(|host| crate::session::machine_of(host) != machine);
                         model
                             .connected
-                            .retain(|source| crate::session::machine_of(source) != machine);
-                        if crate::session::machine_of(&model.state.displayed.source) == machine {
+                            .retain(|host| crate::session::machine_of(host) != machine);
+                        if crate::session::machine_of(&model.state.displayed.host) == machine {
                             model.state.displayed = Default::default();
                             model.state.attach_deadline = None;
                             model.state.attach_pending = false;
@@ -1208,7 +1207,7 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                         model
                             .state
                             .scanning
-                            .retain(|source| crate::session::machine_of(source) != machine);
+                            .retain(|host| crate::session::machine_of(host) != machine);
                         model.state.machine_scanning.remove(&machine);
                         if let Some(rescan) = model.rescan.as_mut() {
                             rescan.locked.insert(machine);
@@ -1219,14 +1218,14 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                         .state
                         .groups
                         .iter()
-                        .filter(|group| crate::session::machine_of(&group.source) == machine)
-                        .map(|group| EventEffect::ApplySourceResult {
-                            source: group.source.clone(),
+                        .filter(|group| crate::session::machine_of(&group.host) == machine)
+                        .map(|group| EventEffect::ApplyHostResult {
+                            host: group.host.clone(),
                             sessions: Vec::new(),
                             err: Some(reason.clone()),
                         })
                         .collect();
-                    // The machine owns its reachability: with no source known, its own
+                    // The machine owns its reachability: with no host known, its own
                     // card states the failure.
                     if model.state.stands_alone(&machine) {
                         model.switcher.apply_machine_result(
@@ -1254,20 +1253,20 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                 }
             }
         }
-        HostEvent::Sessions { source, .. }
+        HostEvent::Sessions { host, .. }
             if model
                 .state
                 .invalid_auth
-                .contains(crate::session::machine_of(&source)) =>
+                .contains(crate::session::machine_of(&host)) =>
         {
             Vec::new()
         }
         HostEvent::Sessions {
-            source,
+            host,
             sessions,
             err,
         } => vec![EventEffect::ApplyPollResult {
-            source,
+            host,
             sessions,
             err,
         }],
@@ -1298,40 +1297,40 @@ pub(crate) fn note_host_exited(
     // reopened channel found no server): the host is empty, whatever it listed before.
     if reason
         .as_deref()
-        .is_some_and(crate::model::source::reason_is_no_sessions)
+        .is_some_and(crate::model::host_def::reason_is_no_sessions)
     {
-        switcher.apply_source_result(host.to_string(), Vec::new(), None, state);
+        switcher.apply_host_result(host.to_string(), Vec::new(), None, state);
         return false;
     }
     if was_connected {
         return false;
     }
     let msg = reason.unwrap_or_else(|| "connection closed".into());
-    switcher.apply_source_result(host.to_string(), Vec::new(), Some(msg), state);
+    switcher.apply_host_result(host.to_string(), Vec::new(), Some(msg), state);
     true
 }
 
-/// The sources whose last answer was an answer: settled, with no failure.
-fn answering_sources(state: &crate::state::State) -> HashSet<String> {
+/// The hosts whose last answer was an answer: settled, with no failure.
+fn answering_hosts(state: &crate::state::State) -> HashSet<String> {
     state
         .groups
         .iter()
-        .filter(|g| g.err.is_none() && !state.scanning.contains(&g.source))
-        .map(|g| g.source.clone())
+        .filter(|g| g.err.is_none() && !state.scanning.contains(&g.host))
+        .map(|g| g.host.clone())
         .collect()
 }
 
-/// Records each source that was answering before and stopped since as a background event:
-/// the history only, because nobody asked for that answer just now. A source that has not
+/// Records each host that was answering before and stopped since as a background event:
+/// the history only, because nobody asked for that answer just now. A host that has not
 /// answered yet (a launch scan failing its first probe) stopped nothing, so its card alone
 /// says so. A re-scan in flight is left to its own summary, which reports the same change
 /// as the result of the re-scan.
-fn record_lost_sources(model: &mut AppModel, before: &HashSet<String>) {
-    let reported = |source: &str| match &model.rescan {
+fn record_lost_hosts(model: &mut AppModel, before: &HashSet<String>) {
+    let reported = |host: &str| match &model.rescan {
         Some(RescanInFlight {
             machine: Some(machine),
             ..
-        }) => crate::session::machine_of(source) == machine,
+        }) => crate::session::machine_of(host) == machine,
         Some(_) => true,
         None => false,
     };
@@ -1339,12 +1338,12 @@ fn record_lost_sources(model: &mut AppModel, before: &HashSet<String>) {
         .state
         .groups
         .iter()
-        .filter(|g| before.contains(&g.source) && !model.state.scanning.contains(&g.source))
-        .filter(|g| !reported(&g.source))
+        .filter(|g| before.contains(&g.host) && !model.state.scanning.contains(&g.host))
+        .filter(|g| !reported(&g.host))
         .filter_map(|g| {
             let reason = g.err.as_deref()?.lines().next().unwrap_or_default();
             Some((
-                model.state.chrome.source_label_when(&g.source, false),
+                model.state.chrome.host_label_when(&g.host, false),
                 reason.to_string(),
             ))
         })
@@ -1369,8 +1368,8 @@ fn settle_rescan_roster(model: &mut AppModel) {
     model.switcher.hold_numbers(false, &model.state);
 }
 
-/// Makes the re-scan's summary toast once every source it asked and the roster have
-/// answered. A one-machine re-scan waits for that machine's sources alone and reports
+/// Makes the re-scan's summary toast once every host it asked and the roster have
+/// answered. A one-machine re-scan waits for that machine's hosts alone and reports
 /// them alone, under a title naming the machine.
 fn settle_rescan(model: &mut AppModel) {
     let Some(rescan) = model.rescan.as_ref() else {
@@ -1404,14 +1403,14 @@ fn settle_rescan(model: &mut AppModel) {
         Some(machine) => after.only_machine(machine),
         None => after,
     };
-    // A source names its mux only when it answered, as its card does.
+    // A host names its mux only when it answered, as its card does.
     let state = &model.state;
-    let notes = before.summary(&after, |source| {
+    let notes = before.summary(&after, |host| {
         let answered = state
             .groups
             .iter()
-            .any(|g| g.source == source && g.err.is_none());
-        state.chrome.source_label_when(source, answered)
+            .any(|g| g.host == host && g.err.is_none());
+        state.chrome.host_label_when(host, answered)
     });
     let title = match &machine {
         Some(machine) => format!("rescan machine {machine}"),
@@ -1421,15 +1420,15 @@ fn settle_rescan(model: &mut AppModel) {
 }
 
 /// The application update transition: one message in, the effects it asks for out. Every
-/// message is folded by [`step`]; around it, a message that can carry a source's answer
+/// message is folded by [`step`]; around it, a message that can carry a host's answer
 /// records what stopped answering, and a re-scan whose last answer arrived reports.
 pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
     let answers = matches!(msg, Msg::HostEvent { .. } | Msg::ApplyInventory { .. });
-    let answering_before = answers.then(|| answering_sources(&model.state));
+    let answering_before = answers.then(|| answering_hosts(&model.state));
     let landing = model.switcher.landing_open();
     let mut effects = step(model, msg);
     if let Some(before) = answering_before {
-        record_lost_sources(model, &before);
+        record_lost_hosts(model, &before);
     }
     settle_rescan(model);
     effects.extend(settle_logout_choice(model));
@@ -1473,8 +1472,8 @@ fn run_palette_choice(model: &mut AppModel, choice: crate::state::PaletteChoice)
     use crate::model::keys::KeyCommand;
     use crate::state::PaletteChoice;
     match choice {
-        PaletteChoice::Login(source) => {
-            let opened = model.switcher.open_host(&source, &mut model.state);
+        PaletteChoice::Login(host) => {
+            let opened = model.switcher.open_host(&host, &mut model.state);
             if opened {
                 update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
             } else {
@@ -1485,12 +1484,12 @@ fn run_palette_choice(model: &mut AppModel, choice: crate::state::PaletteChoice)
             KeyCommand::Filter
             | KeyCommand::NewSession
             | KeyCommand::Rescan
-            | KeyCommand::RescanHost
+            | KeyCommand::RescanMachine
             | KeyCommand::Logout => {
                 let key = match command {
                     KeyCommand::Filter => '/',
                     KeyCommand::NewSession => 'n',
-                    KeyCommand::RescanHost => 'r',
+                    KeyCommand::RescanMachine => 'r',
                     KeyCommand::Rescan => 'R',
                     KeyCommand::Logout => 'L',
                     _ => unreachable!(),
@@ -1629,14 +1628,14 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             execute_list_choice(model)
         }
         Msg::OpResult {
-            result: crate::model::OpResult::HostKeysFound { machine, result },
+            result: crate::model::OpResult::MachineKeysFound { machine, result },
             logged_in,
         } => {
             model.state.logged_in = logged_in;
             logout_keys_found(model, machine, result)
         }
         Msg::OpResult {
-            result: crate::model::OpResult::HostKeysRemoved { machine, result },
+            result: crate::model::OpResult::MachineKeysRemoved { machine, result },
             logged_in,
         } => {
             model.state.logged_in = logged_in;
@@ -1658,7 +1657,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         }
         Msg::OpResult { result, logged_in } => {
             if let crate::model::OpResult::Login {
-                source,
+                host,
                 attempt,
                 outcome,
                 ..
@@ -1666,7 +1665,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             {
                 model
                     .running_logins
-                    .retain(|run| !(run.source == *source && run.attempt == *attempt));
+                    .retain(|run| !(run.host == *host && run.attempt == *attempt));
                 // The running handle, not the steps, says which login is current: the
                 // steps can leave before the result arrives, while only a logout or a
                 // newer submission replaces the handle, and so ends the login it held.
@@ -1674,7 +1673,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                     .state
                     .login_run
                     .as_ref()
-                    .is_some_and(|run| run.source == *source && run.attempt == *attempt)
+                    .is_some_and(|run| run.host == *host && run.attempt == *attempt)
                 {
                     return Vec::new();
                 }
@@ -1682,12 +1681,12 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                     model
                         .state
                         .invalid_auth
-                        .remove(crate::session::machine_of(source));
+                        .remove(crate::session::machine_of(host));
                     if let Some(method) = outcome.auth_method {
                         model
                             .state
                             .auth_methods
-                            .insert(crate::session::machine_of(source).to_owned(), method);
+                            .insert(crate::session::machine_of(host).to_owned(), method);
                     }
                 }
             }
@@ -1695,27 +1694,27 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             let effects: Vec<_> = model
                 .switcher
                 .apply_op_result(result, &mut model.state)
-                .map(|(source, login)| Effect::LoginApplied { source, login })
+                .map(|(host, login)| Effect::LoginApplied { host, login })
                 .into_iter()
                 .collect();
             effects
         }
         Msg::LoginSettled {
-            source,
+            host,
             credential_held,
-            machine_has_sources,
+            machine_has_hosts,
             probe,
         } => {
-            if let Some(progress) = model.state.login_progress.get_mut(&source) {
+            if let Some(progress) = model.state.login_progress.get_mut(&host) {
                 progress.arm_probe(probe);
             }
-            let machine = crate::session::machine_of(&source);
+            let machine = crate::session::machine_of(&host);
             if credential_held {
                 model.state.logged_in.insert(machine.to_owned());
             } else {
                 model.state.logged_in.remove(machine);
             }
-            if !machine_has_sources {
+            if !machine_has_hosts {
                 model
                     .switcher
                     .mark_machine_scanning(machine, &mut model.state);
@@ -1724,7 +1723,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .state
                 .login
                 .as_ref()
-                .is_some_and(|draft| draft.source == source)
+                .is_some_and(|draft| draft.host == host)
             {
                 model.state.login = None;
             }
@@ -1740,8 +1739,8 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 })
                 .map(|(machine, _)| machine.clone())
                 .collect();
-            for (source, method) in &model.state.display_auth_methods {
-                let machine = crate::session::machine_of(source);
+            for (host, method) in &model.state.display_auth_methods {
+                let machine = crate::session::machine_of(host);
                 if *method == crate::model::AuthMethod::Password && !held.contains(machine) {
                     missing.insert(machine.to_owned());
                 }
@@ -1754,26 +1753,26 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 model.state.logged_in.remove(&machine);
                 model
                     .state
-                    .live_sources
-                    .retain(|source| crate::session::machine_of(source) != machine);
+                    .live_hosts
+                    .retain(|host| crate::session::machine_of(host) != machine);
                 model
                     .connected
-                    .retain(|source| crate::session::machine_of(source) != machine);
-                if crate::session::machine_of(&model.state.displayed.source) == machine {
+                    .retain(|host| crate::session::machine_of(host) != machine);
+                if crate::session::machine_of(&model.state.displayed.host) == machine {
                     model.state.displayed = Default::default();
                     model.state.attach_deadline = None;
                     model.state.attach_pending = false;
                 }
-                let sources: Vec<_> = model
+                let hosts: Vec<_> = model
                     .state
                     .groups
                     .iter()
-                    .filter(|group| crate::session::machine_of(&group.source) == machine)
-                    .map(|group| group.source.clone())
+                    .filter(|group| crate::session::machine_of(&group.host) == machine)
+                    .map(|group| group.host.clone())
                     .collect();
-                for source in sources {
-                    model.switcher.apply_source_result(
-                        source,
+                for host in hosts {
+                    model.switcher.apply_host_result(
+                        host,
                         Vec::new(),
                         Some("SSH password no longer held; log in again".into()),
                         &mut model.state,
@@ -1790,48 +1789,46 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             }
             effects
         }
-        Msg::DisplayAuth { source, method } => {
+        Msg::DisplayAuth { host, method } => {
             if let Some(method) = method {
                 if !model
                     .state
                     .invalid_auth
-                    .contains(crate::session::machine_of(&source))
+                    .contains(crate::session::machine_of(&host))
                 {
-                    model.state.display_auth_methods.insert(source, method);
+                    model.state.display_auth_methods.insert(host, method);
                 }
             } else {
-                model.state.display_auth_methods.remove(&source);
+                model.state.display_auth_methods.remove(&host);
             }
             Vec::new()
         }
         Msg::ApplyInventory {
-            source,
+            host,
             sessions,
             live,
         } => {
             if !live {
                 return Vec::new();
             }
-            let renamed = model.switcher.apply_source_result(
-                source.clone(),
-                sessions,
-                None,
-                &mut model.state,
-            );
+            let renamed =
+                model
+                    .switcher
+                    .apply_host_result(host.clone(), sessions, None, &mut model.state);
             renamed
-                .map(|(from, to)| Effect::Event(EventEffect::RenameDisplayed { source, from, to }))
+                .map(|(from, to)| Effect::Event(EventEffect::RenameDisplayed { host, from, to }))
                 .into_iter()
                 .collect()
         }
-        Msg::AddSource { source, scanning } => {
-            model.switcher.add_source(source.clone(), &mut model.state);
+        Msg::AddHost { host, scanning } => {
+            model.switcher.add_host(host.clone(), &mut model.state);
             if scanning {
-                model.switcher.mark_scanning(&source, &mut model.state);
+                model.switcher.mark_scanning(&host, &mut model.state);
             }
             Vec::new()
         }
-        Msg::AddSources { sources } => {
-            model.switcher.add_sources(sources, &mut model.state);
+        Msg::AddHosts { hosts } => {
+            model.switcher.add_hosts(hosts, &mut model.state);
             Vec::new()
         }
         Msg::AddMachine { machine } => {
@@ -1853,17 +1850,17 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.switcher.settle_muxless(&machine, &mut model.state);
             Vec::new()
         }
-        Msg::RemoveSource {
-            source,
+        Msg::RemoveHost {
+            host,
             clear_tracking,
         } => {
-            model.state.display_auth_methods.remove(&source);
+            model.state.display_auth_methods.remove(&host);
             if clear_tracking {
-                model.connected.remove(&source);
-                model.detecting.remove(&source);
+                model.connected.remove(&host);
+                model.detecting.remove(&host);
             }
-            model.state.login_progress.remove(&source);
-            model.switcher.remove_source(&source, &mut model.state);
+            model.state.login_progress.remove(&host);
+            model.switcher.remove_host(&host, &mut model.state);
             Vec::new()
         }
         Msg::RescanRosterApplied => {
@@ -1874,12 +1871,12 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.switcher.hold_numbers(false, &model.state);
             Vec::new()
         }
-        Msg::DetectionFinished { source } => {
-            model.detecting.remove(&source);
+        Msg::DetectionFinished { host } => {
+            model.detecting.remove(&host);
             Vec::new()
         }
-        Msg::SetSourceReach(reach) => {
-            model.state.chrome.set_source_reach(reach);
+        Msg::SetHostReach(reach) => {
+            model.state.chrome.set_host_reach(reach);
             Vec::new()
         }
         Msg::SetRosterFacts {
@@ -1887,11 +1884,11 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             login_defaults,
             ssh_stanzas,
             held_credentials,
-            source_reach,
+            host_reach,
         } => {
-            let machines: HashSet<_> = source_reach
+            let machines: HashSet<_> = host_reach
                 .keys()
-                .map(|source| crate::session::machine_of(source).to_owned())
+                .map(|host| crate::session::machine_of(host).to_owned())
                 .collect();
             model
                 .state
@@ -1900,7 +1897,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model
                 .state
                 .display_auth_methods
-                .retain(|source, _| source_reach.contains_key(source));
+                .retain(|host, _| host_reach.contains_key(host));
             model
                 .state
                 .invalid_auth
@@ -1914,7 +1911,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .state
                 .logged_in
                 .retain(|machine| held_credentials.contains(machine));
-            model.state.chrome.set_source_reach(source_reach);
+            model.state.chrome.set_host_reach(host_reach);
             Vec::new()
         }
         Msg::HostEvent { event, logged_in } => {
@@ -1924,28 +1921,28 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .into_iter()
                 .filter_map(|effect| match effect {
                     EventEffect::MarkConnected { host } => {
-                        model.state.live_sources.insert(host.clone());
+                        model.state.live_hosts.insert(host.clone());
                         model.connected.insert(host);
                         None
                     }
-                    EventEffect::ApplySourceResult {
-                        source,
+                    EventEffect::ApplyHostResult {
+                        host,
                         sessions,
                         err,
                     } => {
                         model
                             .switcher
-                            .apply_source_result(source, sessions, err, &mut model.state);
+                            .apply_host_result(host, sessions, err, &mut model.state);
                         None
                     }
                     EventEffect::ApplyPollResult {
-                        source,
+                        host,
                         sessions,
                         err,
                     } => {
                         let failed = err.is_some();
-                        let renamed = model.switcher.apply_source_result(
-                            source.clone(),
+                        let renamed = model.switcher.apply_host_result(
+                            host.clone(),
                             sessions.clone(),
                             err,
                             &mut model.state,
@@ -1955,13 +1952,13 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                         } else {
                             let mut effects: Vec<EventEffect> = renamed
                                 .map(|(from, to)| EventEffect::RenameDisplayed {
-                                    source: source.clone(),
+                                    host: host.clone(),
                                     from,
                                     to,
                                 })
                                 .into_iter()
                                 .collect();
-                            effects.push(EventEffect::SyncPollSessions { source, sessions });
+                            effects.push(EventEffect::SyncPollSessions { host, sessions });
                             Some(Effect::EventBatch(effects))
                         }
                     }
@@ -1980,9 +1977,9 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .collect()
         }
         Msg::Focus(target) => update(model, Msg::Action(Action::Focus(target))),
-        Msg::FeedLogin { source, bytes } => model
+        Msg::FeedLogin { host, bytes } => model
             .state
-            .feed_login(&source, &bytes)
+            .feed_login(&host, &bytes)
             .and_then(|command| command_effect(model, command))
             .into_iter()
             .collect(),
@@ -2185,26 +2182,26 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         }
         Msg::Tick { now, spinner } => {
             let mut expired = Vec::new();
-            for source in &model.state.scanning {
+            for host in &model.state.scanning {
                 let deadline = model
                     .state
                     .scan_deadlines
-                    .entry(source.clone())
+                    .entry(host.clone())
                     .or_insert(now + crate::provision::env::SCAN_TIMEOUT);
                 if now >= *deadline {
-                    expired.push(source.clone());
+                    expired.push(host.clone());
                 }
             }
-            for source in expired {
+            for host in expired {
                 let sessions = model
                     .state
                     .groups
                     .iter()
-                    .find(|group| group.source == source)
+                    .find(|group| group.host == host)
                     .map(|group| group.sessions.clone())
                     .unwrap_or_default();
-                model.switcher.apply_source_result(
-                    source,
+                model.switcher.apply_host_result(
+                    host,
                     sessions,
                     Some("scan timed out after 10s".into()),
                     &mut model.state,
@@ -2273,8 +2270,8 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             );
             Vec::new()
         }
-        Msg::DetectionStarted(source) => {
-            model.detecting.insert(source);
+        Msg::DetectionStarted(host) => {
+            model.detecting.insert(host);
             Vec::new()
         }
         Msg::Shutdown => {
@@ -2326,15 +2323,15 @@ mod tests {
     use crate::model::EventEffect;
 
     fn model() -> AppModel {
-        AppModel::from_sources(vec!["local".to_owned()])
+        AppModel::from_hosts(vec!["local".to_owned()])
     }
 
     /// A model listing two sessions on `local` and an unreachable `prod`, with the
     /// selection on the first session.
     fn model_with_cards() -> AppModel {
-        let mut model = AppModel::from_sources(vec!["local".to_owned(), "prod".to_owned()]);
+        let mut model = AppModel::from_hosts(vec!["local".to_owned(), "prod".to_owned()]);
         let session = |name: &str, windows: i64| crate::session::Session {
-            source: "local".to_owned(),
+            host: "local".to_owned(),
             name: name.to_owned(),
             windows,
             ..Default::default()
@@ -2343,7 +2340,7 @@ mod tests {
             &mut model,
             Msg::HostEvent {
                 event: crate::link::HostEvent::Sessions {
-                    source: "local".to_owned(),
+                    host: "local".to_owned(),
                     sessions: vec![session("build", 3), session("editor", 1)],
                     err: None,
                 },
@@ -2354,7 +2351,7 @@ mod tests {
             &mut model,
             Msg::HostEvent {
                 event: crate::link::HostEvent::Sessions {
-                    source: "prod".to_owned(),
+                    host: "prod".to_owned(),
                     sessions: Vec::new(),
                     err: Some("ssh: connect to host prod port 22: Connection refused".to_owned()),
                 },
@@ -2506,7 +2503,7 @@ mod tests {
     fn mouse_row_click_goes_through_update() {
         let mut model = model();
         let session = crate::session::Session {
-            source: "local".to_owned(),
+            host: "local".to_owned(),
             name: "work".to_owned(),
             ..Default::default()
         };
@@ -2514,7 +2511,7 @@ mod tests {
             &mut model,
             Msg::HostEvent {
                 event: crate::link::HostEvent::Sessions {
-                    source: "local".to_owned(),
+                    host: "local".to_owned(),
                     sessions: vec![session],
                     err: None,
                 },
@@ -2545,15 +2542,15 @@ mod tests {
     }
 
     #[test]
-    fn remove_source_tracking_depends_on_the_removal_origin() {
+    fn remove_host_tracking_depends_on_the_removal_origin() {
         let mut model = model();
         model.connected.insert("local".into());
         model.detecting.insert("local".into());
 
         let effects = update(
             &mut model,
-            Msg::RemoveSource {
-                source: "local".into(),
+            Msg::RemoveHost {
+                host: "local".into(),
                 clear_tracking: false,
             },
         );
@@ -2564,8 +2561,8 @@ mod tests {
 
         let effects = update(
             &mut model,
-            Msg::RemoveSource {
-                source: "local".into(),
+            Msg::RemoveHost {
+                host: "local".into(),
                 clear_tracking: true,
             },
         );
@@ -2621,7 +2618,7 @@ mod tests {
 
     #[test]
     fn host_event_preserves_state_actions_before_runtime_followups() {
-        let mut model = AppModel::from_sources(Vec::new());
+        let mut model = AppModel::from_hosts(Vec::new());
         let connected = super::host_event_effects(
             &mut model,
             crate::link::HostEvent::Connected {
@@ -2657,7 +2654,7 @@ mod tests {
         let scanned = super::host_event_effects(
             &mut model,
             crate::link::HostEvent::Scanned {
-                source: "jup".into(),
+                host: "jup".into(),
                 detected: None,
                 err: Some("mux not found".into()),
             },
@@ -2665,12 +2662,12 @@ mod tests {
         assert!(matches!(
             scanned.as_slice(),
             [
-                crate::model::EventEffect::ApplySourceResult {
-                    source: applied,
+                crate::model::EventEffect::ApplyHostResult {
+                    host: applied,
                     ..
                 },
                 crate::model::EventEffect::DispatchScanned {
-                    source: dispatched,
+                    host: dispatched,
                     ..
                 }
             ] if applied == "jup" && dispatched == "jup"
@@ -2688,11 +2685,11 @@ mod tests {
         assert!(matches!(effects.as_slice(), [Effect::CancelLogin(_)]));
     }
 
-    fn sessions(source: &str, names: &[&str]) -> Vec<crate::session::Session> {
+    fn sessions(host: &str, names: &[&str]) -> Vec<crate::session::Session> {
         names
             .iter()
             .map(|name| crate::session::Session {
-                source: source.to_owned(),
+                host: host.to_owned(),
                 name: (*name).to_owned(),
                 mux: "tmux".to_owned(),
                 windows: 1,
@@ -2701,14 +2698,14 @@ mod tests {
             .collect()
     }
 
-    fn answer(model: &mut AppModel, source: &str, names: &[&str], err: Option<&str>) {
+    fn answer(model: &mut AppModel, host: &str, names: &[&str], err: Option<&str>) {
         let logged_in = model.state.logged_in.clone();
         update(
             model,
             Msg::HostEvent {
                 event: crate::link::HostEvent::Sessions {
-                    source: source.to_owned(),
-                    sessions: sessions(source, names),
+                    host: host.to_owned(),
+                    sessions: sessions(host, names),
                     err: err.map(str::to_owned),
                 },
                 logged_in,
@@ -2725,8 +2722,8 @@ mod tests {
     }
 
     #[test]
-    fn a_rescan_reports_one_summary_once_every_source_has_answered() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned(), "b".to_owned()]);
+    fn a_rescan_reports_one_summary_once_every_host_has_answered() {
+        let mut m = AppModel::from_hosts(vec!["a".to_owned(), "b".to_owned()]);
         answer(&mut m, "a", &["x"], None);
         answer(&mut m, "b", &[], None);
         assert!(
@@ -2739,7 +2736,7 @@ mod tests {
         answer(&mut m, "a", &["x", "y"], None);
         assert!(
             m.state.notify.toasts.is_empty(),
-            "no summary while a source is still scanning"
+            "no summary while a host is still scanning"
         );
         answer(&mut m, "b", &[], Some("ssh: connect to host b: timed out"));
         assert_eq!(m.state.notify.toasts.len(), 1, "one toast for the re-scan");
@@ -2776,18 +2773,18 @@ mod tests {
 
     #[test]
     fn a_rescan_summary_waits_for_the_roster_answer() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned()]);
         answer(&mut m, "a", &["x"], None);
         update(&mut m, Msg::Action(crate::model::Action::Rescan));
         answer(&mut m, "a", &["x"], None);
         assert!(
             m.state.notify.toasts.is_empty(),
-            "every source answered, the roster has not"
+            "every host answered, the roster has not"
         );
         update(
             &mut m,
-            Msg::AddSource {
-                source: "b".to_owned(),
+            Msg::AddHost {
+                host: "b".to_owned(),
                 scanning: false,
             },
         );
@@ -2817,7 +2814,7 @@ mod tests {
 
     #[test]
     fn a_refused_saved_password_is_summarized_as_login_needed() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned()]);
         answer(&mut m, "a", &["x", "y"], None);
         update(&mut m, Msg::Action(crate::model::Action::Rescan));
         update(&mut m, Msg::RescanRosterApplied);
@@ -2850,7 +2847,7 @@ mod tests {
 
     #[test]
     fn a_launch_probe_that_fails_records_nothing() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned()]);
         assert!(m.state.scanning.contains("a"));
         answer(&mut m, "a", &[], Some("ssh: connect to host a: timed out"));
         assert!(
@@ -2871,7 +2868,7 @@ mod tests {
         .flat_map(|effect| match effect {
             Effect::Event(effect) => vec![effect],
             Effect::EventBatch(effects) => effects,
-            effect => panic!("a source event emitted an unrelated effect: {effect:?}"),
+            effect => panic!("a host event emitted an unrelated effect: {effect:?}"),
         })
         .map(|effect| format!("{effect:?}"))
         .collect()
@@ -2887,7 +2884,7 @@ mod tests {
 
     /// A `gpu` host whose control channel connected listing `names`.
     fn connected_gpu(names: &[&str]) -> AppModel {
-        let mut m = AppModel::from_sources(vec!["gpu".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["gpu".to_owned()]);
         answer(&mut m, "gpu", names, None);
         host_event(
             &mut m,
@@ -2900,7 +2897,7 @@ mod tests {
     }
 
     fn gpu_card(m: &AppModel) -> (Vec<String>, Option<String>) {
-        let g = m.state.groups.iter().find(|g| g.source == "gpu").unwrap();
+        let g = m.state.groups.iter().find(|g| g.host == "gpu").unwrap();
         (
             g.sessions.iter().map(|s| s.name.clone()).collect(),
             g.err.clone(),
@@ -2926,7 +2923,7 @@ mod tests {
         update(
             &mut m,
             Msg::ApplyInventory {
-                source: "gpu".to_owned(),
+                host: "gpu".to_owned(),
                 sessions: sessions("gpu", &["keep"]),
                 live: true,
             },
@@ -3108,8 +3105,8 @@ mod tests {
     }
 
     #[test]
-    fn a_source_that_stops_answering_unasked_is_recorded_without_a_toast() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+    fn a_host_that_stops_answering_unasked_is_recorded_without_a_toast() {
+        let mut m = AppModel::from_hosts(vec!["a".to_owned()]);
         answer(&mut m, "a", &["x"], None);
         answer(&mut m, "a", &[], Some("connection closed\nmore detail"));
         assert!(
@@ -3224,7 +3221,7 @@ mod tests {
 
     #[test]
     fn a_session_create_reports_its_result_as_a_toast() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned()]);
         answer(&mut m, "a", &[], None);
         update(
             &mut m,
@@ -3252,24 +3249,24 @@ mod tests {
     }
 
     fn logged_in_box() -> AppModel {
-        let mut m = AppModel::from_sources(vec!["box:tmux".into()]);
+        let mut m = AppModel::from_hosts(vec!["box:tmux".into()]);
         m.state
             .auth_methods
             .insert("box".into(), crate::model::AuthMethod::Password);
         m.state
             .display_auth_methods
             .insert("box:tmux".into(), crate::model::AuthMethod::Password);
-        m.state.live_sources.insert("box:tmux".into());
+        m.state.live_hosts.insert("box:tmux".into());
         m.connected.insert("box:tmux".into());
         m
     }
 
     /// The found line for `line`, whose key is its `ssh-` word and the word after it.
-    fn key_line(line: &str, marked: bool) -> crate::provision::env::HostKeyLine {
+    fn key_line(line: &str, marked: bool) -> crate::provision::env::MachineKeyLine {
         let mut words = line
             .split_whitespace()
             .skip_while(|w| !w.starts_with("ssh-"));
-        crate::provision::env::HostKeyLine {
+        crate::provision::env::MachineKeyLine {
             file: crate::provision::env::KeyFile::User,
             kind: words.next().unwrap().into(),
             body: words.next().unwrap().into(),
@@ -3277,9 +3274,9 @@ mod tests {
         }
     }
 
-    fn keys_found(result: Result<Vec<crate::provision::env::HostKeyLine>, String>) -> Msg {
+    fn keys_found(result: Result<Vec<crate::provision::env::MachineKeyLine>, String>) -> Msg {
         Msg::OpResult {
-            result: crate::ui::switcher::OpResult::HostKeysFound {
+            result: crate::ui::switcher::OpResult::MachineKeysFound {
                 machine: "box".into(),
                 result,
             },
@@ -3289,7 +3286,7 @@ mod tests {
 
     fn keys_removed(result: Result<(), String>) -> Msg {
         Msg::OpResult {
-            result: crate::ui::switcher::OpResult::HostKeysRemoved {
+            result: crate::ui::switcher::OpResult::MachineKeysRemoved {
                 machine: "box".into(),
                 result,
             },
@@ -3387,14 +3384,14 @@ mod tests {
             Msg::Commands(vec![crate::model::Command::Logout("box".into())]),
         );
         assert!(
-            matches!(effects.as_slice(), [Effect::FindHostKeys { machine, .. }] if machine == "box"),
+            matches!(effects.as_slice(), [Effect::FindMachineKeys { machine, .. }] if machine == "box"),
             "{effects:?}"
         );
     }
 
     fn assert_still_logged_in(m: &AppModel) {
         assert!(m.state.auth_methods.contains_key("box"));
-        assert!(m.state.live_sources.contains("box:tmux"));
+        assert!(m.state.live_hosts.contains("box:tmux"));
         assert!(m.connected.contains("box:tmux"));
         assert!(!m.state.invalid_auth.contains("box"));
     }
@@ -3403,7 +3400,7 @@ mod tests {
         assert!(!m.state.auth_methods.contains_key("box"));
         assert!(m.state.display_auth_methods.is_empty());
         assert!(m.state.invalid_auth.contains("box"));
-        assert!(m.state.live_sources.is_empty());
+        assert!(m.state.live_hosts.is_empty());
         assert!(m.connected.is_empty());
         assert!(m.logout.is_none());
         assert_eq!(
@@ -3426,7 +3423,7 @@ mod tests {
         update(m, Msg::Key(KeyEvent::new(code, KeyModifiers::NONE)))
     }
 
-    /// The key comes off the host while the connection the login left is still there,
+    /// The key comes off the machine while the connection the login left is still there,
     /// so nothing of the machine's is cleared until the removal answered.
     #[test]
     fn logout_removes_the_keys_xmux_added_before_it_clears_the_machine() {
@@ -3436,7 +3433,7 @@ mod tests {
         let found = vec![key_line("ssh-ed25519 AAAAkey me xmux-registered", true)];
         let effects = find(&mut m, keys_found(Ok(found.clone())));
         assert!(
-            matches!(effects.as_slice(), [Effect::RemoveHostKeys { machine, lines }] if machine == "box" && *lines == found),
+            matches!(effects.as_slice(), [Effect::RemoveMachineKeys { machine, lines }] if machine == "box" && *lines == found),
             "{effects:?}"
         );
         assert!(
@@ -3461,7 +3458,7 @@ mod tests {
     }
 
     #[test]
-    fn a_host_holding_no_key_of_this_pc_logs_out_at_once() {
+    fn a_machine_holding_no_key_of_this_pc_logs_out_at_once() {
         let mut m = logged_in_box();
         start_logout(&mut m);
         let effects = find(&mut m, keys_found(Ok(Vec::new())));
@@ -3470,7 +3467,7 @@ mod tests {
         assert_logged_out(&m);
     }
 
-    /// A line xmux did not add may be how the user reaches the host outside xmux, so it
+    /// A line xmux did not add may be how the user reaches the machine outside xmux, so it
     /// goes only after a second confirmation says so.
     #[test]
     fn a_key_xmux_did_not_add_asks_again_and_confirming_removes_it_too() {
@@ -3499,7 +3496,7 @@ mod tests {
         }
         let effects = press(&mut m, KeyCode::Enter);
         assert!(
-            matches!(effects.as_slice(), [Effect::RemoveHostKeys { lines, .. }] if *lines == found),
+            matches!(effects.as_slice(), [Effect::RemoveMachineKeys { lines, .. }] if *lines == found),
             "{effects:?}"
         );
         assert_still_logged_in(&m);
@@ -3525,7 +3522,7 @@ mod tests {
         find(&mut m, keys_found(Ok(found)));
         let effects = press(&mut m, KeyCode::Esc);
         assert!(
-            matches!(effects.as_slice(), [Effect::RemoveHostKeys { lines, .. }] if *lines == vec![marked.clone()]),
+            matches!(effects.as_slice(), [Effect::RemoveMachineKeys { lines, .. }] if *lines == vec![marked.clone()]),
             "{effects:?}"
         );
         assert_still_logged_in(&m);
@@ -3575,7 +3572,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreachable_host_still_logs_out_and_reports_the_key_was_not_removed() {
+    fn an_unreachable_machine_still_logs_out_and_reports_the_key_was_not_removed() {
         let mut m = logged_in_box();
         start_logout(&mut m);
         let effects = find(
@@ -3621,8 +3618,8 @@ mod tests {
         );
     }
 
-    /// The ssh config entries naming the host go once the key steps settled, because they
-    /// reach the host through them, and the toast names each one after the key.
+    /// The ssh config entries naming the machine go once the key steps settled, because they
+    /// reach the machine through them, and the toast names each one after the key.
     #[test]
     fn logout_removes_the_ssh_config_entries_after_the_key() {
         let mut m = logged_in_box();
@@ -3664,7 +3661,7 @@ mod tests {
         );
     }
 
-    /// An ssh config entry xmux did not write may be how the user reaches the host
+    /// An ssh config entry xmux did not write may be how the user reaches the machine
     /// outside xmux, so it changes only after the second confirmation says so.
     #[test]
     fn an_ssh_config_entry_xmux_did_not_write_asks_and_confirming_removes_it() {
@@ -3759,7 +3756,7 @@ mod tests {
                 vec![marked.clone()]
             };
             assert!(
-                matches!(effects.as_slice(), [Effect::RemoveHostKeys { lines, .. }] if *lines == want),
+                matches!(effects.as_slice(), [Effect::RemoveMachineKeys { lines, .. }] if *lines == want),
                 "{effects:?}"
             );
             assert!(m.state.modal.is_none(), "no second question follows");
@@ -3834,7 +3831,7 @@ mod tests {
         );
         assert!(matches!(
             effects.as_slice(),
-            [Effect::FindHostKeys { cancel_login, .. }] if cancel_login.len() == 1
+            [Effect::FindMachineKeys { cancel_login, .. }] if cancel_login.len() == 1
         ));
         assert!(m.state.login_run.is_none());
         assert!(!m.state.login_progress.contains_key("box"));
@@ -3857,9 +3854,9 @@ mod tests {
     /// cancels the login on its own machine, so that login registers no key afterwards.
     #[test]
     fn logout_cancels_its_machines_login_after_another_machine_logged_in() {
-        let mut m = AppModel::from_sources(vec!["a:tmux".into(), "b:tmux".into()]);
+        let mut m = AppModel::from_hosts(vec!["a:tmux".into(), "b:tmux".into()]);
         let run = |machine: &str| crate::model::Command::RunLogin {
-            source: format!("{machine}:tmux"),
+            host: format!("{machine}:tmux"),
             login: crate::transport::Login::default(),
             password: Default::default(),
             after_login: crate::model::AfterLogin::RegisterKey,
@@ -3867,20 +3864,20 @@ mod tests {
         update(&mut m, Msg::Commands(vec![run("a")]));
         update(&mut m, Msg::Commands(vec![run("b")]));
         assert_eq!(
-            m.state.login_run.as_ref().map(|r| r.source.as_str()),
+            m.state.login_run.as_ref().map(|r| r.host.as_str()),
             Some("b:tmux")
         );
         let effects = update(
             &mut m,
             Msg::Commands(vec![crate::model::Command::Logout("a".into())]),
         );
-        let [Effect::FindHostKeys { cancel_login, .. }] = effects.as_slice() else {
+        let [Effect::FindMachineKeys { cancel_login, .. }] = effects.as_slice() else {
             panic!("{effects:?}");
         };
-        let cancelled: Vec<_> = cancel_login.iter().map(|r| r.source.as_str()).collect();
+        let cancelled: Vec<_> = cancel_login.iter().map(|r| r.host.as_str()).collect();
         assert_eq!(cancelled, vec!["a:tmux"]);
         assert_eq!(
-            m.state.login_run.as_ref().map(|r| r.source.as_str()),
+            m.state.login_run.as_ref().map(|r| r.host.as_str()),
             Some("b:tmux"),
             "the other machine's login keeps running"
         );
@@ -3899,7 +3896,7 @@ mod tests {
         update(
             &mut m,
             Msg::Commands(vec![crate::model::Command::RunLogin {
-                source: "box:tmux".into(),
+                host: "box:tmux".into(),
                 login: crate::transport::Login::default(),
                 password: Default::default(),
                 after_login: crate::model::AfterLogin::SshConfig,
@@ -3925,7 +3922,7 @@ mod tests {
         let effects = update(
             &mut m,
             Msg::Commands(vec![crate::model::Command::RunLogin {
-                source: "box:tmux".into(),
+                host: "box:tmux".into(),
                 login: crate::transport::Login::default(),
                 password: Default::default(),
                 after_login: crate::model::AfterLogin::RegisterKey,
@@ -3939,7 +3936,7 @@ mod tests {
         let effects = update(
             &mut m,
             Msg::Commands(vec![crate::model::Command::RunLogin {
-                source: "box:tmux".into(),
+                host: "box:tmux".into(),
                 login: crate::transport::Login::default(),
                 password: Default::default(),
                 after_login: crate::model::AfterLogin::RegisterKey,
@@ -3953,11 +3950,11 @@ mod tests {
 
     #[test]
     fn losing_a_held_password_disconnects_the_machine() {
-        let mut m = AppModel::from_sources(vec!["box:tmux".into()]);
+        let mut m = AppModel::from_hosts(vec!["box:tmux".into()]);
         m.state
             .auth_methods
             .insert("box".into(), crate::model::AuthMethod::Password);
-        m.state.live_sources.insert("box:tmux".into());
+        m.state.live_hosts.insert("box:tmux".into());
         m.connected.insert("box:tmux".into());
         let effects = update(
             &mut m,
@@ -3971,7 +3968,7 @@ mod tests {
         ));
         assert!(!m.state.auth_methods.contains_key("box"));
         assert!(m.state.invalid_auth.contains("box"));
-        assert!(m.state.live_sources.is_empty());
+        assert!(m.state.live_hosts.is_empty());
         assert!(m.connected.is_empty());
         assert_eq!(
             m.state.groups[0].err.as_deref(),
@@ -3981,7 +3978,7 @@ mod tests {
 
     #[test]
     fn scanning_card_stops_after_ten_seconds_and_rescan_gets_a_new_budget() {
-        let mut m = AppModel::from_sources(vec!["box".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["box".to_owned()]);
         let started = std::time::Instant::now();
         update(
             &mut m,
@@ -4014,16 +4011,16 @@ mod tests {
         assert!(m.state.scanning.contains("box"));
     }
 
-    /// A model with `sources` blocked by a refused probe, then a login submitted on the
+    /// A model with `hosts` blocked by a refused probe, then a login submitted on the
     /// first of them through the pane's own keys. Returns the submission's attempt.
-    fn submitted_login(sources: &[&str]) -> (AppModel, u64) {
-        let mut m = AppModel::from_sources(sources.iter().map(|s| (*s).to_owned()).collect());
-        for source in sources {
+    fn submitted_login(hosts: &[&str]) -> (AppModel, u64) {
+        let mut m = AppModel::from_hosts(hosts.iter().map(|s| (*s).to_owned()).collect());
+        for host in hosts {
             update(
                 &mut m,
                 Msg::HostEvent {
                     event: crate::link::HostEvent::Sessions {
-                        source: (*source).to_owned(),
+                        host: (*host).to_owned(),
                         sessions: Vec::new(),
                         err: Some("alice@box: Permission denied (publickey,password).".to_owned()),
                     },
@@ -4035,7 +4032,7 @@ mod tests {
         let effects = update(
             &mut m,
             Msg::FeedLogin {
-                source: sources[0].to_owned(),
+                host: hosts[0].to_owned(),
                 bytes: b"\r\ralice\r\r\r\r\r\r".to_vec(),
             },
         );
@@ -4049,16 +4046,16 @@ mod tests {
         (m, attempt)
     }
 
-    fn step(m: &AppModel, source: &str, step: crate::model::LoginStep) -> crate::model::StepState {
-        m.state.login_progress[source]
+    fn step(m: &AppModel, host: &str, step: crate::model::LoginStep) -> crate::model::StepState {
+        m.state.login_progress[host]
             .state_of(step)
             .expect("the step is listed")
     }
 
-    fn login_event(source: &str, attempt: u64, event: crate::model::LoginEvent) -> Msg {
+    fn login_event(host: &str, attempt: u64, event: crate::model::LoginEvent) -> Msg {
         Msg::OpResult {
             result: crate::ui::switcher::OpResult::LoginProgress {
-                source: source.to_owned(),
+                host: host.to_owned(),
                 attempt,
                 event,
             },
@@ -4066,14 +4063,10 @@ mod tests {
         }
     }
 
-    fn login_result(
-        source: &str,
-        attempt: u64,
-        connect: crate::link::unlock::UnlockOutcome,
-    ) -> Msg {
+    fn login_result(host: &str, attempt: u64, connect: crate::link::unlock::UnlockOutcome) -> Msg {
         Msg::OpResult {
             result: crate::ui::switcher::OpResult::Login {
-                source: source.to_owned(),
+                host: host.to_owned(),
                 login: crate::transport::Login::default(),
                 attempt,
                 outcome: crate::ui::ops::LoginOutcome {
@@ -4107,25 +4100,25 @@ mod tests {
     }
 
     /// A working login whose re-probe got `probe` and found the machine answering.
-    fn logged_in_awaiting_mux(sources: &[&str], probe: u64) -> AppModel {
-        let (mut m, attempt) = submitted_login(sources);
-        let source = sources[0];
+    fn logged_in_awaiting_mux(hosts: &[&str], probe: u64) -> AppModel {
+        let (mut m, attempt) = submitted_login(hosts);
+        let host = hosts[0];
         update(
             &mut m,
-            login_result(source, attempt, crate::link::unlock::UnlockOutcome::Ok),
+            login_result(host, attempt, crate::link::unlock::UnlockOutcome::Ok),
         );
         update(
             &mut m,
             Msg::LoginSettled {
-                source: source.to_owned(),
+                host: host.to_owned(),
                 credential_held: false,
-                machine_has_sources: true,
+                machine_has_hosts: true,
                 probe,
             },
         );
         update(
             &mut m,
-            probed(crate::session::machine_of(source), probe, None),
+            probed(crate::session::machine_of(host), probe, None),
         );
         m
     }
@@ -4163,13 +4156,13 @@ mod tests {
         update(
             &mut m,
             Msg::LoginSettled {
-                source: "pwbox".to_owned(),
+                host: "pwbox".to_owned(),
                 credential_held: false,
-                machine_has_sources: true,
+                machine_has_hosts: true,
                 probe: 9,
             },
         );
-        // A probe already in flight, and the source answer it leads to, came before the
+        // A probe already in flight, and the host answer it leads to, came before the
         // login's own probe: neither settles the search.
         update(&mut m, probed("pwbox", 0, None));
         answer(&mut m, "pwbox", &["work"], None);
@@ -4186,7 +4179,7 @@ mod tests {
     #[test]
     fn detection_that_finds_no_mux_settles_the_search() {
         use crate::model::{LoginStep, StepState};
-        // The source was blocked at launch, so it is undetected and no longer scanning:
+        // The host was blocked at launch, so it is undetected and no longer scanning:
         // detection's answer is the only one it gets.
         let mut m = logged_in_awaiting_mux(&["pwbox"], 3);
         m.state.scanning.clear();
@@ -4194,7 +4187,7 @@ mod tests {
             &mut m,
             Msg::HostEvent {
                 event: crate::link::HostEvent::Scanned {
-                    source: "pwbox".to_owned(),
+                    host: "pwbox".to_owned(),
                     detected: None,
                     err: None,
                 },
@@ -4213,7 +4206,7 @@ mod tests {
             &mut m,
             Msg::HostEvent {
                 event: crate::link::HostEvent::Scanned {
-                    source: "pwbox".to_owned(),
+                    host: "pwbox".to_owned(),
                     detected: None,
                     err: Some("tmux: command not found".to_owned()),
                 },
@@ -4244,8 +4237,8 @@ mod tests {
         assert_eq!(step(&m, "pwbox", LoginStep::FindMux), StepState::Failed);
         update(
             &mut m,
-            Msg::RemoveSource {
-                source: "pwbox".to_owned(),
+            Msg::RemoveHost {
+                host: "pwbox".to_owned(),
                 clear_tracking: false,
             },
         );
@@ -4253,7 +4246,7 @@ mod tests {
     }
 
     #[test]
-    fn steps_belong_to_one_submission_on_one_source() {
+    fn steps_belong_to_one_submission_on_one_host() {
         use crate::link::unlock::{FailureKind, UnlockOutcome};
         use crate::model::{LoginEvent, LoginStep, StepState};
         let (mut m, first) = submitted_login(&["box:tmux", "box:zellij"]);
@@ -4266,7 +4259,7 @@ mod tests {
         update(
             &mut m,
             Msg::FeedLogin {
-                source: "box:tmux".to_owned(),
+                host: "box:tmux".to_owned(),
                 bytes: b"\r".to_vec(),
             },
         );
@@ -4347,8 +4340,8 @@ mod tests {
         let (mut m, attempt) = submitted_login(&["pwbox"]);
         update(
             &mut m,
-            Msg::RemoveSource {
-                source: "pwbox".to_owned(),
+            Msg::RemoveHost {
+                host: "pwbox".to_owned(),
                 clear_tracking: false,
             },
         );
@@ -4363,16 +4356,16 @@ mod tests {
 
     #[test]
     fn prefix_r_rescans_the_selected_machine_and_reports_it_alone() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned(), "b".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned(), "b".to_owned()]);
         answer(&mut m, "a", &["x"], None);
         answer(&mut m, "b", &["y"], None);
-        assert_eq!(m.switcher.current_source().as_deref(), Some("a"));
+        assert_eq!(m.switcher.current_host().as_deref(), Some("a"));
 
         let effects = update(&mut m, lower_r());
         assert!(
             matches!(
                 effects.as_slice(),
-                [Effect::Command(crate::model::Command::RescanHost(machine))] if machine == "a"
+                [Effect::Command(crate::model::Command::RescanMachine(machine))] if machine == "a"
             ),
             "{effects:?}"
         );
@@ -4400,13 +4393,13 @@ mod tests {
 
     #[test]
     fn a_second_rescan_waits_for_the_first_and_a_full_one_takes_over() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned(), "b".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned(), "b".to_owned()]);
         answer(&mut m, "a", &["x"], None);
         answer(&mut m, "b", &["y"], None);
         update(&mut m, lower_r());
         let effects = update(
             &mut m,
-            Msg::Commands(vec![crate::model::Command::RescanHost("b".to_owned())]),
+            Msg::Commands(vec![crate::model::Command::RescanMachine("b".to_owned())]),
         );
         assert!(effects.is_empty(), "{effects:?}");
         assert!(m.state.chrome.flash.contains("still running"));
@@ -4427,7 +4420,7 @@ mod tests {
 
     #[test]
     fn enter_in_the_check_table_on_a_blocked_host_focuses_its_login_pane() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned(), "lock".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned(), "lock".to_owned()]);
         answer(&mut m, "a", &["x"], None);
         answer(
             &mut m,
@@ -4453,12 +4446,12 @@ mod tests {
             !m.state.focus.view_is_nav(),
             "the login pane takes the keys"
         );
-        assert_eq!(m.switcher.current_source().as_deref(), Some("lock"));
+        assert_eq!(m.switcher.current_host().as_deref(), Some("lock"));
     }
 
     #[test]
     fn palette_runs_a_named_command_and_ignores_unmatched_enter() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned()]);
         update(&mut m, Msg::TogglePalette);
         let no_match = update(
             &mut m,
@@ -4488,7 +4481,7 @@ mod tests {
 
     #[test]
     fn palette_login_opens_an_unreachable_host() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned(), "dead".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned(), "dead".to_owned()]);
         answer(&mut m, "a", &["x"], None);
         answer(&mut m, "dead", &[], Some("connection refused"));
         update(&mut m, Msg::TogglePalette);
@@ -4500,12 +4493,12 @@ mod tests {
             },
         );
         assert!(m.state.filter.is_empty());
-        assert_eq!(m.switcher.current_source().as_deref(), Some("dead"));
-        assert!(m.switcher.current_host_blocked());
+        assert_eq!(m.switcher.current_host().as_deref(), Some("dead"));
+        assert!(m.switcher.current_machine_blocked());
         assert!(!m.state.focus.view_is_nav());
         assert!(effects.is_empty());
         answer(&mut m, "dead", &[], None);
-        assert!(!m.switcher.current_host_blocked());
+        assert!(!m.switcher.current_machine_blocked());
     }
 
     /// Lays the model out at 140x30 with the nav shown, as a frame would, so a mouse
@@ -4537,7 +4530,7 @@ mod tests {
 
     #[test]
     fn a_click_on_a_palette_entry_runs_it_as_enter_does() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned()]);
         update(&mut m, Msg::TogglePalette);
         update(
             &mut m,
@@ -4578,7 +4571,7 @@ mod tests {
             crate::state::InputMode::Logout,
             crate::state::InputMode::LogoutKeys,
         ] {
-            let mut m = AppModel::from_sources(vec!["box".to_owned()]);
+            let mut m = AppModel::from_hosts(vec!["box".to_owned()]);
             let mut input = crate::state::Input::new(mode, String::new(), Some("box".into()));
             input.facts = vec![
                 ("session", "box/a-session-with-a-rather-long-name".into()),
@@ -4647,7 +4640,7 @@ mod tests {
 
     #[test]
     fn a_click_on_the_query_field_runs_nothing() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned()]);
         update(&mut m, Msg::TogglePalette);
         lay_out(&mut m);
         let r = m.render_plan.popup_rect;
@@ -4657,7 +4650,7 @@ mod tests {
 
     #[test]
     fn a_click_on_a_host_to_check_opens_it_as_enter_does() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned(), "lock".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned(), "lock".to_owned()]);
         answer(&mut m, "a", &["x"], None);
         answer(
             &mut m,
@@ -4675,12 +4668,12 @@ mod tests {
             !m.state.focus.view_is_nav(),
             "the login pane takes the keys"
         );
-        assert_eq!(m.switcher.current_source().as_deref(), Some("lock"));
+        assert_eq!(m.switcher.current_host().as_deref(), Some("lock"));
     }
 
     #[test]
     fn hovering_a_palette_entry_marks_it_without_moving_the_selection() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned()]);
         update(&mut m, Msg::TogglePalette);
         lay_out(&mut m);
         let r = m.render_plan.popup_rect;
@@ -4727,7 +4720,7 @@ mod tests {
 
     #[test]
     fn a_press_dragged_off_a_palette_entry_moves_the_popup_and_runs_nothing() {
-        let mut m = AppModel::from_sources(vec!["a".to_owned()]);
+        let mut m = AppModel::from_hosts(vec!["a".to_owned()]);
         update(&mut m, Msg::TogglePalette);
         update(
             &mut m,

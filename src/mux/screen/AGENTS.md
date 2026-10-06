@@ -17,7 +17,7 @@ client switch and no session switch from inside a session.
 ## Invariants
 
 - `screen -ls` exiting 1 with `No Sockets found` is an empty-but-reachable mux, never a
-  dead host.
+  dead machine.
 - The attach is `screen -x <name>`, so xmux adds its display client whether the session
   is detached or attached elsewhere.
 - screen's `-S` names a session, so a server socket never reaches it.

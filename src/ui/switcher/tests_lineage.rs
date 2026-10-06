@@ -6,60 +6,60 @@ use super::*;
 use crate::model::OpResult;
 use crate::state::State;
 
-fn sess(source: &str, name: &str) -> Session {
+fn sess(host: &str, name: &str) -> Session {
     Session {
-        source: source.into(),
+        host: host.into(),
         name: name.into(),
         windows: 1,
         ..Default::default()
     }
 }
 
-fn launch(sources: &[&str]) -> (Switcher, State) {
-    let mut state = State::from_sources(sources.iter().map(|s| s.to_string()).collect());
-    let sw = Switcher::from_sources(&mut state);
+fn launch(hosts: &[&str]) -> (Switcher, State) {
+    let mut state = State::from_hosts(hosts.iter().map(|s| s.to_string()).collect());
+    let sw = Switcher::from_hosts(&mut state);
     (sw, state)
 }
 
-fn answer(sw: &mut Switcher, state: &mut State, source: &str, names: &[&str]) {
-    let sessions = names.iter().map(|n| sess(source, n)).collect();
-    sw.apply_source_result(source.into(), sessions, None, state);
+fn answer(sw: &mut Switcher, state: &mut State, host: &str, names: &[&str]) {
+    let sessions = names.iter().map(|n| sess(host, n)).collect();
+    sw.apply_host_result(host.into(), sessions, None, state);
 }
 
-fn fail(sw: &mut Switcher, state: &mut State, source: &str, reason: &str) {
-    sw.apply_source_result(source.into(), Vec::new(), Some(reason.into()), state);
+fn fail(sw: &mut Switcher, state: &mut State, host: &str, reason: &str) {
+    sw.apply_host_result(host.into(), Vec::new(), Some(reason.into()), state);
 }
 
 /// The selected card as a message for a failed assertion.
 fn picked(sw: &Switcher) -> String {
     match sw.selected_card() {
         Some(RowRef::Session { sess }) => format!("session {}", sess.address().display()),
-        Some(RowRef::Section { source }) => format!("section {source}"),
-        Some(RowRef::Host { source, .. }) => format!("host {source}"),
+        Some(RowRef::Section { host }) => format!("section {host}"),
+        Some(RowRef::Host { host, .. }) => format!("host {host}"),
         Some(RowRef::Machine { machine, .. }) => format!("machine {machine}"),
         None => "nothing".into(),
     }
 }
 
-fn on_session(sw: &Switcher, source: &str, name: &str) -> bool {
-    matches!(sw.selected_card(), Some(RowRef::Session { sess }) if sess.source == source && sess.name == name)
+fn on_session(sw: &Switcher, host: &str, name: &str) -> bool {
+    matches!(sw.selected_card(), Some(RowRef::Session { sess }) if sess.host == host && sess.name == name)
 }
 
-fn on_section(sw: &Switcher, source: &str) -> bool {
-    matches!(sw.selected_card(), Some(RowRef::Section { source: s }) if s == source)
+fn on_section(sw: &Switcher, host: &str) -> bool {
+    matches!(sw.selected_card(), Some(RowRef::Section { host: s }) if s == host)
 }
 
-fn on_host(sw: &Switcher, source: &str) -> bool {
-    matches!(sw.selected_card(), Some(RowRef::Host { source: s, .. }) if s == source)
+fn on_host(sw: &Switcher, host: &str) -> bool {
+    matches!(sw.selected_card(), Some(RowRef::Host { host: s, .. }) if s == host)
 }
 
-/// Whether the selection is on the one card of a host that is down.
+/// Whether the selection is on the one card of a machine that is down.
 fn on_machine(sw: &Switcher, machine: &str) -> bool {
     matches!(sw.selected_card(), Some(RowRef::Machine { machine: m, .. }) if m == machine)
 }
 
-fn host(machine: &str) -> Option<Node> {
-    Some(Node::Host(machine.into()))
+fn machine(machine: &str) -> Option<Node> {
+    Some(Node::Machine(machine.into()))
 }
 
 /// The issue's walk up to the point the user is on the unreachable machine card: `local`
@@ -67,7 +67,7 @@ fn host(machine: &str) -> Option<Node> {
 /// yet, cannot be reached, and the user selects mars's card.
 fn on_unreachable_machine() -> (Switcher, State) {
     let mut state = State::from_roster(vec!["local".into()], vec!["local".into(), "mars".into()]);
-    let mut sw = Switcher::from_sources(&mut state);
+    let mut sw = Switcher::from_hosts(&mut state);
     answer(&mut sw, &mut state, "local", &["work"]);
     sw.apply_machine_result("mars", Some("connection refused".into()), &mut state);
     sw.open_host("mars", &mut state);
@@ -75,23 +75,23 @@ fn on_unreachable_machine() -> (Switcher, State) {
     (sw, state)
 }
 
-/// The machine answers with two muxes: each becomes a source of its own, and the card
+/// The machine answers with two muxes: each becomes a host of its own, and the card
 /// that stood for the machine goes as they join the list.
 fn resolve_into_two_muxes(sw: &mut Switcher, state: &mut State) {
-    sw.add_sources(vec!["mars:tmux".into(), "mars:screen".into()], state);
+    sw.add_hosts(vec!["mars:tmux".into(), "mars:screen".into()], state);
 }
 
 #[test]
-fn a_resolved_machine_card_hands_the_selection_to_its_first_source_card() {
+fn a_resolved_machine_card_hands_the_selection_to_its_first_host_card() {
     let (mut sw, mut state) = on_unreachable_machine();
     resolve_into_two_muxes(&mut sw, &mut state);
     assert!(on_host(&sw, "mars:screen"), "{}", picked(&sw));
-    // The sources answer; the selected source gains sessions and keeps the selection as
-    // its section title, whose screen is the source's information, not a session grid.
+    // The hosts answer; the selected host gains sessions and keeps the selection as
+    // its section title, whose screen is the host's information, not a session grid.
     answer(&mut sw, &mut state, "mars:tmux", &["t1"]);
     answer(&mut sw, &mut state, "mars:screen", &["s1"]);
     assert!(on_section(&sw, "mars:screen"), "{}", picked(&sw));
-    assert_eq!(sw.current_view_screen(&state), Some(ViewScreen::HostInfo));
+    assert_eq!(sw.current_view_screen(&state), Some(ViewScreen::Host));
     assert!(sw.current_attach_target(&state).is_none());
 }
 
@@ -113,11 +113,11 @@ fn a_created_session_takes_the_selection_and_its_end_returns_it_to_the_section()
     // The session ends: the next listing lacks it, and the selection goes to the section.
     answer(&mut sw, &mut state, "mars:screen", &["s1"]);
     assert!(on_section(&sw, "mars:screen"), "{}", picked(&sw));
-    assert_eq!(sw.current_view_screen(&state), Some(ViewScreen::HostInfo));
+    assert_eq!(sw.current_view_screen(&state), Some(ViewScreen::Host));
 }
 
 #[test]
-fn the_last_session_ending_leaves_the_selection_on_its_source_card() {
+fn the_last_session_ending_leaves_the_selection_on_its_host_card() {
     let (mut sw, mut state) = launch(&["local"]);
     answer(&mut sw, &mut state, "local", &["only"]);
     assert!(on_session(&sw, "local", "only"));
@@ -127,42 +127,42 @@ fn the_last_session_ending_leaves_the_selection_on_its_source_card() {
 }
 
 #[test]
-fn a_vanished_source_goes_to_its_host() {
+fn a_vanished_host_goes_to_its_machine() {
     let (mut sw, mut state) = launch(&["prod", "prod:zellij", "zeta"]);
     answer(&mut sw, &mut state, "prod", &["a"]);
     answer(&mut sw, &mut state, "prod:zellij", &["z"]);
     answer(&mut sw, &mut state, "zeta", &["q"]);
     assert!(sw.select_address(&Address::new("prod:zellij", "z")));
-    sw.remove_source("prod:zellij", &mut state);
-    assert_eq!(sw.selected_node(), host("prod"));
+    sw.remove_host("prod:zellij", &mut state);
+    assert_eq!(sw.selected_node(), machine("prod"));
     assert!(
         on_section(&sw, "prod"),
-        "the host half of its remaining title"
+        "the machine half of its remaining title"
     );
 }
 
 #[test]
-fn a_vanished_source_goes_to_its_host_on_the_hosts_remaining_title() {
+fn a_vanished_host_goes_to_its_machine_on_the_machines_remaining_title() {
     let (mut sw, mut state) = on_unreachable_machine();
     resolve_into_two_muxes(&mut sw, &mut state);
     answer(&mut sw, &mut state, "mars:screen", &["s1"]);
     answer(&mut sw, &mut state, "mars:tmux", &["t1"]);
     assert!(on_section(&sw, "mars:screen"));
-    sw.remove_source("mars:screen", &mut state);
-    assert_eq!(sw.selected_node(), host("mars"));
+    sw.remove_host("mars:screen", &mut state);
+    assert_eq!(sw.selected_node(), machine("mars"));
     assert!(on_section(&sw, "mars:tmux"), "{}", picked(&sw));
 }
 
 #[test]
 fn a_removed_machine_hands_the_selection_to_the_card_in_its_place() {
     let (mut sw, mut state) = launch(&["alpha", "beta", "gamma"]);
-    for (source, name) in [("alpha", "a"), ("beta", "b"), ("gamma", "g")] {
-        answer(&mut sw, &mut state, source, &[name]);
+    for (machine, name) in [("alpha", "a"), ("beta", "b"), ("gamma", "g")] {
+        answer(&mut sw, &mut state, machine, &[name]);
     }
     assert!(sw.select_address(&Address::new("beta", "b")));
-    sw.remove_source("beta", &mut state);
+    sw.remove_host("beta", &mut state);
     assert!(on_session(&sw, "gamma", "g"), "the next card");
-    sw.remove_source("gamma", &mut state);
+    sw.remove_host("gamma", &mut state);
     assert!(
         on_session(&sw, "alpha", "a"),
         "the previous card at the end"
@@ -170,7 +170,7 @@ fn a_removed_machine_hands_the_selection_to_the_card_in_its_place() {
 }
 
 #[test]
-fn a_logout_moves_the_selection_to_the_hosts_own_card() {
+fn a_logout_moves_the_selection_to_the_machines_own_card() {
     let (mut sw, mut state) = launch(&["local", "prod"]);
     answer(&mut sw, &mut state, "local", &["work"]);
     answer(&mut sw, &mut state, "prod", &["api"]);
@@ -182,12 +182,12 @@ fn a_logout_moves_the_selection_to_the_hosts_own_card() {
         "SSH password no longer held; log in again",
     );
     assert!(on_machine(&sw, "prod"), "{}", picked(&sw));
-    assert_eq!(sw.selected_node(), host("prod"));
+    assert_eq!(sw.selected_node(), machine("prod"));
     assert!(sw.current_attach_target(&state).is_none());
 }
 
 #[test]
-fn a_filter_hiding_the_whole_source_lands_on_the_neighbouring_visible_card() {
+fn a_filter_hiding_the_whole_host_lands_on_the_neighbouring_visible_card() {
     let (mut sw, mut state) = launch(&["alpha", "beta", "gamma"]);
     answer(&mut sw, &mut state, "alpha", &["red"]);
     answer(&mut sw, &mut state, "beta", &["blue"]);
@@ -202,14 +202,14 @@ fn a_filter_hiding_the_whole_source_lands_on_the_neighbouring_visible_card() {
 }
 
 #[test]
-fn a_rescan_waits_on_the_source_card_and_returns_only_to_the_awaited_session() {
+fn a_rescan_waits_on_the_host_card_and_returns_only_to_the_awaited_session() {
     let (mut sw, mut state) = launch(&["alpha", "beta"]);
     answer(&mut sw, &mut state, "alpha", &["a"]);
     answer(&mut sw, &mut state, "beta", &["b"]);
     assert!(sw.select_address(&Address::new("beta", "b")));
     sw.request_rescan(&mut state);
     assert!(on_host(&sw, "beta"), "{}", picked(&sw));
-    // Another source answering first is unrelated to the interest.
+    // Another host answering first is unrelated to the interest.
     answer(&mut sw, &mut state, "alpha", &["a"]);
     assert!(on_host(&sw, "beta"));
     answer(&mut sw, &mut state, "beta", &["b"]);
@@ -231,7 +231,7 @@ fn a_rescan_whose_session_did_not_return_stays_on_the_section() {
 }
 
 #[test]
-fn a_preselected_session_that_ends_during_the_scan_holds_its_source_card() {
+fn a_preselected_session_that_ends_during_the_scan_holds_its_host_card() {
     let (mut sw, mut state) = launch(&["alpha", "beta"]);
     answer(&mut sw, &mut state, "beta", &["b"]);
     assert!(on_session(&sw, "beta", "b"), "the launch preselect");

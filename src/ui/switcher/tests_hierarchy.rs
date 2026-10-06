@@ -1,7 +1,7 @@
-//! The host / source / session hierarchy in the nav and the terminal view: the two halves
-//! of a section title, the card step and the level step, the host's and the source's
-//! screens and their links, the soft selection under the pointer, and a host none of
-//! whose sources connected standing as one card, and the landing screen above them all.
+//! The machine / host / session hierarchy in the nav and the terminal view: the two halves
+//! of a section title, the card step and the level step, the machine's and the host's
+//! screens and their links, the soft selection under the pointer, and a machine none of
+//! whose hosts connected standing as one card, and the landing screen above them all.
 
 use super::*;
 use crate::model::Node;
@@ -13,28 +13,28 @@ use ratatui::Terminal;
 
 const LOGGED_OUT: &str = "logged out; log in again or re-scan";
 
-fn sess(source: &str, name: &str) -> Session {
+fn sess(host: &str, name: &str) -> Session {
     Session {
-        source: source.into(),
+        host: host.into(),
         name: name.into(),
         windows: 1,
         ..Default::default()
     }
 }
 
-fn host(machine: &str) -> Option<Node> {
-    Some(Node::Host(machine.into()))
+fn machine(machine: &str) -> Option<Node> {
+    Some(Node::Machine(machine.into()))
 }
 
-fn source(id: &str) -> Option<Node> {
-    Some(Node::Source(id.into()))
+fn host(id: &str) -> Option<Node> {
+    Some(Node::Host(id.into()))
 }
 
 fn session(id: &str, name: &str) -> Option<Node> {
     Some(Node::Session(Address::new(id, name)))
 }
 
-/// The mux a test source is reached through: the one its id names, else tmux.
+/// The mux a test host is reached through: the one its id names, else tmux.
 fn mux_named(id: &str) -> &str {
     match crate::session::mux_of(id) {
         "" => "tmux",
@@ -42,9 +42,9 @@ fn mux_named(id: &str) -> &str {
     }
 }
 
-/// A switcher over `groups`, each `(source, sessions, failure)`, painted on a 140x30
-/// screen with the nav on the left. Every source is reached over ssh through tmux, so its
-/// title and its card read `{host}/tmux` and its host's screen states the ssh facts.
+/// A switcher over `groups`, each `(host, sessions, failure)`, painted on a 140x30
+/// screen with the nav on the left. Every host is reached over ssh through tmux, so its
+/// title and its card read `{machine}/tmux` and its machine's screen states the ssh facts.
 struct H {
     sw: Switcher,
     state: State,
@@ -58,7 +58,7 @@ impl H {
         let groups: Vec<Group> = groups
             .iter()
             .map(|(id, names, err)| Group {
-                source: id.to_string(),
+                host: id.to_string(),
                 err: err.map(str::to_string),
                 sessions: names.iter().map(|n| sess(id, n)).collect(),
             })
@@ -67,11 +67,11 @@ impl H {
             .iter()
             .map(|g| {
                 (
-                    g.source.clone(),
-                    crate::state::SourceReach {
+                    g.host.clone(),
+                    crate::state::HostReach {
                         ssh: true,
-                        kind: mux_named(&g.source).into(),
-                        mux: mux_named(&g.source).into(),
+                        kind: mux_named(&g.host).into(),
+                        mux: mux_named(&g.host).into(),
                         refresh: "live updates".into(),
                         ..Default::default()
                     },
@@ -79,7 +79,7 @@ impl H {
             })
             .collect();
         let mut state = State::from_scan(Scan { groups });
-        state.chrome.set_source_reach(reach);
+        state.chrome.set_host_reach(reach);
         let sw = Switcher::new(&mut state);
         let mut h = H {
             sw,
@@ -164,8 +164,8 @@ impl H {
         self.sw
             .rows
             .iter()
-            .position(|r| matches!(&r.reference, RowRef::Section { source } if source == id))
-            .expect("the source has a title")
+            .position(|r| matches!(&r.reference, RowRef::Section { host } if host == id))
+            .expect("the host has a title")
     }
 
     fn card_row(&self, pick: impl Fn(&RowRef) -> bool) -> usize {
@@ -218,29 +218,32 @@ fn fleet() -> H {
 fn a_section_title_is_two_targets_and_paints_only_the_selected_half() {
     let mut h = fleet();
     let title = h.title_row("web");
-    let (host_half, source_half) = (h.half(title, Part::Host), h.half(title, Part::Source));
-    assert_eq!(h.cells(host_half), "web");
-    assert_eq!(h.cells(source_half), "tmux");
+    let (machine_half, host_half) = (h.half(title, Part::Machine), h.half(title, Part::Host));
+    assert_eq!(h.cells(machine_half), "web");
+    assert_eq!(h.cells(host_half), "tmux");
+
+    assert!(h
+        .sw
+        .mouse_select(&h.plan.clone(), machine_half.x, machine_half.y));
+    h.draw();
+    assert_eq!(h.node(), machine("web"));
+    let (machine_half, host_half) = (h.half(title, Part::Machine), h.half(title, Part::Host));
+    assert!(
+        h.reversed(machine_half),
+        "the machine half is the selection"
+    );
+    assert!(!h.reversed(host_half), "the host half is not");
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        Some(ViewScreen::Machine)
+    );
 
     assert!(h.sw.mouse_select(&h.plan.clone(), host_half.x, host_half.y));
     h.draw();
     assert_eq!(h.node(), host("web"));
-    let (host_half, source_half) = (h.half(title, Part::Host), h.half(title, Part::Source));
-    assert!(h.reversed(host_half), "the host half is the selection");
-    assert!(!h.reversed(source_half), "the source half is not");
+    let (machine_half, host_half) = (h.half(title, Part::Machine), h.half(title, Part::Host));
+    assert!(h.reversed(host_half) && !h.reversed(machine_half));
     assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Host));
-
-    assert!(h
-        .sw
-        .mouse_select(&h.plan.clone(), source_half.x, source_half.y));
-    h.draw();
-    assert_eq!(h.node(), source("web"));
-    let (host_half, source_half) = (h.half(title, Part::Host), h.half(title, Part::Source));
-    assert!(h.reversed(source_half) && !h.reversed(host_half));
-    assert_eq!(
-        h.sw.current_view_screen(&h.state),
-        Some(ViewScreen::HostInfo)
-    );
 }
 
 #[test]
@@ -258,11 +261,11 @@ fn the_card_step_never_stops_on_a_title_and_does_stop_on_cards_without_sessions(
             session("gpu", "train"),
             session("web", "api"),
             session("web", "deploy"),
-            source("idle"),
-            host("db"),
+            host("idle"),
+            machine("db"),
             session("gpu", "train"),
         ],
-        "titles are skipped; an empty source and a down host each take a step"
+        "titles are skipped; an empty host and a down machine each take a step"
     );
 }
 
@@ -270,7 +273,7 @@ fn the_card_step_never_stops_on_a_title_and_does_stop_on_cards_without_sessions(
 fn the_card_step_from_a_title_half_goes_to_the_neighbouring_card() {
     let mut h = fleet();
     h.select("web", "api");
-    h.ctrl(KeyCode::Up); // the source half of web's title
+    h.ctrl(KeyCode::Up); // the host half of web's title
     h.key(KeyCode::Down);
     assert_eq!(
         h.node(),
@@ -278,8 +281,8 @@ fn the_card_step_from_a_title_half_goes_to_the_neighbouring_card() {
         "↓ reaches the first card under it"
     );
     h.ctrl(KeyCode::Up);
-    h.ctrl(KeyCode::Up); // the host half
-    assert_eq!(h.node(), host("web"));
+    h.ctrl(KeyCode::Up); // the machine half
+    assert_eq!(h.node(), machine("web"));
     h.key(KeyCode::Up);
     assert_eq!(
         h.node(),
@@ -289,23 +292,23 @@ fn the_card_step_from_a_title_half_goes_to_the_neighbouring_card() {
 }
 
 #[test]
-fn ctrl_up_walks_session_source_host_and_ctrl_down_returns_where_it_came_from() {
+fn ctrl_up_walks_session_host_machine_and_ctrl_down_returns_where_it_came_from() {
     let mut h = fleet();
     h.select("web", "deploy");
     h.ctrl(KeyCode::Up);
-    assert_eq!(h.node(), source("web"));
-    assert_eq!(h.sw.part, Part::Source);
-    h.ctrl(KeyCode::Up);
     assert_eq!(h.node(), host("web"));
+    assert_eq!(h.sw.part, Part::Host);
+    h.ctrl(KeyCode::Up);
+    assert_eq!(h.node(), machine("web"));
     assert_eq!(
         (h.sw.selected, h.sw.part),
-        (h.title_row("web"), Part::Host),
-        "the host half of the same title"
+        (h.title_row("web"), Part::Machine),
+        "the machine half of the same title"
     );
     h.ctrl(KeyCode::Up);
-    assert_eq!(h.node(), host("web"), "a host is the top");
+    assert_eq!(h.node(), machine("web"), "a machine is the top");
     h.ctrl(KeyCode::Down);
-    assert_eq!(h.node(), source("web"));
+    assert_eq!(h.node(), host("web"));
     h.ctrl(KeyCode::Down);
     assert_eq!(
         h.node(),
@@ -327,11 +330,11 @@ fn ctrl_down_without_a_trail_takes_the_first_child_by_name() {
         ("box:tmux", &["notes", "editor"], None),
     ]);
     let title = h.title_row("box:zellij");
-    let half = h.half(title, Part::Host);
+    let half = h.half(title, Part::Machine);
     h.sw.mouse_select(&h.plan.clone(), half.x, half.y);
-    assert_eq!(h.node(), host("box"));
+    assert_eq!(h.node(), machine("box"));
     h.ctrl(KeyCode::Down);
-    assert_eq!(h.node(), source("box:tmux"), "sources by name");
+    assert_eq!(h.node(), host("box:tmux"), "hosts by name");
     h.ctrl(KeyCode::Down);
     assert_eq!(
         h.node(),
@@ -341,27 +344,27 @@ fn ctrl_down_without_a_trail_takes_the_first_child_by_name() {
 }
 
 #[test]
-fn a_source_card_reads_as_two_targets_too() {
+fn a_host_card_reads_as_two_targets_too() {
     let mut h = fleet();
-    let idle = h.card_row(|r| matches!(r, RowRef::Host { source, .. } if source == "idle"));
+    let idle = h.card_row(|r| matches!(r, RowRef::Host { host, .. } if host == "idle"));
     h.sw.set_selected(idle);
     h.draw();
-    assert_eq!(h.node(), source("idle"));
-    let half = h.half(idle, Part::Host);
+    assert_eq!(h.node(), host("idle"));
+    let half = h.half(idle, Part::Machine);
     assert_eq!(h.cells(half), "idle");
     h.ctrl(KeyCode::Up);
-    assert_eq!(h.node(), host("idle"));
-    assert!(h.reversed(h.half(idle, Part::Host)));
+    assert_eq!(h.node(), machine("idle"));
+    assert!(h.reversed(h.half(idle, Part::Machine)));
     assert!(
         !h.reversed(h.card(idle)),
-        "only the host half is the selection"
+        "only the machine half is the selection"
     );
     h.ctrl(KeyCode::Down);
-    assert_eq!(h.node(), source("idle"));
+    assert_eq!(h.node(), host("idle"));
 }
 
 #[test]
-fn the_host_screen_states_the_machine_and_links_its_sources() {
+fn the_machine_screen_states_the_machine_and_links_its_hosts() {
     let mut h = H::new(&[
         ("box:tmux", &["notes", "editor"], None),
         ("box:zellij", &[], None),
@@ -372,7 +375,7 @@ fn the_host_screen_states_the_machine_and_links_its_sources() {
     h.select("box:tmux", "editor");
     h.ctrl(KeyCode::Up);
     h.ctrl(KeyCode::Up);
-    assert_eq!(h.node(), host("box"));
+    assert_eq!(h.node(), machine("box"));
     let view = h.view();
     for want in [
         "reachable",
@@ -389,7 +392,7 @@ fn the_host_screen_states_the_machine_and_links_its_sources() {
     ] {
         assert!(
             view.contains(want),
-            "the host screen states {want:?}:\n{view}"
+            "the machine screen states {want:?}:\n{view}"
         );
     }
     assert!(!view.contains("start a new session"), "{view}");
@@ -404,7 +407,7 @@ fn the_machine_and_host_screens_name_their_level_and_keep_to_its_facts() {
         .insert("box".into(), "Host box\n    User dev".into());
     h.select("box:tmux", "notes");
     h.ctrl(KeyCode::Up);
-    assert_eq!(h.node(), source("box:tmux"));
+    assert_eq!(h.node(), host("box:tmux"));
     let mux = h.view();
     assert_eq!(
         mux.lines().nth(1).map(str::trim_end),
@@ -418,7 +421,7 @@ fn the_machine_and_host_screens_name_their_level_and_keep_to_its_facts() {
         );
     }
     h.ctrl(KeyCode::Up);
-    assert_eq!(h.node(), host("box"));
+    assert_eq!(h.node(), machine("box"));
     let machine = h.view();
     assert_eq!(
         machine.lines().nth(1).map(str::trim_end),
@@ -440,7 +443,7 @@ fn the_machine_and_host_screens_name_their_level_and_keep_to_its_facts() {
 }
 
 #[test]
-fn the_source_screen_links_its_host_and_its_sessions_and_leaves_the_login_to_the_host() {
+fn the_host_screen_links_its_machine_and_its_sessions_and_leaves_the_login_to_the_machine() {
     let mut h = fleet();
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
@@ -455,19 +458,19 @@ fn the_source_screen_links_its_host_and_its_sessions_and_leaves_the_login_to_the
     ] {
         assert!(
             view.contains(want),
-            "the source screen states {want:?}:\n{view}"
+            "the host screen states {want:?}:\n{view}"
         );
     }
     for gone in ["SSH login", "log out of this machine", "public key"] {
         assert!(
             !view.contains(gone),
-            "the host states {gone:?}, not its source:\n{view}"
+            "the machine states {gone:?}, not its host:\n{view}"
         );
     }
     assert_eq!(
         h.cells(h.link_rect(0)),
         "web",
-        "the host half of the path is a link"
+        "the machine half of the path is a link"
     );
     assert_eq!(h.cells(h.link_rect(1)), "api");
     assert_eq!(h.cells(h.link_rect(2)), "deploy");
@@ -504,14 +507,14 @@ fn screen_links_take_the_arrows_and_enter_in_the_terminal_view() {
         "the opened session is what the terminal view shows"
     );
 
-    // Up the path: the source screen, then its host's, which selects the source it came
+    // Up the path: the host screen, then its machine's, which selects the host it came
     // from among its links.
     h.ctrl(KeyCode::Up);
     assert!(h.sw.open_link(0, &h.state));
     h.draw();
-    assert_eq!(h.node(), host("web"));
-    let links = h.sw.screen_links(&Node::Host("web".into()), &h.state);
-    assert_eq!(links[h.sw.link].node, Node::Source("web".into()));
+    assert_eq!(h.node(), machine("web"));
+    let links = h.sw.screen_links(&Node::Machine("web".into()), &h.state);
+    assert_eq!(links[h.sw.link].node, Node::Host("web".into()));
     assert!(h.reversed(h.link_rect(h.sw.link)));
 }
 
@@ -551,10 +554,13 @@ fn hovering_a_nav_target_shows_its_screen_without_moving_the_hard_selection() {
     assert!(!h.reversed(h.card(deploy)));
 
     let title = h.title_row("web");
-    let half = h.half(title, Part::Host);
+    let half = h.half(title, Part::Machine);
     h.sw.mouse_hover(&h.plan.clone(), half.x, half.y);
     h.draw();
-    assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Host));
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        Some(ViewScreen::Machine)
+    );
     assert!(h.view().contains("hosts"), "{}", h.view());
 
     // Off every target the hard selection's screen comes back.
@@ -587,11 +593,11 @@ fn a_hovered_link_is_underlined_in_the_terminal_view() {
     assert!(h.sw.link_hover_at(&h.plan.clone(), rect.x, rect.y));
     h.draw();
     assert!(h.underlined(h.link_rect(2)));
-    assert_eq!(h.node(), source("web"), "hovering a link opens nothing");
+    assert_eq!(h.node(), host("web"), "hovering a link opens nothing");
 }
 
 #[test]
-fn a_logout_gathers_the_selection_onto_the_hosts_one_card() {
+fn a_logout_gathers_the_selection_onto_the_machines_one_card() {
     let mut h = H::new(&[
         ("gpu", &["train"], None),
         ("db:tmux", &["pg-primary"], None),
@@ -599,7 +605,7 @@ fn a_logout_gathers_the_selection_onto_the_hosts_one_card() {
     ]);
     h.select("db:tmux", "pg-primary");
     for id in ["db:tmux", "db:zellij"] {
-        h.sw.apply_source_result(id.into(), vec![], Some(LOGGED_OUT.into()), &mut h.state);
+        h.sw.apply_host_result(id.into(), vec![], Some(LOGGED_OUT.into()), &mut h.state);
     }
     h.draw();
     let machine_cards =
@@ -607,26 +613,27 @@ fn a_logout_gathers_the_selection_onto_the_hosts_one_card() {
             .iter()
             .filter(|r| matches!(r.reference, RowRef::Machine { .. }))
             .count();
-    assert_eq!(machine_cards, 1, "one card for the host, none per source");
+    assert_eq!(machine_cards, 1, "one card for the machine, none per host");
     assert!(
-        !h.sw.rows.iter().any(
-            |r| matches!(&r.reference, RowRef::Host { source, .. } if source.starts_with("db"))
-        ),
-        "no source of the host keeps a card"
+        !h.sw
+            .rows
+            .iter()
+            .any(|r| matches!(&r.reference, RowRef::Host { host, .. } if host.starts_with("db"))),
+        "no host of the machine keeps a card"
     );
-    assert_eq!(h.node(), host("db"));
+    assert_eq!(h.node(), machine("db"));
     assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Login));
     assert!(h.sw.login_pane_shown(&h.state));
     let view = h.view();
     assert!(
         view.contains("Log in"),
-        "the login form is on the host's screen:\n{view}"
+        "the login form is on the machine's screen:\n{view}"
     );
     assert!(view.contains("tmux  login needed"), "{view}");
 }
 
 #[test]
-fn a_host_card_that_logs_back_in_hands_the_selection_to_its_first_source() {
+fn a_machine_card_that_logs_back_in_hands_the_selection_to_its_first_host() {
     let mut h = H::new(&[
         ("gpu", &["train"], None),
         ("db:zellij", &[], Some(LOGGED_OUT)),
@@ -634,9 +641,9 @@ fn a_host_card_that_logs_back_in_hands_the_selection_to_its_first_source() {
     ]);
     let card = h.card_row(|r| matches!(r, RowRef::Machine { .. }));
     h.sw.set_selected(card);
-    assert_eq!(h.node(), host("db"));
+    assert_eq!(h.node(), machine("db"));
     h.sw.mark_machine_scanning("db", &mut h.state);
-    assert_eq!(h.node(), source("db:tmux"), "the first source by name");
+    assert_eq!(h.node(), host("db:tmux"), "the first host by name");
 }
 
 #[test]
@@ -646,11 +653,11 @@ fn an_unresolved_machine_screen_links_to_nothing() {
     h.sw.set_selected(card);
     h.terminal_focused = true;
     h.draw();
-    assert_eq!(h.node(), host("db"));
+    assert_eq!(h.node(), machine("db"));
     assert!(
-        h.sw.screen_links(&Node::Host("db".into()), &h.state)
+        h.sw.screen_links(&Node::Machine("db".into()), &h.state)
             .is_empty(),
-        "the placeholder source stands for this machine, so it is no link"
+        "the placeholder host stands for this machine, so it is no link"
     );
     let view = h.view();
     assert!(
@@ -681,13 +688,13 @@ fn the_login_form_keeps_the_keyboard_from_the_screen_links() {
         !h.sw.open_selected_link(&h.state),
         "Enter belongs to the form"
     );
-    assert_eq!(h.node(), host("db"), "the keys moved nothing");
+    assert_eq!(h.node(), machine("db"), "the keys moved nothing");
     assert!(h.sw.open_link(0, &h.state), "a click still opens the link");
-    assert_eq!(h.node(), source("db:tmux"));
+    assert_eq!(h.node(), host("db:tmux"));
 }
 
 #[test]
-fn a_link_opens_a_source_the_nav_has_no_card_for() {
+fn a_link_opens_a_host_the_nav_has_no_card_for() {
     let mut h = H::new(&[
         ("gpu", &["train"], None),
         ("db:tmux", &[], Some(LOGGED_OUT)),
@@ -701,20 +708,20 @@ fn a_link_opens_a_source_the_nav_has_no_card_for() {
         "the machine's screen lists its hosts:\n{}",
         h.view()
     );
-    let links = h.sw.screen_links(&Node::Host("db".into()), &h.state);
-    assert_eq!(links[0].node, Node::Source("db:tmux".into()));
+    let links = h.sw.screen_links(&Node::Machine("db".into()), &h.state);
+    assert_eq!(links[0].node, Node::Host("db:tmux".into()));
     assert!(h.sw.open_link(0, &h.state));
     h.draw();
     assert_eq!(
         h.node(),
-        source("db:tmux"),
-        "the source is selected without a card"
+        host("db:tmux"),
+        "the host is selected without a card"
     );
-    assert_eq!(h.sw.selected, card, "the nav stands on its host's card");
+    assert_eq!(h.sw.selected, card, "the nav stands on its machine's card");
     assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Login));
     assert!(
         !h.sw.login_pane_shown(&h.state),
-        "a source states its failure and leaves the login to its host"
+        "a host states its failure and leaves the login to its machine"
     );
     let view = h.view();
     assert!(
@@ -723,34 +730,34 @@ fn a_link_opens_a_source_the_nav_has_no_card_for() {
     );
     assert!(!view.contains("Log in ]"), "{view}");
 
-    // The selection holds while the inventory lists the source, and lands on the source's
+    // The selection holds while the inventory lists the host, and lands on the host's
     // own card once it has one.
     h.sw.rebuild(&mut h.state);
-    assert_eq!(h.node(), source("db:tmux"));
-    h.sw.apply_source_result(
+    assert_eq!(h.node(), host("db:tmux"));
+    h.sw.apply_host_result(
         "db:tmux".into(),
         vec![sess("db:tmux", "pg")],
         None,
         &mut h.state,
     );
-    assert_eq!(h.node(), source("db:tmux"));
+    assert_eq!(h.node(), host("db:tmux"));
     assert!(h.sw.deep.is_none());
-    assert_eq!(h.sw.part, Part::Source);
+    assert_eq!(h.sw.part, Part::Host);
 }
 
 #[test]
-fn a_selected_source_whose_host_goes_down_goes_to_the_hosts_card() {
+fn a_selected_host_whose_machine_goes_down_goes_to_the_machines_card() {
     let mut h = fleet();
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
-    assert_eq!(h.node(), source("web"));
-    h.sw.apply_source_result(
+    assert_eq!(h.node(), host("web"));
+    h.sw.apply_host_result(
         "web".into(),
         vec![],
         Some("connection refused".into()),
         &mut h.state,
     );
-    assert_eq!(h.node(), host("web"));
+    assert_eq!(h.node(), machine("web"));
     assert!(matches!(h.sw.current_ref(), Some(RowRef::Machine { .. })));
 }
 
@@ -764,9 +771,9 @@ fn a_click_on_a_nav_target_selects_it_and_reports_the_hit() {
         !h.sw.mouse_select(&h.plan.clone(), blank, rect.y),
         "a title's blank tail is no target"
     );
-    let half = h.half(title, Part::Source);
+    let half = h.half(title, Part::Host);
     assert!(h.sw.mouse_select(&h.plan.clone(), half.x, half.y));
-    assert_eq!(h.node(), source("gpu"));
+    assert_eq!(h.node(), host("gpu"));
 }
 
 #[test]
@@ -775,12 +782,12 @@ fn a_cancelled_jump_returns_to_the_half_of_the_title_it_started_on() {
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
     h.ctrl(KeyCode::Up);
-    assert_eq!(h.node(), host("web"));
+    assert_eq!(h.node(), machine("web"));
     h.key(KeyCode::Char('1'));
     assert_eq!(h.node(), session("gpu", "train"), "the jump moved");
     h.key(KeyCode::Esc);
-    assert_eq!(h.node(), host("web"), "Esc returns to the host half");
-    assert_eq!(h.sw.part, Part::Host);
+    assert_eq!(h.node(), machine("web"), "Esc returns to the machine half");
+    assert_eq!(h.sw.part, Part::Machine);
 }
 
 #[test]
@@ -791,22 +798,22 @@ fn the_selected_link_follows_its_node_when_the_links_change() {
     h.terminal_focused = true;
     h.draw();
     h.sw.step_link(2, &h.state);
-    assert_eq!(h.sw.link, 2, "deploy, after the host and api");
+    assert_eq!(h.sw.link, 2, "deploy, after the machine and api");
 
     // api ends: deploy is still the selected link, one place up.
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "web".into(),
         vec![sess("web", "deploy")],
         None,
         &mut h.state,
     );
     h.draw();
-    assert_eq!(h.node(), source("web"));
+    assert_eq!(h.node(), host("web"));
     assert_eq!(h.sw.link, 1);
     assert!(h.reversed(h.link_rect(1)));
 
     // deploy ends too: the selection stays on a link the screen still has.
-    h.sw.apply_source_result("web".into(), vec![sess("web", "api")], None, &mut h.state);
+    h.sw.apply_host_result("web".into(), vec![sess("web", "api")], None, &mut h.state);
     h.draw();
     assert_eq!(h.sw.link, 1);
     assert!(h.sw.open_selected_link(&h.state), "Enter opens a link");
@@ -839,7 +846,7 @@ fn the_section_step_from_a_title_part_goes_to_the_neighbouring_section() {
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
     h.ctrl(KeyCode::Up);
-    assert_eq!(h.node(), host("web"));
+    assert_eq!(h.node(), machine("web"));
     h.key(KeyCode::Left);
     assert_eq!(
         h.node(),
@@ -849,11 +856,7 @@ fn the_section_step_from_a_title_part_goes_to_the_neighbouring_section() {
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
     h.key(KeyCode::Right);
-    assert_eq!(
-        h.node(),
-        source("idle"),
-        "→ reaches the host cards' section"
-    );
+    assert_eq!(h.node(), host("idle"), "→ reaches the host cards' section");
 }
 
 /// The fleet as it stands at launch: the landing screen up, nothing executed yet.
@@ -1004,16 +1007,16 @@ fn opening_a_landing_link_executes_it_and_the_landing_never_returns() {
 }
 
 #[test]
-fn a_landing_link_to_a_host_that_needs_a_login_opens_its_login_screen() {
+fn a_landing_link_to_a_machine_that_needs_a_login_opens_its_login_screen() {
     let mut h = landed();
     let i =
         h.sw.landing_links()
             .iter()
-            .position(|l| l.node == Node::Host("db".into()))
+            .position(|l| l.node == Node::Machine("db".into()))
             .unwrap();
     assert!(h.sw.open_link(i, &h.state));
     h.draw();
-    assert_eq!(h.node(), host("db"));
+    assert_eq!(h.node(), machine("db"));
     assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Login));
 }
 
@@ -1043,7 +1046,7 @@ fn a_switch_closes_the_landing_even_onto_the_card_already_selected() {
 }
 
 #[test]
-fn the_landing_counts_a_host_serving_several_muxes_once() {
+fn the_landing_counts_a_machine_serving_several_muxes_once() {
     let mut h = H::new(&[
         ("gpu", &["train"], None),
         ("db:tmux", &["pg-primary"], None),
@@ -1059,11 +1062,11 @@ fn the_landing_counts_a_host_serving_several_muxes_once() {
     assert_eq!(
         h.state.chrome.scan_progress(&h.state),
         format!("{spinner} 1 of 2 machines scanned"),
-        "a host is scanned only once every source of it answered"
+        "a machine is scanned only once every host of it answered"
     );
 }
 
-/// The harness over `groups` plus `machine`, which is on the roster with no source known,
+/// The harness over `groups` plus `machine`, which is on the roster with no host known,
 /// in the state its answer left it: `Some` why it could not be asked, `None` still asking.
 fn with_unresolved(
     groups: &[(&str, &[&str], Option<&str>)],
@@ -1084,11 +1087,11 @@ fn with_unresolved(
 const REFUSED: &str = "dev@db: Permission denied (publickey,password).";
 
 #[test]
-fn a_machine_with_no_source_known_is_a_machine_and_no_source() {
+fn a_machine_with_no_host_known_is_a_machine_and_no_host() {
     let mut h = with_unresolved(&[("gpu", &["train"], None)], "db", Some(REFUSED));
     assert!(
-        h.state.groups.iter().all(|g| g.source != "db"),
-        "no source stands for the machine"
+        h.state.groups.iter().all(|g| g.host != "db"),
+        "no host stands for the machine"
     );
     let card = h.card_row(
         |r| matches!(r, RowRef::Machine { machine, blocked: true, scanning: false, .. } if machine == "db"),
@@ -1096,9 +1099,9 @@ fn a_machine_with_no_source_known_is_a_machine_and_no_source() {
     h.sw.set_selected(card);
     h.terminal_focused = true;
     h.draw();
-    assert_eq!(h.node(), host("db"), "the selection names the machine");
+    assert_eq!(h.node(), machine("db"), "the selection names the machine");
     assert!(
-        h.sw.screen_links(&Node::Host("db".into()), &h.state)
+        h.sw.screen_links(&Node::Machine("db".into()), &h.state)
             .is_empty(),
         "a machine with no confirmed host links nowhere, least of all to itself"
     );
@@ -1119,8 +1122,8 @@ fn a_machine_with_no_source_known_is_a_machine_and_no_source() {
     assert!(
         h.sw.check_entries(&h.state)
             .iter()
-            .any(|e| e.source == "db" && e.kind == crate::model::FailureKind::Blocked),
-        "the host problems list the machine"
+            .any(|e| e.host == "db" && e.kind == crate::model::FailureKind::Blocked),
+        "the machine problems list the machine"
     );
 }
 
@@ -1133,7 +1136,7 @@ fn a_machine_still_answering_spins_on_its_own_card() {
     let landing = h.sw.landing_links();
     let link = landing
         .iter()
-        .find(|l| l.node == Node::Host("win".into()))
+        .find(|l| l.node == Node::Machine("win".into()))
         .expect("the landing lists the machine");
     assert_eq!(link.value, "scanning");
     assert!(h.state.scanning_any());
@@ -1141,13 +1144,13 @@ fn a_machine_still_answering_spins_on_its_own_card() {
 }
 
 #[test]
-fn the_first_source_found_takes_the_machines_card_number() {
+fn the_first_host_found_takes_the_machines_card_number() {
     let mut h = with_unresolved(&[("gpu", &["train"], None)], "win", None);
     h.sw.set_renumbering(false, &mut h.state);
     let row = h.card_row(|r| matches!(r, RowRef::Machine { machine, .. } if machine == "win"));
     let number = h.sw.card_number(row);
-    h.sw.add_sources(vec!["win".into()], &mut h.state);
-    let row = h.card_row(|r| matches!(r, RowRef::Host { source, .. } if source == "win"));
+    h.sw.add_hosts(vec!["win".into()], &mut h.state);
+    let row = h.card_row(|r| matches!(r, RowRef::Host { host, .. } if host == "win"));
     assert_eq!(h.sw.card_number(row), number, "the card keeps its number");
     assert!(!h.state.machine_scanning.contains("win"));
 }

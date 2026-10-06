@@ -4,7 +4,7 @@
 //! alone (one window, its own name).
 
 use super::*;
-use crate::model::source::RunError;
+use crate::model::host_def::RunError;
 use crate::session::Session;
 use crate::transport::Transport;
 
@@ -113,13 +113,13 @@ impl Mux for Abduco {
     }
 }
 
-/// Parses `abduco`'s listing into sessions tagged with `source`/`mux`. Each line is
+/// Parses `abduco`'s listing into sessions tagged with `host`/`mux`. Each line is
 /// `<status> <Day>\t<YYYY-MM-DD HH:MM:SS>\t<name>` in the released abduco 0.6, and
 /// abduco's master branch inserts a `<pid>` field before the name; an all-digit third
 /// field followed by a fourth is that pid. The header and any banner carry no tabs and
 /// are skipped. `attached` reads the leading status char (`*` = a client attached;
 /// `+` = command terminated while unattached; ` ` = running, unattached).
-pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
+pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in out.split('\n') {
         let ln = ln.strip_suffix('\r').unwrap_or(ln);
@@ -136,7 +136,7 @@ pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
             continue;
         }
         sessions.push(Session {
-            source: source.to_string(),
+            host: host.to_string(),
             name,
             mux: mux.to_string(),
             windows: 1,
@@ -165,7 +165,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for CannedRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
             self.0
                 .lock()
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(names, vec!["sess1", "build"]);
         assert!(got[0].attached, "the * marker means a client is attached");
         assert!(!got[1].attached, "the space marker means unattached");
-        assert!(got.iter().all(|s| s.source == "jup" && s.mux == "abduco"));
+        assert!(got.iter().all(|s| s.host == "jup" && s.mux == "abduco"));
         assert_eq!(got[0].windows, 1);
     }
 

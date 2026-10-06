@@ -12,9 +12,9 @@ pub(crate) const CONNECT_TIMEOUT: &str = "5";
 
 /// A remote over ssh. `control_path` is the ControlMaster socket (empty ⇒ no
 /// multiplex, e.g. a Windows local side); `os` is the LOCAL platform (gates
-/// ControlMaster). `alias` is the ssh DESTINATION, and `id` is the SOURCE id this
+/// ControlMaster). `alias` is the ssh DESTINATION, and `id` is the HOST id this
 /// transport answers as - the two differ when a machine serves several muxes, since
-/// each mux is its own source reached at the same destination.
+/// each mux is its own host reached at the same destination.
 #[derive(Clone, Debug)]
 pub struct Ssh {
     pub id: String,
@@ -236,8 +236,8 @@ impl Ssh {
 
 impl Transport for Ssh {
     fn host_id(&self) -> &str {
-        // The SOURCE id, not the destination: several muxes on one machine are several
-        // sources reached at the same `alias`.
+        // The HOST id, not the destination: several muxes on one machine are several
+        // hosts reached at the same `alias`.
         &self.id
     }
 
@@ -476,7 +476,7 @@ impl Transport for Ssh {
 
     /// No held credential and no master: a master that a password login opened would
     /// answer for a key that cannot log in. `LogLevel=VERBOSE` makes ssh report when
-    /// authentication succeeded, which separates a host that refuses the key from one
+    /// authentication succeeded, which separates a machine that refuses the key from one
     /// that accepts it and then cannot open a session.
     fn key_only_argv(&self, remote_cmd: &str) -> Option<crate::transport::CommandSpec> {
         let mut args = Vec::new();
@@ -505,11 +505,11 @@ impl Transport for Ssh {
     }
 }
 
-/// A held password still lets ssh try a key first, so a host that takes a key needs no
+/// A held password still lets ssh try a key first, so a machine that takes a key needs no
 /// password prompt.
 const KEY_FIRST: &str = "PreferredAuthentications=publickey,password,keyboard-interactive";
 
-/// The options of a command that authenticates with the held password alone, for a host
+/// The options of a command that authenticates with the held password alone, for a machine
 /// that accepts a key and then closes the connection before a session opens.
 const PASSWORD_ONLY: [&str; 4] = [
     "-o",

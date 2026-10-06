@@ -6,7 +6,7 @@
 active filter, the canonical selection, the confirmed displayed address, focus, the
 open modal, chrome data, notifications, login and authentication state, the attach
 debounce, and the last session address persisted to preferences. It is seeded from a
-scan or from the roster's sources and hosts. The app update transition owns all mutation and
+scan or from the roster's hosts and machines. The app update transition owns all mutation and
 folds domain intents through this layer's action reducer, which touches only state
 and returns commands; the clock and runtime attach facts enter as data on the tick.
 
@@ -16,7 +16,7 @@ and returns commands; the clock and runtime attach facts enter as data on the ti
   results, the selection, and the action, command, effect, and event types.
 - The app owns message handling and unified effect dispatch: switcher and connection
   actions, inventory application, refetch, probe, reap, sync, scan dispatch, and
-  source addition.
+  host addition.
 - State owns the focus state machine, the modal types, classifiers, input editing,
   and the read-only popup feed; the UI owns popup geometry and rendering.
 - Notifications hold the toasts on screen and the bounded history behind them; the
@@ -39,8 +39,8 @@ and returns commands; the clock and runtime attach facts enter as data on the ti
   return a command for the loop to run instead.
 - The action reducer folds intents without a match on mux kind; the mux enters here
   only as domain data.
-- A host is held apart from its sources and owns its own failure and scan state, so a
-  host whose muxes are not known yet stands with no source, and no source stands in
+- A machine is held apart from its hosts and owns its own failure and scan state, so a
+  machine whose muxes are not known yet stands with no host, and no host stands in
   for it.
 
 ## Common Pitfalls

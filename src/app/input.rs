@@ -227,7 +227,7 @@ fn nav_action(command: KeyCommand, key: ratatui::crossterm::event::KeyEvent) -> 
         | KeyCommand::Filter
         | KeyCommand::NewSession
         | KeyCommand::Rescan
-        | KeyCommand::RescanHost => Some(Action::NavKey(key)),
+        | KeyCommand::RescanMachine => Some(Action::NavKey(key)),
         KeyCommand::Logout => Some(Action::NavKey(key)),
         KeyCommand::HostInfo => Some(Action::NavKey(key)),
         KeyCommand::FocusNav | KeyCommand::LiteralPrefix => None,
@@ -298,7 +298,7 @@ mod tests {
         assert_eq!(
             rt(b"\x07h", false),
             vec![Action::ShowCheck],
-            "prefix h opens the host problems"
+            "prefix h opens the machine problems"
         );
         assert_eq!(
             rt(b"\x07s", false),
@@ -427,7 +427,7 @@ mod tests {
             | KeyCommand::Filter
             | KeyCommand::NewSession
             | KeyCommand::Rescan
-            | KeyCommand::RescanHost => Some(Action::NavKey(key)),
+            | KeyCommand::RescanMachine => Some(Action::NavKey(key)),
             KeyCommand::Logout => Some(Action::NavKey(key)),
             KeyCommand::HostInfo => Some(Action::NavKey(key)),
             KeyCommand::FocusNav | KeyCommand::LiteralPrefix => None,
@@ -597,7 +597,7 @@ mod tests {
         assert_eq!(
             rt(b"\x07r", false),
             vec![tk('r')],
-            "prefix r arms the one-host rescan"
+            "prefix r arms the one-machine rescan"
         );
         assert_eq!(rt(b"\x07n", false), vec![tk('n')], "prefix n arms new");
         assert_eq!(rt(b"L", false), vec![tk('L')], "prefix L arms logout");
@@ -884,7 +884,7 @@ mod tests {
                 crate::ui::switcher::NavPosition::Left
             ),
             Some(Action::ShowCheck),
-            "the key opens the host problems"
+            "the key opens the machine problems"
         );
         assert!(!armed, "a key while ready consumes ready");
         assert!(

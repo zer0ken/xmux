@@ -1,9 +1,9 @@
-//! Provisioning: which machines, binaries, and sources exist on this machine, and
+//! Provisioning: which machines, binaries, and hosts exist on this machine, and
 //! the resolved runtime view over them. `config` loads the optional TOML and
 //! merges it with ssh-config discovery, `roster` names the ssh targets, and
-//! `discovery` probes sources concurrently; `env` resolves all of it into the
+//! `discovery` probes hosts concurrently; `env` resolves all of it into the
 //! roster and lookups the commands share, re-resolved on every re-scan, and builds the
-//! runtime source registry from it.
+//! runtime host registry from it.
 
 pub mod config;
 pub mod discovery;

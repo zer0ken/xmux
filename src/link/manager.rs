@@ -1,11 +1,11 @@
 //! `HostManager`: owns each host's metadata channel - a `-CC` `HostClient` or a
 //! poll task - plus `control_argv`, the composed control-child argv.
 //!
-//! The manager owns the live mechanisms only. A source's session inventory has one
-//! owner, the source's own inventory: both metadata paths feed it through source events
+//! The manager owns the live mechanisms only. A host's session inventory has one
+//! owner, the host's own inventory: both metadata paths feed it through host events
 //! (the control reader carries its parsed sessions, the poll task the same), and the run
 //! loop folds them in and rebuilds the nav rows from it. Live process and task ownership
-//! stays out of the source domain type, and live per-source processes are tracked here
+//! stays out of the host domain type, and live per-host processes are tracked here
 //! rather than in a registry of their own.
 
 use std::collections::HashMap;
@@ -210,7 +210,7 @@ mod tests {
     // LIVE: connects to the real `jupiter06` over ssh and verifies the control-mode
     // METADATA path end-to-end - connect → list-sessions resolves → inventory has the
     // host's real sessions. Uses PIPES (not a ConPTY), so it works headlessly even
-    // inside a mux. `#[ignore]` because it needs network + the host reachable:
+    // inside a mux. `#[ignore]` because it needs network + the machine reachable:
     //   cargo test -p xmux host::tests::live_jupiter06 -- --ignored --nocapture
     #[ignore = "live: ssh to jupiter06; run on demand"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -254,7 +254,7 @@ mod tests {
     }
 
     /// LIVE: starts a REAL local tmux server and connects the `-CC` control client to
-    /// it through the pty spawn (`control_needs_pty` on a Unix local host). On pipe
+    /// it through the pty spawn (`control_needs_pty` on a Unix local machine). On pipe
     /// stdio the control child dies at once (`tcgetattr failed`) and the host reads
     /// as unreachable; the pty the spawner allocates keeps it alive long enough to
     /// resolve list-sessions into the real inventory. `#[ignore]` because it needs a
@@ -281,7 +281,7 @@ mod tests {
         );
         assert!(
             host.transport.control_needs_pty(),
-            "a local tmux control child needs a pty on this host"
+            "a local tmux control child needs a pty on this machine"
         );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
@@ -377,7 +377,7 @@ mod tests {
         );
     }
 
-    /// A constructible LOCAL `Source` for the manager tests: its runner defaults to the
+    /// A constructible LOCAL `HostDef` for the manager tests: its runner defaults to the
     /// real exec runner and its `cmd.exe` binary is a real local program, so if `ensure`
     /// ever did spawn it the process would exist rather than fail to launch. In these
     /// tests it stays dormant - `ensure` on an already-present host returns `Ok(false)`
@@ -585,7 +585,7 @@ mod tests {
     #[tokio::test]
     async fn ensure_needs_no_source_arg() {
         // ensure composes the control/poll channel from the host alone (transport × mux);
-        // it takes no Source. A poll host (psmux) is idempotent while its task lives.
+        // it takes no `HostDef`. A poll host (psmux) is idempotent while its task lives.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
         let mut mgr = HostManager::new(tx);
         let host = crate::model::Host::new(
@@ -594,7 +594,7 @@ mod tests {
         );
         assert!(
             mgr.ensure("local", &host, 80, 24).unwrap(),
-            "first ensure spawns the poll task without a source"
+            "first ensure spawns the poll task without a HostDef"
         );
         assert!(
             !mgr.ensure("local", &host, 80, 24).unwrap(),

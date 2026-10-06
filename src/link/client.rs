@@ -18,7 +18,7 @@ use super::{run_reader, run_writer, HostCmd, HostEvent, InFlight, PendingReply, 
 /// `model::Host.inventory`. This is a METADATA / change-event / `switch-client`
 /// channel only — the per-session PTY attachments own the pixels.
 pub struct HostClient {
-    /// Stable host id (the source name), echoed back on every `HostEvent`.
+    /// Stable host id (the host name), echoed back on every `HostEvent`.
     pub host: String,
     /// True until any wire activity proves the channel is live.
     pub connecting: Arc<AtomicBool>,

@@ -19,19 +19,16 @@ struct RecordOps {
 
 #[async_trait::async_trait]
 impl Ops for RecordOps {
-    fn sources(&self) -> Vec<String> {
+    fn hosts(&self) -> Vec<String> {
         Vec::new()
     }
-    async fn list_sessions(&self, _source: &str) -> anyhow::Result<Vec<Session>> {
+    async fn list_sessions(&self, _host: &str) -> anyhow::Result<Vec<Session>> {
         Ok(Vec::new())
     }
-    async fn new_session(&self, source: &str, name: &str) -> anyhow::Result<Session> {
-        self.created
-            .lock()
-            .unwrap()
-            .push(format!("{source}/{name}"));
+    async fn new_session(&self, host: &str, name: &str) -> anyhow::Result<Session> {
+        self.created.lock().unwrap().push(format!("{host}/{name}"));
         Ok(Session {
-            source: source.into(),
+            host: host.into(),
             name: name.into(),
             windows: 1,
             ..Default::default()
@@ -39,11 +36,11 @@ impl Ops for RecordOps {
     }
     async fn login_command(
         &self,
-        source: &str,
+        host: &str,
         _login: &crate::transport::Login,
         _password: String,
     ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
-        self.logged_in.lock().unwrap().push(source.to_string());
+        self.logged_in.lock().unwrap().push(host.to_string());
         // A child that exits 0 at once: the conversation this stands in for is one that
         // needed nothing typed.
         Ok(Some(crate::transport::CommandSpec::from_argv(vec![
@@ -52,14 +49,14 @@ impl Ops for RecordOps {
     }
     fn write_login_stanza(
         &self,
-        _source: &str,
+        _host: &str,
         _login: &crate::transport::Login,
     ) -> Result<(), String> {
         Ok(())
     }
     async fn register_login_key(
         &self,
-        _source: &str,
+        _host: &str,
         _login: &crate::transport::Login,
         _register: crate::ui::ops::KeyRegistration,
     ) -> crate::ui::ops::RegistrationOutcome {
@@ -102,13 +99,13 @@ impl Harness {
         h
     }
 
-    fn from_sources(aliases: &[&str]) -> Self {
+    fn from_hosts(aliases: &[&str]) -> Self {
         let backend = TestBackend::new(140, 30);
         let term = Terminal::new(backend).unwrap();
         let aliases = aliases.iter().map(|s| s.to_string()).collect();
-        let mut state = crate::state::State::from_sources(aliases);
+        let mut state = crate::state::State::from_hosts(aliases);
         let mut h = Harness {
-            sw: Switcher::from_sources(&mut state),
+            sw: Switcher::from_hosts(&mut state),
             plan: RenderPlan::default(),
             state,
             term,
@@ -360,9 +357,9 @@ fn mod_of(buf: &Buffer, text: &str, limit: u16) -> Option<Modifier> {
 
 // --- sample data --------------------------------------------------------
 
-fn sess(source: &str, name: &str, windows: i64, attached: bool) -> Session {
+fn sess(host: &str, name: &str, windows: i64, attached: bool) -> Session {
     Session {
-        source: source.into(),
+        host: host.into(),
         name: name.into(),
         mux: String::new(),
         windows,
@@ -377,7 +374,7 @@ fn sess(source: &str, name: &str, windows: i64, attached: bool) -> Session {
 /// these tests.
 fn selection_parked_elsewhere(mut scan: Scan) -> Scan {
     scan.groups.push(Group {
-        source: "aaa".into(),
+        host: "aaa".into(),
         err: None,
         sessions: vec![sess_mux("aaa", "parked", "psmux")],
     });
@@ -387,7 +384,7 @@ fn selection_parked_elsewhere(mut scan: Scan) -> Scan {
 fn sample() -> Scan {
     let groups = vec![
         Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![
                 sess("local", "editor", 2, true),
@@ -395,12 +392,12 @@ fn sample() -> Scan {
             ],
         },
         Group {
-            source: "jupiter00".into(),
+            host: "jupiter00".into(),
             err: None,
             sessions: vec![sess("jupiter00", "inference", 1, false)],
         },
         Group {
-            source: "db-2".into(),
+            host: "db-2".into(),
             err: Some("connection timed out".into()),
             sessions: vec![],
         },
@@ -408,29 +405,29 @@ fn sample() -> Scan {
     Scan { groups }
 }
 
-/// Two sources with a session each and TWO with none, so the host band holds more than
+/// Two hosts with a session each and TWO with none, so the host band holds more than
 /// one card. Used where the band's own SIZE is the point: to ←/→ it is one category
 /// however many cards it holds.
 fn scan_with_a_host_band() -> Scan {
     Scan {
         groups: vec![
             Group {
-                source: "local".into(),
+                host: "local".into(),
                 err: None,
                 sessions: vec![sess("local", "editor", 1, false)],
             },
             Group {
-                source: "jupiter00".into(),
+                host: "jupiter00".into(),
                 err: None,
                 sessions: vec![sess("jupiter00", "inference", 1, false)],
             },
             Group {
-                source: "db-2".into(),
+                host: "db-2".into(),
                 err: Some("connection timed out".into()),
                 sessions: vec![],
             },
             Group {
-                source: "db-3".into(),
+                host: "db-3".into(),
                 err: Some("connection timed out".into()),
                 sessions: vec![],
             },
@@ -438,7 +435,7 @@ fn scan_with_a_host_band() -> Scan {
     }
 }
 
-/// One reachable source carrying `n` sessions, so the nav holds exactly `n` cards
+/// One reachable host carrying `n` sessions, so the nav holds exactly `n` cards
 /// numbered `1..=n`. Used where the card COUNT is the point (a two-digit jump needs
 /// more cards than [`sample`] has).
 fn scan_with_sessions(n: usize) -> Scan {
@@ -447,7 +444,7 @@ fn scan_with_sessions(n: usize) -> Scan {
         .collect();
     Scan {
         groups: vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions,
         }],
@@ -461,19 +458,19 @@ fn cur_session_name(h: &Harness) -> Option<String> {
     }
 }
 
-/// The session names of one source's group, in `state.groups` (display) order.
-fn group_session_names(h: &Harness, source: &str) -> Vec<String> {
+/// The session names of one host's group, in `state.groups` (display) order.
+fn group_session_names(h: &Harness, host: &str) -> Vec<String> {
     h.state
         .groups
         .iter()
-        .find(|g| g.source == source)
+        .find(|g| g.host == host)
         .map(|g| g.sessions.iter().map(|s| s.name.clone()).collect())
         .unwrap_or_default()
 }
 
-/// The host-group sources in `state.groups` (display) order.
+/// The group hosts in `state.groups` (display) order.
 fn group_order(h: &Harness) -> Vec<String> {
-    h.state.groups.iter().map(|g| g.source.clone()).collect()
+    h.state.groups.iter().map(|g| g.host.clone()).collect()
 }
 
 /// The single [`MuxOp`](crate::model::MuxOp) a committing key resolved to, pulled
@@ -489,7 +486,7 @@ fn only_run_op(cmds: Vec<Command>) -> Option<crate::model::MuxOp> {
 fn two_window_scan() -> Scan {
     Scan {
         groups: vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![sess("jup", "api", 2, false)],
         }],
@@ -520,7 +517,7 @@ fn arrows_and_hjkl_navigate() {
     );
     assert_eq!(sw.selected, start, "k == ↑");
     // ←/→ are the OTHER step (one category at a time), so neither is a second way to
-    // step a card: from the first card of the first source, → leaves that source.
+    // step a card: from the first card of the first host, → leaves that host.
     sw.handle_key(
         KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
         &mut state,
@@ -530,7 +527,7 @@ fn arrows_and_hjkl_navigate() {
     sw.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut state);
     assert_eq!(
         sw.selected, start,
-        "← returns to the first source's first card"
+        "← returns to the first host's first card"
     );
     // h/l mirror ←/→: the OTHER step, one category at a time, not a card step.
     sw.handle_key(
@@ -544,7 +541,7 @@ fn arrows_and_hjkl_navigate() {
     );
     assert_eq!(
         sw.selected, start,
-        "h == ←: back to the first source's first card"
+        "h == ←: back to the first host's first card"
     );
 }
 
@@ -552,7 +549,7 @@ fn arrows_and_hjkl_navigate() {
 
 #[tokio::test]
 async fn renders_a_session_card_per_session() {
-    // One card per session: a `{host}/{mux}` context line over the session name on
+    // One card per session: a `{machine}/{mux}` context line over the session name on
     // the detail line. No per-window rows (the focused window a card used to name is
     // gone from the card).
     let h = Harness::new(sample());
@@ -564,7 +561,7 @@ async fn renders_a_session_card_per_session() {
         "jupiter00",
         "inference",
         "db-2",
-        "▲", // unreachable host marker (the reason lives on the host screen)
+        "▲", // unreachable machine marker (the reason lives on the machine screen)
     ] {
         assert!(out.contains(want), "nav missing {want:?}\n{out}");
     }
@@ -579,15 +576,15 @@ async fn launch_preselects_top_row() {
     // #G: on launch the highlight sits on the very top card (index 0) - the first
     // local session (frozen there before any remote streams in); no persisted
     // last_session is consulted and a remote must not steal the top.
-    let mut h = Harness::from_sources(&["local", "jupiter00"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["local", "jupiter00"]);
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess("local", "editor", 1, false)],
         None,
         &mut h.state,
     );
     // A remote streams in and must NOT pull the cursor down.
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter00".into(),
         vec![sess("jupiter00", "infer", 1, false)],
         None,
@@ -601,7 +598,7 @@ async fn launch_preselects_top_row() {
     assert!(
         matches!(
             h.sw.current_ref(),
-            Some(RowRef::Session { sess }) if sess.source == "local" && sess.name == "editor"
+            Some(RowRef::Session { sess }) if sess.host == "local" && sess.name == "editor"
         ),
         "the top card is the local session, not the remote"
     );
@@ -667,8 +664,8 @@ async fn rescan_resets_to_scanning_skeleton() {
 }
 
 #[test]
-fn initial_source_seed_does_not_arm_a_rescan() {
-    let mut h = Harness::from_sources(&["local", "jupiter00"]);
+fn initial_host_seed_does_not_arm_a_rescan() {
+    let mut h = Harness::from_hosts(&["local", "jupiter00"]);
 
     assert!(
         !h.sw.take_rescan_kick(),
@@ -679,10 +676,10 @@ fn initial_source_seed_does_not_arm_a_rescan() {
 // --- streaming model (render-first, per-element) ------------------------
 
 #[tokio::test]
-async fn from_sources_renders_scanning_skeletons() {
-    // The first frame: one host-skeleton row per source, each in a scanning
+async fn from_hosts_renders_scanning_skeletons() {
+    // The first frame: one host-skeleton row per host, each in a scanning
     // state, before ANY probe result lands. Structure first, data later.
-    let h = Harness::from_sources(&["local", "jupiter00"]);
+    let h = Harness::from_hosts(&["local", "jupiter00"]);
     let out = h.nav_cards_text();
     assert!(out.contains("local"), "host skeleton present:\n{out}");
     assert!(out.contains("jupiter00"), "host skeleton present:\n{out}");
@@ -703,7 +700,7 @@ async fn from_sources_renders_scanning_skeletons() {
 
 #[tokio::test]
 async fn a_scanning_host_card_is_one_line_with_a_trailing_spinner() {
-    // Every navigation row is one line now, a scanning host included: the host name,
+    // Every navigation row is one line now, a scanning host included: the machine name,
     // the confirmed mux, and ONE spinner trailing the line - in the same trailing
     // place whether or not the mux is already known, so all scanning cards read alike
     // and none leaves a blank second row.
@@ -717,14 +714,14 @@ async fn a_scanning_host_card_is_one_line_with_a_trailing_spinner() {
             .collect::<Vec<_>>()
     };
 
-    // A bare source id has no confirmed mux yet: the card is host + trailing spinner.
-    let h = Harness::from_sources(&["local"]);
+    // A bare host id has no confirmed mux yet: the card is machine + trailing spinner.
+    let h = Harness::from_hosts(&["local"]);
     let rows = non_empty(&h);
     assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
     assert_eq!(rows[0], format!("{SELECTED_MARK} local {sp} scanning"));
 
     // A qualified id already confirms its mux: same shape, the mux in the middle.
-    let h = Harness::from_sources(&["local:zellij"]);
+    let h = Harness::from_hosts(&["local:zellij"]);
     let rows = non_empty(&h);
     assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
     assert_eq!(
@@ -734,16 +731,16 @@ async fn a_scanning_host_card_is_one_line_with_a_trailing_spinner() {
 }
 
 #[tokio::test]
-async fn remove_source_drops_the_card_and_everything_keyed_to_it() {
-    let mut h = Harness::from_sources(&["local", "jupiter00"]);
-    h.sw.apply_source_result(
+async fn remove_host_drops_the_card_and_everything_keyed_to_it() {
+    let mut h = Harness::from_hosts(&["local", "jupiter00"]);
+    h.sw.apply_host_result(
         "jupiter00".into(),
         vec![sess("jupiter00", "api", 2, false)],
         None,
         &mut h.state,
     );
 
-    h.sw.remove_source("jupiter00", &mut h.state);
+    h.sw.remove_host("jupiter00", &mut h.state);
     h.draw();
     let out = h.nav_text();
     assert!(
@@ -760,21 +757,21 @@ async fn remove_source_drops_the_card_and_everything_keyed_to_it() {
 }
 
 #[tokio::test]
-async fn remove_source_ignores_a_source_the_nav_does_not_show() {
-    let mut h = Harness::from_sources(&["local"]);
+async fn remove_host_ignores_a_host_the_nav_does_not_show() {
+    let mut h = Harness::from_hosts(&["local"]);
     let before = h.state.groups.len();
-    h.sw.remove_source("jupiter00", &mut h.state);
+    h.sw.remove_host("jupiter00", &mut h.state);
     assert_eq!(h.state.groups.len(), before, "idempotent");
 }
 
 #[tokio::test]
-async fn apply_source_result_turns_scanning_into_sessions() {
-    let mut h = Harness::from_sources(&["local"]);
+async fn apply_host_result_turns_scanning_into_sessions() {
+    let mut h = Harness::from_hosts(&["local"]);
     assert!(
         spins(&h.nav_cards_text()),
         "the host card spins before the result"
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess("local", "editor", 2, false)],
         None,
@@ -800,8 +797,8 @@ async fn apply_source_result_turns_scanning_into_sessions() {
 async fn poll_preserves_session_order_after_scan() {
     // Scan establishes name order db, web. A later poll reports the sessions in a
     // different arrival order - the deterministic name order holds.
-    let mut h = Harness::from_sources(&["local"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["local"]);
+    h.sw.apply_host_result(
         "local".into(),
         vec![
             sess("local", "web", 1, false),
@@ -815,7 +812,7 @@ async fn poll_preserves_session_order_after_scan() {
         vec!["db", "web"],
         "the scan applies name order"
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![
             sess("local", "db", 1, false),
@@ -833,8 +830,8 @@ async fn poll_preserves_session_order_after_scan() {
 
 #[tokio::test]
 async fn poll_sorts_a_new_session_into_place() {
-    let mut h = Harness::from_sources(&["local"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["local"]);
+    h.sw.apply_host_result(
         "local".into(),
         vec![
             sess("local", "web", 1, false),
@@ -845,7 +842,7 @@ async fn poll_sorts_a_new_session_into_place() {
     ); // → db, web
        // A poll surfaces a brand-new session `api`. It sorts into its name position,
        // never appending at the end.
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![
             sess("local", "db", 1, false),
@@ -866,20 +863,20 @@ async fn poll_sorts_a_new_session_into_place() {
 async fn poll_preserves_host_group_order_after_scan() {
     // Scan settles the host order: local first, then remotes by name (jupiter00 below
     // jupiter06).
-    let mut h = Harness::from_sources(&["local", "jupiter00", "jupiter06"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["local", "jupiter00", "jupiter06"]);
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess("local", "w", 1, false)],
         None,
         &mut h.state,
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter06".into(),
         vec![sess("jupiter06", "b", 1, false)],
         None,
         &mut h.state,
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter00".into(),
         vec![sess("jupiter00", "a", 1, false)],
         None,
@@ -891,7 +888,7 @@ async fn poll_preserves_host_group_order_after_scan() {
         "the scan orders hosts local-first then by name"
     );
     // A poll reports jupiter06's session again - the deterministic name order holds.
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter06".into(),
         vec![sess("jupiter06", "b", 1, false)],
         None,
@@ -906,8 +903,8 @@ async fn poll_preserves_host_group_order_after_scan() {
 
 #[tokio::test]
 async fn rescan_reapplies_name_order() {
-    let mut h = Harness::from_sources(&["local"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["local"]);
+    h.sw.apply_host_result(
         "local".into(),
         vec![
             sess("local", "web", 1, false),
@@ -916,7 +913,7 @@ async fn rescan_reapplies_name_order() {
         None,
         &mut h.state,
     ); // → db, web
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![
             sess("local", "db", 1, false),
@@ -933,7 +930,7 @@ async fn rescan_reapplies_name_order() {
     // The `R` re-scan clears sessions + re-seeds scanning; the next result re-applies
     // the deterministic name order, identical to the poll's.
     h.sw.request_rescan(&mut h.state);
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![
             sess("local", "db", 1, false),
@@ -952,20 +949,20 @@ async fn rescan_reapplies_name_order() {
 /// Streams the sample three-host tree (local/jupiter00/jupiter06), each with one
 /// session, and leaves the selection on the MIDDLE host's session.
 async fn three_hosts_cursor_on_middle() -> Harness {
-    let mut h = Harness::from_sources(&["local", "jupiter00", "jupiter06"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["local", "jupiter00", "jupiter06"]);
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess("local", "web", 1, false)],
         None,
         &mut h.state,
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter00".into(),
         vec![sess("jupiter00", "infer", 1, false)],
         None,
         &mut h.state,
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter06".into(),
         vec![sess("jupiter06", "build", 1, false)],
         None,
@@ -986,8 +983,8 @@ async fn rescan_parks_on_parent_host_not_bottom() {
     // Skeleton phase: every session vanished, so the selection parks on infer's parent
     // host (jupiter00), NOT the last host a removal-fallback would jump to.
     match h.sw.current_ref() {
-        Some(RowRef::Host { source, .. }) => assert_eq!(
-            source, "jupiter00",
+        Some(RowRef::Host { host, .. }) => assert_eq!(
+            host, "jupiter00",
             "the re-scan skeleton parks on the parent host, not the bottom"
         ),
         _ => panic!("expected the parent host row after a re-scan"),
@@ -999,19 +996,19 @@ async fn rescan_returns_cursor_to_the_same_session() {
     let mut h = three_hosts_cursor_on_middle().await;
     h.sw.request_rescan(&mut h.state);
     // Sessions re-stream in a different arrival order; infer's host arrives last.
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter06".into(),
         vec![sess("jupiter06", "build", 1, false)],
         None,
         &mut h.state,
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess("local", "web", 1, false)],
         None,
         &mut h.state,
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter00".into(),
         vec![sess("jupiter00", "infer", 1, false)],
         None,
@@ -1024,28 +1021,28 @@ async fn rescan_returns_cursor_to_the_same_session() {
     );
 }
 
-/// Selects the host card of `source`, as a user move does.
-fn select_host_card(h: &mut Harness, source: &str) {
+/// Selects the host card of `host`, as a user move does.
+fn select_host_card(h: &mut Harness, host: &str) {
     let i =
         h.sw.rows
             .iter()
-            .position(|r| matches!(&r.reference, RowRef::Host { source: s, .. } if s == source))
+            .position(|r| matches!(&r.reference, RowRef::Host { host: s, .. } if s == host))
             .expect("the host card");
     h.sw.note_user_move();
     h.sw.set_selected(i);
 }
 
 #[test]
-fn a_scanning_host_card_shows_its_scanning_screen_over_another_sources_display() {
-    let mut h = Harness::from_sources(&["local", "prod"]);
-    h.sw.apply_source_result(
+fn a_scanning_host_card_shows_its_scanning_screen_over_another_hosts_display() {
+    let mut h = Harness::from_hosts(&["local", "prod"]);
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess("local", "web", 1, false)],
         None,
         &mut h.state,
     );
     h.state.displayed = crate::model::Selection {
-        source: "local".into(),
+        host: "local".into(),
         session: "web".into(),
     };
     select_host_card(&mut h, "prod");
@@ -1061,21 +1058,21 @@ fn a_scanning_host_card_shows_its_scanning_screen_over_another_sources_display()
 async fn a_full_rescan_keeps_the_collapsed_sessions_grid_until_the_selection_moves() {
     let mut h = three_hosts_cursor_on_middle().await;
     h.state.displayed = crate::model::Selection {
-        source: "jupiter00".into(),
+        host: "jupiter00".into(),
         session: "infer".into(),
     };
     h.sw.request_rescan(&mut h.state);
     assert!(matches!(
         h.sw.current_ref(),
-        Some(RowRef::Host { source, .. }) if source == "jupiter00"
+        Some(RowRef::Host { host, .. }) if host == "jupiter00"
     ));
     assert_eq!(
         h.sw.current_view_screen(&h.state),
         None,
         "the collapsed session keeps its grid"
     );
-    // Another source answering does not move the selection.
-    h.sw.apply_source_result(
+    // Another host answering does not move the selection.
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess("local", "web", 1, false)],
         None,
@@ -1093,8 +1090,8 @@ async fn a_full_rescan_keeps_the_collapsed_sessions_grid_until_the_selection_mov
 
 #[test]
 fn a_scanning_host_screen_states_its_headline_word_and_facts() {
-    let mut h = Harness::from_sources(&["local", "prod"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["local", "prod"]);
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess("local", "web", 1, false)],
         None,
@@ -1134,13 +1131,13 @@ async fn rescan_interest_dropped_when_user_navigates_away() {
     // The user navigates to the last host during the skeleton phase.
     h.key(KeyCode::End).await;
     // Sessions re-stream - the selection must NOT get yanked back to infer.
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess("local", "web", 1, false)],
         None,
         &mut h.state,
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter00".into(),
         vec![sess("jupiter00", "infer", 1, false)],
         None,
@@ -1154,9 +1151,9 @@ async fn rescan_interest_dropped_when_user_navigates_away() {
 }
 
 #[tokio::test]
-async fn apply_source_result_empty_shows_empty_status() {
-    let mut h = Harness::from_sources(&["local"]);
-    h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
+async fn apply_host_result_empty_shows_empty_status() {
+    let mut h = Harness::from_hosts(&["local"]);
+    h.sw.apply_host_result("local".into(), vec![], None, &mut h.state);
     h.draw();
     // The selected card names its state, and the host screen repeats the state with its
     // available actions.
@@ -1179,8 +1176,8 @@ async fn apply_source_result_empty_shows_empty_status() {
 
 #[tokio::test]
 async fn a_reachable_empty_host_card_is_a_single_row() {
-    let mut h = Harness::from_sources(&["local"]);
-    h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
+    let mut h = Harness::from_hosts(&["local"]);
+    h.sw.apply_host_result("local".into(), vec![], None, &mut h.state);
     h.draw();
     let cards = h.nav_cards_text();
     assert!(
@@ -1190,9 +1187,9 @@ async fn a_reachable_empty_host_card_is_a_single_row() {
 }
 
 #[tokio::test]
-async fn apply_source_result_marks_the_card_and_states_the_reason_on_the_screen() {
-    let mut h = Harness::from_sources(&["prod"]);
-    h.sw.apply_source_result(
+async fn apply_host_result_marks_the_card_and_states_the_reason_on_the_screen() {
+    let mut h = Harness::from_hosts(&["prod"]);
+    h.sw.apply_host_result(
         "prod".into(),
         vec![],
         Some("command failed (exit 255): ssh: connect to prod port 22: connection refused".into()),
@@ -1202,23 +1199,26 @@ async fn apply_source_result_marks_the_card_and_states_the_reason_on_the_screen(
     // Nav: the one-cell marker and nothing more. No part of the message reaches the card -
     // the screen is where it is stated, and a card is too narrow to hold it whole.
     let tree = h.nav_text();
-    assert!(tree.contains('▲'), "the host row is marked with ▲:\n{tree}");
+    assert!(
+        tree.contains('▲'),
+        "the machine row is marked with ▲:\n{tree}"
+    );
     for absent in ["connection refused", "command failed"] {
         assert!(
             !tree.contains(absent),
             "the card states no reason, found {absent:?}:\n{tree}"
         );
     }
-    // The lone unreachable host is auto-selected → its host screen states it is
+    // The lone unreachable machine is auto-selected → its machine screen states it is
     // unreachable and shows why.
     let out = h.text();
     assert!(
         out.contains("unreachable"),
-        "the host screen states unreachable:\n{out}"
+        "the machine screen states unreachable:\n{out}"
     );
     assert!(
         out.contains("connection refused"),
-        "the host screen shows the failure reason:\n{out}"
+        "the machine screen shows the failure reason:\n{out}"
     );
 }
 
@@ -1227,17 +1227,17 @@ async fn host_failures_use_distinct_one_cell_glyphs_and_selected_state_words() {
     let scan = Scan {
         groups: vec![
             Group {
-                source: "login-box".into(),
+                host: "login-box".into(),
                 err: Some("alice@login-box: Permission denied (publickey,password).".into()),
                 sessions: vec![],
             },
             Group {
-                source: "list-box".into(),
+                host: "list-box".into(),
                 err: Some("invalid tuios session listing: expected value".into()),
                 sessions: vec![],
             },
             Group {
-                source: "dead-box".into(),
+                host: "dead-box".into(),
                 err: Some("connection refused".into()),
                 sessions: vec![],
             },
@@ -1282,8 +1282,8 @@ async fn host_failures_use_distinct_one_cell_glyphs_and_selected_state_words() {
 
 #[tokio::test]
 async fn scanning_and_settled_host_glyphs_share_a_fixed_column() {
-    let mut h = Harness::from_sources(&["scanbox", "deadbox"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["scanbox", "deadbox"]);
+    h.sw.apply_host_result(
         "deadbox".into(),
         vec![],
         Some("connection refused".into()),
@@ -1311,10 +1311,10 @@ async fn long_card_names_are_middle_ellipsized() {
     let mut h = Harness::new_sized(
         Scan {
             groups: vec![Group {
-                source: "local".into(),
+                host: "local".into(),
                 err: None,
                 sessions: vec![Session {
-                    source: "local".into(),
+                    host: "local".into(),
                     name: "my-important-production-session-with-a-very-long-tail-session".into(),
                     mux: "tmux".into(),
                     ..Default::default()
@@ -1345,16 +1345,16 @@ async fn open_filter_reports_matches_and_bolds_matching_cells() {
     let mut h = Harness::new(Scan {
         groups: vec![
             Group {
-                source: "host".into(),
+                host: "host".into(),
                 err: None,
                 sessions: vec![Session {
-                    source: "host".into(),
+                    host: "host".into(),
                     name: "alpha".into(),
                     ..Default::default()
                 }],
             },
             Group {
-                source: "alpine".into(),
+                host: "alpine".into(),
                 err: Some("connection refused".into()),
                 sessions: vec![],
             },
@@ -1385,10 +1385,10 @@ async fn open_filter_reports_matches_and_bolds_matching_cells() {
 async fn filter_highlights_the_session_part_of_the_matched_address() {
     let mut h = Harness::new(Scan {
         groups: vec![Group {
-            source: "host".into(),
+            host: "host".into(),
             err: None,
             sessions: vec![Session {
-                source: "host".into(),
+                host: "host".into(),
                 name: "alpha".into(),
                 ..Default::default()
             }],
@@ -1432,21 +1432,21 @@ async fn empty_filter_counts_every_card() {
     let mut h = Harness::new(Scan {
         groups: vec![
             Group {
-                source: "local".into(),
+                host: "local".into(),
                 err: None,
                 sessions: vec![Session {
-                    source: "local".into(),
+                    host: "local".into(),
                     name: "alpha".into(),
                     ..Default::default()
                 }],
             },
             Group {
-                source: "hidden".into(),
+                host: "hidden".into(),
                 err: Some("connection refused".into()),
                 sessions: vec![],
             },
             Group {
-                source: "kept".into(),
+                host: "kept".into(),
                 err: Some("connection refused".into()),
                 sessions: vec![],
             },
@@ -1463,7 +1463,7 @@ async fn empty_filter_counts_every_card() {
 async fn list_failure_allows_a_new_session_on_the_answering_host() {
     let mut h = Harness::new(Scan {
         groups: vec![Group {
-            source: "list-box:tmux".into(),
+            host: "list-box:tmux".into(),
             err: Some("invalid tmux session listing: expected value".into()),
             sessions: vec![],
         }],
@@ -1508,7 +1508,7 @@ async fn terminal_below_the_minimum_renders_the_required_size() {
 async fn interaction_screens_render_key_tokens_in_one_shape() {
     let mut h = Harness::new(Scan {
         groups: vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![],
         }],
@@ -1529,7 +1529,7 @@ async fn an_unselected_unreachable_card_keeps_the_warning_mark() {
     // assertion reads an UNSELECTED unreachable card.
     let scan = selection_parked_elsewhere(Scan {
         groups: vec![Group {
-            source: "dead".into(),
+            host: "dead".into(),
             err: Some("connection refused".into()),
             sessions: vec![],
         }],
@@ -1548,22 +1548,22 @@ async fn an_unselected_unreachable_card_keeps_the_warning_mark() {
 }
 
 #[tokio::test]
-async fn a_locked_host_card_reads_locked_with_the_lock_mark() {
-    let mut h = Harness::from_sources(&["prod"]);
-    h.sw.apply_source_result(
+async fn a_locked_machine_card_reads_locked_with_the_lock_mark() {
+    let mut h = Harness::from_hosts(&["prod"]);
+    h.sw.apply_host_result(
         "prod".into(),
         vec![],
         Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
     h.draw();
-    // The card carries the lock mark on its host row (the screen state and reason are
+    // The card carries the lock mark on its machine row (the screen state and reason are
     // the panel's own assertions).
     let tree = h.nav_text();
     assert!(
         tree.lines()
             .any(|l| l.contains("prod") && l.contains(crate::ui::chrome::BLOCK_MARK)),
-        "the locked host row carries the lock mark:\n{tree}"
+        "the locked machine row carries the lock mark:\n{tree}"
     );
 }
 
@@ -1572,15 +1572,15 @@ async fn login_pane_draws_its_fields_with_the_password_masked() {
     // The login pane is a feature of the terminal view, not a modal: the connection
     // values sit in the panel, driven from `State::login`. It renders them in the clear
     // and the password as bullets, and no plaintext reaches the frame.
-    let mut h = Harness::from_sources(&["pwbox"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["pwbox"]);
+    h.sw.apply_host_result(
         "pwbox".into(),
         vec![],
         Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
     h.state.login = Some(crate::state::LoginDraft {
-        source: "pwbox".into(),
+        host: "pwbox".into(),
         address: "100.88.0.0".into(),
         port: "22".into(),
         username: "alice".into(),
@@ -1607,8 +1607,8 @@ async fn login_pane_draws_its_fields_with_the_password_masked() {
 
 #[tokio::test]
 async fn login_pane_shows_one_selected_after_login_choice() {
-    let mut h = Harness::from_sources(&["pwbox"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["pwbox"]);
+    h.sw.apply_host_result(
         "pwbox".into(),
         vec![],
         Some("alice@pwbox: Permission denied (publickey,password).".into()),
@@ -1630,8 +1630,8 @@ async fn login_pane_shows_one_selected_after_login_choice() {
 async fn login_pane_marks_required_fields_and_hints_the_optional_one() {
     // A field carries its own emptiness: a required one is marked in its label, and the
     // optional one says so in the space its value would occupy.
-    let mut h = Harness::from_sources(&["pwbox"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["pwbox"]);
+    h.sw.apply_host_result(
         "pwbox".into(),
         vec![],
         Some("alice@pwbox: Permission denied (publickey,password).".into()),
@@ -1654,7 +1654,7 @@ async fn login_pane_marks_required_fields_and_hints_the_optional_one() {
 
 #[tokio::test]
 async fn login_pane_hides_the_ssh_config_choice_when_the_values_are_already_saved() {
-    let mut h = Harness::from_sources(&["pwbox"]);
+    let mut h = Harness::from_hosts(&["pwbox"]);
     let value = |value: &str| crate::provision::env::LoginValue {
         value: value.into(),
         provenance: "from ssh config",
@@ -1675,7 +1675,7 @@ async fn login_pane_hides_the_ssh_config_choice_when_the_values_are_already_save
         )]),
         Default::default(),
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "pwbox".into(),
         vec![],
         Some("alice@pwbox: Permission denied (publickey,password).".into()),
@@ -1702,7 +1702,7 @@ async fn login_pane_hides_the_ssh_config_choice_when_the_values_are_already_save
 
 #[tokio::test]
 async fn login_pane_prefills_all_values_from_ssh_config() {
-    let mut h = Harness::from_sources(&["e2e-box"]);
+    let mut h = Harness::from_hosts(&["e2e-box"]);
     h.state.chrome.set_login_defaults(
         std::collections::HashMap::from([(
             "e2e-box".into(),
@@ -1724,7 +1724,7 @@ async fn login_pane_prefills_all_values_from_ssh_config() {
         )]),
         Default::default(),
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "e2e-box".into(),
         vec![],
         Some("dev@127.0.0.1: Permission denied (publickey,password).".into()),
@@ -1748,13 +1748,13 @@ async fn login_pane_prefills_all_values_from_ssh_config() {
 }
 
 #[tokio::test]
-async fn login_and_key_registration_results_are_one_toast_kept_for_the_host() {
+async fn login_and_key_registration_results_are_one_toast_kept_for_the_machine() {
     use crate::link::unlock::UnlockOutcome;
     use crate::ui::ops::{LoginOutcome, OpResult, RegistrationOutcome};
-    let mut h = Harness::from_sources(&["pwbox"]);
+    let mut h = Harness::from_hosts(&["pwbox"]);
     h.sw.apply_op_result(
         OpResult::Login {
-            source: "pwbox".into(),
+            host: "pwbox".into(),
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: LoginOutcome {
@@ -1771,7 +1771,7 @@ async fn login_and_key_registration_results_are_one_toast_kept_for_the_host() {
     let toast = &h.state.notify.toasts[0];
     assert_eq!(
         toast.title, "pwbox",
-        "the toast names the host it reports on"
+        "the toast names the machine it reports on"
     );
     let lines: Vec<&str> = toast.notes.iter().map(|n| n.text.as_str()).collect();
     assert_eq!(lines, ["logged in", "public key registered"]);
@@ -1797,10 +1797,10 @@ async fn a_failed_login_and_a_skipped_key_have_timed_toasts() {
     use crate::link::unlock::{FailureKind, UnlockOutcome};
     use crate::state::notify::Level;
     use crate::ui::ops::{LoginOutcome, OpResult, RegistrationOutcome};
-    let mut h = Harness::from_sources(&["pwbox"]);
+    let mut h = Harness::from_hosts(&["pwbox"]);
     h.sw.apply_op_result(
         OpResult::Login {
-            source: "pwbox".into(),
+            host: "pwbox".into(),
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: LoginOutcome {
@@ -1824,10 +1824,10 @@ async fn a_failed_login_and_a_skipped_key_have_timed_toasts() {
     );
     assert!(toast.until.is_some(), "a failure toast expires");
 
-    let mut h = Harness::from_sources(&["pwbox"]);
+    let mut h = Harness::from_hosts(&["pwbox"]);
     h.sw.apply_op_result(
         OpResult::Login {
-            source: "pwbox".into(),
+            host: "pwbox".into(),
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: LoginOutcome {
@@ -1849,10 +1849,10 @@ async fn a_failed_login_and_a_skipped_key_have_timed_toasts() {
     assert!(h.state.notify.toasts[0].until.is_some());
 
     // A cancelled login says nothing about the connection the user ended.
-    let mut h = Harness::from_sources(&["pwbox"]);
+    let mut h = Harness::from_hosts(&["pwbox"]);
     h.sw.apply_op_result(
         OpResult::Login {
-            source: "pwbox".into(),
+            host: "pwbox".into(),
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: LoginOutcome {
@@ -1876,15 +1876,15 @@ async fn a_running_login_says_so_in_place_of_the_submit_button() {
     // Submitting the pane hands the values to ssh and waits. The form stays on screen
     // with what it collected, and the row the user would press says the login is running
     // and how to stop it, so the pane is never a screen where nothing happens.
-    let mut h = Harness::from_sources(&["pwbox"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["pwbox"]);
+    h.sw.apply_host_result(
         "pwbox".into(),
         vec![],
         Some("alice@pwbox: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
     h.state.login = Some(crate::state::LoginDraft {
-        source: "pwbox".into(),
+        host: "pwbox".into(),
         address: "100.88.0.0".into(),
         port: "22".into(),
         username: "alice".into(),
@@ -1913,12 +1913,12 @@ async fn a_running_login_says_so_in_place_of_the_submit_button() {
         "there is nothing left to submit:\n{screen}"
     );
 
-    // A login running for a DIFFERENT host is not this pane's: the button stays.
+    // A login running for a DIFFERENT machine is not this pane's: the button stays.
     h.state.login_run = Some(crate::link::unlock::RunningLogin::parked("elsewhere"));
     h.draw();
     assert!(
         h.text().contains(" Log in "),
-        "another host's login leaves this pane alone:\n{}",
+        "another machine's login leaves this pane alone:\n{}",
         h.text()
     );
 }
@@ -1929,22 +1929,22 @@ async fn the_verdict_takes_the_login_screen_down() {
     // back holding what was typed, so a failure is retried rather than retyped.
     use crate::link::unlock::UnlockOutcome;
     use crate::ui::ops::OpResult;
-    let mut h = Harness::from_sources(&["pwbox"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["pwbox"]);
+    h.sw.apply_host_result(
         "pwbox".into(),
         vec![],
         Some("alice@pwbox: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
     h.state.login = Some(crate::state::LoginDraft {
-        source: "pwbox".into(),
+        host: "pwbox".into(),
         username: "alice".into(),
         ..Default::default()
     });
     h.state.login_run = Some(crate::link::unlock::RunningLogin::parked("pwbox"));
     h.sw.apply_op_result(
         OpResult::Login {
-            source: "pwbox".into(),
+            host: "pwbox".into(),
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: crate::ui::ops::LoginOutcome {
@@ -1960,7 +1960,7 @@ async fn the_verdict_takes_the_login_screen_down() {
         },
         &mut h.state,
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "pwbox".into(),
         vec![],
         Some("ssh: connect to host pwbox: Connection refused".into()),
@@ -1989,20 +1989,20 @@ async fn the_verdict_takes_the_login_screen_down() {
 async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked() {
     use crate::link::unlock::UnlockOutcome;
     use crate::ui::ops::OpResult;
-    let mut h = Harness::from_sources(&["pwbox"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["pwbox"]);
+    h.sw.apply_host_result(
         "pwbox".into(),
         vec![],
         Some("alice@pwbox: Permission denied (publickey,password).".into()),
         &mut h.state,
     );
     h.draw();
-    // A successful unlock returns the unlocked source so the app re-probes ONLY that
+    // A successful unlock returns the unlocked machine so the app re-probes ONLY that
     // machine (its reach changed locked→connected), and it does NOT arm a whole-roster
-    // re-scan - that would re-probe every host for one that changed.
+    // re-scan - that would re-probe every machine for one that changed.
     let reprobe = h.sw.apply_op_result(
         OpResult::Login {
-            source: "pwbox".into(),
+            host: "pwbox".into(),
             login: crate::transport::Login {
                 user: Some("alice".into()),
                 ..Default::default()
@@ -2018,7 +2018,7 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
         },
         &mut h.state,
     );
-    // The values that authenticated come back WITH the source: the app records them on
+    // The values that authenticated come back WITH the machine: the app records them on
     // the machine, so the re-probe below reaches it as the account that just worked
     // rather than as whoever runs xmux.
     assert_eq!(
@@ -2037,7 +2037,7 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
         "success does not re-scan the whole roster"
     );
     // A failed unlock stays locked and re-probes nothing.
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "pwbox".into(),
         vec![],
         Some("alice@pwbox: Permission denied (publickey,password).".into()),
@@ -2045,7 +2045,7 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
     );
     let reprobe = h.sw.apply_op_result(
         OpResult::Login {
-            source: "pwbox".into(),
+            host: "pwbox".into(),
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: crate::ui::ops::LoginOutcome {
@@ -2063,7 +2063,7 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
     );
     assert_eq!(reprobe, None, "a failure re-probes nothing");
     assert!(
-        h.sw.current_host_blocked(),
+        h.sw.current_machine_blocked(),
         "auth failure keeps the card locked"
     );
 }
@@ -2073,8 +2073,8 @@ async fn login_success_reprobes_only_that_machine_and_a_failure_keeps_it_blocked
 fn refused_login_harness() -> Harness {
     use crate::link::unlock::{FailureKind, UnlockOutcome};
     use crate::ui::ops::{LoginOutcome, OpResult, RegistrationOutcome};
-    let mut h = Harness::from_sources(&["pwbox"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["pwbox"]);
+    h.sw.apply_host_result(
         "pwbox".into(),
         vec![],
         Some("alice@pwbox: Permission denied (publickey,password).".into()),
@@ -2083,7 +2083,7 @@ fn refused_login_harness() -> Harness {
     let raw = "Warning: Permanently added 'pwbox' to the list of known hosts.\nalice@pwbox: Permission denied (publickey,password).";
     h.sw.apply_op_result(
         OpResult::Login {
-            source: "pwbox".into(),
+            host: "pwbox".into(),
             login: crate::transport::Login::default(),
             attempt: 0,
             outcome: LoginOutcome {
@@ -2165,7 +2165,7 @@ async fn a_login_failure_reads_verdict_marked_field_dim_ssh_line_then_details() 
     assert_eq!(address_style.fg, Some(pal.decoration));
     assert!(!h.view_row(address_row).contains('✗'), "{out}");
 
-    // Folded: ssh's earlier lines and the host facts wait behind the choice, and the
+    // Folded: ssh's earlier lines and the machine facts wait behind the choice, and the
     // keys stay.
     for folded in ["Warning: Permanently added", "ssh output"] {
         assert!(!out.contains(folded), "{folded:?} is folded:\n{out}");
@@ -2178,7 +2178,7 @@ async fn a_login_failure_reads_verdict_marked_field_dim_ssh_line_then_details() 
 }
 
 #[tokio::test]
-async fn the_details_choice_unfolds_ssh_text_and_host_facts() {
+async fn the_details_choice_unfolds_ssh_text_and_machine_facts() {
     let mut h = refused_login_harness();
     // Back-tab from the first stop wraps to the last one, which is the details choice
     // while the pane states a failure, and Space picks it like any other choice.
@@ -2203,8 +2203,8 @@ async fn the_details_choice_unfolds_ssh_text_and_host_facts() {
     );
 
     // Without a failure there is nothing to unfold, so the choice is no stop.
-    let mut h = Harness::from_sources(&["pwbox"]);
-    h.sw.apply_source_result("pwbox".into(), vec![], None, &mut h.state);
+    let mut h = Harness::from_hosts(&["pwbox"]);
+    h.sw.apply_host_result("pwbox".into(), vec![], None, &mut h.state);
     h.state.feed_login("pwbox", b"\x1b[Z");
     assert_eq!(
         h.state.login.as_ref().unwrap().focus,
@@ -2216,8 +2216,8 @@ async fn the_details_choice_unfolds_ssh_text_and_host_facts() {
 async fn login_steps_show_each_state_as_the_login_reports_it() {
     use crate::link::unlock::{FailureKind, UnlockOutcome};
     use crate::ui::ops::{LoginOutcome, OpResult, RegistrationOutcome};
-    let mut h = Harness::from_sources(&["pwbox"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["pwbox"]);
+    h.sw.apply_host_result(
         "pwbox".into(),
         vec![],
         Some("alice@pwbox: Permission denied (publickey,password).".into()),
@@ -2259,7 +2259,7 @@ async fn login_steps_show_each_state_as_the_login_reports_it() {
 
     h.sw.apply_op_result(
         OpResult::LoginProgress {
-            source: "pwbox".into(),
+            host: "pwbox".into(),
             attempt: 1,
             event: crate::model::LoginEvent::PasswordAsked,
         },
@@ -2277,7 +2277,7 @@ async fn login_steps_show_each_state_as_the_login_reports_it() {
 
     h.sw.apply_op_result(
         OpResult::Login {
-            source: "pwbox".into(),
+            host: "pwbox".into(),
             login,
             attempt: 1,
             outcome: LoginOutcome {
@@ -2317,8 +2317,8 @@ async fn login_steps_show_each_state_as_the_login_reports_it() {
 async fn a_step_note_over_several_lines_renders_one_line_each() {
     use crate::link::unlock::UnlockOutcome;
     use crate::ui::ops::{LoginOutcome, RegistrationOutcome};
-    let mut h = Harness::from_sources(&["pwbox"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["pwbox"]);
+    h.sw.apply_host_result(
         "pwbox".into(),
         vec![],
         Some("alice@pwbox: Permission denied (publickey,password).".into()),
@@ -2356,7 +2356,7 @@ async fn a_step_note_over_several_lines_renders_one_line_each() {
 async fn login_inputs_are_grouped_and_the_focused_value_inverts() {
     let mut h = refused_login_harness();
     h.state.login = Some(crate::state::LoginDraft {
-        source: "pwbox".into(),
+        host: "pwbox".into(),
         address: "10.0.4.12".into(),
         port: "22".into(),
         username: "alice".into(),
@@ -2418,7 +2418,7 @@ async fn login_inputs_are_grouped_and_the_focused_value_inverts() {
 async fn a_card_claims_a_mux_only_when_it_is_confirmed() {
     // A host-state card claims no mux it cannot back with an answer. A bare-id host
     // (its mux is a config assumption, never probed until the enumeration answers)
-    // reads the host alone when unreachable or scanning; a QUALIFIED id names a mux
+    // reads the machine alone when unreachable or scanning; a QUALIFIED id names a mux
     // the machine was resolved to serve, which is a confirmed fact even while the host
     // is unreachable; a settled reachable host shows the mux its enumeration answered
     // through.
@@ -2426,7 +2426,7 @@ async fn a_card_claims_a_mux_only_when_it_is_confirmed() {
         groups: vec![
             // bare id: mux only assumed, unreachable - no claim.
             Group {
-                source: "dead".into(),
+                host: "dead".into(),
                 err: Some("connection refused".into()),
                 sessions: vec![],
             },
@@ -2434,18 +2434,18 @@ async fn a_card_claims_a_mux_only_when_it_is_confirmed() {
             // machine's other mux answered, so the machine is up and the failing mux keeps
             // a card of its own.
             Group {
-                source: "srv:zellij".into(),
+                host: "srv:zellij".into(),
                 err: Some("connection refused".into()),
                 sessions: vec![],
             },
             Group {
-                source: "srv:screen".into(),
+                host: "srv:screen".into(),
                 err: None,
                 sessions: vec![],
             },
             // settled reachable empty host: the enumeration answered through its mux.
             Group {
-                source: "fresh:psmux".into(),
+                host: "fresh:psmux".into(),
                 err: None,
                 sessions: vec![],
             },
@@ -2467,13 +2467,13 @@ async fn a_card_claims_a_mux_only_when_it_is_confirmed() {
 }
 
 #[tokio::test]
-async fn unreachable_host_screen_keeps_a_long_reason_whole() {
+async fn unreachable_machine_screen_keeps_a_long_reason_whole() {
     // ssh wraps the failure in its own context and names it LAST, past the width of the
     // screen: a reason cut off at the edge drops the only words that say what went wrong.
     let reason =
         "command failed (exit 255): ssh: connect to host kyla.tail1cbccc.ts.net port 22: Connection timed out";
-    let mut h = Harness::from_sources(&["kyla"]);
-    h.sw.apply_source_result("kyla".into(), vec![], Some(reason.into()), &mut h.state);
+    let mut h = Harness::from_hosts(&["kyla"]);
+    h.sw.apply_host_result("kyla".into(), vec![], Some(reason.into()), &mut h.state);
     h.draw();
     let out = h.view_text();
     for word in reason.split_whitespace() {
@@ -2491,9 +2491,9 @@ async fn the_session_xmux_runs_in_is_never_a_terminal_view_target() {
     // the user's own client and paints xmux inside itself. The refusal is on the TARGET,
     // which is the one value the display reconcile, the attach and the mux-side switch
     // all read, so none of them can reach the session by another path.
-    let mut h = Harness::from_sources(&["local"]);
+    let mut h = Harness::from_hosts(&["local"]);
     h.sw.set_own_session(Some(crate::session::Address::new("local", "xmus")));
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess_mux("local", "xmus", "psmux")],
         None,
@@ -2516,9 +2516,9 @@ async fn the_session_xmux_runs_in_is_never_a_terminal_view_target() {
 async fn the_session_xmux_runs_in_shows_a_screen_instead_of_its_grid() {
     // Refusing silently would leave the last session's grid standing under the wrong
     // card. The screen says whose session it is and why it is not shown.
-    let mut h = Harness::from_sources(&["local"]);
+    let mut h = Harness::from_hosts(&["local"]);
     h.sw.set_own_session(Some(crate::session::Address::new("local", "xmus")));
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess_mux("local", "xmus", "psmux")],
         None,
@@ -2535,8 +2535,8 @@ async fn the_session_xmux_runs_in_shows_a_screen_instead_of_its_grid() {
 async fn the_self_session_screen_headline_carries_the_mux_too() {
     // The screen is reached by an ADDRESS, and an address names three levels: the machine,
     // its mux, the session. The headline states all three, in the cards' own grammar.
-    let mut h = Harness::from_sources(&["local"]);
-    h.state.chrome.set_source_reach(
+    let mut h = Harness::from_hosts(&["local"]);
+    h.state.chrome.set_host_reach(
         [(
             "local".to_string(),
             reach("psmux", "this box", "", "psmux ls"),
@@ -2545,7 +2545,7 @@ async fn the_self_session_screen_headline_carries_the_mux_too() {
         .collect(),
     );
     h.sw.set_own_session(Some(crate::session::Address::new("local", "xmus")));
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess_mux("local", "xmus", "psmux")],
         None,
@@ -2563,9 +2563,9 @@ async fn the_self_session_screen_headline_carries_the_mux_too() {
 async fn another_instances_session_is_shown_like_any_other() {
     // Only xmux's OWN session is refused. A session running a DIFFERENT xmux mirrors
     // like anything else - that is a real screen a user may want to look at.
-    let mut h = Harness::from_sources(&["local"]);
+    let mut h = Harness::from_hosts(&["local"]);
     h.sw.set_own_session(Some(crate::session::Address::new("local", "xmus")));
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess_mux("local", "other", "psmux")],
         None,
@@ -2577,17 +2577,17 @@ async fn another_instances_session_is_shown_like_any_other() {
 }
 
 #[tokio::test]
-async fn unreachable_host_screen_names_the_provider_that_offered_the_host() {
-    // A host that fails is only half an answer while the user cannot tell why it is on
+async fn unreachable_machine_screen_names_the_provider_that_offered_the_machine() {
+    // A machine that fails is only half an answer while the user cannot tell why it is on
     // the list at all: a tailnet peer nobody wrote down reads as a mystery. The screen
     // names the provider that put it there, which is also the one they would turn off.
-    let mut h = Harness::from_sources(&["kyla"]);
+    let mut h = Harness::from_hosts(&["kyla"]);
     h.state.chrome.set_roster_providers(
         [("kyla".to_string(), "tailscale".to_string())]
             .into_iter()
             .collect(),
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "kyla".into(),
         vec![],
         Some("connection timed out".into()),
@@ -2601,11 +2601,11 @@ async fn unreachable_host_screen_names_the_provider_that_offered_the_host() {
 }
 
 #[tokio::test]
-async fn a_host_nothing_recorded_gets_no_provider_row() {
+async fn a_machine_nothing_recorded_gets_no_provider_row() {
     // An empty map is not "offered by nothing": it is nothing recorded. The row is
     // absent rather than blank, so the screen never states an answer it does not have.
-    let mut h = Harness::from_sources(&["kyla"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["kyla"]);
+    h.sw.apply_host_result(
         "kyla".into(),
         vec![],
         Some("connection timed out".into()),
@@ -2621,8 +2621,8 @@ async fn a_host_nothing_recorded_gets_no_provider_row() {
 }
 
 #[tokio::test]
-async fn unreachable_host_screen_shows_ssh_config_stanza() {
-    let mut h = Harness::from_sources(&["jupiter00"]);
+async fn unreachable_machine_screen_shows_ssh_config_stanza() {
+    let mut h = Harness::from_hosts(&["jupiter00"]);
     h.state.chrome.set_login_defaults(
         Default::default(),
         std::collections::HashMap::from([(
@@ -2630,7 +2630,7 @@ async fn unreachable_host_screen_shows_ssh_config_stanza() {
             "Host jupiter00\n    HostName 143.248.140.120\n    User hrlee\n".into(),
         )]),
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter00".into(),
         vec![],
         Some("no route".into()),
@@ -2641,12 +2641,12 @@ async fn unreachable_host_screen_shows_ssh_config_stanza() {
     let out = h.text();
     assert!(
         out.contains("HostName 143.248.140.120"),
-        "shows the host's ssh config:\n{out}"
+        "shows the machine's ssh config:\n{out}"
     );
     assert!(out.contains("hrlee"), "shows the configured user:\n{out}");
     assert!(
         !out.contains("1.2.3.4"),
-        "does NOT leak an unrelated host's config:\n{out}"
+        "does NOT leak an unrelated machine's config:\n{out}"
     );
 }
 
@@ -2656,8 +2656,8 @@ async fn streaming_keeps_local_preselect_when_untouched() {
     // session, row 1 - row 0 is its section title), and a later REMOTE
     // session streaming in must NOT steal it: the selection must not leap to a remote
     // on first launch (#1).
-    let mut h = Harness::from_sources(&["local", "jupiter00"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["local", "jupiter00"]);
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess("local", "editor", 1, false)],
         None,
@@ -2668,7 +2668,7 @@ async fn streaming_keeps_local_preselect_when_untouched() {
         h.sw.selected, 1,
         "the selection stays on the local session card, under its section title"
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter00".into(),
         vec![sess("jupiter00", "infer", 1, false)],
         None,
@@ -2680,7 +2680,7 @@ async fn streaming_keeps_local_preselect_when_untouched() {
         "an untouched selection stays on the top session card; a remote must not steal it"
     );
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.host == "local"),
         "the untouched selection is the local session card"
     );
 }
@@ -2693,9 +2693,9 @@ async fn streaming_holds_the_first_session_that_answered() {
     // order puts above it. A cursor that walked from host to host through the scan would
     // attach a session per step, leaving the screen on whichever step is still in flight
     // while the cursor names another.
-    let mut h = Harness::from_sources(&["local", "jupiter00"]);
+    let mut h = Harness::from_hosts(&["local", "jupiter00"]);
     // The remote answers first.
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter00".into(),
         vec![sess("jupiter00", "infer", 1, false)],
         None,
@@ -2705,13 +2705,13 @@ async fn streaming_holds_the_first_session_that_answered() {
     assert!(
         matches!(
             h.sw.current_ref(),
-            Some(RowRef::Session { sess }) if sess.source == "jupiter00"
+            Some(RowRef::Session { sess }) if sess.host == "jupiter00"
         ),
         "the first session to answer takes the cursor"
     );
     // The local host answers second, and the order puts it ABOVE the remote - the case a
     // top-card preselect would move the cursor for.
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess("local", "editor", 1, false)],
         None,
@@ -2721,7 +2721,7 @@ async fn streaming_holds_the_first_session_that_answered() {
     assert!(
         matches!(
             h.sw.current_ref(),
-            Some(RowRef::Session { sess }) if sess.source == "jupiter00" && sess.name == "infer"
+            Some(RowRef::Session { sess }) if sess.host == "jupiter00" && sess.name == "infer"
         ),
         "a host answering later does not take the cursor off the session already on screen"
     );
@@ -2731,8 +2731,8 @@ async fn streaming_holds_the_first_session_that_answered() {
 async fn request_rescan_arms_a_display_reattach() {
     // The `R` re-scan also arms an explicit re-attach of the current display, so a
     // detached / dead display client is re-created on demand (the loop consumes it).
-    let mut state = crate::state::State::from_sources(vec!["h".into()]);
-    let mut sw = Switcher::from_sources(&mut state);
+    let mut state = crate::state::State::from_hosts(vec!["h".into()]);
+    let mut sw = Switcher::from_hosts(&mut state);
     assert!(
         !sw.take_reattach_kick(),
         "no re-attach armed before a re-scan"
@@ -2750,9 +2750,9 @@ async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
     // The selection thrash: once the user has moved the selection onto a session, a bare
     // rebuild (a frequent poll / %-event)
     // must keep it there, not snap it back to the preferred preselect.
-    let mut state = crate::state::State::from_sources(vec!["h".into()]);
-    let mut sw = Switcher::from_sources(&mut state);
-    sw.apply_source_result(
+    let mut state = crate::state::State::from_hosts(vec!["h".into()]);
+    let mut sw = Switcher::from_hosts(&mut state);
+    sw.apply_host_result(
         "h".into(),
         vec![sess("h", "a", 1, false), sess("h", "b", 1, false)],
         None,
@@ -2789,8 +2789,8 @@ async fn rebuild_holds_a_user_moved_session_against_the_preselect() {
 
 #[tokio::test]
 async fn streaming_preserves_cursor_once_user_moves() {
-    let mut h = Harness::from_sources(&["local", "jupiter00"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["local", "jupiter00"]);
+    h.sw.apply_host_result(
         "local".into(),
         vec![
             sess("local", "editor", 1, false),
@@ -2804,7 +2804,7 @@ async fn streaming_preserves_cursor_once_user_moves() {
     h.key(KeyCode::Down).await;
     assert_eq!(cur_session_name(&h).as_deref(), Some("editor"));
     // A remote session streams in; the selection must NOT jump.
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "jupiter00".into(),
         vec![sess("jupiter00", "infer", 1, false)],
         None,
@@ -2820,7 +2820,7 @@ async fn streaming_preserves_cursor_once_user_moves() {
 
 #[tokio::test]
 async fn hint_bar_shows_scanning_progress_then_clears() {
-    let mut h = Harness::from_sources(&["local", "jupiter00"]);
+    let mut h = Harness::from_hosts(&["local", "jupiter00"]);
     let hint_bar = h.hint_bar_text();
     assert!(
         hint_bar.contains("scanning"),
@@ -2830,8 +2830,8 @@ async fn hint_bar_shows_scanning_progress_then_clears() {
         hint_bar.contains("/2"),
         "hint_bar shows the host progress fraction:\n{hint_bar:?}"
     );
-    h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
-    h.sw.apply_source_result("jupiter00".into(), vec![], None, &mut h.state);
+    h.sw.apply_host_result("local".into(), vec![], None, &mut h.state);
+    h.sw.apply_host_result("jupiter00".into(), vec![], None, &mut h.state);
     h.draw();
     let hint_bar = h.hint_bar_text();
     assert!(
@@ -3064,14 +3064,14 @@ async fn create_adds_and_selects() {
     // A reachable empty host shows a host card; n on it creates a session, then selects it.
     let scan = Scan {
         groups: vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![],
         }],
     };
     let mut h = Harness::new(scan);
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "local"),
+        matches!(h.sw.current_ref(), Some(RowRef::Host { host, .. }) if host == "local"),
         "the lone empty host card is auto-selected"
     );
     h.ch('n').await; // n on a host card ⇒ create a session
@@ -3087,7 +3087,7 @@ async fn slow_op_is_deferred_off_the_key_path() {
     // freeze the UI on a slow remote); it only queues the op for the loop.
     let scan = Scan {
         groups: vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![],
         }],
@@ -3120,8 +3120,8 @@ async fn slow_op_is_deferred_off_the_key_path() {
 
 #[tokio::test]
 async fn n_on_a_session_card_opens_new_for_its_host() {
-    // `n` starts a new SESSION on the selected card's host/mux. A session card
-    // names its source, so `n` there opens the create input seeded with it rather
+    // `n` starts a new SESSION on the selected card's machine/mux. A session card
+    // names its host, so `n` there opens the create input seeded with it rather
     // than refusing - you can add a session to a host that already has sessions.
     let mut h = Harness::new(sample());
     assert!(h
@@ -3137,9 +3137,9 @@ async fn n_on_a_session_card_opens_new_for_its_host() {
         Some(Modal::Input(i)) => {
             assert!(matches!(i.mode, InputMode::New), "new-session mode");
             assert_eq!(
-                i.source.as_deref(),
+                i.host.as_deref(),
                 Some("local"),
-                "seeded with the selected card's source"
+                "seeded with the selected card's host"
             );
         }
         _ => panic!("expected a New input modal"),
@@ -3152,15 +3152,15 @@ async fn n_on_a_session_card_opens_new_for_its_host() {
 
 #[test]
 fn logout_confirms_the_selected_ssh_session_and_machine() {
-    let mut h = Harness::from_sources(&["box"]);
-    h.state.chrome.source_reach.insert(
+    let mut h = Harness::from_hosts(&["box"]);
+    h.state.chrome.host_reach.insert(
         "box".into(),
-        crate::state::SourceReach {
+        crate::state::HostReach {
             ssh: true,
             ..Default::default()
         },
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "box".into(),
         vec![sess("box", "api", 1, true)],
         None,
@@ -3212,11 +3212,41 @@ fn logout_confirms_the_selected_ssh_session_and_machine() {
     assert!(matches!(commands.as_slice(), [Command::Logout(machine)] if machine == "box"));
 }
 
+#[test]
+fn logout_from_a_card_with_no_session_names_the_machine() {
+    let mut h = Harness::from_hosts(&["box"]);
+    h.state.chrome.host_reach.insert(
+        "box".into(),
+        crate::state::HostReach {
+            ssh: true,
+            ..Default::default()
+        },
+    );
+    h.sw.apply_host_result("box".into(), Vec::new(), None, &mut h.state);
+    h.draw();
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Host { .. })));
+    assert!(h
+        .sw
+        .handle_key(
+            KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE),
+            &mut h.state
+        )
+        .is_empty());
+    let Some(Modal::Input(input)) = &h.state.modal else {
+        panic!("logout confirmation")
+    };
+    assert_eq!(
+        input.facts.first(),
+        Some(&("machine", "box".to_string())),
+        "the machine is not a session"
+    );
+}
+
 /// The second confirmation states which lines xmux did not add, what removing them costs
 /// outside xmux, and what keeping them leaves, and only the typed word confirms it.
 #[test]
 fn the_logout_key_confirmation_states_the_risk_and_needs_remove_typed() {
-    let mut h = Harness::from_sources(&["box"]);
+    let mut h = Harness::from_hosts(&["box"]);
     h.sw.open_logout_keys("box", &["authorized_keys"], 1, &[], &mut h.state);
     let Some(Modal::Input(input)) = &h.state.modal else {
         panic!("logout key confirmation")
@@ -3255,7 +3285,7 @@ fn the_logout_key_confirmation_states_the_risk_and_needs_remove_typed() {
 
 #[test]
 fn the_logout_key_confirmation_says_the_key_stays_when_xmux_added_none() {
-    let mut h = Harness::from_sources(&["box"]);
+    let mut h = Harness::from_hosts(&["box"]);
     h.sw.open_logout_keys(
         "box",
         &["authorized_keys", "administrators_authorized_keys"],
@@ -3291,7 +3321,7 @@ fn the_logout_confirmation_lists_the_ssh_config_lines_that_change() {
             after: None,
         },
     ];
-    let mut h = Harness::from_sources(&["box"]);
+    let mut h = Harness::from_hosts(&["box"]);
     h.sw.open_logout_keys("box", &[], 1, &entries, &mut h.state);
     let Some(Modal::Input(input)) = &h.state.modal else {
         panic!("logout confirmation")
@@ -3353,8 +3383,8 @@ async fn filter_leaves_cursor_on_visible_session() {
     // grid; the next step down reaches the visible session. The filter applies live
     // while the input is open (set_input_text applies it as a real edit would), so Enter
     // only closes it.
-    let mut h = Harness::from_sources(&["local"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["local"]);
+    h.sw.apply_host_result(
         "local".into(),
         vec![
             sess("local", "live", 2, true),
@@ -3368,7 +3398,7 @@ async fn filter_leaves_cursor_on_visible_session() {
     h.key(KeyCode::Enter).await; // close the input
     assert!(matches!(
         h.sw.selected_card(),
-        Some(RowRef::Section { source }) if source == "local"
+        Some(RowRef::Section { host }) if host == "local"
     ));
     assert!(h.sw.current_attach_target(&h.state).is_none());
     h.key(KeyCode::Down).await;
@@ -3387,8 +3417,8 @@ async fn filter_host_enter_targets_visible_session() {
     // Under the filter the top card is the visible (matching) session, not a
     // filtered-out one - so current_attach_target yields it. The filter is in effect
     // while the input is open; Enter only closes it.
-    let mut h = Harness::from_sources(&["alpha"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["alpha"]);
+    h.sw.apply_host_result(
         "alpha".into(),
         vec![
             sess("alpha", "keep-me", 1, false),
@@ -3516,18 +3546,18 @@ async fn filter_keeps_the_selection_on_a_surviving_card_while_typing() {
 }
 
 #[tokio::test]
-async fn create_on_unreachable_host_refused() {
+async fn create_on_unreachable_machine_refused() {
     let mut h = Harness::new(sample());
-    // jump to the last card - the unreachable db-2, one card for the host.
+    // jump to the last card - the unreachable db-2, one card for the machine.
     h.key(KeyCode::End).await;
     assert!(
         matches!(h.sw.current_ref(), Some(RowRef::Machine { .. })),
-        "expected to reach the unreachable db-2 host"
+        "expected to reach the unreachable db-2 machine"
     );
     h.ch('n').await;
     assert!(
         h.state.chrome.flash.to_lowercase().contains("unreachable"),
-        "create on unreachable host should flash unreachable, got {:?}",
+        "create on unreachable machine should flash unreachable, got {:?}",
         h.state.chrome.flash
     );
     assert!(h.ops.created.lock().unwrap().is_empty());
@@ -3539,7 +3569,7 @@ async fn empty_reachable_host_shows_its_host_screen() {
     // keys that apply) in the terminal view, not a blank grid.
     let scan = Scan {
         groups: vec![Group {
-            source: "fresh".into(),
+            host: "fresh".into(),
             err: None,
             sessions: vec![],
         }],
@@ -3547,7 +3577,7 @@ async fn empty_reachable_host_shows_its_host_screen() {
     let h = Harness::new(scan);
     // The lone selectable row is that empty host, so it is auto-selected.
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Host { source, .. }) if source == "fresh"),
+        matches!(h.sw.current_ref(), Some(RowRef::Host { host, .. }) if host == "fresh"),
         "selection is on the empty host row"
     );
     let view = h.view_text();
@@ -3570,7 +3600,7 @@ async fn host_with_sessions_has_no_host_screen() {
     let mut h = Harness::new(sample());
     h.key(KeyCode::Home).await; // the top card - a session of a host that HAS sessions
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.host == "local"),
         "the top card is a session of a reachable host with sessions"
     );
     assert!(
@@ -3582,13 +3612,13 @@ async fn host_with_sessions_has_no_host_screen() {
 #[tokio::test]
 async fn a_section_opens_host_freshness_by_key_and_click_without_numbering_it() {
     let mut h = Harness::new(sample());
-    h.state.chrome.source_reach.insert(
+    h.state.chrome.host_reach.insert(
         "local".into(),
         reach("tmux", "local", "", "tmux list-sessions"),
     );
-    h.state.live_sources.insert("local".into());
+    h.state.live_hosts.insert("local".into());
     h.key(KeyCode::Char('i')).await;
-    assert!(matches!(h.sw.current_ref(), Some(RowRef::Section { source }) if source == "local"));
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Section { host }) if host == "local"));
     let screen = h.view_text();
     assert!(screen.contains("sessions"), "{screen}");
     assert!(screen.contains("live updates"), "{screen}");
@@ -3607,25 +3637,25 @@ async fn a_section_opens_host_freshness_by_key_and_click_without_numbering_it() 
         .1;
     h.sw.mouse_select(&h.plan.clone(), rect.x, rect.y);
     h.draw();
-    assert!(matches!(h.sw.current_ref(), Some(RowRef::Section { source }) if source == "local"));
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Section { host }) if host == "local"));
     h.sw.rebuild(&mut h.state);
-    assert!(matches!(h.sw.current_ref(), Some(RowRef::Section { source }) if source == "local"));
-    h.state.live_sources.remove("local");
+    assert!(matches!(h.sw.current_ref(), Some(RowRef::Section { host }) if host == "local"));
+    h.state.live_hosts.remove("local");
     h.draw();
     assert!(h.view_text().contains("last observed (channel closed)"));
 }
 
 #[tokio::test]
-async fn the_host_screen_shows_the_observed_login_method() {
-    let mut h = Harness::from_sources(&["box"]);
-    h.state.chrome.source_reach.insert(
+async fn the_machine_screen_shows_the_observed_login_method() {
+    let mut h = Harness::from_hosts(&["box"]);
+    h.state.chrome.host_reach.insert(
         "box".into(),
-        crate::state::SourceReach {
+        crate::state::HostReach {
             ssh: true,
             ..Default::default()
         },
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "box".into(),
         vec![sess("box", "api", 1, false)],
         None,
@@ -3637,7 +3667,7 @@ async fn the_host_screen_shows_the_observed_login_method() {
     h.state
         .display_auth_methods
         .insert("box".into(), crate::model::AuthMethod::PublicKey);
-    // The login is the host's: a session's source does not state it.
+    // The login is the machine's: a session's host does not state it.
     h.ctrl(KeyCode::Up);
     assert!(h.view_cell_of("SSH login").is_none(), "{}", h.view_text());
     h.ctrl(KeyCode::Up);
@@ -3660,7 +3690,7 @@ async fn both_host_screens_share_one_grammar() {
     // is pinned here is the SHAPE both hold to, not either one's words: the name as the
     // headline, the state word under it, one rule column for every row that carries a
     // cell, and the rescan key both offer. A state added later has this to answer to.
-    let mut dead = Harness::from_sources(&["prod"]);
+    let mut dead = Harness::from_hosts(&["prod"]);
     dead.state.chrome.set_login_defaults(
         Default::default(),
         std::collections::HashMap::from([(
@@ -3668,7 +3698,7 @@ async fn both_host_screens_share_one_grammar() {
             "Host prod\n    HostName 10.0.0.1\n".into(),
         )]),
     );
-    dead.sw.apply_source_result(
+    dead.sw.apply_host_result(
         "prod".into(),
         vec![],
         Some("connection refused".into()),
@@ -3677,7 +3707,7 @@ async fn both_host_screens_share_one_grammar() {
     dead.draw();
     let empty = Harness::new(Scan {
         groups: vec![Group {
-            source: "fresh".into(),
+            host: "fresh".into(),
             err: None,
             sessions: vec![],
         }],
@@ -3735,7 +3765,7 @@ async fn both_host_screens_share_one_grammar() {
 fn an_empty_host_animates_only_below_its_screen_content_when_it_fits() {
     let scan = Scan {
         groups: vec![Group {
-            source: "fresh".into(),
+            host: "fresh".into(),
             err: None,
             sessions: vec![],
         }],
@@ -3825,9 +3855,9 @@ async fn card_text_has_a_fixed_attribute_hierarchy() {
 }
 
 /// A session stamped with its mux kind, for the context-line tests.
-fn sess_mux(source: &str, name: &str, mux: &str) -> Session {
+fn sess_mux(host: &str, name: &str, mux: &str) -> Session {
     Session {
-        source: source.into(),
+        host: host.into(),
         name: name.into(),
         mux: mux.into(),
         windows: 1,
@@ -3836,22 +3866,22 @@ fn sess_mux(source: &str, name: &str, mux: &str) -> Session {
 }
 
 /// One host carrying `sessions`.
-fn one_host_scan(source: &str, sessions: Vec<Session>) -> Scan {
+fn one_host_scan(host: &str, sessions: Vec<Session>) -> Scan {
     Scan {
         groups: vec![Group {
-            source: source.into(),
+            host: host.into(),
             err: None,
             sessions,
         }],
     }
 }
 
-/// Several sources, each carrying `sessions`.
-fn sources_scan(sources: Vec<(&str, Vec<Session>)>) -> Scan {
-    let groups = sources
+/// Several hosts, each carrying `sessions`.
+fn hosts_scan(hosts: Vec<(&str, Vec<Session>)>) -> Scan {
+    let groups = hosts
         .into_iter()
-        .map(|(source, sessions)| Group {
-            source: source.into(),
+        .map(|(host, sessions)| Group {
+            host: host.into(),
             err: None,
             sessions,
         })
@@ -3860,11 +3890,11 @@ fn sources_scan(sources: Vec<(&str, Vec<Session>)>) -> Scan {
 }
 
 #[tokio::test]
-async fn a_sources_cards_are_contiguous_and_the_order_is_deterministic() {
-    // A source's cards sit together under their source's one section title: alpha's
+async fn a_hosts_cards_are_contiguous_and_the_order_is_deterministic() {
+    // A host's cards sit together under their host's one section title: alpha's
     // before beta's, never interleaved with another host's, and inside each host the
     // name order holds (a-new, then a-old).
-    let mut h = Harness::new(sources_scan(vec![
+    let mut h = Harness::new(hosts_scan(vec![
         (
             "alpha",
             vec![
@@ -3880,9 +3910,9 @@ async fn a_sources_cards_are_contiguous_and_the_order_is_deterministic() {
             ],
         ),
     ]));
-    // The app resolves every source's reach before its first frame; set it here so the
+    // The app resolves every host's reach before its first frame; set it here so the
     // section titles name their mux exactly as the live app's do.
-    h.state.chrome.set_source_reach(
+    h.state.chrome.set_host_reach(
         [
             ("alpha".to_string(), reach("tmux", "alpha", "", "tmux ls")),
             ("beta".to_string(), reach("tmux", "beta", "", "tmux ls")),
@@ -3907,7 +3937,7 @@ async fn a_sources_cards_are_contiguous_and_the_order_is_deterministic() {
         "alpha then beta, each by name: a-new {a_new}, a-old {a_old}, b-new {b_new}, b-old {b_old}
 {out}"
     );
-    // One section title per source: the title names the whole group, the cards below
+    // One section title per host: the title names the whole group, the cards below
     // it carry the sessions alone.
     assert_eq!(
         out.matches("alpha/tmux").count(),
@@ -3924,16 +3954,16 @@ async fn a_sources_cards_are_contiguous_and_the_order_is_deterministic() {
 }
 
 #[tokio::test]
-async fn a_session_found_later_lands_inside_its_own_source() {
+async fn a_session_found_later_lands_inside_its_own_host() {
     // The order is frozen once the hosts settle, so a session that appears afterwards
     // cannot be placed by re-sorting. It is inserted after the last card of its own
-    // source - never appended to the bottom, which would strand it under another host's
-    // context line and split the source it belongs to.
-    let mut h = Harness::new(sources_scan(vec![
+    // host - never appended to the bottom, which would strand it under another host's
+    // context line and split the host it belongs to.
+    let mut h = Harness::new(hosts_scan(vec![
         ("alpha", vec![sess_mux("alpha", "a-one", "tmux")]),
         ("beta", vec![sess_mux("beta", "b-one", "tmux")]),
     ]));
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "alpha".into(),
         vec![
             sess_mux("alpha", "a-one", "tmux"),
@@ -3960,16 +3990,16 @@ async fn a_session_found_later_lands_inside_its_own_source() {
 }
 
 #[tokio::test]
-async fn the_section_title_shows_host_mux_and_the_session_takes_the_accent() {
-    // The `{host}/{mux}` label lives on the SECTION TITLE, both halves in the quiet
+async fn the_section_title_shows_machine_mux_and_the_session_takes_the_accent() {
+    // The `{machine}/{mux}` label lives on the SECTION TITLE, both halves in the quiet
     // header role; the session card under it is the name alone, the accent target.
-    // The mux comes from the resolved reach, exactly as the app resolves every source
+    // The mux comes from the resolved reach, exactly as the app resolves every host
     // before its first frame.
     let mut h = Harness::new(selection_parked_elsewhere(one_host_scan(
         "srv",
         vec![sess_mux("srv", "alpha", "tmux")],
     )));
-    h.state.chrome.set_source_reach(
+    h.state.chrome.set_host_reach(
         [("srv".to_string(), reach("tmux", "srv", "", "tmux ls"))]
             .into_iter()
             .collect(),
@@ -3984,7 +4014,7 @@ async fn the_section_title_shows_host_mux_and_the_session_takes_the_accent() {
     assert_eq!(
         h.nav_fg_of("srv"),
         Some(crate::ui::palette::Palette::default().decoration),
-        "the section title is dim, host half"
+        "the section title is dim, machine half"
     );
     assert_eq!(
         h.nav_fg_of("tmux"),
@@ -4111,11 +4141,11 @@ async fn a_split_sections_continuation_columns_repeat_the_title() {
 async fn a_column_is_never_narrower_than_the_title_naming_it() {
     // A column is as wide as the WIDEST thing in it, and the section title is one of
     // those things. Sessions named in one character must therefore not shrink the column
-    // under the `{host}/{mux}` above them: the title is the only row saying where the
+    // under the `{machine}/{mux}` above them: the title is the only row saying where the
     // cards are, and a host cut in half names a machine that does not exist. It holds
     // its one row while doing it - the fix is the column's width, never a second row.
     let mut h = Harness::new_sized(
-        sources_scan(vec![
+        hosts_scan(vec![
             (
                 "build-runner-eu-west",
                 vec![sess_mux("build-runner-eu-west", "z", "zellij")],
@@ -4125,7 +4155,7 @@ async fn a_column_is_never_narrower_than_the_title_naming_it() {
         60,
         12,
     );
-    h.state.chrome.set_source_reach(
+    h.state.chrome.set_host_reach(
         [
             (
                 "build-runner-eu-west".to_string(),
@@ -4171,18 +4201,18 @@ async fn a_column_is_never_narrower_than_the_title_naming_it() {
 #[tokio::test]
 async fn a_host_card_gives_its_mux_the_secondary() {
     // A host-state card has no session to take the accent, so its mux - the lowest
-    // level it displays - stays with the host half; both read in the secondary role.
+    // level it displays - stays with the machine half; both read in the secondary role.
     // The separator keeps its own furniture role.
     let scan = Scan {
         groups: vec![
             Group {
-                source: "srv:zellij".into(),
+                host: "srv:zellij".into(),
                 err: None,
                 sessions: vec![sess_mux("srv:zellij", "alpha", "zellij")],
             },
             // A reachable machine with no session left: the host-state card.
             Group {
-                source: "srv:psmux".into(),
+                host: "srv:psmux".into(),
                 err: None,
                 sessions: vec![],
             },
@@ -4198,14 +4228,14 @@ async fn a_host_card_gives_its_mux_the_secondary() {
     assert_eq!(
         h.nav_fg_of("psmux"),
         Some(crate::ui::palette::Palette::default().secondary),
-        "the mux shares the host half's secondary role"
+        "the mux shares the machine half's secondary role"
     );
-    // The separator is furniture on both card kinds, and the host half is secondary.
+    // The separator is furniture on both card kinds, and the machine half is secondary.
     let (x, y) = locate(h.buf(), "srv/psmux", NAV_WIDTH).expect("the host card");
     assert_eq!(
         h.buf()[(x, y)].fg,
         crate::ui::palette::Palette::default().secondary,
-        "the host half"
+        "the machine half"
     );
     assert_eq!(
         h.buf()[(x + 3, y)].fg,
@@ -4214,12 +4244,12 @@ async fn a_host_card_gives_its_mux_the_secondary() {
     );
 }
 
-/// A scan holding `n` sessions on one reachable source plus one unreachable source, so
+/// A scan holding `n` sessions on one reachable host plus one unreachable host, so
 /// the nav has both of its bands: session cards over a host-state card.
 fn scan_with_bands(n: usize) -> Scan {
     let mut scan = scan_with_sessions(n);
     scan.groups.push(Group {
-        source: "db-2".into(),
+        host: "db-2".into(),
         err: Some("connection timed out".into()),
         sessions: vec![],
     });
@@ -4238,10 +4268,10 @@ fn card_rect(h: &Harness, idx: usize) -> Rect {
 
 #[tokio::test]
 async fn every_host_state_card_sits_below_every_session_card() {
-    // The dead host is FIRST in group order, and its card still lands last: a host with
+    // The dead machine is FIRST in group order, and its card still lands last: a host with
     // no session to show is the tail of the list, whatever order the hosts were scanned in.
     let mut groups = vec![Group {
-        source: "db-2".into(),
+        host: "db-2".into(),
         err: Some("connection timed out".into()),
         sessions: vec![],
     }];
@@ -4315,11 +4345,11 @@ async fn the_bands_never_touch_on_screen() {
     // (every card is one row now), so the parting has no row left to take: rather than
     // let the bands meet, the list scrolls a row early and the rule takes the boundary's
     // row. Scroll to the boundary first - the host sits below the fold at the top.
-    let mut h = Harness::from_sources(&["local", "db-2"]);
+    let mut h = Harness::from_hosts(&["local", "db-2"]);
     let sessions: Vec<crate::session::Session> = (0..27)
         .map(|i| sess("local", &format!("s{i}"), 1, false))
         .collect();
-    h.sw.apply_source_result("local".into(), sessions, None, &mut h.state);
+    h.sw.apply_host_result("local".into(), sessions, None, &mut h.state);
     h.draw();
     let cards: u16 = h.sw.rows.len() as u16;
     assert_eq!(
@@ -4355,7 +4385,7 @@ async fn the_bands_never_touch_on_screen() {
 #[tokio::test]
 async fn scanning_hosts_start_at_the_top_until_found() {
     // Host cards use the first available rows even before sessions are found.
-    let h = Harness::from_sources(&["local", "jupiter00"]);
+    let h = Harness::from_hosts(&["local", "jupiter00"]);
     let txt = h.nav_cards_text();
     let rows: Vec<&str> = txt.lines().collect();
     let card_rows: Vec<usize> = rows
@@ -4369,9 +4399,9 @@ async fn scanning_hosts_start_at_the_top_until_found() {
         vec![0, 1],
         "both scanning hosts start at the top:\n{card_rows:?}"
     );
-    // One source resolves: its section and cards lead, and the other follows.
-    let mut h = Harness::from_sources(&["local", "jupiter00"]);
-    h.sw.apply_source_result(
+    // One host resolves: its section and cards lead, and the other follows.
+    let mut h = Harness::from_hosts(&["local", "jupiter00"]);
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess("local", "editor", 1, false)],
         None,
@@ -4382,7 +4412,7 @@ async fn scanning_hosts_start_at_the_top_until_found() {
         h.sw.rows
             .iter()
             .position(|r| matches!(&r.reference, RowRef::Section { .. }))
-            .expect("the resolved source gains a section title");
+            .expect("the resolved host gains a section title");
     assert_eq!(card_rect(&h, section).y, 0, "the section leads the list");
     assert_eq!(card_rect(&h, section + 1).y, 1, "its card follows");
     let host =
@@ -4426,8 +4456,8 @@ fn band_line(h: &Harness, y: u16) -> String {
 }
 
 #[tokio::test]
-async fn a_sources_sessions_are_each_a_single_row_under_one_section_title() {
-    // Every session of one source is a single-row card (the number + the name), stacked
+async fn a_hosts_sessions_are_each_a_single_row_under_one_section_title() {
+    // Every session of one host is a single-row card (the number + the name), stacked
     // directly under the one section title that names the whole group. The side list
     // draws no connector and no per-card context line: it is one full-width run, where
     // the title and the rule under it already draw the group.
@@ -4440,7 +4470,7 @@ async fn a_sources_sessions_are_each_a_single_row_under_one_section_title() {
             sess_mux("srv", "zeta", "tmux"),
         ],
     ));
-    h.state.chrome.set_source_reach(
+    h.state.chrome.set_host_reach(
         [("srv".to_string(), reach("tmux", "srv", "", "tmux ls"))]
             .into_iter()
             .collect(),
@@ -4522,7 +4552,7 @@ async fn focus_changes_only_the_address_column() {
 #[tokio::test]
 async fn navigation_wraps_around() {
     let mut h = Harness::new(sample());
-    h.key(KeyCode::End).await; // last card = db-2 host
+    h.key(KeyCode::End).await; // last card = db-2 machine
     assert!(
         matches!(h.sw.current_ref(), Some(RowRef::Machine { machine, .. }) if machine == "db-2")
     );
@@ -4540,22 +4570,22 @@ async fn navigation_wraps_around() {
 #[tokio::test]
 async fn horizontal_steps_one_host_and_lands_on_its_first_card() {
     // ↑/↓ and ←/→ name the two things the list is made of. ←/→ cross a whole category
-    // at a time: from a session of one source the selection lands on the FIRST card of
+    // at a time: from a session of one host the selection lands on the FIRST card of
     // the next, so a list of many hosts is crossed without stepping over every session
     // between them. The host band is the last category, entered at its first card.
     // (`sample`: local holds two sessions, jupiter00 one, db-2 is unreachable.)
     let mut h = Harness::new(sample());
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.host == "local"),
         "the launch cursor is a local session card"
     );
     h.key(KeyCode::Right).await;
     assert!(
         matches!(
             h.sw.current_ref(),
-            Some(RowRef::Session { sess }) if sess.source == "jupiter00" && sess.name == "inference"
+            Some(RowRef::Session { sess }) if sess.host == "jupiter00" && sess.name == "inference"
         ),
-        "→ lands on the next source's first session"
+        "→ lands on the next host's first session"
     );
     h.key(KeyCode::Right).await;
     assert!(
@@ -4566,7 +4596,7 @@ async fn horizontal_steps_one_host_and_lands_on_its_first_card() {
 
 #[tokio::test]
 async fn the_host_band_is_one_stop_however_many_cards_it_holds() {
-    // The sources with nothing to show are ONE category to ←/→, not one each: a
+    // The hosts with nothing to show are ONE category to ←/→, not one each: a
     // list of machines with nothing running on them is a single thing to reach past
     // rather than a run of places to be carried into one at a time. Every one of them is
     // still a card, so ↑/↓ reach each.
@@ -4584,15 +4614,15 @@ async fn the_host_band_is_one_stop_however_many_cards_it_holds() {
     );
     h.key(KeyCode::Right).await;
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.host == "local"),
         "→ crosses the whole band in one step, from any card in it"
     );
 }
 
 #[tokio::test]
-async fn leaving_the_host_band_backwards_lands_on_the_last_source_with_sessions() {
+async fn leaving_the_host_band_backwards_lands_on_the_last_host_with_sessions() {
     // The band is left the same way in either direction, and from any card in it: ← from
-    // its second card returns to the source before it, not to its own first card.
+    // its second card returns to the host before it, not to its own first card.
     let mut h = Harness::new(scan_with_a_host_band());
     h.key(KeyCode::Right).await; // local → jupiter00
     h.key(KeyCode::Right).await; // jupiter00 → the band
@@ -4601,31 +4631,31 @@ async fn leaving_the_host_band_backwards_lands_on_the_last_source_with_sessions(
     assert!(
         matches!(
             h.sw.current_ref(),
-            Some(RowRef::Session { sess }) if sess.source == "jupiter00"
+            Some(RowRef::Session { sess }) if sess.host == "jupiter00"
         ),
-        "← leaves the band for the source before it"
+        "← leaves the band for the host before it"
     );
 }
 
 #[tokio::test]
 async fn horizontal_leaves_the_host_from_any_of_its_cards() {
-    // The step is by SOURCE, not by card: it leaves the host the selection is on
+    // The step is by HOST, not by card: it leaves the host the selection is on
     // wherever inside that host the selection sits. Stepping to the next CARD from the
-    // last session of a source would look the same from that one card alone, so the
-    // selection is moved off the first card of a two-session source first.
+    // last session of a host would look the same from that one card alone, so the
+    // selection is moved off the first card of a two-session host first.
     let mut h = Harness::new(sample());
     h.key(KeyCode::Down).await;
     assert!(
         matches!(
             h.sw.current_ref(),
-            Some(RowRef::Session { sess }) if sess.source == "local" && sess.name == "editor"
+            Some(RowRef::Session { sess }) if sess.host == "local" && sess.name == "editor"
         ),
         "the second local session"
     );
     h.key(KeyCode::Right).await;
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "jupiter00"),
-        "→ leaves the source from a card that is not its last"
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.host == "jupiter00"),
+        "→ leaves the host from a card that is not its last"
     );
 }
 
@@ -4637,12 +4667,12 @@ async fn horizontal_wraps_at_both_ends() {
     h.key(KeyCode::Left).await;
     assert!(
         matches!(h.sw.current_ref(), Some(RowRef::Machine { machine, .. }) if machine == "db-2"),
-        "← from the first source wraps to the last"
+        "← from the first host wraps to the last"
     );
     h.key(KeyCode::Right).await;
     assert!(
-        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.source == "local"),
-        "→ from the last source wraps to the first"
+        matches!(h.sw.current_ref(), Some(RowRef::Session { sess }) if sess.host == "local"),
+        "→ from the last host wraps to the first"
     );
 }
 
@@ -4794,12 +4824,12 @@ async fn terminal_view_target_follows_cursor() {
         .sw
         .select_address(&crate::session::Address::new("local", "editor")));
     let t = h.sw.terminal_view_target();
-    assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
+    assert_eq!((t.host.as_str(), t.target.as_str()), ("local", "editor"));
     // Step to the next card (the next session) - the target follows the cursor.
     h.key(KeyCode::Down).await;
     let t = h.sw.terminal_view_target();
     assert_eq!(
-        (t.source.as_str(), t.target.as_str()),
+        (t.host.as_str(), t.target.as_str()),
         ("jupiter00", "inference")
     );
 }
@@ -4830,8 +4860,8 @@ fn render_terminal_view_none_grid_is_blank_not_attaching() {
     // never the placeholder. The display keeps the last confirmed session until
     // the next is ready (stale-while-revalidate), so a transitional placeholder
     // has no purpose.
-    let mut state = crate::state::State::from_sources(vec!["local".into(), "jupiter06".into()]);
-    let sw = Switcher::from_sources(&mut state);
+    let mut state = crate::state::State::from_hosts(vec!["local".into(), "jupiter06".into()]);
+    let sw = Switcher::from_hosts(&mut state);
     let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
     term.draw(|f| sw.render_test(f, None, true, NavSize::hidden(NAV_WIDTH), &state))
         .unwrap();
@@ -4849,7 +4879,7 @@ fn cur_row_label(h: &Harness) -> String {
         .get(h.sw.selected)
         .map(|r| match &r.reference {
             RowRef::Session { sess } => sess.address().display(),
-            RowRef::Host { source, .. } | RowRef::Section { source, .. } => source.clone(),
+            RowRef::Host { host, .. } | RowRef::Section { host, .. } => host.clone(),
             RowRef::Machine { machine, .. } => machine.clone(),
         })
         .unwrap_or_default()
@@ -4885,21 +4915,21 @@ async fn cursor_move_yields_attach_target() {
     let t =
         h.sw.current_attach_target(&h.state)
             .expect("a session card yields a target");
-    assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "build"));
+    assert_eq!((t.host.as_str(), t.target.as_str()), ("local", "build"));
     h.key(KeyCode::Down).await; // ↓ to the next local session's card
     let t =
         h.sw.current_attach_target(&h.state)
             .expect("still a target");
-    assert_eq!((t.source.as_str(), t.target.as_str()), ("local", "editor"));
+    assert_eq!((t.host.as_str(), t.target.as_str()), ("local", "editor"));
 }
 
 #[tokio::test]
-async fn current_host_tracks_cursor_source() {
-    // The app ensures this host on every move; every card yields its source, so the
+async fn current_host_tracks_cursor_host() {
+    // The app ensures this host on every move; every card yields its host, so the
     // host's tree can be fetched.
     let mut h = Harness::new(sample()); // launch on the first local session's card
     assert_eq!(h.sw.current_host().as_deref(), Some("local"));
-    h.key(KeyCode::End).await; // jump to the last card (the db-2 host card)
+    h.key(KeyCode::End).await; // jump to the last card (the db-2 machine card)
     assert_eq!(h.sw.current_host().as_deref(), Some("db-2"));
 }
 
@@ -5315,7 +5345,7 @@ fn every_unselected_card_carries_its_1_based_number_beside_its_session() {
     for (i, rect) in plan.nav_cells.iter().copied() {
         if matches!(sw.rows[i].reference, RowRef::Section { .. }) {
             assert_ne!(i, selected, "this test selects a session card");
-            // The section title is flush left - its host name occupies the address
+            // The section title is flush left - its machine name occupies the address
             // column - so it must simply never carry a number or the mark.
             let first = read(rect.x, rect.y, num_w).trim().to_string();
             assert!(
@@ -6760,7 +6790,7 @@ async fn input_esc_cancels_without_acting() {
     // `n` starts a session on a REACHABLE host card, so the fixture is one empty host.
     let mut h = Harness::new(Scan {
         groups: vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![],
         }],
@@ -6782,7 +6812,7 @@ fn a_renamed_session_keeps_the_selection_and_the_displayed_record() {
     // displayed record follow it, so nothing reads the rename as a move elsewhere.
     let scan = Scan {
         groups: vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![sess("jup", "api", 1, false), sess("jup", "zeta", 1, false)],
         }],
@@ -6793,12 +6823,12 @@ fn a_renamed_session_keeps_the_selection_and_the_displayed_record() {
     assert!(matches!(sw.current_ref(), Some(RowRef::Session { sess }) if sess.name == "api"));
     // The loop syncs the selection off the switcher; stand in for it.
     state.selection = crate::model::Selection {
-        source: "jup".into(),
+        host: "jup".into(),
         session: "api".into(),
     };
     state.displayed = state.selection.clone();
 
-    let renamed = sw.apply_source_result(
+    let renamed = sw.apply_host_result(
         "jup".into(),
         vec![sess("jup", "web", 1, false), sess("jup", "zeta", 1, false)],
         None,
@@ -6940,18 +6970,18 @@ fn select_address_moves_cursor_to_named_session() {
     use crate::ui::tree::Group;
     let scan = Scan {
         groups: vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![
                 Session {
-                    source: "jup".into(),
+                    host: "jup".into(),
                     name: "api".into(),
                     mux: String::new(),
                     windows: 1,
                     attached: false,
                 },
                 Session {
-                    source: "jup".into(),
+                    host: "jup".into(),
                     name: "db".into(),
                     mux: String::new(),
                     windows: 1,
@@ -7002,26 +7032,26 @@ fn fit_selects_by_display_width() {
 
 // --- the portrait band's column flow ------------------------------------
 
-/// `n` sources of two sessions each, named so every card is the same width.
-fn column_flow_scan(sources: &[&str], name_len: usize) -> Scan {
-    let counts: Vec<(&str, usize)> = sources.iter().map(|s| (*s, 2)).collect();
+/// `n` hosts of two sessions each, named so every card is the same width.
+fn column_flow_scan(hosts: &[&str], name_len: usize) -> Scan {
+    let counts: Vec<(&str, usize)> = hosts.iter().map(|s| (*s, 2)).collect();
     column_flow_scan_sized(&counts, name_len)
 }
 
-/// Sources carrying the given session counts, every card the same width. The counts
+/// Hosts carrying the given session counts, every card the same width. The counts
 /// set each host/mux RUN's height (one expanded card over the rest collapsed), which
 /// is what the column flow packs.
-fn column_flow_scan_sized(sources: &[(&str, usize)], name_len: usize) -> Scan {
+fn column_flow_scan_sized(hosts: &[(&str, usize)], name_len: usize) -> Scan {
     let pad = "x".repeat(name_len.saturating_sub(2));
     let mut out: Vec<(&str, Vec<Session>)> = Vec::new();
-    for (src, n) in sources {
+    for (host, n) in hosts {
         let mut sessions = Vec::new();
         for k in 0..*n {
-            sessions.push(sess(src, &format!("{src}{pad}{k}"), 1, false));
+            sessions.push(sess(host, &format!("{host}{pad}{k}"), 1, false));
         }
-        out.push((*src, sessions));
+        out.push((*host, sessions));
     }
-    sources_scan(out)
+    hosts_scan(out)
 }
 
 /// Renders `scan` into a `w`x`h` portrait backend and returns the switcher, so a test
@@ -7054,8 +7084,8 @@ fn cells_of(plan: &RenderPlan) -> std::collections::HashMap<usize, Rect> {
 
 #[test]
 fn the_portrait_band_flows_cards_down_then_right() {
-    // A three-row band: each source's section (a title over its two sessions) fills a
-    // column exactly, so the next source opens the column to its right. Reading order is
+    // A three-row band: each host's section (a title over its two sessions) fills a
+    // column exactly, so the next host opens the column to its right. Reading order is
     // the fill order - down a column, then right - which is what the numbers count in.
     let (_sw, plan, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 12);
     let cells = cells_of(&plan);
@@ -7064,7 +7094,7 @@ fn the_portrait_band_flows_cards_down_then_right() {
         let (title, a, b) = (cells[&base], cells[&(base + 1)], cells[&(base + 2)]);
         // One column, but a session card starts at the group indent while the
         // title it hangs under holds the column's left edge.
-        assert_eq!(a.x, title.x + CARD_INDENT, "a source's rows share a column");
+        assert_eq!(a.x, title.x + CARD_INDENT, "a host's rows share a column");
         assert_eq!(b.x, a.x, "and the session cards line up with each other");
         assert_eq!(title.y, 0, "the section title starts its column");
         assert_eq!(title.height, 1, "a title is one row");
@@ -7074,12 +7104,12 @@ fn the_portrait_band_flows_cards_down_then_right() {
     }
     assert!(
         cells[&0].x < cells[&3].x && cells[&3].x < cells[&6].x,
-        "later sources open columns to the right: {cells:?}"
+        "later hosts open columns to the right: {cells:?}"
     );
 }
 
 #[tokio::test]
-async fn moving_selection_does_not_reflow_host_cards_in_a_band() {
+async fn moving_selection_does_not_reflow_machine_cards_in_a_band() {
     let scan = Scan {
         groups: [
             (
@@ -7090,8 +7120,8 @@ async fn moving_selection_does_not_reflow_host_cards_in_a_band() {
             ("charlie", "connection refused"),
         ]
         .into_iter()
-        .map(|(source, error)| Group {
-            source: source.into(),
+        .map(|(host, error)| Group {
+            host: host.into(),
             err: Some(error.into()),
             sessions: vec![],
         })
@@ -7108,7 +7138,7 @@ async fn moving_selection_does_not_reflow_host_cards_in_a_band() {
 fn a_column_holds_whole_sections() {
     // An eight-row band holds two three-row sections with TWO rows to spare - room for
     // the third section's title, but not for the section. It moves right ENTIRE rather
-    // than leaving a card behind at the foot of the column: a source's rows stay
+    // than leaving a card behind at the foot of the column: a host's rows stay
     // together, and the title naming them stays at the top of them.
     let (_sw, plan, _t) = portrait(column_flow_scan(&["aa", "bb", "cc"], 2), 60, 21);
     let cells = cells_of(&plan);
@@ -7146,17 +7176,17 @@ fn the_portrait_band_parts_sessions_left_and_hosts_right() {
     let scan = Scan {
         groups: vec![
             Group {
-                source: "aa".into(),
+                host: "aa".into(),
                 err: None,
                 sessions: vec![sess("aa", "a0", 1, false), sess("aa", "a1", 1, false)],
             },
             Group {
-                source: "bb".into(),
+                host: "bb".into(),
                 err: None,
                 sessions: vec![sess("bb", "b0", 1, false), sess("bb", "b1", 1, false)],
             },
             Group {
-                source: "dead".into(),
+                host: "dead".into(),
                 err: Some("refused".into()),
                 sessions: vec![],
             },
@@ -7164,15 +7194,15 @@ fn the_portrait_band_parts_sessions_left_and_hosts_right() {
     };
     let (_sw, plan, term) = portrait(scan, 60, 12);
     let cells = cells_of(&plan);
-    // Two sections (6 rows) + one host card.
+    // Two sections (6 rows) + one machine card.
     assert_eq!(cells.len(), 7, "every row is placed: {cells:?}");
     let host = cells[&6];
     let sess = cells[&0];
     assert!(
         host.x > sess.x,
-        "the host card is in a column of its own, right of the sessions"
+        "the machine card is in a column of its own, right of the sessions"
     );
-    // The host follows the session columns with one blank column between them.
+    // The machine card follows the session columns with one blank column between them.
     let band_w = term.backend().buffer().area.width;
     assert!(host.right() < band_w, "unused room remains on the right");
     assert!(host.x > sess.x + sess.width, "blank columns part the bands");
@@ -7184,17 +7214,17 @@ fn portrait_scanning_hosts_start_at_the_left_until_found() {
     let scan = Scan {
         groups: vec![
             Group {
-                source: "local".into(),
+                host: "local".into(),
                 err: None,
                 sessions: vec![],
             },
             Group {
-                source: "jupiter00".into(),
+                host: "jupiter00".into(),
                 err: None,
                 sessions: vec![],
             },
             Group {
-                source: "prod".into(),
+                host: "prod".into(),
                 err: None,
                 sessions: vec![],
             },
@@ -7225,7 +7255,7 @@ fn portrait_scanning_hosts_start_at_the_left_until_found() {
 fn floating_host_status_has_reversed_padding_on_both_sides() {
     let scan = Scan {
         groups: vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![],
         }],
@@ -7254,7 +7284,7 @@ fn floating_host_status_has_reversed_padding_on_both_sides() {
 fn floating_host_status_preserves_the_selected_mark_in_a_narrow_band() {
     let scan = Scan {
         groups: vec![Group {
-            source: "very-long-host-name".into(),
+            host: "very-long-host-name".into(),
             err: Some("refused".into()),
             sessions: vec![],
         }],
@@ -7462,11 +7492,11 @@ fn the_side_lists_overflow_thickens_the_seam_and_spares_every_card() {
 
 #[tokio::test]
 async fn a_host_card_names_its_mux_even_where_the_id_does_not() {
-    // A machine serving ONE mux carries no mux in its source id. The card still names it:
+    // A machine serving ONE mux carries no mux in its host id. The card still names it:
     // a machine that reads `local/psmux` on one card and `local` on the next reads as two
     // machines.
-    let mut h = Harness::from_sources(&["local"]);
-    h.state.chrome.set_source_reach(
+    let mut h = Harness::from_hosts(&["local"]);
+    h.state.chrome.set_host_reach(
         [(
             "local".to_string(),
             reach("psmux", "this box", "", "psmux ls"),
@@ -7474,7 +7504,7 @@ async fn a_host_card_names_its_mux_even_where_the_id_does_not() {
         .into_iter()
         .collect(),
     );
-    h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
+    h.sw.apply_host_result("local".into(), vec![], None, &mut h.state);
     h.draw();
     let out = h.text();
     assert!(
@@ -7484,11 +7514,11 @@ async fn a_host_card_names_its_mux_even_where_the_id_does_not() {
 }
 
 #[tokio::test]
-async fn a_session_with_no_stamped_mux_takes_its_source_mux() {
+async fn a_session_with_no_stamped_mux_takes_its_host_mux() {
     // A session created since the last enumeration carries no mux of its own. Its card
-    // takes the source's, so it does not stand out from the cards beside it.
-    let mut h = Harness::from_sources(&["local"]);
-    h.state.chrome.set_source_reach(
+    // takes the host's, so it does not stand out from the cards beside it.
+    let mut h = Harness::from_hosts(&["local"]);
+    h.state.chrome.set_host_reach(
         [(
             "local".to_string(),
             reach("psmux", "this box", "", "psmux ls"),
@@ -7496,7 +7526,7 @@ async fn a_session_with_no_stamped_mux_takes_its_source_mux() {
         .into_iter()
         .collect(),
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "local".into(),
         vec![sess_mux("local", "fresh", "")],
         None,
@@ -7511,9 +7541,9 @@ async fn a_session_with_no_stamped_mux_takes_its_source_mux() {
 }
 
 #[tokio::test]
-async fn a_host_screen_headline_reads_as_host_over_mux() {
-    let mut h = Harness::from_sources(&["prod:zellij"]);
-    h.state.chrome.set_source_reach(
+async fn a_host_screen_headline_reads_as_machine_over_mux() {
+    let mut h = Harness::from_hosts(&["prod:zellij"]);
+    h.state.chrome.set_host_reach(
         [(
             "prod:zellij".to_string(),
             reach("zellij", "ssh to prod", "", "ssh -- prod zellij ls"),
@@ -7521,14 +7551,14 @@ async fn a_host_screen_headline_reads_as_host_over_mux() {
         .into_iter()
         .collect(),
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "prod:zellij".into(),
         vec![],
         Some("connection refused".into()),
         &mut h.state,
     );
     select_unreachable_host(&mut h).await;
-    // The host's one card opens the host's screen; a step down opens its source's.
+    // The machine's one card opens the machine's screen; a step down opens its host's.
     h.ctrl(KeyCode::Down);
     let out = h.view_text();
     assert!(
@@ -7541,16 +7571,16 @@ async fn a_host_screen_headline_reads_as_host_over_mux() {
     );
 }
 
-/// A reach entry for `source`, so a screen test states what the app would have resolved.
+/// A reach entry for `host`, so a screen test states what the app would have resolved.
 /// A host xmux never reached is offered under the mux it WOULD have tried. That guess
 /// must not reach the screen wearing the grammar every confirmed pair wears: the screen
-/// for such a host reads the host alone.
+/// for such a host reads the machine alone.
 #[tokio::test]
 async fn a_host_that_answered_nothing_headlines_without_a_mux() {
-    let mut h = Harness::from_sources(&["prod"]);
+    let mut h = Harness::from_hosts(&["prod"]);
     // The reach record carries the mux that was ASKED FOR, which is what the diagnostic
     // rows state; it is not an answer, and the headline must not read it as one.
-    h.state.chrome.set_source_reach(
+    h.state.chrome.set_host_reach(
         [(
             "prod".to_string(),
             reach("tmux", "ssh to prod", "", "ssh -- prod tmux ls"),
@@ -7558,7 +7588,7 @@ async fn a_host_that_answered_nothing_headlines_without_a_mux() {
         .into_iter()
         .collect(),
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "prod".into(),
         vec![],
         Some("connection refused".into()),
@@ -7570,7 +7600,7 @@ async fn a_host_that_answered_nothing_headlines_without_a_mux() {
     let out = h.view_text();
     assert!(
         out.lines().any(|l| l.trim() == "machine prod"),
-        "the headline is the host alone:\n{out}"
+        "the headline is the machine alone:\n{out}"
     );
     assert!(
         !out.contains("prod/tmux"),
@@ -7587,8 +7617,8 @@ async fn a_host_that_answered_nothing_headlines_without_a_mux() {
 /// reads it. An empty host answered - having no session is an answer.
 #[tokio::test]
 async fn a_host_that_answered_headlines_with_its_mux() {
-    let mut h = Harness::from_sources(&["fresh"]);
-    h.state.chrome.set_source_reach(
+    let mut h = Harness::from_hosts(&["fresh"]);
+    h.state.chrome.set_host_reach(
         [(
             "fresh".to_string(),
             reach("tmux", "ssh to fresh", "", "ssh -- fresh tmux ls"),
@@ -7596,7 +7626,7 @@ async fn a_host_that_answered_headlines_with_its_mux() {
         .into_iter()
         .collect(),
     );
-    h.sw.apply_source_result("fresh".into(), vec![], None, &mut h.state);
+    h.sw.apply_host_result("fresh".into(), vec![], None, &mut h.state);
     h.draw();
     let out = h.view_text();
     assert!(
@@ -7605,8 +7635,8 @@ async fn a_host_that_answered_headlines_with_its_mux() {
     );
 }
 
-fn reach(mux: &str, machine: &str, socket: &str, probe: &str) -> crate::ui::chrome::SourceReach {
-    crate::ui::chrome::SourceReach {
+fn reach(mux: &str, machine: &str, socket: &str, probe: &str) -> crate::ui::chrome::HostReach {
+    crate::ui::chrome::HostReach {
         ssh: false,
         probe: probe.into(),
         machine: machine.into(),
@@ -7618,7 +7648,7 @@ fn reach(mux: &str, machine: &str, socket: &str, probe: &str) -> crate::ui::chro
     }
 }
 
-/// Selects the first card of an unreachable host or source, whatever else the nav holds.
+/// Selects the first card of an unreachable host or machine, whatever else the nav holds.
 async fn select_unreachable_host(h: &mut Harness) {
     h.key(KeyCode::End).await;
     for _ in 0..64 {
@@ -7639,13 +7669,13 @@ async fn select_unreachable_host(h: &mut Harness) {
 }
 
 #[tokio::test]
-async fn unreachable_host_screen_states_what_was_asked_and_over_what() {
+async fn unreachable_machine_screen_states_what_was_asked_and_over_what() {
     // The message alone says a host failed, not what xmux asked of it. The mux and the
     // machine are separate rows because they are the two things that can be wrong
     // independently, and the probe is the command itself, so the user can run it by hand
     // instead of taking the app's word for the failure.
-    let mut h = Harness::from_sources(&["prod"]);
-    h.state.chrome.set_source_reach(
+    let mut h = Harness::from_hosts(&["prod"]);
+    h.state.chrome.set_host_reach(
         [(
             "prod".to_string(),
             reach(
@@ -7658,7 +7688,7 @@ async fn unreachable_host_screen_states_what_was_asked_and_over_what() {
         .into_iter()
         .collect(),
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "prod".into(),
         vec![],
         Some("connection refused".into()),
@@ -7683,8 +7713,8 @@ async fn unreachable_host_screen_states_what_was_asked_and_over_what() {
 
 #[tokio::test]
 async fn unreachable_screen_keeps_last_success_and_folds_diagnostics() {
-    let mut h = Harness::from_sources(&["prod"]);
-    h.state.chrome.source_reach.insert(
+    let mut h = Harness::from_hosts(&["prod"]);
+    h.state.chrome.host_reach.insert(
         "prod".into(),
         reach(
             "tmux",
@@ -7693,9 +7723,9 @@ async fn unreachable_screen_keeps_last_success_and_folds_diagnostics() {
             "ssh prod tmux ls",
         ),
     );
-    h.sw.apply_source_result("prod".into(), vec![], None, &mut h.state);
+    h.sw.apply_host_result("prod".into(), vec![], None, &mut h.state);
     let last = h.state.last_reached["prod"];
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "prod".into(),
         vec![],
         Some("connection refused".into()),
@@ -7719,12 +7749,12 @@ async fn unreachable_screen_keeps_last_success_and_folds_diagnostics() {
 }
 
 #[tokio::test]
-async fn a_source_nothing_was_resolved_for_gets_no_reach_rows() {
+async fn a_host_nothing_was_resolved_for_gets_no_reach_rows() {
     // An empty map is not "reached by nothing": it is nothing resolved. Those rows are
     // absent rather than blank, the provider row's own rule, so the screen never names a
     // datum it does not have.
-    let mut h = Harness::from_sources(&["prod"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["prod"]);
+    h.sw.apply_host_result(
         "prod".into(),
         vec![],
         Some("connection refused".into()),
@@ -7752,15 +7782,15 @@ async fn unreachable_host_screen_names_the_other_muxes_on_the_machine() {
     // same machine serving sessions says the box is up and this mux is not. The row
     // carries each sibling's own state, so the answer is on the screen rather than being
     // something the user reconstructs from the nav.
-    let mut h = Harness::from_sources(&["prod:tmux", "prod:zellij", "local"]);
-    h.sw.apply_source_result(
+    let mut h = Harness::from_hosts(&["prod:tmux", "prod:zellij", "local"]);
+    h.sw.apply_host_result(
         "prod:zellij".into(),
         vec![sess_mux("prod:zellij", "infer", "zellij")],
         None,
         &mut h.state,
     );
-    h.sw.apply_source_result("local".into(), vec![], None, &mut h.state);
-    h.sw.apply_source_result(
+    h.sw.apply_host_result("local".into(), vec![], None, &mut h.state);
+    h.sw.apply_host_result(
         "prod:tmux".into(),
         vec![],
         Some("no server running".into()),
@@ -7781,18 +7811,18 @@ async fn unreachable_host_screen_names_the_other_muxes_on_the_machine() {
     );
     assert!(
         !out.contains("local ·"),
-        "a source on ANOTHER machine is not a sibling:\n{out}"
+        "a host on ANOTHER machine is not a sibling:\n{out}"
     );
 }
 
 #[tokio::test]
-async fn unreachable_host_screen_separates_a_standing_failure_from_a_blip() {
+async fn unreachable_machine_screen_separates_a_standing_failure_from_a_blip() {
     // One failed sweep and a host that has not answered since launch read identically in
     // the message. The run length is what parts them, and it clears the moment the host
     // answers - a stale count would keep calling a live host a standing failure.
-    let mut h = Harness::from_sources(&["prod"]);
+    let mut h = Harness::from_hosts(&["prod"]);
     for _ in 0..3 {
-        h.sw.apply_source_result(
+        h.sw.apply_host_result(
             "prod".into(),
             vec![],
             Some("connection refused".into()),
@@ -7805,7 +7835,7 @@ async fn unreachable_host_screen_separates_a_standing_failure_from_a_blip() {
     assert!(out.contains("failures"), "the row is named:\n{out}");
     assert!(out.contains("3 in a row"), "and counts them:\n{out}");
 
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "prod".into(),
         vec![sess("prod", "editor", 1, false)],
         None,
@@ -7819,15 +7849,15 @@ async fn unreachable_host_screen_separates_a_standing_failure_from_a_blip() {
 }
 
 #[tokio::test]
-async fn unreachable_host_screen_names_the_log_file() {
+async fn unreachable_machine_screen_names_the_log_file() {
     // Everything xmux dispatched and what came back is written down. The screen names the
     // file, so the full history is findable rather than being something the user has to
     // already know about.
-    let mut h = Harness::from_sources(&["prod"]);
+    let mut h = Harness::from_hosts(&["prod"]);
     h.state
         .chrome
         .set_log_path("/home/h/.xmux/xmux.log.<date>".into());
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "prod".into(),
         vec![],
         Some("connection refused".into()),
@@ -7957,9 +7987,9 @@ async fn a_selection_that_falls_to_its_host_card_is_painted() {
     // selection on a host card while the terminal view keeps the focus.
     let mut h = Harness::new(scan_with_a_host_band());
     h.sw.sync_view_focus(true);
-    for source in ["local", "jupiter00"] {
-        h.sw.apply_source_result(
-            source.into(),
+    for host in ["local", "jupiter00"] {
+        h.sw.apply_host_result(
+            host.into(),
             vec![],
             Some("logged out; log in again or re-scan".into()),
             &mut h.state,
@@ -8000,8 +8030,8 @@ async fn a_jump_to_a_hidden_host_card_paints_it() {
 }
 
 /// One host serving `names`, every one a session.
-fn host_with(source: &str, names: &[&str]) -> Vec<Session> {
-    names.iter().map(|n| sess_mux(source, n, "tmux")).collect()
+fn host_with(host: &str, names: &[&str]) -> Vec<Session> {
+    names.iter().map(|n| sess_mux(host, n, "tmux")).collect()
 }
 
 /// The number the card naming `name` carries.
@@ -8009,7 +8039,7 @@ fn number_of(sw: &Switcher, name: &str) -> Option<usize> {
     (0..sw.rows.len())
         .find(|&i| match &sw.rows[i].reference {
             RowRef::Session { sess } => sess.name == name,
-            RowRef::Host { source, .. } => source == name,
+            RowRef::Host { host, .. } => host == name,
             RowRef::Machine { machine, .. } => machine == name,
             RowRef::Section { .. } => false,
         })
@@ -8019,12 +8049,12 @@ fn number_of(sw: &Switcher, name: &str) -> Option<usize> {
 #[tokio::test]
 async fn default_numbers_follow_the_sorted_current_list_and_jump() {
     let mut h = Harness::new(one_host_scan("h", host_with("h", &["a", "b", "c"])));
-    h.sw.apply_source_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
+    h.sw.apply_host_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
     assert_eq!(
         [number_of(&h.sw, "a"), number_of(&h.sw, "c")],
         [Some(1), Some(2)]
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "h".into(),
         host_with("h", &["a", "aa", "c"]),
         None,
@@ -8061,7 +8091,7 @@ async fn a_card_keeps_its_number_and_an_ended_cards_number_stays_vacant() {
         [Some(1), Some(2), Some(3)]
     );
     // b ends: c keeps 3 and 2 stays vacant; the screen writes the same number.
-    h.sw.apply_source_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
+    h.sw.apply_host_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
     h.draw();
     assert_eq!(number_of(&h.sw, "c"), Some(3), "no card shifts");
     assert!(
@@ -8072,7 +8102,7 @@ async fn a_card_keeps_its_number_and_an_ended_cards_number_stays_vacant() {
         h.nav_cards_text()
     );
     // A new card takes the next number, never the vacant one.
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "h".into(),
         host_with("h", &["a", "c", "d"]),
         None,
@@ -8080,7 +8110,7 @@ async fn a_card_keeps_its_number_and_an_ended_cards_number_stays_vacant() {
     );
     assert_eq!(number_of(&h.sw, "d"), Some(4));
     // The same session returning under its name takes its number back.
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "h".into(),
         host_with("h", &["a", "b", "c", "d"]),
         None,
@@ -8093,7 +8123,7 @@ async fn a_card_keeps_its_number_and_an_ended_cards_number_stays_vacant() {
 async fn a_jump_lands_by_the_fixed_number_and_refuses_a_vacant_one() {
     let mut h = Harness::new(one_host_scan("h", host_with("h", &["a", "b", "c"])));
     h.sw.set_renumbering(false, &mut h.state);
-    h.sw.apply_source_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
+    h.sw.apply_host_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
     h.draw();
     let start = h.sw.selected;
     h.key(KeyCode::Char('2')).await;
@@ -8125,26 +8155,26 @@ async fn a_jump_lands_by_the_fixed_number_and_refuses_a_vacant_one() {
 async fn a_full_rescan_deals_the_numbers_again_in_list_order() {
     let mut h = Harness::new(one_host_scan("h", host_with("h", &["a", "b", "c"])));
     h.sw.set_renumbering(false, &mut h.state);
-    h.sw.apply_source_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
+    h.sw.apply_host_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
     assert_eq!(number_of(&h.sw, "c"), Some(3));
     h.sw.request_rescan(&mut h.state);
-    h.sw.apply_source_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
+    h.sw.apply_host_result("h".into(), host_with("h", &["a", "c"]), None, &mut h.state);
     assert_eq!(
         [number_of(&h.sw, "a"), number_of(&h.sw, "c")],
         [Some(1), Some(2)],
         "the re-scan closes the vacancy"
     );
-    // Once that scan has heard from every source the numbers are fixed again.
-    h.sw.apply_source_result("h".into(), host_with("h", &["c"]), None, &mut h.state);
+    // Once that scan has heard from every host the numbers are fixed again.
+    h.sw.apply_host_result("h".into(), host_with("h", &["c"]), None, &mut h.state);
     assert_eq!(number_of(&h.sw, "c"), Some(2));
 }
 
 #[tokio::test]
 async fn numbers_are_dealt_in_list_order_while_the_launch_scan_runs() {
-    let mut h = Harness::from_sources(&["alpha", "beta"]);
+    let mut h = Harness::from_hosts(&["alpha", "beta"]);
     h.sw.set_renumbering(false, &mut h.state);
-    h.sw.apply_source_result("beta".into(), host_with("beta", &["x"]), None, &mut h.state);
-    h.sw.apply_source_result(
+    h.sw.apply_host_result("beta".into(), host_with("beta", &["x"]), None, &mut h.state);
+    h.sw.apply_host_result(
         "alpha".into(),
         host_with("alpha", &["y"]),
         None,
@@ -8155,7 +8185,7 @@ async fn numbers_are_dealt_in_list_order_while_the_launch_scan_runs() {
         [Some(1), Some(2)],
         "the launch scan ends with the numbers in list order"
     );
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "beta".into(),
         host_with("beta", &["w", "x"]),
         None,
@@ -8165,18 +8195,18 @@ async fn numbers_are_dealt_in_list_order_while_the_launch_scan_runs() {
     assert_eq!(number_of(&h.sw, "w"), Some(3));
 }
 
-/// A host with a session, a blocked host, two unreachable ones, and a host whose listing
+/// A host with a session, a blocked machine, two unreachable ones, and a host whose listing
 /// failed.
 fn problem_scan() -> Scan {
-    let failed = |source: &str, err: &str| Group {
-        source: source.into(),
+    let failed = |host: &str, err: &str| Group {
+        host: host.into(),
         err: Some(err.into()),
         sessions: vec![],
     };
     Scan {
         groups: vec![
             Group {
-                source: "aaa".into(),
+                host: "aaa".into(),
                 err: None,
                 sessions: vec![sess_mux("aaa", "work", "tmux")],
             },
@@ -8192,14 +8222,12 @@ fn problem_scan() -> Scan {
 }
 
 #[tokio::test]
-async fn the_check_table_groups_problem_hosts_by_cause() {
+async fn the_check_table_groups_problem_machines_by_cause() {
     use crate::model::FailureKind;
     let mut h = Harness::new(problem_scan());
     let entries = h.sw.check_entries(&h.state);
-    let rows: Vec<(&str, FailureKind)> = entries
-        .iter()
-        .map(|e| (e.source.as_str(), e.kind))
-        .collect();
+    let rows: Vec<(&str, FailureKind)> =
+        entries.iter().map(|e| (e.host.as_str(), e.kind)).collect();
     assert_eq!(
         rows,
         [
@@ -8223,14 +8251,14 @@ async fn the_check_table_groups_problem_hosts_by_cause() {
     assert!(text.contains("✗ list failed"), "{text}");
     assert!(
         text.contains("dead-1     connection refused"),
-        "a host and its reason share one row: {text}"
+        "a machine and its reason share one row: {text}"
     );
     assert!(text.contains("Enter open · Esc close ╯"), "{text}");
     assert!(!text.contains("hidden"), "{text}");
 }
 
 #[tokio::test]
-async fn enter_on_a_blocked_host_selects_it_and_hands_the_focus_to_its_login_pane() {
+async fn enter_on_a_blocked_machine_selects_it_and_hands_the_focus_to_its_login_pane() {
     let mut h = Harness::new(problem_scan());
     h.sw.toggle_check(&mut h.state);
     let mut armed = false;
@@ -8240,12 +8268,12 @@ async fn enter_on_a_blocked_host_selects_it_and_hands_the_focus_to_its_login_pan
         "the login pane takes the keys"
     );
     assert!(h.state.modal.is_none(), "the table closes");
-    assert!(h.sw.current_host_blocked());
-    assert_eq!(h.sw.current_source().as_deref(), Some("login-box"));
+    assert!(h.sw.current_machine_blocked());
+    assert_eq!(h.sw.current_host().as_deref(), Some("login-box"));
 }
 
 #[tokio::test]
-async fn enter_on_a_disconnected_host_opens_login() {
+async fn enter_on_a_disconnected_machine_opens_login() {
     let mut h = Harness::new(problem_scan());
     h.sw.toggle_check(&mut h.state);
     let mut armed = false;
@@ -8257,11 +8285,11 @@ async fn enter_on_a_disconnected_host_opens_login() {
         "the login pane takes focus"
     );
     assert!(h.state.filter.is_empty());
-    assert_eq!(h.sw.current_source().as_deref(), Some("dead-2"));
+    assert_eq!(h.sw.current_host().as_deref(), Some("dead-2"));
     assert_eq!(
         h.sw.selected_node(),
-        Some(crate::model::Node::Host("dead-2".into())),
-        "an unreachable host is one card, and its login is on its screen"
+        Some(crate::model::Node::Machine("dead-2".into())),
+        "an unreachable machine is one card, and its login is on its screen"
     );
     assert_eq!(
         h.sw.current_view_screen(&h.state),
@@ -8270,7 +8298,7 @@ async fn enter_on_a_disconnected_host_opens_login() {
 }
 
 #[tokio::test]
-async fn command_palette_searches_commands_and_host_login() {
+async fn command_palette_searches_commands_and_machine_login() {
     let mut h = Harness::new(problem_scan());
     h.sw.toggle_palette(&mut h.state);
     h.draw();
@@ -8330,8 +8358,8 @@ async fn the_check_table_closes_on_esc_and_its_selection_stays_on_a_row() {
 }
 
 #[tokio::test]
-async fn prefix_r_asks_for_the_selected_host_alone_unless_it_is_scanning() {
-    let mut h = Harness::new(sources_scan(vec![
+async fn prefix_r_asks_for_the_selected_machine_alone_unless_it_is_scanning() {
+    let mut h = Harness::new(hosts_scan(vec![
         ("alpha", host_with("alpha", &["a"])),
         ("beta", host_with("beta", &["b"])),
     ]));
@@ -8339,13 +8367,13 @@ async fn prefix_r_asks_for_the_selected_host_alone_unless_it_is_scanning() {
         KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
         &mut h.state,
     );
-    let machine = crate::session::machine_of(&h.sw.current_source().unwrap()).to_string();
-    assert!(matches!(&cmds[..], [Command::RescanHost(m)] if *m == machine));
+    let machine = crate::session::machine_of(&h.sw.current_host().unwrap()).to_string();
+    assert!(matches!(&cmds[..], [Command::RescanMachine(m)] if *m == machine));
     h.sw.mark_machine_scanning(&machine, &mut h.state);
     assert_eq!(
         h.state.scanning.len(),
         1,
-        "only that machine's source is in flight"
+        "only that machine's host is in flight"
     );
     assert!(
         number_of(&h.sw, "a").is_some() && number_of(&h.sw, "b").is_some(),
@@ -8370,14 +8398,14 @@ async fn the_key_list_carries_no_scope_or_hidden_host_status() {
 
 #[tokio::test]
 async fn numbers_stay_open_until_a_held_roster_answers() {
-    // The launch roster names the remote hosts after the first source already answered:
+    // The launch roster names the remote machines after the first host already answered:
     // the numbers are dealt in list order until that roster is in.
-    let mut h = Harness::from_sources(&["beta"]);
+    let mut h = Harness::from_hosts(&["beta"]);
     h.sw.set_renumbering(false, &mut h.state);
     h.sw.hold_numbers(true, &h.state);
-    h.sw.apply_source_result("beta".into(), host_with("beta", &["x"]), None, &mut h.state);
-    h.sw.add_source("alpha".into(), &mut h.state);
-    h.sw.apply_source_result(
+    h.sw.apply_host_result("beta".into(), host_with("beta", &["x"]), None, &mut h.state);
+    h.sw.add_host("alpha".into(), &mut h.state);
+    h.sw.apply_host_result(
         "alpha".into(),
         host_with("alpha", &["y"]),
         None,
@@ -8388,7 +8416,7 @@ async fn numbers_stay_open_until_a_held_roster_answers() {
         [Some(1), Some(2)]
     );
     h.sw.hold_numbers(false, &h.state);
-    h.sw.apply_source_result(
+    h.sw.apply_host_result(
         "beta".into(),
         host_with("beta", &["w", "x"]),
         None,
@@ -8446,7 +8474,7 @@ async fn every_text_field_puts_the_hardware_cursor_on_its_caret() {
 async fn a_popover_field_puts_the_hardware_cursor_on_its_caret() {
     let mut h = Harness::new(Scan {
         groups: vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![],
         }],

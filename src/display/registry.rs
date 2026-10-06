@@ -25,7 +25,7 @@ use crate::display::attachment::Attachment;
 use crate::display::grid::Grid;
 
 pub struct AttachRegistry {
-    /// Keyed by `Session::address()` (`source/session`).
+    /// Keyed by `Session::address()` (`host/session`).
     map: HashMap<String, Attachment>,
     /// Fresh attachments kept live but off-screen while their grids paint. Input and
     /// resize target these before the stale visible attachment under the same key.
@@ -126,7 +126,7 @@ impl AttachRegistry {
     }
 
     /// Every owned attachment address, installed or paint-pending, for inventory
-    /// reconciliation and source cleanup.
+    /// reconciliation and host cleanup.
     pub fn addresses(&self) -> Vec<String> {
         let mut addresses: Vec<String> = self.map.keys().cloned().collect();
         addresses.extend(

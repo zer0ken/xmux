@@ -7,7 +7,7 @@ mod modal;
 pub(crate) mod notify;
 mod view;
 
-pub use chrome::{Chrome, SourceReach, ViewBorderColors};
+pub use chrome::{Chrome, HostReach, ViewBorderColors};
 pub use focus::{Focus, ModalKind, ViewFocus};
 pub(crate) use modal::{
     feed_reader, is_inputting, is_popup_open, is_reader, modal_kind, HelpMap, Input, InputMode,
@@ -30,7 +30,7 @@ pub struct State {
     // ponytail: flat fields, not an Inventory sub-struct - bundle them if a reader
     // ever needs the whole group at once.
     pub groups: Vec<Group>,
-    /// Sources whose `list-sessions` has not yet returned (host shows scanning…).
+    /// Hosts whose `list-sessions` has not yet returned (host shows scanning…).
     pub scanning: HashSet<String>,
     /// Every machine on the roster, the level above the groups. A machine with no group
     /// stands on the nav by itself.
@@ -38,7 +38,7 @@ pub struct State {
     /// Machines with no group whose answer is still on its way: their reachability probe,
     /// or the question of which muxes they serve.
     pub machine_scanning: HashSet<String>,
-    /// The time each outstanding source scan must have answered by.
+    /// The time each outstanding host scan must have answered by.
     pub(crate) scan_deadlines: HashMap<String, std::time::Instant>,
     /// The time each machine in `machine_scanning` must have answered by.
     pub(crate) machine_scan_deadlines: HashMap<String, std::time::Instant>,
@@ -56,7 +56,7 @@ pub struct State {
     pub logged_in: HashSet<String>,
     /// SSH authentication reported by the connection that last reached each machine.
     pub auth_methods: HashMap<String, crate::model::AuthMethod>,
-    /// Authentication reported by the current live display attachment of each source.
+    /// Authentication reported by the current live display attachment of each host.
     pub display_auth_methods: HashMap<String, crate::model::AuthMethod>,
     /// Machines whose known authentication was invalidated until the user asks again.
     /// Losing a held password, or a refusal of a machine whose method was known, lands
@@ -67,18 +67,18 @@ pub struct State {
     /// follow-up probe cannot replace the authentication diagnosis the user needs.
     pub login_reports: HashMap<String, LoginOutcome>,
     /// The last requested public-key registration result for each machine. It outlives
-    /// the login pane so a later host screen can still state what happened.
+    /// the login pane so a later machine screen can still state what happened.
     pub registration_reports: HashMap<String, RegistrationOutcome>,
-    /// How many times in a row each source has failed to enumerate, reset to zero the
+    /// How many times in a row each host has failed to enumerate, reset to zero the
     /// moment it answers. Written at the single result-apply site and read only to be
     /// SHOWN: the unreachable screen states it, because one failed sweep and a host that
     /// has not answered since launch are different problems behind the same message.
     pub failure_runs: HashMap<String, u32>,
-    /// Last successful enumeration of each source in this run.
+    /// Last successful enumeration of each host in this run.
     pub last_reached: HashMap<String, std::time::SystemTime>,
-    /// Sources whose metadata push channel currently answers.
-    pub live_sources: HashSet<String>,
-    /// Sources whose host-screen diagnostic rows are expanded.
+    /// Hosts whose metadata push channel currently answers.
+    pub live_hosts: HashSet<String>,
+    /// Hosts whose host-screen diagnostic rows are expanded.
     pub(crate) host_details: HashSet<String>,
     /// Active fuzzy-filter text (drives the visible tree + the hint_bar).
     pub filter: String,
@@ -125,7 +125,7 @@ pub struct State {
     /// values the user is entering INTO the login pane (the terminal view) and which
     /// element the keys drive. It is NOT a modal - it never routes through the nav input
     /// path - it is a feature of the login pane, driven only while the terminal view
-    /// holds a blocked host. `source` pins it to that host so moving to another card
+    /// holds a blocked host. `host` pins it to that host so moving to another card
     /// starts a fresh draft. The password moves from here into the process-memory
     /// credential store; it is drawn masked and never logged or serialized.
     pub login: Option<LoginDraft>,
@@ -134,7 +134,7 @@ pub struct State {
     /// while that validation runs, so its presence is what tells
     /// the pane to say a login is under way instead of offering one.
     pub login_run: Option<crate::link::unlock::RunningLogin>,
-    /// The steps of each source's last login attempt and where each stands. They outlive
+    /// The steps of each host's last login attempt and where each stands. They outlive
     /// the running handle, because the mux search a working login starts runs after the
     /// verdict, and a failed login keeps the step it stopped at on screen until the
     /// machine is looked at again.
@@ -156,7 +156,7 @@ pub enum LoginFocus {
     AfterSshConfig,
     AfterPublicKey,
     Submit,
-    /// The choice that unfolds the failure's full ssh text and host facts. A stop only
+    /// The choice that unfolds the failure's full ssh text and machine facts. A stop only
     /// while the pane states a failure.
     Details,
 }
@@ -171,20 +171,20 @@ pub enum LoginFocus {
 /// show where each value came from.
 #[derive(Clone, Default)]
 pub struct LoginDraft {
-    /// The blocked source this draft belongs to; a different current source resets it.
-    pub source: String,
+    /// The blocked host this draft belongs to; a different current host resets it.
+    pub host: String,
     pub address: String,
     pub port: String,
     pub username: String,
     pub password: SecretInput,
     pub after_login: AfterLogin,
     pub focus: LoginFocus,
-    /// Whether the failure's full ssh text and host facts are unfolded.
+    /// Whether the failure's full ssh text and machine facts are unfolded.
     pub details: bool,
     pub default_address: String,
     pub default_port: String,
     pub default_username: String,
-    /// What ssh effectively uses for the host when a `Host` block names it, which the
+    /// What ssh effectively uses for the machine when a `Host` block names it, which the
     /// entered values are compared with to decide whether recording them would change
     /// anything.
     pub ssh_effective: Option<crate::transport::Login>,
@@ -193,7 +193,7 @@ pub struct LoginDraft {
 impl std::fmt::Debug for LoginDraft {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoginDraft")
-            .field("source", &self.source)
+            .field("host", &self.host)
             .field("address", &self.address)
             .field("port", &self.port)
             .field("username", &self.username)
@@ -244,8 +244,8 @@ impl LoginDraft {
     }
 
     /// Whether recording the entered values in ssh config would change what ssh uses:
-    /// no `Host` block names the host, so recording makes it known to ssh, or some value
-    /// the login names differs from what ssh effectively uses. A host whose block already
+    /// no `Host` block names the machine, so recording makes it known to ssh, or some value
+    /// the login names differs from what ssh effectively uses. A machine whose block already
     /// leads ssh to these values, xmux's own included, is not offered a recording that
     /// writes them again. ssh compares host names without case.
     pub fn offers_ssh_config(&self) -> bool {
@@ -307,7 +307,7 @@ impl LoginDraft {
     }
 }
 
-/// One key the login pane or a host's or source's screen understands, decoded from the
+/// One key the login pane or a machine's or host's screen understands, decoded from the
 /// terminal's bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Key {
@@ -375,11 +375,11 @@ pub(crate) fn decode_keys(bytes: &[u8]) -> Vec<Key> {
 
 impl State {
     /// The current session-list update method, including a closed push channel.
-    pub(crate) fn refresh_words(&self, source: &str) -> &str {
-        let Some(reach) = self.chrome.source_reach.get(source) else {
+    pub(crate) fn refresh_words(&self, host: &str) -> &str {
+        let Some(reach) = self.chrome.host_reach.get(host) else {
             return "on request";
         };
-        if reach.refresh == "live updates" && !self.live_sources.contains(source) {
+        if reach.refresh == "live updates" && !self.live_hosts.contains(host) {
             "last observed (channel closed)"
         } else {
             &reach.refresh
@@ -420,29 +420,29 @@ impl State {
         modal_kind(&self.modal)
     }
 
-    /// Feeds terminal-view keystrokes into the login pane for `source`.
+    /// Feeds terminal-view keystrokes into the login pane for `host`.
     ///
     /// The pane is a form: printable characters land in the focused text field, Tab and
     /// the vertical arrows walk the stops, Enter activates the focused one, and Space
     /// picks a choice. Enter on a text field passes the focus on, so filling the pane top
     /// to bottom with Enter alone ends on the button, where Enter submits.
     ///
-    /// A draft for a different source is reset first. Address and port start at the
+    /// A draft for a different host is reset first. Address and port start at the
     /// values ssh would have used, while username needs input when no host stanza
     /// supplies it. On submit the password leaves the rendered draft and enters the
     /// process-only credential broker. A failed or replaced login removes that exact
     /// credential.
-    pub fn feed_login(&mut self, source: &str, bytes: &[u8]) -> Option<crate::model::Command> {
-        let details = self.login_failure(source).is_some();
-        let defaults = self.chrome.login_defaults(source);
+    pub fn feed_login(&mut self, host: &str, bytes: &[u8]) -> Option<crate::model::Command> {
+        let details = self.login_failure(host).is_some();
+        let defaults = self.chrome.login_defaults(host);
         let address = defaults.address.value;
         let port = defaults.port.value;
         let username = defaults.username.value;
         let draft = match &mut self.login {
-            Some(d) if d.source == source => d,
+            Some(d) if d.host == host => d,
             _ => {
                 self.login = Some(LoginDraft {
-                    source: source.to_string(),
+                    host: host.to_string(),
                     address: address.clone(),
                     port: port.clone(),
                     username: username.clone(),
@@ -490,7 +490,7 @@ impl State {
             return None;
         }
         Some(crate::model::Command::RunLogin {
-            source: draft.source.clone(),
+            host: draft.host.clone(),
             login: draft.login(),
             password: std::mem::take(&mut draft.password),
             after_login: draft.after_login,
@@ -501,9 +501,9 @@ impl State {
     /// (reachable or unreachable per its `err`) and every session is present. Other
     /// state fields stay default.
     pub fn from_scan(scan: Scan) -> State {
-        let mut state = State::from_sources(Vec::new());
+        let mut state = State::from_hosts(Vec::new());
         for group in &scan.groups {
-            let machine = crate::session::machine_of(&group.source);
+            let machine = crate::session::machine_of(&group.host);
             if state.machine(machine).is_none() {
                 state.machines.push(Machine::new(machine));
             }
@@ -512,13 +512,13 @@ impl State {
         state
     }
 
-    /// Seeds the inventory from the resolved source list alone - no probing - so
+    /// Seeds the inventory from the resolved host list alone - no probing - so
     /// the first frame paints host-skeleton rows, each in a scanning state. Other
     /// state fields stay default.
-    pub fn from_sources(aliases: Vec<String>) -> State {
+    pub fn from_hosts(aliases: Vec<String>) -> State {
         let mut machines: Vec<Machine> = Vec::new();
-        for source in &aliases {
-            let machine = crate::session::machine_of(source);
+        for host in &aliases {
+            let machine = crate::session::machine_of(host);
             if !machines.iter().any(|m| m.name == machine) {
                 machines.push(Machine::new(machine));
             }
@@ -526,8 +526,8 @@ impl State {
         let scanning = aliases.iter().cloned().collect();
         let groups = aliases
             .into_iter()
-            .map(|source| Group {
-                source,
+            .map(|host| Group {
+                host,
                 err: None,
                 sessions: Vec::new(),
             })
@@ -540,17 +540,17 @@ impl State {
         }
     }
 
-    /// Seeds the inventory from the roster: a scanning skeleton for every source, and
-    /// every machine, each one with no source scanning on its own.
-    pub fn from_roster(sources: Vec<String>, machines: Vec<String>) -> State {
-        let mut state = State::from_sources(sources);
+    /// Seeds the inventory from the roster: a scanning skeleton for every host, and
+    /// every machine, each one with no host scanning on its own.
+    pub fn from_roster(hosts: Vec<String>, machines: Vec<String>) -> State {
+        let mut state = State::from_hosts(hosts);
         for machine in machines {
             state.add_machine(machine);
         }
         state
     }
 
-    /// Puts `machine` on the roster, scanning when no source of it is listed. A machine
+    /// Puts `machine` on the roster, scanning when no host of it is listed. A machine
     /// already there is left as it is.
     pub(crate) fn add_machine(&mut self, machine: String) {
         if self.machines.iter().any(|m| m.name == machine) {
@@ -571,26 +571,26 @@ impl State {
         self.machines.iter_mut().find(|m| m.name == machine)
     }
 
-    /// Whether any answer is still on its way: a source's listing, or the answer of a
-    /// machine with no source known.
+    /// Whether any answer is still on its way: a host's listing, or the answer of a
+    /// machine with no host known.
     pub(crate) fn scanning_any(&self) -> bool {
         !self.scanning.is_empty() || !self.machine_scanning.is_empty()
     }
 
-    /// Whether `machine` stands on the nav by itself: on the roster, with no source
+    /// Whether `machine` stands on the nav by itself: on the roster, with no host
     /// listed, and not settled as serving no mux.
     pub(crate) fn stands_alone(&self, machine: &str) -> bool {
         self.machine(machine).is_some_and(|m| !m.muxless) && !self.has_hosts(machine)
     }
 
-    /// Whether any source of `machine` is listed.
+    /// Whether any host of `machine` is listed.
     pub(crate) fn has_hosts(&self, machine: &str) -> bool {
         self.groups
             .iter()
-            .any(|g| crate::session::machine_of(&g.source) == machine)
+            .any(|g| crate::session::machine_of(&g.host) == machine)
     }
 
-    /// The machines that stand on the nav by themselves: on the roster, with no source
+    /// The machines that stand on the nav by themselves: on the roster, with no host
     /// listed, and not settled as serving no mux.
     pub(crate) fn hostless_machines(&self) -> Vec<&Machine> {
         self.machines
@@ -600,26 +600,26 @@ impl State {
     }
 
     /// Resolves a `switch` target against the current inventory - the set the nav
-    /// shows. `Ok` when a session with exactly that source and session is listed;
-    /// `Err` names which half is missing (an absent source, or a present source with no
+    /// shows. `Ok` when a session with exactly that host and session is listed;
+    /// `Err` names which half is missing (an absent host, or a present host with no
     /// matching session). The answer the ctl `switch` verb replies with: resolution,
     /// not attach success, which is async and confirms later.
     pub fn resolve_switch_address(&self, address: &crate::session::Address) -> Result<(), String> {
         let found = self.groups.iter().any(|g| {
             g.sessions
                 .iter()
-                .any(|s| s.source == address.source && s.name == address.session)
+                .any(|s| s.host == address.host && s.name == address.session)
         });
         if found {
             return Ok(());
         }
-        if self.groups.iter().any(|g| g.source == address.source) {
+        if self.groups.iter().any(|g| g.host == address.host) {
             Err(format!(
-                "no such session {:?} on source {:?}",
-                address.session, address.source
+                "no such session {:?} on host {:?}",
+                address.session, address.host
             ))
         } else {
-            Err(format!("no such source {:?}", address.source))
+            Err(format!("no such host {:?}", address.host))
         }
     }
 
@@ -730,7 +730,7 @@ impl State {
                 // an in-flight attach on the same shared host while the selection moves to
                 // another of its sessions). Only on an address change.
                 let addr =
-                    crate::session::Address::new(&self.selection.source, &self.selection.session);
+                    crate::session::Address::new(&self.selection.host, &self.selection.session);
                 if addr != self.last_saved_session {
                     self.last_saved_session = addr.clone();
                     cmds.push(Command::PersistLastSession(addr));
@@ -746,8 +746,8 @@ impl State {
             // The session-lifecycle intent is a pure effect emitter: it folds into the
             // MuxOp the run loop runs off-loop. `apply` mutates no domain state - the
             // inventory change arrives later as the OpResult.
-            Action::CreateSession { source, name } => {
-                vec![Command::RunOp(MuxOp::Create { source, name })]
+            Action::CreateSession { host, name } => {
+                vec![Command::RunOp(MuxOp::Create { host, name })]
             }
         }
     }
@@ -795,7 +795,7 @@ impl State {
             // The unlock verdict is no inventory mutation: the app reacts to it (re-probe
             // the unlocked machine on success, a toast either way).
             OpResult::Login {
-                source,
+                host,
                 login,
                 attempt,
                 outcome,
@@ -806,31 +806,31 @@ impl State {
                 if self
                     .login_run
                     .as_ref()
-                    .is_some_and(|run| run.source == source && run.attempt == attempt)
+                    .is_some_and(|run| run.host == host && run.attempt == attempt)
                 {
                     self.login_run = None;
                 }
                 if let Some(progress) = self
                     .login_progress
-                    .get_mut(&source)
+                    .get_mut(&host)
                     .filter(|p| p.attempt == attempt)
                 {
                     progress.finish(&outcome);
                 }
                 OpFollow::LoginResult {
-                    source,
+                    host,
                     login,
                     outcome,
                 }
             }
             OpResult::LoginProgress {
-                source,
+                host,
                 attempt,
                 event,
             } => {
                 if let Some(progress) = self
                     .login_progress
-                    .get_mut(&source)
+                    .get_mut(&host)
                     .filter(|p| p.attempt == attempt)
                 {
                     progress.apply(&event);
@@ -839,8 +839,8 @@ impl State {
             }
             // A logout's steps are no inventory mutation: the application update
             // transition reads them before the switcher sees any result.
-            OpResult::HostKeysFound { .. }
-            | OpResult::HostKeysRemoved { .. }
+            OpResult::MachineKeysFound { .. }
+            | OpResult::MachineKeysRemoved { .. }
             | OpResult::SshConfigEntriesFound { .. }
             | OpResult::SshConfigEntriesRemoved { .. } => OpFollow::Nothing,
         }
@@ -851,8 +851,8 @@ impl State {
     /// newer look at the machine, so steps that already settled describe an older state
     /// and go.
     pub(crate) fn login_probe_answered(&mut self, machine: &str, probe: u64, err: Option<&str>) {
-        self.login_progress.retain(|source, progress| {
-            if crate::session::machine_of(source) != machine {
+        self.login_progress.retain(|host, progress| {
+            if crate::session::machine_of(host) != machine {
                 return true;
             }
             if probe != 0 && progress.probe_answered(probe, err) {
@@ -867,8 +867,8 @@ impl State {
     /// Steps that settled earlier go too when the machine now answers with a mux, since
     /// they no longer describe it.
     pub(crate) fn login_mux_answered(&mut self, machine: &str, answer: &crate::model::MuxAnswer) {
-        self.login_progress.retain(|source, progress| {
-            if crate::session::machine_of(source) != machine {
+        self.login_progress.retain(|host, progress| {
+            if crate::session::machine_of(host) != machine {
                 return true;
             }
             let was_running = progress.running();
@@ -882,14 +882,14 @@ impl State {
         });
     }
 
-    /// The failure the login pane for `source` states: the machine's last login when it
+    /// The failure the login pane for `host` states: the machine's last login when it
     /// failed, else the probe failure that blocked the host. A first-seen key is a
     /// condition the form can answer, not a failed login. `None` when neither failed.
     ///
     /// The login's own categorized ssh reason is stated apart from, and ahead of, later
     /// probe errors, so a submitted login that fails keeps its own verdict.
-    pub(crate) fn login_failure(&self, source: &str) -> Option<crate::model::LoginFailure> {
-        let machine = crate::session::machine_of(source);
+    pub(crate) fn login_failure(&self, host: &str) -> Option<crate::model::LoginFailure> {
+        let machine = crate::session::machine_of(host);
         if let Some(failure) = self
             .login_reports
             .get(machine)
@@ -901,17 +901,17 @@ impl State {
         // question the login is answering, not a failure of its own.
         if self
             .login_progress
-            .get(source)
+            .get(host)
             .is_some_and(crate::model::LoginProgress::running)
         {
             return None;
         }
         self.groups
             .iter()
-            .find(|g| g.source == source)
+            .find(|g| g.host == host)
             .and_then(|g| g.err.as_deref())
             .or_else(|| {
-                self.machine(source)
+                self.machine(host)
                     .filter(|m| !self.has_hosts(&m.name))
                     .and_then(|m| m.err.as_deref())
             })
@@ -955,7 +955,7 @@ mod tests {
     fn login_requires_a_manually_entered_username() {
         let mut state = State {
             login: Some(LoginDraft {
-                source: "prod".into(),
+                host: "prod".into(),
                 address: "prod.example".into(),
                 port: "22".into(),
                 focus: LoginFocus::Submit,
@@ -978,7 +978,7 @@ mod tests {
         let unknown = crate::transport::diagnostic::explain("Host key verification failed.", false);
         let mut state = State::from_scan(Scan {
             groups: vec![Group {
-                source: "prod".into(),
+                host: "prod".into(),
                 err: Some(unknown),
                 sessions: vec![],
             }],
@@ -1018,7 +1018,7 @@ mod tests {
 
     fn sel(session: &str) -> Selection {
         Selection {
-            source: "jup".into(),
+            host: "jup".into(),
             session: session.into(),
         }
     }
@@ -1026,10 +1026,10 @@ mod tests {
     fn one_session_scan() -> Scan {
         Scan {
             groups: vec![Group {
-                source: "jup".into(),
+                host: "jup".into(),
                 err: None,
                 sessions: vec![Session {
-                    source: "jup".into(),
+                    host: "jup".into(),
                     name: "api".into(),
                     mux: "tmux".into(),
                     windows: 2,
@@ -1480,19 +1480,19 @@ mod tests {
         let s = State::from_scan(Scan {
             groups: vec![
                 Group {
-                    source: "jup".into(),
+                    host: "jup".into(),
                     err: None,
                     sessions: vec![Session {
-                        source: "jup".into(),
+                        host: "jup".into(),
                         name: "api".into(),
                         ..Default::default()
                     }],
                 },
                 Group {
-                    source: "local:psmux".into(),
+                    host: "local:psmux".into(),
                     err: None,
                     sessions: vec![Session {
-                        source: "local:psmux".into(),
+                        host: "local:psmux".into(),
                         name: "swtarget".into(),
                         ..Default::default()
                     }],
@@ -1507,24 +1507,24 @@ mod tests {
         assert_eq!(
             s.resolve_switch_address(&Address::new("local:psmux", "swtarget")),
             Ok(()),
-            "the qualified source pair the nav actually uses resolves"
+            "the qualified host pair the nav actually uses resolves"
         );
-        // A session missing under an existing source is a session error.
+        // A session missing under an existing host is a session error.
         let err = s
             .resolve_switch_address(&Address::new("jup", "nope"))
             .unwrap_err();
         assert!(err.starts_with("no such session"), "{err}");
-        // A source that does not exist is a source error - the issue's `local/swtarget`
-        // when the real source is `local:psmux`, and a wholly unknown host.
+        // A host that does not exist is a host error - the issue's `local/swtarget`
+        // when the real host is `local:psmux`, and a wholly unknown host.
         let err = s
             .resolve_switch_address(&Address::new("local", "swtarget"))
             .unwrap_err();
-        assert!(err.starts_with("no such source"), "{err}");
+        assert!(err.starts_with("no such host"), "{err}");
         let err = s
             .resolve_switch_address(&Address::new("nosuchhost", "nosuchsession"))
             .unwrap_err();
-        assert!(err.starts_with("no such source"), "{err}");
-        // An address with no source on the roster is a source error, not a parse one.
+        assert!(err.starts_with("no such host"), "{err}");
+        // An address with no host on the roster is a host error, not a parse one.
         assert!(s
             .resolve_switch_address(&Address::new("noslash", ""))
             .is_err());
@@ -1567,7 +1567,7 @@ mod tests {
 
     fn a_sess(name: &str) -> crate::session::Session {
         crate::session::Session {
-            source: "jup".into(),
+            host: "jup".into(),
             name: name.into(),
             ..Default::default()
         }
@@ -1579,11 +1579,11 @@ mod tests {
         let mut s = State::default();
         assert_eq!(
             s.apply(Action::CreateSession {
-                source: "jup".into(),
+                host: "jup".into(),
                 name: "api".into(),
             }),
             vec![Command::RunOp(MuxOp::Create {
-                source: "jup".into(),
+                host: "jup".into(),
                 name: "api".into(),
             })]
         );
@@ -1596,7 +1596,7 @@ mod tests {
         let mut s = State::default();
         let before_sel = s.selection.clone();
         s.apply(Action::CreateSession {
-            source: "jup".into(),
+            host: "jup".into(),
             name: "api".into(),
         });
         assert_eq!(

@@ -24,7 +24,7 @@ pub fn run_reader<E: FnMut(HostEvent)>(
     let mut block: Option<(u64, PendingReply, Vec<String>, bool)> = None;
     // The last %error block's text, so a never-connected exit carries a meaningful
     // reason (notably "no sessions" / "no server running" → reachable-but-empty). A
-    // remote host's REACHABILITY (locked / unreachable) is classified upstream by the
+    // remote machine's REACHABILITY (locked / unreachable) is classified upstream by the
     // machine probe, not here: this control channel opens only for a machine already
     // known to connect, and ssh's own auth-failure line goes to the drained stderr, not
     // this stdout stream.
@@ -252,7 +252,7 @@ mod tests {
             .expect("a Connected event carrying sessions");
         assert_eq!(connected.len(), 1);
         assert_eq!(connected[0].name, "api");
-        assert_eq!(connected[0].source, "jupiter06");
+        assert_eq!(connected[0].host, "jupiter06");
         assert!(
             events
                 .iter()
@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn exited_reason_stays_none_when_only_idle_body_lines_arrive() {
         // A control child that dies after only idle/body lines carries no reason: a
-        // remote host's reach failure is the machine probe's word, never a body line
+        // remote machine's reach failure is the machine probe's word, never a body line
         // here. (A `%error` block, tested above, is the one thing that names a reason.)
         let state = test_state(80, 24);
         let in_flight: InFlight = Default::default();

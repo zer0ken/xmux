@@ -99,17 +99,17 @@ it in the state it left.
 ## Walking the Nav
 
 The nav is a list of numbered cards in sections, not a tree. `←`/`→` step one section:
-a source with sessions, entered at its first session, or the whole band of host cards
+a host with sessions, entered at its first session, or the whole band of machine cards
 at once, entered at its first card, so a run of idle machines is one stop rather than a
 long walk. Both steps wrap, and neither depends on where a card sits on screen, so they
 mean the same thing in a column and in a band. The card step never stops on a section
 title, and a title takes no number.
 
-The hierarchy of sessions, sources, and hosts is reached three ways: `Ctrl-↑`/`Ctrl-↓`,
-the two parts of a section title, and the links on a host's or a source's screen. A
-source is selected on the `{mux}` part of its title, or on its card when it has no
-sessions; a host on the `{host}` part, or on its card when none of its sources
-connected. `Ctrl-↓` returns to the child the walk came from, else the first source by
+The hierarchy of sessions, hosts, and machines is reached three ways: `Ctrl-↑`/`Ctrl-↓`,
+the two parts of a section title, and the links on a machine's or a host's screen. A
+host is selected on the `{mux}` part of its title, or on its card when it has no
+sessions; a machine on the `{machine}` part, or on its card when none of its hosts
+connected. `Ctrl-↓` returns to the child the walk came from, else the first host by
 name or the first session in card order. From a title part, `↑`/`↓` go to the adjacent
 card and `←`/`→` to the adjacent section. A bare `Ctrl-↑`/`Ctrl-↓` right after
 `prefix Ctrl-↑`/`prefix Ctrl-↓` still resizes the band.
@@ -144,14 +144,14 @@ and it reports in one toast titled `rescan machine <machine>`. It is refused whi
 machine is still scanning and while another re-scan has not reported; a `prefix R`
 pressed meanwhile takes over.
 
-`prefix L` asks for `logout` typed in full. It removes the lines of the host's key files
-that hold this machine's public key and carry the `xmux-registered` mark. A matching line
+`prefix L` asks for `logout` typed in full. It removes the lines of the machine's key files
+that hold this PC's public key and carry the `xmux-registered` mark. A matching line
 without the mark opens a second confirmation, where `remove` typed in full removes it too
-and anything else keeps it. The ssh config stanza a login saved for the host goes
-next. Any other ssh config `Host` entry naming the host is listed in that same second
-confirmation, and `remove` takes the host off it too: an entry naming only this host
+and anything else keeps it. The ssh config stanza a login saved for the machine goes
+next. Any other ssh config `Host` entry naming the machine is listed in that same second
+confirmation, and `remove` takes the machine off it too: an entry naming only this machine
 goes, and an entry naming others too keeps them. The held password and the connections are cleared after
-that; a host that cannot be reached or a removal that fails still logs out, with a toast
+that; a machine that cannot be reached or a removal that fails still logs out, with a toast
 saying what remains and why.
 
 `prefix <digit>` opens the jump popup holding the digit, so a number past 9 is typed out
@@ -207,9 +207,9 @@ moving that selection, and a click executes the item as `Enter` would.
   the nearest visible card related to its card when that card is hidden. `Enter` keeps
   the filter, `Esc` restores the one the popup opened with, and `Esc` in the nav clears
   an applied filter.
-- **Logout** (`prefix L`): states the session, the observed SSH login, what happens to a
-  held password, to this machine's key, and to the ssh config entry xmux saved, and the
-  machine whose connections close.
+- **Logout** (`prefix L`): states the selected session, or the machine when no session
+  is selected, the observed SSH login, what happens to a held password, to this PC's
+  key, and to the ssh config entry xmux saved, and the machine whose connections close.
   Typing `logout` and `Enter` confirms it, and `Esc` cancels. When the window is too short
   for these rows, `↑`/`↓` and `PgUp`/`PgDn` scroll them above the field, and the key
   removal confirm that can follow scrolls the same way.
@@ -251,8 +251,8 @@ the pane, which needs the mux's own mouse mode to use them.
 ## Automation
 
 A running instance listens on `ctl-<name>.sock`. Its verbs are `ping`, `status`,
-`dump`, `rescan`, `switch <source> <session>`, `focus <nav|terminal>`, `width <delta>`
-(a signed column delta), `toggle-auto-hide`, `quit`, and `new-session <source> [name]`.
+`dump`, `rescan`, `switch <host> <session>`, `focus <nav|terminal>`, `width <delta>`
+(a signed column delta), `toggle-auto-hide`, `quit`, and `new-session <host> [name]`.
 There are no kill, rename, or window verbs, because the mux owns editing a session.
 
 ```
@@ -265,6 +265,6 @@ printf 'switch prod api\nfocus terminal\n' | xmux send amber-otter
 
 `--name` takes lowercase letters, digits, and `-`, up to 32 characters. With no command,
 `send` reads commands from stdin, one per line. A refused command exits non-zero, and a
-`switch` to a source or session the inventory does not list replies `err:` naming the
+`switch` to a host or session the inventory does not list replies `err:` naming the
 missing half. The `raw:` namespace (`raw:key`, `raw:keys`, `raw:text`) injects
 keystrokes or bytes and is not part of the supported surface.

@@ -40,9 +40,9 @@ fn collapsed_at(position: NavPosition) -> NavSize {
     }
 }
 
-fn sess(source: &str, name: &str) -> Session {
+fn sess(host: &str, name: &str) -> Session {
     Session {
-        source: source.into(),
+        host: host.into(),
         name: name.into(),
         mux: String::new(),
         windows: 1,
@@ -54,10 +54,10 @@ fn scan_of(groups: Vec<(&str, Vec<&str>)>) -> Scan {
     Scan {
         groups: groups
             .into_iter()
-            .map(|(source, names)| Group {
-                source: source.into(),
+            .map(|(host, names)| Group {
+                host: host.into(),
                 err: None,
-                sessions: names.into_iter().map(|n| sess(source, n)).collect(),
+                sessions: names.into_iter().map(|n| sess(host, n)).collect(),
             })
             .collect(),
     }
@@ -76,7 +76,7 @@ fn many_sessions(n: usize, name_len: usize) -> Scan {
         .collect();
     Scan {
         groups: vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: names.iter().map(|n| sess("local", n)).collect(),
         }],
@@ -96,7 +96,7 @@ fn three_card_groups_and_focus_policy_hold_at_every_position() {
     for position in ALL {
         let mut scan = scan_of(vec![("local", vec!["work"]), ("z-empty", vec![])]);
         scan.groups.push(Group {
-            source: "a-offline".into(),
+            host: "a-offline".into(),
             sessions: vec![],
             err: Some("connection refused".into()),
         });
@@ -111,9 +111,7 @@ fn three_card_groups_and_focus_policy_hold_at_every_position() {
             .sw
             .rows
             .iter()
-            .position(
-                |r| matches!(&r.reference, RowRef::Host { source, .. } if source == "z-empty"),
-            )
+            .position(|r| matches!(&r.reference, RowRef::Host { host, .. } if host == "z-empty"))
             .unwrap();
         let offline = shot
             .sw
@@ -801,8 +799,8 @@ fn a_band_selection_hint_owns_the_seam_until_it_expires() {
 /// Every surface a prefix key opens, as the modal it sets.
 fn prefix_surfaces() -> Vec<crate::state::Modal> {
     use crate::state::{Input, InputMode, Modal};
-    let input = |mode, source: Option<&str>| {
-        let mut input = Input::new(mode, String::new(), source.map(str::to_string));
+    let input = |mode, host: Option<&str>| {
+        let mut input = Input::new(mode, String::new(), host.map(str::to_string));
         if matches!(mode, InputMode::Logout | InputMode::LogoutKeys) {
             input.facts = vec![
                 ("session", "local/build".into()),

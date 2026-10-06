@@ -4,8 +4,8 @@
 
 xmux is a Rust terminal multiplexer switcher: the app owns the terminal, keeps mux
 display attachments alive, renders the split view, and serves `ctl-<name>.sock`. Two
-orthogonal axes, `Transport` (HOST) and `Mux` (MUX), describe every connection, and argv
-is composed from a source's own transport and mux, so neither knows the other.
+orthogonal axes, `Transport` (MACHINE) and `Mux` (MUX), describe every connection, and argv
+is composed from a host's own transport and mux, so neither knows the other.
 Vocabulary is in `CONTEXT.md` and design principles in `docs/principles.md`.
 
 ## Module Seams
@@ -13,12 +13,12 @@ Vocabulary is in `CONTEXT.md` and design principles in `docs/principles.md`.
 - `src/app/` - the application model and its update transition, the runtime loop, the
   ctl server, and preference persistence.
 - `src/cli/` - argument parsing and command dispatch, behind one public entry.
-- `src/provision/` - the config, the roster, the source probe, and the resolved view.
-- `src/transport/` - the HOST axis: the `Transport` trait and its implementations.
+- `src/provision/` - the config, the roster, the host probe, and the resolved view.
+- `src/transport/` - the MACHINE axis: the `Transport` trait and its implementations.
 - `src/mux/` - the MUX axis: the `Mux` trait and one directory per mux.
 - `src/model/` - runtime domain values, the action and command sets, the operation port.
 - `src/display/` - the display path: PTY attachment, the grid, and terminal input.
-- `src/link/` - the metadata path: per-source channels, mux operations, ctl protocol.
+- `src/link/` - the metadata path: per-host channels, mux operations, ctl protocol.
 - `src/ui/` - nav rows, off-loop operations, interaction, and rendering.
 - `src/state/` - domain state and the action reducer the update transition uses.
 

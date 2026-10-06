@@ -4,9 +4,9 @@
 //! (`Host::transport`'s `exec_argv`) dispatches it for local-vs-ssh execution, then it
 //! runs via an injected runner - exactly like `mux::enumerate_via_list_sessions`.
 //! Nothing is cached and no state is held. Off-loop `Ops` assemble a value host from
-//! config and pass the source's runner.
+//! config and pass the host's runner.
 
-use crate::model::source::{RunError, Runner};
+use crate::model::host_def::{RunError, Runner};
 use crate::model::Host;
 
 /// Composes a mux argv (from the host's `Mux`) through the machine `Transport` and
@@ -76,12 +76,12 @@ async fn pick_session_name(host: &Host, runner: &dyn Runner) -> Result<String, R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::source::Runner;
+    use crate::model::host_def::Runner;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
     /// Records the command it was asked to run and returns canned results. For a
-    /// LOCAL source it receives `name = binary` and `args = the mux argv WITHOUT
+    /// LOCAL host it receives `name = binary` and `args = the mux argv WITHOUT
     /// the leading binary`.
     struct RecordingRunner {
         out: Vec<u8>,
@@ -107,7 +107,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for RecordingRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             *self.recorded.lock().unwrap() = Some((name.to_string(), args.to_vec()));
             if self.fail {
@@ -195,7 +195,7 @@ mod tests {
 
     #[async_trait]
     impl Runner for SeqRunner {
-        crate::model::source::runner_spec_via_argv!();
+        crate::model::host_def::runner_spec_via_argv!();
         async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
             self.recorded
                 .lock()

@@ -31,13 +31,13 @@ pub fn new_session(bin: &str, name: &str) -> Vec<String> {
         argv(&[bin, "-dmS", name])
     }
 }
-/// Parses `screen -ls` output into sessions tagged with `source`/`mux`. Each socket
+/// Parses `screen -ls` output into sessions tagged with `host`/`mux`. Each socket
 /// line is `\t<pid>.<name>\t(<state>)`, with an optional date column before the state;
 /// the name is everything after the first dot, and `attached` is read from the final
 /// state column. Lines that carry no socket id (header/footer) or a non-numeric pid
 /// are skipped so banners cannot poison the list. `windows` is unknown from `-ls`,
 /// so it is 0.
-pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
+pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in out.split('\n') {
         let ln = ln.strip_suffix('\r').unwrap_or(ln);
@@ -55,7 +55,7 @@ pub fn parse_sessions(source: &str, mux: &str, out: &str) -> Vec<Session> {
         let state = fields.last().unwrap().to_lowercase();
         let attached = state.contains("attached") && !state.contains("detached");
         sessions.push(Session {
-            source: source.to_string(),
+            host: host.to_string(),
             name: name.to_string(),
             mux: mux.to_string(),
             windows: 0,
@@ -110,7 +110,7 @@ mod tests {
         assert!(!got[0].attached);
         assert_eq!(got[1].name, "alpha");
         assert!(got[1].attached);
-        assert!(got.iter().all(|s| s.source == "jup" && s.mux == "screen"));
+        assert!(got.iter().all(|s| s.host == "jup" && s.mux == "screen"));
     }
 
     #[test]
@@ -172,7 +172,7 @@ mod tests {
             );
             assert!(got
                 .iter()
-                .all(|s| s.source == "jup" && s.mux == "screen" && s.windows == 0));
+                .all(|s| s.host == "jup" && s.mux == "screen" && s.windows == 0));
         }
     }
 

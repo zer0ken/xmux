@@ -1,5 +1,5 @@
 //! The pure tree-model logic for the session switcher: a slice of [`Group`]s (one
-//! per source) each carrying its sessions in name order. The functions here are
+//! per host) each carrying its sessions in name order. The functions here are
 //! side-effect-free transforms over that model; the interactive ratatui
 //! rendering is layered on top separately.
 
@@ -43,11 +43,11 @@ pub fn fuzzy_match(pattern: &str, s: &str) -> bool {
     false
 }
 
-/// Keeps the groups whose source matches `pattern` or that have at least one
+/// Keeps the groups whose host matches `pattern` or that have at least one
 /// matching session, preserving group order. An empty pattern returns the input
-/// unchanged. A reachable group whose source matches keeps all its sessions;
+/// unchanged. A reachable group whose host matches keeps all its sessions;
 /// otherwise only the sessions whose address matches are kept. An unreachable
-/// group (`err` set) is kept only when its source matches, since its sessions
+/// group (`err` set) is kept only when its host matches, since its sessions
 /// carry no meaning. Inputs are never mutated.
 pub fn filter_groups(groups: &[Group], pattern: &str) -> Vec<Group> {
     if pattern.is_empty() {
@@ -55,16 +55,16 @@ pub fn filter_groups(groups: &[Group], pattern: &str) -> Vec<Group> {
     }
     let mut out = Vec::new();
     for g in groups {
-        let source_match = fuzzy_match(pattern, &g.source);
+        let host_match = fuzzy_match(pattern, &g.host);
         if g.err.is_some() {
-            if source_match {
+            if host_match {
                 out.push(g.clone());
             }
             continue;
         }
-        if source_match {
+        if host_match {
             out.push(Group {
-                source: g.source.clone(),
+                host: g.host.clone(),
                 err: None,
                 sessions: g.sessions.clone(),
             });
@@ -78,7 +78,7 @@ pub fn filter_groups(groups: &[Group], pattern: &str) -> Vec<Group> {
             .collect();
         if !kept.is_empty() {
             out.push(Group {
-                source: g.source.clone(),
+                host: g.host.clone(),
                 err: None,
                 sessions: kept,
             });
@@ -96,7 +96,7 @@ pub fn remove_session(groups: &[Group], address: &crate::session::Address) -> Ve
         if let Some(j) = g
             .sessions
             .iter()
-            .position(|s| s.source == address.source && s.name == address.session)
+            .position(|s| s.host == address.host && s.name == address.session)
         {
             g.sessions.remove(j);
             return out;
@@ -105,26 +105,26 @@ pub fn remove_session(groups: &[Group], address: &crate::session::Address) -> Ve
     out
 }
 
-/// Orders host groups for display: local sources first, then WSL distros, then
-/// remote hosts, each tier by source name ascending. Inputs are not mutated.
+/// Orders host groups for display: local hosts first, then WSL distros, then
+/// remote machines, each tier by host name ascending. Inputs are not mutated.
 pub fn order_groups(groups: &[Group]) -> Vec<Group> {
     let mut out = groups.to_vec();
-    out.sort_by(|a, b| card_order(&a.source, &b.source));
+    out.sort_by(|a, b| card_order(&a.host, &b.host));
     out
 }
 
-/// The card order of two names, each a source id or the name of a machine standing on
+/// The card order of two names, each a host id or the name of a machine standing on
 /// its own: by tier, then by name.
 pub(crate) fn card_order(a: &str, b: &str) -> std::cmp::Ordering {
-    source_tier(a).cmp(&source_tier(b)).then_with(|| a.cmp(b))
+    host_tier(a).cmp(&host_tier(b)).then_with(|| a.cmp(b))
 }
 
-/// The display tier of a source: local (0) before WSL (1) before remote (2).
+/// The display tier of a host: local (0) before WSL (1) before remote (2).
 /// A WSL machine is a distro on this machine, neither this machine's own mux scope nor an
 /// ssh host, so it gets its own tier between them.
-fn source_tier(source: &str) -> u8 {
-    let machine = crate::session::machine_of(source);
-    if machine == crate::session::LOCAL_SOURCE {
+fn host_tier(host: &str) -> u8 {
+    let machine = crate::session::machine_of(host);
+    if machine == crate::session::LOCAL_MACHINE {
         0
     } else if crate::session::wsl_distro_of(machine).is_some() {
         1
@@ -146,7 +146,7 @@ pub fn rename_session(
         if let Some(j) = g
             .sessions
             .iter()
-            .position(|s| s.source == address.source && s.name == address.session)
+            .position(|s| s.host == address.host && s.name == address.session)
         {
             g.sessions[j].name = new_name.to_string();
             return out;
@@ -156,15 +156,15 @@ pub fn rename_session(
 }
 
 /// One navigation row: a session card is a single line carrying the session name,
-/// a section title is the `{host}/{mux}` header above a group of them, and a
+/// a section title is the `{machine}/{mux}` header above a group of them, and a
 /// host-state card is the host's own row. The context is derived at render time from
-/// the row's [`RowRef`] - `{host}/{mux}` for a section title, the session name for a
-/// session card, `{host}` for a host-state card - as is colour, so this model stays
+/// the row's [`RowRef`] - `{machine}/{mux}` for a section title, the session name for a
+/// session card, `{machine}` for a host-state card - as is colour, so this model stays
 /// terminal-free (no `ratatui` dependency) and unit-testable without a backend.
 pub(crate) struct Row {
-    /// The mux the row NAMES, resolved once here so every row on one source
+    /// The mux the row NAMES, resolved once here so every row on one host
     /// names its mux the same way: the kind the enumeration stamped on the session, or the
-    /// source's own mux where no session carries one (a host-state card, a session created
+    /// host's own mux where no session carries one (a host-state card, a session created
     /// since the last enumeration). Empty only while nothing knows it yet, which is the
     /// state a card turns a spinner for.
     pub(crate) mux: String,
@@ -173,17 +173,17 @@ pub(crate) struct Row {
 
 impl Row {
     /// Session and host-state cards take numbers and participate in card navigation.
-    /// A section title opens its source's information screen by click or the info key.
+    /// A section title opens its host's screen by click or the info key.
     pub(crate) fn selectable(&self) -> bool {
         !matches!(self.reference, RowRef::Section { .. })
     }
 }
 
 /// The groups to render, in `groups` order - that order is authoritative (established
-/// by the deterministic source order at rebuild via [`order_groups`], which a routine
+/// by the deterministic host order at rebuild via [`order_groups`], which a routine
 /// poll reproduces exactly, so a poll never reshuffles the tree). An empty filter
 /// borrows the input unchanged. A non-matching filter must not be a dead end (XM-01):
-/// it falls back to header-only groups (every source, no sessions) so the hosts stay
+/// it falls back to header-only groups (every host, no sessions) so the hosts stay
 /// visible. Inputs are not mutated.
 pub(crate) fn visible_groups<'a>(groups: &'a [Group], filter: &str) -> Cow<'a, [Group]> {
     if filter.is_empty() {
@@ -195,7 +195,7 @@ pub(crate) fn visible_groups<'a>(groups: &'a [Group], filter: &str) -> Cow<'a, [
                 groups
                     .iter()
                     .map(|g| Group {
-                        source: g.source.clone(),
+                        host: g.host.clone(),
                         err: g.err.clone(),
                         sessions: Vec::new(),
                     })
@@ -210,9 +210,9 @@ pub(crate) fn visible_groups<'a>(groups: &'a [Group], filter: &str) -> Cow<'a, [
 /// Pushes a session's card. Every session gets one card naming its session; the
 /// focused window a card used to name has left the card, so there is no pane state
 /// to wait on and no loading stand-in.
-fn push_session_card(rows: &mut Vec<Row>, sess: &Session, mux_of_source: &dyn Fn(&str) -> String) {
+fn push_session_card(rows: &mut Vec<Row>, sess: &Session, mux_of_host: &dyn Fn(&str) -> String) {
     let mux = if sess.mux.is_empty() {
-        mux_of_source(&sess.source)
+        mux_of_host(&sess.host)
     } else {
         sess.mux.clone()
     };
@@ -222,8 +222,8 @@ fn push_session_card(rows: &mut Vec<Row>, sess: &Session, mux_of_source: &dyn Fn
     });
 }
 
-/// The state word of a host that answered through at least one of its sources.
-pub(crate) const HOST_REACHABLE: &str = "reachable";
+/// The state word of a machine that answered through at least one of its hosts.
+pub(crate) const MACHINE_REACHABLE: &str = "reachable";
 
 /// The status word a host-state card and its screen share. The specific states precede
 /// unreachable because authentication and listing failures carry their own words. The
@@ -247,15 +247,15 @@ pub(crate) fn host_state_word(
     }
 }
 
-/// The hosts that are down: every source of the host failed to connect (unreachable, or
+/// The machines that are down: every host of the machine failed to connect (unreachable, or
 /// refused until a login) and none is still waiting on an answer. A listing failure is not
-/// one of them, since the host answered it.
+/// one of them, since the machine answered it.
 pub(crate) fn down_machines(groups: &[Group], scanning: &HashSet<String>) -> HashSet<String> {
     let mut up = HashSet::new();
     let mut all = HashSet::new();
     for g in groups {
-        let machine = crate::session::machine_of(&g.source).to_string();
-        let failed = !scanning.contains(&g.source)
+        let machine = crate::session::machine_of(&g.host).to_string();
+        let failed = !scanning.contains(&g.host)
             && matches!(
                 g.failure(),
                 Some(crate::model::FailureKind::Blocked | crate::model::FailureKind::Unreachable)
@@ -291,7 +291,7 @@ pub(crate) fn visible_machines<'a>(
     }
 }
 
-/// One entry of the band of cards with no session to show: a source's card, or the card
+/// One entry of the band of cards with no session to show: a host's card, or the card
 /// of a machine standing on its own.
 enum Standing<'a> {
     Group(&'a Group),
@@ -301,23 +301,23 @@ enum Standing<'a> {
 impl Standing<'_> {
     fn name(&self) -> &str {
         match self {
-            Standing::Group(g) => &g.source,
+            Standing::Group(g) => &g.host,
             Standing::Machine(m) => &m.name,
         }
     }
 }
 
 /// Flattens the inventory into a flat list of navigation rows: a section title per
-/// source that has a session to show, then one session card per session, emitted in
+/// host that has a session to show, then one session card per session, emitted in
 /// group order (the deterministic local→WSL→remote, name-sorted order `rebuild`
-/// establishes, so a routine poll reproduces the same list). Sources with no session to
-/// show get one host-state card each: reachable empty sources first, then sources whose
-/// connection or inventory is unresolved. A host that is down gets one host card in place
-/// of its sources' cards, where its first source's card would stand; its screen is the host
-/// screen, and its sources are reached through that screen's links. A machine with no
-/// source known (`machines`) gets its own card among the unresolved ones, in card order.
-/// The mux each row NAMES is resolved here through `mux_of_source`, so a
-/// row cannot exist without it and two rows on one source cannot name their mux two
+/// establishes, so a routine poll reproduces the same list). Hosts with no session to
+/// show get one host-state card each: reachable empty hosts first, then hosts whose
+/// connection or inventory is unresolved. A machine that is down gets one machine card in place
+/// of its hosts' cards, where its first host's card would stand; its screen is the machine
+/// screen, and its hosts are reached through that screen's links. A machine with no
+/// host known (`machines`) gets its own card among the unresolved ones, in card order.
+/// The mux each row NAMES is resolved here through `mux_of_host`, so a
+/// row cannot exist without it and two rows on one host cannot name their mux two
 /// ways; colour is derived at render time from each row's [`RowRef`], so this stays
 /// terminal-free. Inputs are not mutated.
 pub(crate) fn flatten(
@@ -326,20 +326,20 @@ pub(crate) fn flatten(
     machines: &[&Machine],
     machine_scanning: &HashSet<String>,
     filter: &str,
-    mux_of_source: &dyn Fn(&str) -> String,
+    mux_of_host: &dyn Fn(&str) -> String,
 ) -> Vec<Row> {
     let machines = visible_machines(groups, machines, filter);
     let down = down_machines(groups, scanning);
-    let first_source = |machine: &str| {
+    let first_host = |machine: &str| {
         groups
             .iter()
-            .find(|g| crate::session::machine_of(&g.source) == machine)
-            .map(|g| g.source.clone())
+            .find(|g| crate::session::machine_of(&g.host) == machine)
+            .map(|g| g.host.clone())
             .unwrap_or_default()
     };
     let blocked_machine = |machine: &str| {
         groups.iter().any(|g| {
-            crate::session::machine_of(&g.source) == machine
+            crate::session::machine_of(&g.host) == machine
                 && g.failure() == Some(crate::model::FailureKind::Blocked)
         })
     };
@@ -360,21 +360,21 @@ pub(crate) fn flatten(
     standing.sort_by(|a, b| card_order(a.name(), b.name()));
 
     let mut rows = Vec::new();
-    // 1. A section per source that has a session to show: outside numbered-card steps
-    //    `{host}/{mux}` title, then one session card per session. A session created
+    // 1. A section per host that has a session to show: outside numbered-card steps
+    //    `{machine}/{mux}` title, then one session card per session. A session created
     //    from one of these cards is its sibling - it joins this same section.
     for g in groups {
         if g.err.is_some() || g.sessions.is_empty() {
             continue;
         }
         rows.push(Row {
-            mux: mux_of_source(&g.source),
+            mux: mux_of_host(&g.host),
             reference: RowRef::Section {
-                source: g.source.clone(),
+                host: g.host.clone(),
             },
         });
         for sess in &g.sessions {
-            push_session_card(&mut rows, sess, mux_of_source);
+            push_session_card(&mut rows, sess, mux_of_host);
         }
     }
     // Host cards are grouped by connection state after the session cards.
@@ -382,7 +382,7 @@ pub(crate) fn flatten(
         for entry in &standing {
             let g = match entry {
                 Standing::Group(g) => *g,
-                // A machine with no source known has answered nothing that names a mux,
+                // A machine with no host known has answered nothing that names a mux,
                 // so its card is never in the connected group.
                 Standing::Machine(m) => {
                     if !connected {
@@ -390,7 +390,7 @@ pub(crate) fn flatten(
                             mux: String::new(),
                             reference: RowRef::Machine {
                                 machine: m.name.clone(),
-                                source: m.name.clone(),
+                                host: m.name.clone(),
                                 blocked: m.failure() == Some(crate::model::FailureKind::Blocked),
                                 scanning: machine_scanning.contains(&m.name),
                             },
@@ -399,7 +399,7 @@ pub(crate) fn flatten(
                     continue;
                 }
             };
-            let is_scanning = scanning.contains(&g.source);
+            let is_scanning = scanning.contains(&g.host);
             let blocked = g.failure() == Some(crate::model::FailureKind::Blocked);
             let list_failed = g.failure() == Some(crate::model::FailureKind::ListFailed);
             let unreachable = g.err.is_some() && !list_failed;
@@ -409,14 +409,14 @@ pub(crate) fn flatten(
             if g.err.is_none() && !g.sessions.is_empty() {
                 continue;
             }
-            let machine = crate::session::machine_of(&g.source);
+            let machine = crate::session::machine_of(&g.host);
             if down.contains(machine) {
                 if machine_cards.insert(machine) {
                     rows.push(Row {
                         mux: String::new(),
                         reference: RowRef::Machine {
                             machine: machine.to_string(),
-                            source: first_source(machine),
+                            host: first_host(machine),
                             blocked: blocked_machine(machine),
                             scanning: false,
                         },
@@ -425,18 +425,18 @@ pub(crate) fn flatten(
                 continue;
             }
             // The mux a host-state card may CLAIM. A host still scanning or unreachable has
-            // answered nothing, so its card claims no mux: it reads the host alone
+            // answered nothing, so its card claims no mux: it reads the machine alone
             // (unreachable) or spins in the mux position (scanning).
             let mux_confirmed =
-                crate::session::mux_may_be_named(&g.source, !is_scanning && !unreachable);
+                crate::session::mux_may_be_named(&g.host, !is_scanning && !unreachable);
             rows.push(Row {
                 mux: if mux_confirmed {
-                    mux_of_source(&g.source)
+                    mux_of_host(&g.host)
                 } else {
                     String::new()
                 },
                 reference: RowRef::Host {
-                    source: g.source.clone(),
+                    host: g.host.clone(),
                     unreachable,
                     blocked,
                     list_failed,
@@ -452,15 +452,15 @@ pub(crate) fn flatten(
 mod tests {
     use super::*;
 
-    /// What the app's resolver answers with: the source's own mux. A test source id
+    /// What the app's resolver answers with: the host's own mux. A test host id
     /// carries its mux when its machine serves several and nothing else knows one.
-    fn mux_of_source(source: &str) -> String {
-        crate::session::mux_of(source).to_string()
+    fn mux_of_host(host: &str) -> String {
+        crate::session::mux_of(host).to_string()
     }
 
-    fn sess(source: &str, name: &str) -> Session {
+    fn sess(host: &str, name: &str) -> Session {
         Session {
-            source: source.into(),
+            host: host.into(),
             name: name.into(),
             ..Default::default()
         }
@@ -486,7 +486,7 @@ mod tests {
     fn sample_groups() -> Vec<Group> {
         vec![
             Group {
-                source: "jupiter00".into(),
+                host: "jupiter00".into(),
                 err: None,
                 sessions: vec![
                     sess("jupiter00", "inference"),
@@ -494,12 +494,12 @@ mod tests {
                 ],
             },
             Group {
-                source: "local".into(),
+                host: "local".into(),
                 err: None,
                 sessions: vec![sess("local", "web"), sess("local", "db")],
             },
             Group {
-                source: "deadhost".into(),
+                host: "deadhost".into(),
                 err: Some("dial: connection refused".into()),
                 sessions: vec![sess("deadhost", "ghost")],
             },
@@ -537,16 +537,16 @@ mod tests {
         let got = filter_groups(&in_, "");
         assert_eq!(got.len(), in_.len());
         for i in 0..in_.len() {
-            assert_eq!(got[i].source, in_[i].source);
+            assert_eq!(got[i].host, in_[i].host);
             assert_eq!(got[i].sessions.len(), in_[i].sessions.len());
         }
     }
 
     #[test]
-    fn filter_groups_source_match_keeps_all_sessions() {
+    fn filter_groups_host_match_keeps_all_sessions() {
         let got = filter_groups(&sample_groups(), "jptr");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].source, "jupiter00");
+        assert_eq!(got[0].host, "jupiter00");
         assert_eq!(got[0].sessions.len(), 2);
     }
 
@@ -554,26 +554,26 @@ mod tests {
     fn filter_groups_session_only_match() {
         let got = filter_groups(&sample_groups(), "jupiter00/inference");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].source, "jupiter00");
+        assert_eq!(got[0].host, "jupiter00");
         assert_eq!(got[0].sessions.len(), 1);
         assert_eq!(got[0].sessions[0].name, "inference");
     }
 
     #[test]
-    fn filter_groups_unreachable_kept_only_on_source_match() {
+    fn filter_groups_unreachable_kept_only_on_host_match() {
         let got = filter_groups(&sample_groups(), "dead");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].source, "deadhost");
+        assert_eq!(got[0].host, "deadhost");
         assert!(got[0].err.is_some());
 
         let got2 = filter_groups(&sample_groups(), "ghost");
-        assert!(got2.iter().all(|g| g.source != "deadhost"));
+        assert!(got2.iter().all(|g| g.host != "deadhost"));
     }
 
     #[test]
     fn filter_groups_preserves_order() {
         let got = filter_groups(&sample_groups(), "e");
-        let order: Vec<&str> = got.iter().map(|g| g.source.as_str()).collect();
+        let order: Vec<&str> = got.iter().map(|g| g.host.as_str()).collect();
         assert_eq!(order, vec!["jupiter00", "local", "deadhost"]);
     }
 
@@ -590,14 +590,14 @@ mod tests {
     #[test]
     fn add_session_new_group() {
         let groups = vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![sess("local", "web")],
         }];
         let got = add_session(&groups, sess("remote", "build"));
         assert_eq!(got.len(), 2);
         let last = got.last().unwrap();
-        assert_eq!(last.source, "remote");
+        assert_eq!(last.host, "remote");
         assert_eq!(last.sessions.len(), 1);
         assert_eq!(last.sessions[0].name, "build");
     }
@@ -605,7 +605,7 @@ mod tests {
     #[test]
     fn add_session_appends_new_at_end() {
         let groups = vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![sess("local", "web")],
         }];
@@ -622,11 +622,11 @@ mod tests {
     #[test]
     fn add_session_dedup_by_name_replaces() {
         let groups = vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![
                 Session {
-                    source: "local".into(),
+                    host: "local".into(),
                     name: "web".into(),
                     windows: 1,
                     ..Default::default()
@@ -637,7 +637,7 @@ mod tests {
         let got = add_session(
             &groups,
             Session {
-                source: "local".into(),
+                host: "local".into(),
                 name: "web".into(),
                 windows: 9,
                 ..Default::default()
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn add_session_does_not_mutate_input() {
         let groups = vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![sess("local", "web")],
         }];
@@ -665,7 +665,7 @@ mod tests {
     #[test]
     fn remove_session_drops_session() {
         let groups = vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![sess("local", "web"), sess("local", "db")],
         }];
@@ -678,20 +678,20 @@ mod tests {
     #[test]
     fn remove_session_keeps_empty_group() {
         let groups = vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![sess("local", "web")],
         }];
         let got = remove_session(&groups, &crate::session::Address::new("local", "web"));
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].source, "local");
+        assert_eq!(got[0].host, "local");
         assert!(got[0].sessions.is_empty());
     }
 
     #[test]
     fn remove_session_does_not_mutate_input() {
         let groups = vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![sess("local", "web"), sess("local", "db")],
         }];
@@ -703,7 +703,7 @@ mod tests {
     #[test]
     fn rename_session_keeps_position() {
         let groups = vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![sess("local", "alpha"), sess("local", "zeta")],
         }];
@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn rename_session_no_op_when_missing() {
         let groups = vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![sess("local", "web")],
         }];
@@ -740,7 +740,7 @@ mod tests {
     #[test]
     fn rename_session_does_not_mutate_input() {
         let groups = vec![Group {
-            source: "local".into(),
+            host: "local".into(),
             err: None,
             sessions: vec![sess("local", "web")],
         }];
@@ -756,34 +756,34 @@ mod tests {
     fn order_groups_local_then_wsl_then_remote_by_name() {
         let groups = vec![
             Group {
-                source: "jupiter00".into(),
+                host: "jupiter00".into(),
                 err: None,
                 sessions: vec![sess("jupiter00", "a")],
             },
             Group {
-                source: "local".into(),
+                host: "local".into(),
                 err: None,
                 sessions: vec![sess("local", "w")],
             },
             Group {
-                source: "wsl.Debian".into(),
+                host: "wsl.Debian".into(),
                 err: None,
                 sessions: vec![sess("wsl.Debian", "d")],
             },
             Group {
-                source: "jupiter06".into(),
+                host: "jupiter06".into(),
                 err: None,
                 sessions: vec![sess("jupiter06", "b")],
             },
             Group {
-                source: "deadhost".into(),
+                host: "deadhost".into(),
                 err: Some("refused".into()),
                 sessions: vec![],
             },
         ];
         let out = order_groups(&groups);
-        let order: Vec<&str> = out.iter().map(|g| g.source.as_str()).collect();
-        // local first, then WSL, then remotes by name; each tier by source name
+        let order: Vec<&str> = out.iter().map(|g| g.host.as_str()).collect();
+        // local first, then WSL, then remotes by name; each tier by host name
         // ascending. deadhost's unreachable state does not sink it.
         assert_eq!(
             order,
@@ -793,41 +793,41 @@ mod tests {
 
     #[test]
     fn every_mux_on_this_box_pins_ahead_of_every_remote() {
-        // Two muxes on this machine are two sources with QUALIFIED ids. Both are local and
+        // Two muxes on this machine are two hosts with QUALIFIED ids. Both are local and
         // both must stay ahead of the remotes: a comparison against the bare "local"
-        // would sink them in among the ssh hosts.
+        // would sink them in among the ssh machines.
         let groups = vec![
             Group {
-                source: "jupiter06".into(),
+                host: "jupiter06".into(),
                 err: None,
                 sessions: vec![sess("jupiter06", "b")],
             },
             Group {
-                source: "local:zellij".into(),
+                host: "local:zellij".into(),
                 err: None,
                 sessions: vec![sess("local:zellij", "z")],
             },
             Group {
-                source: "local:psmux".into(),
+                host: "local:psmux".into(),
                 err: None,
                 sessions: vec![sess("local:psmux", "p")],
             },
         ];
         let out = order_groups(&groups);
-        let order: Vec<&str> = out.iter().map(|g| g.source.as_str()).collect();
+        let order: Vec<&str> = out.iter().map(|g| g.host.as_str()).collect();
         assert_eq!(
             order,
             vec!["local:psmux", "local:zellij", "jupiter06"],
-            "both local sources first, by source name"
+            "both local hosts first, by host name"
         );
     }
 
     #[test]
     fn order_groups_does_not_mutate_input() {
         let groups = sample_groups();
-        let first = groups[0].source.clone();
+        let first = groups[0].host.clone();
         let _ = order_groups(&groups);
-        assert_eq!(groups[0].source, first);
+        assert_eq!(groups[0].host, first);
     }
 
     fn kind(r: &RowRef) -> &'static str {
@@ -842,19 +842,19 @@ mod tests {
     /// The session address a session card references ("" for a host card or a section).
     fn addr_of(r: &RowRef) -> String {
         match r {
-            RowRef::Section { source, .. } => source.clone(),
+            RowRef::Section { host, .. } => host.clone(),
             RowRef::Session { sess } => sess.address().display(),
-            RowRef::Host { source, .. } => source.clone(),
+            RowRef::Host { host, .. } => host.clone(),
             RowRef::Machine { machine, .. } => machine.clone(),
         }
     }
 
     #[test]
     fn flatten_emits_a_section_then_a_card_per_session() {
-        // A source with one session: a SECTION title, then one session card. No host
+        // A host with one session: a SECTION title, then one session card. No host
         // row (the host has sessions to show).
         let groups = vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![sess("jup", "api")],
         }];
@@ -864,14 +864,14 @@ mod tests {
             &[],
             &HashSet::new(),
             "",
-            &mux_of_source,
+            &mux_of_host,
         );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["section", "session"]);
         assert_eq!(addr_of(&rows[1].reference), "jup/api");
         assert!(matches!(
             rows[0].reference,
-            RowRef::Section { ref source } if source == "jup"
+            RowRef::Section { ref host } if host == "jup"
         ));
     }
 
@@ -880,7 +880,7 @@ mod tests {
         // Two sessions: the section title, then the session cards in the group's order
         // (the deterministic order `rebuild` establishes).
         let groups = vec![Group {
-            source: "h".into(),
+            host: "h".into(),
             err: None,
             sessions: vec![sess("h", "a"), sess("h", "b")],
         }];
@@ -890,7 +890,7 @@ mod tests {
             &[],
             &HashSet::new(),
             "",
-            &mux_of_source,
+            &mux_of_host,
         );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["section", "session", "session"]);
@@ -901,13 +901,13 @@ mod tests {
     #[test]
     fn flatten_scanning_host_gets_a_host_state_card() {
         let groups = vec![Group {
-            source: "jup".into(),
+            host: "jup".into(),
             err: None,
             sessions: vec![],
         }];
         let mut scanning = HashSet::new();
         scanning.insert("jup".to_string());
-        let rows = flatten(&groups, &scanning, &[], &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(&groups, &scanning, &[], &HashSet::new(), "", &mux_of_host);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host"]);
         assert_eq!(addr_of(&rows[0].reference), "jup");
@@ -924,15 +924,15 @@ mod tests {
     }
 
     #[test]
-    fn flatten_gives_an_empty_source_its_card_and_a_down_host_one_card() {
+    fn flatten_gives_an_empty_host_its_card_and_a_down_machine_one_card() {
         let groups = vec![
             Group {
-                source: "empty".into(),
+                host: "empty".into(),
                 err: None,
                 sessions: vec![],
             },
             Group {
-                source: "dead".into(),
+                host: "dead".into(),
                 err: Some("refused".into()),
                 sessions: vec![],
             },
@@ -943,7 +943,7 @@ mod tests {
             &[],
             &HashSet::new(),
             "",
-            &mux_of_source,
+            &mux_of_host,
         );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host", "machine"]);
@@ -964,17 +964,17 @@ mod tests {
     }
 
     #[test]
-    fn a_host_none_of_whose_sources_connected_is_one_card() {
+    fn a_machine_none_of_whose_hosts_connected_is_one_card() {
         // Two muxes on one machine that refused both: one card for the machine, where its
-        // first source's card would stand, naming that source for the login.
+        // first host's card would stand, naming that host for the login.
         let groups = vec![
             Group {
-                source: "db:tmux".into(),
+                host: "db:tmux".into(),
                 err: Some("refused".into()),
                 sessions: vec![],
             },
             Group {
-                source: "db:zellij".into(),
+                host: "db:zellij".into(),
                 err: Some("logged out; log in again or re-scan".into()),
                 sessions: vec![],
             },
@@ -985,27 +985,27 @@ mod tests {
             &[],
             &HashSet::new(),
             "",
-            &mux_of_source,
+            &mux_of_host,
         );
         assert_eq!(rows.len(), 1);
         assert!(matches!(
             &rows[0].reference,
-            RowRef::Machine { machine, source, blocked: true, .. } if machine == "db" && source == "db:tmux"
+            RowRef::Machine { machine, host, blocked: true, .. } if machine == "db" && host == "db:tmux"
         ));
     }
 
     #[test]
-    fn a_host_with_an_answering_source_keeps_a_card_per_source() {
-        // One mux answered, so the machine is up: the failing mux is a source card of its
+    fn a_machine_with_an_answering_host_keeps_a_card_per_host() {
+        // One mux answered, so the machine is up: the failing mux is a host card of its
         // own, and so is one still scanning.
         let groups = vec![
             Group {
-                source: "db:tmux".into(),
+                host: "db:tmux".into(),
                 err: Some("refused".into()),
                 sessions: vec![],
             },
             Group {
-                source: "db:screen".into(),
+                host: "db:screen".into(),
                 err: None,
                 sessions: vec![],
             },
@@ -1016,18 +1016,18 @@ mod tests {
             &[],
             &HashSet::new(),
             "",
-            &mux_of_source,
+            &mux_of_host,
         );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host", "host"]);
         let mut scanning = HashSet::new();
         scanning.insert("db:screen".to_string());
-        let rows = flatten(&groups, &scanning, &[], &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(&groups, &scanning, &[], &HashSet::new(), "", &mux_of_host);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(
             kinds,
             vec!["host", "host"],
-            "a scanning source is not down yet"
+            "a scanning host is not down yet"
         );
     }
 
@@ -1036,13 +1036,13 @@ mod tests {
         // A host still being scanned has no reason to show, even carrying a stale one
         // from the last sweep: the card says what it is doing now.
         let groups = vec![Group {
-            source: "kyla".into(),
+            host: "kyla".into(),
             err: Some("ssh: Connection timed out".into()),
             sessions: vec![],
         }];
         let mut scanning = HashSet::new();
         scanning.insert("kyla".to_string());
-        let rows = flatten(&groups, &scanning, &[], &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(&groups, &scanning, &[], &HashSet::new(), "", &mux_of_host);
         assert!(matches!(
             rows[0].reference,
             RowRef::Host { scanning: true, .. }
@@ -1051,7 +1051,7 @@ mod tests {
 
     #[test]
     fn flatten_keeps_the_unreachable_card_when_the_filter_names_it() {
-        // The filter names the disconnected host directly.
+        // The filter names the disconnected machine directly.
         let groups = sample_groups();
         let rows = flatten(
             &groups,
@@ -1059,7 +1059,7 @@ mod tests {
             &[],
             &HashSet::new(),
             "dead",
-            &mux_of_source,
+            &mux_of_host,
         );
         assert!(rows.iter().any(|r| matches!(
             &r.reference,
@@ -1068,15 +1068,15 @@ mod tests {
     }
 
     #[test]
-    fn flatten_keeps_disconnected_hosts_as_cards() {
+    fn flatten_keeps_disconnected_machines_as_cards() {
         let groups = vec![
             Group {
-                source: "deadhost".into(),
+                host: "deadhost".into(),
                 err: Some("refused".into()),
                 sessions: vec![],
             },
             Group {
-                source: "other".into(),
+                host: "other".into(),
                 err: Some("timed out".into()),
                 sessions: vec![],
             },
@@ -1087,15 +1087,15 @@ mod tests {
             &[],
             &HashSet::new(),
             "",
-            &mux_of_source,
+            &mux_of_host,
         );
         assert_eq!(rows.len(), 2);
     }
 
     #[test]
-    fn flatten_marks_a_blocked_host_as_blocked() {
+    fn flatten_marks_a_blocked_machine_as_blocked() {
         let groups = vec![Group {
-            source: "pwbox".into(),
+            host: "pwbox".into(),
             err: Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
             sessions: vec![],
         }];
@@ -1105,13 +1105,13 @@ mod tests {
             &[],
             &HashSet::new(),
             "",
-            &mux_of_source,
+            &mux_of_host,
         );
         match &rows[0].reference {
             RowRef::Machine { blocked, .. } => {
                 assert!(*blocked, "a login answers it");
             }
-            _ => panic!("expected the host's card, got another row"),
+            _ => panic!("expected the machine's card, got another row"),
         }
     }
 

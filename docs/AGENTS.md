@@ -10,7 +10,7 @@ standard the code is checked against, not a description of the code as it reads.
 
 - `principles.md` states every design principle once, with its reason.
 - `requirements.md` records functional requirements, one sentence per stable ID.
-- `guide.md` is the user guide the README points to: the command line, hosts and
+- `guide.md` is the user guide the README points to: the command line, machines, hosts, and
   login, the roster, configuration, and the control socket.
 - `keybind.md` lists every key and covers what the in-app help leaves out.
 - `assets/` holds the images the README shows.

@@ -10,42 +10,42 @@ pub struct Scan {
 }
 
 /// What a navigation row references. A session card attaches to that session (the mux
-/// lands on its active window), a source's host-state card selects the source, and a host
-/// card selects the host, so its screen shows. A section title is not a card: it carries
-/// no number and stays out of the card step, and its host half and source half each
+/// lands on its active window), a host's host-state card selects the host, and a machine
+/// card selects the machine, so its screen shows. A section title is not a card: it carries
+/// no number and stays out of the card step, and its machine half and host half each
 /// select their own level.
 #[derive(Clone)]
 pub(crate) enum RowRef {
-    /// A host/mux SECTION TITLE: the header row a group of sibling session cards hangs
-    /// under. It carries `{host}/{mux}` and is never numbered; its host half selects the
-    /// host and its mux half the source. The numbers below it are the sessions'. `n` on
+    /// A machine/mux SECTION TITLE: the header row a group of sibling session cards hangs
+    /// under. It carries `{machine}/{mux}` and is never numbered; its machine half selects
+    /// the machine and its mux half the host. The numbers below it are the sessions'. `n` on
     /// one of those sessions creates a sibling in the same section.
-    Section { source: String },
+    Section { host: String },
     /// A session card: the session name on a single detail line. Every session card
     /// carries its session name; the focused window it used to name is gone from the
-    /// card, and the `{host}/{mux}` it used to carry now lives on the section title
+    /// card, and the `{machine}/{mux}` it used to carry now lives on the section title
     /// above it.
     Session { sess: Session },
-    /// A source with no session to show (scanning / unreachable / blocked / list
+    /// A host with no session to show (scanning / unreachable / blocked / list
     /// failed / empty), sunk below the sections. `scanning` is the in-flight state: the
     /// card's unresolved level shows a spinner instead of a settled mux. `blocked`
     /// refines `unreachable`: the failure is one a login answers.
     Host {
-        source: String,
+        host: String,
         unreachable: bool,
         blocked: bool,
         list_failed: bool,
         scanning: bool,
     },
-    /// A machine's own card: one for a machine none of whose sources connected
-    /// (unreachable, or logged out and waiting on a login), in place of a card per source,
-    /// and one for a machine no source of which is known yet. `source` is the address the
-    /// login pane and the probes use for it: its first source in card order, or the
+    /// A machine's own card: one for a machine none of whose hosts connected
+    /// (unreachable, or logged out and waiting on a login), in place of a card per host,
+    /// and one for a machine no host of which is known yet. `host` is the address the
+    /// login pane and the probes use for it: its first host in card order, or the
     /// machine's own name while it has none. `blocked` says a login can answer the
     /// failure, and `scanning` that the machine's answer is still on its way.
     Machine {
         machine: String,
-        source: String,
+        host: String,
         blocked: bool,
         scanning: bool,
     },
@@ -64,11 +64,11 @@ pub enum OpFollow {
     Reselect(Address),
     /// No inventory change. Report this message for a failed operation.
     Failed(String),
-    /// The login verdict: re-probe that `source`'s machine on success (only it could
+    /// The login verdict: re-probe that `host`'s machine on success (only it could
     /// have changed reach state), report the failure reason otherwise. `login` rides along
     /// so a success can be recorded on the machine before that re-probe goes out.
     LoginResult {
-        source: String,
+        host: String,
         login: crate::transport::Login,
         outcome: LoginOutcome,
     },
