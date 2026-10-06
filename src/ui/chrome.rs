@@ -3,8 +3,6 @@
 //! [`State`](crate::state::State) owns the [`Chrome`] data this module paints.
 
 use std::collections::{HashMap, HashSet};
-#[cfg(test)]
-use std::time::Instant;
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -12,8 +10,6 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
-#[cfg(test)]
-use crate::state::chrome::FLASH_TTL;
 use crate::state::Chrome;
 pub use crate::state::{HostReach, ViewBorderColors};
 use crate::ui::modal::wrap_text;
@@ -208,16 +204,6 @@ pub(crate) fn palette_overrides(
         bar_accent: pick(&ui.bar_accent),
         selection_bg: parse_selection_bg(&ui.selection_style),
     }
-}
-
-/// The hint bar's refusal style: a solid error bar (the active palette's
-/// `error` as the background, the bar's own text slot on top) that breaks hard
-/// from the calm default so a refused action reads as an
-/// error at a glance, not as more of the hint bar's keys. Every flash paints
-/// this. Fixed, not configurable: an error must stay legible regardless of any
-/// `[ui] hint-bar-style` override.
-pub(crate) fn error_flash_style(palette: &crate::ui::palette::Palette) -> Style {
-    Style::default().bg(palette.error).fg(palette.bar_fg)
 }
 
 /// How much of its row the hint bar paints.
@@ -492,8 +478,6 @@ impl Default for Chrome {
     fn default() -> Self {
         let palette = crate::ui::palette::Palette::default();
         Chrome {
-            flash: String::new(),
-            flash_until: None,
             selection_hint: None,
             first_key_seen: false,
             first_key_notice: false,
@@ -1886,15 +1870,12 @@ impl Chrome {
     /// the nav's prefix indicator, and it stays the prefix while the prefix is armed (the
     /// key list beside it names the keys). An open input keeps the prefix too: the input
     /// says its keys where it is typed. The transient states outrank the rest, in order:
-    /// a flash (a refusal), the input, the armed prefix, the hint after a selection move,
-    /// then the scan progress. A flash is returned raw - it may
-    /// exceed `width`; [`Self::hint_bar_lines`] wraps it so it never clips.
+    /// the input, the armed prefix, the hint after a selection move, then the scan
+    /// progress. What an action did or why it did nothing is a toast, never this text.
     pub(crate) fn hint_bar_text(&self, width: u16, state: &crate::state::State) -> String {
         // Use the active prefix so the hint_bar matches the user's configured binding.
         let p = &self.ui_prefix;
-        if !self.flash.is_empty() {
-            format!(" ✗ {}", self.flash)
-        } else if state.is_inputting() {
+        if state.is_inputting() {
             // An open input says its keys on its own box's border, so the indicator rests.
             fit(&[format!(" {p}"), p.to_string()], width)
         } else if self.armed {
@@ -1937,37 +1918,10 @@ impl Chrome {
         }
     }
 
-    /// The hint_bar text split into the lines to render. The fit-based text is always one
-    /// line; only a flash (an arbitrary error message) may exceed `width`, so it wraps
-    /// across as many nav rows as it needs rather than clipping.
-    pub(crate) fn hint_bar_lines(&self, width: u16, state: &crate::state::State) -> Vec<String> {
-        let text = self.hint_bar_text(width, state);
-        // Only a flash can exceed `width` (the fit-based text is already constrained);
-        // wrap it on word boundaries with a consistent left margin.
-        if !!self.flash.is_empty() {
-            return vec![text];
-        }
-        wrap_text(text.trim_start(), width.saturating_sub(1))
-            .into_iter()
-            .map(|l| format!(" {l}"))
-            .collect()
-    }
-
-    /// The style the hint bar paints with this frame. While a flash is showing it is
-    /// the [`error_flash_style`]; otherwise the configured status style. Split from
-    /// [`Self::render_hint_bar`] so the choice is unit-testable without a backend.
-    pub(crate) fn hint_bar_render_style(&self, palette: &crate::ui::palette::Palette) -> Style {
-        if self.flash.is_empty() {
-            self.hint_bar_style
-        } else {
-            error_flash_style(palette)
-        }
-    }
-
     /// One hint-bar line as styled spans: each ` · `-separated segment's leading key
     /// token (the prefix `C-g` is its own segment, so every other segment is one key)
     /// gets the accent, the separators go muted, and the rest inherits the bar's base
-    /// style. Purely presentational - the text is exactly the [`Self::hint_bar_lines`]
+    /// style. Purely presentational - the text is exactly the [`Self::hint_bar_text`]
     /// line, so the fit / wrap behaviour is untouched.
     fn hint_bar_line_spans(
         &self,
@@ -2035,36 +1989,24 @@ impl Chrome {
         fill: BarFill,
         palette: &crate::ui::palette::Palette,
     ) {
-        let lines = self.hint_bar_lines(area.width, state);
-        // Key tokens get the accent only on the built-in default style with no flash
-        // showing: a `[ui] hint-bar-style` override keeps its exact colours (uniform,
-        // as configured), and a flash keeps the one solid style of its kind.
-        let width = lines
-            .iter()
-            .map(|l| l.chars().count() as u16)
-            .max()
-            .unwrap_or(0);
-        let flash = !self.flash.is_empty();
-        let styled = !flash && self.hint_bar_style == hint_bar_default_style(palette);
+        let line = self.hint_bar_text(area.width, state);
+        // Key tokens get the accent only on the built-in default style: a
+        // `[ui] hint-bar-style` override keeps its exact colours (uniform, as configured).
+        let width = line.chars().count() as u16;
+        let styled = self.hint_bar_style == hint_bar_default_style(palette);
         let fact = (!self.armed)
             .then_some(self.selection_hint.as_ref())
             .flatten()
             .map(|h| h.fact.split(':').next().unwrap_or_default().to_string());
         let text = if styled {
-            Text::from(
-                lines
-                    .into_iter()
-                    .map(|l| self.hint_bar_line_spans(l, palette, fact.as_deref()))
-                    .collect::<Vec<_>>(),
-            )
+            Text::from(self.hint_bar_line_spans(line, palette, fact.as_deref()))
         } else {
-            Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>())
+            Text::from(line)
         };
-        // The hint bar is a solid status bar: the configured status style
-        // (`hint_bar_default_style` / the `[ui] hint-bar-style` override) normally, or the
-        // flash style of its kind while a flash shows. The style fills the whole area,
-        // so the bar spans full width even where the text does not; unstyled spans
-        // inherit the bar's fg/bg.
+        // The hint bar is a solid status bar in the configured status style
+        // (`hint_bar_default_style` / the `[ui] hint-bar-style` override). The style fills
+        // the whole area, so the bar spans full width even where the text does not;
+        // unstyled spans inherit the bar's fg/bg.
         //
         // `Clear` first, because a style only recolours cells - it does not blank them.
         // A floating bar covers the live grid, so without this the grid's own
@@ -2075,12 +2017,7 @@ impl Chrome {
             BarFill::Content => Self::bar_content_rect(area, width),
         };
         frame.render_widget(Clear, painted);
-        let style = if flash {
-            error_flash_style(palette)
-        } else {
-            self.hint_bar_style
-        };
-        frame.render_widget(Paragraph::new(text).style(style), painted);
+        frame.render_widget(Paragraph::new(text).style(self.hint_bar_style), painted);
     }
 
     /// Paints the resting prefix across a collapsed nav's indicator: after a one-cell
@@ -2097,22 +2034,14 @@ impl Chrome {
         frame.render_widget(Clear, area);
         let margin = if padded { " " } else { "" };
         let line = self.hint_bar_line_spans(format!("{margin}{}", self.ui_prefix), palette, None);
-        frame.render_widget(
-            Paragraph::new(line).style(self.hint_bar_render_style(palette)),
-            area,
-        );
+        frame.render_widget(Paragraph::new(line).style(self.hint_bar_style), area);
     }
 
     /// How many cells a [`BarFill::Content`] bar paints, so whatever else is on the row
     /// (a band's overflow counts) can stop where the bar starts instead of being painted
     /// over.
     pub(crate) fn hint_bar_chip_width(&self, width: u16, state: &crate::state::State) -> u16 {
-        let content = self
-            .hint_bar_lines(width, state)
-            .iter()
-            .map(|l| l.chars().count() as u16)
-            .max()
-            .unwrap_or(0);
+        let content = self.hint_bar_text(width, state).chars().count() as u16;
         Self::bar_content_rect(Rect::new(0, 0, width, 1), content).width
     }
 
@@ -2172,33 +2101,6 @@ fn selection_hint_text(
 mod tests {
     use super::*;
 
-    /// A flash comes down on its own, so a refusal nobody answered stops holding the
-    /// hint bar. Dropping it is a one-time change: the bar is already back afterwards.
-    #[test]
-    fn a_flash_comes_down_after_its_own_life() {
-        let mut c = Chrome::default();
-        c.flash("boom");
-        let now = Instant::now();
-        assert!(!c.expire_flash(now), "it has only just been shown");
-        assert_eq!(c.flash, "boom");
-        assert!(c.expire_flash(now + FLASH_TTL), "its life is over");
-        assert!(c.flash.is_empty());
-        assert!(
-            !c.expire_flash(now + FLASH_TTL),
-            "an empty bar changes nothing"
-        );
-    }
-
-    /// A key that takes the flash down takes its deadline with it, so nothing is left to
-    /// fire later at a bar the user already cleared.
-    #[test]
-    fn clearing_a_flash_leaves_nothing_to_expire() {
-        let mut c = Chrome::default();
-        c.flash("boom");
-        c.clear_flash();
-        assert!(!c.expire_flash(Instant::now() + FLASH_TTL));
-    }
-
     #[test]
     fn a_selection_style_names_one_background() {
         // A selection surface IS a background, so a bare colour token is it; `bg=` is
@@ -2256,12 +2158,9 @@ mod tests {
     }
 
     #[test]
-    fn hint_bar_shows_a_flash_over_an_open_input() {
-        // A flash outranks an open input: a logout confirm Entered without the word
-        // flashes while leaving the input open, so the flash must show; once it clears,
-        // the bar rests again.
+    fn hint_bar_rests_over_an_open_input() {
         use crate::ui::modal::{Input, InputMode, Modal};
-        let mut c = Chrome::default();
+        let c = Chrome::default();
         let state = crate::state::State {
             modal: Some(Modal::Input(Box::new(Input::new(
                 InputMode::Filter,
@@ -2276,21 +2175,6 @@ mod tests {
             "C-g",
             "the input says its keys where it is typed, so the bar rests: {t:?}"
         );
-        // A flash displaces the input while it lasts.
-        c.flash("type logout to confirm");
-        let t2 = c.hint_bar_text(60, &state);
-        assert!(
-            t2.contains("type logout to confirm"),
-            "the flash shows over the input: {t2:?}"
-        );
-        // The next key clears the flash and the bar rests again.
-        c.flash.clear();
-        let t3 = c.hint_bar_text(60, &state);
-        assert_eq!(
-            t3.trim(),
-            "C-g",
-            "the bar rests once the flash clears: {t3:?}"
-        );
     }
 
     #[test]
@@ -2304,9 +2188,6 @@ mod tests {
         state.scanning.insert("local".into());
         c.set_armed(true);
         assert_eq!(c.hint_bar_text(400, &state).trim(), "C-g");
-        // A flash outranks the armed prefix: a refusal must not be hidden by it.
-        c.flash("host unreachable");
-        assert!(c.hint_bar_text(120, &state).contains("host unreachable"));
     }
 
     #[test]
@@ -2370,28 +2251,6 @@ mod tests {
         assert!(c.hint_bar_text(200, &state).contains("2 windows"));
         c.set_armed(true);
         assert_eq!(c.hint_bar_text(200, &state).trim(), "C-g");
-    }
-
-    #[test]
-    fn flash_paints_the_error_style_not_the_status_style() {
-        let mut c = Chrome::default();
-        let palette = crate::ui::palette::Palette::default();
-        assert_eq!(
-            c.hint_bar_render_style(&palette),
-            c.hint_bar_style,
-            "with no flash the bar keeps the configured status style"
-        );
-        c.flash("cannot kill a host");
-        assert_eq!(
-            c.hint_bar_render_style(&palette),
-            error_flash_style(&palette),
-            "a refusal flash paints the distinct error style"
-        );
-        assert_ne!(
-            error_flash_style(&palette),
-            c.hint_bar_style,
-            "the error style is visually distinct from the status style"
-        );
     }
 
     #[test]

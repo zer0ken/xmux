@@ -120,8 +120,8 @@ pub struct State {
     /// geometry (drag offset / drawn rect); this owns which modal is open + its content.
     pub(crate) modal: Option<Modal>,
     /// The switcher's chrome view-state: the tree|terminal view border, the tree-column
-    /// hint bar (help / status / wrapped flash), and the host screens,
-    /// plus their inputs (flash, spinner set + frame, auto-hide/hover cues, view border
+    /// hint bar (prefix / selection hint / status), and the host screens,
+    /// plus their inputs (spinner set + frame, auto-hide/hover cues, view border
     /// colours, ssh-config text, prefix). Owned here beside the modal data and fed by
     /// the app each frame; the switcher's `render` reads it off
     /// `&state`.
@@ -1048,12 +1048,10 @@ impl State {
             })
     }
 
-    /// Flashes a refused key's reason in the tree-column hint bar.
-    /// The next tree key clears it (the switcher's `handle_key` clear path), and so does
-    /// its own ten-second life, so the normal hint bar returns whether or not the user
-    /// presses anything. Delegates to the chrome's flash API.
-    pub(crate) fn flash(&mut self, msg: impl Into<String>) {
-        self.chrome.flash(msg);
+    /// Reports an action xmux refused, titled by what it was about, as a notification.
+    /// The hint bar keeps its contextual text: a refusal is a result of the action.
+    pub(crate) fn refuse(&mut self, title: impl Into<String>, reason: impl Into<String>) {
+        self.notify.refusal(title, reason);
     }
 }
 

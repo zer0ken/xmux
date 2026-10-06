@@ -530,7 +530,10 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             // One re-scan reports at a time: a second one waits for the first one's
             // summary, so each summary says what its own re-scan found.
             if model.rescan.is_some() {
-                model.state.flash("a re-scan is still running");
+                model.state.refuse(
+                    format!("rescan machine {machine}"),
+                    "a re-scan is still running",
+                );
                 return None;
             }
             model.state.invalid_auth.remove(&machine);
@@ -549,11 +552,12 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
         }
         Command::Logout(machine) => {
             if model.logout.is_some() {
-                model.state.flash("a logout is still running");
+                model
+                    .state
+                    .refuse(format!("logout {machine}"), "a logout is still running");
                 return None;
             }
-            // A flash is a refusal, never progress: the confirm popup or the result toast
-            // is what the logout says next.
+            // The confirm popup or the result toast is what the logout says next.
             let cancel_login = take_login_of(model, &machine);
             model.logout = Some(LogoutRun {
                 machine: machine.clone(),
@@ -617,7 +621,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
             {
                 model
                     .state
-                    .flash(format!("a logout of {machine} is running"));
+                    .refuse(machine, format!("a logout of {machine} is running"));
                 return None;
             }
             model.state.logged_in.remove(machine);
@@ -1307,7 +1311,7 @@ pub(crate) fn note_host_exited(
 ) -> bool {
     // Clear the connected mark so this host is no longer pinned to "keep last-known
     // rows". A transient drop of a once-connected host keeps its rows (no unreachable
-    // flash) on THIS exit; but a later reconnect that fails (no sessions / unreachable)
+    // state) on THIS exit; but a later reconnect that fails (no sessions / unreachable)
     // must then resolve its real state - otherwise a refresh that set it scanning would
     // spin on "loading…" forever, since a sticky `connected` made every exit a no-op.
     let was_connected = connected.remove(host);
@@ -2247,7 +2251,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                     &mut model.state,
                 );
             }
-            model.state.chrome.expire_flash(now);
             model.state.chrome.expire_selection_hint(now);
             let history_open =
                 matches!(model.state.modal, Some(crate::state::Modal::History { .. }));
@@ -3268,7 +3271,6 @@ mod tests {
         let failed = &m.state.notify.toasts[1];
         assert_eq!(failed.notes[0].text, "create failed: boom");
         assert!(failed.until.is_none(), "a failure waits to be dismissed");
-        assert!(m.state.chrome.flash.is_empty(), "a result is no flash");
     }
 
     fn sync_frame(m: &mut AppModel) -> Vec<Effect> {
@@ -3954,7 +3956,14 @@ mod tests {
             Msg::Commands(vec![crate::model::Command::Logout("box".into())]),
         );
         assert!(effects.is_empty(), "{effects:?}");
-        assert_eq!(m.state.chrome.flash, "a logout is still running");
+        assert_eq!(
+            m.state.notify.last_report(),
+            Some((
+                "logout box",
+                crate::state::notify::Level::Warning,
+                "a logout is still running"
+            ))
+        );
     }
 
     #[test]
@@ -4064,7 +4073,14 @@ mod tests {
             }]),
         );
         assert!(effects.is_empty(), "{effects:?}");
-        assert_eq!(m.state.chrome.flash, "a logout of box is running");
+        assert_eq!(
+            m.state.notify.last_report(),
+            Some((
+                "box",
+                crate::state::notify::Level::Warning,
+                "a logout of box is running"
+            ))
+        );
         assert!(m.running_logins.is_empty());
         let effects = find(&mut m, keys_found(Ok(Vec::new())));
         no_stanza(&mut m, effects);
@@ -4546,12 +4562,29 @@ mod tests {
         answer(&mut m, "a", &["x"], None);
         answer(&mut m, "b", &["y"], None);
         update(&mut m, lower_r());
+        m.state.chrome.show_selection_hint(
+            Vec::new(),
+            "1 window".into(),
+            std::time::Instant::now(),
+        );
         let effects = update(
             &mut m,
             Msg::Commands(vec![crate::model::Command::RescanMachine("b".to_owned())]),
         );
         assert!(effects.is_empty(), "{effects:?}");
-        assert!(m.state.chrome.flash.contains("still running"));
+        assert_eq!(
+            m.state.chrome.hint_bar_text(200, &m.state).trim(),
+            "1 window",
+            "the refusal leaves the hint bar on its advice"
+        );
+        assert_eq!(
+            m.state.notify.last_report(),
+            Some((
+                "rescan machine b",
+                crate::state::notify::Level::Warning,
+                "a re-scan is still running"
+            ))
+        );
         assert!(!m.state.scanning.contains("b"));
 
         update(&mut m, Msg::Action(crate::model::Action::Rescan));
@@ -4560,10 +4593,17 @@ mod tests {
         update(&mut m, Msg::RescanRosterApplied);
         answer(&mut m, "a", &["x"], None);
         answer(&mut m, "b", &["y"], None);
-        assert_eq!(m.state.notify.toasts.len(), 1);
+        let titles: Vec<&str> = m
+            .state
+            .notify
+            .toasts
+            .iter()
+            .map(|t| t.title.as_str())
+            .collect();
         assert_eq!(
-            m.state.notify.toasts[0].title, "rescan all machines",
-            "the full summary"
+            titles,
+            ["rescan machine b", "rescan all machines"],
+            "the refusal, then the full summary"
         );
     }
 

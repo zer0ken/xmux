@@ -756,25 +756,6 @@ fn the_selection_hint_uses_the_seam_or_the_side_layout_bottom_row() {
 }
 
 #[test]
-fn a_band_flash_opens_beside_the_seam() {
-    for position in [NavPosition::Top, NavPosition::Bottom] {
-        let mut shot = Shot::new(two_groups(), nav_at(position), false);
-        shot.state
-            .chrome
-            .flash("a refusal with enough words to wrap if the window is narrow");
-        shot.draw(false);
-        let bar = shot.plan.hint_bar_rect;
-        let seam = shot.plan.regions.view_border;
-        if position == NavPosition::Top {
-            assert_eq!(bar.y, seam.bottom(), "{position:?}");
-        } else {
-            assert_eq!(bar.bottom(), seam.y, "{position:?}");
-        }
-        assert!(shot.seam_text().contains("C-g"), "{position:?}");
-    }
-}
-
-#[test]
 fn a_band_selection_hint_owns_the_seam_until_it_expires() {
     for position in [NavPosition::Top, NavPosition::Bottom] {
         let mut shot = Shot::new(many_sessions(60, 12), nav_at(position), false);

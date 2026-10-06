@@ -10,52 +10,24 @@ use crate::ui::palette;
 /// column's bottom row, or the right end of a band's view border row (empty when the nav
 /// is hidden, so the mux keeps every row).
 ///
-/// Floating, it spans the full bottom row of a side layout. A selection hint in a band
-/// shares the seam with the prefix; an input uses the seam and an adjacent guide row
-/// when needed. A flash opens below a top band's seam or above a bottom band's seam.
-/// A multi-row bar grows away from the
-/// indicator. With the nav hidden there is no
-/// indicator, so it borrows the window's bottom rows. Only the paint moves; the layout is
-/// untouched, so nothing reflows.
-pub(super) fn hint_bar_rect(
-    indicator: Rect,
-    area: Rect,
-    hint_bar_h: u16,
-    floating: bool,
-    position: NavPosition,
-) -> Rect {
-    if !floating {
+/// Floating, it spans the full row of a side layout's indicator; a band shares its seam
+/// with the prefix instead. With the nav hidden there is no indicator, so it borrows the
+/// window's bottom row. Only the paint moves; the layout is untouched, so nothing
+/// reflows.
+pub(super) fn hint_bar_rect(indicator: Rect, area: Rect, floating: bool) -> Rect {
+    if !floating || area.height == 0 {
         return indicator;
     }
-    let h = hint_bar_h.min(area.height);
-    if indicator.height == 0 {
-        // Nav hidden: no row was reserved, so borrow the window's bottom rows.
-        return Rect {
-            x: area.x,
-            y: area.y + area.height - h,
-            width: area.width,
-            height: h,
-        };
-    }
-    match position {
-        NavPosition::Left | NavPosition::Right => Rect {
-            x: area.x,
-            y: indicator.bottom().saturating_sub(h).max(area.y),
-            width: area.width,
-            height: h,
+    Rect {
+        x: area.x,
+        y: if indicator.height == 0 {
+            // Nav hidden: no row was reserved, so borrow the window's bottom row.
+            area.bottom() - 1
+        } else {
+            indicator.y
         },
-        NavPosition::Top => Rect {
-            x: area.x,
-            y: indicator.bottom().min(area.bottom() - h),
-            width: area.width,
-            height: h,
-        },
-        NavPosition::Bottom => Rect {
-            x: area.x,
-            y: indicator.y.saturating_sub(h).max(area.y),
-            width: area.width,
-            height: h,
-        },
+        width: area.width,
+        height: 1,
     }
 }
 
@@ -309,20 +281,8 @@ impl Switcher {
         // bar says: a floating bar only paints further, it never takes a row from the nav.
         let regions = compute_regions(area, nav, 1);
         let floating = hint_bar_floats(state);
-        let seam_hint = band
-            && !regions.hint_bar.is_empty()
-            && floating
-            && state.chrome.flash.is_empty()
-            && !state.chrome.armed;
+        let seam_hint = band && !regions.hint_bar.is_empty() && floating && !state.chrome.armed;
         let prefix_w = prefix_chip_width(&state.chrome.ui_prefix);
-        let bar_w = if seam_hint {
-            area.width.saturating_sub(prefix_w)
-        } else if floating {
-            area.width
-        } else {
-            nav.width
-        };
-        let hint_bar_h = state.chrome.hint_bar_lines(bar_w, state).len().max(1) as u16;
         // At rest the prefix indicator is a label on the column's bottom row, and the right
         // end of the seam row in a band. While the bar floats, the indicator keeps the
         // prefix alone.
@@ -359,7 +319,7 @@ impl Switcher {
                 height: 1,
             }
         } else {
-            hint_bar_rect(resting_bar, area, hint_bar_h, floating, nav.position)
+            hint_bar_rect(resting_bar, area, floating)
         };
         // A live prefix opens its key list from the indicator toward the terminal view,
         // sized to the room there.
@@ -1023,8 +983,8 @@ impl Switcher {
                 }
             }
             self.place_field_cursor(frame, state, plan, view_caret);
-            // The bar still floats for the states that must be seen even here: an armed
-            // prefix, open input, or refusal flash. Hiding the nav hides the prefix indicator,
+            // The bar still floats for the states that must be seen even here: the hint
+            // after a selection move. Hiding the nav hides the prefix indicator,
             // not xmux's ability to answer a keypress.
             if plan.floating_hint_bar {
                 state.chrome.render_hint_bar(
@@ -1045,11 +1005,7 @@ impl Switcher {
         // sizing and mouse hit-testing so they never diverge: the nav list / terminal split
         // side by side (Column) or stacked (Band), parted by the view
         // border, and the hint bar rests on a column's bottom row or a band's view border
-        // row. The hint bar is normally one row; a long flash wraps, so size it to the
-        // wrapped line count (never clipped). Measured at the width it will RENDER at: the
-        // nav column at rest in a column, and the whole window once the bar floats
-        // (see `hint_bar_floats` /
-        // `hint_bar_rect`).
+        // row. The hint bar is one row (see `hint_bar_floats` / `hint_bar_rect`).
         self.render_nav(frame, state, plan, &palette);
         // The view border is the one line the nav draws: its colour says which view holds
         // the focus, and a side nav's overflow thickens the stretch beside the cards on
@@ -1072,8 +1028,7 @@ impl Switcher {
         // terminal view. At rest it is the prefix indicator, a label sized to what it says
         // on the column's bottom row or at the right end of a band's seam. A floating
         // bar spans the whole width in a side layout. In a band, a selection hint shares
-        // the seam with the prefix; input uses the seam, while a flash opens beside it. The layout never
-        // reflows. A band's overflow counts share the seam with the indicator at rest.
+        // the seam with the prefix. The layout never reflows. A band's overflow counts share the seam with the indicator at rest.
         for mark in &plan.overflow_marks {
             Self::render_overflow_mark(frame, *mark, &palette);
         }

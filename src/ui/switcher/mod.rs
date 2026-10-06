@@ -70,18 +70,16 @@ pub(crate) fn prefix_chip_width(ui_prefix: &str) -> u16 {
 }
 
 /// Whether the hint bar floats over the whole window instead of resting at the nav's
-/// prefix indicator: for a refusal and the hint after a selection move. A live prefix
-/// does not float the bar: its keys open in the key list instead. An open input does not
-/// either: it says its keys on its popup's border.
+/// prefix indicator: for the hint after a selection move. A live prefix does not float
+/// the bar: its keys open in the key list instead. An open input does not either: it says
+/// its keys on its popup's border.
 pub(crate) fn hint_bar_floats(state: &crate::state::State) -> bool {
-    !state.chrome.flash.is_empty()
-        || (state.chrome.selection_hint.is_some() && !state.chrome.armed && !state.is_inputting())
+    state.chrome.selection_hint.is_some() && !state.chrome.armed && !state.is_inputting()
 }
 
-/// Whether the prefix key list is open: a live prefix that no input popup or refusal
-/// outranks.
+/// Whether the prefix key list is open: a live prefix that no input popup outranks.
 pub(crate) fn key_list_open(state: &crate::state::State) -> bool {
-    state.chrome.armed && !state.is_inputting() && state.chrome.flash.is_empty()
+    state.chrome.armed && !state.is_inputting()
 }
 
 /// The auto band-layout tree height for a body of `body_rows` rows (before the hint bar row

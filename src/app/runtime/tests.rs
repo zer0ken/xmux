@@ -5971,24 +5971,6 @@ fn muxes_found_forwards_the_add_to_the_loop() {
     assert_eq!(state.groups.len(), before, "and folds nothing itself");
 }
 
-// --- chrome ownership: State owns the chrome view-state -------------------
-
-#[test]
-fn flash_sets_message_and_key_clears_it() {
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    let (mut state, mut sw) = with_switcher(one_session_scan());
-    state.flash("boom");
-    assert_eq!(
-        state.chrome.flash, "boom",
-        "State::flash sets the chrome flash"
-    );
-    // A navigation key clears the flash (the switcher's handle_key clear path).
-    sw.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut state);
-    assert!(
-        state.chrome.flash.is_empty(),
-        "a key clears the flash so the normal hint bar returns"
-    );
-}
 #[test]
 fn clear_screen_wipes_the_screen_and_repaints_every_cell() {
     use ratatui::widgets::Paragraph;

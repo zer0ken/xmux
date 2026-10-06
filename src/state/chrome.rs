@@ -52,12 +52,6 @@ pub struct HostReach {
     pub refresh: String,
 }
 
-/// How long a flash stays up with nothing pressed. A refused key is about something that
-/// already happened, so a bar holding one forever keeps the nav's own help text off
-/// screen over a message that has stopped being news. Ten seconds reads a wrapped line
-/// twice over.
-pub(crate) const FLASH_TTL: Duration = Duration::from_secs(10);
-
 /// How long the hint after a selection move stays up with nothing pressed. Long enough to
 /// read a key and a fact, short enough that the resting indicator is back before the next
 /// glance.
@@ -77,11 +71,6 @@ pub(crate) struct SelectionHint {
 
 /// Runtime-owned chrome data read by border, hint bar, and host-screen rendering.
 pub struct Chrome {
-    /// A refused key's reason, shown in the hint bar until the next key or its own life
-    /// ends. Empty when nothing is flashing.
-    pub(crate) flash: String,
-    /// When the flash stops showing itself, or `None` when nothing is flashing.
-    pub(crate) flash_until: Option<Instant>,
     /// The hint about the card the selection moved to, while it lasts.
     pub(crate) selection_hint: Option<SelectionHint>,
     /// The first interactive key without a saved preference introduces the prefix.
@@ -136,32 +125,6 @@ pub struct Chrome {
 }
 
 impl Chrome {
-    /// Sets the flash shown in the nav's hint bar: why a key was refused. The next tree
-    /// key clears it (the switcher's `handle_key`), and [`FLASH_TTL`] clears it for a user
-    /// who presses nothing, so the normal hint bar returns either way.
-    pub(crate) fn flash(&mut self, msg: impl Into<String>) {
-        self.flash = msg.into();
-        self.flash_until = Some(Instant::now() + FLASH_TTL);
-    }
-
-    /// Takes the flash down, however its lifetime ended.
-    pub(crate) fn clear_flash(&mut self) {
-        self.flash.clear();
-        self.flash_until = None;
-    }
-
-    /// Drops a flash that has been up for its whole life, and says whether the bar
-    /// changed, so a caller repaints only when it did.
-    pub(crate) fn expire_flash(&mut self, now: Instant) -> bool {
-        match self.flash_until {
-            Some(until) if now >= until => {
-                self.clear_flash();
-                true
-            }
-            _ => false,
-        }
-    }
-
     /// Shows the hint about the card the selection just moved to, replacing any earlier
     /// one, for [`SELECTION_HINT_TTL`] from `now`.
     pub(crate) fn show_selection_hint(&mut self, keys: Vec<HintKey>, fact: String, now: Instant) {

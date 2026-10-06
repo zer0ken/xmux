@@ -1553,9 +1553,9 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         tokio::spawn(async move { crate::link::control::prune_stale(&dir, &keep).await });
     }
 
-    // What the newest release is, from the answer recorded on disk. The flash carries
-    // it, so the user reads it where every other transient notice appears rather than
-    // in a banner of its own.
+    // What the newest release is, from the answer recorded on disk. A toast carries
+    // it, so the user reads it where every other result appears rather than in a banner
+    // of its own.
     //
     // Nothing here waits on the network: the line comes from the recorded answer, and
     // the refresh below runs on its own thread and only writes the file. So a launch
