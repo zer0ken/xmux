@@ -1108,7 +1108,7 @@ fn a_scanning_host_screen_states_its_headline_word_and_facts() {
     let lines: Vec<&str> = view.lines().map(str::trim).collect();
     let headline = lines
         .iter()
-        .position(|l| l.starts_with("mux prod"))
+        .position(|l| l.starts_with("host prod"))
         .unwrap_or_else(|| {
             panic!(
                 "the headline:
@@ -3689,7 +3689,7 @@ async fn both_host_screens_share_one_grammar() {
             "machine prod",
             "unreachable",
         ),
-        ("empty", empty.view_text(), "mux fresh", "no sessions"),
+        ("empty", empty.view_text(), "host fresh", "no sessions"),
     ] {
         let lines: Vec<&str> = view.lines().collect();
         assert_eq!(lines[0].trim(), "", "{label}: opens on a blank row");

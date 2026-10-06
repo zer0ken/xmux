@@ -12,15 +12,15 @@ The nav takes these keys while it holds focus:
 | Key                      | Action                                                                   |
 | ------------------------ | ------------------------------------------------------------------------ |
 | `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends)                                       |
-| `←` / `→` (or `h` / `l`) | previous / next `machine/mux` section, the machine cards counting as one |
+| `←` / `→` (or `h` / `l`) | previous / next `machine/mux` host section, the machine cards counting as one |
 | `Home` / `End`           | jump to the first / last card                                            |
 | `PageUp` / `PageDown`    | jump ten cards                                                           |
 | `Enter`                  | move focus into the selected session's terminal view                     |
 | `prefix 1`-`prefix 9`    | jump to card number (keep typing for 10+)                                |
-| `prefix n`               | new session on the selected mux                                          |
+| `prefix n`               | new session on the selected host                                         |
 | `prefix /`               | filter cards (fuzzy)                                                     |
-| `prefix r`               | rescan this machine: the selected card's machine and its muxes           |
-| `prefix R`               | rescan all machines: refresh which machines exist, and every mux's sessions |
+| `prefix r`               | rescan this machine: the selected card's machine and its hosts           |
+| `prefix R`               | rescan all machines: refresh which machines exist, and every host's sessions |
 | `prefix L`               | log out of this machine (an SSH machine)                                 |
 
 xmux has its own prefix, like tmux's `set -g prefix`. The default is `Ctrl-g`,
@@ -51,8 +51,8 @@ single control byte, so it never collides with typed text, and a prefix pasted a
 
 | Key | Action |
 |---|---|
-| `Ctrl-↑` / `Ctrl-↓` | move up a level (session, mux, machine) / back down to the child |
-| `prefix i` (bare `i` in the nav) | select the current mux and show its screen |
+| `Ctrl-↑` / `Ctrl-↓` | move up a level (session, host, machine) / back down to the child |
+| `prefix i` (bare `i` in the nav) | select the current host and show its screen |
 | `prefix r` | rescan this machine: the selected card's machine alone |
 | `prefix h` | open the table of machine problems |
 | `prefix :` | open the command palette |
@@ -114,13 +114,13 @@ name or the first session in card order. From a title part, `↑`/`↓` go to th
 card and `←`/`→` to the adjacent section. A bare `Ctrl-↑`/`Ctrl-↓` right after
 `prefix Ctrl-↑`/`prefix Ctrl-↓` still resizes the band.
 
-The terminal view shows a machine screen for a machine and a mux screen for one mux
-on it, each headed by its level and path, such as `machine db-01` or `mux db-01/tmux`.
-A machine screen states how the machine is reached and logged in to; a mux screen
-states the mux's sessions and how they stay current. While the terminal view shows
+The terminal view shows a machine screen for a machine and a host screen for one mux
+on it, each headed by its level and path, such as `machine db-01` or `host db-01/tmux`.
+A machine screen states how the machine is reached and logged in to; a host screen
+states the host's sessions and how they stay current. While the terminal view shows
 either screen, `↑`/`↓` (and `Tab`) step through its links and `Enter` opens the
-selected one. A machine screen links each of its muxes; a mux screen links its machine
-and each of its sessions.
+selected one. A machine screen links each of its hosts whose mux is confirmed, and
+none while no mux is; a host screen links its machine and each of its sessions.
 
 At launch the terminal view shows the landing screen in place of a session: how many
 machines the scan has reached, and every nav card under its number as a
@@ -131,13 +131,13 @@ rest of the run, opens the chosen card, and focuses the terminal view.
 
 ## Commands
 
-`prefix n` starts a session on the mux of the selected card, a mux's card or a session
-card alike, and is refused under an unreachable machine or mux. An empty name is
-assigned by the mux where it names its own sessions, otherwise by xmux as an
-`<adjective>-<noun>` no session on that mux holds.
+`prefix n` starts a session on the host of the selected card, a host's card or a
+session card alike, and is refused under an unreachable machine or host. An empty name
+is assigned by the mux where it names its own sessions, otherwise by xmux as an
+`<adjective>-<noun>` no session on that host holds.
 
 `prefix r` asks the selected card's machine again and nothing else: its reachability
-probe, then every mux it serves. Its cards keep their sessions and numbers meanwhile,
+probe, then every host it serves. Its cards keep their sessions and numbers meanwhile,
 and it reports in one toast titled `rescan machine <machine>`. It is refused while that
 machine is still scanning and while another re-scan has not reported; a `prefix R`
 pressed meanwhile takes over.

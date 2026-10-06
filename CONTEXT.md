@@ -13,17 +13,17 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 
 ## Hosts and Sources
 
-- **host** - a machine that hosts muxes and that xmux can reach; the roster decides
-  the set. A sentence about a host must stay true when one host serves two muxes; one
-  that does not is about a source. Every surface calls a host a machine.
-- **machine** - the word every surface uses for a host, and the plain word for the
-  computer in the world when a sentence is about hardware rather than the model.
-- **source** - one mux on one host, and what every session address names. Its id is
-  the bare host alias when the host serves one mux and `<host>:<mux>` when it serves
-  several. Every surface calls a source a mux and writes it as its source label.
-- **level word** - `machine` or `mux`, the word a surface uses wherever a screen, key,
-  or message is about one level of the hierarchy, so the two levels never share a word
-  such as `host`.
+- **host** - in the code, a machine that hosts muxes and that xmux can reach; the
+  roster decides the set. A sentence about a host must stay true when one host serves
+  two muxes; one that does not is about a source. Every surface calls it a machine.
+- **machine** - the word every surface uses for what the code calls a host, and the
+  plain word for the computer in the world.
+- **source** - in the code, one mux on one host, and what every session address names.
+  Its id is the bare host alias when the host serves one mux and `<host>:<mux>` when it
+  serves several. Every surface calls it a host and writes it as its source label.
+- **level words** - `machine`, `host`, and `session`, the words every surface uses for
+  the three levels a session lives in: on a surface, `host` always names one mux on a
+  machine (`db-01/tmux`) and never the machine (`db-01`).
 - **`Transport`** - the HOST axis trait (local, ssh, WSL): where a command runs and how
   its argv is executed. A transport reaches a host; it is not one.
 - **`Mux`** - the MUX axis trait (tmux, psmux, zellij, abduco, screen, tuios, herdr):
@@ -141,7 +141,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **key list** - the box a live prefix opens, naming every key it unlocks.
 - **selection hint** - what the hint bar says for three seconds after the user moves the
   selection: the card's next keys and one fact about it.
-- **scan indicator** - the `scanning muxes n/m…` progress in the hint bar, counting
+- **scan indicator** - the `scanning hosts n/m…` progress in the hint bar, counting
   sources.
 - **flash** - the reason a key did nothing, shown in the hint bar. A refusal, never the
   result of work.
@@ -159,14 +159,15 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **command palette** - the searchable list of named actions (`prefix :`).
 - **one-machine re-scan** - `prefix r`: the selected card's machine asked again alone.
 - **view screen** - what the terminal view shows in place of a grid: a machine screen,
-  a mux screen, a scanning or settled state, the own session, or the landing screen.
-- **machine screen** - a host's view screen, headed `machine {host}`: how the machine is
-  reached and logged in to, its login pane, and a link to each of its muxes.
-- **mux screen** - a source's view screen, headed `mux {host}/{mux}`: the mux's
-  sessions, how they stay current, and a link to its machine and to each session.
+  a host screen, a scanning or settled state, the own session, or the landing screen.
+- **machine screen** - the view screen headed `machine {machine}`: how the machine is
+  reached and logged in to, its login pane, and a link to each of its hosts whose mux is
+  confirmed. A machine with no confirmed mux links nowhere.
+- **host screen** - the view screen headed `host {machine}/{mux}`: the host's sessions,
+  how they stay current, and a link to its machine and to each session.
 - **landing screen** - the view screen from launch until the first execution: the scan
   progress and every nav card as a link, sharing the one hard selection.
-- **screen link** - a selectable link on a machine or mux screen that opens another
+- **screen link** - a selectable link on a machine or host screen that opens another
   node's screen.
 - **switcher screen** - the rendered split view as a whole. Never an "overlay".
 

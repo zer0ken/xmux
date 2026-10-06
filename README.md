@@ -20,9 +20,9 @@ gpu-01.](docs/assets/xmux-landing.gif)
 ![Moving down one card, then jumping to sessions 5 and 3 by number; the terminal
 view follows each selection.](docs/assets/xmux-nav-switch.gif)
 
-**Walk up to the mux and the machine**
+**Walk up to the host and the machine**
 
-![Ctrl-↑ selects the session's mux and shows its screen, a second Ctrl-↑ selects the
+![Ctrl-↑ selects the session's host and shows its screen, a second Ctrl-↑ selects the
 machine and shows its screen, and Ctrl-↓ walks back down to the
 session.](docs/assets/xmux-hierarchy.gif)
 

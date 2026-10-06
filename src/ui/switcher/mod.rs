@@ -1393,7 +1393,7 @@ impl Switcher {
                         format!(
                             "{}, {n} {}",
                             tree::HOST_REACHABLE,
-                            if n == 1 { "mux" } else { "muxes" }
+                            if n == 1 { "host" } else { "hosts" }
                         )
                     }
                 };

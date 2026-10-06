@@ -150,9 +150,10 @@ against, naming no source file, function, or test.
   The landing list and the nav share one hard selection, which only highlights; the
   first execution closes the landing screen for the rest of the run, opens the chosen
   card, and focuses the terminal view.
-- **FR-B44** - Every surface calls a host a machine and a source a mux, a machine screen
-  and a mux screen open with their level and path (`machine db-01`, `mux db-01/tmux`),
-  and each states only the facts of its own level.
+- **FR-B44** - Every surface names the levels machine, host, and session, with `host`
+  always one mux on a machine, a machine screen and a host screen open with their level
+  and path (`machine db-01`, `host db-01/tmux`), and each states only the facts of its
+  own level.
 
 ## C. Switching (the keystone)
 

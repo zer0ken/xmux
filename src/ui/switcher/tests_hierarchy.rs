@@ -383,7 +383,7 @@ fn the_host_screen_states_the_machine_and_links_its_sources() {
         "username and password",
         "rescan this machine",
         "log out of this machine",
-        "muxes",
+        "hosts",
         "tmux  2 sessions",
         "zellij  no sessions",
     ] {
@@ -396,7 +396,7 @@ fn the_host_screen_states_the_machine_and_links_its_sources() {
 }
 
 #[test]
-fn the_machine_and_mux_screens_name_their_level_and_keep_to_its_facts() {
+fn the_machine_and_host_screens_name_their_level_and_keep_to_its_facts() {
     let mut h = H::new(&[("box:tmux", &["notes"], None), ("box:zellij", &[], None)]);
     h.state
         .chrome
@@ -408,11 +408,14 @@ fn the_machine_and_mux_screens_name_their_level_and_keep_to_its_facts() {
     let mux = h.view();
     assert_eq!(
         mux.lines().nth(1).map(str::trim_end),
-        Some(" mux box/tmux"),
+        Some(" host box/tmux"),
         "{mux}"
     );
     for gone in ["ssh config", "Host box", "address", "SSH login"] {
-        assert!(!mux.contains(gone), "the mux screen omits {gone:?}:\n{mux}");
+        assert!(
+            !mux.contains(gone),
+            "the host screen omits {gone:?}:\n{mux}"
+        );
     }
     h.ctrl(KeyCode::Up);
     assert_eq!(h.node(), host("box"));
@@ -422,7 +425,7 @@ fn the_machine_and_mux_screens_name_their_level_and_keep_to_its_facts() {
         Some(" machine box"),
         "{machine}"
     );
-    for want in ["ssh config", "Host box", "User dev", "muxes"] {
+    for want in ["ssh config", "Host box", "User dev", "hosts"] {
         assert!(
             machine.contains(want),
             "the machine screen states {want:?}:\n{machine}"
@@ -552,7 +555,7 @@ fn hovering_a_nav_target_shows_its_screen_without_moving_the_hard_selection() {
     h.sw.mouse_hover(&h.plan.clone(), half.x, half.y);
     h.draw();
     assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Host));
-    assert!(h.view().contains("muxes"), "{}", h.view());
+    assert!(h.view().contains("hosts"), "{}", h.view());
 
     // Off every target the hard selection's screen comes back.
     assert!(h.sw.mouse_hover(&h.plan.clone(), 100, 10));

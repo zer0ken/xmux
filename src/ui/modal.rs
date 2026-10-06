@@ -165,16 +165,16 @@ fn glyph_legend() -> Vec<(String, String)> {
         (BLOCK_MARK.into(), "a machine that needs a login".into()),
         (
             UNREACHABLE_MARK.into(),
-            "an unreachable machine or mux; on a toast, a warning that stays until dismissed"
+            "an unreachable machine or host; on a toast, a warning that stays until dismissed"
                 .into(),
         ),
         (
             LIST_FAILED_MARK.into(),
-            "a mux whose session list could not be read; on a toast, a failure that stays".into(),
+            "a host whose session list could not be read; on a toast, a failure that stays".into(),
         ),
         (
             crate::ui::spinner_glyph(0).to_string(),
-            "the spinner: a machine or mux still scanning, or a login step still running".into(),
+            "the spinner: a machine or host still scanning, or a login step still running".into(),
         ),
         (
             crate::ui::switcher::SELECTED_MARK.into(),
@@ -976,9 +976,9 @@ pub(crate) fn new_session_popover(
     width: u16,
     palette: &palette::Palette,
 ) -> (PopupFrame, Vec<Line<'static>>) {
-    let lead = label_lead(&["mux", "name"]);
+    let lead = label_lead(&["host", "name"]);
     let room = (width as usize).saturating_sub(2 + lead + 1).max(1);
-    let mut rows = wrapped_row("mux", host, room);
+    let mut rows = wrapped_row("host", host, room);
     rows.push(("name", input_field(input, room, "auto", palette)));
     let lines = label_rows(rows, palette);
     (
@@ -998,7 +998,7 @@ const LOGOUT_KEYS_HINTS: &[Hint] = &[("Enter", "remove"), ("Esc", "keep it")];
 /// The new-session popover's natural outer size for `host`: wide enough for the host on
 /// one row.
 pub(crate) fn new_session_size(host: &str) -> (u16, u16) {
-    let lead = label_lead(&["mux", "name"]);
+    let lead = label_lead(&["host", "name"]);
     let w = (lead + UnicodeWidthStr::width(host) + 1 + 2) as u16;
     let hints = (hints_width(NEW_SESSION_HINTS) + 6) as u16;
     (w.max(hints).max(POPOVER_MIN_WIDTH), 4)
@@ -1986,7 +1986,7 @@ mod tests {
     fn a_wrapped_help_description_hangs_under_the_description_column() {
         let palette = palette::Palette::default();
         let kw = key_column_width(&help_rows("C-g", POS));
-        let (_, lines) = help_lines("C-g", POS, &palette, "current mux", 0, None, None, 40, 40);
+        let (_, lines) = help_lines("C-g", POS, &palette, "current host", 0, None, None, 40, 40);
         let text: Vec<String> = lines[HELP_LEAD..].iter().map(|l| l.to_string()).collect();
         let at = text
             .iter()
@@ -2013,7 +2013,7 @@ mod tests {
             shown,
             [
                 "move (nav focus)",
-                "machine and mux screens",
+                "machine and host screens",
                 "navigate",
                 "sessions",
                 "view",
@@ -2068,7 +2068,7 @@ mod tests {
         );
         assert_eq!(
             lines[HELP_LEAD].to_string(),
-            " machine and mux screens",
+            " machine and host screens",
             "the title is the top body row"
         );
         feed_sized(&mut m, b"\x1b[C\x1b[C", inner, visible);
