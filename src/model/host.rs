@@ -585,13 +585,6 @@ mod tests {
         ) -> Option<std::sync::Arc<std::sync::Mutex<crate::display::grid::Grid>>> {
             None
         }
-        fn input(
-            &mut self,
-            _sel: &crate::model::Selection,
-            _bytes: Vec<u8>,
-            _ctx: &crate::driver::DriverCtx,
-        ) {
-        }
         fn sync(
             &mut self,
             _source: &str,

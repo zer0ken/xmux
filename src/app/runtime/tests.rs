@@ -1922,6 +1922,7 @@ fn test_rt(env: Env) -> Runtime {
         last_draw: std::time::Instant::now(),
         rescan_pending: false,
         display_probe: DisplayProbe::default(),
+        held_input: None,
         discovery_runs: 0,
         host_rescans: Vec::new(),
     };
@@ -6374,4 +6375,104 @@ fn every_key_a_screen_reads_is_in_the_key_table_and_every_screen_entry_is_read()
             "the key table names {code:?} on a screen but no screen reads it"
         );
     }
+}
+
+/// Two remote sources: `deb-1` serving abduco, whose display reattaches on every session
+/// change, and `deb-2` serving tmux.
+fn abduco_and_tmux_hosts() -> crate::model::Hosts {
+    let mut hosts = crate::model::Hosts::default();
+    for (alias, mux) in [("deb-1", "abduco"), ("deb-2", "tmux")] {
+        hosts.insert(crate::model::Host::new(
+            crate::transport::ssh(alias.into(), String::new(), "linux".into()),
+            crate::mux::for_binary(mux).unwrap(),
+        ));
+    }
+    hosts
+}
+
+fn logged(log: &std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>) -> Vec<u8> {
+    log.lock().unwrap().concat()
+}
+
+/// Returning from another source to an abduco session keeps the other source's session
+/// on screen until the fresh abduco attachment paints, and abduco repaints nothing on
+/// attach. Keys typed meanwhile belong to the selected session: they wait while its
+/// attachment spawns and reach it once it exists, never the session still on screen
+/// and never the stale attachment under the same key.
+#[tokio::test(flavor = "current_thread")]
+async fn keys_typed_while_returning_to_a_reattaching_source_reach_the_selected_session() {
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = abduco_and_tmux_hosts();
+    let selected = Selection {
+        source: "deb-1".into(),
+        session: "abduco2".into(),
+    };
+    let shown = Selection {
+        source: "deb-2".into(),
+        session: "tmux1".into(),
+    };
+    let abduco_key = display_key(&rt.hosts, &selected);
+    let tmux_key = display_key(&rt.hosts, &shown);
+    let (stale, stale_log) = crate::display::attachment::fake_attachment_with_input_log(1);
+    let (tmux, tmux_log) = crate::display::attachment::fake_attachment_with_input_log(2);
+    rt.registry.insert(&abduco_key, stale);
+    rt.registry.insert(&tmux_key, tmux);
+    rt.model.state.displayed = shown;
+    rt.model.state.selection = selected.clone();
+    {
+        let display = &mut rt.hosts.get_mut("deb-1").unwrap().display;
+        display.set_shows(&abduco_key, "abduco2");
+        display.mark_in_flight(&abduco_key, 1);
+        display.mark_pending(3, &abduco_key);
+    }
+
+    rt.forward_input(b"whereami".to_vec());
+    rt.flush_held_input();
+    assert!(
+        logged(&tmux_log).is_empty(),
+        "the session on screen is not selected"
+    );
+    assert!(
+        logged(&stale_log).is_empty(),
+        "the stale attachment shows abduco1"
+    );
+
+    let (fresh, fresh_log) = crate::display::attachment::fake_attachment_with_input_log(3);
+    rt.on_display_event(DisplayEvent::Ready {
+        seq: 1,
+        key: abduco_key.clone(),
+        attachment: fresh,
+    });
+    rt.flush_held_input();
+    rt.forward_input(b"\r".to_vec());
+    assert_eq!(logged(&fresh_log), b"whereami\r");
+    assert!(logged(&tmux_log).is_empty());
+    assert!(logged(&stale_log).is_empty());
+}
+
+/// Input held for a selection is dropped when the selection moves on before its
+/// attachment exists, so it never reaches a session it was not typed for.
+#[tokio::test(flavor = "current_thread")]
+async fn input_held_for_a_selection_left_behind_is_dropped() {
+    let mut rt = test_rt(fake_env_with_sources(&[]));
+    rt.hosts = abduco_and_tmux_hosts();
+    let shown = Selection {
+        source: "deb-2".into(),
+        session: "tmux1".into(),
+    };
+    let tmux_key = display_key(&rt.hosts, &shown);
+    let (tmux, tmux_log) = crate::display::attachment::fake_attachment_with_input_log(2);
+    rt.registry.insert(&tmux_key, tmux);
+    rt.model.state.displayed = shown.clone();
+    rt.model.state.selection = Selection {
+        source: "deb-1".into(),
+        session: "abduco2".into(),
+    };
+    rt.model.state.attach_pending = true;
+
+    rt.forward_input(b"lost".to_vec());
+    rt.model.state.selection = shown;
+    rt.model.state.attach_pending = false;
+    rt.forward_input(b"kept".to_vec());
+    assert_eq!(logged(&tmux_log), b"kept");
 }

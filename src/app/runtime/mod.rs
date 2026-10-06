@@ -704,6 +704,59 @@ fn selection_attach_in_flight(hosts: &crate::model::Hosts, selection: &Selection
         .unwrap_or(false)
 }
 
+/// Where terminal input goes, decided by [`input_route`].
+#[derive(Debug, PartialEq, Eq)]
+enum InputRoute {
+    /// The selected session's own attachment under this display key: the confirmed
+    /// display, or a fresh attachment that waits to paint and takes input meanwhile.
+    Selected(String),
+    /// No attachment for the selection exists yet, and one is on its way.
+    Hold,
+    /// Nothing is on its way to the selection, so input reaches the session on screen.
+    Shown(String),
+}
+
+/// Input held for `selection` since `since`, in the order it was typed.
+struct HeldInput {
+    selection: Selection,
+    since: std::time::Instant,
+    bytes: Vec<u8>,
+}
+
+/// How long input waits for the selection's attachment before it is dropped. An attach
+/// spawns in well under a second, so input held this long belongs to an attach that is
+/// not arriving.
+const HELD_INPUT_MAX: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Routes terminal input by the SELECTION, not by what is on screen. The display keeps
+/// the previous session until a fresh attachment paints, which for a mux that repaints
+/// nothing on attach is the whole no-output wait, and that previous session may live on
+/// another source. Keys typed after a selection belong to the selected session, so they
+/// go to its attachment as soon as one exists and wait for it until then. The stale
+/// attachment under the same key shows another session and never takes them.
+fn input_route(state: &crate::state::State, hosts: &crate::model::Hosts) -> InputRoute {
+    let selection = &state.selection;
+    if selection.is_empty() || *selection == state.displayed {
+        return InputRoute::Selected(display_key(hosts, &state.displayed));
+    }
+    let key = display_key(hosts, selection);
+    let Some(host) = hosts.get(&selection.source) else {
+        return InputRoute::Shown(display_key(hosts, &state.displayed));
+    };
+    let fresh_for_selection = host.display.shows(&key) == Some(selection.session.as_str());
+    if fresh_for_selection && host.display.pending_paint_contains(&key) {
+        return InputRoute::Selected(key);
+    }
+    let coming = state.attach_pending
+        || state.attach_deadline.is_some()
+        || (fresh_for_selection && host.display.in_flight_contains(&key));
+    if coming {
+        InputRoute::Hold
+    } else {
+        InputRoute::Shown(display_key(hosts, &state.displayed))
+    }
+}
+
 /// Makes the SELECTED session live in its host's display terminal and lands it on
 /// the selected window. Returns `true` when the selection has a session to show.
 ///
@@ -1434,6 +1487,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        rt.flush_held_input();
         rt.prepare_and_draw(&mut term);
 
         // NOT biased: a biased select polls host_rx first every iteration, so a
@@ -1566,6 +1620,9 @@ struct Runtime {
     last_draw: std::time::Instant,
     rescan_pending: bool,
     display_probe: DisplayProbe,
+    /// Terminal input typed for a selection whose attachment does not exist yet; see
+    /// [`input_route`].
+    held_input: Option<HeldInput>,
     #[cfg(test)]
     discovery_runs: usize,
     /// The machines a one-machine re-scan probed, in order, for tests.
