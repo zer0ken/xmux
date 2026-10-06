@@ -289,6 +289,9 @@ logout still clears the password and the connections, and its toast says the key
 remains and why. SSH config is not changed. A re-scan reconnects only with a key the
 host still accepts; otherwise, log in again.
 
+For the requirements of a Windows host and the limits of Entra-only accounts, see
+[`INSTALL.md`](INSTALL.md#windows-hosts).
+
 ## Roster
 
 The roster assembles the machines xmux offers as hosts. It gathers ssh target
