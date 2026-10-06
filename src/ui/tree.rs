@@ -247,6 +247,55 @@ pub(crate) fn host_state_word(
     }
 }
 
+/// The state word of a host or a machine the user logged out of. A logout is the user's
+/// choice, so it reads as a state of its own, never as the refusal a login answers.
+pub(crate) const LOGGED_OUT: &str = "logged out";
+
+/// The state word of a host-state card or a machine card, the one source every surface
+/// that names a card's state reads, so a card and its screen never name one state two
+/// ways. `None` for a session card and a section title, which carry no state word.
+pub(crate) fn card_state_word(reference: &RowRef) -> Option<&'static str> {
+    match reference {
+        RowRef::Host {
+            logged_out: true, ..
+        }
+        | RowRef::Machine {
+            logged_out: true, ..
+        } => Some(LOGGED_OUT),
+        RowRef::Host {
+            unreachable,
+            blocked,
+            list_failed,
+            scanning,
+            ..
+        } => Some(host_state_word(
+            *scanning,
+            *blocked,
+            *list_failed,
+            *unreachable,
+        )),
+        RowRef::Machine {
+            blocked, scanning, ..
+        } => Some(host_state_word(*scanning, *blocked, false, true)),
+        RowRef::Session { .. } | RowRef::Section { .. } => None,
+    }
+}
+
+/// The state word of a host or a machine that failed: [`LOGGED_OUT`] for one the user
+/// logged out of, the word of its failure kind otherwise.
+pub(crate) fn failure_word(kind: crate::model::FailureKind, logged_out: bool) -> &'static str {
+    use crate::model::FailureKind;
+    if logged_out {
+        return LOGGED_OUT;
+    }
+    host_state_word(
+        false,
+        kind == FailureKind::Blocked,
+        kind == FailureKind::ListFailed,
+        true,
+    )
+}
+
 /// The machines that are down: every host of the machine failed to connect (unreachable, or
 /// refused until a login) and none is still waiting on an answer. A listing failure is not
 /// one of them, since the machine answered it.
@@ -343,6 +392,11 @@ pub(crate) fn flatten(
                 && g.failure() == Some(crate::model::FailureKind::Blocked)
         })
     };
+    let logged_out_machine = |machine: &str| {
+        groups
+            .iter()
+            .any(|g| crate::session::machine_of(&g.host) == machine && g.logged_out())
+    };
     // A machine the filter keeps means the filter matched something, so the groups fall
     // back to their titles only when neither matched.
     let groups = if !filter.is_empty() && machines.iter().any(|m| fuzzy_match(filter, &m.name)) {
@@ -392,6 +446,7 @@ pub(crate) fn flatten(
                                 machine: m.name.clone(),
                                 host: m.name.clone(),
                                 blocked: m.failure() == Some(crate::model::FailureKind::Blocked),
+                                logged_out: m.logged_out(),
                                 scanning: machine_scanning.contains(&m.name),
                             },
                         });
@@ -418,6 +473,7 @@ pub(crate) fn flatten(
                             machine: machine.to_string(),
                             host: first_host(machine),
                             blocked: blocked_machine(machine),
+                            logged_out: logged_out_machine(machine),
                             scanning: false,
                         },
                     });
@@ -439,6 +495,7 @@ pub(crate) fn flatten(
                     host: g.host.clone(),
                     unreachable,
                     blocked,
+                    logged_out: g.logged_out(),
                     list_failed,
                     scanning: is_scanning,
                 },
@@ -975,7 +1032,7 @@ mod tests {
             },
             Group {
                 host: "db:zellij".into(),
-                err: Some("logged out; log in again or re-scan".into()),
+                err: Some(crate::model::LOGGED_OUT.into()),
                 sessions: vec![],
             },
         ];

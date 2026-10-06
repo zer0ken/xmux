@@ -305,6 +305,15 @@ impl Chrome {
         crate::session::host_label(crate::session::machine_of(host), self.host_mux(host))
     }
 
+    /// Formats a session as its `{machine}/{mux}/{session}` path.
+    pub(crate) fn session_label(&self, address: &crate::session::Address) -> String {
+        crate::session::session_label(
+            crate::session::machine_of(&address.host),
+            self.host_mux(&address.host),
+            &address.session,
+        )
+    }
+
     /// The same label, for a surface that knows whether the host ANSWERED. A mux no
     /// answer confirmed is left off, so the label never puts a guess where every other
     /// one carries a fact.

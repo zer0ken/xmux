@@ -3151,7 +3151,7 @@ async fn n_on_a_session_card_opens_new_for_its_host() {
 }
 
 #[test]
-fn logout_confirms_the_selected_ssh_session_and_machine() {
+fn logout_confirms_the_machine_of_the_selected_session() {
     let mut h = Harness::from_hosts(&["box"]);
     h.state.chrome.host_reach.insert(
         "box".into(),
@@ -3180,10 +3180,12 @@ fn logout_confirms_the_selected_ssh_session_and_machine() {
     let Some(Modal::Input(input)) = &h.state.modal else {
         panic!("logout confirmation")
     };
+    // Opened from a session card, the first fact is still the machine: the logout acts
+    // on the machine, and the session is only where the user stood.
     assert_eq!(
         input.facts,
         vec![
-            ("session", "box/api".to_string()),
+            ("machine", "box".to_string()),
             ("SSH login", "username and password".to_string()),
             ("password", "held password is cleared".to_string()),
             (
@@ -7991,7 +7993,7 @@ async fn a_selection_that_falls_to_its_host_card_is_painted() {
         h.sw.apply_host_result(
             host.into(),
             vec![],
-            Some("logged out; log in again or re-scan".into()),
+            Some(crate::model::LOGGED_OUT.into()),
             &mut h.state,
         );
     }
@@ -8510,4 +8512,117 @@ fn the_login_pane_field_puts_the_hardware_cursor_on_its_caret() {
         .map(|c| h.buf()[(c, y)].symbol().to_string())
         .collect();
     assert!(row.contains("address*"), "the focused field's row: {row:?}");
+}
+
+/// A surface that names a session apart from its host's section writes the session's
+/// whole path: the machine, the mux, and the session. Each such surface is rendered and
+/// its text scanned, on a machine serving one mux, where the host id is the machine
+/// alone and a surface that joined the id and the session would read `gpu-01/train-llm`.
+#[test]
+fn every_rendered_surface_names_a_session_by_its_three_level_path() {
+    use crate::ui::ops::OpResult;
+    let mut h = Harness::from_hosts(&["gpu-01"]);
+    h.state.chrome.set_host_reach(
+        [(
+            "gpu-01".to_string(),
+            crate::state::HostReach {
+                ssh: true,
+                kind: "tmux".into(),
+                ..Default::default()
+            },
+        )]
+        .into(),
+    );
+    h.sw.apply_host_result(
+        "gpu-01".into(),
+        vec![sess_mux("gpu-01", "train-llm", "tmux")],
+        None,
+        &mut h.state,
+    );
+    let screen = |h: &Harness| {
+        let buf = h.buf();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    };
+    let mut frames = Vec::new();
+
+    // The landing lists every card as its path.
+    h.sw.open_landing();
+    h.draw();
+    frames.push(("landing", screen(&h)));
+
+    // The jump popup names the card its number reaches.
+    h.sw.open_jump('1', &mut h.state);
+    h.draw();
+    frames.push(("jump", screen(&h)));
+    h.state.modal = None;
+
+    // The logout confirmation opened from the session card names the machine it acts on.
+    h.sw.handle_key(
+        KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE),
+        &mut h.state,
+    );
+    h.draw();
+    let Some(Modal::Input(input)) = &h.state.modal else {
+        panic!("logout confirmation")
+    };
+    assert_eq!(input.facts[0], ("machine", "gpu-01".to_string()));
+    frames.push(("logout", screen(&h)));
+    h.state.modal = None;
+
+    // A re-scan that finds a new session, and a session the user created, each toast it.
+    let before =
+        crate::state::notify::ScanSnapshot::of(&h.state, &std::collections::HashSet::new());
+    h.sw.apply_host_result(
+        "gpu-01".into(),
+        vec![
+            sess_mux("gpu-01", "eval", "tmux"),
+            sess_mux("gpu-01", "train-llm", "tmux"),
+        ],
+        None,
+        &mut h.state,
+    );
+    let after = crate::state::notify::ScanSnapshot::of(&h.state, &std::collections::HashSet::new());
+    let notes = before.summary(&after, |host| h.state.chrome.host_label_when(host, true));
+    h.state.notify.toast("rescan machine gpu-01", notes);
+    h.sw.apply_op_result(
+        OpResult::Created {
+            session: sess("gpu-01", "serve", 1, false),
+        },
+        &mut h.state,
+    );
+    h.draw();
+    frames.push(("toasts", screen(&h)));
+    let history: Vec<String> = h
+        .state
+        .notify
+        .history
+        .iter()
+        .map(|e| e.note.text.clone())
+        .collect();
+    frames.push(("history", history.join("\n")));
+
+    for (surface, text) in &frames {
+        for name in ["train-llm", "eval", "serve"] {
+            assert!(
+                !text.contains(&format!("gpu-01/{name}")),
+                "{surface} names {name} without its mux:\n{text}"
+            );
+        }
+    }
+    let named = |surface: &str, path: &str| {
+        let (_, text) = frames.iter().find(|(s, _)| *s == surface).unwrap();
+        assert!(text.contains(path), "{surface} names {path}:\n{text}");
+    };
+    named("landing", "gpu-01/tmux/train-llm");
+    named("jump", "gpu-01/tmux/train-llm");
+    named("toasts", "gpu-01/tmux/eval");
+    named("toasts", "gpu-01/tmux/serve");
+    named("history", "gpu-01/tmux/serve");
 }

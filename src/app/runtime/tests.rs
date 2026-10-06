@@ -3268,18 +3268,29 @@ fn status_line_reports_focus_and_address() {
         }],
     };
     let mut state = crate::state::State::from_scan(scan);
+    state.chrome.set_host_reach(
+        [(
+            "jup".to_string(),
+            crate::state::HostReach {
+                kind: "tmux".into(),
+                ..Default::default()
+            },
+        )]
+        .into(),
+    );
     let sw = Switcher::new(&mut state);
     // Tab-separated so a cwd containing spaces survives; cwd/tty are injected so
-    // the assertion stays deterministic (no real env read).
+    // the assertion stays deterministic (no real env read). The displayed session is its
+    // whole path, so the listing names the machine and the mux it runs under.
     let pid = std::process::id();
     assert_eq!(
-        status_line(&sw, "amber-otter", true, "/tmp/x", "-"),
-        format!("name=amber-otter\tpid={pid}\tfocus=nav\ttarget=api\tcwd=/tmp/x\ttty=-")
+        status_line(&sw, &state.chrome, "amber-otter", true, "/tmp/x", "-"),
+        format!("name=amber-otter\tpid={pid}\tfocus=nav\ttarget=jup/tmux/api\tcwd=/tmp/x\ttty=-")
     );
     assert_eq!(
-        status_line(&sw, "amber-otter", false, "/tmp/x", "/dev/pts/3"),
+        status_line(&sw, &state.chrome, "amber-otter", false, "/tmp/x", "/dev/pts/3"),
         format!(
-            "name=amber-otter\tpid={pid}\tfocus=terminal\ttarget=api\tcwd=/tmp/x\ttty=/dev/pts/3"
+            "name=amber-otter\tpid={pid}\tfocus=terminal\ttarget=jup/tmux/api\tcwd=/tmp/x\ttty=/dev/pts/3"
         )
     );
 }

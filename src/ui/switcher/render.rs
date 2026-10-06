@@ -583,16 +583,10 @@ impl Switcher {
             format!("{machine}/{mux}")
         };
         let word_w = match &self.rows[i].reference {
-            RowRef::Host {
-                unreachable,
-                blocked,
-                list_failed,
-                scanning,
-                ..
-            } if show_state_word && self.selected == i && self.part == Part::Card => {
-                crate::ui::tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable)
-                    .len()
-                    + 1
+            reference @ RowRef::Host { .. }
+                if show_state_word && self.selected == i && self.part == Part::Card =>
+            {
+                crate::ui::tree::card_state_word(reference).map_or(0, |word| word.len() + 1)
             }
             _ => 0,
         };
@@ -714,16 +708,9 @@ impl Switcher {
         })
     }
 
-    /// What a card is called on the jump popup: its session, or its machine and mux.
+    /// What a card is called on the jump popup: its path in the hierarchy.
     fn card_name(&self, i: usize) -> String {
-        let (machine, mux, sess) = context_of(&self.rows[i]);
-        if !sess.is_empty() {
-            sess.to_string()
-        } else if mux.is_empty() {
-            machine.to_string()
-        } else {
-            format!("{machine}/{mux}")
-        }
+        card_path(&self.rows[i])
     }
 
     /// The `{machine}/{mux}` a new session lands on.
@@ -1348,18 +1335,9 @@ impl Switcher {
         if self.part != Part::Card {
             return;
         }
-        let word = match &self.rows[self.selected].reference {
-            RowRef::Host {
-                scanning,
-                blocked,
-                list_failed,
-                unreachable,
-                ..
-            } => crate::ui::tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable),
-            RowRef::Machine {
-                blocked, scanning, ..
-            } => crate::ui::tree::host_state_word(*scanning, *blocked, false, true),
-            _ => return,
+        let Some(word) = crate::ui::tree::card_state_word(&self.rows[self.selected].reference)
+        else {
+            return;
         };
         let label = format!(" {word} ");
         let width = label.len() as u16;
@@ -1573,7 +1551,7 @@ impl Switcher {
                     Style::default().fg(palette.error),
                 )
             };
-            let word = crate::ui::tree::host_state_word(*scanning, *blocked, false, true);
+            let word = crate::ui::tree::card_state_word(&row.reference).unwrap_or_default();
             let suffix_w = 2 + if selected && show_state_word {
                 word.len() + 1
             } else {
@@ -1616,8 +1594,7 @@ impl Switcher {
         } = &row.reference
         {
             let pending = Style::default().fg(palette.warning);
-            let word =
-                crate::ui::tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable);
+            let word = crate::ui::tree::card_state_word(&row.reference).unwrap_or_default();
             // A host-state card's number sits on the machine/mux line: the row is a word
             // about the host, not the thing the number names.
             let (glyph, glyph_style) = if *scanning {

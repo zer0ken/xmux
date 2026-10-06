@@ -470,16 +470,25 @@ impl Runtime {
 /// `control` so producer and parser cannot drift.
 fn status_line(
     switcher: &crate::ui::switcher::Switcher,
+    chrome: &crate::state::chrome::Chrome,
     name: &str,
     nav_focused: bool,
     cwd: &str,
     tty: &str,
 ) -> String {
+    let shown = switcher.terminal_view_target();
+    // The displayed session as its path, so `xmux instances` names the machine and the
+    // mux it runs under, not a bare session name another machine may share.
+    let target = if shown.target.is_empty() {
+        String::new()
+    } else {
+        chrome.session_label(&crate::session::Address::new(&shown.host, &shown.target))
+    };
     crate::link::control::format_status(&crate::link::control::StatusFields {
         name: name.to_string(),
         pid: std::process::id().to_string(),
         focus: if nav_focused { "nav" } else { "terminal" }.to_string(),
-        target: switcher.terminal_view_target().target.to_string(),
+        target,
         cwd: cwd.to_string(),
         tty: tty.to_string(),
     })

@@ -54,6 +54,14 @@ pub fn host_label(machine: &str, mux: &str) -> String {
     format!("{machine}{MUX_LABEL_SEP}{mux}")
 }
 
+/// The path a session is READ as: its host label, then the session, parted by
+/// [`MUX_LABEL_SEP`] (`gpu-01/tmux/train-llm`). A session lives on a host and a host on a
+/// machine, so its path carries all three levels wherever it is shown; the host id alone
+/// would drop the mux of a machine that serves one.
+pub fn session_label(machine: &str, mux: &str, session: &str) -> String {
+    format!("{}{MUX_LABEL_SEP}{session}", host_label(machine, mux))
+}
+
 /// Whether a host's mux may be NAMED on screen, given whether it ANSWERED.
 ///
 /// A mux is named only when it is confirmed. A host that answered enumerated THROUGH its

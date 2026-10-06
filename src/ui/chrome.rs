@@ -403,14 +403,8 @@ fn siblings(
             let failure = g.failure();
             let word = if state.scanning.contains(&g.host) {
                 "still scanning".to_string()
-            } else if g.err.is_some() {
-                crate::ui::tree::host_state_word(
-                    false,
-                    failure == Some(crate::model::FailureKind::Blocked),
-                    failure == Some(crate::model::FailureKind::ListFailed),
-                    true,
-                )
-                .to_string()
+            } else if let Some(kind) = failure {
+                crate::ui::tree::failure_word(kind, g.logged_out()).to_string()
             } else {
                 match g.sessions.len() {
                     0 => crate::ui::tree::host_state_word(false, false, false, false).to_string(),
@@ -744,12 +738,7 @@ impl Chrome {
                 if address.session.is_empty() {
                     self.host_label(&address.host)
                 } else {
-                    format!(
-                        "{}{}{}",
-                        self.host_label(&address.host),
-                        crate::session::MUX_LABEL_SEP,
-                        address.session
-                    )
+                    self.session_label(address)
                 }
             }
             // An EMPTY host answered - it has no session, which is itself an answer
@@ -813,6 +802,9 @@ impl Chrome {
         // The login pane is a machine's: a host refused until a login reads its failure,
         // and its machine's screen is where the login is.
         let pane = kind == ViewScreen::Login && machine_screen;
+        // A host or machine the user logged out of: the login screen states that state in
+        // place of a refusal.
+        let logged_out = kind == ViewScreen::Login && state.logged_out(&address.host);
         let pal = palette;
         let mut caret = None;
         let p = &self.ui_prefix;
@@ -854,8 +846,9 @@ impl Chrome {
             // state, not the minimum that identifies it; a datum nothing recorded is an
             // ABSENT row, never a blank one.
             // The login pane states its failure above these rows, as a verdict over ssh's
-            // own text, so only the other screens carry the reason as a row.
-            if !pane {
+            // own text, so only the other screens carry the reason as a row. A logout is
+            // the state word itself and has no reason to state.
+            if !pane && !logged_out {
                 let login_report = state.login_reports.get(crate::session::machine_of(host));
                 let reason = login_report
                     .and_then(|report| report.connect.reason().map(str::to_string))
@@ -1308,6 +1301,8 @@ impl Chrome {
                     " {}",
                     if landing {
                         self.scan_progress(state)
+                    } else if logged_out {
+                        crate::ui::tree::LOGGED_OUT.to_string()
                     } else {
                         kind.word().to_string()
                     }

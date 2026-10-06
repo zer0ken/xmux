@@ -407,14 +407,13 @@ impl Switcher {
             })
             .map(|method| method.label())
             .unwrap_or("not observed");
-        // The first row names what is selected: the session, or the machine itself when
-        // the selection is on a card that has no session.
-        let subject = session.map_or_else(
-            || ("machine", machine.to_owned()),
-            |address| ("session", address.display()),
-        );
+        // The first row names the machine the logout acts on, whichever of its cards the
+        // confirm was opened from: a session or a host is only where the user stood.
         let password = (method != "public key").then_some("held password is cleared");
-        let mut facts = vec![subject, ("SSH login", method.to_owned())];
+        let mut facts = vec![
+            ("machine", machine.to_owned()),
+            ("SSH login", method.to_owned()),
+        ];
         facts.extend(password.map(|p| ("password", p.to_owned())));
         facts.push((
             "key",
@@ -1012,11 +1011,7 @@ impl Switcher {
                     "new session",
                     vec![Note::new(
                         Level::Success,
-                        format!(
-                            "{}/{} created",
-                            crate::session::machine_of(&addr.host),
-                            addr.session
-                        ),
+                        format!("{} created", state.chrome.session_label(&addr)),
                     )],
                 );
                 None

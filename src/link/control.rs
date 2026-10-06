@@ -458,7 +458,7 @@ pub struct StatusFields {
     pub pid: String,
     /// `tree` or `terminal`: which view has focus.
     pub focus: String,
-    /// The displayed session address (`host/session`).
+    /// The displayed session's path (`machine/mux/session`).
     pub target: String,
     /// The instance's working directory.
     pub cwd: String,

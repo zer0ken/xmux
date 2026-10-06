@@ -1357,16 +1357,15 @@ impl Switcher {
                 if state.scanning.contains(&host) {
                     (&[KeyCommand::Filter], "scanning".into())
                 } else if let Some(kind) = group.and_then(crate::model::Group::failure) {
-                    use crate::model::FailureKind;
-                    let word = tree::host_state_word(
-                        false,
-                        kind == FailureKind::Blocked,
-                        kind == FailureKind::ListFailed,
-                        true,
-                    );
+                    // A logout has no reason beyond itself, so its word stands alone.
+                    let fact = if state.logged_out(&host) {
+                        tree::LOGGED_OUT.to_string()
+                    } else {
+                        with_reason(tree::failure_word(kind, false), first_line(&host))
+                    };
                     (
                         &[KeyCommand::FocusTerminal, KeyCommand::RescanMachine],
-                        with_reason(word, first_line(&host)),
+                        fact,
                     )
                 } else {
                     let count = group.map_or(0, |g| g.sessions.len());
@@ -1388,13 +1387,11 @@ impl Switcher {
                 let fact = match machine_failure(state, &machine) {
                     Some(kind) => {
                         let host = self.current_host().unwrap_or_default();
-                        let word = tree::host_state_word(
-                            false,
-                            kind == crate::model::FailureKind::Blocked,
-                            false,
-                            true,
-                        );
-                        with_reason(word, first_line(&host))
+                        if state.logged_out(&host) {
+                            tree::LOGGED_OUT.to_string()
+                        } else {
+                            with_reason(tree::failure_word(kind, false), first_line(&host))
+                        }
                     }
                     None if is_machine_scanning(state, &machine) => "scanning".into(),
                     None => {
@@ -1590,14 +1587,7 @@ impl Switcher {
                     let value = if state.scanning.contains(&g.host) {
                         "scanning".to_string()
                     } else if let Some(kind) = g.failure() {
-                        use crate::model::FailureKind;
-                        tree::host_state_word(
-                            false,
-                            kind == FailureKind::Blocked,
-                            kind == FailureKind::ListFailed,
-                            true,
-                        )
-                        .to_string()
+                        tree::failure_word(kind, g.logged_out()).to_string()
                     } else {
                         match g.sessions.len() {
                             0 => tree::host_state_word(false, false, false, false).to_string(),
@@ -1648,26 +1638,12 @@ impl Switcher {
             .enumerate()
             .filter(|(_, row)| row.selectable())
             .map(|(i, row)| {
-                let (host, mux, session) = context_of(row);
-                let label = [host, mux, session]
-                    .into_iter()
-                    .filter(|part| !part.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("/");
+                let label = card_path(row);
                 let value = match &row.reference {
                     RowRef::Session { sess } => session_facts(sess),
-                    RowRef::Host {
-                        unreachable,
-                        blocked,
-                        list_failed,
-                        scanning,
-                        ..
-                    } => tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable)
+                    reference => tree::card_state_word(reference)
+                        .unwrap_or_default()
                         .to_string(),
-                    RowRef::Machine {
-                        blocked, scanning, ..
-                    } => tree::host_state_word(*scanning, *blocked, false, true).to_string(),
-                    RowRef::Section { .. } => String::new(),
                 };
                 ScreenLink {
                     node: node_of(&row.reference, Part::Card),
@@ -1948,9 +1924,12 @@ impl Switcher {
         state.scanning.remove(&host);
         state.scan_deadlines.remove(&host);
         // The failure run, counted where every result lands so no path can skip it: a
-        // result that failed lengthens it, one that answered clears it. It is shown, not
-        // acted on - see `State::failure_runs`.
+        // result that failed lengthens it, one that answered clears it, and a logout, which
+        // is no failure, ends it. It is shown, not acted on - see `State::failure_runs`.
         match &err {
+            Some(e) if e == crate::model::LOGGED_OUT => {
+                state.failure_runs.remove(&host);
+            }
             Some(_) => *state.failure_runs.entry(host.clone()).or_insert(0) += 1,
             None => {
                 state.failure_runs.remove(&host);
@@ -2103,10 +2082,14 @@ impl Switcher {
         state.machine_scanning.remove(machine);
         state.machine_scan_deadlines.remove(machine);
         // The failure run, counted under the machine's name the way a host counts its
-        // own, and the end of the mux search a working login started.
+        // own and ended by a logout, and the end of the mux search a working login started.
         match &err {
             Some(reason) => {
-                *state.failure_runs.entry(machine.to_string()).or_insert(0) += 1;
+                if reason == crate::model::LOGGED_OUT {
+                    state.failure_runs.remove(machine);
+                } else {
+                    *state.failure_runs.entry(machine.to_string()).or_insert(0) += 1;
+                }
                 state.login_mux_answered(machine, &crate::model::MuxAnswer::Failed(reason.clone()));
             }
             None => {
@@ -2222,6 +2205,18 @@ fn context_of(row: &Row) -> (&str, &str, &str) {
         RowRef::Machine { machine, .. } => (machine, "", ""),
         RowRef::Session { sess } => (crate::session::machine_of(&sess.host), &row.mux, &sess.name),
     }
+}
+
+/// A card written as its path in the hierarchy: a session card as
+/// `{machine}/{mux}/{session}`, a host card as `{machine}/{mux}`, and a machine card, or a
+/// host card whose mux no answer confirmed, as its machine alone.
+fn card_path(row: &Row) -> String {
+    let (machine, mux, session) = context_of(row);
+    [machine, mux, session]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// The category reached by a horizontal step. Vertical steps visit every card.

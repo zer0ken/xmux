@@ -2,6 +2,12 @@
 
 use crate::session::Session;
 
+/// The error a host and a machine carry once the user logged out of the machine. A logout
+/// is the user's choice, not a failure: it classifies as [`FailureKind::Blocked`], since a
+/// login is what connects the machine again, and every surface states it as the logged-out
+/// state rather than as a refusal with a reason.
+pub const LOGGED_OUT: &str = "logged out";
+
 /// How a host's failure classifies. Whether ssh refused for a reason a login can answer
 /// is the transport's ssh diagnostic, read here once; presentation filtering and row
 /// construction consume this typed result and never classify a failure themselves.
@@ -16,9 +22,7 @@ impl FailureKind {
     pub fn from_error(error: &str) -> Self {
         if error.starts_with("invalid ") && error.contains(" session listing:") {
             Self::ListFailed
-        } else if error.starts_with("logged out;")
-            || crate::transport::diagnostic::requires_login(error)
-        {
+        } else if error == LOGGED_OUT || crate::transport::diagnostic::requires_login(error) {
             Self::Blocked
         } else {
             Self::Unreachable
@@ -71,6 +75,11 @@ impl Group {
     pub fn failure(&self) -> Option<FailureKind> {
         self.err.as_deref().map(FailureKind::from_error)
     }
+
+    /// Whether the user logged out of this host's machine and nothing has reached it since.
+    pub fn logged_out(&self) -> bool {
+        self.err.as_deref() == Some(LOGGED_OUT)
+    }
 }
 
 /// One machine on the roster, the level its hosts belong to. It holds what the machine
@@ -97,6 +106,11 @@ impl Machine {
 
     pub fn failure(&self) -> Option<FailureKind> {
         self.err.as_deref().map(FailureKind::from_error)
+    }
+
+    /// Whether the user logged out of this machine and nothing has reached it since.
+    pub fn logged_out(&self) -> bool {
+        self.err.as_deref() == Some(LOGGED_OUT)
     }
 }
 

@@ -79,8 +79,8 @@ method. If SSH reuses a connection without reporting its method, the screen says
 metadata and display connections. A new login or explicit re-scan is needed to
 connect again.
 
-On an SSH machine, `prefix L` opens a confirmation that states the selected session (or the
-machine when no session is selected), its observed SSH login, what happens to a held
+On an SSH machine, `prefix L` opens a confirmation that states the machine it logs out
+of, whichever of its cards is selected, its observed SSH login, what happens to a held
 password and to this PC's key, and the machine whose connections close. Type `logout` to take this PC's public key off the
 machine, then clear the password xmux holds in memory and close that machine's
 connections, including its SSH master where present. Before closing anything, xmux
@@ -98,8 +98,9 @@ the second confirmation lists it with the line it leaves, together with any key 
 did not add; one `remove` answers both, and Esc keeps both. An entry that names only this
 machine goes with its options, and an entry that names other machines too loses only this name.
 Wildcard and negated patterns, `Match` blocks, and every other line of the file stay as
-they were; the toast names each entry that changed and each one that stays. A re-scan reconnects only with
-a key the machine still accepts; otherwise, log in again.
+they were; the toast names each entry that changed and each one that stays. The machine's
+card and screen then read `logged out`, and its screen keeps the login form. A re-scan
+reconnects only with a key the machine still accepts; otherwise, log in again.
 
 For the requirements of a Windows machine and the limits of Entra-only accounts, see
 [`INSTALL.md`](../INSTALL.md#windows-machines).

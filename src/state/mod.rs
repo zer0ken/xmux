@@ -882,6 +882,22 @@ impl State {
         });
     }
 
+    /// Whether the user logged out of the machine `host` stands for and nothing has
+    /// reached it since: its host of that address, or the machine of that name while no
+    /// host of it is known.
+    pub(crate) fn logged_out(&self, host: &str) -> bool {
+        self.groups
+            .iter()
+            .find(|g| g.host == host)
+            .map(crate::model::Group::logged_out)
+            .or_else(|| {
+                self.machine(host)
+                    .filter(|m| !self.has_hosts(&m.name))
+                    .map(crate::model::Machine::logged_out)
+            })
+            .unwrap_or(false)
+    }
+
     /// The failure the login pane for `host` states: the machine's last login when it
     /// failed, else the probe failure that blocked the host. A first-seen key is a
     /// condition the form can answer, not a failed login. `None` when neither failed.
@@ -915,6 +931,9 @@ impl State {
                     .filter(|m| !self.has_hosts(&m.name))
                     .and_then(|m| m.err.as_deref())
             })
+            // A logout is the user's choice, not a failure: the pane states no verdict
+            // over it and offers the login.
+            .filter(|err| *err != crate::model::LOGGED_OUT)
             .map(crate::model::LoginFailure::of_probe)
             // The probe cannot ask about a first-seen key. The login form can answer
             // that condition, so it is not displayed as a failed login attempt.
@@ -971,6 +990,21 @@ mod tests {
         assert!(
             matches!(command, Command::RunLogin { login, .. } if login.user.as_deref() == Some("alice"))
         );
+    }
+
+    /// A logout is the user's choice: its machine reads as logged out, and the login pane
+    /// states no failure over it, so it never reads as an ssh refusal.
+    #[test]
+    fn a_logout_is_not_a_failed_login() {
+        let state = State::from_scan(Scan {
+            groups: vec![Group {
+                host: "prod".into(),
+                err: Some(crate::model::LOGGED_OUT.into()),
+                sessions: vec![],
+            }],
+        });
+        assert!(state.logged_out("prod"));
+        assert!(state.login_failure("prod").is_none());
     }
 
     #[test]
