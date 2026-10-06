@@ -455,6 +455,12 @@ pub trait Transport: Send + Sync {
     /// a machine after it connected is built from this, so its first command already
     /// knows what the machine's probe and login established.
     fn clone_as(&self, id: &str) -> Box<dyn Transport>;
+
+    /// The construction data that reaches this machine as this source. Rebuilding a
+    /// transport from it with [`MachineKind::transport`] reaches the same machine the same
+    /// way, without what was recorded on this one since it was built (a login, a shell
+    /// family, the credential store).
+    fn machine_kind(&self) -> MachineKind;
 }
 
 impl Clone for Box<dyn Transport> {
@@ -532,6 +538,9 @@ impl Transport for Box<dyn Transport> {
     }
     fn clone_as(&self, id: &str) -> Box<dyn Transport> {
         (**self).clone_as(id)
+    }
+    fn machine_kind(&self) -> MachineKind {
+        (**self).machine_kind()
     }
 }
 

@@ -1,9 +1,9 @@
-//! The resolved runtime: the source list and the lookups the commands share,
-//! resolved from config plus roster providers after the first frame and on every re-scan.
-//! Owns the scan (concurrent
-//! reachability probe, used by `ls`) and the switcher's side-effecting [`Ops`]
-//! over the live mux - including the per-source/per-session probes the event
-//! loop streams in.
+//! The resolved runtime: the roster and the lookups the commands share, resolved from
+//! config plus roster providers after the first frame and on every re-scan. Builds the
+//! runtime source registry from the roster, and owns the scan (concurrent reachability
+//! probe, used by `ls`) and the switcher's side-effecting [`Ops`] over the live mux -
+//! including the per-source/per-session probes the event loop streams in. Every source
+//! these read comes from the registry.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::link::manage;
-use crate::model::source::{self, Runner, Source};
-use crate::model::{Group, KeyRegistration, Ops, RegistrationOutcome};
+use crate::model::source::{self, Runner, Source, SourceSet};
+use crate::model::{Group, Hosts, KeyRegistration, Ops, RegistrationOutcome};
 use crate::provision::config::{self, Config};
 use crate::provision::discovery;
 use crate::session::Session;
@@ -73,7 +73,8 @@ mod login_defaults_tests {
         assert!(defaults.username.provenance.is_empty());
     }
 }
-/// Everything a config resolution decides about WHICH sources exist.
+/// Everything a config resolution decides about WHICH machines and muxes exist. The
+/// runtime source registry is built from it ([`Env::hosts`]).
 ///
 /// One value because every field answers the same question from the same read of config
 /// plus the roster providers. A re-scan resolves a FRESH one and swaps it in, so a config
@@ -82,11 +83,6 @@ mod login_defaults_tests {
 pub struct Roster {
     pub cfg: Config,
     pub cfg_warnings: Vec<String>,
-    /// Every source this process knows: the ones config named, plus the ones async mux
-    /// discovery adds while the app runs. A source missing from this list is invisible to
-    /// every off-loop op, so a discovered mux could be enumerated and painted but not
-    /// created on, its panes never read.
-    pub sources: Vec<Source>,
     pub local_muxes: Vec<String>,
     /// Which provider put each host on the roster, keyed by HOST name (the machine half
     /// of a source id). Read only to be SHOWN: the unreachable host screen names it, so
@@ -99,12 +95,11 @@ pub struct Roster {
     /// machine cannot resolve is reachable only by the address the provider knew.
     pub host_addresses: HashMap<String, String>,
     /// The ssh-config host aliases this resolution offered (a config-assembly product).
-    /// `Hosts::build` reruns `Config::host_specs` over these to seed the runtime host
-    /// registry, so the registry is built from config, not by re-reading `sources`.
+    /// `Hosts::build` runs `Config::host_specs` over these to seed the runtime source
+    /// registry.
     pub ssh_aliases: Vec<String>,
-    /// The WSL distributions this resolution listed, as MACHINE names. Held for the same
-    /// reason as `ssh_aliases`: `Hosts::build` reruns `Config::wsl_specs` over them, so
-    /// the host registry and the source list are built from one answer rather than two.
+    /// The WSL distributions this resolution listed, as MACHINE names. `Hosts::build`
+    /// runs `Config::wsl_specs` over them.
     pub wsl_distros: Vec<String>,
     /// Effective OpenSSH values resolved locally for each ssh destination: its address and
     /// port defaults, the identity a prompt names, and its host-key policy.
@@ -133,7 +128,7 @@ pub struct Env {
     /// that names it cannot change under one.
     pub own_session: Option<crate::session::Address>,
     /// The local mux server socket parsed from `$TMUX` (`-S` target), threaded into
-    /// the local host's transport by `Hosts::build`. `None` on the default socket.
+    /// the local sources' transports by `Hosts::build`. `None` on the default socket.
     pub local_socket: Option<String>,
     /// Whether the roster contains only the config facts available for the first frame.
     pub(crate) startup_pending: bool,
@@ -310,28 +305,20 @@ fn local_socket(tmux: Option<&str>) -> Option<String> {
     (!path.is_empty()).then(|| path.to_string())
 }
 
-/// Resolves the ROSTER: reads config, runs the roster providers, and assembles the
-/// source list. The returned error is the config-parse error (non-`None` for a
+/// Resolves the ROSTER: reads config and runs the roster providers. The returned error is the config-parse error (non-`None` for a
 /// malformed config); the [`Roster`] is still usable with defaults so `doctor` can
 /// report the problem instead of dying on it.
 ///
 /// A launch and a re-scan both come from this ONE answer, so neither can disagree with
 /// the other about which machines exist.
-pub async fn resolve_roster(
-    xmux_dir: &std::path::Path,
-    local_socket: Option<String>,
-) -> (Roster, Option<anyhow::Error>) {
-    resolve_roster_with(xmux_dir, local_socket, true).await
+pub async fn resolve_roster() -> (Roster, Option<anyhow::Error>) {
+    resolve_roster_with(true).await
 }
 
 /// [`resolve_roster`] with the neighbor provider optional. Launch resolves the roster
 /// once without it, because the neighbor scan waits out every silent address while the
 /// other providers answer in milliseconds, and once with it.
-pub async fn resolve_roster_with(
-    xmux_dir: &std::path::Path,
-    local_socket: Option<String>,
-    with_neighbors: bool,
-) -> (Roster, Option<anyhow::Error>) {
+pub async fn resolve_roster_with(with_neighbors: bool) -> (Roster, Option<anyhow::Error>) {
     let (cfg, cfg_warnings, cfg_err) = load_roster_config();
     let os = current_os();
     // The ROSTER: which machines xmux offers. `~/.ssh/config` first, so a hand-written
@@ -393,15 +380,6 @@ pub async fn resolve_roster_with(
     let aliases: Vec<String> = offered.iter().map(|(name, _)| name.clone()).collect();
     let ssh_profiles = resolve_ssh_profiles(&aliases).await;
     let local_muxes = cfg.local_muxes(os, &installed);
-    let srcs = source::build(
-        &cfg,
-        &aliases,
-        &wsl_distros,
-        os,
-        &local_muxes,
-        xmux_dir,
-        local_socket.clone(),
-    );
     let roster_providers = roster_providers(&cfg, &offered, &wsl_distros);
     let login_defaults = roster_providers
         .keys()
@@ -426,7 +404,6 @@ pub async fn resolve_roster_with(
         Roster {
             cfg,
             cfg_warnings,
-            sources: srcs,
             local_muxes,
             ssh_aliases: aliases,
             wsl_distros,
@@ -460,20 +437,10 @@ pub fn build_startup_env() -> (Env, Option<anyhow::Error>) {
     let (cfg, cfg_warnings, cfg_err) = load_roster_config();
     let os = current_os();
     let local_muxes = cfg.local_muxes(os, &[]);
-    let sources = source::build(
-        &cfg,
-        &[],
-        &[],
-        os,
-        &local_muxes,
-        &xmux_dir,
-        local_socket.clone(),
-    );
     let roster = Roster {
         roster_providers: roster_providers(&cfg, &[], &[]),
         cfg,
         cfg_warnings,
-        sources,
         local_muxes,
         ..Roster::default()
     };
@@ -487,15 +454,14 @@ pub fn build_startup_env() -> (Env, Option<anyhow::Error>) {
 /// the life of the process. The returned error is the config-parse error.
 pub async fn build_env() -> (Env, Option<anyhow::Error>) {
     let xmux_dir = xmux_dir_path();
-    // The local server socket this machine named, handed on RAW: the host registry filters
-    // it per mux exactly as the source list does, so both derive one answer from one
-    // value. Reading it back off an assembled source would instead make it depend on
-    // WHICH local mux happens to be first, and a first source that takes no socket
-    // (zellij) would drop it for every host behind it.
+    // The local server socket this machine named, handed on RAW: the source registry
+    // filters it per mux. Reading it back off an assembled source would instead make it
+    // depend on WHICH local mux happens to be first, and a first source that takes no
+    // socket (zellij) would drop it for every source behind it.
     let local_socket = local_socket(std::env::var("TMUX").ok().as_deref());
-    let (roster, cfg_err) = resolve_roster(&xmux_dir, local_socket.clone()).await;
+    let (roster, cfg_err) = resolve_roster().await;
     let ui_prefix = roster.cfg.ui_prefix().to_string();
-    let own_session = own_session_address(&roster.sources);
+    let own_session = own_session_address(&roster.local_muxes);
     let env = Env::new(roster, ui_prefix, xmux_dir, own_session, local_socket);
     env.credentials
         .set_force_askpass(crate::transport::auth::detect_force_askpass().await);
@@ -503,16 +469,16 @@ pub async fn build_env() -> (Env, Option<anyhow::Error>) {
 }
 
 /// The [`crate::session::Address`] of the session xmux is running in, resolved against
-/// the LOCAL sources.
+/// the LOCAL sources, one per entry of the resolved `local_muxes`.
 ///
 /// The mux names the session; this pairs it with the source id that mux answers as on
 /// this machine, because the refusal has to match the card exactly. A mux xmux does not
 /// serve here leaves it unresolved, which blocks nothing - the same as not being inside
 /// a mux at all.
-pub(crate) fn own_session_address(srcs: &[Source]) -> Option<crate::session::Address> {
+pub(crate) fn own_session_address(local_muxes: &[String]) -> Option<crate::session::Address> {
     let (kind, session) = crate::display::attach::own_mux_session()?;
     Some(crate::session::Address::new(
-        own_source_id(srcs, &kind)?,
+        &own_source_id(local_muxes, &kind)?,
         &session,
     ))
 }
@@ -524,21 +490,19 @@ pub(crate) fn own_session_address(srcs: &[Source]) -> Option<crate::session::Add
 /// by psmux all the same. The spelling is matched first, then the tmux-compatible
 /// kinds, which is unambiguous while the box serves one of them. Neither matching leaves the
 /// session unresolved, and an unresolved session blocks nothing.
-fn own_source_id<'a>(srcs: &'a [Source], kind: &str) -> Option<&'a str> {
-    let local: Vec<&Source> = srcs
-        .iter()
-        .filter(|s| crate::session::is_local_source(&s.alias))
-        .collect();
-    if let Some(s) = local.iter().find(|s| s.binary == kind) {
-        return Some(&s.alias);
+fn own_source_id(local_muxes: &[String], kind: &str) -> Option<String> {
+    let qualified = local_muxes.len() > 1;
+    let id = |bin: &str| crate::session::source_id(crate::session::LOCAL_SOURCE, bin, qualified);
+    if let Some(bin) = local_muxes.iter().find(|bin| *bin == kind) {
+        return Some(id(bin));
     }
     let tmux_compatible = |b: &str| b == "tmux" || b == "psmux";
     if !tmux_compatible(kind) {
         return None;
     }
-    let mut it = local.iter().filter(|s| tmux_compatible(&s.binary));
+    let mut it = local_muxes.iter().filter(|bin| tmux_compatible(bin));
     let only = it.next()?;
-    it.next().is_none().then_some(only.alias.as_str())
+    it.next().is_none().then(|| id(only))
 }
 
 /// Which provider put each host on the roster, keyed by HOST name.
@@ -598,7 +562,7 @@ impl Env {
     /// Assembles the runtime around an already-resolved roster. The roster is the only
     /// part a re-scan replaces; everything else here is fixed for the life of the process.
     pub fn new(
-        mut roster: Roster,
+        roster: Roster,
         ui_prefix: String,
         xmux_dir: PathBuf,
         own_session: Option<crate::session::Address>,
@@ -607,10 +571,6 @@ impl Env {
         let remote_shells = source::RemoteShells::default();
         let credentials = crate::transport::auth::Credentials::new(xmux_dir.clone());
         credentials.set_profiles(roster.ssh_profiles.clone());
-        for source in &mut roster.sources {
-            source.remote_shells = remote_shells.clone();
-            source.credentials = credentials.clone();
-        }
         Env {
             roster: std::sync::RwLock::new(roster),
             remote_shells,
@@ -635,18 +595,25 @@ impl Env {
         f(&self.roster())
     }
 
-    /// A snapshot of every known source, in order.
-    pub fn source_list(&self) -> Vec<Source> {
-        self.roster().sources.clone()
-    }
-
-    /// The source answering as `alias`, if this process knows one.
-    pub fn source(&self, alias: &str) -> Option<Source> {
-        self.roster()
-            .sources
-            .iter()
-            .find(|s| s.alias == alias)
-            .cloned()
+    /// The runtime source registry for the roster as it stands: every source config and
+    /// the roster providers name, plus each host whose muxes xmux asks for, sharing this
+    /// environment's credential store and shell-family record. A process builds one and
+    /// adds every source to it, and every consumer reads it.
+    pub fn hosts(&self) -> Hosts {
+        let mut hosts = self.with_roster(|r| {
+            Hosts::build(
+                &r.cfg,
+                &r.ssh_aliases,
+                &r.wsl_distros,
+                current_os(),
+                &r.local_muxes,
+                &self.xmux_dir,
+                self.local_socket.clone(),
+            )
+        });
+        hosts.set_credentials(self.credentials());
+        hosts.set_remote_shells(self.remote_shells.clone());
+        hosts
     }
 
     /// Records the shell family a machine's probe read, for every source this
@@ -657,19 +624,6 @@ impl Env {
         shell: crate::transport::vocab::RemoteShell,
     ) {
         self.remote_shells.record(machine, shell);
-    }
-
-    /// Registers a source found after launch (async mux discovery). Idempotent: false
-    /// when one already answers as that alias.
-    pub fn add_source(&self, mut src: Source) -> bool {
-        let mut r = self.roster.write().expect("roster lock");
-        if r.sources.iter().any(|s| s.alias == src.alias) {
-            return false;
-        }
-        src.remote_shells = self.remote_shells.clone();
-        src.credentials = self.credentials.clone();
-        r.sources.push(src);
-        true
     }
 
     pub(crate) fn credentials(&self) -> crate::transport::auth::Credentials {
@@ -690,9 +644,10 @@ impl Env {
     /// card and reports itself unreachable, which is what a machine named by a record
     /// does when it goes offline, so both kinds behave the same way.
     ///
-    /// Everything the machine had is carried, not just its name: the sources (async mux
-    /// discovery's included), the provider its card names, and the address the login pane
-    /// offers - all of which came from the answer that is now missing.
+    /// Everything the machine had is carried, not just its name: the provider its card
+    /// names and the address the login pane offers, both of which came from the answer
+    /// that is now missing. The sources found on it stay in the source registry, which
+    /// keeps every source of a machine the roster still names.
     pub fn carry_probed(&self, fresh: &mut Roster) {
         use crate::provision::roster::Provider;
         let cur = self.roster.read().expect("roster lock");
@@ -705,12 +660,6 @@ impl Env {
             .map(|(machine, _)| machine.clone())
             .collect();
         for machine in lost {
-            fresh.sources.extend(
-                cur.sources
-                    .iter()
-                    .filter(|s| crate::session::machine_of(&s.alias) == machine)
-                    .cloned(),
-            );
             if let Some(addr) = cur.host_addresses.get(&machine) {
                 fresh.host_addresses.insert(machine.clone(), addr.clone());
             }
@@ -729,47 +678,30 @@ impl Env {
         }
     }
 
-    /// Swaps in a freshly resolved roster, CARRYING OVER the sources async mux discovery
-    /// added on machines the fresh roster still names.
-    ///
-    /// The roster names MACHINES; which muxes a machine serves is answered by probing the
-    /// machine, and resolving a roster probes nothing remote. A machine that leaves its
-    /// muxes to xmux has no source in the fresh roster at all, so it is named by the host
-    /// list rather than by its sources. Dropping a carried source would make every re-scan
-    /// tear a discovered mux card down and re-find it a moment later.
-    pub fn replace_roster(&self, mut fresh: Roster) {
-        let mut cur = self.roster.write().expect("roster lock");
-        let auto = fresh.cfg.auto_hosts(&fresh.ssh_aliases, &fresh.wsl_distros);
-        let machines: HashSet<String> = fresh
-            .sources
-            .iter()
-            .map(|s| crate::session::machine_of(&s.alias).to_string())
-            .chain(auto.iter().cloned())
-            .collect();
-        let named: HashSet<&str> = fresh.sources.iter().map(|s| s.alias.as_str()).collect();
-        let carried: Vec<Source> = cur
-            .sources
-            .iter()
-            .filter(|s| {
-                !named.contains(s.alias.as_str())
-                    && machines.contains(crate::session::machine_of(&s.alias))
-            })
-            .cloned()
-            .collect();
+    /// Swaps in a freshly resolved roster, forgetting the held credentials of every
+    /// machine it no longer names. The sources move with it through the source registry
+    /// ([`Hosts::reconcile`]), which keeps the sources mux discovery found on a machine
+    /// the fresh roster still names.
+    pub fn replace_roster(&self, fresh: Roster) {
+        let machines: HashSet<String> = Hosts::build(
+            &fresh.cfg,
+            &fresh.ssh_aliases,
+            &fresh.wsl_distros,
+            current_os(),
+            &fresh.local_muxes,
+            &self.xmux_dir,
+            self.local_socket.clone(),
+        )
+        .machines()
+        .into_iter()
+        .collect();
         self.credentials.retain_machines(&machines);
         self.credentials.set_profiles(fresh.ssh_profiles.clone());
-        drop(machines);
-        drop(named);
-        fresh.sources.extend(carried);
-        for source in &mut fresh.sources {
-            source.remote_shells = self.remote_shells.clone();
-            source.credentials = self.credentials.clone();
-        }
-        *cur = fresh;
+        *self.roster.write().expect("roster lock") = fresh;
     }
 
     /// Asks each host on the roster that leaves its muxes to xmux which of them it
-    /// serves, and registers a source for every mux that answered, named the way a
+    /// serves, and adds a source to `hosts` for every mux that answered, named the way a
     /// written list names them. `only` narrows the question to one host. Returns the
     /// hosts that gained no source, in roster order.
     ///
@@ -777,20 +709,15 @@ impl Env {
     /// to wait on, so it asks here, as part of the one request it is, and in the same
     /// order: the host's reachability probe first, and its muxes only once it connected.
     /// Hosts are asked concurrently, and each host one command at a time.
-    pub async fn discover_hosts(&self, only: Option<&str>) -> Vec<Unanswered> {
-        let machines: Vec<String> = {
-            let r = self.roster();
+    pub async fn discover_hosts(&self, hosts: &mut Hosts, only: Option<&str>) -> Vec<Unanswered> {
+        let machines: Vec<String> = self.with_roster(|r| {
             r.cfg
                 .auto_hosts(&r.ssh_aliases, &r.wsl_distros)
                 .into_iter()
                 .filter(|m| only.is_none_or(|o| o == m))
-                .filter(|m| {
-                    !r.sources
-                        .iter()
-                        .any(|s| crate::session::machine_of(&s.alias) == m)
-                })
+                .filter(|m| !hosts.serves_any(m))
                 .collect()
-        };
+        });
         let sem = Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY));
         let mut set = tokio::task::JoinSet::new();
         for (i, machine) in machines.iter().cloned().enumerate() {
@@ -832,33 +759,31 @@ impl Env {
                 });
             }
             for spec in config::host_specs_for(machine, &found) {
-                self.add_source(source::for_machine_mux(
-                    machine,
-                    &spec.bin,
-                    spec.id,
-                    current_os(),
-                    &self.xmux_dir,
-                    None,
-                ));
+                if hosts.get(&spec.id).is_some() {
+                    continue;
+                }
+                if let Some(host) = hosts.discovered_host(machine, &spec.bin, &spec.id) {
+                    hosts.insert(host);
+                }
             }
         }
         unanswered
     }
 
-    /// Probes every source and returns the merged, name-ordered host/session
+    /// Probes every source in `hosts` and returns the merged, name-ordered host/session
     /// groups (used by `ls`, which needs no window/pane detail).
-    pub async fn scan(&self) -> Vec<Group> {
-        let srcs = self.source_list();
+    pub async fn scan(&self, hosts: &Hosts) -> Vec<Group> {
+        let srcs = hosts.source_list();
         let results = discovery::scan_all(&srcs, SCAN_TIMEOUT, SCAN_CONCURRENCY).await;
         to_groups(results)
     }
 
-    /// Probes every source and streams each host/session group the moment its
-    /// probe resolves, in completion order. Used by `ls` so it can print a source
+    /// Probes every source in `hosts` and streams each host/session group the moment
+    /// its probe resolves, in completion order. Used by `ls` so it can print a source
     /// as soon as it answers instead of appearing frozen while a dead host is
     /// still timing out. The receiver closes after the last probe resolves.
-    pub async fn scan_stream(&self) -> mpsc::Receiver<Group> {
-        let srcs = self.source_list();
+    pub async fn scan_stream(&self, hosts: &Hosts) -> mpsc::Receiver<Group> {
+        let srcs = hosts.source_list();
         let mut rx = discovery::scan_stream(&srcs, SCAN_TIMEOUT, SCAN_CONCURRENCY).await;
         let (tx, out) = mpsc::channel(srcs.len().max(1));
         tokio::spawn(async move {
@@ -877,12 +802,14 @@ impl Env {
         out
     }
 
-    /// Builds the switcher's side-effecting actions over the live mux. A shared
+    /// Builds the switcher's side-effecting actions over the live mux, resolving each
+    /// source through `sources`, the source registry's published set. A shared
     /// semaphore bounds the concurrent probes (`list-sessions`) the
     /// event loop streams through these ops.
-    pub fn ops(self: &Arc<Self>) -> Arc<dyn Ops> {
+    pub fn ops(self: &Arc<Self>, sources: SourceSet) -> Arc<dyn Ops> {
         Arc::new(EnvOps {
             env: self.clone(),
+            sources,
             sem: Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY)),
         })
     }
@@ -937,7 +864,7 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
     (lines, None)
 }
 
-/// A host [`Env::discover_hosts`] registered no source for.
+/// A host [`Env::discover_hosts`] added no source for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unanswered {
     pub host: String,
@@ -970,14 +897,16 @@ async fn ask_host(
 /// The live [`Ops`] implementation over a [`Env`].
 struct EnvOps {
     env: Arc<Env>,
+    /// What the source registry holds, read at each operation.
+    sources: SourceSet,
     /// Bounds the in-flight probes so a fan-out of ssh connects stays capped.
     sem: Arc<tokio::sync::Semaphore>,
 }
 
 impl EnvOps {
     fn source(&self, alias: &str) -> anyhow::Result<Source> {
-        self.env
-            .source(alias)
+        self.sources
+            .get(alias)
             .ok_or_else(|| anyhow::anyhow!("unknown source {alias:?}"))
     }
 }
@@ -996,11 +925,7 @@ async fn with_timeout<T>(
 #[async_trait::async_trait]
 impl Ops for EnvOps {
     fn sources(&self) -> Vec<String> {
-        self.env
-            .source_list()
-            .iter()
-            .map(|s| s.alias.clone())
-            .collect()
+        self.sources.list().into_iter().map(|s| s.alias).collect()
     }
 
     async fn list_sessions(&self, source: &str) -> anyhow::Result<Vec<Session>> {
@@ -2816,21 +2741,31 @@ mod tests {
         }
     }
 
-    fn env_with(aliases: &[&str]) -> Env {
-        Env::new(
-            Roster {
-                sources: aliases.iter().map(|a| test_source(a, true, "")).collect(),
-                ..Default::default()
-            },
+    fn env_with(roster: Roster) -> Arc<Env> {
+        Arc::new(Env::new(
+            roster,
             "C-g".into(),
             PathBuf::from("."),
             None,
             None,
-        )
+        ))
     }
 
-    fn aliases_of(env: &Env) -> Vec<String> {
-        env.source_list().iter().map(|s| s.alias.clone()).collect()
+    /// The operations over `sources`, each sharing the environment's credential store and
+    /// shell-family record the way every source the registry publishes does.
+    fn ops_over(env: &Arc<Env>, sources: Vec<Source>) -> Arc<dyn Ops> {
+        let set = SourceSet::default();
+        set.replace(
+            sources
+                .into_iter()
+                .map(|mut source| {
+                    source.remote_shells = env.remote_shells.clone();
+                    source.credentials = env.credentials();
+                    source
+                })
+                .collect(),
+        );
+        env.ops(set)
     }
 
     #[test]
@@ -2971,60 +2906,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn replace_roster_carries_a_discovered_source_on_a_machine_that_survives() {
-        // `prod:zellij` is there because a probe ANSWERED. Resolving a roster probes
-        // nothing remote, so it cannot name it; carrying it over is what stops every
-        // re-scan from dropping the card and re-finding it a moment later.
-        let env = env_with(&["prod", "prod:zellij", "stage"]);
-        env.replace_roster(Roster {
-            sources: vec![
-                test_source("prod", true, ""),
-                test_source("stage", true, ""),
-            ],
-            ..Default::default()
-        });
-        assert_eq!(
-            aliases_of(&env),
-            vec![
-                "prod".to_string(),
-                "stage".to_string(),
-                "prod:zellij".to_string()
-            ],
-            "the carried source keeps its place behind the ones the roster named"
-        );
-    }
-
-    #[test]
-    fn replace_roster_carries_what_a_host_that_writes_no_mux_answered() {
-        // A host that leaves its muxes to xmux has no source in any fresh roster: every
-        // source it has came from its own answer. The roster still names the HOST, so
-        // those sources are carried rather than dropped on every re-scan.
-        let env = env_with(&["win"]);
-        env.replace_roster(Roster {
-            ssh_aliases: vec!["win".to_string()],
-            ..Default::default()
-        });
-        assert_eq!(aliases_of(&env), vec!["win".to_string()]);
-    }
-
     #[tokio::test]
     async fn a_host_with_no_source_yet_can_be_logged_into() {
         // A login authenticates the machine, and a host whose muxes xmux asks for has no
         // source until it answers, which a locked host cannot do before the login.
-        let env = Arc::new(Env::new(
-            Roster {
-                ssh_aliases: vec!["win".to_string()],
-                ..Default::default()
-            },
-            "C-g".into(),
-            PathBuf::from("."),
-            None,
-            None,
-        ));
-        assert!(env.source("win").is_none(), "precondition");
+        let env = env_with(Roster {
+            ssh_aliases: vec!["win".to_string()],
+            ..Default::default()
+        });
+        let hosts = env.hosts();
+        assert!(hosts.source("win").is_none(), "precondition");
         let command = env
-            .ops()
+            .ops(hosts.sources())
             .login_command(
                 "win",
                 &crate::transport::Login {
@@ -3049,10 +2942,10 @@ mod tests {
 
     #[tokio::test]
     async fn local_and_wsl_targets_never_store_a_typed_password() {
-        let env = Arc::new(env_with(&["local", "wsl.Ubuntu"]));
+        let env = env_with(Roster::default());
         for machine in ["local", "wsl.Ubuntu"] {
             assert!(env
-                .ops()
+                .ops(SourceSet::default())
                 .login_command(
                     machine,
                     &crate::transport::Login::default(),
@@ -3066,20 +2959,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn replace_roster_drops_a_source_whose_machine_is_gone() {
-        let env = env_with(&["prod", "prod:zellij", "stage"]);
-        env.replace_roster(Roster {
-            sources: vec![test_source("stage", true, "")],
-            ..Default::default()
-        });
-        assert_eq!(
-            aliases_of(&env),
-            vec!["stage".to_string()],
-            "prod is off the roster, so every source it served goes with it"
-        );
-    }
-
     /// A neighbour is offered by a 700ms round trip. When it does not answer, the
     /// machine is not gone: everything it had is carried back in, so a card the user is
     /// working in survives a probe that was merely slow.
@@ -3088,10 +2967,6 @@ mod tests {
         use crate::provision::roster::Provider;
         let env = Env::new(
             Roster {
-                sources: vec![
-                    test_source("prod", true, ""),
-                    test_source("prod:zellij", true, ""),
-                ],
                 ssh_aliases: vec!["prod".into()],
                 roster_providers: [("prod".to_string(), Provider::Neighbor)].into(),
                 host_addresses: [("prod".to_string(), "100.87.27.26".to_string())].into(),
@@ -3129,16 +3004,7 @@ mod tests {
         assert_eq!(
             fresh.ssh_aliases,
             vec!["prod".to_string()],
-            "the machine is named again, so every registry built from this roster keeps it"
-        );
-        assert_eq!(
-            fresh
-                .sources
-                .iter()
-                .map(|s| s.alias.clone())
-                .collect::<Vec<_>>(),
-            vec!["prod".to_string(), "prod:zellij".to_string()],
-            "the mux discovery found on it is carried too, not just the machine's name"
+            "the machine is named again, so the registry built from this roster keeps it"
         );
         assert_eq!(
             fresh.roster_providers.get("prod"),
@@ -3169,7 +3035,6 @@ mod tests {
         use crate::provision::roster::Provider;
         let env = Env::new(
             Roster {
-                sources: vec![test_source("prod", true, "")],
                 ssh_aliases: vec!["prod".into()],
                 roster_providers: [("prod".to_string(), Provider::SshConfig)].into(),
                 ..Default::default()
@@ -3182,7 +3047,7 @@ mod tests {
         let mut fresh = Roster::default();
         env.carry_probed(&mut fresh);
         assert!(
-            fresh.ssh_aliases.is_empty() && fresh.sources.is_empty(),
+            fresh.ssh_aliases.is_empty(),
             "the stanza is gone, so the machine is gone: {:?}",
             fresh.ssh_aliases
         );
@@ -3192,18 +3057,11 @@ mod tests {
     async fn list_sessions_probes_one_source() {
         // EnvOps::list_sessions probes a single source by alias, returning its
         // sessions (the per-host streaming probe the event loop fans out).
-        let env = Arc::new(Env::new(
-            Roster {
-                sources: vec![test_source("local", false, "2:1:editor\n")],
-                local_muxes: vec!["tmux".into()],
-                ..Default::default()
-            },
-            "C-g".into(),
-            PathBuf::from("."),
-            None,
-            None,
-        ));
-        let ops = env.ops();
+        let env = env_with(Roster {
+            local_muxes: vec!["tmux".into()],
+            ..Default::default()
+        });
+        let ops = ops_over(&env, vec![test_source("local", false, "2:1:editor\n")]);
         assert_eq!(ops.sources(), vec!["local".to_string()]);
         let sessions = ops.list_sessions("local").await.unwrap();
         assert_eq!(sessions.len(), 1);
@@ -3214,19 +3072,11 @@ mod tests {
     #[tokio::test]
     async fn create_uses_the_recorded_non_posix_shell() {
         let runner = RecordingRunner::new(&["api\n"]);
-        let env = Arc::new(Env::new(
-            Roster {
-                sources: vec![remote_psmux(runner.clone())],
-                ..Default::default()
-            },
-            "C-g".into(),
-            PathBuf::from("."),
-            None,
-            None,
-        ));
+        let env = env_with(Roster::default());
+        let ops = ops_over(&env, vec![remote_psmux(runner.clone())]);
         env.record_remote_shell("prod", crate::transport::vocab::RemoteShell::Other);
 
-        env.ops().new_session("prod", "api").await.unwrap();
+        ops.new_session("prod", "api").await.unwrap();
 
         let commands = runner.commands();
         assert_eq!(commands.len(), 1);
@@ -3240,18 +3090,10 @@ mod tests {
     #[tokio::test]
     async fn create_probes_an_unrecorded_remote_before_the_command() {
         let runner = RecordingRunner::new(&["\n", "api\n"]);
-        let env = Arc::new(Env::new(
-            Roster {
-                sources: vec![remote_psmux(runner.clone())],
-                ..Default::default()
-            },
-            "C-g".into(),
-            PathBuf::from("."),
-            None,
-            None,
-        ));
+        let env = env_with(Roster::default());
+        let ops = ops_over(&env, vec![remote_psmux(runner.clone())]);
 
-        env.ops().new_session("prod", "api").await.unwrap();
+        ops.new_session("prod", "api").await.unwrap();
 
         let commands = runner.commands();
         assert_eq!(commands.len(), 2);
@@ -3270,20 +3112,14 @@ mod tests {
         let runner = Arc::new(SlowProbeRunner {
             probes: std::sync::atomic::AtomicUsize::new(0),
         });
-        let env = Arc::new(Env::new(
-            Roster {
-                sources: vec![
-                    remote_psmux_as("prod:psmux", runner.clone()),
-                    remote_psmux_as("prod:tmux", runner.clone()),
-                ],
-                ..Default::default()
-            },
-            "C-g".into(),
-            PathBuf::from("."),
-            None,
-            None,
-        ));
-        let ops = env.ops();
+        let env = env_with(Roster::default());
+        let ops = ops_over(
+            &env,
+            vec![
+                remote_psmux_as("prod:psmux", runner.clone()),
+                remote_psmux_as("prod:tmux", runner.clone()),
+            ],
+        );
 
         let (first, second) = tokio::join!(
             ops.new_session("prod:psmux", "api"),

@@ -317,9 +317,9 @@ impl Chrome {
         crate::session::source_label(crate::session::machine_of(source), mux)
     }
 
-    /// Sets how xmux reaches each source, keyed by source id. The app calls this once at
-    /// startup from the assembled source list; a source missing from the map shows the
-    /// rows it has and no blanks for the rest.
+    /// Sets how xmux reaches each source, keyed by source id. The app calls this from the
+    /// source registry whenever the sources change; a source missing from the map shows
+    /// the rows it has and no blanks for the rest.
     pub(crate) fn set_source_reach(&mut self, reach: HashMap<String, SourceReach>) {
         self.source_reach = reach;
     }

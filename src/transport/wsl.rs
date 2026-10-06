@@ -136,6 +136,13 @@ impl Transport for Wsl {
             ..self.clone()
         })
     }
+
+    fn machine_kind(&self) -> crate::transport::MachineKind {
+        crate::transport::MachineKind::Wsl {
+            id: self.id.clone(),
+            distro: self.distro.clone(),
+        }
+    }
 }
 
 /// The WSL distributions installed on this machine, as MACHINE names (`wsl.Ubuntu-24.04`).

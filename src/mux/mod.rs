@@ -538,12 +538,10 @@ pub fn for_binary(bin: &str) -> Option<Box<dyn Mux>> {
 /// The server socket to address the mux binary `bin` over: the one this machine named, or
 /// `None` for a mux that takes no socket flag or a name no kind owns.
 ///
-/// The two composition sites (the source list and the host registry) call this before
-/// handing a socket to the transport axis, so a socket only ever reaches a mux that
-/// understands it. The transport axis cannot make this call itself: it names no mux by
-/// design, so it injects the socket it is GIVEN and asks nothing about it. Both sites
-/// derive their answer from one raw value through this one call, which is what keeps a
-/// source and its host addressing one server.
+/// The source registry calls this before handing a socket to the transport axis, so a
+/// socket only ever reaches a mux that understands it. The transport axis cannot make
+/// this call itself: it names no mux by design, so it injects the socket it is GIVEN and
+/// asks nothing about it.
 pub fn server_socket_for(bin: &str, socket: Option<String>) -> Option<String> {
     socket.filter(|_| for_binary(bin).is_some_and(|m| m.takes_server_socket()))
 }

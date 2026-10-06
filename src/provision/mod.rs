@@ -2,7 +2,8 @@
 //! the resolved runtime view over them. `config` loads the optional TOML and
 //! merges it with ssh-config discovery, `roster` names the ssh targets, and
 //! `discovery` probes sources concurrently; `env` resolves all of it into the
-//! source list and lookups the commands share, re-resolved on every re-scan.
+//! roster and lookups the commands share, re-resolved on every re-scan, and builds the
+//! runtime source registry from it.
 
 pub mod config;
 pub mod discovery;

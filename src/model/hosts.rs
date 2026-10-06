@@ -1,9 +1,12 @@
-//! `Hosts`: the app loop's runtime host registry - every host keyed by id, in display
-//! order (local first). The single owner of each machine's `Host`, so display and host
-//! management cannot disagree about which machines exist.
+//! `Hosts`: the runtime source registry - every source keyed by id, in display order
+//! (local first). The single owner of each source's `Host`, and the one registry every
+//! consumer reads: the event loop drives the `Host`s, and the off-loop operations, the
+//! CLI, and the scan read the [`SourceSet`] it publishes, so no two consumers can
+//! disagree about which sources exist.
 
 use std::collections::{HashMap, HashSet};
 
+use crate::model::source::{Runner, Source, SourceSet};
 use crate::model::{Host, Liveness};
 use crate::mux::for_binary;
 use crate::provision::config::Config;
@@ -17,17 +20,27 @@ use crate::transport::Transport;
 /// which muxes it serves, so it is also held as a HOST: its name and the transport that
 /// reaches it. That transport is what probes the host and asks it for its muxes, and every
 /// source found on it is built from it.
+///
+/// Every change to the sources republishes `sources`, the [`SourceSet`] handed to the
+/// work that runs off the event loop, so a source added here is operable everywhere and
+/// no caller has a second registry to keep in step.
 #[derive(Default)]
 pub struct Hosts {
     order: Vec<String>,
     map: HashMap<String, Host>,
     auto: Vec<(String, Box<dyn Transport>)>,
+    sources: SourceSet,
+    credentials: crate::transport::auth::Credentials,
+    remote_shells: crate::model::source::RemoteShells,
+    /// The runner every published source runs its commands through; `None` is the real
+    /// exec runner.
+    runner: Option<std::sync::Arc<dyn Runner>>,
 }
 
 /// What one [`Hosts::reconcile`] changed: the card ids it added, and the ids it dropped
 /// because the fresh roster no longer names their machine. A card id is a source id, or
 /// the bare name of a host whose muxes are not known yet. The loop acts on both, so the
-/// registry, the source list, the nav, and the live connections stay one answer.
+/// registry, the nav, and the live connections stay one answer.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct RosterDelta {
     pub added: Vec<String>,
@@ -44,6 +57,11 @@ impl Hosts {
     /// Insert (or replace) a host, keyed on `host.id()`, appending to display order
     /// on first insert only.
     pub fn insert(&mut self, host: Host) {
+        self.insert_unpublished(host);
+        self.publish();
+    }
+
+    fn insert_unpublished(&mut self, host: Host) {
         let id = host.id().to_string();
         if !self.map.contains_key(&id) {
             self.order.push(id.clone());
@@ -51,6 +69,44 @@ impl Hosts {
         self.map.insert(id, host);
     }
 
+    /// Derives one [`Source`] from each runtime source, in display order, and publishes
+    /// them. The definition is read off the `Host` itself (its id, its mux binary, and
+    /// the construction data of its transport), so it cannot name a machine or a mux the
+    /// loop does not drive.
+    fn publish(&self) {
+        let sources = self
+            .order
+            .iter()
+            .filter_map(|id| self.map.get(id))
+            .map(|host| Source {
+                alias: host.id().to_string(),
+                binary: host.mux.bin().to_string(),
+                kind: host.transport.machine_kind(),
+                runner: self.runner.clone(),
+                remote_shells: self.remote_shells.clone(),
+                credentials: self.credentials.clone(),
+            })
+            .collect();
+        self.sources.replace(sources);
+    }
+
+    /// The published sources, shared with the work that runs off the event loop.
+    pub fn sources(&self) -> SourceSet {
+        self.sources.clone()
+    }
+
+    /// The source answering as `id`, if this registry holds one.
+    pub fn source(&self, id: &str) -> Option<Source> {
+        self.sources.get(id)
+    }
+
+    /// Every source, in display order.
+    pub fn source_list(&self) -> Vec<Source> {
+        self.sources.list()
+    }
+
+    /// Shares the run's machine credential store with every transport this registry holds
+    /// and every source it publishes.
     pub(crate) fn set_credentials(&mut self, credentials: crate::transport::auth::Credentials) {
         for host in self.map.values_mut() {
             host.transport.set_credentials(credentials.clone());
@@ -58,22 +114,40 @@ impl Hosts {
         for (_, transport) in &mut self.auto {
             transport.set_credentials(credentials.clone());
         }
+        self.credentials = credentials;
+        self.publish();
+    }
+
+    /// Shares the record of each machine's shell family with every source this registry
+    /// publishes, so an off-loop operation composes its command for the shell that reads
+    /// it.
+    pub(crate) fn set_remote_shells(&mut self, remote_shells: crate::model::source::RemoteShells) {
+        self.remote_shells = remote_shells;
+        self.publish();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_runner(&mut self, runner: std::sync::Arc<dyn Runner>) {
+        self.runner = Some(runner);
+        self.publish();
     }
 
     /// Holds a machine as an unresolved host card until its mux list arrives.
-    pub(crate) fn hold_unresolved(&mut self, machine: String, transport: Box<dyn Transport>) {
+    pub(crate) fn hold_unresolved(&mut self, machine: String, mut transport: Box<dyn Transport>) {
         if !self.serves_any(&machine) && !self.auto.iter().any(|(name, _)| *name == machine) {
+            transport.set_credentials(self.credentials.clone());
             self.auto.push((machine, transport));
         }
     }
 
     /// Assembles the hosts for a config: this machine's hosts first (one per entry of the
     /// RESOLVED `local_muxes`, its socket from `$TMUX`), then each ssh host in order,
-    /// then each WSL distribution. Mirrors `source::build` but yields owning `Host`s.
+    /// then each WSL distribution. WSL comes last so adding the implementation leaves every
+    /// id an existing install already had in the position it had.
     /// A host whose muxes are xmux's to decide is held by name and transport, with no
     /// source until it answers.
-    /// `xmux_dir` seeds each ssh transport's ControlMaster socket path, exactly as
-    /// `source::build` does. OpenSSH expands its `%C` component from the connection.
+    /// `xmux_dir` seeds each ssh transport's ControlMaster socket path. OpenSSH expands
+    /// its `%C` component from the connection.
     pub fn build(
         cfg: &Config,
         ssh_aliases: &[String],
@@ -86,11 +160,10 @@ impl Hosts {
         let mut hosts = Hosts::default();
 
         // One host per (machine, mux): this machine contributes one for each mux it serves.
-        // The list is the one `Env` resolved, so these ids match the source ids.
         let qualified = local_muxes.len() > 1;
         for bin in local_muxes {
             let id = crate::session::source_id(LOCAL_SOURCE, bin, qualified);
-            hosts.insert(host_for(
+            hosts.insert_unpublished(host_for(
                 LOCAL_SOURCE,
                 bin,
                 id,
@@ -108,7 +181,7 @@ impl Hosts {
             if spec.alias == LOCAL_SOURCE {
                 continue; // "local" is reserved for this machine's sources.
             }
-            hosts.insert(host_for(
+            hosts.insert_unpublished(host_for(
                 &spec.alias,
                 &spec.bin,
                 spec.id,
@@ -121,6 +194,7 @@ impl Hosts {
             let kind = crate::transport::kind_for(&machine, machine.clone(), os, xmux_dir, None);
             hosts.auto.push((machine, kind.transport()));
         }
+        hosts.publish();
         hosts
     }
 
@@ -208,10 +282,11 @@ impl Hosts {
                 if self.machine_serves(crate::session::machine_of(&id), host.mux.bin()) {
                     continue;
                 }
-                self.insert(host);
+                self.insert_unpublished(host);
                 added.push(id);
             }
         }
+        self.publish();
         RosterDelta { added, removed }
     }
 
@@ -377,7 +452,7 @@ impl Hosts {
 
 /// One [`Host`] for the mux binary `bin` on `machine`, answering as the source `id`.
 /// The transport comes from [`crate::transport::kind_for`], the one place a machine's
-/// construction data is assembled, so this host and the matching `Source` agree.
+/// construction data is assembled.
 pub fn host_for(
     machine: &str,
     bin: &str,
@@ -386,8 +461,7 @@ pub fn host_for(
     xmux_dir: &std::path::Path,
     local_socket: Option<String>,
 ) -> Host {
-    // The socket reaches the machine only when `bin` takes one - the peer of the same
-    // filter on the source list, so a host and its source address one server. See
+    // The socket reaches the machine only when `bin` takes one. See
     // `crate::mux::server_socket_for`.
     let local_socket = crate::mux::server_socket_for(bin, local_socket);
     let kind = crate::transport::kind_for(machine, id, os, xmux_dir, local_socket);
@@ -802,12 +876,10 @@ mod tests {
     }
 
     #[test]
-    fn build_ids_match_source_build_order_for_multi_host_config() {
-        // The single runtime registry's projection (`Hosts::ids`) must list the SAME
-        // hosts in the SAME order as the `source::build` list it replaces: local first,
-        // then ssh specs in config order (ssh-config aliases, then config-only hosts).
-        // The cards `State` is seeded with lead with these ids, so they match the source
-        // list exactly - a reordered or dropped host would be a live regression.
+    fn build_orders_local_then_ssh_aliases_then_config_only_hosts() {
+        // Local first, then ssh specs in config order (ssh-config aliases, then
+        // config-only hosts). The cards `State` is seeded with lead with these ids, and
+        // the published sources list them in the same order.
         // A config-only host (declared in config.toml, not ssh-config) with a mux override.
         let mut cfg = tmux_on(&["prod", "db"]);
         cfg.hosts.push(crate::provision::config::HostConfig {
@@ -818,12 +890,11 @@ mod tests {
         let os = "linux";
         let dir = std::path::Path::new("/home/u/.xmux");
         let hosts = Hosts::build(&cfg, &aliases, &[], os, &local(), dir, None);
-        let srcs = crate::model::source::build(&cfg, &aliases, &[], os, &local(), dir, None);
-        let src_order: Vec<String> = srcs.iter().map(|s| s.alias.clone()).collect();
+        let src_order: Vec<String> = hosts.source_list().into_iter().map(|s| s.alias).collect();
         assert_eq!(
             hosts.ids(),
             src_order.as_slice(),
-            "the host registry projection must equal the source-derived order"
+            "the published sources follow the registry's order"
         );
         assert_eq!(
             src_order,
@@ -839,9 +910,8 @@ mod tests {
 
     #[test]
     fn build_appends_wsl_distributions_after_the_ssh_hosts() {
-        // The registry projection and the source list must agree on the WSL implementation too,
-        // and the implementation has to survive as a transport: the ids an existing install had
-        // keep their positions, and the new ones follow.
+        // The WSL implementation has to survive as a transport: the ids an existing install
+        // had keep their positions, and the new ones follow.
         let mut cfg = tmux_on(&["prod"]);
         cfg.wsl.push(crate::provision::config::WslConfig {
             distro: "Ubuntu-24.04".into(),
@@ -851,9 +921,7 @@ mod tests {
         let distros = vec!["wsl.Ubuntu-24.04".to_string()];
         let dir = std::path::Path::new("/x");
         let hosts = Hosts::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
-        let srcs =
-            crate::model::source::build(&cfg, &aliases, &distros, "windows", &local(), dir, None);
-        let src_order: Vec<String> = srcs.iter().map(|s| s.alias.clone()).collect();
+        let src_order: Vec<String> = hosts.source_list().into_iter().map(|s| s.alias).collect();
         assert_eq!(
             src_order,
             vec![
@@ -928,5 +996,81 @@ mod tests {
                 .any(|w| w[0] == "-S" && w[1] == "/tmp/psmux-1/default"),
             "psmux still targets its server: {cmd:?}"
         );
+    }
+
+    /// The aliases the registry publishes, in order.
+    fn published(hosts: &Hosts) -> Vec<String> {
+        hosts
+            .sources()
+            .list()
+            .into_iter()
+            .map(|s| s.alias)
+            .collect()
+    }
+
+    #[test]
+    fn a_source_found_at_runtime_is_published_to_every_holder_of_the_set() {
+        // The set is handed to the off-loop operations once, at construction. A mux that
+        // answers later is added to the registry alone, and it has to reach the set they
+        // already hold, or it paints and scans but refuses every operation.
+        let cfg = Config::default();
+        let mut hosts = Hosts::build(
+            &cfg,
+            &["win".to_string()],
+            &[],
+            "windows",
+            &local(),
+            std::path::Path::new("/x"),
+            None,
+        );
+        let held = hosts.sources();
+        assert_eq!(published(&hosts), vec!["local".to_string()], "precondition");
+        let host = hosts
+            .discovered_host("win", "psmux", "win")
+            .expect("the host the registry reaches");
+        hosts.insert(host);
+        let source = held.get("win").expect("the set handed out earlier has it");
+        assert_eq!(source.binary, "psmux");
+        assert!(matches!(
+            source.kind,
+            crate::transport::MachineKind::Ssh { ref id, ref alias, .. } if id == "win" && alias == "win"
+        ));
+        assert_eq!(
+            source.host().transport.host_id(),
+            hosts.get("win").unwrap().transport.host_id(),
+            "the published source reaches the machine as the loop's host does"
+        );
+    }
+
+    #[test]
+    fn reconcile_publishes_what_it_adds_and_drops() {
+        let mut hosts = built(&["prod", "stage"]);
+        let held = hosts.sources();
+        hosts.reconcile(built(&["prod", "db"]));
+        assert_eq!(
+            held.list().into_iter().map(|s| s.alias).collect::<Vec<_>>(),
+            vec!["local".to_string(), "prod".to_string(), "db".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_local_zellij_source_is_published_without_the_tmux_socket() {
+        // The socket comes from `$TMUX`, which is set whenever xmux runs inside a mux -
+        // the normal case. Handing it to zellij made every local zellij source fail its
+        // listing on argument parsing, so it never reaches the machine at all.
+        let sock = Some("/tmp/psmux-1/default".to_string());
+        let hosts = Hosts::build(
+            &Config::default(),
+            &[],
+            &[],
+            "linux",
+            &["psmux".to_string(), "zellij".to_string()],
+            std::path::Path::new("/tmp/xmux"),
+            sock.clone(),
+        );
+        let z = hosts.source("local:zellij").expect("the zellij source");
+        assert_eq!(z.kind.local_socket(), None, "no socket reaches zellij");
+        let p = hosts.source("local:psmux").expect("the psmux source");
+        assert_eq!(p.kind.local_socket(), sock, "psmux targets its server");
     }
 }

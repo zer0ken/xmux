@@ -286,19 +286,7 @@ impl Runtime {
                     };
                     tracing::info!(machine = %machine, mux = %bin, source = %id, "mux discovered");
                     hosts.insert(host);
-                    // The loop drives the `Host`; the OFF-LOOP ops (create a session, read
-                    // panes, read border styles) resolve a source by id through `Env`. Both
-                    // have to learn the source, or it paints and scans but refuses every
-                    // operation with `unknown source`.
-                    env.add_source(crate::model::source::for_machine_mux(
-                        &machine,
-                        &bin,
-                        id.clone(),
-                        std::env::consts::OS,
-                        &env.xmux_dir,
-                        env.local_socket.clone(),
-                    ));
-                    let effects = update(model, Msg::SetSourceReach(reach_map(env)));
+                    let effects = update(model, Msg::SetSourceReach(reach_map(env, hosts)));
                     debug_assert!(effects.is_empty());
                     // A source that takes the card the machine stood as inherits that card,
                     // whatever it last showed; its own first listing is now in flight.
@@ -338,25 +326,13 @@ impl Runtime {
                     env.credentials().set_force_askpass(startup.force_askpass);
                     model.switcher.set_own_session(startup.own_session);
                 }
-                // A roster resolution completed. Three registries have to agree about
-                // which machines exist, so all three are reconciled from this ONE answer:
-                // the host registry the loop drives, the source list the off-loop ops
-                // resolve against, and the nav. Which makes this the one place to settle
-                // what the answer even is: a machine only a PROBE offers is carried back
-                // in before anything reads the roster, so a probe that was too slow
-                // cannot reap a card through all three at once.
+                // A roster resolution completed. The source registry and the nav have to
+                // agree about which machines exist, so both are reconciled from this ONE
+                // answer. Which makes this the one place to settle what the answer even
+                // is: a machine only a PROBE offers is carried back in before anything
+                // reads the roster, so a probe that was too slow cannot reap a card.
                 let mut roster = roster;
                 env.carry_probed(&mut roster);
-                let mut fresh = crate::model::Hosts::build(
-                    &roster.cfg,
-                    &roster.ssh_aliases,
-                    &roster.wsl_distros,
-                    std::env::consts::OS,
-                    &roster.local_muxes,
-                    &env.xmux_dir,
-                    env.local_socket.clone(),
-                );
-                fresh.set_credentials(env.credentials());
                 // What offered each host, refreshed with the roster: a host added by this
                 // resolution has to be able to name the provider that offered it, exactly
                 // as one present since launch can.
@@ -368,6 +344,7 @@ impl Runtime {
                 let login_defaults = roster.login_defaults.clone();
                 let ssh_stanzas = roster.ssh_stanzas.clone();
                 env.replace_roster(*roster);
+                let delta = hosts.reconcile(env.hosts());
                 let held = env.credentials().machines();
                 let effects = update(
                     model,
@@ -376,11 +353,10 @@ impl Runtime {
                         login_defaults,
                         ssh_stanzas,
                         held_credentials: held,
-                        source_reach: reach_map(env),
+                        source_reach: reach_map(env, hosts),
                     },
                 );
                 debug_assert!(effects.is_empty());
-                let delta = hosts.reconcile(fresh);
                 for id in &delta.removed {
                     tracing::info!(source = %id, "roster dropped a source");
                     // Everything this source held: its metadata channel, the live PTY
@@ -653,6 +629,13 @@ impl Runtime {
         // Restore the band-layout nav height (0 = auto ~40%); a stale value is clamped at
         // render time by compute_regions, so no clamp is needed here.
         let nav_height = crate::app::prefs::load_nav_height(&env.xmux_dir).unwrap_or(0);
+        // The runtime source registry, keyed by id (local first, then each ssh alias in
+        // config order), built from the roster on `Env`. Every host shares the
+        // environment's machine credential store before it can spawn, including one
+        // discovered or reconciled after a login, so a held password reaches each command
+        // that host runs. Nothing replaces the roster during construction, so the read
+        // below sees the same answer the registry was built from.
+        let mut hosts = env.hosts();
         // One read of the roster for the whole construction, so every product below is
         // built from ONE answer about which machines exist.
         let roster = env.roster();
@@ -682,28 +665,12 @@ impl Runtime {
         let worker = DisplayWorker::new(pty_tx);
         let registry = AttachRegistry::new();
 
-        // Host model: the single runtime registry, keyed by id (local first, then each
-        // ssh alias in config order), built from the config-assembly products on `Env`.
-        let host_os = std::env::consts::OS;
-        let mut hosts = crate::model::Hosts::build(
-            &roster.cfg,
-            &roster.ssh_aliases,
-            &roster.wsl_distros,
-            host_os,
-            &roster.local_muxes,
-            &env.xmux_dir,
-            env.local_socket.clone(),
-        );
         if env.startup_pending && !hosts.serves_any(crate::session::LOCAL_SOURCE) {
             hosts.hold_unresolved(
                 crate::session::LOCAL_SOURCE.to_string(),
                 crate::transport::local(None),
             );
         }
-        // Every host shares the environment's machine credential store before it can
-        // spawn, including one discovered or reconciled after a login, so a held password
-        // reaches each command that host runs.
-        hosts.set_credentials(env.credentials());
 
         // The app's runtime state (single source of truth), seeded from the host ids;
         // events stream the nav in.
@@ -744,7 +711,7 @@ impl Runtime {
         // And how each source is REACHED, so an unreachable one states what was asked of
         // it and over what, not only that it failed. Resolved to words here for the same
         // reason the providers are: the screen prints them and nothing branches on them.
-        state.chrome.set_source_reach(reach_map(&env));
+        state.chrome.set_source_reach(reach_map(&env, &hosts));
         // Where the whole history of dispatched commands is written, so the screen can name
         // the file instead of leaving the user to know about it.
         state.chrome.set_log_path(
@@ -767,8 +734,9 @@ impl Runtime {
         state.chrome.first_key_seen = crate::app::prefs::first_key_help_seen(&env.xmux_dir);
         drop(roster);
 
-        // The live mutate ops (create/rename/kill) - NOT nav probing.
-        let ops = env.ops();
+        // The live mutate ops (create/rename/kill) - NOT nav probing. They resolve each
+        // source through the registry's published set.
+        let ops = env.ops(hosts.sources());
         let prefix = crate::display::term::parse_prefix(Some(&env.ui_prefix));
         let term_input = crate::display::input::TermInput::new(prefix);
         let nav_decoder = crate::display::decode::KeyDecoder::new();
@@ -1986,8 +1954,11 @@ fn last_pane_line(registry: &crate::display::registry::AttachRegistry, id: u64) 
 /// How xmux reaches every card: each source, and each host that serves no source yet.
 /// A host's entry names the machine and its reachability probe, and no mux, because
 /// none has answered for it.
-fn reach_map(env: &Env) -> std::collections::HashMap<String, crate::state::SourceReach> {
-    let sources = env.source_list();
+fn reach_map(
+    env: &Env,
+    hosts: &crate::model::Hosts,
+) -> std::collections::HashMap<String, crate::state::SourceReach> {
+    let sources = hosts.source_list();
     let mut reach: std::collections::HashMap<String, crate::state::SourceReach> = sources
         .iter()
         .map(|s| (s.alias.clone(), source_reach(s)))
