@@ -117,34 +117,21 @@ fn middle_ellipsize(text: &str, width: usize) -> String {
     format!("{front}{MIDDLE_ELLIPSIS}{back}")
 }
 
-fn remaining_filter(prefix: &str, filter: &str) -> String {
-    let lower_filter = filter.to_lowercase();
-    let mut wanted = lower_filter.chars().peekable();
-    for ch in prefix.chars() {
-        if wanted
-            .peek()
-            .is_some_and(|next| ch.to_lowercase().next() == Some(*next))
-        {
-            wanted.next();
-        }
-    }
-    wanted.collect()
+fn highlighted(text: String, filter: &str, style: Style) -> Vec<Span<'static>> {
+    highlighted_after("", text, filter, style)
 }
 
-fn highlighted(text: String, filter: &str, style: Style) -> Vec<Span<'static>> {
+/// `text` as spans that bold what `filter` marks when `text` is read after `before`: a
+/// session card writes only its session, but the filter matched the whole path the card
+/// stands for, so the marks are taken over that path and painted on its session part.
+fn highlighted_after(before: &str, text: String, filter: &str, style: Style) -> Vec<Span<'static>> {
     if filter.is_empty() {
         return vec![Span::styled(text, style)];
     }
-    let lower_filter = filter.to_lowercase();
-    let mut wanted = lower_filter.chars().peekable();
+    let marks = crate::ui::tree::match_marks(filter, &format!("{before}{text}"));
     text.chars()
-        .map(|ch| {
-            let matched = wanted
-                .peek()
-                .is_some_and(|next| ch.to_lowercase().next() == Some(*next));
-            if matched {
-                wanted.next();
-            }
+        .zip(marks.into_iter().skip(before.chars().count()))
+        .map(|(ch, matched)| {
             Span::styled(
                 ch.to_string(),
                 if matched {
@@ -609,16 +596,18 @@ impl Switcher {
                 .iter()
                 .filter(|m| crate::ui::tree::fuzzy_match(filter, &m.name))
                 .count();
-            crate::ui::tree::filter_groups(&state.groups, filter)
-                .iter()
-                .map(|group| {
-                    if group.err.is_some() || group.sessions.is_empty() {
-                        1
-                    } else {
-                        group.sessions.len()
-                    }
-                })
-                .sum::<usize>()
+            crate::ui::tree::filter_groups(&state.groups, filter, &|host| {
+                state.chrome.host_mux(host).to_string()
+            })
+            .iter()
+            .map(|group| {
+                if group.err.is_some() || group.sessions.is_empty() {
+                    1
+                } else {
+                    group.sessions.len()
+                }
+            })
+            .sum::<usize>()
                 + machines
         };
         (count(&state.filter), count(""))
@@ -1663,11 +1652,7 @@ impl Switcher {
         //
         // The indent a session card hangs at under its title is NOT part of the card;
         // what a card holds is what a card holds at every position.
-        let (_, _, sess) = context_of(row);
-        let host = match &row.reference {
-            RowRef::Session { sess } => sess.host.as_str(),
-            _ => "",
-        };
+        let (machine, mux, sess) = context_of(row);
         let mut detail = address();
         let available = if width == 0 {
             usize::MAX
@@ -1675,9 +1660,10 @@ impl Switcher {
             (width as usize).saturating_sub(num_w + 2)
         };
         let session_style = accent;
-        detail.extend(highlighted(
+        detail.extend(highlighted_after(
+            &crate::session::session_label(machine, mux, ""),
             middle_ellipsize(sess, available),
-            &remaining_filter(&format!("{host}/"), filter),
+            filter,
             session_style,
         ));
         detail.push(Span::raw(" "));

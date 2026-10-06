@@ -720,6 +720,7 @@ impl Chrome {
     /// session name - the two halves are already separate, so nothing is re-split.
     fn headline(
         &self,
+        state: &crate::state::State,
         address: &crate::session::Address,
         kind: ViewScreen,
         machine_screen: bool,
@@ -738,7 +739,23 @@ impl Chrome {
                 if address.session.is_empty() {
                     self.host_label(&address.host)
                 } else {
-                    self.session_label(address)
+                    // The mux the session's card names, so the screen behind the card
+                    // spells it the same way before the host's reach resolves.
+                    let host_mux = |host: &str| self.host_mux(host).to_string();
+                    let mux = state
+                        .groups
+                        .iter()
+                        .flat_map(|g| &g.sessions)
+                        .find(|s| s.host == address.host && s.name == address.session)
+                        .map_or_else(
+                            || host_mux(&address.host),
+                            |s| crate::ui::tree::session_mux(s, &host_mux),
+                        );
+                    crate::session::session_label(
+                        crate::session::machine_of(&address.host),
+                        &mux,
+                        &address.session,
+                    )
                 }
             }
             // An EMPTY host answered - it has no session, which is itself an answer
@@ -1243,7 +1260,7 @@ impl Chrome {
             | ViewScreen::Machine
             | ViewScreen::Landing => pal.decoration,
         });
-        let headline = self.headline(address, kind, machine_screen);
+        let headline = self.headline(state, address, kind, machine_screen);
         let bold = Style::default()
             .fg(pal.secondary)
             .add_modifier(Modifier::BOLD);
