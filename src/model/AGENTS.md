@@ -15,7 +15,9 @@ remains after the update transition folds an inbound source event into the model
   run off-loop.
 - The source registry holds every source's host with its domain state and display
   bookkeeping, and publishes the source definitions the CLI, the scan, and the off-loop
-  operations read; the PTYs themselves stay in `display/`.
+  operations read; the PTYs themselves stay in `display/`. It also names every host on
+  the roster, including one whose muxes are not known yet and so has no source, and a
+  reconcile reports the hosts it added and dropped apart from the sources.
 - Inventory groups, their deterministic session order, and the typed failure of a
   source are domain values.
 - View screen selection is pure policy over the selection, the typed failure, the

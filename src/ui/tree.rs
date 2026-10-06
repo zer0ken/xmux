@@ -6,7 +6,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-pub use crate::model::{add_session, sort_by_name, Group};
+pub use crate::model::{add_session, sort_by_name, Group, Machine};
 use crate::session::Session;
 pub(crate) use crate::state::RowRef;
 
@@ -109,12 +109,14 @@ pub fn remove_session(groups: &[Group], address: &crate::session::Address) -> Ve
 /// remote hosts, each tier by source name ascending. Inputs are not mutated.
 pub fn order_groups(groups: &[Group]) -> Vec<Group> {
     let mut out = groups.to_vec();
-    out.sort_by(|a, b| {
-        source_tier(&a.source)
-            .cmp(&source_tier(&b.source))
-            .then_with(|| a.source.cmp(&b.source))
-    });
+    out.sort_by(|a, b| card_order(&a.source, &b.source));
     out
+}
+
+/// The card order of two names, each a source id or the name of a machine standing on
+/// its own: by tier, then by name.
+pub(crate) fn card_order(a: &str, b: &str) -> std::cmp::Ordering {
+    source_tier(a).cmp(&source_tier(b)).then_with(|| a.cmp(b))
 }
 
 /// The display tier of a source: local (0) before WSL (1) before remote (2).
@@ -267,6 +269,44 @@ pub(crate) fn down_machines(groups: &[Group], scanning: &HashSet<String>) -> Has
     all
 }
 
+/// The machines standing on their own that a filter keeps: those whose name matches it,
+/// or every one when nothing on the list matches, so a filter is never a dead end.
+pub(crate) fn visible_machines<'a>(
+    groups: &[Group],
+    machines: &[&'a Machine],
+    filter: &str,
+) -> Vec<&'a Machine> {
+    if filter.is_empty() {
+        return machines.to_vec();
+    }
+    let kept: Vec<&Machine> = machines
+        .iter()
+        .copied()
+        .filter(|m| fuzzy_match(filter, &m.name))
+        .collect();
+    if kept.is_empty() && filter_groups(groups, filter).is_empty() {
+        machines.to_vec()
+    } else {
+        kept
+    }
+}
+
+/// One entry of the band of cards with no session to show: a source's card, or the card
+/// of a machine standing on its own.
+enum Standing<'a> {
+    Group(&'a Group),
+    Machine(&'a Machine),
+}
+
+impl Standing<'_> {
+    fn name(&self) -> &str {
+        match self {
+            Standing::Group(g) => &g.source,
+            Standing::Machine(m) => &m.name,
+        }
+    }
+}
+
 /// Flattens the inventory into a flat list of navigation rows: a section title per
 /// source that has a session to show, then one session card per session, emitted in
 /// group order (the deterministic local→WSL→remote, name-sorted order `rebuild`
@@ -274,16 +314,21 @@ pub(crate) fn down_machines(groups: &[Group], scanning: &HashSet<String>) -> Has
 /// show get one host-state card each: reachable empty sources first, then sources whose
 /// connection or inventory is unresolved. A host that is down gets one host card in place
 /// of its sources' cards, where its first source's card would stand; its screen is the host
-/// screen, and its sources are reached through that screen's links. The mux each row NAMES is resolved here through `mux_of_source`, so a
+/// screen, and its sources are reached through that screen's links. A machine with no
+/// source known (`machines`) gets its own card among the unresolved ones, in card order.
+/// The mux each row NAMES is resolved here through `mux_of_source`, so a
 /// row cannot exist without it and two rows on one source cannot name their mux two
 /// ways; colour is derived at render time from each row's [`RowRef`], so this stays
 /// terminal-free. Inputs are not mutated.
 pub(crate) fn flatten(
     groups: &[Group],
     scanning: &HashSet<String>,
+    machines: &[&Machine],
+    machine_scanning: &HashSet<String>,
     filter: &str,
     mux_of_source: &dyn Fn(&str) -> String,
 ) -> Vec<Row> {
+    let machines = visible_machines(groups, machines, filter);
     let down = down_machines(groups, scanning);
     let first_source = |machine: &str| {
         groups
@@ -298,9 +343,21 @@ pub(crate) fn flatten(
                 && g.failure() == Some(crate::model::FailureKind::Blocked)
         })
     };
-    let groups = visible_groups(groups, filter);
+    // A machine the filter keeps means the filter matched something, so the groups fall
+    // back to their titles only when neither matched.
+    let groups = if !filter.is_empty() && machines.iter().any(|m| fuzzy_match(filter, &m.name)) {
+        Cow::Owned(filter_groups(groups, filter))
+    } else {
+        visible_groups(groups, filter)
+    };
     let groups: &[Group] = &groups;
     let mut machine_cards: HashSet<&str> = HashSet::new();
+    let mut standing: Vec<Standing> = groups
+        .iter()
+        .map(Standing::Group)
+        .chain(machines.iter().copied().map(Standing::Machine))
+        .collect();
+    standing.sort_by(|a, b| card_order(a.name(), b.name()));
 
     let mut rows = Vec::new();
     // 1. A section per source that has a session to show: outside numbered-card steps
@@ -322,7 +379,26 @@ pub(crate) fn flatten(
     }
     // Host cards are grouped by connection state after the session cards.
     for connected in [true, false] {
-        for g in groups {
+        for entry in &standing {
+            let g = match entry {
+                Standing::Group(g) => *g,
+                // A machine with no source known has answered nothing that names a mux,
+                // so its card is never in the connected group.
+                Standing::Machine(m) => {
+                    if !connected {
+                        rows.push(Row {
+                            mux: String::new(),
+                            reference: RowRef::Machine {
+                                machine: m.name.clone(),
+                                source: m.name.clone(),
+                                blocked: m.failure() == Some(crate::model::FailureKind::Blocked),
+                                scanning: machine_scanning.contains(&m.name),
+                            },
+                        });
+                    }
+                    continue;
+                }
+            };
             let is_scanning = scanning.contains(&g.source);
             let blocked = g.failure() == Some(crate::model::FailureKind::Blocked);
             let list_failed = g.failure() == Some(crate::model::FailureKind::ListFailed);
@@ -342,6 +418,7 @@ pub(crate) fn flatten(
                             machine: machine.to_string(),
                             source: first_source(machine),
                             blocked: blocked_machine(machine),
+                            scanning: false,
                         },
                     });
                 }
@@ -781,7 +858,14 @@ mod tests {
             err: None,
             sessions: vec![sess("jup", "api")],
         }];
-        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &[],
+            &HashSet::new(),
+            "",
+            &mux_of_source,
+        );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["section", "session"]);
         assert_eq!(addr_of(&rows[1].reference), "jup/api");
@@ -800,7 +884,14 @@ mod tests {
             err: None,
             sessions: vec![sess("h", "a"), sess("h", "b")],
         }];
-        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &[],
+            &HashSet::new(),
+            "",
+            &mux_of_source,
+        );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["section", "session", "session"]);
         let addrs: Vec<String> = rows.iter().map(|r| addr_of(&r.reference)).collect();
@@ -816,7 +907,7 @@ mod tests {
         }];
         let mut scanning = HashSet::new();
         scanning.insert("jup".to_string());
-        let rows = flatten(&groups, &scanning, "", &mux_of_source);
+        let rows = flatten(&groups, &scanning, &[], &HashSet::new(), "", &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host"]);
         assert_eq!(addr_of(&rows[0].reference), "jup");
@@ -846,7 +937,14 @@ mod tests {
                 sessions: vec![],
             },
         ];
-        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &[],
+            &HashSet::new(),
+            "",
+            &mux_of_source,
+        );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host", "machine"]);
         assert_eq!(addr_of(&rows[0].reference), "empty");
@@ -881,11 +979,18 @@ mod tests {
                 sessions: vec![],
             },
         ];
-        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &[],
+            &HashSet::new(),
+            "",
+            &mux_of_source,
+        );
         assert_eq!(rows.len(), 1);
         assert!(matches!(
             &rows[0].reference,
-            RowRef::Machine { machine, source, blocked: true } if machine == "db" && source == "db:tmux"
+            RowRef::Machine { machine, source, blocked: true, .. } if machine == "db" && source == "db:tmux"
         ));
     }
 
@@ -905,12 +1010,19 @@ mod tests {
                 sessions: vec![],
             },
         ];
-        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &[],
+            &HashSet::new(),
+            "",
+            &mux_of_source,
+        );
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(kinds, vec!["host", "host"]);
         let mut scanning = HashSet::new();
         scanning.insert("db:screen".to_string());
-        let rows = flatten(&groups, &scanning, "", &mux_of_source);
+        let rows = flatten(&groups, &scanning, &[], &HashSet::new(), "", &mux_of_source);
         let kinds: Vec<&str> = rows.iter().map(|r| kind(&r.reference)).collect();
         assert_eq!(
             kinds,
@@ -930,7 +1042,7 @@ mod tests {
         }];
         let mut scanning = HashSet::new();
         scanning.insert("kyla".to_string());
-        let rows = flatten(&groups, &scanning, "", &mux_of_source);
+        let rows = flatten(&groups, &scanning, &[], &HashSet::new(), "", &mux_of_source);
         assert!(matches!(
             rows[0].reference,
             RowRef::Host { scanning: true, .. }
@@ -941,7 +1053,14 @@ mod tests {
     fn flatten_keeps_the_unreachable_card_when_the_filter_names_it() {
         // The filter names the disconnected host directly.
         let groups = sample_groups();
-        let rows = flatten(&groups, &HashSet::new(), "dead", &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &[],
+            &HashSet::new(),
+            "dead",
+            &mux_of_source,
+        );
         assert!(rows.iter().any(|r| matches!(
             &r.reference,
             RowRef::Machine { machine, .. } if machine == "deadhost"
@@ -962,7 +1081,14 @@ mod tests {
                 sessions: vec![],
             },
         ];
-        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &[],
+            &HashSet::new(),
+            "",
+            &mux_of_source,
+        );
         assert_eq!(rows.len(), 2);
     }
 
@@ -973,7 +1099,14 @@ mod tests {
             err: Some("pwtest@127.0.0.1: Permission denied (publickey,password).".into()),
             sessions: vec![],
         }];
-        let rows = flatten(&groups, &HashSet::new(), "", &mux_of_source);
+        let rows = flatten(
+            &groups,
+            &HashSet::new(),
+            &[],
+            &HashSet::new(),
+            "",
+            &mux_of_source,
+        );
         match &rows[0].reference {
             RowRef::Machine { blocked, .. } => {
                 assert!(*blocked, "a login answers it");

@@ -362,7 +362,8 @@ impl Switcher {
         let busy = state
             .scanning
             .iter()
-            .any(|s| crate::session::machine_of(s) == machine);
+            .any(|s| crate::session::machine_of(s) == machine)
+            || state.machine_scanning.contains(&machine);
         if busy {
             state.flash(format!("{machine} is still being scanned"));
             return Vec::new();
@@ -527,19 +528,34 @@ impl Switcher {
             FailureKind::Unreachable,
             FailureKind::ListFailed,
         ] {
-            for g in &state.groups {
-                if state.scanning.contains(&g.source) || g.failure() != Some(kind) {
-                    continue;
-                }
-                let reason = g
-                    .err
-                    .as_deref()
-                    .and_then(|e| e.lines().map(str::trim).find(|l| !l.is_empty()))
+            // Each source in a problem state, and each machine with no source known that
+            // failed as a whole, in card order.
+            let mut failed: Vec<(&str, &str)> = state
+                .groups
+                .iter()
+                .filter(|g| !state.scanning.contains(&g.source) && g.failure() == Some(kind))
+                .filter_map(|g| Some((g.source.as_str(), g.err.as_deref()?)))
+                .chain(
+                    state
+                        .hostless_machines()
+                        .into_iter()
+                        .filter(|m| {
+                            !state.machine_scanning.contains(&m.name) && m.failure() == Some(kind)
+                        })
+                        .filter_map(|m| Some((m.name.as_str(), m.err.as_deref()?))),
+                )
+                .collect();
+            failed.sort_by(|a, b| crate::ui::tree::card_order(a.0, b.0));
+            for (source, err) in failed {
+                let reason = err
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
                     .unwrap_or_default()
                     .to_string();
                 entries.push(CheckEntry {
-                    label: state.chrome.source_label_when(&g.source, false),
-                    source: g.source.clone(),
+                    label: state.chrome.source_label_when(source, false),
+                    source: source.to_string(),
                     kind,
                     reason,
                 });
@@ -578,6 +594,7 @@ impl Switcher {
             .iter()
             .find(|group| group.source == source)
             .and_then(crate::model::Group::failure)
+            .or_else(|| super::machine_failure_alone(state, source))
             .is_some_and(|kind| kind != crate::model::FailureKind::ListFailed);
         let machine = crate::session::machine_of(source);
         let host_row = |sw: &Switcher| {

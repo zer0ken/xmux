@@ -18,7 +18,7 @@ pub use view::{OpFollow, Scan};
 
 use crate::model::SECRET_INPUT_CAPACITY;
 pub use crate::model::{AfterLogin, SecretInput};
-use crate::model::{Group, LoginOutcome, OpResult, RegistrationOutcome, Selection};
+use crate::model::{Group, LoginOutcome, Machine, OpResult, RegistrationOutcome, Selection};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -32,8 +32,16 @@ pub struct State {
     pub groups: Vec<Group>,
     /// Sources whose `list-sessions` has not yet returned (host shows scanning…).
     pub scanning: HashSet<String>,
+    /// Every machine on the roster, the level above the groups. A machine with no group
+    /// stands on the nav by itself.
+    pub machines: Vec<Machine>,
+    /// Machines with no group whose answer is still on its way: their reachability probe,
+    /// or the question of which muxes they serve.
+    pub machine_scanning: HashSet<String>,
     /// The time each outstanding source scan must have answered by.
     pub(crate) scan_deadlines: HashMap<String, std::time::Instant>,
+    /// The time each machine in `machine_scanning` must have answered by.
+    pub(crate) machine_scan_deadlines: HashMap<String, std::time::Instant>,
     /// MACHINES the user has logged in to successfully in this run, which hiding never
     /// drops however they answer afterwards.
     ///
@@ -490,16 +498,28 @@ impl State {
     /// (reachable or unreachable per its `err`) and every session is present. Other
     /// state fields stay default.
     pub fn from_scan(scan: Scan) -> State {
-        State {
-            groups: scan.groups,
-            ..State::default()
+        let mut state = State::from_sources(Vec::new());
+        for group in &scan.groups {
+            let machine = crate::session::machine_of(&group.source);
+            if state.machine(machine).is_none() {
+                state.machines.push(Machine::new(machine));
+            }
         }
+        state.groups = scan.groups;
+        state
     }
 
     /// Seeds the inventory from the resolved source list alone - no probing - so
     /// the first frame paints host-skeleton rows, each in a scanning state. Other
     /// state fields stay default.
     pub fn from_sources(aliases: Vec<String>) -> State {
+        let mut machines: Vec<Machine> = Vec::new();
+        for source in &aliases {
+            let machine = crate::session::machine_of(source);
+            if !machines.iter().any(|m| m.name == machine) {
+                machines.push(Machine::new(machine));
+            }
+        }
         let scanning = aliases.iter().cloned().collect();
         let groups = aliases
             .into_iter()
@@ -512,8 +532,68 @@ impl State {
         State {
             scanning,
             groups,
+            machines,
             ..State::default()
         }
+    }
+
+    /// Seeds the inventory from the roster: a scanning skeleton for every source, and
+    /// every machine, each one with no source scanning on its own.
+    pub fn from_roster(sources: Vec<String>, machines: Vec<String>) -> State {
+        let mut state = State::from_sources(sources);
+        for machine in machines {
+            state.add_machine(machine);
+        }
+        state
+    }
+
+    /// Puts `machine` on the roster, scanning when no source of it is listed. A machine
+    /// already there is left as it is.
+    pub(crate) fn add_machine(&mut self, machine: String) {
+        if self.machines.iter().any(|m| m.name == machine) {
+            return;
+        }
+        if !self.has_hosts(&machine) {
+            self.machine_scanning.insert(machine.clone());
+        }
+        self.machines.push(Machine::new(machine));
+    }
+
+    /// The machine named `machine`, if the roster names it.
+    pub(crate) fn machine(&self, machine: &str) -> Option<&Machine> {
+        self.machines.iter().find(|m| m.name == machine)
+    }
+
+    pub(crate) fn machine_mut(&mut self, machine: &str) -> Option<&mut Machine> {
+        self.machines.iter_mut().find(|m| m.name == machine)
+    }
+
+    /// Whether any answer is still on its way: a source's listing, or the answer of a
+    /// machine with no source known.
+    pub(crate) fn scanning_any(&self) -> bool {
+        !self.scanning.is_empty() || !self.machine_scanning.is_empty()
+    }
+
+    /// Whether `machine` stands on the nav by itself: on the roster, with no source
+    /// listed, and not settled as serving no mux.
+    pub(crate) fn stands_alone(&self, machine: &str) -> bool {
+        self.machine(machine).is_some_and(|m| !m.muxless) && !self.has_hosts(machine)
+    }
+
+    /// Whether any source of `machine` is listed.
+    pub(crate) fn has_hosts(&self, machine: &str) -> bool {
+        self.groups
+            .iter()
+            .any(|g| crate::session::machine_of(&g.source) == machine)
+    }
+
+    /// The machines that stand on the nav by themselves: on the roster, with no source
+    /// listed, and not settled as serving no mux.
+    pub(crate) fn hostless_machines(&self) -> Vec<&Machine> {
+        self.machines
+            .iter()
+            .filter(|m| !m.muxless && !self.has_hosts(&m.name))
+            .collect()
     }
 
     /// Resolves a `switch` target against the current inventory - the set the nav
@@ -827,6 +907,11 @@ impl State {
             .iter()
             .find(|g| g.source == source)
             .and_then(|g| g.err.as_deref())
+            .or_else(|| {
+                self.machine(source)
+                    .filter(|m| !self.has_hosts(&m.name))
+                    .and_then(|m| m.err.as_deref())
+            })
             .map(crate::model::LoginFailure::of_probe)
             // The probe cannot ask about a first-seen key. The login form can answer
             // that condition, so it is not displayed as a failed login attempt.

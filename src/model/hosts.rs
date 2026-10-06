@@ -37,14 +37,16 @@ pub struct Hosts {
     runner: Option<std::sync::Arc<dyn Runner>>,
 }
 
-/// What one [`Hosts::reconcile`] changed: the card ids it added, and the ids it dropped
-/// because the fresh roster no longer names their machine. A card id is a source id, or
-/// the bare name of a host whose muxes are not known yet. The loop acts on both, so the
-/// registry, the nav, and the live connections stay one answer.
+/// What one [`Hosts::reconcile`] changed: the source ids it added, the ids it dropped
+/// because the fresh roster no longer names their machine, and the machines that joined
+/// and left the roster. The loop acts on all four, so the registry, the nav, and the live
+/// connections stay one answer.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct RosterDelta {
     pub added: Vec<String>,
     pub removed: Vec<String>,
+    pub machines_added: Vec<String>,
+    pub machines_removed: Vec<String>,
 }
 
 impl Hosts {
@@ -222,9 +224,9 @@ impl Hosts {
     /// card the user is looking at does not move because another machine answered.
     ///
     /// A host whose muxes are xmux's to decide survives on its NAME, and keeps the
-    /// transport it had, which holds what its probe and login established. While it
-    /// serves no source its card is its bare name, which is added and dropped with it.
+    /// transport it had, which holds what its probe and login established.
     pub fn reconcile(&mut self, mut fresh: Hosts) -> RosterDelta {
+        let before = self.machines();
         let mut machines: HashSet<&str> = fresh
             .order
             .iter()
@@ -236,7 +238,7 @@ impl Hosts {
         // muxes are here, never on whether the machine exists - so it must not be able
         // to reap every local source on a re-scan where the probe failed to answer.
         machines.insert(LOCAL_SOURCE);
-        let mut removed: Vec<String> = self
+        let removed: Vec<String> = self
             .order
             .iter()
             .filter(|id| !machines.contains(crate::session::machine_of(id)))
@@ -249,11 +251,6 @@ impl Hosts {
             .filter(|machine| !fresh.auto.iter().any(|(m, _)| m == machine))
             .collect();
         drop(machines);
-        for machine in &gone_auto {
-            if !self.serves_any(machine) {
-                removed.push(machine.clone());
-            }
-        }
         self.auto
             .retain(|(machine, _)| !gone_auto.contains(machine));
         self.order.retain(|id| !removed.contains(id));
@@ -264,9 +261,6 @@ impl Hosts {
         for (machine, transport) in std::mem::take(&mut fresh.auto) {
             if self.auto.iter().any(|(m, _)| *m == machine) {
                 continue;
-            }
-            if !self.serves_any(&machine) {
-                added.push(machine.clone());
             }
             self.auto.push((machine, transport));
         }
@@ -287,7 +281,17 @@ impl Hosts {
             }
         }
         self.publish();
-        RosterDelta { added, removed }
+        let after = self.machines();
+        RosterDelta {
+            added,
+            removed,
+            machines_added: after
+                .iter()
+                .filter(|m| !before.contains(m))
+                .cloned()
+                .collect(),
+            machines_removed: before.into_iter().filter(|m| !after.contains(m)).collect(),
+        }
     }
 
     /// Whether `machine` already serves a source running the mux binary `bin`. The
@@ -305,20 +309,6 @@ impl Hosts {
         self.order
             .iter()
             .any(|id| crate::session::machine_of(id) == machine)
-    }
-
-    /// The ids the nav starts from: every source, then the bare name of each host whose
-    /// muxes are not known yet. That card reads the host alone and turns a spinner until
-    /// the host answers.
-    pub fn card_ids(&self) -> Vec<String> {
-        let mut ids = self.order.clone();
-        ids.extend(
-            self.auto
-                .iter()
-                .map(|(machine, _)| machine.clone())
-                .filter(|machine| !self.serves_any(machine)),
-        );
-        ids
     }
 
     /// Every host, once each: the machines the sources name, then the hosts that serve
@@ -564,6 +554,46 @@ mod tests {
         assert!(hosts.get("stage").is_none(), "dropped from the map too");
     }
 
+    /// A registry for the ssh aliases named, where `tmux` is written only for the ones in
+    /// `written`; every other alias is a machine whose muxes xmux decides.
+    fn built_with_auto(aliases: &[&str], written: &[&str]) -> Hosts {
+        let cfg = tmux_on(written);
+        let aliases: Vec<String> = aliases.iter().map(|a| a.to_string()).collect();
+        Hosts::build(
+            &cfg,
+            &aliases,
+            &[],
+            "linux",
+            &local(),
+            std::path::Path::new("/x"),
+            None,
+        )
+    }
+
+    #[test]
+    fn reconcile_names_the_machines_it_adds_and_drops_apart_from_their_sources() {
+        let mut hosts = built_with_auto(&["prod", "web"], &["prod"]);
+        assert!(
+            !hosts.ids().contains(&"web".to_string()),
+            "a machine whose muxes are not known has no source"
+        );
+        let delta = hosts.reconcile(built_with_auto(&["prod", "db"], &["prod", "db"]));
+        assert_eq!(
+            delta.added,
+            vec!["db".to_string()],
+            "db's written mux is a source"
+        );
+        assert!(delta.removed.is_empty(), "web never had a source to drop");
+        assert_eq!(delta.machines_added, vec!["db".to_string()]);
+        assert_eq!(delta.machines_removed, vec!["web".to_string()]);
+
+        let delta = hosts.reconcile(built_with_auto(&["prod", "db", "api"], &["prod", "db"]));
+        assert!(delta.added.is_empty(), "api has no mux known, so no source");
+        assert_eq!(delta.machines_added, vec!["api".to_string()]);
+        assert!(delta.machines_removed.is_empty());
+        assert!(hosts.machines().contains(&"api".to_string()));
+    }
+
     #[test]
     fn reconcile_leaves_a_surviving_host_live() {
         // The detected mux, the display tty, and the connection the loop drives all live
@@ -637,7 +667,6 @@ mod tests {
             &["local".to_string()],
             "no mux is assumed for it"
         );
-        assert_eq!(hosts.card_ids(), vec!["local", "win"]);
         assert_eq!(hosts.machines(), vec!["local", "win"]);
         let t = hosts.host_transport("win").expect("it is still reached");
         assert!(t.is_remote());

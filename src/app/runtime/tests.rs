@@ -1375,7 +1375,7 @@ async fn first_frame_does_not_wait_for_startup_roster_and_applies_its_answer() {
     let env = std::sync::Arc::new(env);
     let (mut rt, mut io) = Runtime::new(env);
     assert_eq!(cards(&rt), vec!["local"], "the first frame has a skeleton");
-    assert!(rt.model.state.scanning.contains("local"));
+    assert!(rt.model.state.machine_scanning.contains("local"));
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     spawn_startup_resolution_with(
         rt.mgr.events(),
@@ -1604,13 +1604,23 @@ async fn a_discovered_source_sorts_into_place_and_leaves_the_selection_put() {
     );
 }
 
+/// Every card id on the nav, in card order: each source, and each machine standing on its
+/// own under its name.
 fn cards(rt: &Runtime) -> Vec<String> {
-    rt.model
-        .state
+    let state = &rt.model.state;
+    let mut ids: Vec<String> = state
         .groups
         .iter()
         .map(|g| g.source.clone())
-        .collect()
+        .chain(
+            state
+                .hostless_machines()
+                .into_iter()
+                .map(|m| m.name.clone()),
+        )
+        .collect();
+    ids.sort_by(|a, b| crate::ui::tree::card_order(a, b));
+    ids
 }
 
 #[tokio::test]
@@ -1619,7 +1629,14 @@ async fn a_host_that_writes_no_mux_is_one_card_with_no_source() {
     // reads the host alone and spins, and it has no source for any op to reach.
     let rt = test_rt(fake_env_with_auto_hosts(&[], &["win"]));
     assert_eq!(cards(&rt), vec!["local", "win"]);
-    assert!(rt.model.state.scanning.contains("win"), "the card spins");
+    assert!(
+        rt.model.state.machine_scanning.contains("win"),
+        "the card spins"
+    );
+    assert!(
+        rt.model.state.groups.iter().all(|g| g.source != "win"),
+        "the machine is not a source"
+    );
     assert!(rt.hosts.get("win").is_none(), "no mux is assumed for it");
     assert!(rt.hosts.source("win").is_none());
     assert_eq!(
@@ -1768,15 +1785,10 @@ async fn a_host_that_could_not_be_asked_keeps_its_card_with_the_reason() {
         muxes: Err("command failed (exit 255): Connection reset".into()),
     });
     assert_eq!(cards(&rt), vec!["local", "win"]);
-    assert!(!rt.model.state.scanning.contains("win"), "settled");
-    let g = rt
-        .model
-        .state
-        .groups
-        .iter()
-        .find(|g| g.source == "win")
-        .unwrap();
-    assert!(g.err.as_deref().unwrap().contains("Connection reset"));
+    assert!(!rt.model.state.machine_scanning.contains("win"), "settled");
+    let m = rt.model.state.machine("win").unwrap();
+    assert!(m.err.as_deref().unwrap().contains("Connection reset"));
+    assert!(rt.model.state.groups.iter().all(|g| g.source != "win"));
     // Asked again (a re-scan or a login), it answers, and its source takes the card over
     // as in flight rather than inheriting the failure.
     rt.execute_source_effect_for_test(crate::model::EventEffect::AddDiscoveredSources {
@@ -1887,7 +1899,7 @@ async fn a_re_scan_adds_and_drops_the_card_of_a_host_that_writes_no_mux() {
         rescan: false,
     });
     assert_eq!(cards(&rt), vec!["local", "prod", "win"]);
-    assert!(rt.model.state.scanning.contains("win"));
+    assert!(rt.model.state.machine_scanning.contains("win"));
     rt.execute_source_effect_for_test(crate::model::EventEffect::ApplyRoster {
         roster: Box::new(fake_roster(&["prod"])),
         startup: None,
@@ -1920,7 +1932,7 @@ fn test_rt(env: Env) -> Runtime {
         env.local_socket.clone(),
     );
     drop(roster);
-    let mut state = crate::state::State::from_sources(hosts.card_ids());
+    let mut state = crate::state::State::from_roster(hosts.ids().to_vec(), hosts.machines());
     let switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
     let ops = env.ops(hosts.sources());
     let (op_tx, _op_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -6052,18 +6064,24 @@ fn unreachable_screen_details_take_terminal_input() {
     let mut rt = test_rt(fake_env_with_sources(&["prod"]));
     crate::app::model::update(
         &mut rt.model,
-        crate::app::model::Msg::ApplySourceResult {
-            source: "local".into(),
-            sessions: vec![],
-            err: None,
+        crate::app::model::Msg::HostEvent {
+            event: crate::link::HostEvent::Sessions {
+                source: "local".into(),
+                sessions: vec![],
+                err: None,
+            },
+            logged_in: Default::default(),
         },
     );
     crate::app::model::update(
         &mut rt.model,
-        crate::app::model::Msg::ApplySourceResult {
-            source: "prod".into(),
-            sessions: vec![],
-            err: Some("connection refused".into()),
+        crate::app::model::Msg::HostEvent {
+            event: crate::link::HostEvent::Sessions {
+                source: "prod".into(),
+                sessions: vec![],
+                err: Some("connection refused".into()),
+            },
+            logged_in: Default::default(),
         },
     );
     rt.model.switcher.handle_key(

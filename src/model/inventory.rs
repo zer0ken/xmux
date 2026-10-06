@@ -73,6 +73,33 @@ impl Group {
     }
 }
 
+/// One machine on the roster, the level its hosts belong to. It holds what the machine
+/// answered as a whole, which is what its card and screen state while no host of it is
+/// known.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Machine {
+    pub name: String,
+    /// Why the machine itself could not be asked: its reachability probe or its mux
+    /// discovery failed.
+    pub err: Option<String>,
+    /// The machine answered that it serves no mux xmux supports, so it has nothing to
+    /// show.
+    pub muxless: bool,
+}
+
+impl Machine {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ..Self::default()
+        }
+    }
+
+    pub fn failure(&self) -> Option<FailureKind> {
+        self.err.as_deref().map(FailureKind::from_error)
+    }
+}
+
 /// Orders sessions in place by name ascending. The sort is stable so sessions
 /// with equal names keep their original relative order.
 pub fn sort_by_name(sessions: &mut [Session]) {

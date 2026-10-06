@@ -20,7 +20,9 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   plain word for the computer in the world.
 - **source** - in the code, one mux on one host, and what every session address names.
   Its id is the bare host alias when the host serves one mux and `<host>:<mux>` when it
-  serves several. Every surface calls it a host and writes it as its source label.
+  serves several. A source exists only for a mux the host is confirmed to serve, one
+  the config writes or mux discovery found, so a host whose muxes are not known yet has
+  none. Every surface calls it a host and writes it as its source label.
 - **level words** - `machine`, `host`, and `session`, the words every surface uses for
   the three levels a session lives in: on a surface, `host` always names one mux on a
   machine (`db-01/tmux`) and never the machine (`db-01`).
@@ -83,8 +85,8 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 ## Nav Content
 
 - **card** - one numbered nav entry: a session, a source's host-state card, or one card
-  for a host none of whose sources connected. A card states what something is, never
-  why.
+  for a host that has no source yet or none of whose sources connected. A card states
+  what something is, never why.
 - **section** - one source's session cards under its section title, or the band of
   host cards.
 - **section title** - the `{host}/{mux}` header over a source's session cards. It is
@@ -142,7 +144,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **selection hint** - what the hint bar says for three seconds after the user moves the
   selection: the card's next keys and one fact about it.
 - **scan indicator** - the `scanning hosts n/m…` progress in the hint bar, counting
-  sources.
+  sources and the hosts that have no source yet.
 - **flash** - the reason a key did nothing, shown in the hint bar. A refusal, never the
   result of work.
 - **toast** - the result of work the user started, in a box in the terminal view's

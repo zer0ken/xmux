@@ -1062,3 +1062,135 @@ fn the_landing_counts_a_host_serving_several_muxes_once() {
         "a host is scanned only once every source of it answered"
     );
 }
+
+/// The harness over `groups` plus `machine`, which is on the roster with no source known,
+/// in the state its answer left it: `Some` why it could not be asked, `None` still asking.
+fn with_unresolved(
+    groups: &[(&str, &[&str], Option<&str>)],
+    machine: &str,
+    err: Option<&str>,
+) -> H {
+    let mut h = H::new(groups);
+    h.state.add_machine(machine.to_string());
+    if let Some(err) = err {
+        h.sw.apply_machine_result(machine, Some(err.to_string()), &mut h.state);
+    } else {
+        h.sw.rebuild(&mut h.state);
+    }
+    h.draw();
+    h
+}
+
+const REFUSED: &str = "dev@db: Permission denied (publickey,password).";
+
+#[test]
+fn a_machine_with_no_source_known_is_a_machine_and_no_source() {
+    let mut h = with_unresolved(&[("gpu", &["train"], None)], "db", Some(REFUSED));
+    assert!(
+        h.state.groups.iter().all(|g| g.source != "db"),
+        "no source stands for the machine"
+    );
+    let card = h.card_row(
+        |r| matches!(r, RowRef::Machine { machine, blocked: true, scanning: false, .. } if machine == "db"),
+    );
+    h.sw.set_selected(card);
+    h.terminal_focused = true;
+    h.draw();
+    assert_eq!(h.node(), host("db"), "the selection names the machine");
+    assert!(
+        h.sw.screen_links(&Node::Host("db".into()), &h.state)
+            .is_empty(),
+        "a machine with no confirmed host links nowhere, least of all to itself"
+    );
+    let view = h.view();
+    assert!(
+        view.contains("Log in ]"),
+        "its login pane answers it:\n{view}"
+    );
+    assert!(
+        h.sw.login_pane_shown(&h.state),
+        "the login pane takes the keys"
+    );
+    assert_eq!(
+        h.sw.link_marks(&h.state).0,
+        None,
+        "no link holds the keyboard on the login pane"
+    );
+    assert!(
+        h.sw.check_entries(&h.state)
+            .iter()
+            .any(|e| e.source == "db" && e.kind == crate::model::FailureKind::Blocked),
+        "the host problems list the machine"
+    );
+}
+
+#[test]
+fn a_machine_still_answering_spins_on_its_own_card() {
+    let h = with_unresolved(&[("gpu", &["train"], None)], "win", None);
+    let row = h.card_row(
+        |r| matches!(r, RowRef::Machine { machine, scanning: true, .. } if machine == "win"),
+    );
+    let landing = h.sw.landing_links();
+    let link = landing
+        .iter()
+        .find(|l| l.node == Node::Host("win".into()))
+        .expect("the landing lists the machine");
+    assert_eq!(link.value, "scanning");
+    assert!(h.state.scanning_any());
+    assert!(row > 0);
+}
+
+#[test]
+fn the_first_source_found_takes_the_machines_card_number() {
+    let mut h = with_unresolved(&[("gpu", &["train"], None)], "win", None);
+    h.sw.set_renumbering(false, &mut h.state);
+    let row = h.card_row(|r| matches!(r, RowRef::Machine { machine, .. } if machine == "win"));
+    let number = h.sw.card_number(row);
+    h.sw.add_sources(vec!["win".into()], &mut h.state);
+    let row = h.card_row(|r| matches!(r, RowRef::Host { source, .. } if source == "win"));
+    assert_eq!(h.sw.card_number(row), number, "the card keeps its number");
+    assert!(!h.state.machine_scanning.contains("win"));
+}
+
+#[test]
+fn a_machine_that_serves_no_mux_leaves_the_nav() {
+    let mut h = with_unresolved(&[("gpu", &["train"], None)], "win", None);
+    h.sw.settle_muxless("win", &mut h.state);
+    assert!(!h
+        .sw
+        .rows
+        .iter()
+        .any(|r| matches!(&r.reference, RowRef::Machine { machine, .. } if machine == "win")));
+    assert!(!h.state.scanning_any(), "nothing is still asking");
+    // A failure it reports later is shown again.
+    h.sw.apply_machine_result(
+        "win",
+        Some("ssh: connect to host win: timed out".into()),
+        &mut h.state,
+    );
+    assert!(h
+        .sw
+        .rows
+        .iter()
+        .any(|r| matches!(&r.reference, RowRef::Machine { machine, .. } if machine == "win")));
+}
+
+#[test]
+fn a_filter_keeps_a_machine_by_its_name() {
+    let mut h = with_unresolved(&[("gpu", &["train"], None)], "win", None);
+    h.state.filter = "wi".into();
+    h.sw.rebuild(&mut h.state);
+    let machines: Vec<_> =
+        h.sw.rows
+            .iter()
+            .filter(|r| matches!(&r.reference, RowRef::Machine { .. }))
+            .collect();
+    assert_eq!(machines.len(), 1);
+    assert!(
+        !h.sw
+            .rows
+            .iter()
+            .any(|r| matches!(&r.reference, RowRef::Session { .. })),
+        "gpu's session does not match"
+    );
+}

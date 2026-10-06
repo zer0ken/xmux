@@ -1519,7 +1519,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                 // when no new event arrives.
                 if rt.on_config_check()
                     || rt.model.render_plan.view_screen.is_some()
-                    || !rt.model.state.scanning.is_empty()
+                    || rt.model.state.scanning_any()
                     || !rt.model.state.chrome.spinner.is_empty()
                     || rt
                         .model

@@ -297,6 +297,21 @@ impl ScanSnapshot {
     /// password ssh refused: their cards keep no failure of their own, because the login
     /// owns that diagnosis, so the snapshot cannot read the refusal off the inventory.
     pub(crate) fn of(state: &super::State, locked: &HashSet<String>) -> Self {
+        // A machine with no source known is one entry of its own, under its name.
+        let machines = state.hostless_machines().into_iter().map(|m| {
+            let shape = if state.machine_scanning.contains(&m.name) {
+                SourceShape::Unknown
+            } else if locked.contains(&m.name)
+                || m.failure() == Some(crate::model::FailureKind::Blocked)
+            {
+                SourceShape::Locked
+            } else if m.err.is_some() {
+                SourceShape::Unreachable
+            } else {
+                SourceShape::Sessions(Default::default())
+            };
+            (m.name.clone(), shape)
+        });
         let sources = state
             .groups
             .iter()
@@ -314,6 +329,7 @@ impl ScanSnapshot {
                 };
                 (g.source.clone(), shape)
             })
+            .chain(machines)
             .collect();
         ScanSnapshot { sources }
     }

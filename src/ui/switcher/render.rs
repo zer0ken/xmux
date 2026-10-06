@@ -607,7 +607,12 @@ impl Switcher {
 
     /// How many cards the applied filter keeps, and how many the list has without it.
     fn filter_counts(state: &crate::state::State) -> (usize, usize) {
+        let hostless = state.hostless_machines();
         let count = |filter: &str| {
+            let machines = hostless
+                .iter()
+                .filter(|m| crate::ui::tree::fuzzy_match(filter, &m.name))
+                .count();
             crate::ui::tree::filter_groups(&state.groups, filter)
                 .iter()
                 .map(|group| {
@@ -618,6 +623,7 @@ impl Switcher {
                     }
                 })
                 .sum::<usize>()
+                + machines
         };
         (count(&state.filter), count(""))
     }
@@ -1348,9 +1354,9 @@ impl Switcher {
                 unreachable,
                 ..
             } => crate::ui::tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable),
-            RowRef::Machine { blocked, .. } => {
-                crate::ui::tree::host_state_word(false, *blocked, false, true)
-            }
+            RowRef::Machine {
+                blocked, scanning, ..
+            } => crate::ui::tree::host_state_word(*scanning, *blocked, false, true),
             _ => return,
         };
         let label = format!(" {word} ");
@@ -1463,8 +1469,9 @@ impl Switcher {
     /// a host-state card is the host/mux name on its row, with its state glyph in a
     /// fixed slot, or a spinner in
     /// the level a scanning host has not resolved. A host-state card claims a mux only
-    /// when the mux is CONFIRMED - a bare-id host that is unreachable or still scanning
-    /// names none, so the card reads the host alone or spins in the mux position.
+    /// when the mux is CONFIRMED - a source whose mux only config names, unreachable or
+    /// still scanning, names none, so the card reads the host alone or spins in the mux
+    /// position. A machine's card reads the machine alone with its glyph or spinner.
     ///
     /// The ADDRESS column carries the card's dim number - the thing `prefix <digit>`
     /// types - on the same row as the session it names. On the SELECTED card that
@@ -1539,24 +1546,32 @@ impl Switcher {
             spans.push(Span::raw(" "));
             return vec![Line::from(spans)];
         }
-        // A host's card names the host alone, with its state glyph, and the state word
-        // while it is selected.
+        // A machine's card names the machine alone, with its state glyph, or the spinner
+        // while its answer is on its way, and the state word while it is selected.
         if let RowRef::Machine {
-            machine, blocked, ..
+            machine,
+            blocked,
+            scanning,
+            ..
         } = &row.reference
         {
-            let (glyph, glyph_style) = if *blocked {
+            let (glyph, glyph_style) = if *scanning {
                 (
-                    crate::ui::chrome::BLOCK_MARK,
+                    spinner_glyph.to_string(),
+                    Style::default().fg(palette.warning),
+                )
+            } else if *blocked {
+                (
+                    crate::ui::chrome::BLOCK_MARK.to_string(),
                     Style::default().fg(palette.warning),
                 )
             } else {
                 (
-                    crate::ui::chrome::UNREACHABLE_MARK,
+                    crate::ui::chrome::UNREACHABLE_MARK.to_string(),
                     Style::default().fg(palette.error),
                 )
             };
-            let word = crate::ui::tree::host_state_word(false, *blocked, false, true);
+            let word = crate::ui::tree::host_state_word(*scanning, *blocked, false, true);
             let suffix_w = 2 + if selected && show_state_word {
                 word.len() + 1
             } else {
