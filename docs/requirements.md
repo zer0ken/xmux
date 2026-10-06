@@ -140,6 +140,12 @@ against, naming no source file, function, or test.
 - **FR-B42** - Hosts, sources, and sessions each have a view screen linked to one
   another, reached through `Ctrl-↑` / `Ctrl-↓`, the section title parts, and the screen
   links.
+- **FR-B43** - From launch until the first execution the terminal view attaches to no
+  session and shows the landing screen: how many hosts the scan has reached, with the
+  scan spinner, and every nav card in nav order and numbering as its `/`-separated path.
+  The landing list and the nav share one hard selection, which only highlights; the
+  first execution closes the landing screen for the rest of the run, opens the chosen
+  card, and focuses the terminal view.
 
 ## C. Switching (the keystone)
 
@@ -163,8 +169,9 @@ against, naming no source file, function, or test.
 - **FR-D4** - The control socket is removed if stale before bind, owner-only (`0600`) on
   unix, and removed on exit, and a crashed instance's `ctl-*.sock` marker is swept on
   the next startup.
-- **FR-D5** - The app launches directly into the split view, preselects the first
-  session to appear, and keeps that selection as later hosts answer.
+- **FR-D5** - The app launches directly into the split view with the landing screen
+  (FR-B43), preselects the first session to appear, and keeps that selection as later
+  hosts answer; the preselect attaches nothing until the user executes a card.
 - **FR-D6** - An enumeration logs at INFO only when its session list changed and at WARN
   on failure.
 - **FR-D7** - Daily log files are kept for a bounded window, and a repeating recovered

@@ -377,9 +377,11 @@ impl Runtime {
             }
         }
         // A click on a link of the host or source screen the terminal view shows opens
-        // it, the same as Enter on the hard-selected link.
+        // it, the same as Enter on the hard-selected link. The landing screen's links
+        // take a click from either view's focus.
+        let landing = self.model.switcher.landing_open();
         if is_left_press
-            && self.model.state.focus.is_terminal_focused()
+            && (self.model.state.focus.is_terminal_focused() || landing)
             && self.model.render_plan.view_screen.is_some()
         {
             if let Some(link) =
@@ -397,6 +399,11 @@ impl Runtime {
                 );
                 return true;
             }
+        }
+        // Off its links the landing screen has no soft selection, so a click there
+        // executes nothing.
+        if is_left_press && landing && in_mux.is_some() {
+            return dirty;
         }
         let down = (ev.cb & 0x01) != 0;
         let mut model_msg = None;

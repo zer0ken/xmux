@@ -1248,13 +1248,35 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         Msg::HostEvent { .. } | Msg::ApplySourceResult { .. } | Msg::ApplyInventory { .. }
     );
     let answering_before = answers.then(|| answering_sources(&model.state));
+    let landing = model.switcher.landing_open();
     let mut effects = step(model, msg);
     if let Some(before) = answering_before {
         record_lost_sources(model, &before);
     }
     settle_rescan(model);
     effects.extend(settle_logout_choice(model));
+    if landing {
+        effects.extend(settle_landing(model));
+    }
     effects
+}
+
+/// The first execution ends the landing screen and gives the terminal view the focus,
+/// whichever input it came from: a move into the terminal view (Enter, a click on a nav
+/// target) closes the landing, and an execution that closed it (a landing link, a jump, a
+/// switch) moves the focus there.
+fn settle_landing(model: &mut AppModel) -> Vec<Effect> {
+    let nav = model.state.focus.view_is_nav();
+    if model.switcher.landing_open() {
+        if !nav {
+            model.switcher.close_landing();
+        }
+        Vec::new()
+    } else if nav {
+        update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
+    } else {
+        Vec::new()
+    }
 }
 
 /// Executes the item a list popup was told to execute, by an Enter on its hard selection
@@ -4101,5 +4123,87 @@ mod tests {
         assert_eq!(palette_selection(&m), (0, None), "nothing ran");
         lay_out(&mut m);
         assert_eq!(m.render_plan.popup_rect.x, before.x - 5, "the popup moved");
+    }
+
+    /// `model_with_cards` as it stands at launch: the landing screen up, the selection on
+    /// the first session, nothing executed.
+    fn landed() -> AppModel {
+        let mut m = model_with_cards();
+        m.switcher.open_landing();
+        m
+    }
+
+    fn terminal_focused(m: &AppModel) -> bool {
+        !m.state.focus.view_is_nav()
+    }
+
+    #[test]
+    fn the_landing_selection_attaches_nothing_until_it_is_executed() {
+        let mut m = landed();
+        update(&mut m, down());
+        update(&mut m, Msg::SyncSelection);
+        assert!(
+            m.state.selection.session.is_empty(),
+            "a move on the landing selects no session to attach"
+        );
+        assert!(m.switcher.landing_open());
+
+        update(&mut m, Msg::Focus(crate::model::FocusTarget::Terminal));
+        assert!(!m.switcher.landing_open(), "Enter executes the selection");
+        update(&mut m, Msg::SyncSelection);
+        assert_eq!(m.state.selection.session, "editor");
+
+        update(&mut m, Msg::Focus(crate::model::FocusTarget::Nav));
+        assert!(!m.switcher.landing_open(), "the landing never returns");
+    }
+
+    #[test]
+    fn a_landing_link_executes_and_focuses_the_terminal_view() {
+        let mut m = landed();
+        let i = m
+            .switcher
+            .landing_links()
+            .iter()
+            .position(|l| {
+                l.node
+                    == crate::model::Node::Session(crate::session::Address::new("local", "editor"))
+            })
+            .unwrap();
+        update(&mut m, Msg::OpenLink(Some(i)));
+        assert!(!m.switcher.landing_open());
+        assert!(terminal_focused(&m));
+        update(&mut m, Msg::SyncSelection);
+        assert_eq!(m.state.selection.session, "editor");
+    }
+
+    #[test]
+    fn a_switch_executes_the_landing_and_focuses_the_terminal_view() {
+        let mut m = landed();
+        update(
+            &mut m,
+            Msg::Action(crate::model::Action::Switch(crate::session::Address::new(
+                "local", "build",
+            ))),
+        );
+        assert!(!m.switcher.landing_open());
+        assert!(terminal_focused(&m));
+        update(&mut m, Msg::SyncSelection);
+        assert_eq!(m.state.selection.session, "build");
+    }
+
+    #[test]
+    fn a_landed_jump_focuses_the_terminal_view() {
+        let mut m = landed();
+        update(
+            &mut m,
+            Msg::Key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE)),
+        );
+        assert!(m.switcher.landing_open(), "a jump being typed only selects");
+        update(
+            &mut m,
+            Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert!(!m.switcher.landing_open());
+        assert!(terminal_focused(&m));
     }
 }

@@ -85,6 +85,13 @@ While the terminal view shows a host or source screen, `↑`/`↓` (and `Tab`) s
 its links and `Enter` opens the selected one. A host screen links each of its sources;
 a source screen links its host and each of its sessions.
 
+At launch the terminal view shows the landing screen in place of a session: how many
+hosts the scan has reached, and every nav card under its number as a
+`host/mux/session` path. The landing list and the nav share one selection, which only
+highlights there. The first execution (`Enter`, a click on a nav card or a landing card,
+a landed `prefix <digit>` jump, or a ctl `switch`) closes the landing screen for the
+rest of the run, opens the chosen card, and focuses the terminal view.
+
 ## Commands
 
 `prefix n` starts a session on the host and mux of the selected card, a host card or a
@@ -182,6 +189,7 @@ off; the history still records every result.
 | left-click a card or title part | open it: select it and focus the terminal view |
 | point at a card or title part | preview it in the terminal view without moving the selection |
 | left-click a screen link | open the screen it names |
+| point at or left-click a landing card | underline it, or open it as `Enter` does, from either focus |
 | left-click a view | focus that view |
 | left-click a collapsed nav | expand the nav |
 | left-click `‹ 5` or `7 ›` | select the nearest card scrolled off that side |

@@ -6046,3 +6046,77 @@ fn a_click_on_a_screen_link_opens_it() {
     );
     assert_eq!(selected(&rt), session_node("web", "deploy"));
 }
+
+/// `hierarchy_rt` as it stands at launch: the landing screen up in nav focus.
+fn landing_rt() -> Runtime {
+    let mut rt = hierarchy_rt();
+    rt.model.switcher.open_landing();
+    sync_test_render_plan(&mut rt);
+    rt
+}
+
+fn click(rt: &mut Runtime, cb: u16, col: u16, row: u16) -> bool {
+    rt.handle_mouse_event(
+        &mouse(cb, col + 1, row + 1, true),
+        &Selection::default(),
+        &mut false,
+        &mut false,
+        &mut false,
+        &mut false,
+    )
+}
+
+#[test]
+fn a_landing_link_takes_hover_and_a_click_from_the_navs_focus() {
+    let mut rt = landing_rt();
+    let deploy = rt
+        .model
+        .switcher
+        .landing_links()
+        .iter()
+        .position(|l| Some(&l.node) == session_node("web", "deploy").as_ref())
+        .unwrap();
+    let (_, rect) = rt
+        .model
+        .render_plan
+        .view_links
+        .iter()
+        .find(|(i, _)| *i == deploy)
+        .copied()
+        .expect("the landing paints the card's link");
+    assert!(click(&mut rt, 35, rect.x, rect.y), "hover repaints");
+    assert_eq!(rt.model.switcher.soft_marks().1, Some(deploy));
+    assert!(
+        rt.model.switcher.landing_open(),
+        "hovering executes nothing"
+    );
+
+    click(&mut rt, 0, rect.x, rect.y);
+    assert!(!rt.model.switcher.landing_open());
+    assert_eq!(selected(&rt), session_node("web", "deploy"));
+    assert_eq!(rt.model.switcher.terminal_view_target().target, "deploy");
+    assert!(
+        !rt.model.state.focus.view_is_nav(),
+        "the click executes: the terminal view takes the focus"
+    );
+}
+
+#[test]
+fn a_click_off_the_landing_links_executes_nothing() {
+    let mut rt = landing_rt();
+    let area = rt.model.render_plan.regions.terminal;
+    click(&mut rt, 0, area.right() - 2, area.bottom() - 2);
+    assert!(rt.model.switcher.landing_open());
+    assert!(rt.model.state.focus.is_nav_focused());
+}
+
+#[test]
+fn enter_in_the_nav_executes_the_landing_selection() {
+    let mut rt = landing_rt();
+    rt.handle_stdin_bytes(b"\x1b[B", &Selection::default());
+    assert!(rt.model.switcher.landing_open(), "an arrow only selects");
+    assert_eq!(rt.model.switcher.terminal_view_target().target, "");
+    rt.handle_stdin_bytes(b"\r", &Selection::default());
+    assert!(!rt.model.switcher.landing_open());
+    assert_eq!(rt.model.switcher.terminal_view_target().target, "api");
+}

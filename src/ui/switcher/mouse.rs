@@ -243,7 +243,8 @@ impl Switcher {
     /// The pointer resting at `(col, row)` while the terminal view holds the focus: the
     /// link under it is the screen's soft selection. Returns whether it changed.
     pub fn link_hover_at(&mut self, plan: &RenderPlan, col: u16, row: u16) -> bool {
-        let hover = if self.terminal_view {
+        // The landing screen is pickable from either view's focus.
+        let hover = if self.terminal_view || self.landing {
             Self::link_at(plan, col, row)
         } else {
             None
