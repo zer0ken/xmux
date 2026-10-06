@@ -155,8 +155,28 @@ fn home_or_cwd(home: Option<PathBuf>) -> (PathBuf, bool) {
     }
 }
 
-fn home_dir() -> PathBuf {
-    let (dir, fell_back) = home_or_cwd(dirs::home_dir());
+fn resolve_home(
+    home: Option<std::ffi::OsString>,
+    userprofile: Option<std::ffi::OsString>,
+    profile: Option<PathBuf>,
+) -> Option<PathBuf> {
+    home.filter(|p| !p.is_empty())
+        .or_else(|| userprofile.filter(|p| !p.is_empty()))
+        .map(PathBuf::from)
+        .or(profile)
+}
+
+pub(crate) fn resolved_home() -> Option<PathBuf> {
+    resolve_home(
+        std::env::var_os("HOME"),
+        std::env::var_os("USERPROFILE"),
+        dirs::home_dir(),
+    )
+}
+
+/// The home for xmux-owned paths and local SSH records, on every platform.
+pub(crate) fn home_dir() -> PathBuf {
+    let (dir, fell_back) = home_or_cwd(resolved_home());
     if fell_back {
         tracing::warn!("could not resolve a home directory; falling back to the current directory for config, ~/.xmux state, sockets, and logs");
     }
@@ -167,20 +187,8 @@ pub(crate) fn config_path() -> PathBuf {
     home_dir().join(".config").join("xmux").join("config.toml")
 }
 
-/// The home the shell ssh reads `~` and its config from: `$HOME` when set, else
-/// the platform home. OpenSSH resolves `~` off `$HOME`, and on Windows Git
-/// Bash/msys sets `$HOME` to a path that can differ from `USERPROFILE`, so
-/// preferring `$HOME` keeps the config xmux reads identical to the one the
-/// user's ssh actually reads.
-pub(crate) fn ssh_home() -> PathBuf {
-    match std::env::var_os("HOME") {
-        Some(h) => PathBuf::from(h),
-        None => dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")),
-    }
-}
-
 pub(crate) fn ssh_config_path() -> PathBuf {
-    ssh_home().join(".ssh").join("config")
+    home_dir().join(".ssh").join("config")
 }
 
 pub(crate) fn xmux_dir_path() -> PathBuf {
@@ -1878,9 +1886,7 @@ const PUBLIC_KEY_FILES: [&str; 3] = ["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.p
 /// The first existing public key wins, so a machine that already has a key registers THAT
 /// one rather than growing a second identity.
 fn public_key_line() -> Result<String, std::io::Error> {
-    // The home SSH itself reads `~` from, so the key xmux sends is the key ssh would
-    // offer. See `ssh_home`.
-    let dir = ssh_home().join(".ssh");
+    let dir = home_dir().join(".ssh");
     if let Some(line) = existing_public_key_line()? {
         return Ok(line);
     }
@@ -1900,7 +1906,7 @@ fn public_key_line() -> Result<String, std::io::Error> {
 }
 
 fn existing_public_key_line() -> Result<Option<String>, std::io::Error> {
-    let dir = ssh_home().join(".ssh");
+    let dir = home_dir().join(".ssh");
     for name in PUBLIC_KEY_FILES {
         if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
             let line = text.trim().to_string();
@@ -1915,7 +1921,7 @@ fn existing_public_key_line() -> Result<Option<String>, std::io::Error> {
 /// The key type and body of every public key the registration could have chosen, so a key
 /// it put on a host is found whichever file held it then.
 fn this_machine_key_bodies() -> Vec<(String, String)> {
-    let dir = ssh_home().join(".ssh");
+    let dir = home_dir().join(".ssh");
     PUBLIC_KEY_FILES
         .iter()
         .filter_map(|name| std::fs::read_to_string(dir.join(name)).ok())
@@ -1928,11 +1934,6 @@ fn this_machine_key_bodies() -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    /// Serializes the tests that point `$HOME` at a scratch directory. `ssh_home` reads
-    /// that variable, so two tests setting it concurrently would hand each other the
-    /// other's scratch path.
-    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// A public key line for the key command tests. It never authenticates anything; it
     /// only has to look like a key.
     const KNOWN_PUBLIC_KEY: &str =
@@ -3360,20 +3361,108 @@ mod tests {
     }
 
     #[test]
-    fn ssh_config_path_prefers_home() {
-        // Windows Git Bash/msys can set `$HOME` to a path different from
-        // `USERPROFILE`; the ssh config must follow `$HOME` so it matches what the
-        // user's ssh reads.
-        let saved = std::env::var_os("HOME");
-        let _guard = HOME_LOCK.lock().unwrap();
-        let tmp = std::env::temp_dir();
-        std::env::set_var("HOME", &tmp);
-        let got = ssh_config_path();
-        assert_eq!(got, tmp.join(".ssh").join("config"));
-        match saved {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
+    fn xmux_paths_share_home_overrides() {
+        const CHILD_HOME: &str = "XMUX_TEST_HOME_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_HOME) {
+            let root = PathBuf::from(root).canonicalize().unwrap();
+            std::fs::create_dir_all(root.join(".config/xmux")).unwrap();
+            std::fs::create_dir_all(root.join(".ssh")).unwrap();
+            std::fs::create_dir_all(root.join(".xmux")).unwrap();
+            std::fs::write(
+                root.join(".config/xmux/config.toml"),
+                "[ui]\nprefix = 'C-b'\n",
+            )
+            .unwrap();
+            std::fs::write(root.join(".ssh/config"), "Include ~/.ssh/hosts\n").unwrap();
+            std::fs::write(root.join(".ssh/hosts"), "Host isolated-home\n").unwrap();
+            std::fs::write(root.join(".ssh/id_ed25519.pub"), KNOWN_PUBLIC_KEY).unwrap();
+            // Windows TEMP can use an 8.3 spelling of the same directory.
+            for (actual, relative) in [
+                (config_path(), ".config/xmux/config.toml"),
+                (xmux_dir_path(), ".xmux"),
+                (ssh_config_path(), ".ssh/config"),
+            ] {
+                assert_eq!(
+                    actual.canonicalize().unwrap(),
+                    root.join(relative).canonicalize().unwrap()
+                );
+            }
+            assert_eq!(home_dir().canonicalize().unwrap(), root);
+            assert_eq!(
+                config::load_verbose(&config_path()).unwrap().0.ui.prefix,
+                "C-b"
+            );
+            assert_eq!(
+                config::read_ssh_config(&ssh_config_path()).1,
+                ["isolated-home"]
+            );
+            assert_eq!(
+                existing_public_key_line().unwrap().as_deref(),
+                Some(KNOWN_PUBLIC_KEY)
+            );
+            return;
         }
+        let root = std::env::temp_dir().join(format!("xmux-home-{}", std::process::id()));
+        let home = root.join("home");
+        let profile = root.join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&profile).unwrap();
+        let result = || {
+            for home_override in [Some(home.as_os_str()), None, Some(std::ffi::OsStr::new(""))] {
+                let expected = if home_override.is_some_and(|p| !p.is_empty()) {
+                    &home
+                } else {
+                    &profile
+                };
+                let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+                child
+                    .args([
+                        "--exact",
+                        "provision::env::tests::xmux_paths_share_home_overrides",
+                        "--nocapture",
+                    ])
+                    .env(CHILD_HOME, expected)
+                    .env("USERPROFILE", &profile);
+                if let Some(value) = home_override {
+                    child.env("HOME", value);
+                } else {
+                    child.env_remove("HOME");
+                }
+                let output = child.output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        };
+        let outcome = std::panic::catch_unwind(result);
+        std::fs::remove_dir_all(&root).unwrap();
+        outcome.unwrap();
+    }
+
+    #[test]
+    fn home_resolution_preserves_profile_defaults_and_fallbacks() {
+        let profile = std::env::temp_dir().join("xmux-profile");
+        let value = profile.clone().into_os_string();
+        for (home, userprofile) in [
+            (None, None),
+            (Some(value.clone()), None),
+            (None, Some(value.clone())),
+            (Some(value.clone()), Some(value.clone())),
+            (Some("".into()), Some("".into())),
+        ] {
+            assert_eq!(
+                resolve_home(home, userprofile, Some(profile.clone())),
+                Some(profile.clone())
+            );
+        }
+        assert_eq!(resolve_home(None, None, None), None);
+        assert_eq!(
+            resolve_home(Some("".into()), Some(value), None),
+            Some(profile)
+        );
     }
 
     #[test]

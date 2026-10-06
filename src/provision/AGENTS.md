@@ -29,6 +29,13 @@ threads one source-list answer into both the source list and the runtime registr
 
 ## Invariants
 
+- All xmux-owned paths and local SSH records share one home resolution on every
+  platform: nonempty `HOME`, then nonempty `USERPROFILE`, then the platform profile
+  directory. If none resolves, the current directory is used with a warning.
+  Config, state, sockets, logs, and xmux-owned registries follow this home, as do SSH
+  config, tilde includes, and local keys. Paths owned by other programs follow their
+  own rules: psmux uses the platform home (the real profile on Windows), and zellij
+  uses `%APPDATA%` on Windows.
 - The roster is separate from the transport axis (how a command reaches a host) and
   from discovery (scanning a source for sessions).
 - A provider that cannot run yields an empty list rather than an error.
