@@ -1080,6 +1080,9 @@ fn spawn_machine_probe(
             .await
         {
             Ok((out, stderr)) => {
+                // Read once the probe is done: the shared connection it opened or rode.
+                let connection = shared_connection_identity(transport.as_ref()).await;
+                let at = std::time::Instant::now();
                 if let Some(method) = argv
                     .auth_trace_allowed()
                     .then(|| crate::model::AuthMethod::from_ssh_stderr(&stderr))
@@ -1089,6 +1092,14 @@ fn spawn_machine_probe(
                         machine: machine.clone(),
                         method,
                         credential_generation,
+                        connection: connection.clone(),
+                    });
+                }
+                if let Some(identity) = connection {
+                    let _ = tx.send(HostEvent::SharedConnectionSeen {
+                        machine: machine.clone(),
+                        identity,
+                        at,
                     });
                 }
                 (
@@ -1121,6 +1132,74 @@ fn spawn_machine_probe(
             rescan,
             probe,
         });
+    });
+}
+
+/// The identity of the shared SSH connection `transport` rides now: its control
+/// socket's inode and modification time. The master creates the socket when it starts
+/// listening, and a later master replaces it, so the pair names one master for its
+/// whole life: a new socket can reuse a freed inode and a new master can reuse a pid,
+/// but neither keeps the creation time. `None` when the transport shares no connection
+/// or none is open.
+async fn shared_connection_identity(transport: &dyn crate::transport::Transport) -> Option<String> {
+    let argv = transport.shared_connection_config_argv()?;
+    let (out, _) = crate::model::host_def::ExecRunner
+        .run_spec_output(&argv)
+        .await
+        .ok()?;
+    let out = String::from_utf8_lossy(&out);
+    let path = out
+        .lines()
+        .find_map(|line| line.strip_prefix("controlpath "))?;
+    socket_identity(std::path::Path::new(path.trim()))
+}
+
+#[cfg(unix)]
+fn socket_identity(path: &std::path::Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).ok()?;
+    Some(format!(
+        "{}:{}.{:09}",
+        meta.ino(),
+        meta.mtime(),
+        meta.mtime_nsec()
+    ))
+}
+
+/// A side that shares no SSH connection has no control socket to name.
+#[cfg(not(unix))]
+fn socket_identity(_path: &std::path::Path) -> Option<String> {
+    None
+}
+
+/// Reads which shared connection `machine` rides and reports it to the loop.
+async fn check_shared_connection(
+    machine: String,
+    transport: &dyn crate::transport::Transport,
+    tx: &tokio::sync::mpsc::UnboundedSender<HostEvent>,
+) {
+    if let Some(identity) = shared_connection_identity(transport).await {
+        let _ = tx.send(HostEvent::SharedConnectionSeen {
+            machine,
+            identity,
+            at: std::time::Instant::now(),
+        });
+    }
+}
+
+/// Reads off the loop which shared connection `machine` rides, after a connection of it
+/// opened. A connection that rides a shared connection reports no login, so this is how
+/// a recorded login is matched to the connection it describes.
+pub(super) fn spawn_shared_connection_check(
+    machine: String,
+    transport: Box<dyn crate::transport::Transport>,
+    tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
+) {
+    if transport.shared_connection_config_argv().is_none() {
+        return;
+    }
+    tokio::spawn(async move {
+        check_shared_connection(machine, transport.as_ref(), &tx).await;
     });
 }
 

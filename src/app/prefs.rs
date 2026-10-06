@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::model::AuthMethod;
+use crate::model::{AuthMethod, RecordedLogin};
 use crate::session::Address;
 use crate::ui::switcher::NavPosition;
 
@@ -37,38 +37,50 @@ const NAV_POSITION_FILE: &str = "nav_position";
 const NAV_COLLAPSED_FILE: &str = "nav_collapsed";
 
 /// The file under the xmux dir holding, one machine per line, the SSH login the
-/// connection that last authenticated to it reported (`publickey` or `password`, a
-/// space, the machine).
+/// shared connection last opened to it authenticated with (`publickey` or `password`),
+/// that connection's identity, and the machine, parted by spaces.
 const SSH_LOGINS_FILE: &str = "ssh_logins";
 
 /// Reads the recorded SSH logins. A missing file or an unparsable line records nothing.
-pub fn load_ssh_logins(xmux_dir: &Path) -> HashMap<String, AuthMethod> {
+pub fn load_ssh_logins(xmux_dir: &Path) -> HashMap<String, RecordedLogin> {
     std::fs::read_to_string(xmux_dir.join(SSH_LOGINS_FILE))
         .unwrap_or_default()
         .lines()
         .filter_map(|line| {
-            let (word, machine) = line.split_once(' ')?;
+            let (word, rest) = line.split_once(' ')?;
+            let (connection, machine) = rest.split_once(' ')?;
             let method = match word {
                 "publickey" => AuthMethod::PublicKey,
                 "password" => AuthMethod::Password,
                 _ => return None,
             };
-            (!machine.is_empty()).then(|| (machine.to_owned(), method))
+            (!connection.is_empty() && !machine.is_empty()).then(|| {
+                (
+                    machine.to_owned(),
+                    RecordedLogin {
+                        method,
+                        connection: Some(connection.to_owned()),
+                    },
+                )
+            })
         })
         .collect()
 }
 
-/// Persists the recorded SSH logins. Best-effort: a write failure only leaves a later
-/// run that rides an open shared connection without the login it uses.
-pub fn save_ssh_logins(xmux_dir: &Path, logins: &HashMap<String, AuthMethod>) {
+/// Persists the recorded SSH logins whose shared connection is known; one still waiting
+/// for it describes no connection a later run could ride. Best-effort: a write failure
+/// only leaves a later run that rides an open shared connection without the login it
+/// uses.
+pub fn save_ssh_logins(xmux_dir: &Path, logins: &HashMap<String, RecordedLogin>) {
     let mut lines: Vec<String> = logins
         .iter()
-        .map(|(machine, method)| {
-            let word = match method {
+        .filter_map(|(machine, record)| {
+            let word = match record.method {
                 AuthMethod::PublicKey => "publickey",
                 AuthMethod::Password => "password",
             };
-            format!("{word} {machine}\n")
+            let connection = record.connection.as_deref()?;
+            Some(format!("{word} {connection} {machine}\n"))
         })
         .collect();
     lines.sort();
@@ -238,20 +250,36 @@ mod tests {
     fn ssh_logins_save_then_load_round_trips_and_skip_garbage() {
         let dir = temp_dir("sl-roundtrip");
         assert!(load_ssh_logins(&dir).is_empty(), "absent file");
+        let record = |method, connection: Option<&str>| RecordedLogin {
+            method,
+            connection: connection.map(str::to_owned),
+        };
         let logins = HashMap::from([
-            ("gpu-01".to_string(), AuthMethod::PublicKey),
-            ("db-01".to_string(), AuthMethod::Password),
+            (
+                "gpu-01".to_string(),
+                record(AuthMethod::PublicKey, Some("7:1.000000002")),
+            ),
+            (
+                "db-01".to_string(),
+                record(AuthMethod::Password, Some("8:3.000000004")),
+            ),
         ]);
-        save_ssh_logins(&dir, &logins);
-        assert_eq!(load_ssh_logins(&dir), logins);
+        let mut with_pending = logins.clone();
+        with_pending.insert("web-01".into(), record(AuthMethod::PublicKey, None));
+        save_ssh_logins(&dir, &with_pending);
+        assert_eq!(
+            load_ssh_logins(&dir),
+            logins,
+            "a record with no connection is not written"
+        );
         std::fs::write(
             dir.join(SSH_LOGINS_FILE),
-            "kerberos box\npublickey\npassword db\n",
+            "kerberos 1:2 box\npublickey 1:2\npublickey box\npassword 3:4 db\n",
         )
         .unwrap();
         assert_eq!(
             load_ssh_logins(&dir),
-            HashMap::from([("db".to_string(), AuthMethod::Password)])
+            HashMap::from([("db".to_string(), record(AuthMethod::Password, Some("3:4")))])
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

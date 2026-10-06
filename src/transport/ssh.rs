@@ -279,6 +279,28 @@ impl Transport for Ssh {
         })
     }
 
+    /// `ssh -G` resolves the control path as every connection of this machine does,
+    /// with the same login options, and contacts nothing.
+    fn shared_connection_config_argv(&self) -> Option<crate::transport::CommandSpec> {
+        self.multiplexes().then(|| {
+            let access = self.credentials.access(&self.alias);
+            let login = access
+                .as_ref()
+                .map(crate::transport::auth::AskpassAccess::login)
+                .unwrap_or(&self.login);
+            let mut args = vec![
+                "-G".into(),
+                "-o".into(),
+                format!("ControlPath={}", self.control_path),
+            ];
+            for option in login.options() {
+                args.extend(["-o".into(), option]);
+            }
+            args.extend(["--".into(), self.alias.clone()]);
+            crate::transport::CommandSpec::new("ssh", args)
+        })
+    }
+
     fn remote_shell(&self) -> RemoteShell {
         self.shell
     }
@@ -625,6 +647,32 @@ mod tests {
             .is_none());
         assert!(ssh("prod", "windows", "/tmp/cm.sock")
             .close_shared_connection_argv()
+            .is_none());
+    }
+
+    #[test]
+    fn the_shared_connection_config_names_the_control_path_and_the_login() {
+        let mut transport = ssh("prod", "linux", "/tmp/cm-%C");
+        transport.set_login(Login {
+            address: None,
+            port: Some(2222),
+            user: None,
+        });
+        assert_eq!(
+            transport.shared_connection_config_argv().unwrap().argv(),
+            argv(&[
+                "ssh",
+                "-G",
+                "-o",
+                "ControlPath=/tmp/cm-%C",
+                "-o",
+                "Port=2222",
+                "--",
+                "prod"
+            ])
+        );
+        assert!(ssh("prod", "windows", "/tmp/cm-%C")
+            .shared_connection_config_argv()
             .is_none());
     }
 

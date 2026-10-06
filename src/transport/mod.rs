@@ -358,6 +358,12 @@ pub trait Transport: Send + Sync {
         None
     }
 
+    /// A local command that prints this transport's effective configuration, its shared
+    /// connection's socket path included, when it shares a connection at all.
+    fn shared_connection_config_argv(&self) -> Option<CommandSpec> {
+        None
+    }
+
     /// Which shell family answers this machine's remote commands. `Posix` (the default)
     /// for every machine whose shell is known to be POSIX and for one not yet asked; a
     /// remote learns its own answer from the reachability probe. NOT derived from the

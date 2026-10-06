@@ -4919,10 +4919,16 @@ fn host_event_connected_marks_connected_and_emits_apply_inventory() {
     );
     assert!(connected.contains("jup"), "Connected records the host");
     assert!(
-        matches!(effects.as_slice(), [EventEffect::ApplyInventory { host, sessions }] if host == "jup" && sessions.len() == 1),
-        "Connected carries its sessions into one ApplyInventory effect: {effects:?}"
+        matches!(
+            effects.as_slice(),
+            [
+                EventEffect::CheckSharedConnection { machine },
+                EventEffect::ApplyInventory { host, sessions }
+            ] if machine == "jup" && host == "jup" && sessions.len() == 1
+        ),
+        "Connected reads its shared connection and carries its sessions into one ApplyInventory effect: {effects:?}"
     );
-    // Inventory behaves identically (the arm is shared).
+    // Inventory applies the same sessions; the channel was already open.
     let effects = host_event_effects_for_test(
         &mut state,
         HostEvent::Inventory {
