@@ -286,8 +286,10 @@ and removing it also stops ssh outside xmux from using the key, so a second
 confirmation opens in the same place and asks first: type `remove` to remove it too,
 or press Esc to keep it. When the host cannot be reached or the removal fails, the
 logout still clears the password and the connections, and its toast says the key
-remains and why. SSH config is not changed. A re-scan reconnects only with a key the
-host still accepts; otherwise, log in again.
+remains and why. After the key, xmux removes the stanza a login saved for the host in
+`~/.ssh/config`, the one under its `# xmux: <host>` line, and leaves every other line of
+the file as it was; the toast says whether it was removed. A re-scan reconnects only with
+a key the host still accepts; otherwise, log in again.
 
 For the requirements of a Windows host and the limits of Entra-only accounts, see
 [`INSTALL.md`](INSTALL.md#windows-hosts).

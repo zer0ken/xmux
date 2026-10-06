@@ -282,6 +282,19 @@ impl Runtime {
                         });
                     });
                 }
+                Effect::RemoveSshConfigStanza { machine } => {
+                    let tx = self.op_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let result = crate::provision::env::remove_ssh_config_stanza(
+                            &crate::provision::env::ssh_config_path(),
+                            &machine,
+                        );
+                        let _ = tx.send(crate::ui::switcher::OpResult::SshConfigStanzaRemoved {
+                            machine,
+                            result,
+                        });
+                    });
+                }
                 Effect::LogoutMachine {
                     machine,
                     cancel_login,

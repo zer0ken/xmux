@@ -3190,6 +3190,7 @@ fn logout_confirms_the_selected_ssh_session_and_machine() {
                 "key",
                 "removed from box; asks first if xmux did not add it".to_string()
             ),
+            ("ssh config", "removes the entry xmux saved".to_string()),
             ("connections", "closes box connections".to_string()),
         ]
     );

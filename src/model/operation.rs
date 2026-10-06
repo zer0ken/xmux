@@ -94,4 +94,10 @@ pub enum OpResult {
         machine: String,
         result: Result<(), String>,
     },
+    /// What removing the ssh config stanza a login recorded for a logged-out machine
+    /// did: whether there was one, or why it stays.
+    SshConfigStanzaRemoved {
+        machine: String,
+        result: Result<bool, String>,
+    },
 }

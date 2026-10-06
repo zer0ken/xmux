@@ -373,8 +373,9 @@ impl Switcher {
     /// Opens the logout confirm for the selected card's machine. It names the selected
     /// session's observed SSH authentication method and the affected machine, then
     /// requires typing `logout`. The logout removes this PC's key from the host first,
-    /// then clears the held password and closes that machine's connections, including its
-    /// shared SSH master where present. SSH config is not changed.
+    /// then the ssh config stanza a login recorded for it, then clears the held password
+    /// and closes that machine's connections, including its shared SSH master where
+    /// present.
     fn open_logout(&mut self, state: &mut crate::state::State) {
         let Some(source) = self.current_source() else {
             return;
@@ -413,6 +414,7 @@ impl Switcher {
             "key",
             format!("removed from {machine}; asks first if xmux did not add it"),
         ));
+        facts.push(("ssh config", "removes the entry xmux saved".to_owned()));
         facts.push(("connections", format!("closes {machine} connections")));
         self.dismiss_modals(state);
         let mut input = Input::new(InputMode::Logout, String::new(), Some(source));

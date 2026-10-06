@@ -753,9 +753,11 @@ impl State {
                 }
                 OpFollow::Nothing
             }
-            // A logout's key steps are no inventory mutation: the application update
+            // A logout's steps are no inventory mutation: the application update
             // transition reads them before the switcher sees any result.
-            OpResult::HostKeysFound { .. } | OpResult::HostKeysRemoved { .. } => OpFollow::Nothing,
+            OpResult::HostKeysFound { .. }
+            | OpResult::HostKeysRemoved { .. }
+            | OpResult::SshConfigStanzaRemoved { .. } => OpFollow::Nothing,
         }
     }
 
