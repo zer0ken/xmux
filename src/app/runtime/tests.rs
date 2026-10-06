@@ -4810,7 +4810,7 @@ fn feed_login_after_login_radio_keeps_one_choice() {
     );
 }
 
-/// A state whose login pane for `prod` starts at what its ssh config already resolves:
+/// A state whose login pane for `prod` starts at what its ssh config already sets:
 /// 192.0.2.7, port 2222, user dev.
 fn state_with_saved_login() -> State {
     use crate::provision::env::{LoginDefaults, LoginValue};
@@ -4826,7 +4826,7 @@ fn state_with_saved_login() -> State {
                 address: value("192.0.2.7"),
                 port: value("2222"),
                 username: value("dev"),
-                resolved: crate::transport::Login {
+                configured: crate::transport::Login {
                     address: Some("192.0.2.7".into()),
                     port: Some(2222),
                     user: Some("dev".into()),
@@ -4841,7 +4841,7 @@ fn state_with_saved_login() -> State {
 }
 
 #[test]
-fn feed_login_hides_the_ssh_config_choice_when_ssh_already_resolves_the_values() {
+fn feed_login_hides_the_ssh_config_choice_when_ssh_config_already_sets_the_values() {
     let s = state_with_saved_login();
     let d = s.login.as_ref().unwrap();
     assert!(!d.offers_ssh_config());
@@ -4849,7 +4849,7 @@ fn feed_login_hides_the_ssh_config_choice_when_ssh_already_resolves_the_values()
     // ssh compares host names without case, so a differently cased address is the same.
     let mut upper = d.clone();
     upper.address = "HOST.EXAMPLE".into();
-    upper.resolved.address = Some("host.example".into());
+    upper.configured.address = Some("host.example".into());
     assert!(!upper.offers_ssh_config());
 }
 
@@ -4867,10 +4867,72 @@ fn feed_login_offers_the_ssh_config_choice_when_any_value_differs() {
         assert!(changed.offers_ssh_config(), "{changed:?}");
         assert!(changed.stops(false).contains(&LoginFocus::AfterSshConfig));
     }
-    // A value ssh does not resolve cannot be known to match.
+    // A value ssh config does not set cannot be known to match.
     let mut unresolved = d.clone();
-    unresolved.resolved.user = None;
+    unresolved.configured.user = None;
     assert!(unresolved.offers_ssh_config());
+}
+
+/// The login pane `feed_login` opens for `prod` from `config_text`, with `ssh -G`
+/// reporting what it reports for any name: the alias as the host name, port 22 unless a
+/// block sets another, and the local user.
+fn login_pane_from_ssh_config(config_text: &str) -> LoginDraft {
+    let stanza = crate::provision::config::stanza_login(config_text, "prod");
+    let effective = crate::transport::Login {
+        address: stanza.address.or(Some("prod".into())),
+        port: stanza.port.or(Some(22)),
+        user: stanza.user.or(Some("local-user".into())),
+    };
+    let defaults =
+        crate::provision::config::login_defaults("prod", None, Some(&effective), config_text);
+    let mut s = State::default();
+    s.chrome
+        .set_login_defaults([("prod".to_string(), defaults)].into(), Default::default());
+    s.feed_login("prod", b"");
+    s.login.unwrap()
+}
+
+#[test]
+fn feed_login_offers_the_ssh_config_choice_for_a_host_without_a_config_entry() {
+    let mut d = login_pane_from_ssh_config(
+        "Host other
+    User bob
+",
+    );
+    assert!(d.offers_ssh_config(), "{d:?}");
+    d.username = "local-user".into();
+    assert!(d.offers_ssh_config(), "{d:?}");
+}
+
+#[test]
+fn feed_login_offers_the_ssh_config_choice_only_when_the_stanza_differs() {
+    let text = "Host prod
+    HostName 192.0.2.7
+    Port 2222
+    User dev
+";
+    let d = login_pane_from_ssh_config(text);
+    assert!(!d.offers_ssh_config(), "{d:?}");
+    let mut port = d.clone();
+    port.port = "2200".into();
+    assert!(port.offers_ssh_config(), "{port:?}");
+}
+
+#[test]
+fn feed_login_hides_the_ssh_config_choice_after_xmux_saved_the_values() {
+    let saved = crate::provision::config::upsert_managed_stanza(
+        "Host other
+    User bob
+",
+        "prod",
+        &crate::transport::Login {
+            address: Some("192.0.2.7".into()),
+            port: Some(22),
+            user: Some("dev".into()),
+        },
+    );
+    let d = login_pane_from_ssh_config(&saved);
+    assert!(!d.offers_ssh_config(), "{d:?}");
 }
 
 #[test]

@@ -176,9 +176,9 @@ pub struct LoginDraft {
     pub default_address: String,
     pub default_port: String,
     pub default_username: String,
-    /// What ssh resolves for the host on its own, which the entered values are compared
-    /// with to decide whether recording them would change anything.
-    pub resolved: crate::transport::Login,
+    /// What ssh config sets for the host, which the entered values are compared with to
+    /// decide whether recording them would change anything.
+    pub configured: crate::transport::Login,
 }
 
 impl std::fmt::Debug for LoginDraft {
@@ -195,7 +195,7 @@ impl std::fmt::Debug for LoginDraft {
             .field("default_address", &self.default_address)
             .field("default_port", &self.default_port)
             .field("default_username", &self.default_username)
-            .field("resolved", &self.resolved)
+            .field("configured", &self.configured)
             .finish()
     }
 }
@@ -235,21 +235,22 @@ impl LoginDraft {
     }
 
     /// Whether recording the entered values in ssh config would change what ssh uses:
-    /// some value the login names differs from what ssh resolves on its own. A host
-    /// whose stanza already holds these values, xmux's own included, is not offered a
-    /// recording that writes them again. ssh compares host names without case.
+    /// some value the login names differs from what ssh config sets for the host, or ssh
+    /// config sets no value for it. A host whose stanza already holds these values,
+    /// xmux's own included, is not offered a recording that writes them again. ssh
+    /// compares host names without case.
     pub fn offers_ssh_config(&self) -> bool {
         let login = self.login();
-        let resolved = &self.resolved;
+        let configured = &self.configured;
         login.address.is_some_and(|a| {
-            !resolved
+            !configured
                 .address
                 .as_deref()
                 .is_some_and(|r| r.eq_ignore_ascii_case(&a))
-        }) || login.port.is_some_and(|p| resolved.port != Some(p))
+        }) || login.port.is_some_and(|p| configured.port != Some(p))
             || login
                 .user
-                .is_some_and(|u| resolved.user.as_deref() != Some(u.as_str()))
+                .is_some_and(|u| configured.user.as_deref() != Some(u.as_str()))
     }
 
     /// Moves the focus `delta` stops, wrapping.
@@ -437,7 +438,7 @@ impl State {
                     default_address: address,
                     default_port: port,
                     default_username: username,
-                    resolved: defaults.resolved,
+                    configured: defaults.configured,
                     ..Default::default()
                 });
                 self.login.as_mut().unwrap()
