@@ -1291,7 +1291,7 @@ fn clear_display_tty_for_attach(
     if let Some(addr) = registry.address_of_id(id) {
         let host_id = addr.split('/').next().unwrap_or(&addr).to_string();
         if let Some(h) = hosts.get_mut(&host_id) {
-            h.display_tty = crate::model::DisplayTty(None);
+            h.clear_display_tty();
         }
     }
 }

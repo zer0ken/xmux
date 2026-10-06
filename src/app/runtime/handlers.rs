@@ -163,7 +163,7 @@ impl Runtime {
                 registry.remove(&key);
                 if let Some(h) = hosts.get_mut(&host) {
                     h.display.clear(&key); // forget the shown session + any in-flight spawn
-                    h.display_tty = crate::model::DisplayTty(None); // the dead client's tty is gone
+                    h.clear_display_tty(); // the dead client's tty is gone
                 }
                 return (true, Vec::new()); // rearm recovery
             }

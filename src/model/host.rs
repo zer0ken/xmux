@@ -484,9 +484,11 @@ impl Host {
     }
 
     /// Forget the display tty when the attachment dies, so no later `switch-client`
-    /// is aimed at a detached/dead client (the blank-pane class).
+    /// is aimed at a detached/dead client (the blank-pane class). Moves reported for the
+    /// dead attachment's clients go with it, so the next attachment's tty cannot claim one.
     pub fn clear_display_tty(&mut self) {
         self.display_tty = DisplayTty(None);
+        self.reported_sessions.clear();
     }
 
     /// True when `client` (a `%client-detached` client tty) is xmux's OWN display
