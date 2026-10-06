@@ -16,13 +16,13 @@ use super::{run_reader, run_writer, HostCmd, HostEvent, InFlight, PendingReply, 
 /// OS threads. The app holds the `cmd_tx` to drive it and reads `connecting` for the
 /// spinner; the session/window inventory is carried on `HostEvent`s and owned by
 /// `model::Host.inventory`. This is a METADATA / change-event / `switch-client`
-/// channel only — the per-session PTY attachments own the pixels.
+/// channel only - the per-session PTY attachments own the pixels.
 pub struct HostClient {
     /// Stable host id (the host name), echoed back on every `HostEvent`.
     pub host: String,
     /// True until any wire activity proves the channel is live.
     pub connecting: Arc<AtomicBool>,
-    /// The mux's control-mode protocol — builds every command line this client
+    /// The mux's control-mode protocol - builds every command line this client
     /// sends. Shared `'static` (the impl is stateless), so the reader/writer threads
     /// borrow it without owning a clone.
     proto: &'static dyn ControlProtocol,
@@ -144,7 +144,7 @@ impl HostClient {
     }
 
     /// Re-issues list-sessions on demand (control-mode lines carry no binary
-    /// prefix — we are already inside the tmux command interpreter).
+    /// prefix - we are already inside the tmux command interpreter).
     pub fn list_sessions(&self) {
         let _ = self.cmd_tx.send(HostCmd::Query {
             line: self.proto.list_sessions_line(),
@@ -155,7 +155,7 @@ impl HostClient {
     /// Probes this host's display-client tty over the -CC control connection. The reply
     /// resolves to a [`HostEvent::DisplayTty`] the supervisor records on
     /// `Host.display_tty`. Carried over the control connection, NOT via an in-band
-    /// attach-shell marker — a Windows ConPTY consumes the marker's OSC before the
+    /// attach-shell marker - a Windows ConPTY consumes the marker's OSC before the
     /// display pump can read it, so the marker never lands for a remote host. With the
     /// tty known, a session switch is an in-place `switch-client -c <tty>`.
     /// Probes this host's display-client tty for `host_key`, the key the display attach
@@ -179,14 +179,14 @@ impl HostClient {
     /// Move xmux's display client (`display_tty`) to `session` over THIS control
     /// connection (`switch-client -c <tty> -t <session>`). The shared (tmux) session
     /// switch: routing it over the already-open `-CC` connection avoids spawning a
-    /// fresh `ssh` per switch — on Windows ssh has no ControlMaster, so each fresh
+    /// fresh `ssh` per switch - on Windows ssh has no ControlMaster, so each fresh
     /// exec pays a full connect+auth handshake (~0.5s), which is the switch lag (#2).
     /// The server moves the named client regardless of which client issues the command.
     /// Returns whether the command reached the writer thread, which is as far as this
     /// side can observe: the writer owns the child's stdin, and it drops the receiver
     /// when a write breaks. A refused send is a switch that provably never went out,
     /// so the caller must not record the client as moved. A send that is accepted is
-    /// not yet a switch that landed — only the mux's own session-changed notice says
+    /// not yet a switch that landed - only the mux's own session-changed notice says
     /// that.
     pub fn switch_client_on(&self, display_tty: &str, session: &str) -> bool {
         self.cmd_tx
@@ -247,7 +247,7 @@ fn spawn_piped_child(command: &crate::transport::CommandSpec) -> anyhow::Result<
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Strip EVERY mux session var (all `PSMUX*`, `TMUX`, `TMUX_PANE` — see
+    // Strip EVERY mux session var (all `PSMUX*`, `TMUX`, `TMUX_PANE` - see
     // `mux::vocab::is_mux_var`), not just `PSMUX_SESSION`: a per-session psmux
     // control child must not inherit stale psmux routing state (e.g. an
     // ambient `PSMUX_SESSION_NAME`) that could override its `-s <session>`
@@ -309,7 +309,7 @@ pub(super) fn spawn_pty_child(
     cols: u16,
     rows: u16,
 ) -> anyhow::Result<Spawned> {
-    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use portable_pty::{native_pty_system, PtySize};
 
     let pair = native_pty_system().openpty(PtySize {
         rows,
@@ -317,7 +317,7 @@ pub(super) fn spawn_pty_child(
         pixel_width: 0,
         pixel_height: 0,
     })?;
-    let mut cmd = CommandBuilder::new(command.program());
+    let mut cmd = crate::display::attachment::inherited_command(command.program());
     cmd.args(command.args());
     // The same mux-session-var strip and `extra_env` the piped spawn applies, so
     // the two spawn shapes give the child the same environment.

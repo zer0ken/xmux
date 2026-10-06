@@ -133,9 +133,12 @@ The run proves its isolation from both ends:
   run, and fails when one differs. An xmux of that person's running at the same time
   changes `~/.xmux` too, so the run expects none.
 
-Every cell of the Windows client run fails until #671 is fixed: the session view starts
-the `ssh` that the registry's `PATH` names instead of the wrapper, and that `ssh` cannot
-resolve the hosts.
+The Windows client run fails the cells that show a remote tmux session:
+
+| Cell | Issue | Reason |
+| --- | --- | --- |
+| `first-launch`, tmux, Alpine, and every `switch` that shows Alpine's tmux | #673 | the tail of a terminal reply reaches tmux 3.5a as typed text |
+| `switch`, tmux, Debian | #674 | the view stays on the first tmux session after the second is selected |
 
 psmux, the Windows-only mux, has no cell. Its sessions run on the Windows machine
 itself and register under the user's `~/.psmux`, so a psmux scenario would start
