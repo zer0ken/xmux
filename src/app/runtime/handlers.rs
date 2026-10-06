@@ -897,9 +897,22 @@ impl Runtime {
         // The single owner of the effective nav width: reconcile it to the focus + the
         // hide setting + any natural-width change. On a change, resize the PTYs so the
         // mux reflows, and mark dirty.
+        let shown = crate::ui::switcher::NavSize {
+            width: if self.model.nav_collapsed {
+                crate::ui::switcher::collapsed_nav_width(&self.env.ui_prefix)
+            } else {
+                self.model.nav_width_natural
+            },
+            ..self.model.nav_size()
+        };
+        let crowds = crate::ui::switcher::nav_crowds_terminal(
+            ratatui::layout::Rect::new(0, 0, self.cols, self.body_rows.saturating_add(1)),
+            shown,
+        );
         let want_nav_width = reconciled_nav_width(
             self.model.state.focus.is_terminal_focused(),
             self.model.auto_hide_nav,
+            crowds,
             prefix_active,
             self.model.nav_width_natural,
             self.model.nav_collapsed,

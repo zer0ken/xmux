@@ -397,36 +397,137 @@ fn terminal_view_size_keeps_full_height_when_the_tree_is_shown() {
 fn reconciled_nav_width_hides_only_when_focused_and_enabled_and_no_prefix() {
     // Tree focused (terminal_focused = false): always the natural width.
     assert_eq!(
-        reconciled_nav_width(false, true, false, 48, false, "C-g"),
+        reconciled_nav_width(false, true, false, false, 48, false, "C-g"),
         48
     );
     assert_eq!(
-        reconciled_nav_width(false, false, true, 48, false, "C-g"),
+        reconciled_nav_width(false, false, false, true, 48, false, "C-g"),
         48
     );
     // Terminal view focused + setting on + no prefix interaction: hidden (0).
-    assert_eq!(reconciled_nav_width(true, true, false, 48, false, "C-g"), 0);
+    assert_eq!(
+        reconciled_nav_width(true, true, false, false, 48, false, "C-g"),
+        0
+    );
     // Terminal view focused + setting on + prefix active: shown.
-    assert_eq!(reconciled_nav_width(true, true, true, 48, false, "C-g"), 48);
+    assert_eq!(
+        reconciled_nav_width(true, true, false, true, 48, false, "C-g"),
+        48
+    );
     // Terminal view focused + setting off: stays shown regardless.
     assert_eq!(
-        reconciled_nav_width(true, false, false, 48, false, "C-g"),
+        reconciled_nav_width(true, false, false, false, 48, false, "C-g"),
         48
     );
     assert_eq!(
-        reconciled_nav_width(true, false, true, 48, false, "C-g"),
+        reconciled_nav_width(true, false, false, true, 48, false, "C-g"),
         48
     );
     assert_eq!(
-        reconciled_nav_width(false, false, false, 48, true, "C-g"),
+        reconciled_nav_width(false, false, false, false, 48, true, "C-g"),
         3,
         "collapsed is exactly the prefix wide"
     );
     assert_eq!(
-        reconciled_nav_width(true, true, false, 48, true, "C-g"),
+        reconciled_nav_width(true, true, false, false, 48, true, "C-g"),
         0,
         "auto-hide wins over collapse"
     );
+    // A nav that crowds the terminal view hides like auto-hide, and only on its terms.
+    assert_eq!(
+        reconciled_nav_width(true, false, true, false, 48, false, "C-g"),
+        0,
+        "a crowding nav hides while the terminal view holds the focus"
+    );
+    assert_eq!(
+        reconciled_nav_width(true, false, true, true, 48, false, "C-g"),
+        48,
+        "a prefix interaction brings a crowding nav back"
+    );
+    assert_eq!(
+        reconciled_nav_width(false, false, true, false, 48, false, "C-g"),
+        48,
+        "a focused nav keeps its width however small the window"
+    );
+}
+
+/// A runtime whose one machine `pwbox` needs a login, sized `cols` by `rows`, with the
+/// selection on its card and the terminal view, where its login pane is, focused.
+fn login_pane_rt(cols: u16, rows: u16) -> Runtime {
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    let mut state = crate::state::State::from_hosts(vec!["pwbox".into()]);
+    let mut switcher = crate::ui::switcher::Switcher::from_hosts(&mut state);
+    switcher.apply_host_result(
+        "pwbox".into(),
+        Vec::new(),
+        Some("alice@pwbox: Permission denied (publickey,password).".into()),
+        &mut state,
+    );
+    state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.cols = cols;
+    rt.body_rows = rows - 1;
+    // Past the frame gate, so each prepare_and_draw paints.
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    rt
+}
+
+fn drawn_text(term: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+    let buf = term.backend().buffer();
+    let mut out = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            out.push_str(buf[(x, y)].symbol());
+        }
+        out.push('\n');
+    }
+    out
+}
+
+#[test]
+fn a_small_window_gives_the_focused_login_pane_its_whole_width() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut rt = login_pane_rt(40, 12);
+    let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    let out = drawn_text(&term);
+    assert_eq!(rt.model.nav_width, 0, "the nav steps aside:\n{out}");
+    assert_eq!(rt.model.render_plan.regions.terminal.width, 40, "{out}");
+    for row in [
+        "machine pwbox",
+        "address*   pwbox",
+        "port*      22",
+        "username*",
+        "password   optional",
+    ] {
+        assert!(out.contains(row), "the pane shows `{row}` whole:\n{out}");
+    }
+
+    // Focusing the nav brings it back at the same size: the small window then belongs
+    // to the view the user moved to.
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Nav);
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    rt.prepare_and_draw(&mut term);
+    assert_eq!(rt.model.nav_width, rt.model.nav_width_natural);
+    assert!(drawn_text(&term).contains("pwbox"));
+}
+
+#[test]
+fn a_window_with_room_for_both_keeps_the_nav_beside_the_focused_pane() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut rt = login_pane_rt(100, 30);
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    assert_eq!(rt.model.nav_width, rt.model.nav_width_natural);
+    assert!(drawn_text(&term).contains("username*"));
 }
 
 #[test]

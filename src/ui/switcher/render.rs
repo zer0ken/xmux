@@ -68,9 +68,6 @@ pub(super) fn hint_bar_rect(
 pub(crate) const SELECTED_MARK: &str = "\u{276f}";
 pub(crate) const MIDDLE_ELLIPSIS: char = '…';
 
-const MIN_SCREEN_WIDTH: u16 = 24;
-const MIN_SCREEN_HEIGHT: u16 = 4;
-
 struct NavRowPaint<'a> {
     width: u16,
     filter: &'a str,
@@ -998,6 +995,7 @@ impl Switcher {
         // Clearing first makes every unpainted cell default; ratatui still diffs against
         // the last frame, so static content writes nothing (no flicker).
         frame.render_widget(Clear, area);
+        use super::{MIN_SCREEN_HEIGHT, MIN_SCREEN_WIDTH};
         if area.width < MIN_SCREEN_WIDTH || area.height < MIN_SCREEN_HEIGHT {
             frame.render_widget(
                 Paragraph::new(vec![

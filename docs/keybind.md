@@ -96,6 +96,11 @@ dragging back out in the same drag expands it. A click anywhere on the collapsed
 focusing the nav by keyboard, expands it. Auto-hide takes the whole nav away and returns
 it in the state it left.
 
+A nav that would leave the terminal view smaller than 24 columns by 4 rows, the size xmux
+draws in at all, hides the way auto-hide hides it whenever the terminal view holds the
+focus, whatever auto-hide is set to. In a small window the view the user works in then
+has the whole window: focusing the nav or pressing the prefix brings the nav back.
+
 ## Walking the Nav
 
 The nav is a list of numbered cards in sections, not a tree. `←`/`→` step one section:
