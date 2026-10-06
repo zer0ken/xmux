@@ -74,8 +74,10 @@ login cannot be tried at all, xmux keeps the key and reports it as not verified.
 
 The information screen's `SSH login` row shows the SSH authentication method reported
 by the selected session's display connection. On a machine card it shows the machine's last observed
-method. If SSH reuses a connection without reporting its method, the screen says
-`not observed`. A held password disappearing closes that machine's
+method. A connection that rides the machine's shared SSH connection reports no method of
+its own and uses the one that shared connection authenticated with, so it shows that
+method, which xmux keeps across runs for a shared connection an earlier run opened. A
+machine no connection has reported a method for says `not observed`. A held password disappearing closes that machine's
 metadata and display connections. A new login or explicit re-scan is needed to
 connect again.
 

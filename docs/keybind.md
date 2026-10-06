@@ -96,6 +96,11 @@ dragging back out in the same drag expands it. A click anywhere on the collapsed
 focusing the nav by keyboard, expands it. Auto-hide takes the whole nav away and returns
 it in the state it left.
 
+A nav that would leave the terminal view smaller than 24 columns by 4 rows, the size xmux
+draws in at all, hides the way auto-hide hides it whenever the terminal view holds the
+focus, whatever auto-hide is set to. In a small window the view the user works in then
+has the whole window: focusing the nav or pressing the prefix brings the nav back.
+
 ## Walking the Nav
 
 The nav is a list of numbered cards in sections, not a tree. `←`/`→` step one section:
@@ -122,7 +127,8 @@ either screen, `↑`/`↓` (and `Tab`) step through its links and `Enter` opens 
 selected one. A machine screen links each of its hosts whose mux is confirmed, and
 none while no mux is; a host screen links its machine and each of its sessions. While
 a machine screen shows the login pane, the pane takes those keys and its links answer
-only a click.
+only a click. A screen too short for its selected link or the pane's focused stop scrolls
+just far enough to show it on its last row.
 
 At launch the terminal view shows the landing screen in place of a session: how many
 machines the scan has reached, and every nav card under its number as a

@@ -59,6 +59,9 @@ pub(crate) struct AppModel {
     /// is on. The pane's handle names only the latest submission, so a logout of another
     /// machine finds its own login here.
     pub(crate) running_logins: Vec<crate::link::unlock::RunningLogin>,
+    /// The recorded logins as the xmux directory last stored them, so the loop writes
+    /// the record only when it changes.
+    pub(crate) saved_logins: HashMap<String, crate::model::AuthMethod>,
 }
 
 /// A logout that has not yet cleared its machine. The key comes off the machine first, over
@@ -153,6 +156,7 @@ impl AppModel {
             rescan: None,
             logout: None,
             running_logins: Vec::new(),
+            saved_logins: HashMap::new(),
         }
     }
 
@@ -393,6 +397,7 @@ pub(crate) enum Effect {
     PersistNavCollapsed(bool),
     PersistNavPosition(Option<NavPosition>),
     PersistFirstKeyHelpSeen,
+    PersistSshLogins(HashMap<String, crate::model::AuthMethod>),
     ReattachDisplay(Selection),
     /// Searches the machine's key files for this machine's public keys, ending first the
     /// login the logout cancelled.
@@ -453,6 +458,9 @@ impl std::fmt::Debug for Effect {
                 f.debug_tuple("PersistNavPosition").field(position).finish()
             }
             Self::PersistFirstKeyHelpSeen => f.write_str("PersistFirstKeyHelpSeen"),
+            Self::PersistSshLogins(logins) => {
+                f.debug_tuple("PersistSshLogins").field(logins).finish()
+            }
             Self::ReattachDisplay(selection) => {
                 f.debug_tuple("ReattachDisplay").field(selection).finish()
             }
@@ -924,8 +932,7 @@ fn finish_logout(model: &mut AppModel, notes: Vec<crate::state::notify::Note>) -
         return Vec::new();
     };
     let cancel_login = take_login_of(model, &machine);
-    model.state.auth_methods.remove(&machine);
-    clear_display_auth(&mut model.state, &machine);
+    model.state.forget_auth(&machine);
     model.state.invalid_auth.insert(machine.clone());
     model.state.logged_in.remove(&machine);
     model.state.registration_reports.remove(&machine);
@@ -970,12 +977,6 @@ fn finish_logout(model: &mut AppModel, notes: Vec<crate::state::notify::Note>) -
     }]
 }
 
-fn clear_display_auth(state: &mut crate::state::State, machine: &str) {
-    state
-        .display_auth_methods
-        .retain(|host, _| crate::session::machine_of(host) != machine);
-}
-
 fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Vec<EventEffect> {
     use crate::link::HostEvent;
 
@@ -984,7 +985,7 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             machine, method, ..
         } => {
             if !model.state.invalid_auth.contains(&machine) {
-                model.state.auth_methods.insert(machine, method);
+                model.state.note_auth(machine, method);
             }
             Vec::new()
         }
@@ -1180,8 +1181,7 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                             .keys()
                             .any(|host| crate::session::machine_of(host) == machine);
                     let disconnect = if auth_refused && known_auth {
-                        model.state.auth_methods.remove(&machine);
-                        clear_display_auth(&mut model.state, &machine);
+                        model.state.forget_auth(&machine);
                         model.state.invalid_auth.insert(machine.clone());
                         model
                             .state
@@ -1685,8 +1685,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                     if let Some(method) = outcome.auth_method {
                         model
                             .state
-                            .auth_methods
-                            .insert(crate::session::machine_of(host).to_owned(), method);
+                            .note_auth(crate::session::machine_of(host).to_owned(), method);
                     }
                 }
             }
@@ -1747,8 +1746,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             }
             let mut effects = Vec::new();
             for machine in missing {
-                model.state.auth_methods.remove(&machine);
-                clear_display_auth(&mut model.state, &machine);
+                model.state.forget_auth(&machine);
                 model.state.invalid_auth.insert(machine.clone());
                 model.state.logged_in.remove(&machine);
                 model
@@ -2136,6 +2134,10 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             }
             model.nav_was_focused = nav_focused;
             model.state.chrome.set_auto_hide(model.auto_hide_nav);
+            if model.state.recorded_logins != model.saved_logins {
+                model.saved_logins = model.state.recorded_logins.clone();
+                effects.push(Effect::PersistSshLogins(model.saved_logins.clone()));
+            }
             effects
         }
         Msg::ReconcileNav { width, position } => {
@@ -3248,11 +3250,49 @@ mod tests {
         assert!(m.state.chrome.flash.is_empty(), "a result is no flash");
     }
 
+    fn sync_frame(m: &mut AppModel) -> Vec<Effect> {
+        update(
+            m,
+            Msg::SyncFrame {
+                spinner_frame: 0,
+                animation_ms: 0,
+                view_border_hovered: false,
+                prefix_active: false,
+            },
+        )
+    }
+
+    #[test]
+    fn a_reported_login_is_recorded_for_a_later_run_once() {
+        let mut m = AppModel::from_hosts(vec!["box:tmux".into()]);
+        update(
+            &mut m,
+            Msg::HostEvent {
+                event: crate::link::HostEvent::AuthObserved {
+                    machine: "box".into(),
+                    method: crate::model::AuthMethod::PublicKey,
+                    credential_generation: 0,
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        let recorded = std::collections::HashMap::from([(
+            "box".to_string(),
+            crate::model::AuthMethod::PublicKey,
+        )]);
+        assert!(
+            matches!(sync_frame(&mut m).as_slice(), [Effect::PersistSshLogins(l)] if *l == recorded)
+        );
+        assert!(
+            sync_frame(&mut m).is_empty(),
+            "an unchanged record is not written again"
+        );
+    }
+
     fn logged_in_box() -> AppModel {
         let mut m = AppModel::from_hosts(vec!["box:tmux".into()]);
         m.state
-            .auth_methods
-            .insert("box".into(), crate::model::AuthMethod::Password);
+            .note_auth("box".into(), crate::model::AuthMethod::Password);
         m.state
             .display_auth_methods
             .insert("box:tmux".into(), crate::model::AuthMethod::Password);
@@ -3399,6 +3439,7 @@ mod tests {
     fn assert_logged_out(m: &AppModel) {
         assert!(!m.state.auth_methods.contains_key("box"));
         assert!(m.state.display_auth_methods.is_empty());
+        assert!(!m.state.recorded_logins.contains_key("box"));
         assert!(m.state.invalid_auth.contains("box"));
         assert!(m.state.live_hosts.is_empty());
         assert!(m.connected.is_empty());

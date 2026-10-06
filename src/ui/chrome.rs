@@ -282,16 +282,27 @@ pub(crate) struct ScreenLink {
 /// width, relative to the screen's own area.
 type LinkCell = (usize, usize, u16, u16);
 
+/// A view screen's rows as its paint and its hit-test both read them.
+struct ScreenLines {
+    lines: Vec<Line<'static>>,
+    /// The row and column of the login pane's caret while a text field takes keys.
+    caret: Option<(usize, u16)>,
+    links: Vec<LinkCell>,
+    /// The row of the login pane's focused stop while the pane takes keys.
+    focus_line: Option<usize>,
+}
+
 /// The first line of a view screen shown in `height` rows: the top, unless the
-/// hard-selected link would fall below the area, in which case the screen scrolls just
-/// far enough to show that link on its last row. A link the user can select is a link
-/// the user can see before opening it.
-fn screen_top(links: &[LinkCell], selected: Option<usize>, height: u16) -> usize {
+/// hard-selected link or the login pane's focused stop would fall below the area, in
+/// which case the screen scrolls just far enough to show it on its last row. A link the
+/// user can select is a link the user can see before opening it, and a stop that takes
+/// keys is a stop the user can see while typing into it.
+fn screen_top(screen: &ScreenLines, selected: Option<usize>, height: u16) -> usize {
     selected
-        .and_then(|s| links.iter().find(|l| l.0 == s))
-        .map_or(0, |&(_, line, _, _)| {
-            (line + 1).saturating_sub(height as usize)
-        })
+        .and_then(|s| screen.links.iter().find(|l| l.0 == s))
+        .map(|&(_, line, _, _)| line)
+        .or(screen.focus_line)
+        .map_or(0, |line| (line + 1).saturating_sub(height as usize))
 }
 
 impl ViewScreen {
@@ -627,9 +638,10 @@ impl Chrome {
         view: ViewScreenRender<'_>,
         palette: &crate::ui::palette::Palette,
     ) -> Option<ratatui::layout::Position> {
-        let (lines, caret, links) = self.view_screen_lines(state, &view, area.width, palette);
-        let top = screen_top(&links, view.link, area.height);
-        let lines: Vec<Line<'static>> = lines.into_iter().skip(top).collect();
+        let screen = self.view_screen_lines(state, &view, area.width, palette);
+        let top = screen_top(&screen, view.link, area.height);
+        let caret = screen.caret;
+        let lines: Vec<Line<'static>> = screen.lines.into_iter().skip(top).collect();
         let content_rows = lines.len().min(area.height as usize) as u16;
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
         let blank = Rect {
@@ -693,9 +705,10 @@ impl Chrome {
         area: Rect,
         palette: &crate::ui::palette::Palette,
     ) -> Vec<(usize, Rect)> {
-        let (_, _, links) = self.view_screen_lines(state, view, area.width, palette);
-        let top = screen_top(&links, view.link, area.height);
-        links
+        let screen = self.view_screen_lines(state, view, area.width, palette);
+        let top = screen_top(&screen, view.link, area.height);
+        screen
+            .links
             .into_iter()
             .filter_map(|(link, line, col, width)| Some((link, line.checked_sub(top)?, col, width)))
             .filter(|&(_, line, col, _)| line < area.height as usize && col < area.width)
@@ -786,8 +799,8 @@ impl Chrome {
             .collect()
     }
 
-    /// The lines of [`render_view_screen`](Self::render_view_screen), and the row and
-    /// column of the caret of the login pane's text field while it takes keys. Split out
+    /// The lines of [`render_view_screen`](Self::render_view_screen), with the login
+    /// pane's caret and focused stop and where the links stand. Split out
     /// because the layout IS the list of rows: both states build one, so neither can drift
     /// into a paragraph of its own shape.
     fn view_screen_lines(
@@ -796,7 +809,7 @@ impl Chrome {
         view: &ViewScreenRender<'_>,
         width: u16,
         palette: &crate::ui::palette::Palette,
-    ) -> (Vec<Line<'static>>, Option<(usize, u16)>, Vec<LinkCell>) {
+    ) -> ScreenLines {
         let (address, kind, focused, machine_screen) =
             (view.address, view.kind, view.focused, view.machine_screen);
         let marks = (view.link, view.link_hover);
@@ -808,6 +821,7 @@ impl Chrome {
         let logged_out = kind == ViewScreen::Login && state.logged_out(&address.host);
         let pal = palette;
         let mut caret = None;
+        let mut focus_line = None;
         let p = &self.ui_prefix;
         let host = address.host.as_str();
         // The rows in reading order: a reachable empty host offers actions before
@@ -962,16 +976,7 @@ impl Chrome {
                 rows.push((ScreenCell::Label("user"), defaults.username.value));
                 let machine = crate::session::machine_of(host);
                 let method = state
-                    .auth_methods
-                    .get(machine)
-                    .or_else(|| {
-                        state
-                            .display_auth_methods
-                            .iter()
-                            .filter(|(s, _)| crate::session::machine_of(s) == machine)
-                            .map(|(_, method)| method)
-                            .next()
-                    })
+                    .ssh_login(machine, None)
                     .map(|method| method.label())
                     .unwrap_or("not observed");
                 rows.push((ScreenCell::Label("SSH login"), method.into()));
@@ -1415,16 +1420,34 @@ impl Chrome {
                     spans.push(Span::styled(text, style));
                     spans.push(Span::raw(" ".repeat(pad)));
                 }
+                // Where the value is and how the field reads it; the failure's mark
+                // follows. A pane too narrow for these beside the value continues them on
+                // the next row under the value column, so nothing it states is cut.
+                let mut tail = Vec::new();
                 if !provenance.is_empty() {
-                    spans.push(Span::styled(
+                    tail.push(Span::styled(
                         format!("  {provenance}"),
                         Style::default().fg(pal.decoration),
                     ));
                 }
                 if cause {
-                    spans.push(Span::styled("  ✗", Style::default().fg(pal.error)));
+                    tail.push(Span::styled("  ✗", Style::default().fg(pal.error)));
                 }
-                Line::from(spans)
+                let head = Line::from(spans);
+                let tail_w: usize = tail.iter().map(Span::width).sum();
+                if head.width() + tail_w <= width as usize {
+                    let mut line = head;
+                    line.spans.extend(tail);
+                    vec![line]
+                } else if tail.is_empty() {
+                    vec![head]
+                } else {
+                    // The tail's own two leading cells part it from the value; under the
+                    // value column they are the indent.
+                    let mut under = vec![Span::raw(" ".repeat(fcw + 3))];
+                    under.extend(tail);
+                    vec![head, Line::from(under)]
+                }
             };
             // Choice labels stay plain; the value and its padding carry focus. The focused
             // stop's value is reversed (a stop with no value reverses its own text), only
@@ -1467,8 +1490,11 @@ impl Chrome {
             };
             out.push(Line::from(""));
             out.push(group("Connection"));
-            let fields_at = out.len();
-            out.push(field(
+            // The line each stop of the form stands on, so the screen can scroll the
+            // focused one into view in a window too short for the whole form.
+            let mut stops: Vec<(LoginFocus, usize)> = Vec::new();
+            stops.push((LoginFocus::Address, out.len()));
+            out.extend(field(
                 "address",
                 true,
                 &d.address,
@@ -1477,7 +1503,8 @@ impl Chrome {
                 provenance(&d.address, &d.default_address, defaults.address.provenance),
                 LoginField::Address,
             ));
-            out.push(field(
+            stops.push((LoginFocus::Port, out.len()));
+            out.extend(field(
                 "port",
                 true,
                 &d.port,
@@ -1486,7 +1513,8 @@ impl Chrome {
                 provenance(&d.port, &d.default_port, defaults.port.provenance),
                 LoginField::Port,
             ));
-            out.push(field(
+            stops.push((LoginFocus::Username, out.len()));
+            out.extend(field(
                 "username",
                 true,
                 &d.username,
@@ -1499,7 +1527,8 @@ impl Chrome {
                 ),
                 LoginField::Username,
             ));
-            out.push(field(
+            stops.push((LoginFocus::Password, out.len()));
+            out.extend(field(
                 "password",
                 false,
                 &d.password,
@@ -1510,15 +1539,18 @@ impl Chrome {
             ));
             // The terminal's own cursor sits on the focused field's caret, where an input
             // method draws what it is composing.
-            let focused_field = match d.focus {
-                LoginFocus::Address => Some(0),
-                LoginFocus::Port => Some(1),
-                LoginFocus::Username => Some(2),
-                LoginFocus::Password => Some(3),
-                _ => None,
-            };
-            if let Some(i) = focused_field.filter(|_| taking_keys) {
-                let row = fields_at + i;
+            let focused_field = stops
+                .iter()
+                .find(|&&(stop, _)| stop == d.focus)
+                .map(|&(_, row)| row);
+            let field_focused = matches!(
+                d.focus,
+                LoginFocus::Address
+                    | LoginFocus::Port
+                    | LoginFocus::Username
+                    | LoginFocus::Password
+            );
+            if let Some(row) = focused_field.filter(|_| taking_keys && field_focused) {
                 caret = crate::ui::modal::caret_offset(&out[row]).map(|col| (row, col));
             }
             out.push(Line::from(""));
@@ -1533,6 +1565,7 @@ impl Chrome {
                 "do nothing",
                 d.focus == LoginFocus::AfterNothing,
             ));
+            stops.push((LoginFocus::AfterNothing, out.len() - 1));
             if d.offers_ssh_config() {
                 out.push(choice(
                     "",
@@ -1544,6 +1577,7 @@ impl Chrome {
                     "save connection to ssh config",
                     d.focus == LoginFocus::AfterSshConfig,
                 ));
+                stops.push((LoginFocus::AfterSshConfig, out.len() - 1));
             }
             out.push(choice(
                 "",
@@ -1555,6 +1589,7 @@ impl Chrome {
                 "register my public key",
                 d.focus == LoginFocus::AfterPublicKey,
             ));
+            stops.push((LoginFocus::AfterPublicKey, out.len() - 1));
             out.push(Line::from(""));
             // A login under way replaces the button it was started from. The pane keeps
             // every value, so what the user sees is the thing they submitted, still
@@ -1565,6 +1600,7 @@ impl Chrome {
                 out.push(choice("", "", "logging in…  esc to stop", false));
             } else {
                 out.push(choice("", "", "[ Log in ]", d.focus == LoginFocus::Submit));
+                stops.push((LoginFocus::Submit, out.len() - 1));
             }
             out.push(Line::from(""));
             out.push(Line::from(""));
@@ -1679,6 +1715,13 @@ impl Chrome {
                     "details",
                     d.focus == LoginFocus::Details,
                 ));
+                stops.push((LoginFocus::Details, out.len() - 1));
+            }
+            if taking_keys {
+                focus_line = stops
+                    .iter()
+                    .find(|&&(stop, _)| stop == d.focus)
+                    .map(|&(_, row)| row);
             }
             // The pane's keys, under the form while it takes them.
             if focused {
@@ -1723,7 +1766,12 @@ impl Chrome {
             }
             out.push(Line::from(spans));
         }
-        (out, caret, links)
+        ScreenLines {
+            lines: out,
+            caret,
+            links,
+            focus_line,
+        }
     }
 
     /// The hint bar's logical text, fit to `width`. At rest this text is only the prefix,

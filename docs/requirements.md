@@ -79,7 +79,9 @@ against, naming no source file, function, or test.
 - **FR-B17** - The resting prefix indicator is a label sized to its text, and a flash
   explaining why a key did nothing comes down on the next key or after ten seconds.
 - **FR-B18** - A prefix interaction lasts until the function it starts ends, and the key
-  list and an auto-hidden nav show for exactly that span.
+  list and an auto-hidden nav show for exactly that span. While the terminal view holds
+  the focus, a nav that would leave it smaller than 24 columns by 4 rows hides as an
+  auto-hidden nav does.
 - **FR-B19** - A mouse click, release, wheel, or drag cancels a pending prefix chord,
   while bare hover and dragging the key list do not.
 - **FR-B20** - A held prefix key counts as repeated taps, each sending the

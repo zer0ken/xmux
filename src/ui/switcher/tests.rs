@@ -3284,6 +3284,75 @@ fn logout_confirms_the_machine_of_the_selected_session() {
 }
 
 #[test]
+fn logout_from_a_session_riding_the_shared_connection_states_its_login() {
+    // The display attachment rode the machine's shared SSH connection, so it reported no
+    // method of its own; the login its session uses is the one that connection reported.
+    let mut h = Harness::from_hosts(&["box"]);
+    h.state.chrome.host_reach.insert(
+        "box".into(),
+        crate::state::HostReach {
+            ssh: true,
+            ..Default::default()
+        },
+    );
+    h.sw.apply_host_result(
+        "box".into(),
+        vec![sess("box", "api", 1, true)],
+        None,
+        &mut h.state,
+    );
+    h.state
+        .auth_methods
+        .insert("box".into(), crate::model::AuthMethod::PublicKey);
+    h.draw();
+    h.sw.handle_key(
+        KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE),
+        &mut h.state,
+    );
+    let Some(Modal::Input(input)) = &h.state.modal else {
+        panic!("logout confirmation")
+    };
+    assert_eq!(input.facts[1], ("SSH login", "public key".to_string()));
+    assert!(
+        !input.facts.iter().any(|(name, _)| *name == "password"),
+        "a key login holds no password to clear: {:?}",
+        input.facts
+    );
+}
+
+#[test]
+fn logout_states_the_login_an_earlier_run_recorded_for_the_shared_connection() {
+    // Every connection of this run rode a shared connection an earlier run opened, so
+    // none reported a method; that run's record is the login the session uses.
+    let mut h = Harness::from_hosts(&["box"]);
+    h.state.chrome.host_reach.insert(
+        "box".into(),
+        crate::state::HostReach {
+            ssh: true,
+            ..Default::default()
+        },
+    );
+    h.sw.apply_host_result(
+        "box".into(),
+        vec![sess("box", "api", 1, true)],
+        None,
+        &mut h.state,
+    );
+    h.state
+        .recorded_logins
+        .insert("box".into(), crate::model::AuthMethod::PublicKey);
+    h.draw();
+    h.sw.handle_key(
+        KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE),
+        &mut h.state,
+    );
+    let Some(Modal::Input(input)) = &h.state.modal else {
+        panic!("logout confirmation")
+    };
+    assert_eq!(input.facts[1], ("SSH login", "public key".to_string()));
+}
+
+#[test]
 fn logout_from_a_card_with_no_session_names_the_machine() {
     let mut h = Harness::from_hosts(&["box"]);
     h.state.chrome.host_reach.insert(

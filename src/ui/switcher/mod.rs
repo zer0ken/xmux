@@ -298,6 +298,20 @@ pub fn compute_regions(area: Rect, nav: NavSize, hint_bar_h: u16) -> Regions {
     }
 }
 
+/// The smallest window xmux draws its split view in; a smaller one shows the required
+/// size instead.
+pub(super) const MIN_SCREEN_WIDTH: u16 = 24;
+pub(super) const MIN_SCREEN_HEIGHT: u16 = 4;
+
+/// Whether showing `nav` in `area` leaves the terminal view smaller than the smallest
+/// window xmux draws in. Such a nav hides while the terminal view holds the focus, as
+/// auto-hide hides it, so a small window gives the view the user is working in all of
+/// its room instead of a strip too narrow for a screen's rows.
+pub(crate) fn nav_crowds_terminal(area: Rect, nav: NavSize) -> bool {
+    let t = compute_regions(area, nav, 1).terminal;
+    t.width < MIN_SCREEN_WIDTH || t.height < MIN_SCREEN_HEIGHT
+}
+
 pub use crate::state::Scan;
 
 /// What the user is interested in: the one value both selection rules read

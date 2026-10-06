@@ -58,6 +58,11 @@ pub struct State {
     pub auth_methods: HashMap<String, crate::model::AuthMethod>,
     /// Authentication reported by the current live display attachment of each host.
     pub display_auth_methods: HashMap<String, crate::model::AuthMethod>,
+    /// The method the connection that last authenticated to each machine reported, kept
+    /// across runs. Every later connection rides that connection while it stays open, and
+    /// a riding connection reports nothing, so a run started while it was open learns the
+    /// login its sessions use only from here.
+    pub recorded_logins: HashMap<String, crate::model::AuthMethod>,
     /// Machines whose known authentication was invalidated until the user asks again.
     /// Losing a held password, or a refusal of a machine whose method was known, lands
     /// here: the reported method goes and the machine's metadata and display connections
@@ -897,6 +902,43 @@ impl State {
             }
             was_running || *answer != crate::model::MuxAnswer::Found
         });
+    }
+
+    /// Notes the method a connection that authenticated to `machine` reported.
+    pub(crate) fn note_auth(&mut self, machine: String, method: crate::model::AuthMethod) {
+        self.recorded_logins.insert(machine.clone(), method);
+        self.auth_methods.insert(machine, method);
+    }
+
+    /// Forgets every SSH authentication known for `machine` and its hosts' displays.
+    pub(crate) fn forget_auth(&mut self, machine: &str) {
+        self.auth_methods.remove(machine);
+        self.recorded_logins.remove(machine);
+        self.display_auth_methods
+            .retain(|host, _| crate::session::machine_of(host) != machine);
+    }
+
+    /// The SSH login xmux observed for `machine`, as the session on `host` uses it when
+    /// one is given. A display attachment that rides the machine's shared SSH connection
+    /// authenticates nothing itself and reports no method, so the login its session uses
+    /// is the one the connection that reached the machine reported, in this run or, when
+    /// an earlier run opened the shared connection, in that one. Without a session, the
+    /// machine's report comes first and any of its displays' reports stands in.
+    pub(crate) fn ssh_login(
+        &self,
+        machine: &str,
+        host: Option<&str>,
+    ) -> Option<crate::model::AuthMethod> {
+        let display = |host: &str| self.display_auth_methods.get(host).copied();
+        host.and_then(display)
+            .or_else(|| self.auth_methods.get(machine).copied())
+            .or_else(|| {
+                self.display_auth_methods
+                    .iter()
+                    .find(|(host, _)| crate::session::machine_of(host) == machine)
+                    .map(|(_, method)| *method)
+            })
+            .or_else(|| self.recorded_logins.get(machine).copied())
     }
 
     /// Whether the user logged out of the machine `host` stands for and nothing has

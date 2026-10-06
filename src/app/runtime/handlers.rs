@@ -707,6 +707,8 @@ impl Runtime {
         // The app's runtime state (single source of truth), seeded from the host ids;
         // events stream the nav in.
         let mut state = crate::state::State::from_roster(hosts.ids().to_vec(), hosts.machines());
+        state.recorded_logins = crate::app::prefs::load_ssh_logins(&env.xmux_dir);
+        let saved_logins = state.recorded_logins.clone();
         let mut switcher = crate::ui::switcher::Switcher::from_hosts(&mut state);
         // The one session the terminal view refuses: the one xmux is running in. Named
         // once here, because the environment that names it cannot change under a run.
@@ -799,6 +801,7 @@ impl Runtime {
             rescan: None,
             logout: None,
             running_logins: Vec::new(),
+            saved_logins,
         };
         let initial_frame_interval = frame_interval(model.max_fps);
         let rt = Runtime {
@@ -897,9 +900,22 @@ impl Runtime {
         // The single owner of the effective nav width: reconcile it to the focus + the
         // hide setting + any natural-width change. On a change, resize the PTYs so the
         // mux reflows, and mark dirty.
+        let shown = crate::ui::switcher::NavSize {
+            width: if self.model.nav_collapsed {
+                crate::ui::switcher::collapsed_nav_width(&self.env.ui_prefix)
+            } else {
+                self.model.nav_width_natural
+            },
+            ..self.model.nav_size()
+        };
+        let crowds = crate::ui::switcher::nav_crowds_terminal(
+            ratatui::layout::Rect::new(0, 0, self.cols, self.body_rows.saturating_add(1)),
+            shown,
+        );
         let want_nav_width = reconciled_nav_width(
             self.model.state.focus.is_terminal_focused(),
             self.model.auto_hide_nav,
+            crowds,
             prefix_active,
             self.model.nav_width_natural,
             self.model.nav_collapsed,
