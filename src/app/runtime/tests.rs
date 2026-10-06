@@ -6120,3 +6120,50 @@ fn enter_in_the_nav_executes_the_landing_selection() {
     assert!(!rt.model.switcher.landing_open());
     assert_eq!(rt.model.switcher.terminal_view_target().target, "api");
 }
+
+#[test]
+fn every_key_a_screen_reads_is_in_the_key_table_and_every_screen_entry_is_read() {
+    use crate::model::keys::{Keys, TABLE};
+    use crate::state::Key;
+    use ratatui::crossterm::event::KeyCode;
+    let code_of = |key: Key| match key {
+        Key::Char(c) => KeyCode::Char(c),
+        Key::Enter => KeyCode::Enter,
+        Key::Tab => KeyCode::Tab,
+        Key::BackTab => KeyCode::BackTab,
+        Key::Up => KeyCode::Up,
+        Key::Down => KeyCode::Down,
+        Key::Backspace => KeyCode::Backspace,
+    };
+    let listed: Vec<KeyCode> = TABLE
+        .iter()
+        .filter_map(|e| match e.keys {
+            Keys::Screen(codes) => Some(codes),
+            _ => None,
+        })
+        .flatten()
+        .copied()
+        .collect();
+    let mut inputs: Vec<Vec<u8>> = (0x00u8..=0x7e).map(|b| vec![b]).collect();
+    inputs.extend([b"\x1b[A", b"\x1b[B", b"\x1b[C", b"\x1b[D", b"\x1b[Z"].map(|s| s.to_vec()));
+    let mut read = Vec::new();
+    for bytes in &inputs {
+        for key in crate::state::decode_keys(bytes) {
+            for unreachable in [false, true] {
+                if input::screen_msg(key, unreachable).is_some() {
+                    assert!(
+                        listed.contains(&code_of(key)),
+                        "a screen reads {key:?} but the key table does not name it"
+                    );
+                    read.push(code_of(key));
+                }
+            }
+        }
+    }
+    for code in &listed {
+        assert!(
+            read.contains(code),
+            "the key table names {code:?} on a screen but no screen reads it"
+        );
+    }
+}

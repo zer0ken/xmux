@@ -1984,6 +1984,7 @@ mod tests {
             shown,
             [
                 "move (nav focus)",
+                "host and source screens",
                 "navigate",
                 "sessions",
                 "view",
@@ -2038,7 +2039,7 @@ mod tests {
         );
         assert_eq!(
             lines[HELP_LEAD].to_string(),
-            " navigate",
+            " host and source screens",
             "the title is the top body row"
         );
         feed_sized(&mut m, b"\x1b[C\x1b[C", inner, visible);
