@@ -27,7 +27,8 @@ pub struct NavSize {
     pub width: u16,
     /// The band's height the user set; 0 means auto.
     pub height: u16,
-    /// Which side of the terminal view the nav is attached to this frame.
+    /// Which side of the terminal view the nav is attached to this frame. Auto-hide
+    /// keeps it, so a hidden nav returns on the side it left.
     pub position: NavPosition,
     /// Whether the nav shows only its prefix indicator.
     pub collapsed: bool,

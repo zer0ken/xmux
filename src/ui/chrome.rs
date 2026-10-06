@@ -297,7 +297,8 @@ impl ViewScreen {
     /// The state word under the headline. The two SETTLED HOST states read theirs from
     /// the one source the nav cards read, so a card and the screen reached from it can
     /// never name the same state two ways; the self-session state is not a host state and
-    /// names itself.
+    /// names itself. A blocked host's word never says what it was blocked on; the login
+    /// pane states that.
     fn word(self) -> &'static str {
         match self {
             ViewScreen::Scanning => "scanning",

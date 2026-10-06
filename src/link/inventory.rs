@@ -164,6 +164,10 @@ pub enum HostEvent {
     /// `shell` is which shell family answered, read from the same round trip. `None`
     /// when nothing answered, and for a machine that is POSIX by construction, so the
     /// transport's own default stands in both cases.
+    ///
+    /// `credential_generation` is the machine's credential generation when the probe
+    /// spawned. A result whose generation is not the current one changes nothing, so an
+    /// older probe cannot undo or reclassify a newer login.
     MachineProbed {
         machine: String,
         err: Option<String>,

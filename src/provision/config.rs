@@ -1052,6 +1052,10 @@ pub fn stanza_login(config_text: &str, alias: &str) -> crate::transport::Login {
 
 /// The address and port the login pane starts with. Only an exact host stanza supplies
 /// the username; without one, the user enters it.
+///
+/// OpenSSH's effective configuration wins; the matching stanza stands in when OpenSSH
+/// could not report it. A value neither supplies is the provider's address, else the
+/// host's own name, and port 22.
 pub fn login_defaults(
     alias: &str,
     provider_address: Option<&str>,

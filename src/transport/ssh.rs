@@ -81,8 +81,13 @@ impl Ssh {
     /// The ssh options preceding the remote command, ending with `-- <alias>` so an
     /// alias beginning with `-` is the destination, never an option. A held credential
     /// forces askpass with one password attempt; without one, BatchMode keeps every
-    /// command non-interactive, including a tty attach. ControlMaster is multiplexed
-    /// only on a non-windows local side with a control path.
+    /// command non-interactive, including a tty attach. An OpenSSH too old to force
+    /// askpass gets the password only on Unix and only for a non-tty child, which runs in
+    /// a new session so it cannot read the user's terminal; on Windows it never does.
+    /// ControlMaster is multiplexed only on a non-windows local side with a control path.
+    /// Only the submitted login adds `StrictHostKeyChecking=accept-new`, and only when
+    /// OpenSSH reports the effective policy as `ask`: a stricter policy is never weakened,
+    /// and no other command changes the host-key policy.
     fn ssh_opts(
         &self,
         tty: bool,

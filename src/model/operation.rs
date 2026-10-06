@@ -36,7 +36,8 @@ pub trait Ops: Send + Sync {
 
 /// The key registration requested by a login.
 pub struct KeyRegistration {
-    /// The shell family reported by the login command.
+    /// The shell family reported by the login command, which reads it because a locked
+    /// host's family is unknown before its login.
     pub shell: Option<crate::transport::vocab::RemoteShell>,
 }
 

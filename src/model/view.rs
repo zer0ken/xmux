@@ -34,8 +34,9 @@ pub struct ConfirmedDisplay<'a> {
 }
 
 /// Chooses the terminal view screen from domain facts; rendering paints the screen this
-/// returns and never chooses one itself. A selected host card that is
-/// scanning shows its scanning screen, never another source's grid. The one exception
+/// returns and never chooses one itself. A selection without a session (a source's or
+/// a host's card) gets that card's screen, never a session's grid. A selected host card
+/// that is scanning shows its scanning screen, never another source's grid. The one exception
 /// is a full re-scan that collapsed the selected session card into its own host card:
 /// that session's grid stays until the selection moves.
 pub fn choose_view_screen(

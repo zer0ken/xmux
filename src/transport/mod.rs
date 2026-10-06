@@ -1,8 +1,8 @@
 //! The transport axis: how a mux argv reaches the server, SEPARATE from which mux
 //! runs there (that is `Mux`). A `Transport` owns argv assembly and the ssh
-//! wrapping only — it never decides a server model. Each machine implementation lives in
-//! its own file behind the `Transport` trait — `Local` (`local.rs`), `Ssh`
-//! (`ssh.rs`), `Wsl` (`wsl.rs`) — mirroring how each mux implementation lives behind `Mux`. Shared shell
+//! wrapping only - it never decides a server model. Each machine implementation lives in
+//! its own file behind the `Transport` trait - `Local` (`local.rs`), `Ssh`
+//! (`ssh.rs`), `Wsl` (`wsl.rs`) - mirroring how each mux implementation lives behind `Mux`. Shared shell
 //! helpers (`quote`/`remote_command`) is in `vocab.rs`, the peer of
 //! `mux/vocab.rs`. A new implementation is a new file implementing `Transport` plus a
 //! factory here; the trait and its callers name no concrete implementation.
@@ -157,8 +157,8 @@ impl CommandSpec {
     /// The command to run instead after this one failed, when it held a password that
     /// askpass never handed over and the host dropped the connection before a session
     /// started without refusing authentication: the host accepted a key and could not
-    /// open a session for it. The caller runs it once and calls
-    /// [`CommandSpec::password_only_worked`] when it succeeds.
+    /// open a session for it. The caller runs it once, inside the time budget the first
+    /// run started with, and calls [`CommandSpec::password_only_worked`] when it succeeds.
     pub fn password_only_retry(&self, exit_code: i32, diagnostic: &str) -> Option<&CommandSpec> {
         let retry = self.password_only_retry.as_deref()?;
         let auth = self.auth.as_ref()?;
@@ -229,6 +229,9 @@ impl CommandSpec {
         self.auth.is_some()
     }
 
+    /// Removes the held password only when ssh exited 255, askpass handed this command
+    /// the password, and ssh wrote its own authentication refusal line. Any other failure
+    /// keeps it.
     pub fn forget_refused_password(&self, exit_code: i32, diagnostic: &str) -> bool {
         if exit_code == 255
             && crate::transport::diagnostic::contains_auth_refusal(diagnostic)
@@ -247,6 +250,9 @@ impl CommandSpec {
         self.auth.as_ref().is_some_and(auth::CommandAuth::promote)
     }
 
+    /// Promotes the login's pending credential for the machine only when askpass handed
+    /// it to ssh; a login that never asked for the password discards it. `false` when a
+    /// newer login replaced this one.
     pub fn finish_successful_login(&self) -> bool {
         let Some(auth) = &self.auth else {
             return true;
@@ -308,13 +314,13 @@ impl std::ops::Deref for CommandSpec {
 /// The machine boundary: turns a full mux argv (`argv[0]` = the mux binary) into a
 /// runnable `(command, args)`, and wraps interactive/control/raw execution for the
 /// machine it targets. Implementors are the machine implementations (`Local`, `Ssh`, `Wsl`); no
-/// caller branches on which one — it addresses a machine through this trait.
+/// caller branches on which one - it addresses a machine through this trait.
 pub trait Transport: Send + Sync {
-    /// `"local"`, the ssh alias, or `wsl.<distro>` — the stable host id and `Hosts` map
+    /// `"local"`, the ssh alias, or `wsl.<distro>` - the stable host id and `Hosts` map
     /// key.
     fn host_id(&self) -> &str;
 
-    /// True for a remote (ssh) machine. Used only to SHAPE ssh options — not to decide a
+    /// True for a remote (ssh) machine. Used only to SHAPE ssh options - not to decide a
     /// server MODEL (that is `ServerModel`) nor the two capability predicates below.
     fn is_remote(&self) -> bool {
         false
@@ -330,7 +336,7 @@ pub trait Transport: Send + Sync {
     }
 
     /// True when THIS box's local mux registry (`~/.psmux`) is the authority for this
-    /// host's sessions — enabling the registry-merge enumeration and the local
+    /// host's sessions - enabling the registry-merge enumeration and the local
     /// `list-clients` tty probe. `false` (the default) for a machine whose sessions live
     /// on the far side. NOT derived from `is_remote`.
     fn local_registry_scope(&self) -> bool {
@@ -440,7 +446,7 @@ pub trait Transport: Send + Sync {
         None
     }
 
-    /// Clones into a fresh box — a spawned poll task needs an owned transport, and a
+    /// Clones into a fresh box - a spawned poll task needs an owned transport, and a
     /// trait object cannot derive `Clone`.
     fn clone_box(&self) -> Box<dyn Transport>;
 
@@ -529,12 +535,12 @@ impl Transport for Box<dyn Transport> {
     }
 }
 
-/// The concrete, runnable shape of a display-client switch — what the driver hands to
+/// The concrete, runnable shape of a display-client switch - what the driver hands to
 /// `run_lowered`. Lives on the TRANSPORT side (it is the execution shape), not in the
 /// mux's intent set. The mux never names these variants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoweredSwitch {
-    /// A local mux argv (`argv[0]` = binary) — run non-interactively.
+    /// A local mux argv (`argv[0]` = binary) - run non-interactively.
     Local(CommandSpec),
     /// A full ssh argv carrying a guarded raw remote `switch-client` snippet, run via
     /// the same path `run_raw` uses.
@@ -545,7 +551,7 @@ pub enum LoweredSwitch {
 /// construction data. The SINGLE representation of transport kind: config/`Hosts::build`
 /// picks a variant, and the `MachineKind` query methods ([`transport`](Self::transport),
 /// [`local_socket`](Self::local_socket)) are the only code that matches on the kind. A new
-/// kind is a variant here plus one arm in each of those methods — no code OUTSIDE
+/// kind is a variant here plus one arm in each of those methods - no code OUTSIDE
 /// `MachineKind` matches on the kind.
 #[derive(Clone, Debug)]
 pub enum MachineKind {
@@ -660,7 +666,7 @@ impl MachineKind {
         }
     }
 
-    /// The local mux server socket (`-S`) this machine targets — `Some` only for a local
+    /// The local mux server socket (`-S`) this machine targets - `Some` only for a local
     /// machine on a non-default socket, `None` for any other kind or the default socket.
     /// Like [`transport`](Self::transport), the match on the kind lives HERE on the type, so
     /// a new implementation is compiler-forced to state its socket in one place.
@@ -718,7 +724,7 @@ pub fn ssh_as(id: String, alias: String, control_path: String, os: String) -> Bo
 }
 
 /// A WSL machine transport for `distro`, answering as the bare machine name
-/// `wsl.<distro>` — that distribution serving one mux.
+/// `wsl.<distro>` - that distribution serving one mux.
 pub fn wsl(distro: String) -> Box<dyn Transport> {
     Box::new(Wsl {
         id: crate::session::WSL_PREFIX.to_string() + &distro,
@@ -841,7 +847,7 @@ mod tests {
     #[test]
     fn a_wsl_machine_name_selects_the_wsl_kind() {
         // `kind_for` is the single assembly site, and the WSL kind is chosen by the
-        // machine NAME — nothing else is threaded in to say which kind this is.
+        // machine NAME - nothing else is threaded in to say which kind this is.
         let kind = kind_for(
             "wsl.Ubuntu-24.04",
             String::new(),

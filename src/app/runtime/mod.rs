@@ -13,7 +13,8 @@
 //! control socket, terminal resize, and an animation tick. ratatui owns stdout and
 //! draws the SAME split (nav + selected PTY grid) in both focus states - Focus::Nav
 //! (nav focused) and Focus::Terminal (terminal focused) differ only in the view border
-//! colour and where keys go, so toggling focus needs no screen clear.
+//! colour and where keys go, so toggling focus needs no screen clear. The app launches
+//! straight into this split; there is no separate picker mode.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

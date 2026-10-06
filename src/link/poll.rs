@@ -49,8 +49,8 @@ pub(super) async fn run_poll(
             &crate::model::source::ExecRunner,
             &mut |ev| {
                 // Log at the producer, where `err` is in hand. A success that changed the
-                // session list (or is the first) is INFO; an unchanged one is TRACE. A
-                // failure is WARN.
+                // session list (or is the first) is INFO carrying that list; an unchanged
+                // one is TRACE. A failure is WARN.
                 if let HostEvent::Sessions {
                     source: ref host,
                     ref sessions,

@@ -9,8 +9,8 @@ standard the code is checked against, not a description of the code as it reads.
 ## Module Seams
 
 - `principles.md` states every design principle once, with its reason.
-- `requirements.md` records functional requirements by stable ID.
-- `keybind.md` documents key and mouse behavior for users.
+- `requirements.md` records functional requirements, one sentence per stable ID.
+- `keybind.md` covers what the README's keys and the in-app help leave out.
 - `assets/` holds the images the README shows.
 
 ## Invariants

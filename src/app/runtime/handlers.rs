@@ -896,7 +896,7 @@ impl Runtime {
             // Crossing the hidden sentinel (0) flips the column TOPOLOGY; a stale wide-char
             // cell at the new boundary can survive ratatui's diff, so force a full repaint.
             // A position change moves the border to the opposite side of the screen and
-            // gets the same treatment.
+            // gets the same treatment; the selection and the focus stay as they are.
             let crossed_hidden = (want_nav_width == 0) != (self.model.nav_width == 0);
             let crossed_position = want_position != self.model.nav_position;
             let effects = update(

@@ -76,6 +76,7 @@ pub struct RunningLogin {
 }
 
 impl RunningLogin {
+    /// Ends the login; its pending credential is discarded with it.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Release);
     }
