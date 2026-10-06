@@ -63,23 +63,22 @@ fn host(machine: &str) -> Option<Node> {
 }
 
 /// The issue's walk up to the point the user is on the unreachable machine card: `local`
-/// lists a session (the launch preselect lands there), `mars` cannot be reached, and the
-/// user selects mars's card.
+/// lists a session (the launch preselect lands there), `mars`, whose muxes are not known
+/// yet, cannot be reached, and the user selects mars's card.
 fn on_unreachable_machine() -> (Switcher, State) {
-    let (mut sw, mut state) = launch(&["local", "mars"]);
+    let mut state = State::from_roster(vec!["local".into()], vec!["local".into(), "mars".into()]);
+    let mut sw = Switcher::from_sources(&mut state);
     answer(&mut sw, &mut state, "local", &["work"]);
-    fail(&mut sw, &mut state, "mars", "connection refused");
+    sw.apply_machine_result("mars", Some("connection refused".into()), &mut state);
     sw.open_host("mars", &mut state);
     assert!(on_machine(&sw, "mars"), "{}", picked(&sw));
     (sw, state)
 }
 
 /// The machine answers with two muxes: each becomes a source of its own, and the card
-/// that stood for the machine goes once they are on the list (the discovery order).
+/// that stood for the machine goes as they join the list.
 fn resolve_into_two_muxes(sw: &mut Switcher, state: &mut State) {
-    sw.add_source("mars:tmux".into(), state);
-    sw.add_source("mars:screen".into(), state);
-    sw.remove_source("mars", state);
+    sw.add_sources(vec!["mars:tmux".into(), "mars:screen".into()], state);
 }
 
 #[test]

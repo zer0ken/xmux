@@ -22,3 +22,6 @@ to the live terminal or to the headless backend behind the ctl `dump`.
 - Paint and hit-test read the same geometry answer; rendering never computes a second.
 - Every rebuild resolves the selection from the one interest; no path picks a fallback
   card of its own.
+- Every card, screen, screen link, and lineage step derives from the three levels: a
+  host with no source has a card and a screen of its own and links to no host, and the
+  first source found on it takes over its card and selection.

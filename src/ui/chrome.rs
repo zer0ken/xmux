@@ -660,16 +660,24 @@ impl Chrome {
     /// any is still scanning. A host serving several muxes counts once, and only once
     /// none of its sources is still scanning.
     pub(crate) fn scan_progress(&self, state: &crate::state::State) -> String {
+        let hostless = state.hostless_machines();
         let machines: std::collections::BTreeSet<&str> = state
             .groups
             .iter()
             .map(|g| crate::session::machine_of(&g.source))
+            .chain(hostless.iter().map(|m| m.name.as_str()))
             .collect();
         let scanning: std::collections::BTreeSet<&str> = state
             .groups
             .iter()
             .filter(|g| state.scanning.contains(&g.source))
             .map(|g| crate::session::machine_of(&g.source))
+            .chain(
+                hostless
+                    .iter()
+                    .filter(|m| state.machine_scanning.contains(&m.name))
+                    .map(|m| m.name.as_str()),
+            )
             .collect();
         let total = machines.len();
         let done = total - scanning.len();
@@ -851,6 +859,12 @@ impl Chrome {
                             .iter()
                             .find(|g| g.source == source)
                             .and_then(|g| g.err.clone())
+                    })
+                    .or_else(|| {
+                        state
+                            .machine(source)
+                            .filter(|m| !state.has_hosts(&m.name))
+                            .and_then(|m| m.err.clone())
                     })
                     .unwrap_or_else(|| "connection closed".into());
                 rows.push((ScreenCell::Label("reason"), reason));
@@ -1732,13 +1746,14 @@ impl Chrome {
             fit(&[format!(" {p}"), p.to_string()], width)
         } else if let Some(hint) = &self.selection_hint {
             selection_hint_text(hint, p, width)
-        } else if !state.scanning.is_empty() {
+        } else if state.scanning_any() {
             // A subtle global indicator while host probes are in flight; clears
             // (falls through to the resting prefix) once every host has settled. It
             // turns the SAME spinner the scanning cards do, on the same frame, so the
-            // bar and the cards read as one thing still loading.
-            let total = state.groups.len();
-            let done = total.saturating_sub(state.scanning.len());
+            // bar and the cards read as one thing still loading. A machine with no source
+            // known counts as one entry of its own.
+            let total = state.groups.len() + state.hostless_machines().len();
+            let done = total.saturating_sub(state.scanning.len() + state.machine_scanning.len());
             let sp = crate::ui::spinner_glyph(self.spinner_frame);
             fit(
                 &[

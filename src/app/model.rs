@@ -238,18 +238,36 @@ pub(crate) enum Msg {
         sessions: Vec<crate::session::Session>,
         live: bool,
     },
-    ApplySourceResult {
-        source: String,
-        sessions: Vec<crate::session::Session>,
-        err: Option<String>,
-    },
     AddSource {
         source: String,
         scanning: bool,
     },
+    /// Sources one machine answered it serves, added together so the card the machine
+    /// stood on hands its selection to the first of them by name.
+    AddSources {
+        sources: Vec<String>,
+    },
     RemoveSource {
         source: String,
         clear_tracking: bool,
+    },
+    /// A machine the roster now names.
+    AddMachine {
+        machine: String,
+    },
+    /// A machine the roster no longer names.
+    RemoveMachine {
+        machine: String,
+    },
+    /// What a machine answered as a whole while no source of it is known: why it could
+    /// not be asked.
+    ApplyMachineResult {
+        machine: String,
+        err: Option<String>,
+    },
+    /// A machine answered that it serves no mux xmux supports.
+    SettleMuxless {
+        machine: String,
     },
     /// The re-scan's roster answer has been reconciled into the registries and the nav.
     RescanRosterApplied,
@@ -939,6 +957,13 @@ fn finish_logout(model: &mut AppModel, notes: Vec<crate::state::notify::Note>) -
             &mut model.state,
         );
     }
+    if model.state.stands_alone(&machine) {
+        model.switcher.apply_machine_result(
+            &machine,
+            Some("logged out; log in again or re-scan".into()),
+            &mut model.state,
+        );
+    }
     model.state.notify.toast(format!("logout {machine}"), notes);
     vec![Effect::LogoutMachine {
         machine,
@@ -1184,6 +1209,7 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                             .state
                             .scanning
                             .retain(|source| crate::session::machine_of(source) != machine);
+                        model.state.machine_scanning.remove(&machine);
                         if let Some(rescan) = model.rescan.as_mut() {
                             rescan.locked.insert(machine);
                         }
@@ -1200,10 +1226,22 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                             err: Some(reason.clone()),
                         })
                         .collect();
+                    // The machine owns its reachability: with no source known, its own
+                    // card states the failure.
+                    if model.state.stands_alone(&machine) {
+                        model.switcher.apply_machine_result(
+                            &machine,
+                            Some(reason.clone()),
+                            &mut model.state,
+                        );
+                    }
                     effects.extend(disconnect);
                     effects
                 }
                 None => {
+                    if let Some(m) = model.state.machine_mut(&machine) {
+                        m.err = None;
+                    }
                     model.state.login_reports.remove(&machine);
                     if let Some(rescan) = model.rescan.as_mut() {
                         rescan.locked.remove(&machine);
@@ -1339,12 +1377,15 @@ fn settle_rescan(model: &mut AppModel) {
         return;
     };
     let waiting = match &rescan.machine {
-        Some(machine) => model
-            .state
-            .scanning
-            .iter()
-            .any(|s| crate::session::machine_of(s) == machine),
-        None => !model.state.scanning.is_empty() || rescan.roster,
+        Some(machine) => {
+            model
+                .state
+                .scanning
+                .iter()
+                .any(|s| crate::session::machine_of(s) == machine)
+                || model.state.machine_scanning.contains(machine)
+        }
+        None => model.state.scanning_any() || rescan.roster,
     };
     if waiting {
         return;
@@ -1383,10 +1424,7 @@ fn settle_rescan(model: &mut AppModel) {
 /// message is folded by [`step`]; around it, a message that can carry a source's answer
 /// records what stopped answering, and a re-scan whose last answer arrived reports.
 pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
-    let answers = matches!(
-        msg,
-        Msg::HostEvent { .. } | Msg::ApplySourceResult { .. } | Msg::ApplyInventory { .. }
-    );
+    let answers = matches!(msg, Msg::HostEvent { .. } | Msg::ApplyInventory { .. });
     let answering_before = answers.then(|| answering_sources(&model.state));
     let landing = model.switcher.landing_open();
     let mut effects = step(model, msg);
@@ -1678,7 +1716,9 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 model.state.logged_in.remove(machine);
             }
             if !machine_has_sources {
-                model.switcher.mark_scanning(machine, &mut model.state);
+                model
+                    .switcher
+                    .mark_machine_scanning(machine, &mut model.state);
             }
             if model
                 .state
@@ -1739,6 +1779,13 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                         &mut model.state,
                     );
                 }
+                if model.state.stands_alone(&machine) {
+                    model.switcher.apply_machine_result(
+                        &machine,
+                        Some("SSH password no longer held; log in again".into()),
+                        &mut model.state,
+                    );
+                }
                 effects.push(Effect::Event(EventEffect::DisconnectMachine { machine }));
             }
             effects
@@ -1776,21 +1823,34 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .into_iter()
                 .collect()
         }
-        Msg::ApplySourceResult {
-            source,
-            sessions,
-            err,
-        } => {
-            model
-                .switcher
-                .apply_source_result(source, sessions, err, &mut model.state);
-            Vec::new()
-        }
         Msg::AddSource { source, scanning } => {
             model.switcher.add_source(source.clone(), &mut model.state);
             if scanning {
                 model.switcher.mark_scanning(&source, &mut model.state);
             }
+            Vec::new()
+        }
+        Msg::AddSources { sources } => {
+            model.switcher.add_sources(sources, &mut model.state);
+            Vec::new()
+        }
+        Msg::AddMachine { machine } => {
+            model.switcher.add_machine(machine, &mut model.state);
+            Vec::new()
+        }
+        Msg::RemoveMachine { machine } => {
+            model.state.machine_scan_deadlines.remove(&machine);
+            model.switcher.remove_machine(&machine, &mut model.state);
+            Vec::new()
+        }
+        Msg::ApplyMachineResult { machine, err } => {
+            model
+                .switcher
+                .apply_machine_result(&machine, err, &mut model.state);
+            Vec::new()
+        }
+        Msg::SettleMuxless { machine } => {
+            model.switcher.settle_muxless(&machine, &mut model.state);
             Vec::new()
         }
         Msg::RemoveSource {
@@ -2146,6 +2206,24 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 model.switcher.apply_source_result(
                     source,
                     sessions,
+                    Some("scan timed out after 10s".into()),
+                    &mut model.state,
+                );
+            }
+            let mut expired = Vec::new();
+            for machine in &model.state.machine_scanning {
+                let deadline = model
+                    .state
+                    .machine_scan_deadlines
+                    .entry(machine.clone())
+                    .or_insert(now + crate::provision::env::SCAN_TIMEOUT);
+                if now >= *deadline {
+                    expired.push(machine.clone());
+                }
+            }
+            for machine in expired {
+                model.switcher.apply_machine_result(
+                    &machine,
                     Some("scan timed out after 10s".into()),
                     &mut model.state,
                 );
@@ -2624,15 +2702,18 @@ mod tests {
     }
 
     fn answer(model: &mut AppModel, source: &str, names: &[&str], err: Option<&str>) {
-        let effects = update(
+        let logged_in = model.state.logged_in.clone();
+        update(
             model,
-            Msg::ApplySourceResult {
-                source: source.to_owned(),
-                sessions: sessions(source, names),
-                err: err.map(str::to_owned),
+            Msg::HostEvent {
+                event: crate::link::HostEvent::Sessions {
+                    source: source.to_owned(),
+                    sessions: sessions(source, names),
+                    err: err.map(str::to_owned),
+                },
+                logged_in,
             },
         );
-        assert!(effects.is_empty());
     }
 
     fn note_texts(model: &AppModel) -> Vec<String> {
@@ -3940,10 +4021,13 @@ mod tests {
         for source in sources {
             update(
                 &mut m,
-                Msg::ApplySourceResult {
-                    source: (*source).to_owned(),
-                    sessions: Vec::new(),
-                    err: Some("alice@box: Permission denied (publickey,password).".to_owned()),
+                Msg::HostEvent {
+                    event: crate::link::HostEvent::Sessions {
+                        source: (*source).to_owned(),
+                        sessions: Vec::new(),
+                        err: Some("alice@box: Permission denied (publickey,password).".to_owned()),
+                    },
+                    logged_in: HashSet::new(),
                 },
             );
         }

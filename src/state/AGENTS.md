@@ -6,7 +6,7 @@
 active filter, the canonical selection, the confirmed displayed address, focus, the
 open modal, chrome data, notifications, login and authentication state, the attach
 debounce, and the last session address persisted to preferences. It is seeded from a
-scan or the configured source list. The app update transition owns all mutation and
+scan or from the roster's sources and hosts. The app update transition owns all mutation and
 folds domain intents through this layer's action reducer, which touches only state
 and returns commands; the clock and runtime attach facts enter as data on the tick.
 
@@ -39,6 +39,9 @@ and returns commands; the clock and runtime attach facts enter as data on the ti
   return a command for the loop to run instead.
 - The action reducer folds intents without a match on mux kind; the mux enters here
   only as domain data.
+- A host is held apart from its sources and owns its own failure and scan state, so a
+  host whose muxes are not known yet stands with no source, and no source stands in
+  for it.
 
 ## Common Pitfalls
 

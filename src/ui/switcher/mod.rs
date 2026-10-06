@@ -600,12 +600,11 @@ impl Switcher {
     // --- tree model ---------------------------------------------------------
 
     fn rebuild(&mut self, state: &mut crate::state::State) {
-        if self.login_target.as_ref().is_some_and(|source| {
-            !state
-                .groups
-                .iter()
-                .any(|group| group.source == *source && group.failure().is_some())
-        }) {
+        if self
+            .login_target
+            .as_ref()
+            .is_some_and(|source| !login_answers(state, source))
+        {
             self.login_target = None;
         }
         let prior = Prior {
@@ -627,15 +626,27 @@ impl Switcher {
         // The mux each card NAMES comes from one resolver, so a session card, its host's
         // card and the screen behind either cannot spell one mux three ways.
         let named_mux = |source: &str| state.chrome.source_mux(source).to_string();
-        let rows = tree::flatten(&state.groups, &state.scanning, &state.filter, &named_mux);
+        let hostless = state.hostless_machines();
+        let flat = |filter: &str| {
+            tree::flatten(
+                &state.groups,
+                &state.scanning,
+                &hostless,
+                &state.machine_scanning,
+                filter,
+                &named_mux,
+            )
+        };
+        let rows = flat(&state.filter);
         // While the numbers are dealt in list order, they are dealt over the list the
         // filter does not narrow, so a filter typed during a scan cannot renumber the cards
         // it hides.
         let unfiltered = (!self.renumbering && !self.numbers_fixed && !state.filter.is_empty())
-            .then(|| tree::flatten(&state.groups, &state.scanning, "", &named_mux));
+            .then(|| flat(""));
+        let settled = state.scanning.is_empty() && state.machine_scanning.is_empty();
 
         let old_rows = std::mem::replace(&mut self.rows, rows);
-        self.number_cards(unfiltered.as_deref(), state.scanning.is_empty());
+        self.number_cards(unfiltered.as_deref(), settled);
         let target = self.resolve_selection(prior, &old_rows, state);
         if self
             .hover
@@ -738,9 +749,9 @@ impl Switcher {
     ///   has no session to show);
     /// - a source goes to its host (the host's card when the host is down, else the host
     ///   half of the row the source stood on, else of the host's first row);
-    /// - a card that stood for the whole host (its card while it was down, or the card
-    ///   of the source named by the host alone) that resolved into sources hands the
-    ///   selection to the first of them by name;
+    /// - the card of a machine (its card while it was down, or while no source of it
+    ///   was known) that resolved into sources hands the selection to the first of them
+    ///   by name;
     /// - when nothing of the host survives, the selection goes to the card that now holds
     ///   the vanished card's place: the first card after it in the prior card order that
     ///   survived, else the last surviving card before it.
@@ -759,14 +770,10 @@ impl Switcher {
         let near = prior.row.as_ref().and_then(row_source).map(str::to_owned);
         loop {
             if let Node::Host(machine) = &node {
-                // A card that stood for the whole host: its card while it was down, or the
-                // card of the source named by the host alone, which stands in for it until
-                // its muxes are known.
-                let card = |r: &RowRef| match r {
-                    RowRef::Machine { machine: m, .. } => m == machine,
-                    RowRef::Host { source, .. } => source == machine,
-                    _ => false,
-                };
+                // The card that stood for the whole machine: its card while it was down, or
+                // while no source of it was known.
+                let card =
+                    |r: &RowRef| matches!(r, RowRef::Machine { machine: m, .. } if m == machine);
                 if prior.row.as_ref().is_some_and(card)
                     && !self.rows.iter().any(|r| card(&r.reference))
                 {
@@ -953,7 +960,7 @@ impl Switcher {
         self.numbers_held = held;
         if held {
             self.reopen_numbers();
-        } else if state.scanning.is_empty() {
+        } else if state.scanning.is_empty() && state.machine_scanning.is_empty() {
             self.numbers_fixed = true;
         }
     }
@@ -1316,6 +1323,12 @@ impl Switcher {
                 .iter()
                 .find(|g| g.source == source)
                 .and_then(|g| g.err.as_deref())
+                .or_else(|| {
+                    state
+                        .machine(source)
+                        .filter(|m| !state.has_hosts(&m.name))
+                        .and_then(|m| m.err.as_deref())
+                })
                 .and_then(|e| e.lines().map(str::trim).find(|l| !l.is_empty()))
                 .unwrap_or_default()
                 .to_string()
@@ -1474,9 +1487,9 @@ impl Switcher {
                 .login_target
                 .as_deref()
                 .is_some_and(|source| crate::session::machine_of(source) == machine)
-                && state.groups.iter().any(|g| {
+                && (state.groups.iter().any(|g| {
                     crate::session::machine_of(&g.source) == machine && g.failure().is_some()
-                });
+                }) || machine_failure_alone(state, machine).is_some());
             let login_reported = state
                 .login
                 .as_ref()
@@ -1506,7 +1519,7 @@ impl Switcher {
             .and_then(|source| state.groups.iter().find(|group| group.source == source));
         let scanning = match &node {
             Some(Node::Source(source)) => state.scanning.contains(source),
-            None => !state.scanning.is_empty(),
+            None => state.scanning_any(),
             _ => false,
         };
         crate::model::choose_view_screen(
@@ -1563,9 +1576,8 @@ impl Switcher {
                 .filter(|g| crate::session::machine_of(&g.source) == machine)
                 .filter_map(|g| {
                     // A source is named by its mux, and only by a mux an answer
-                    // confirmed. A source with no confirmed mux is linked nowhere: it is
-                    // the placeholder that stands for the whole machine until its mux is
-                    // known, so its link would open the screen it is listed on.
+                    // confirmed, so a source whose mux no answer has confirmed yet is not
+                    // linked.
                     let answered = g.err.is_none() && !state.scanning.contains(&g.source);
                     let mux = state.chrome.source_mux(&g.source);
                     if mux.is_empty() || !crate::session::mux_may_be_named(&g.source, answered) {
@@ -1649,9 +1661,9 @@ impl Switcher {
                         ..
                     } => tree::host_state_word(*scanning, *blocked, *list_failed, *unreachable)
                         .to_string(),
-                    RowRef::Machine { blocked, .. } => {
-                        tree::host_state_word(false, *blocked, false, true).to_string()
-                    }
+                    RowRef::Machine {
+                        blocked, scanning, ..
+                    } => tree::host_state_word(*scanning, *blocked, false, true).to_string(),
                     RowRef::Section { .. } => String::new(),
                 };
                 ScreenLink {
@@ -1877,6 +1889,18 @@ impl Switcher {
             g.err = None;
             g.sessions.clear();
         }
+        let hostless: Vec<String> = state
+            .hostless_machines()
+            .into_iter()
+            .map(|m| m.name.clone())
+            .collect();
+        for machine in hostless {
+            state.machine_scanning.insert(machine.clone());
+            state.machine_scan_deadlines.remove(&machine);
+            if let Some(m) = state.machine_mut(&machine) {
+                m.err = None;
+            }
+        }
         self.rescan_kick = true;
         self.reattach_kick = true;
         self.rebuild(state);
@@ -1969,17 +1993,44 @@ impl Switcher {
     /// It APPENDS the new host to `state.groups`; `rebuild` then places it in the
     /// deterministic order.
     pub fn add_source(&mut self, source: String, state: &mut crate::state::State) {
-        if state.groups.iter().any(|g| g.source == source) {
-            return;
+        self.add_sources(vec![source], state);
+    }
+
+    /// Adds every source of `sources` the nav does not show yet, then rebuilds once, so
+    /// the card a machine stood on before any source of it was known hands its selection
+    /// to the first of them by name. The source named by the machine alone keeps that
+    /// card's number.
+    pub fn add_sources(&mut self, sources: Vec<String>, state: &mut crate::state::State) {
+        let mut added = false;
+        for source in sources {
+            if state.groups.iter().any(|g| g.source == source) {
+                continue;
+            }
+            let machine = crate::session::machine_of(&source).to_string();
+            if !state.has_hosts(&machine) {
+                if let Some(n) = self.numbers.remove(&CardId::Machine(machine.clone())) {
+                    if source == machine {
+                        self.numbers.insert(CardId::Host(source.clone()), n);
+                    }
+                }
+                state.machine_scanning.remove(&machine);
+                state.machine_scan_deadlines.remove(&machine);
+            }
+            if state.machine(&machine).is_none() {
+                state.machines.push(crate::model::Machine::new(machine));
+            }
+            state.scanning.insert(source.clone());
+            state.scan_deadlines.remove(&source);
+            state.groups.push(Group {
+                source,
+                err: None,
+                sessions: Vec::new(),
+            });
+            added = true;
         }
-        state.scanning.insert(source.clone());
-        state.scan_deadlines.remove(&source);
-        state.groups.push(Group {
-            source,
-            err: None,
-            sessions: Vec::new(),
-        });
-        self.rebuild(state);
+        if added {
+            self.rebuild(state);
+        }
     }
 
     /// Puts the card of `source` back in flight: it spins and carries no failure, for an
@@ -2009,11 +2060,82 @@ impl Switcher {
                 state.scan_deadlines.remove(&g.source);
             }
         }
+        if !state.has_hosts(machine) {
+            if let Some(m) = state.machine_mut(machine).filter(|m| !m.muxless) {
+                m.err = None;
+                state.machine_scanning.insert(machine.to_string());
+                state.machine_scan_deadlines.remove(machine);
+            }
+        }
+        self.rebuild(state);
+    }
+
+    /// Puts `machine` on the roster, its card spinning while no source of it is known.
+    /// Idempotent.
+    pub fn add_machine(&mut self, machine: String, state: &mut crate::state::State) {
+        state.add_machine(machine);
+        self.rebuild(state);
+    }
+
+    /// Drops a machine the roster no longer names. Its sources leave through
+    /// [`Switcher::remove_source`]. Idempotent.
+    pub fn remove_machine(&mut self, machine: &str, state: &mut crate::state::State) {
+        if state.machine(machine).is_none() {
+            return;
+        }
+        state.machines.retain(|m| m.name != machine);
+        state.machine_scanning.remove(machine);
+        self.rebuild(state);
+    }
+
+    /// Records the answer `machine` gave as a whole: `Some` why it could not be asked,
+    /// `None` that it answered. The card of a machine with no source known states it, and
+    /// its answer is no longer on its way.
+    pub fn apply_machine_result(
+        &mut self,
+        machine: &str,
+        err: Option<String>,
+        state: &mut crate::state::State,
+    ) {
+        let Some(m) = state.machine_mut(machine) else {
+            return;
+        };
+        if err.is_some() {
+            m.muxless = false;
+        }
+        m.err = err.clone();
+        state.machine_scanning.remove(machine);
+        state.machine_scan_deadlines.remove(machine);
+        // The failure run, counted under the machine's name the way a source counts its
+        // own, and the end of the mux search a working login started.
+        match &err {
+            Some(reason) => {
+                *state.failure_runs.entry(machine.to_string()).or_insert(0) += 1;
+                state.login_mux_answered(machine, &crate::model::MuxAnswer::Failed(reason.clone()));
+            }
+            None => {
+                state.failure_runs.remove(machine);
+            }
+        }
+        self.rebuild(state);
+    }
+
+    /// Settles `machine` as serving no mux xmux supports: with no source known, it has
+    /// nothing to show, so its card goes.
+    pub fn settle_muxless(&mut self, machine: &str, state: &mut crate::state::State) {
+        let Some(m) = state.machine_mut(machine) else {
+            return;
+        };
+        m.muxless = true;
+        m.err = None;
+        state.machine_scanning.remove(machine);
+        state.machine_scan_deadlines.remove(machine);
         self.rebuild(state);
     }
 
     /// Drops a source whose MACHINE the roster no longer names, and everything the nav
-    /// held for it. Idempotent: a source the nav does not show is left alone.
+    /// held for it, the machine with its last source. Idempotent: a source the nav does
+    /// not show is left alone.
     ///
     /// A selection on the dropped card moves along its lineage, as on every rebuild.
     pub fn remove_source(&mut self, source: &str, state: &mut crate::state::State) {
@@ -2021,6 +2143,12 @@ impl Switcher {
             return;
         }
         state.groups.retain(|g| g.source != source);
+        let machine = crate::session::machine_of(source);
+        if !state.has_hosts(machine) {
+            state.machines.retain(|m| m.name != machine);
+            state.machine_scanning.remove(machine);
+            state.machine_scan_deadlines.remove(machine);
+        }
         state.scanning.remove(source);
         state.scan_deadlines.remove(source);
         state.failure_runs.remove(source);
@@ -2185,10 +2313,9 @@ fn node_of(reference: &RowRef, part: Part) -> Node {
 /// source while it is listed, a session while its source lists it.
 fn node_exists(node: &Node, state: &crate::state::State) -> bool {
     match node {
-        Node::Host(machine) => state
-            .groups
-            .iter()
-            .any(|g| crate::session::machine_of(&g.source) == machine),
+        Node::Host(machine) => {
+            state.has_hosts(machine) || state.hostless_machines().iter().any(|m| m.name == *machine)
+        }
         Node::Source(source) => state.groups.iter().any(|g| g.source == *source),
         Node::Session(address) => state.groups.iter().any(|g| {
             g.source == address.source
@@ -2233,6 +2360,9 @@ pub(crate) fn host_failure(
     machine: &str,
 ) -> Option<crate::model::FailureKind> {
     use crate::model::FailureKind;
+    if !state.has_hosts(machine) {
+        return machine_failure_alone(state, machine);
+    }
     let mut blocked = false;
     let mut any = false;
     for g in state
@@ -2255,8 +2385,34 @@ pub(crate) fn host_failure(
     })
 }
 
-/// Whether every source of a host is still waiting on its answer.
+/// The failure a machine with no source known is in, read off its own answer, and `None`
+/// while that answer is on its way or for a machine with a source.
+pub(crate) fn machine_failure_alone(
+    state: &crate::state::State,
+    machine: &str,
+) -> Option<crate::model::FailureKind> {
+    if state.has_hosts(machine) || state.machine_scanning.contains(machine) {
+        return None;
+    }
+    state.machine(machine)?.failure()
+}
+
+/// Whether the login pane opened for `source` still has a failure to answer: a failed
+/// source of that address, or a machine of that name that failed with no source known.
+fn login_answers(state: &crate::state::State, source: &str) -> bool {
+    state
+        .groups
+        .iter()
+        .any(|group| group.source == source && group.failure().is_some())
+        || machine_failure_alone(state, source).is_some()
+}
+
+/// Whether every source of a host is still waiting on its answer, or, for a machine with
+/// no source known, whether its own answer is.
 pub(crate) fn host_scanning(state: &crate::state::State, machine: &str) -> bool {
+    if !state.has_hosts(machine) {
+        return state.machine_scanning.contains(machine);
+    }
     let mut sources = state
         .groups
         .iter()

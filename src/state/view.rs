@@ -37,14 +37,17 @@ pub(crate) enum RowRef {
         list_failed: bool,
         scanning: bool,
     },
-    /// A host none of whose sources connected (unreachable, or logged out and waiting on
-    /// a login): one card for the whole machine in place of a card per source. `source`
-    /// is the source the login pane and the probes address for it, its first in card
-    /// order. `blocked` says a login can answer the failure.
+    /// A machine's own card: one for a machine none of whose sources connected
+    /// (unreachable, or logged out and waiting on a login), in place of a card per source,
+    /// and one for a machine no source of which is known yet. `source` is the address the
+    /// login pane and the probes use for it: its first source in card order, or the
+    /// machine's own name while it has none. `blocked` says a login can answer the
+    /// failure, and `scanning` that the machine's answer is still on its way.
     Machine {
         machine: String,
         source: String,
         blocked: bool,
+        scanning: bool,
     },
 }
 

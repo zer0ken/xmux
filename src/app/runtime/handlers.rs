@@ -229,8 +229,8 @@ impl Runtime {
                 // and streams its sessions in like any other.
                 //
                 // A machine that serves no source yet names its sources the way a written
-                // list would: one mux takes the bare machine name, which is the card the
-                // machine has been showing, and several are each qualified. A machine
+                // list would: one mux takes the bare machine name, and several are each
+                // qualified. A machine
                 // that already serves a source adds each new one qualified (`prod:zellij`),
                 // and the one already served keeps the id it was painted with, because
                 // that id is what the frozen order, the persisted selection, and anything
@@ -247,9 +247,8 @@ impl Runtime {
                         if first {
                             let effects = update(
                                 model,
-                                Msg::ApplySourceResult {
-                                    source: machine,
-                                    sessions: Vec::new(),
+                                Msg::ApplyMachineResult {
+                                    machine,
                                     err: Some(reason),
                                 },
                             );
@@ -276,7 +275,7 @@ impl Runtime {
                         })
                         .collect()
                 };
-                let machine_card_goes = first && !specs.iter().any(|(_, id)| *id == machine);
+                let mut added = Vec::new();
                 for (bin, id) in specs {
                     if hosts.get(&id).is_some() {
                         continue;
@@ -286,33 +285,28 @@ impl Runtime {
                     };
                     tracing::info!(machine = %machine, mux = %bin, source = %id, "mux discovered");
                     hosts.insert(host);
+                    added.push(id);
+                }
+                if !added.is_empty() {
                     let effects = update(model, Msg::SetSourceReach(reach_map(env, hosts)));
                     debug_assert!(effects.is_empty());
-                    // A source that takes the card the machine stood as inherits that card,
-                    // whatever it last showed; its own first listing is now in flight.
+                    // Every source the machine answered joins at once, so the card the
+                    // machine stood on hands its selection to the first of them by name;
+                    // each one's first listing is now in flight.
                     let effects = update(
                         model,
-                        Msg::AddSource {
-                            source: id.clone(),
-                            scanning: true,
+                        Msg::AddSources {
+                            sources: added.clone(),
                         },
                     );
                     debug_assert!(effects.is_empty());
-                    scan_or_dispatch_host(mgr, hosts, model, &id, vc, vr, scan_pool);
-                }
-                // The card that stood for the machine goes when no source takes its name:
-                // nothing answered, so there is nothing to show, or several muxes did and
-                // each has a card of its own. It goes AFTER the sources it resolved into
-                // are on the list, so a selection on it moves to the machine's first source
-                // card rather than past a machine that has no card yet.
-                if machine_card_goes {
-                    let effects = update(
-                        model,
-                        Msg::RemoveSource {
-                            source: machine.clone(),
-                            clear_tracking: false,
-                        },
-                    );
+                    for id in &added {
+                        scan_or_dispatch_host(mgr, hosts, model, id, vc, vr, scan_pool);
+                    }
+                } else if first {
+                    // Nothing answered that xmux supports, so the machine has nothing to
+                    // show and its card goes.
+                    let effects = update(model, Msg::SettleMuxless { machine });
                     debug_assert!(effects.is_empty());
                 }
             }
@@ -377,6 +371,16 @@ impl Runtime {
                     );
                     debug_assert!(effects.is_empty());
                 }
+                for machine in &delta.machines_removed {
+                    tracing::info!(machine = %machine, "roster dropped a machine");
+                    let effects = update(
+                        model,
+                        Msg::RemoveMachine {
+                            machine: machine.clone(),
+                        },
+                    );
+                    debug_assert!(effects.is_empty());
+                }
                 for id in &delta.added {
                     tracing::info!(source = %id, "roster offered a new source");
                     let effects = update(
@@ -384,6 +388,18 @@ impl Runtime {
                         Msg::AddSource {
                             source: id.clone(),
                             scanning: launching,
+                        },
+                    );
+                    debug_assert!(effects.is_empty());
+                }
+                // A machine joins after its sources, so one that has a source does not
+                // stand on the nav by itself even for a moment.
+                for machine in &delta.machines_added {
+                    tracing::info!(machine = %machine, "roster offered a new machine");
+                    let effects = update(
+                        model,
+                        Msg::AddMachine {
+                            machine: machine.clone(),
                         },
                     );
                     debug_assert!(effects.is_empty());
@@ -401,8 +417,12 @@ impl Runtime {
                 // re-probe of all machines that the re-scan already started reclassifies
                 // those, so nothing is probed twice for one re-scan.
                 let mut probed: HashSet<&str> = HashSet::new();
-                for id in &delta.added {
-                    let machine = crate::session::machine_of(id);
+                let added = delta
+                    .added
+                    .iter()
+                    .map(|id| crate::session::machine_of(id))
+                    .chain(delta.machines_added.iter().map(String::as_str));
+                for machine in added {
                     if probed.insert(machine) {
                         probe_machine(machine, hosts, mgr.events(), scan_pool, false, 0);
                     }
@@ -674,7 +694,7 @@ impl Runtime {
 
         // The app's runtime state (single source of truth), seeded from the host ids;
         // events stream the nav in.
-        let mut state = crate::state::State::from_sources(hosts.card_ids());
+        let mut state = crate::state::State::from_roster(hosts.ids().to_vec(), hosts.machines());
         let mut switcher = crate::ui::switcher::Switcher::from_sources(&mut state);
         // The one session the terminal view refuses: the one xmux is running in. Named
         // once here, because the environment that names it cannot change under a run.
