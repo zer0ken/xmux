@@ -29,11 +29,13 @@ pub(crate) enum RowRef {
     /// A host with no session to show (scanning / unreachable / blocked / list
     /// failed / empty), sunk below the sections. `scanning` is the in-flight state: the
     /// card's unresolved level shows a spinner instead of a settled mux. `blocked`
-    /// refines `unreachable`: the failure is one a login answers.
+    /// refines `unreachable`: the failure is one a login answers. `logged_out` refines
+    /// `blocked`: the user logged out of the machine.
     Host {
         host: String,
         unreachable: bool,
         blocked: bool,
+        logged_out: bool,
         list_failed: bool,
         scanning: bool,
     },
@@ -42,11 +44,13 @@ pub(crate) enum RowRef {
     /// and one for a machine no host of which is known yet. `host` is the address the
     /// login pane and the probes use for it: its first host in card order, or the
     /// machine's own name while it has none. `blocked` says a login can answer the
-    /// failure, and `scanning` that the machine's answer is still on its way.
+    /// failure, `logged_out` that the user logged out of the machine, and `scanning` that
+    /// the machine's answer is still on its way.
     Machine {
         machine: String,
         host: String,
         blocked: bool,
+        logged_out: bool,
         scanning: bool,
     },
 }

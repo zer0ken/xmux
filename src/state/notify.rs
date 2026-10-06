@@ -344,9 +344,9 @@ impl ScanSnapshot {
 
     /// One report of what changed between this snapshot and `after`: hosts added and
     /// removed, sessions started and ended, and hosts that stopped or started
-    /// answering. `label` names a host the way its card does. A session is named under
-    /// its machine, and under the machine and its mux when the machine serves several. A
-    /// re-scan that changed nothing says so, with the counts it found. Every host count
+    /// answering. `label` names a host the way its card does, and a session is named by
+    /// its path under that label. A re-scan that changed nothing says so, with the counts
+    /// it found. Every host count
     /// counts machines, not the muxes they serve. A host whose login was refused reads
     /// as needing a login, never as its sessions ending.
     pub(crate) fn summary(
@@ -364,11 +364,7 @@ impl ScanSnapshot {
             match (self.hosts.get(host), shape) {
                 (None, _) => added.push(host.as_str()),
                 (Some(HostShape::Sessions(was)), HostShape::Sessions(now)) => {
-                    let owner = if crate::session::mux_of(host).is_empty() {
-                        crate::session::machine_of(host).to_string()
-                    } else {
-                        label(host)
-                    };
+                    let owner = label(host);
                     started.extend(now.difference(was).map(|n| format!("{owner}/{n}")));
                     ended.extend(was.difference(now).map(|n| format!("{owner}/{n}")));
                 }
@@ -725,8 +721,11 @@ mod tests {
             vec![
                 (Level::Info, "1 machine added: new/tmux".to_string()),
                 (Level::Info, "1 machine removed: old/tmux".to_string()),
-                (Level::Info, "1 session started: gpu-01/serve".to_string()),
-                (Level::Info, "1 session ended: gpu-01/eval".to_string()),
+                (
+                    Level::Info,
+                    "1 session started: gpu-01/tmux/serve".to_string()
+                ),
+                (Level::Info, "1 session ended: gpu-01/tmux/eval".to_string()),
                 (Level::Success, "db/tmux reachable again".to_string()),
                 (Level::Warning, "web-03/tmux unreachable".to_string()),
             ]

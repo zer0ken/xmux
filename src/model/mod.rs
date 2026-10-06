@@ -27,7 +27,7 @@ pub use death::{
 pub(crate) use host::PendingInstall;
 pub use host::{Host, HostDisplay, Liveness, ReadyOutcome};
 pub use hosts::{host_for, Hosts, RosterDelta};
-pub use inventory::{add_session, sort_by_name, FailureKind, Group, Machine};
+pub use inventory::{add_session, sort_by_name, FailureKind, Group, Machine, LOGGED_OUT};
 pub(crate) use login::SECRET_INPUT_CAPACITY;
 pub use login::{
     AfterLogin, AuthMethod, LoginEvent, LoginFailure, LoginField, LoginProgress, LoginStep,

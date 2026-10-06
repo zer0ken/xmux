@@ -10,8 +10,8 @@ against, naming no source file, function, or test.
 
 ## A. Discovery & inventory
 
-- **FR-A1** - `xmux ls` lists every reachable session across all hosts as
-  `<host>/<name>` lines.
+- **FR-A1** - `xmux ls` lists every reachable session across all hosts, one line per
+  session written as its `<machine>/<mux>/<session>` path.
 - **FR-A2** - A reachable mux with no sessions is reported as empty, a host on a dead
   machine as unreachable, and the case where every host is unreachable is distinguished.
 - **FR-A3** - `xmux doctor` reports config health, ssh availability, and per-host
@@ -153,7 +153,8 @@ against, naming no source file, function, or test.
 - **FR-B44** - Every surface names the levels machine, host, and session, with `host`
   always one mux on a machine, a machine screen and a host screen open with their level
   and path (`machine db-01`, `host db-01/tmux`), and each states only the facts of its
-  own level.
+  own level. A surface that names a session apart from its host's section, title, or
+  screen writes its whole path (`db-01/tmux/pg-primary`).
 
 ## C. Switching (the keystone)
 

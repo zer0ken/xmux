@@ -207,8 +207,8 @@ moving that selection, and a click executes the item as `Enter` would.
   the nearest visible card related to its card when that card is hidden. `Enter` keeps
   the filter, `Esc` restores the one the popup opened with, and `Esc` in the nav clears
   an applied filter.
-- **Logout** (`prefix L`): states the selected session, or the machine when no session
-  is selected, the observed SSH login, what happens to a held password, to this PC's
+- **Logout** (`prefix L`): states the machine it logs out of, whichever of its cards is
+  selected, the observed SSH login, what happens to a held password, to this PC's
   key, and to the ssh config entry xmux saved, and the machine whose connections close.
   Typing `logout` and `Enter` confirms it, and `Esc` cancels. When the window is too short
   for these rows, `↑`/`↓` and `PgUp`/`PgDn` scroll them above the field, and the key

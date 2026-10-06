@@ -803,7 +803,7 @@ fn prefix_surfaces() -> Vec<crate::state::Modal> {
         let mut input = Input::new(mode, String::new(), host.map(str::to_string));
         if matches!(mode, InputMode::Logout | InputMode::LogoutKeys) {
             input.facts = vec![
-                ("session", "local/build".into()),
+                ("machine", "local".into()),
                 ("SSH login", "public key".into()),
                 (
                     "key",

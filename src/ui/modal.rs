@@ -1435,7 +1435,7 @@ mod tests {
         let p = palette::Palette::default();
         let mut input = Input::new(InputMode::Logout, "logo".into(), Some("gpu-01".into()));
         input.facts = vec![
-            ("session", "gpu-01/train".into()),
+            ("machine", "gpu-01".into()),
             ("SSH login", "not observed".into()),
             ("password", "held password is cleared".into()),
             (
@@ -1455,7 +1455,7 @@ mod tests {
         assert_eq!(lines.len() as u16 + 2, h);
         let text = flat(&lines);
         for row in [
-            "session      gpu-01/train",
+            "machine      gpu-01",
             "SSH login    not observed",
             "password     held password is cleared",
             "key          removed from gpu-01; asks first if xmux did not add it",
@@ -2236,7 +2236,7 @@ mod tests {
         let p = palette::Palette::default();
         let mut input = Input::new(InputMode::Logout, "lo".into(), Some("gpu-01".into()));
         input.facts = vec![
-            ("session", "gpu-01/a-session-with-a-long-name".into()),
+            ("machine", "gpu-01-a-machine-with-a-long-name".into()),
             (
                 "key",
                 "removed from gpu-01; asks first if xmux did not add it".into(),
@@ -2268,7 +2268,7 @@ mod tests {
         );
 
         let input = Input::new(InputMode::Jump, "4".into(), None);
-        let name = "gpu-02/a-session-with-a-name-longer-than-the-popup";
+        let name = "gpu-02/tmux/a-session-with-a-name-longer-than-the-popup";
         let (_, lines) = jump_popup(&input, Some(name), false, 9, 30, &p);
         assert!(lines.len() > 1 && lines.iter().all(|l| l.width() <= 28));
         assert!(squeezed(&lines).contains(name));

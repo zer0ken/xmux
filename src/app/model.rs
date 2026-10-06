@@ -952,14 +952,14 @@ fn finish_logout(model: &mut AppModel, notes: Vec<crate::state::notify::Note>) -
         model.switcher.apply_host_result(
             host,
             Vec::new(),
-            Some("logged out; log in again or re-scan".into()),
+            Some(crate::model::LOGGED_OUT.into()),
             &mut model.state,
         );
     }
     if model.state.stands_alone(&machine) {
         model.switcher.apply_machine_result(
             &machine,
-            Some("logged out; log in again or re-scan".into()),
+            Some(crate::model::LOGGED_OUT.into()),
             &mut model.state,
         );
     }
@@ -3405,7 +3405,7 @@ mod tests {
         assert!(m.logout.is_none());
         assert_eq!(
             m.state.groups[0].err.as_deref(),
-            Some("logged out; log in again or re-scan")
+            Some(crate::model::LOGGED_OUT)
         );
     }
 
@@ -3846,7 +3846,7 @@ mod tests {
         assert!(!m.state.auth_methods.contains_key("box"));
         assert_eq!(
             m.state.groups[0].err.as_deref(),
-            Some("logged out; log in again or re-scan")
+            Some(crate::model::LOGGED_OUT)
         );
     }
 
@@ -4574,7 +4574,7 @@ mod tests {
             let mut m = AppModel::from_hosts(vec!["box".to_owned()]);
             let mut input = crate::state::Input::new(mode, String::new(), Some("box".into()));
             input.facts = vec![
-                ("session", "box/a-session-with-a-rather-long-name".into()),
+                ("machine", "box-a-machine-with-a-rather-long-name".into()),
                 ("SSH login", "password".into()),
                 ("password", "held password is cleared".into()),
                 (

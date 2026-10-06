@@ -840,12 +840,18 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
             Some(format!("{}  (unreachable: {err})", g.host)),
         );
     }
-    let addr_w = g
-        .sessions
-        .iter()
-        .map(|s| s.address().display().len())
-        .max()
-        .unwrap_or(0);
+    // Each session is written as its path, so a line names the machine and the mux it
+    // runs under as every other surface does. The mux a listing stamped wins; the host
+    // id's own mux stands in for a session nothing stamped.
+    let path = |s: &Session| {
+        let mux = if s.mux.is_empty() {
+            crate::session::mux_of(&s.host)
+        } else {
+            &s.mux
+        };
+        crate::session::session_label(crate::session::machine_of(&s.host), mux, &s.name)
+    };
+    let addr_w = g.sessions.iter().map(|s| path(s).len()).max().unwrap_or(0);
     let nw_w = g
         .sessions
         .iter()
@@ -858,7 +864,7 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
         .map(|s| {
             format!(
                 "{:<addr_w$}  {:<nw_w$}  attached={}",
-                s.address().display(),
+                path(s),
                 window_word(s.windows),
                 s.attached
             )
@@ -3145,7 +3151,7 @@ mod tests {
         Session {
             host: host.into(),
             name: name.into(),
-            mux: String::new(),
+            mux: "tmux".into(),
             windows,
             attached,
         }
@@ -3165,11 +3171,21 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "local/editor  2 windows  attached=true",
-                "local/build   1 window   attached=false"
+                "local/tmux/editor  2 windows  attached=true",
+                "local/tmux/build   1 window   attached=false"
             ]
         );
         assert!(unreachable.is_none());
+    }
+
+    /// A session nothing stamped a mux on is written under the mux its host id names, so
+    /// the line still carries the machine, the mux, and the session.
+    #[test]
+    fn ls_lines_one_writes_the_host_ids_mux_for_an_unstamped_session() {
+        let mut s = sess("local:zellij", "notes", 1, false);
+        s.mux.clear();
+        let (lines, _) = ls_lines_one(&group("local:zellij", None, vec![s]));
+        assert_eq!(lines, vec!["local/zellij/notes  1 window  attached=false"]);
     }
 
     #[test]

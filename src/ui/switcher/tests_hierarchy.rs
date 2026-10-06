@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Modifier;
 use ratatui::Terminal;
 
-const LOGGED_OUT: &str = "logged out; log in again or re-scan";
+const LOGGED_OUT: &str = crate::model::LOGGED_OUT;
 
 fn sess(host: &str, name: &str) -> Session {
     Session {
@@ -622,6 +622,12 @@ fn a_logout_gathers_the_selection_onto_the_machines_one_card() {
         "no host of the machine keeps a card"
     );
     assert_eq!(h.node(), machine("db"));
+    let card = h.card_row(|r| matches!(r, RowRef::Machine { .. }));
+    assert!(
+        h.cells(h.card(card)).contains("logged out"),
+        "the machine's card states the logout: {}",
+        h.cells(h.card(card))
+    );
     assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Login));
     assert!(h.sw.login_pane_shown(&h.state));
     let view = h.view();
@@ -629,7 +635,15 @@ fn a_logout_gathers_the_selection_onto_the_machines_one_card() {
         view.contains("Log in"),
         "the login form is on the machine's screen:\n{view}"
     );
-    assert!(view.contains("tmux  login needed"), "{view}");
+    assert!(view.contains("tmux  logged out"), "{view}");
+    assert!(
+        view.lines().any(|l| l.trim() == "logged out"),
+        "the machine screen states the logged-out state:\n{view}"
+    );
+    assert!(
+        !view.contains("ssh failed"),
+        "a logout is no failure:\n{view}"
+    );
 }
 
 #[test]
@@ -725,8 +739,8 @@ fn a_link_opens_a_host_the_nav_has_no_card_for() {
     );
     let view = h.view();
     assert!(
-        view.contains("login needed") && view.contains("reason"),
-        "{view}"
+        view.contains("logged out") && !view.contains("reason"),
+        "a logout is the state itself, with no reason under it:\n{view}"
     );
     assert!(!view.contains("Log in ]"), "{view}");
 
@@ -917,7 +931,7 @@ fn the_landing_lists_every_card_in_nav_order_under_its_number() {
     assert!(view.contains(" xmux"), "{view}");
     assert!(view.contains("4 of 4 machines scanned"), "{view}");
     assert!(view.contains("1  gpu/tmux/train"), "{view}");
-    assert!(view.contains("5  db  login needed"), "{view}");
+    assert!(view.contains("5  db  logged out"), "{view}");
 }
 
 #[test]
