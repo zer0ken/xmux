@@ -18,5 +18,12 @@ case "$(hostname)" in
     show api-server 'echo "listening on :8080"'
     show deploy 'echo "deployed v2.4.1 to 3 replicas"'
     ;;
+  db-01)
+    # The login scenario's server takes only the password, until xmux registers a key.
+    rm -f "$HOME/.ssh/authorized_keys"
+    mk postgres; mk backup
+    show postgres 'echo "postgres 16  accepting connections on :5432"'
+    show backup 'echo "nightly backup finished: 4.2 GB"'
+    ;;
 esac
 sleep 1

@@ -1,9 +1,43 @@
 # Keybindings
 
-The README's Keys section lists the everyday keys, and `prefix ?` opens the in-app
-help with every key and glyph. This document lists the remaining keys and describes
-what neither of those shows: how the nav is placed and walked, what the longer
-commands do, the prefix indicator, popups, toasts, the mouse, and automation.
+`prefix ?` opens the in-app help with every key and glyph. This document lists the
+keys and describes what the help does not show: how the nav is placed and walked, what
+the longer commands do, the prefix indicator, popups, toasts, the mouse, and
+automation.
+
+## Everyday Keys
+
+The nav takes these keys while it holds focus:
+
+| Key                      | Action                                                                   |
+| ------------------------ | ------------------------------------------------------------------------ |
+| `↑` / `↓` (or `k` / `j`) | move one card (wraps at both ends)                                       |
+| `←` / `→` (or `h` / `l`) | previous / next `host/mux` section, the host cards counting as one       |
+| `Home` / `End`           | jump to the first / last card                                            |
+| `PageUp` / `PageDown`    | jump ten cards                                                           |
+| `Enter`                  | move focus into the selected session's terminal view                     |
+| `prefix 1`-`prefix 9`    | jump to card number (keep typing for 10+)                                |
+| `prefix n`               | new session on the selected host                                         |
+| `prefix /`               | filter cards (fuzzy)                                                     |
+| `prefix r`               | rescan this host: the selected card's machine and its sources            |
+| `prefix R`               | rescan all hosts: refresh which machines exist, and every source's sessions |
+| `prefix L`               | log out of this host (an SSH host)                                       |
+
+xmux has its own prefix, like tmux's `set -g prefix`. The default is `Ctrl-g`,
+and `[ui] prefix` replaces it. A chord is the prefix followed by one key:
+
+| Chord        | Action                                                  |
+| ------------ | ------------------------------------------------------- |
+| `prefix q`   | quit xmux                                               |
+| `prefix ?`   | help and glyphs (type to search)                        |
+| `prefix m`   | message history of results and events                   |
+| `prefix Tab` | toggle focus between the nav and the terminal view      |
+| `prefix p`   | place nav on the next side of the view                  |
+
+Pressing the prefix opens a box beside the prefix indicator that lists every key it
+unlocks. A click on a card selects it, and a click on the terminal view focuses it.
+The first key pressed after installation briefly points out the configured prefix and
+help key. xmux records that the introduction has been shown.
 
 ## The Prefix
 
@@ -13,11 +47,10 @@ environment-variable override. It accepts `C-<letter>` (for example `C-g`, `C-b`
 single control byte, so it never collides with typed text, and a prefix pasted as data
 (bracketed paste) passes through untouched.
 
-## Remaining Keys
+## Other Keys
 
 | Key | Action |
 |---|---|
-| `k` / `j`, `h` / `l` | the same as `↑` / `↓` and `←` / `→` in the nav |
 | `Ctrl-↑` / `Ctrl-↓` | move up a level (session, source, host) / back down to the child |
 | `prefix i` (bare `i` in the nav) | select the current source and show its screen |
 | `prefix r` | rescan this host: the selected card's host alone |

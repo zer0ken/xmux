@@ -10,7 +10,9 @@ standard the code is checked against, not a description of the code as it reads.
 
 - `principles.md` states every design principle once, with its reason.
 - `requirements.md` records functional requirements, one sentence per stable ID.
-- `keybind.md` covers what the README's keys and the in-app help leave out.
+- `guide.md` is the user guide the README points to: the command line, hosts and
+  login, the roster, configuration, and the control socket.
+- `keybind.md` lists every key and covers what the in-app help leaves out.
 - `assets/` holds the images the README shows.
 
 ## Invariants
@@ -38,6 +40,7 @@ standard the code is checked against, not a description of the code as it reads.
   in the code.
 - **One place per fact.** A principle is stated in `principles.md`, a term in
   `CONTEXT.md`, a requirement in `requirements.md`, and user instructions in the
-  README or `keybind.md`; other documents point there instead of repeating it.
+  README, `guide.md`, or `keybind.md`; other documents point there instead of
+  repeating it.
 - Durable docs describe current behavior only, with no change history.
 - A requirement has no coverage line: which tests cover it is the test suite's answer.
