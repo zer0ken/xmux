@@ -16,6 +16,11 @@
 //! attached to forever, and a wrong answer is worse than none. Every other platform
 //! therefore has no signal at all and says so by answering `None`.
 
+/// Whether this platform reads a live child environment at all. Elsewhere [`read`]
+/// answers `None` for every child, so a caller looking for the client's session asks
+/// another source.
+pub const READS_LIVE_ENV: bool = cfg!(windows);
+
 /// The value of `name` in `child`'s LIVE environment, or `None` when there is no answer:
 /// the child is gone, its memory cannot be read, the platform exposes no live
 /// environment, or it holds no such variable. `None` always means "no signal", never

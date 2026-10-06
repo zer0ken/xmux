@@ -1509,6 +1509,19 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     0
 }
 
+/// How often a host-side query asks where xmux's own display client is. A switch the
+/// client makes inside itself reaches the nav within this long, and a query rides the
+/// host's open connection, so a second costs one short command per second.
+const DISPLAY_PROBE_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The cadence of the host-side display-client query: when the next may start, and
+/// whether one is still out. One query at a time, so a slow host never stacks them.
+#[derive(Default)]
+struct DisplayProbe {
+    next: Option<std::time::Instant>,
+    in_flight: bool,
+}
+
 /// The persistent app's WORLD STATE: everything the `select!` loop mutates across
 /// iterations. The `select!` receivers/timers and the ratatui `Terminal` stay
 /// loop-local in [`run_app`] - a receiver cannot be polled from `self.<rx>.recv()`
@@ -1552,6 +1565,7 @@ struct Runtime {
     dirty: bool,
     last_draw: std::time::Instant,
     rescan_pending: bool,
+    display_probe: DisplayProbe,
     #[cfg(test)]
     discovery_runs: usize,
     /// The machines a one-machine re-scan probed, in order, for tests.

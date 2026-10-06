@@ -6,11 +6,13 @@
 shape with tmux: every command plan is overridden and its listing is parsed here. Its
 CLI is one process per query. Enumeration runs `list-sessions -n`, then
 `--session <name> action list-tabs --json` for each live session to count its windows
-without a display attachment. JSON counts tabs independently of their names.
-zellij moves a client between
-sessions inside the client process with `switch-session`, so the display reattaches on
-every session change, and `ZELLIJ_SESSION_NAME` in xmux's own client is the only record
-of a user's move, readable only for a client on THIS machine.
+without a display attachment. JSON counts tabs independently of their names. zellij
+moves a client between sessions inside the client process with `switch-session`, so
+the display reattaches on every session change and no zellij command reports where a
+client went. On Windows xmux reads `ZELLIJ_SESSION_NAME` out of its own client. On
+Linux it asks the kernel, once a second over the host's open path, which session's
+server socket is the peer of its client's sockets (`ss -xn`). The client is named by
+process id, which an attach run through a host shell records before `exec`.
 
 ## Module Seams
 
@@ -26,6 +28,7 @@ of a user's move, readable only for a client on THIS machine.
 - A session listed as exited is a resurrectable record, not a session, and is dropped
   during enumeration.
 - An attachment already recorded as showing the selected session is left alone.
+- A query answer counts only for the attachment it asked about, and never mid-reattach.
 
 ## Common Pitfalls
 
@@ -35,6 +38,8 @@ of a user's move, readable only for a client on THIS machine.
   is reused, and all queries share the seven-second sweep budget and six-second
   command limit. A failed query fails enumeration rather than inventing a count.
 - Tab counts do not select a tab; the display mirrors the attached client's tab.
+- `/proc/<pid>/environ` holds the environment a process started with, never the
+  client's rewritten session variable, and `list-clients` ties no client to a process.
 - Do not assume an action always answers. On WINDOWS an action addressed at a stale
   session never returns; the per-command poll budget bounds it. Verify zellij behavior
   on Linux, where the same queries answer immediately.
@@ -47,10 +52,8 @@ of a user's move, readable only for a client on THIS machine.
 
 ## Verification
 
-- A live check of the client-switch follow needs a real LOCAL zellij on Windows: attach
-  xmux's terminal view to one session, run `zellij action switch-session <other>`
-  inside it, and confirm the nav selection lands on the other session's card while the
-  same client stays on screen.
+- Check the client-switch follow live: `zellij action switch-session <other>` inside
+  the terminal view moves the nav and keeps the same client on screen.
 - A live check needs a real zellij host: create a detached session with
   `zellij attach -b <name>` and let xmux attach to it. Do NOT create tabs from outside a
   clientless session first: zellij 0.45.0 then panics its server on the next client

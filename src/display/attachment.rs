@@ -40,6 +40,9 @@ pub enum PtyEvent {
     /// the loop re-emits the same sequence on xmux's stdout between frames so the
     /// terminal above sets the clipboard.
     Osc52 { seq: Vec<u8> },
+    /// A host-side query answered which session `id`'s mux client is on, or answered
+    /// nothing (`None`). Sent once per query, so the loop knows the query ended.
+    DisplayClientSession { id: u64, session: Option<String> },
 }
 
 /// A command for a kept attachment's dedicated PTY control thread: bytes to write
@@ -481,6 +484,12 @@ impl Attachment {
     /// trust it. `None` on a platform whose PTY carries no name.
     pub fn child_tty(&self) -> Option<&str> {
         self.child_tty.as_deref()
+    }
+    /// The attach CHILD's process id on this machine, or `None` where the PTY layer has
+    /// none for it. It names the mux client only when the child IS the mux binary, which
+    /// is the transport's fact to know.
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child.process_id()
     }
     /// The value `name` holds in the attach CHILD's LIVE environment right now, read out
     /// of the running process rather than remembered from the spawn. A mux that moves its

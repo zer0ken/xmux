@@ -68,6 +68,54 @@ pub fn parse_sessions(source: &str, out: &str) -> Vec<Session> {
     sessions
 }
 
+/// The session a zellij client is connected to, from `ss -xn` rows already narrowed to
+/// the sockets whose peer is one of that client's own sockets.
+///
+/// A zellij server listens on a socket named after its session, and the socket it
+/// accepts a client on carries the same name, so the one row with a path is the
+/// server's end of the client's connection and the path's last component is the
+/// session. A client is connected to one server at a time; rows naming two sessions
+/// are not a single answer and answer `None`.
+///
+/// A row reads `u_str ESTAB <recv-q> <send-q> <path> <inode> * <peer inode>`. The
+/// path is what lies between the fourth field and the last three, so a session name
+/// holding spaces survives. A row with no path (`*`), or whose last three fields are
+/// not an inode, `*`, and an inode, is skipped.
+pub fn connected_session(out: &str) -> Option<String> {
+    let mut found: Option<&str> = None;
+    for row in out.lines() {
+        let Some(path) = server_end_path(row) else {
+            continue;
+        };
+        let session = path.rsplit('/').next().unwrap_or(path);
+        if session.is_empty() {
+            continue;
+        }
+        match found {
+            Some(seen) if seen != session => return None,
+            _ => found = Some(session),
+        }
+    }
+    found.map(str::to_string)
+}
+
+/// The local path of one `ss -xn` row, or `None` for a row without one.
+fn server_end_path(row: &str) -> Option<&str> {
+    let mut rest = row.trim();
+    for _ in 0..4 {
+        rest = rest.split_once(char::is_whitespace)?.1.trim_start();
+    }
+    let is_inode = |field: &str| !field.is_empty() && field.bytes().all(|b| b.is_ascii_digit());
+    let (head, peer) = rest.rsplit_once(char::is_whitespace)?;
+    let (head, star) = head.trim_end().rsplit_once(char::is_whitespace)?;
+    let (path, inode) = head.trim_end().rsplit_once(char::is_whitespace)?;
+    if !is_inode(peer) || star != "*" || !is_inode(inode) {
+        return None;
+    }
+    let path = path.trim_end();
+    (!path.is_empty() && path != "*").then_some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +196,46 @@ mod tests {
         ] {
             assert!(parse_sessions("jup", junk).is_empty(), "skipped: {junk:?}");
         }
+    }
+
+    /// `ss -xn` rows narrowed to a client's peers, verbatim from a Debian 12 host with
+    /// zellij 0.45.1: the client's internal socket pair, which has no path, and the
+    /// server end of its connection to a session whose name holds a space.
+    const CONNECTED: &str = "u_str ESTAB 0      0                                                 * 6125772            * 6125773       
+        u_str ESTAB 0      0      /tmp/zellij-1000/contract_version_1/my build 6119266            * 6110103       
+        u_str ESTAB 0      0                                                 * 6125773            * 6125772       
+";
+
+    #[test]
+    fn the_server_end_of_the_connection_names_the_session() {
+        assert_eq!(connected_session(CONNECTED).as_deref(), Some("my build"));
+    }
+
+    #[test]
+    fn no_single_server_end_is_no_answer() {
+        for out in [
+            "",
+            "u_str ESTAB 0 0 * 6125772 * 6125773
+",
+            "u_str ESTAB 0 0 /run/user/1000/zellij/api 1 * x
+",
+            "u_str ESTAB 0 0 /run/user/1000/zellij/api 1 2 3
+",
+            "u_str ESTAB 0 0 /run/user/1000/zellij/api 1 * 2
+             u_str ESTAB 0 0 /run/user/1000/zellij/web 3 * 4
+",
+        ] {
+            assert_eq!(connected_session(out), None, "{out:?}");
+        }
+        assert_eq!(
+            connected_session(
+                "u_str ESTAB 0 0 /run/user/1000/zellij/api 1 * 2
+                 u_str ESTAB 0 0 /run/user/1000/zellij/api 5 * 6
+"
+            )
+            .as_deref(),
+            Some("api"),
+            "two connections to one server are one answer"
+        );
     }
 }

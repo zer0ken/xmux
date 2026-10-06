@@ -13,6 +13,46 @@ mod parse;
 
 pub use display::ZellijDriver;
 
+/// Where an attach run through the host's shell records its client's process id, keyed
+/// per attachment so a query never reads the record of a client an earlier attach left.
+/// Under `/tmp`, which every POSIX host has and lets its user write.
+fn pid_record_path(record_key: &str) -> String {
+    let token: String = record_key
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("/tmp/.xmux-zc-{token}")
+}
+
+/// The shell text, run after `p` holds the client's process id, that prints the `ss -xn`
+/// rows of the server ends connected to that client's sockets.
+const CONNECTED_SERVER_END: &str = r#"[ -n "$p" ] || exit 0; i=$(ls -l /proc/"$p"/fd 2>/dev/null | sed -n 's/.*socket:\[\([0-9]*\)\].*/\1/p' | tr '\n' ' '); [ -n "$i" ] || exit 0; ss -xn 2>/dev/null | awk -v i="$i" 'BEGIN { n = split(i, a, " "); for (k = 1; k <= n; k++) w[a[k]] = 1 } $NF in w && $5 != "*"'"#;
+
+/// The attach `attach` run so that the shell running it records its own process id at
+/// the record for `record_key`, then becomes the client with `exec`, so the recorded id
+/// is the client's. A record that cannot be written leaves the attach unaffected.
+pub(super) fn recording_attach(attach: &[String], record_key: &str) -> Vec<String> {
+    let attach: Vec<String> = attach
+        .iter()
+        .map(|arg| crate::transport::vocab::quote(arg))
+        .collect();
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "{{ echo $$ >{}; }} 2>/dev/null; exec {}",
+            pid_record_path(record_key),
+            attach.join(" ")
+        ),
+    ]
+}
+
 /// zellij: one server per session, enumerated from `list-sessions`, polled for change,
 /// each session displayed through its own attachment.
 pub struct Zellij {
@@ -127,12 +167,43 @@ impl Mux for Zellij {
     /// on. Because the variable belongs to the PROCESS, it names xmux's own display
     /// client and no other zellij client of the user's.
     ///
-    /// It is the only source of truth there is. No server sees the move, so the poll cannot ask
-    /// for it, and the session listing cannot answer it either: the listing's
-    /// current-session marker names the session the LISTING COMMAND ITSELF ran inside,
-    /// and xmux polls from outside every session, so that marker is never present.
+    /// zellij itself reports the move nowhere: the session listing's current-session
+    /// marker names the session the LISTING COMMAND ITSELF ran inside, and xmux polls
+    /// from outside every session, so that marker is never present. Where the client's
+    /// process memory cannot be read, [`display_client_query`](Mux::display_client_query)
+    /// asks the kernel instead.
     fn display_session_env(&self) -> Option<&str> {
         Some("ZELLIJ_SESSION_NAME")
+    }
+
+    /// Asks the kernel, not zellij, which session server the client is connected to.
+    /// zellij's own CLI has no answer: `list-clients` numbers clients per server with
+    /// nothing that ties one to a process, and the client's rewritten variable lives in
+    /// its process memory, which `/proc/<pid>/environ` does not show (that file holds the
+    /// environment the process was started with).
+    ///
+    /// The client holds one connection to the server of the session it is on, and the
+    /// server's end of it carries the session's socket path. The query lists the
+    /// client's socket inodes from `/proc/<pid>/fd` and has `ss -xn` print the rows whose
+    /// peer is one of them, which leaves that server end. It is one short shell run that
+    /// reads two kernel tables and attaches to nothing. A host without `/proc` or `ss`
+    /// prints nothing, which is no signal.
+    fn display_client_query(&self, client: &DisplayClient) -> Option<Vec<String>> {
+        let pid = match client {
+            DisplayClient::Pid(pid) => pid.to_string(),
+            DisplayClient::Recorded(key) => {
+                format!("$(cat {} 2>/dev/null)", pid_record_path(key))
+            }
+        };
+        Some(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            format!("p={pid}; {CONNECTED_SERVER_END}"),
+        ])
+    }
+
+    fn parse_display_client(&self, out: &str) -> Option<String> {
+        parse::connected_session(out)
     }
 
     fn control_argv(&self) -> Option<Vec<String>> {
@@ -363,13 +434,72 @@ mod tests {
         );
     }
 
-    /// The live client's own environment is where a `switch-session` can be seen, and
-    /// the only place: zellij pushes no notification, and its session listing marks only
-    /// the session the listing itself ran inside, which xmux is never in. The variable
-    /// belongs to the client PROCESS, so what it answers is xmux's own client.
+    /// The live client's own environment is where zellij records a `switch-session`:
+    /// zellij pushes no notification, and its session listing marks only the session the
+    /// listing itself ran inside, which xmux is never in. The variable belongs to the
+    /// client PROCESS, so what it answers is xmux's own client.
     #[test]
     fn the_client_carries_the_session_it_is_on_in_its_own_environment() {
         assert_eq!(zellij().display_session_env(), Some("ZELLIJ_SESSION_NAME"));
+    }
+
+    /// A shell-run attach records its own process id, then `exec`s into the client, so
+    /// the record names the client. The session name is quoted like any argument.
+    #[test]
+    fn a_recording_attach_records_its_pid_then_becomes_the_client() {
+        assert_eq!(
+            recording_attach(&argv(&["zellij", "attach", "my build"]), "jup-x;rm-1"),
+            argv(&[
+                "sh",
+                "-c",
+                "{ echo $$ >/tmp/.xmux-zc-jup-x_rm-1; } 2>/dev/null; exec zellij attach 'my build'"
+            ])
+        );
+    }
+
+    /// The query names the client the way the display path knows it: by the attach
+    /// child's own pid on this machine, or by the record a shell-run attach wrote. Both
+    /// read the same record path the recording attach writes.
+    #[test]
+    fn the_client_query_names_the_client_by_pid_or_by_its_record() {
+        let by_pid = zellij()
+            .display_client_query(&DisplayClient::Pid(4242))
+            .unwrap();
+        assert_eq!(&by_pid[..2], &argv(&["sh", "-c"])[..]);
+        assert!(by_pid[2].starts_with("p=4242; "), "{by_pid:?}");
+        let recorded = zellij()
+            .display_client_query(&DisplayClient::Recorded("jup-x;rm-1".into()))
+            .unwrap();
+        assert!(
+            recorded[2].starts_with("p=$(cat /tmp/.xmux-zc-jup-x_rm-1 2>/dev/null); "),
+            "{recorded:?}"
+        );
+        assert!(by_pid[2].ends_with(CONNECTED_SERVER_END));
+        assert_eq!(
+            zellij()
+                .parse_display_client(
+                    "u_str ESTAB 0 0 /tmp/zellij-1000/contract_version_1/api 7 * 8
+"
+                )
+                .as_deref(),
+            Some("api")
+        );
+    }
+
+    /// The query is POSIX shell run by `sh`. Where `sh` exists, it must parse, and a
+    /// client that is not there answers nothing rather than failing.
+    #[cfg(unix)]
+    #[test]
+    fn the_client_query_is_valid_shell_and_a_missing_client_answers_nothing() {
+        let query = zellij()
+            .display_client_query(&DisplayClient::Recorded("absent-record".into()))
+            .unwrap();
+        let out = std::process::Command::new(&query[0])
+            .args(&query[1..])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert!(out.stdout.is_empty(), "{out:?}");
     }
 
     #[test]

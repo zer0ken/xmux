@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev m
 FROM debian:12
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      openssh-server tmux screen locales procps curl ca-certificates \
+      openssh-server tmux screen locales procps iproute2 curl ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen \
  && useradd -m -s /bin/bash dev && echo 'dev:e2e-pass' | chpasswd \

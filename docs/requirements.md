@@ -273,3 +273,6 @@ The seamless cross-host switch is bought with these costs, accepted by design:
   fresh connection.
 - A push-channel mux inside a WSL distribution that cannot allocate a terminal is
   reported unreachable.
+- A zellij client moved to another session from inside itself is followed only on
+  Windows locally and on a Linux host with `ss` reached locally, through WSL, or over a
+  shared ssh connection; elsewhere the nav stays on the card it was on.

@@ -70,17 +70,27 @@ impl MuxDriver for ZellijDriver {
             session = %sel.session,
             "display_show"
         );
-        let command = {
+        let (attach, records, transport) = {
             let host = ctx
                 .hosts
                 .get_mut(&sel.source)
                 .expect("the selected source exists");
             host.display.clear(&key);
-            let mux_argv = host.mux.attach_plan(&sel.session);
-            host.transport.exec_argv(true, &mux_argv)
+            (
+                host.mux.attach_plan(&sel.session),
+                crate::driver::attach_records_client(host.transport.as_ref()),
+                host.transport.clone_box(),
+            )
         };
         let id = ctx
-            .request_attach(sel, command)
+            .request_attach_with_id(sel, |id, key, instance_name| {
+                if records {
+                    let record = crate::mux::display_tty_key(key, instance_name, id);
+                    transport.exec_argv(true, &super::recording_attach(&attach, &record))
+                } else {
+                    transport.exec_argv(true, &attach)
+                }
+            })
             .expect("the selected source exists");
         tracing::info!(addr = %key, id, count = ctx.registry.len(), "attach_created");
         crate::driver::log_display_inventory!(ctx, sel.session, pre_mismatch);

@@ -1921,6 +1921,7 @@ fn test_rt(env: Env) -> Runtime {
         dirty: true,
         last_draw: std::time::Instant::now(),
         rescan_pending: false,
+        display_probe: DisplayProbe::default(),
         discovery_runs: 0,
         host_rescans: Vec::new(),
     };
@@ -2650,6 +2651,117 @@ fn a_settled_zellij_runtime() -> Runtime {
     );
     settled(&mut rt);
     rt
+}
+
+/// Delivers a host-side query's answer about attachment `id`'s client.
+fn the_query_answers(rt: &mut Runtime, id: u64, session: Option<&str>) {
+    let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    rt.on_pty_event(
+        PtyEvent::DisplayClientSession {
+            id,
+            session: session.map(str::to_string),
+        },
+        &mut rx,
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_queried_zellij_switch_in_terminal_focus_moves_the_nav() {
+    // The user ran `zellij action switch-session b` inside xmux's own client on a host
+    // whose client cannot be read here, and the host-side query found that client on
+    // `b`. The nav goes to `b`, and the client the user moved stays on screen.
+    let mut rt = a_settled_zellij_runtime();
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    rt.display_probe.in_flight = true;
+    let t0 = std::time::Instant::now();
+
+    the_query_answers(&mut rt, OWN_CLIENT, Some("b"));
+    assert!(!rt.display_probe.in_flight, "the answer ends the query");
+    for _ in 0..3 {
+        one_pass(&mut rt, t0);
+    }
+    one_pass(&mut rt, t0 + std::time::Duration::from_secs(1));
+
+    assert_eq!(rt.model.state.selection.session, "b");
+    assert_eq!(
+        rt.registry.get("local").map(|a| a.id()),
+        Some(OWN_CLIENT),
+        "the moved client is kept, not reattached"
+    );
+    assert!(rt.hosts.get("local").unwrap().display.in_flight_is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_query_answer_about_another_client_or_mid_reattach_is_not_recorded() {
+    // An answer is about the attachment the query was started for. Once that client is
+    // replaced, or while a reattach is on its way, the old client still sits on the
+    // session the display is leaving, so its answer must not move the record.
+    let mut rt = a_settled_zellij_runtime();
+    the_query_answers(&mut rt, OWN_CLIENT + 7, Some("b"));
+    assert_eq!(
+        rt.hosts.get("local").unwrap().display.shows("local"),
+        Some("a"),
+        "an answer about a client that is not the live one is dropped"
+    );
+
+    the_query_answers(&mut rt, OWN_CLIENT, None);
+    assert_eq!(
+        rt.hosts.get("local").unwrap().display.shows("local"),
+        Some("a"),
+        "no answer is no signal"
+    );
+
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .mark_in_flight("local", 9);
+    the_query_answers(&mut rt, OWN_CLIENT, Some("b"));
+    assert_eq!(
+        rt.hosts.get("local").unwrap().display.shows("local"),
+        Some("a"),
+        "an answer arriving mid-reattach is dropped"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn one_display_query_runs_at_a_time_on_its_cadence() {
+    // A remote zellij client over a shared connection is asked where it is, one query at
+    // a time and no more than once per cadence, so a slow host never stacks queries.
+    let mut rt = a_settled_zellij_runtime();
+    let mut hosts = crate::model::Hosts::default();
+    hosts.insert(crate::model::Host::new(
+        crate::transport::ssh("local".into(), "/tmp/cm".into(), "linux".into()),
+        crate::mux::for_binary("zellij").unwrap(),
+    ));
+    hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .set_shows("local", "a");
+    rt.hosts = hosts;
+    let t0 = std::time::Instant::now();
+
+    rt.start_display_probe(t0);
+    assert!(rt.display_probe.in_flight, "the first query starts");
+    let next = rt.display_probe.next;
+    rt.start_display_probe(t0 + std::time::Duration::from_secs(5));
+    assert_eq!(
+        rt.display_probe.next, next,
+        "no second query while one is out"
+    );
+
+    rt.display_probe.in_flight = false;
+    rt.start_display_probe(t0 + std::time::Duration::from_millis(500));
+    assert!(
+        !rt.display_probe.in_flight,
+        "the next waits for the cadence"
+    );
+    rt.start_display_probe(t0 + std::time::Duration::from_secs(1));
+    assert!(rt.display_probe.in_flight, "and starts once it elapses");
 }
 
 /// Delivers the EOF the pump emits when the mirrored client detaches (or dies).
