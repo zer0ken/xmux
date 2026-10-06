@@ -746,7 +746,11 @@ mod tests {
     fn a_command_that_leaves_a_daemon_behind_returns_when_it_does() {
         let a = ssh("prod", "linux", "").exec_argv(
             false,
-            &argv(&["sh", "-c", "sleep 5 </dev/null >/dev/null 2>&1 & echo started"]),
+            &argv(&[
+                "sh",
+                "-c",
+                "sleep 5 </dev/null >/dev/null 2>&1 & echo started",
+            ]),
         );
         let started = std::time::Instant::now();
         let out = std::process::Command::new("sh")
