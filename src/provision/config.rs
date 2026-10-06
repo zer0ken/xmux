@@ -781,14 +781,14 @@ fn logical_lines(content: &str) -> Vec<String> {
 }
 
 /// Expands an `Include` pattern to the files it names: a leading `~` becomes the
-/// home the shell ssh uses, and a relative pattern is resolved against the
+/// home xmux resolves, and a relative pattern is resolved against the
 /// directory of the including config file. Glob metacharacters are then matched
 /// against the filesystem.
 fn expand_include(pattern: &str, from: &Path) -> Vec<std::path::PathBuf> {
     let expanded = if pattern == "~" {
-        crate::provision::env::ssh_home()
+        crate::provision::env::home_dir()
     } else if let Some(rest) = pattern.strip_prefix("~/") {
-        crate::provision::env::ssh_home().join(rest)
+        crate::provision::env::home_dir().join(rest)
     } else {
         std::path::PathBuf::from(pattern)
     };

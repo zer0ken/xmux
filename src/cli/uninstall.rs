@@ -971,9 +971,7 @@ fn run_blocking(args: &Args, handle: tokio::runtime::Handle) -> Result<Outcome, 
     let platform = update::platform();
     let method = update::classify(&exe, &update::cargo_bins(), platform);
 
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .or_else(dirs::home_dir);
+    let home = crate::provision::env::resolved_home();
     let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();

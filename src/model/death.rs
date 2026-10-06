@@ -46,7 +46,11 @@ pub fn psmux_port_path(session: &str) -> PathBuf {
 /// True when the session's `.port` file exists. Its disappearance means the
 /// per-session server is gone even if a stale PTY lingers (the PathStat death).
 pub fn psmux_session_is_live(session: &str) -> bool {
-    psmux_port_path(session).exists()
+    psmux_port_is_live(&psmux_port_path(session))
+}
+
+fn psmux_port_is_live(path: &std::path::Path) -> bool {
+    path.exists()
 }
 
 /// The shell prefix xmux prepends to its OWN attach argv so the attach shell prints
@@ -194,12 +198,13 @@ some-banner /dev/pts/5\r\n";
 
     #[test]
     fn psmux_session_is_live_reflects_port_file() {
-        let name = format!("xmux-live-{}", std::process::id());
-        let path = psmux_port_path(&name);
-        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        let dir = std::env::temp_dir().join(format!("xmux-live-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("editor.port");
         std::fs::write(&path, b"40000").unwrap();
-        assert!(psmux_session_is_live(&name));
+        assert!(psmux_port_is_live(&path));
         std::fs::remove_file(&path).unwrap();
-        assert!(!psmux_session_is_live(&name));
+        assert!(!psmux_port_is_live(&path));
+        std::fs::remove_dir(&dir).unwrap();
     }
 }
