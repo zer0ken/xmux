@@ -3366,6 +3366,40 @@ fn a_non_repeating_command_ends_the_prefix_at_once() {
 }
 
 #[test]
+fn one_escape_read_closes_the_prefix_key_list_in_either_focus() {
+    // A lone ESC after the prefix is the whole key: the read that carries it ends the
+    // chord and the next frame drops the key list, with no further input or timer.
+    for nav_focus in [false, true] {
+        let mut rt = rt_terminal_focus_with_session();
+        if nav_focus {
+            rt.model.state.focus = crate::state::Focus::Nav;
+        }
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 25)).unwrap();
+        assert!(!rt.on_stdin(b"\x07"));
+        rt.last_draw -= std::time::Duration::from_secs(1);
+        rt.prepare_and_draw(&mut term);
+        assert!(rt.model.state.chrome.armed, "nav focus {nav_focus}");
+        assert!(
+            rt.model.render_plan.key_list.is_some(),
+            "nav focus {nav_focus}"
+        );
+        assert!(!rt.on_stdin(b"\x1b"));
+        assert!(rt.dirty, "the chord end repaints: nav focus {nav_focus}");
+        rt.last_draw -= std::time::Duration::from_secs(1);
+        rt.prepare_and_draw(&mut term);
+        assert!(!rt.model.state.chrome.armed, "nav focus {nav_focus}");
+        assert!(
+            rt.model.render_plan.key_list.is_none(),
+            "nav focus {nav_focus}"
+        );
+        assert!(
+            !rt.on_stdin(b"q"),
+            "the next key is no longer a prefix command: nav focus {nav_focus}"
+        );
+    }
+}
+
+#[test]
 fn an_open_input_row_keeps_the_prefix_live_until_it_closes() {
     // A command that opens an input row owns the prefix until the row closes: the
     // hint bar hosts the input, so it must stay expanded while the user types.
