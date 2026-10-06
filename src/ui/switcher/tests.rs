@@ -2569,7 +2569,12 @@ async fn the_session_xmux_runs_in_shows_a_screen_instead_of_its_grid() {
     );
     h.draw();
     let out = h.view_text();
-    assert!(out.contains("local/xmus"), "headlined by address:\n{out}");
+    // The host names no mux before its reach resolves, but the session's listing does,
+    // and the headline names the mux the session's card names.
+    assert!(
+        out.contains("local/psmux/xmus"),
+        "headlined by its path:\n{out}"
+    );
     assert!(out.contains("running xmux"), "and by its state:\n{out}");
     assert!(out.contains("refused"), "and says it is refused:\n{out}");
 }
