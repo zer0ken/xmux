@@ -1694,7 +1694,7 @@ impl Switcher {
             address,
             host: matches!(node, Node::Host(_)),
             links: self.screen_links(&node, state),
-            marks: self.link_marks(),
+            marks: self.link_marks(state),
         })
     }
 
@@ -1716,10 +1716,15 @@ impl Switcher {
 
     /// Which link of the shown screen is hard-selected and which is under the pointer.
     /// Both belong to the terminal view, so neither is drawn while the nav holds the focus
-    /// or while the nav's soft selection is showing another screen there.
-    pub(crate) fn link_marks(&self) -> (Option<usize>, Option<usize>) {
+    /// or while the nav's soft selection is showing another screen there. The login pane
+    /// owns the keyboard, so on its screen no link holds the hard selection and only the
+    /// pointer reaches the links.
+    pub(crate) fn link_marks(&self, state: &crate::state::State) -> (Option<usize>, Option<usize>) {
         if !self.terminal_view || self.hover.is_some() {
             return (None, None);
+        }
+        if self.login_pane_shown(state) {
+            return (None, self.link_hover);
         }
         (Some(self.link), self.link_hover)
     }
@@ -1738,7 +1743,7 @@ impl Switcher {
     /// focus: they walk its links, stopping at both ends.
     pub(crate) fn step_link(&mut self, delta: isize, state: &crate::state::State) {
         let n = self.shown_links(state).len();
-        if n == 0 {
+        if n == 0 || self.login_pane_shown(state) {
             return;
         }
         self.link = (self.link as isize + delta).clamp(0, n as isize - 1) as usize;
@@ -1777,7 +1782,11 @@ impl Switcher {
     }
 
     /// Opens the hard-selected link of the shown screen (Enter in the terminal view).
+    /// The login pane's screen has none: Enter there belongs to the form.
     pub(crate) fn open_selected_link(&mut self, state: &crate::state::State) -> bool {
+        if self.login_pane_shown(state) {
+            return false;
+        }
         self.open_link(self.link, state)
     }
 

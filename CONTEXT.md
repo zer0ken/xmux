@@ -168,7 +168,8 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **landing screen** - the view screen from launch until the first execution: the scan
   progress and every nav card as a link, sharing the one hard selection.
 - **screen link** - a selectable link on a machine or host screen that opens another
-  node's screen.
+  node's screen. While the login pane is open it owns the keyboard, so a link there
+  holds no selection and answers only the pointer.
 - **switcher screen** - the rendered split view as a whole. Never an "overlay".
 
 ## Login

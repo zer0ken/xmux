@@ -120,7 +120,9 @@ A machine screen states how the machine is reached and logged in to; a host scre
 states the host's sessions and how they stay current. While the terminal view shows
 either screen, `↑`/`↓` (and `Tab`) step through its links and `Enter` opens the
 selected one. A machine screen links each of its hosts whose mux is confirmed, and
-none while no mux is; a host screen links its machine and each of its sessions.
+none while no mux is; a host screen links its machine and each of its sessions. While
+a machine screen shows the login pane, the pane takes those keys and its links answer
+only a click.
 
 At launch the terminal view shows the landing screen in place of a session: how many
 machines the scan has reached, and every nav card under its number as a

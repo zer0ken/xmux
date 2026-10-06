@@ -661,6 +661,32 @@ fn an_unresolved_machine_screen_links_to_nothing() {
 }
 
 #[test]
+fn the_login_form_keeps_the_keyboard_from_the_screen_links() {
+    let mut h = H::new(&[
+        ("gpu", &["train"], None),
+        ("db:tmux", &[], Some(LOGGED_OUT)),
+    ]);
+    let card = h.card_row(|r| matches!(r, RowRef::Machine { .. }));
+    h.sw.set_selected(card);
+    h.terminal_focused = true;
+    h.draw();
+    assert!(h.sw.login_pane_shown(&h.state));
+    assert_eq!(
+        h.sw.link_marks(&h.state).0,
+        None,
+        "no link holds the hard selection beside the form"
+    );
+    h.sw.step_link(1, &h.state);
+    assert!(
+        !h.sw.open_selected_link(&h.state),
+        "Enter belongs to the form"
+    );
+    assert_eq!(h.node(), host("db"), "the keys moved nothing");
+    assert!(h.sw.open_link(0, &h.state), "a click still opens the link");
+    assert_eq!(h.node(), source("db:tmux"));
+}
+
+#[test]
 fn a_link_opens_a_source_the_nav_has_no_card_for() {
     let mut h = H::new(&[
         ("gpu", &["train"], None),
