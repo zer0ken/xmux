@@ -94,10 +94,10 @@ pub enum OpResult {
         machine: String,
         result: Result<(), String>,
     },
-    /// What removing the ssh config stanza a login recorded for a logged-out machine
-    /// did: whether there was one, or why it stays.
-    SshConfigStanzaRemoved {
+    /// What removing a logged-out machine from ssh config did: the entries that named it,
+    /// or why they stay.
+    SshConfigEntriesRemoved {
         machine: String,
-        result: Result<bool, String>,
+        result: Result<Vec<crate::provision::config::RemovedEntry>, String>,
     },
 }

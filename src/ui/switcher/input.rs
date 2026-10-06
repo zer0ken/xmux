@@ -414,7 +414,10 @@ impl Switcher {
             "key",
             format!("removed from {machine}; asks first if xmux did not add it"),
         ));
-        facts.push(("ssh config", "removes the entry xmux saved".to_owned()));
+        facts.push((
+            "ssh config",
+            format!("removes {machine} from every Host entry naming it"),
+        ));
         facts.push(("connections", format!("closes {machine} connections")));
         self.dismiss_modals(state);
         let mut input = Input::new(InputMode::Logout, String::new(), Some(source));

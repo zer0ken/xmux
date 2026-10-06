@@ -62,7 +62,7 @@ pub(crate) struct AppModel {
 }
 
 /// A logout that has not yet cleared its machine. The key comes off the host first, over
-/// the connection the login left, and the ssh config stanza the login recorded goes
+/// the connection the login left, and the ssh config entries naming the machine go
 /// after, so nothing of the machine's is cleared until both settle.
 #[derive(Debug)]
 pub(crate) struct LogoutRun {
@@ -78,9 +78,9 @@ enum LogoutStep {
     Asking(Vec<crate::provision::env::HostKeyLine>),
     /// The chosen lines are being removed. Carries whether lines xmux did not add stay.
     Removing { kept_unmarked: bool },
-    /// The ssh config stanza the login recorded is being removed. Carries what the key
-    /// steps reported.
-    RemovingStanza {
+    /// The machine is being removed from the ssh config entries naming it. Carries what
+    /// the key steps reported.
+    RemovingEntries {
         notes: Vec<crate::state::notify::Note>,
     },
 }
@@ -372,7 +372,7 @@ pub(crate) enum Effect {
         machine: String,
         lines: Vec<crate::provision::env::HostKeyLine>,
     },
-    RemoveSshConfigStanza {
+    RemoveSshConfigEntries {
         machine: String,
     },
     LogoutMachine {
@@ -428,8 +428,8 @@ impl std::fmt::Debug for Effect {
                 .field("machine", machine)
                 .field("lines", &lines.len())
                 .finish(),
-            Self::RemoveSshConfigStanza { machine } => f
-                .debug_tuple("RemoveSshConfigStanza")
+            Self::RemoveSshConfigEntries { machine } => f
+                .debug_tuple("RemoveSshConfigEntries")
                 .field(machine)
                 .finish(),
             Self::LogoutMachine { machine, .. } => {
@@ -771,8 +771,8 @@ fn logout_keys_removed(
     remove_logout_stanza(model, notes)
 }
 
-/// Goes on to the stanza step once the key steps settled. The stanza goes after the key,
-/// because the key steps reach the host through the values it holds. `notes` report what
+/// Goes on to the ssh config step once the key steps settled. The entries go after the
+/// key, because the key steps reach the host through the values they hold. `notes` report what
 /// happened to the key.
 fn remove_logout_stanza(
     model: &mut AppModel,
@@ -781,20 +781,20 @@ fn remove_logout_stanza(
     let Some(run) = model.logout.as_mut() else {
         return Vec::new();
     };
-    run.step = LogoutStep::RemovingStanza { notes };
-    vec![Effect::RemoveSshConfigStanza {
+    run.step = LogoutStep::RemovingEntries { notes };
+    vec![Effect::RemoveSshConfigEntries {
         machine: run.machine.clone(),
     }]
 }
 
-/// Reads what removing the recorded ssh config stanza did, then finishes the logout
-/// either way. A machine with no recorded stanza adds nothing to the report.
+/// Reads what removing the machine from ssh config did, then finishes the logout either
+/// way. The toast names every entry that changed; a machine no entry named adds nothing.
 fn logout_stanza_removed(
     model: &mut AppModel,
     machine: String,
-    result: Result<bool, String>,
+    result: Result<Vec<crate::provision::config::RemovedEntry>, String>,
 ) -> Vec<Effect> {
-    let Some(LogoutStep::RemovingStanza { notes }) = model
+    let Some(LogoutStep::RemovingEntries { notes }) = model
         .logout
         .as_mut()
         .filter(|run| run.machine == machine)
@@ -804,22 +804,34 @@ fn logout_stanza_removed(
     };
     let mut notes = std::mem::take(notes);
     match result {
-        Ok(true) => notes.push(crate::state::notify::Note::new(
-            crate::state::notify::Level::Success,
-            format!("ssh config entry for {machine} removed"),
-        )),
-        Ok(false) => {}
+        Ok(removed) if removed.is_empty() => {}
+        Ok(removed) => {
+            let entries: Vec<String> = removed
+                .iter()
+                .map(|entry| {
+                    if entry.whole {
+                        format!("removed {}", entry.header)
+                    } else {
+                        format!("removed {machine} from {}", entry.header)
+                    }
+                })
+                .collect();
+            notes.push(crate::state::notify::Note::new(
+                crate::state::notify::Level::Success,
+                format!("ssh config: {}", entries.join("; ")),
+            ))
+        }
         Err(reason) => notes.push(crate::state::notify::Note::new(
             crate::state::notify::Level::Warning,
-            format!("ssh config entry for {machine} remains: {reason}"),
+            format!("ssh config entries for {machine} remain: {reason}"),
         )),
     }
     finish_logout(model, notes)
 }
 
-/// Clears the logged-out machine once its key and stanza steps settled: the held
+/// Clears the logged-out machine once its key and ssh config steps settled: the held
 /// password, the login state, and every card on it, then the connections through the
-/// effect. `notes` report what happened to the key and the stanza.
+/// effect. `notes` report what happened to the key and the ssh config entries.
 fn finish_logout(model: &mut AppModel, notes: Vec<crate::state::notify::Note>) -> Vec<Effect> {
     let Some(LogoutRun { machine, .. }) = model.logout.take() else {
         return Vec::new();
@@ -1523,7 +1535,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             logout_keys_removed(model, machine, result)
         }
         Msg::OpResult {
-            result: crate::model::OpResult::SshConfigStanzaRemoved { machine, result },
+            result: crate::model::OpResult::SshConfigEntriesRemoved { machine, result },
             logged_in,
         } => {
             model.state.logged_in = logged_in;
@@ -3127,9 +3139,9 @@ mod tests {
         }
     }
 
-    fn stanza_removed(result: Result<bool, String>) -> Msg {
+    fn stanza_removed(result: Result<Vec<crate::provision::config::RemovedEntry>, String>) -> Msg {
         Msg::OpResult {
-            result: crate::ui::switcher::OpResult::SshConfigStanzaRemoved {
+            result: crate::ui::switcher::OpResult::SshConfigEntriesRemoved {
                 machine: "box".into(),
                 result,
             },
@@ -3137,15 +3149,15 @@ mod tests {
         }
     }
 
-    /// The stanza step every logout ends with: the machine is still there while the
-    /// recorded ssh config stanza is removed, and `result` is what the removal answers.
+    /// The ssh config step every logout ends with: the machine is still there while its
+    /// ssh config entries are removed, and `result` is what the removal answers.
     fn stanza_step(
         m: &mut AppModel,
         effects: Vec<Effect>,
-        result: Result<bool, String>,
+        result: Result<Vec<crate::provision::config::RemovedEntry>, String>,
     ) -> Vec<Effect> {
         assert!(
-            matches!(effects.as_slice(), [Effect::RemoveSshConfigStanza { machine }] if machine == "box"),
+            matches!(effects.as_slice(), [Effect::RemoveSshConfigEntries { machine }] if machine == "box"),
             "{effects:?}"
         );
         assert!(m.logout.is_some());
@@ -3153,9 +3165,9 @@ mod tests {
         update(m, stanza_removed(result))
     }
 
-    /// The stanza step of a machine whose login recorded no ssh config stanza.
+    /// The ssh config step of a machine no ssh config entry names.
     fn no_stanza(m: &mut AppModel, effects: Vec<Effect>) -> Vec<Effect> {
-        stanza_step(m, effects, Ok(false))
+        stanza_step(m, effects, Ok(Vec::new()))
     }
 
     fn start_logout(m: &mut AppModel) {
@@ -3398,10 +3410,10 @@ mod tests {
         );
     }
 
-    /// The stanza a login recorded goes once the key steps settled, because they reach the
-    /// host through it, and the toast reports it after the key.
+    /// The ssh config entries naming the host go once the key steps settled, because they
+    /// reach the host through them, and the toast names each one after the key.
     #[test]
-    fn logout_removes_the_recorded_ssh_config_stanza_after_the_key() {
+    fn logout_removes_the_ssh_config_entries_after_the_key() {
         let mut m = logged_in_box();
         start_logout(&mut m);
         update(
@@ -3412,7 +3424,20 @@ mod tests {
             )])),
         );
         let effects = update(&mut m, keys_removed(Ok(())));
-        let effects = stanza_step(&mut m, effects, Ok(true));
+        let effects = stanza_step(
+            &mut m,
+            effects,
+            Ok(vec![
+                crate::provision::config::RemovedEntry {
+                    header: "Host box".into(),
+                    whole: true,
+                },
+                crate::provision::config::RemovedEntry {
+                    header: "Host gpu-01 box".into(),
+                    whole: false,
+                },
+            ]),
+        );
         assert!(matches!(effects.as_slice(), [Effect::LogoutMachine { .. }]));
         assert_logged_out(&m);
         assert_eq!(
@@ -3424,7 +3449,7 @@ mod tests {
                 ),
                 (
                     crate::state::notify::Level::Success,
-                    "ssh config entry for box removed".to_string()
+                    "ssh config: removed Host box; removed box from Host gpu-01 box".to_string()
                 ),
             ]
         );
@@ -3447,7 +3472,7 @@ mod tests {
                 ),
                 (
                     crate::state::notify::Level::Warning,
-                    "ssh config entry for box remains: Access is denied.".to_string()
+                    "ssh config entries for box remain: Access is denied.".to_string()
                 ),
             ]
         );
@@ -4225,7 +4250,10 @@ mod tests {
                     "key",
                     "removed from box; asks first if xmux did not add it".into(),
                 ),
-                ("ssh config", "removes the entry xmux saved".into()),
+                (
+                    "ssh config",
+                    "removes box from every Host entry naming it".into(),
+                ),
                 ("connections", "closes box connections".into()),
             ];
             m.state.modal = Some(crate::state::Modal::Input(Box::new(input)));

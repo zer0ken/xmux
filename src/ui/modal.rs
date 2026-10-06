@@ -1432,7 +1432,10 @@ mod tests {
                 "key",
                 "removed from gpu-01; asks first if xmux did not add it".into(),
             ),
-            ("ssh config", "removes the entry xmux saved".into()),
+            (
+                "ssh config",
+                "removes gpu-01 from every Host entry naming it".into(),
+            ),
             ("connections", "closes gpu-01 connections".into()),
         ];
         let (w, h) = logout_size(&input, 140);
@@ -1446,7 +1449,7 @@ mod tests {
             "SSH login    not observed",
             "password     held password is cleared",
             "key          removed from gpu-01; asks first if xmux did not add it",
-            "ssh config   removes the entry xmux saved",
+            "ssh config   removes gpu-01 from every Host entry naming it",
             "connections  closes gpu-01 connections",
             "type logout  logo",
         ] {

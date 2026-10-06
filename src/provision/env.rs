@@ -1323,23 +1323,23 @@ fn write_ssh_config_stanza(
     std::fs::write(&path, next)
 }
 
-/// Removes the xmux-managed stanza for `machine` from the ssh config at `path`, and says
-/// whether there was one. A missing file holds none; a file that cannot be read is left
-/// as it is and the reason returned. Nothing outside the stanza changes.
-pub(crate) fn remove_ssh_config_stanza(
+/// Removes `machine` from every entry of the ssh config at `path` that names it, and
+/// returns the entries that changed. A missing file holds none; a file that cannot be read
+/// is left as it is and the reason returned. Nothing outside those entries changes.
+pub(crate) fn remove_ssh_config_entries(
     path: &std::path::Path,
     machine: &str,
-) -> Result<bool, String> {
+) -> Result<Vec<crate::provision::config::RemovedEntry>, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e.to_string()),
     };
-    let Some(next) = crate::provision::config::remove_managed_stanza(&text, machine) else {
-        return Ok(false);
-    };
-    std::fs::write(path, next).map_err(|e| e.to_string())?;
-    Ok(true)
+    let (next, removed) = crate::provision::config::remove_host_entries(&text, machine);
+    if !removed.is_empty() {
+        std::fs::write(path, next).map_err(|e| e.to_string())?;
+    }
+    Ok(removed)
 }
 
 /// The word the registration puts at the end of the comment of every key line it appends.
@@ -2619,31 +2619,37 @@ mod tests {
     use crate::provision::config::Config;
     use crate::session::Session;
 
-    /// A logout removes the stanza the login recorded and leaves the rest of the file as
-    /// it was; a file with no stanza, a missing file, and one that cannot be read are
-    /// all left alone.
+    /// A logout removes every entry naming the host and leaves the rest of the file as it
+    /// was; a second logout, a missing file, and one that cannot be read are all left alone.
     #[test]
-    fn a_logout_removes_only_the_recorded_ssh_config_stanza() {
+    fn a_logout_removes_every_ssh_config_entry_naming_the_host() {
         let root = std::env::temp_dir().join(format!("xmux-env-ssh-config-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("config");
-        let user_text = "Host db-01\r\n    User admin\r\n";
+        let user_text = "Host gpu-01 web-01 db-01
+    User admin
+";
         let login = crate::transport::Login {
             user: Some("dev".into()),
             ..Default::default()
         };
         let recorded = crate::provision::config::upsert_managed_stanza(user_text, "db-01", &login);
         std::fs::write(&path, &recorded).unwrap();
-        assert_eq!(remove_ssh_config_stanza(&path, "db-01"), Ok(true));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), user_text);
-        assert_eq!(remove_ssh_config_stanza(&path, "db-01"), Ok(false));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), user_text);
+        let removed = remove_ssh_config_entries(&path, "db-01").unwrap();
+        assert_eq!(removed.len(), 2, "{removed:?}");
         assert_eq!(
-            remove_ssh_config_stanza(&root.join("missing"), "db-01"),
-            Ok(false)
+            std::fs::read_to_string(&path).unwrap(),
+            "Host gpu-01 web-01
+    User admin
+"
+        );
+        assert_eq!(remove_ssh_config_entries(&path, "db-01"), Ok(Vec::new()));
+        assert_eq!(
+            remove_ssh_config_entries(&root.join("missing"), "db-01"),
+            Ok(Vec::new())
         );
         assert!(!root.join("missing").exists());
-        assert!(remove_ssh_config_stanza(&root, "db-01").is_err());
+        assert!(remove_ssh_config_entries(&root, "db-01").is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
