@@ -320,6 +320,13 @@ pub trait Mux: Send + Sync {
         None
     }
 
+    /// True for a mux whose client drops the keys it reads before it draws its first
+    /// frame, so input typed into a fresh attachment waits for that frame. `false` (the
+    /// default) for a client that keeps keys typed ahead of its first frame.
+    fn drops_input_before_first_frame(&self) -> bool {
+        false
+    }
+
     /// The control argv for a `-CC` metadata channel. `None` for a mux with no
     /// host-level control stream (it is polled).
     fn control_argv(&self) -> Option<Vec<String>>;

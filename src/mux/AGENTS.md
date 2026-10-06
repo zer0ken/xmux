@@ -32,7 +32,8 @@ listing parse with it, since a plan and the shape of what it prints are one deci
   error, and so is a listing that exceeds the fixed per-command budget.
 - A per-session reattach HOLDS the stale attachment, so its grid stays on screen until
   the fresh attachment paints or reaches its bounded wait (stale-while-revalidate).
-  Input goes to the fresh attachment while it waits.
+  Input goes to the fresh attachment while it waits, except that a mux whose client
+  drops keys read before its first frame holds them until that attachment draws.
 - A per-session driver never pre-warms; sync only reaps the host PTY when the host
   has no sessions left.
 
