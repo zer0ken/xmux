@@ -34,7 +34,6 @@ COLS, ROWS = 140, 60
 # scenario, mux, host system or None for every system). Such a cell still runs; it
 # reports KNOWN when it fails and PASS when it passes.
 KNOWN = {
-    (None, "screen", "alpine"): "#588",
     ("in-client-switch", "tuios", None): "#333",
 }
 # Cells that do not apply: the mux cannot move a client between sessions (a screen,
