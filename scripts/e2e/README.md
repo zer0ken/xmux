@@ -61,7 +61,7 @@ The xmux behavior group:
 | `first-launch` | the landing screen appears, choosing a session attaches it, and typed input runs in that session |
 | `switch` | after both sessions of a mux were shown, moving to a session of another mux on another host and back to the second session shows each one and runs what is typed there |
 | `new-session` | `prefix n` creates a session that becomes selected, attached, and live on the host |
-| `password-login` | logging in to the password-only host lists its sessions, and logging out leaves one host card |
+| `password-login` | logging in to the password-only host lists its sessions, and logging out, confirming the removal of the ssh config entry xmux did not write, removes that entry and leaves one host card |
 | `unreachable` | a stopped host shows as one unreachable host card after a re-scan, and returns as sections once it starts again |
 
 The native workflow group, typed through xmux's terminal view:

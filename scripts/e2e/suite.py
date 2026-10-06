@@ -433,8 +433,14 @@ def password_login(c):
     app.t.send("L", gap=0.3)
     app.t.wait_text("type logout", 10)
     app.t.send("logout", "Enter")
+    # The suite wrote the host's ssh config entry, not xmux, so the logout asks first.
+    app.t.wait_text(f"Host {c.pw} goes with its options", 30)
+    app.t.send("remove", "Enter")
     app.t.wait(lambda ls: not app.sections(f"{c.pw}/") and app.host_card_line(c.pw),
                f"{c.pw} as one host card", 30)
+    config = open(os.path.join(app.home, ".ssh", "config")).read().splitlines()
+    if f"Host {c.pw}" in config:
+        raise Failure(f"logout left the ssh config entry of {c.pw}")
 
 
 def unreachable(c):
