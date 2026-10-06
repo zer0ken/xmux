@@ -278,7 +278,7 @@ mod tests {
         assert_eq!(fr.name(), "ssh");
         assert_eq!(
             fr.args().last().unwrap(),
-            "sh -lc '{ tmux new-session -A -d -P -F '\\''#{session_name}'\\'' -s api\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+            "sh -lc '{ tmux new-session -A -d -P -F '\\''#{session_name}'\\'' -s api\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null"
         );
     }
 }

@@ -217,13 +217,18 @@ impl Ssh {
     /// login shell with its ordinary streams pointed at `/dev/null`. The command group restores
     /// both streams only after login startup has completed. This keeps parsed mux output
     /// clean, including the control path where ssh allocates a pty and combines streams.
+    ///
+    /// The group closes descriptors 3 and 4 once it has restored the streams. A mux
+    /// server that a detached create starts closes only descriptors 0 to 2, so copies of
+    /// ssh's streams it inherited on 3 and 4 would hold the channel open until that
+    /// session ended, and the create would never return.
     fn login_shell_command(&self, command: &str) -> String {
         if !self.shell.runs_posix_snippets() {
             return command.to_string();
         }
         // The group carries the restoring redirection for every command in a multi-command
         // snippet, not only the last one; the newline lets a snippet end in `;` or `&`.
-        let command = format!("{{ {command}\n}} 1>&3 2>&4");
+        let command = format!("{{ {command}\n}} 1>&3 2>&4 3>&- 4>&-");
         let shell = remote_command(&["sh".into(), "-lc".into(), command]);
         format!("{shell} 3>&1 4>&2 1>/dev/null 2>/dev/null")
     }
@@ -681,7 +686,7 @@ mod tests {
         let mut t = ssh("prod", "linux", "");
         assert_eq!(
             t.interactive_attach_argv(&attach).last().unwrap(),
-            "sh -lc '{ exec tmux attach -t api\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null",
+            "sh -lc '{ exec tmux attach -t api\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null",
             "a POSIX remote keeps the exec"
         );
 
@@ -729,7 +734,36 @@ mod tests {
         assert_eq!(a.program(), "ssh");
         assert_eq!(
             a.last().unwrap(),
-            "sh -lc '{ tmux kill-session -t x\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+            "sh -lc '{ tmux kill-session -t x\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+        );
+    }
+
+    /// A detached create leaves a mux server behind that closes only descriptors 0 to 2,
+    /// so the remote command reaches EOF on ssh's streams only when the command itself
+    /// holds no other copy of them.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_leaves_a_daemon_behind_returns_when_it_does() {
+        let a = ssh("prod", "linux", "").exec_argv(
+            false,
+            &argv(&[
+                "sh",
+                "-c",
+                "sleep 5 </dev/null >/dev/null 2>&1 & echo started",
+            ]),
+        );
+        let started = std::time::Instant::now();
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(a.last().unwrap())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "started\n");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "the streams stayed open for {:?}",
+            started.elapsed()
         );
     }
 
@@ -747,7 +781,7 @@ mod tests {
         );
         assert_eq!(
             a.last().unwrap(),
-            "sh -lc '{ tmux rename-session -t old '\\''evil'\\''\\'\\'''\\''; touch /tmp/pwned; echo '\\''\\'\\'''\\'''\\''\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+            "sh -lc '{ tmux rename-session -t old '\\''evil'\\''\\'\\'''\\''; touch /tmp/pwned; echo '\\''\\'\\'''\\'''\\''\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null"
         );
     }
 
@@ -762,7 +796,7 @@ mod tests {
         );
         assert_eq!(
             got.last().unwrap(),
-            "sh -lc '{ tmux -CC attach\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+            "sh -lc '{ tmux -CC attach\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null"
         );
     }
 
@@ -774,7 +808,7 @@ mod tests {
         assert_eq!(got[0], "ssh");
         assert_eq!(
             got.last().unwrap(),
-            "sh -lc '{ c=$(tty); echo $c\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+            "sh -lc '{ c=$(tty); echo $c\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null"
         );
         assert!(
             got.iter().any(|s: &String| s.contains("BatchMode=yes")),
@@ -1062,7 +1096,7 @@ mod tests {
         assert!(a.join(" ").contains("BatchMode=yes"), "{a:?}");
         assert_eq!(
             a.last().unwrap(),
-            "sh -lc '{ exec tmux attach -t api\n} 1>&3 2>&4' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+            "sh -lc '{ exec tmux attach -t api\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null"
         );
     }
 
