@@ -25,7 +25,7 @@ pub use death::{
     psmux_session_is_live,
 };
 pub(crate) use host::PendingInstall;
-pub use host::{Host, HostDisplay, Liveness, ReadyOutcome};
+pub use host::{Host, HostDisplay, Liveness, ReadyOutcome, EARLY_END};
 pub use hosts::{host_for, Hosts, RosterDelta};
 pub use inventory::{add_session, sort_by_name, FailureKind, Group, Machine, LOGGED_OUT};
 pub(crate) use login::SECRET_INPUT_CAPACITY;

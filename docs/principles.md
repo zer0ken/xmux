@@ -32,8 +32,19 @@ drops those past its limit, so work fans out across machines and never within on
 xmux is a guest on every machine it reaches: recovering is the user's to ask for, which
 costs a keystroke and is the only kind of recovery that stops. What the user sees
 follows from this deliberately: a dropped channel stays dropped, a display whose client
-died keeps its last frame, and an unreachable card stays unreachable, each until the
-user asks again.
+died keeps its last frame, a display that failed to start is not started again, and an
+unreachable card stays unreachable, each until the user asks again by selecting the card,
+executing it, or re-scanning.
+
+One exception answers a defect in zellij 0.45. zellij can give an attaching client the
+id that its own session probe has just released, and the probe's late cleanup then
+removes the new client while the session stays up (zellij-org/zellij#5270,
+zellij-org/zellij#5546). zellij runs that probe inside the attach itself, so no ordering
+on xmux's side avoids it. When the display client of a mux with this defect ends within
+two seconds of attaching while its session is still selected, xmux attaches it once
+more. The bound is one reattach per selection: a second early end shows the ordinary
+ended display, so a session that is really gone costs one extra connection and never a
+loop.
 
 ## Minimal Persistent Surface
 

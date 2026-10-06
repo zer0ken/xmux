@@ -1154,7 +1154,9 @@ impl Runtime {
             // connection raised by the death of the connection before it, and when the
             // session is gone every attempt dies the same way, so the chain does not stop
             // on its own. The user recovers the pane by selecting its card again or
-            // re-scanning. Repaint so the pane shows what it is now.
+            // re-scanning. The one exception, a client its mux dropped right after it
+            // attached, was answered where the exit was applied and is bounded to once
+            // per selection. Repaint so the pane shows what it is now.
             self.dirty = true;
         }
     }
@@ -1176,6 +1178,14 @@ impl Runtime {
         .flatten();
         match ev {
             PtyEvent::Exited { id } => {
+                let now = std::time::Instant::now();
+                let ended_early = self.registry.address_of_id(id).is_some_and(|key| {
+                    self.attach_is_for_selection(&key)
+                        && self
+                            .hosts
+                            .get(host_of_key(&key))
+                            .is_some_and(|h| h.display.ended_early(&key, id, now))
+                });
                 if let Some(address) = self.registry.address_of_id(id) {
                     let effects = update(
                         &mut self.model,
@@ -1202,6 +1212,9 @@ impl Runtime {
                     // reattach that keeps firing; saying so here is what separates that
                     // from a reattach decision gone wrong.
                     tracing::info!(id, established = true, last = %last, "attach_exited");
+                    if ended_early {
+                        self.on_selection_attach_lost(id, true, now);
+                    }
                 }
                 Some(id) == displayed_attach_id
             }
@@ -1258,6 +1271,11 @@ impl Runtime {
                 let id = attachment.id();
                 let output_times = attachment.output_times();
                 let hold_for_paint = self.registry.contains(&key);
+                let current_for_selection = self.attach_is_for_selection(&key)
+                    && self
+                        .hosts
+                        .get(&hid)
+                        .is_some_and(|h| h.display.reply_is_current(&key, seq));
                 let outcome = match self.hosts.get_mut(&hid) {
                     Some(h) => {
                         tracing::info!(key, seq, id, "attach_ready");
@@ -1281,6 +1299,12 @@ impl Runtime {
                         debug_assert_eq!(replaced, registry_replaced);
                         tracing::info!(key, id, session = shown, "attach_waiting_for_paint");
                     }
+                    // The selection's own client ended before its Ready: it never carried
+                    // the display, so it is answered like a start that failed.
+                    Some(crate::model::ReadyOutcome::TearDownReaped) if current_for_selection => {
+                        attachment.teardown();
+                        self.on_selection_attach_lost(id, false, std::time::Instant::now());
+                    }
                     // Reaped-race, stale seq, or unknown host: tear the fresh attachment down
                     // (resolve_ready already cleared the bookkeeping for the first two).
                     Some(_) | None => attachment.teardown(),
@@ -1288,12 +1312,60 @@ impl Runtime {
             }
             DisplayEvent::Failed { seq, key, message } => {
                 let hid = host_of_key(&key).to_string();
-                if let Some(h) = self.hosts.get_mut(&hid) {
-                    h.display.resolve_failed(&key, seq);
-                }
+                let for_selection = self.attach_is_for_selection(&key);
+                let current = self
+                    .hosts
+                    .get_mut(&hid)
+                    .is_some_and(|h| h.display.resolve_failed(&key, seq));
                 tracing::warn!(key, error = %message, "attach_failed");
+                // A start that failed is not a reason to start again: the selection waits
+                // for the user to ask for it, as a display that died does.
+                if current && for_selection {
+                    let effects = update(
+                        &mut self.model,
+                        Msg::Action(crate::model::Action::AttachFailed),
+                    );
+                    debug_assert!(effects.is_empty());
+                }
             }
         }
+    }
+
+    /// Whether `key` is the key the selection renders through and its attach request
+    /// was made for the selected session, so what happens to that attach happens to the
+    /// selection.
+    fn attach_is_for_selection(&self, key: &str) -> bool {
+        let selection = &self.model.state.selection;
+        !selection.is_empty()
+            && display_key(&self.hosts, selection) == key
+            && self
+                .hosts
+                .get(&selection.host)
+                .is_some_and(|h| h.display.shows(key) == Some(selection.session.as_str()))
+    }
+
+    /// Answers the selection's attachment `id` ending before it confirmed the display
+    /// (`confirmed` false) or within [`EARLY_END`](crate::model::EARLY_END) after it did.
+    ///
+    /// On a mux that drops fresh clients the session is most likely still there, so the
+    /// selection is attached once more, and the state bounds that to once per selection.
+    /// Any other mux ended the client for a reason of its own: an unconfirmed attach then
+    /// waits for the user, and a confirmed one is the ordinary ended display.
+    fn on_selection_attach_lost(&mut self, id: u64, confirmed: bool, now: std::time::Instant) {
+        let drops = self
+            .hosts
+            .get(&self.model.state.selection.host)
+            .is_some_and(|h| h.mux.drops_fresh_client());
+        let action = if drops {
+            tracing::info!(id, confirmed, "attach_dropped_early");
+            crate::model::Action::FreshClientDropped { now }
+        } else if !confirmed {
+            crate::model::Action::AttachFailed
+        } else {
+            return;
+        };
+        let effects = update(&mut self.model, Msg::Action(action));
+        debug_assert!(effects.is_empty());
     }
 
     /// Installs one attachment whose display gate has opened and confirms it only when

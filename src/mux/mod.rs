@@ -226,6 +226,16 @@ pub trait Mux: Send + Sync {
     /// adopted as the new session's name) surfaces far from the mux that inherited it.
     fn assigns_new_session_name(&self) -> bool;
 
+    /// Whether this mux can drop a display client right after it attaches while the
+    /// session itself lives on. The display then attaches once more when its client
+    /// ends within [`EARLY_END`](crate::model::EARLY_END) of starting, the one exception
+    /// to a dead display staying dead until the user asks. A mux that drops a client
+    /// only for a reason of its own answers `false`, so its ended pane is what the user
+    /// sees.
+    fn drops_fresh_client(&self) -> bool {
+        false
+    }
+
     /// The mux argv this mux enumerates its sessions with, `argv[0]` the binary.
     ///
     /// Exists to be SHOWN - the unreachable screen states the command behind a failed

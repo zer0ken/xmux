@@ -81,6 +81,13 @@ pub enum Action {
     /// `Tick` re-attaches immediately - the `r` reattach-kick, which re-attaches the
     /// current display with no debounce.
     RearmAttachNow { now: Instant },
+    /// The selection's attach did not carry the display: its start failed, or its client
+    /// ended before it confirmed. The selection waits for the user to ask for it again.
+    AttachFailed,
+    /// The selection's mux dropped the client it had just attached while the session
+    /// lives on. The first time for a selection, a reattach is armed at `now`; after
+    /// that, the selection waits for the user as after [`AttachFailed`](Self::AttachFailed).
+    FreshClientDropped { now: Instant },
     /// Create a new session named `name` (empty = auto-named) on `host`. The one
     /// mutating intent xmux keeps: a reachable host with no sessions offers nothing to
     /// switch to, so starting the first one is part of switching, not mux editing.

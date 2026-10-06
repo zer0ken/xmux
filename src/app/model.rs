@@ -2246,6 +2246,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         Msg::ConsumeReattach { now } => {
             if model.switcher.take_reattach_kick() && !model.state.selection.is_empty() {
                 let selection = model.state.selection.clone();
+                model.state.attach_held = None;
                 model.state.apply(Action::ClearDisplay);
                 model.state.apply(Action::RearmAttachNow { now });
                 vec![Effect::ReattachDisplay(selection)]

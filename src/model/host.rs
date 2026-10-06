@@ -58,6 +58,9 @@ pub struct HostDisplay {
     /// Fresh attachments held off-screen until their grid has painted enough to replace
     /// the live stale frame. The PTYs themselves remain owned by the display registry.
     painting: HashMap<String, PendingPaint>,
+    /// display_key -> the attachment its latest current `Ready` delivered and when, so
+    /// an exit can tell an attachment that ended right after starting.
+    started: HashMap<String, (u64, Instant)>,
 }
 
 /// Quiet time after visible output that lets a fresh attachment finish one visual burst
@@ -73,6 +76,12 @@ pub(crate) const PAINT_HARD_CAP: Duration = Duration::from_millis(400);
 /// Maximum time a fresh attachment may go without a visible frame before it replaces the
 /// stale frame, so a silent or stalled client cannot freeze the old session indefinitely.
 pub(crate) const PAINT_NO_OUTPUT_CAP: Duration = Duration::from_secs(3);
+
+/// How soon after its `Ready` an attachment's end counts as early. A client a mux drops
+/// right after attaching ends within tens of milliseconds of its first paint, and a
+/// fresh client paints well inside a second, so two seconds covers a loaded machine
+/// without reaching a session the user has been working in.
+pub const EARLY_END: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 struct PendingPaint {
@@ -151,6 +160,7 @@ impl HostDisplay {
         self.in_flight.remove(key);
         self.pending.retain(|_, k| k != key);
         self.painting.remove(key);
+        self.started.remove(key);
     }
 
     /// True when an attach is in flight for `key` (a spawn requested, its `Ready`/`Failed`
@@ -205,12 +215,16 @@ impl HostDisplay {
             // resolves as stale and blanks the pane until it self-heals.
             if self.reply_is_current(key, seq) {
                 self.in_flight.remove(key);
+                // No client reached the session this request recorded, so the record
+                // no longer names what the key shows.
+                self.current.remove(key);
             }
             self.pending.remove(&id);
             ReadyOutcome::TearDownReaped
         } else if self.reply_is_current(key, seq) {
             self.in_flight.remove(key);
             self.pending.remove(&id);
+            self.started.insert(key.to_string(), (id, now));
             let shown = self.current.get(key).cloned().unwrap_or_default();
             if hold_for_paint {
                 let replaced = self
@@ -237,12 +251,14 @@ impl HostDisplay {
     }
 
     /// Resolves a worker `Failed(seq)` for `key`: when it is the current in-flight reply,
-    /// clear the in-flight seq + every pending id mapped to the key and return `true`
-    /// (the caller rearms recovery); a stale failure is a no-op returning `false`.
+    /// clear the in-flight seq, every pending id mapped to the key, and the session the
+    /// request recorded, which no client reached, and return `true`; a stale failure is
+    /// a no-op returning `false`.
     pub fn resolve_failed(&mut self, key: &str, seq: u64) -> bool {
         if self.reply_is_current(key, seq) {
             self.in_flight.remove(key);
             self.pending.retain(|_, k| k != key);
+            self.current.remove(key);
             true
         } else {
             false
@@ -259,6 +275,14 @@ impl HostDisplay {
         } else {
             false
         }
+    }
+
+    /// Whether attachment `id`, the latest one delivered for `key`, ends within
+    /// [`EARLY_END`] of its `Ready` when it ends at `now`.
+    pub fn ended_early(&self, key: &str, id: u64, now: Instant) -> bool {
+        self.started.get(key).is_some_and(|&(started_id, at)| {
+            started_id == id && now.saturating_duration_since(at) < EARLY_END
+        })
     }
 
     /// Records output from a parked attachment. Returns whether this host owns `id`.
@@ -809,13 +833,42 @@ mod tests {
         let mut d = HostDisplay::default();
         d.mark_in_flight("local/w", 3);
         d.pending.insert(42, "local/w".into());
+        d.set_shows("local/w", "w");
         assert!(d.resolve_failed("local/w", 3), "current reply clears state");
         assert!(!d.in_flight_contains("local/w"));
         assert!(d.pending.is_empty());
+        assert_eq!(
+            d.shows("local/w"),
+            None,
+            "no client reached the session the request recorded"
+        );
         // A stale Failed (newer seq in flight) leaves state untouched.
         d.mark_in_flight("local/w", 9);
         assert!(!d.resolve_failed("local/w", 3));
         assert!(d.in_flight_contains("local/w"));
+    }
+
+    #[test]
+    fn an_end_counts_as_early_only_for_the_latest_attachment_inside_the_window() {
+        let mut d = HostDisplay::default();
+        let t0 = Instant::now();
+        d.mark_in_flight("local", 1);
+        d.set_shows("local", "a");
+        assert_eq!(
+            d.resolve_ready("local", 1, 7, false, None, t0),
+            ReadyOutcome::Install { shown: "a".into() }
+        );
+        assert!(d.ended_early("local", 7, t0 + Duration::from_millis(50)));
+        assert!(
+            !d.ended_early("local", 7, t0 + EARLY_END),
+            "an end at the window's edge is a late end"
+        );
+        assert!(
+            !d.ended_early("local", 8, t0),
+            "another attachment under the key never started here"
+        );
+        d.clear("local");
+        assert!(!d.ended_early("local", 7, t0), "a cleared key has no start");
     }
 
     #[test]
