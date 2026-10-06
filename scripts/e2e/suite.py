@@ -114,18 +114,21 @@ class Hosts:
             docker("exec", "-i", name, "sh", "-c",
                    "cat > /home/dev/.ssh/authorized_keys && chown dev /home/dev/.ssh/authorized_keys"
                    " && chmod 600 /home/dev/.ssh/authorized_keys", input=pubkey)
-        self.seed(alias)
+        self.wait_up(alias)
 
-    def seed(self, alias):
-        """Waits for sshd and starts every mux's sessions on a fresh container."""
+    def wait_up(self, alias):
+        """Waits for sshd, which the host starts only once every mux's sessions are up."""
         name = PREFIX + alias
         end = time.monotonic() + 30
         while docker("exec", name, "sh", "-c", "ls /run/sshd.pid /var/run/sshd.pid 2>/dev/null",
                      check=False).strip() == "":
             if time.monotonic() > end:
-                raise RuntimeError(f"sshd did not start on {alias}")
+                # The host writes its boot output to stderr, which `docker logs` passes on.
+                r = subprocess.run(["docker", "logs", "--tail", "20", name], capture_output=True,
+                                   text=True, timeout=30)
+                raise RuntimeError(f"{alias} did not start its sessions and sshd:\n"
+                                   f"{r.stdout}{r.stderr}")
             time.sleep(0.2)
-        self.sh(alias, "sh /opt/e2e/sessions.sh " + " ".join(MUXES))
 
     def sh(self, alias, command, check=True):
         """Runs a command as the remote user through a login shell on the host."""
@@ -137,7 +140,7 @@ class Hosts:
 
     def start(self, alias):
         docker("start", PREFIX + alias)
-        self.seed(alias)
+        self.wait_up(alias)
 
     def port(self, alias):
         return docker("port", PREFIX + alias, "22/tcp").split("\n")[0].rsplit(":", 1)[1].strip()
@@ -218,6 +221,9 @@ class WindowsClient:
 
     Windows OpenSSH reads ~/.ssh from the profile folder whatever HOME says, so a
     wrapper named ssh.exe first on PATH hands the real ssh the temporary config with -F.
+    It also ignores a private key that anyone besides its owner may read, and a file in
+    the temporary directory inherits that directory's grants, so each key copy is left
+    to the current user alone.
     """
 
     def __init__(self, xmux, workdir, hosts):
@@ -230,6 +236,9 @@ class WindowsClient:
         src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "windows", "ssh_wrapper.rs")
         subprocess.run([os.environ.get("RUSTC", "rustc"), "-O", "-o", os.path.join(self.bin, "ssh.exe"), src], check=True)
         self.count, self.lock = 0, threading.Lock()
+        whoami = os.path.join(os.environ["SystemRoot"], "System32", "whoami.exe")
+        self.sid = subprocess.run([whoami, "/user", "/fo", "csv", "/nh"], capture_output=True,
+                                  text=True, check=True).stdout.strip().split(",")[1].strip('"')
 
     def pubkey(self):
         return open(self.key + ".pub").read()
@@ -244,6 +253,8 @@ class WindowsClient:
         key = os.path.join(home, ".ssh", "id_ed25519")
         shutil.copy(self.key, key)
         shutil.copy(self.key + ".pub", key + ".pub")
+        subprocess.run(["icacls", key, "/inheritance:r", "/grant:r", f"*{self.sid}:F"],
+                       capture_output=True, check=True)
         config = os.path.join(home, ".ssh", "config")
         with open(config, "w", newline="\n") as f:
             for a in aliases:
@@ -251,10 +262,52 @@ class WindowsClient:
                 f.write(f"  IdentityFile {key}\n  IdentitiesOnly yes\n  IdentityAgent none\n")
         with open(os.path.join(home, ".config", "xmux", "config.toml"), "w") as f:
             f.write(XMUX_CONFIG)
-        env = dict(os.environ, HOME=home, USERPROFILE=home, TERM="xterm-256color",
-                   XMUX_E2E_SSH_CONFIG=config,
-                   PATH=self.bin + os.pathsep + os.environ.get("PATH", ""))
-        return App(driver.Term([self.xmux, "--name", f"e2e{n}"], env, COLS, ROWS, cwd=home), home)
+        return App(driver.Term([self.xmux, "--name", f"e2e{n}"], self.env(home, config), COLS,
+                               ROWS, cwd=home), home)
+
+    def env(self, home, ssh_config):
+        return dict(os.environ, HOME=home, USERPROFILE=home, TERM="xterm-256color",
+                    XMUX_E2E_SSH_CONFIG=ssh_config,
+                    PATH=self.bin + os.pathsep + os.environ.get("PATH", ""))
+
+    def check_home(self):
+        """Stops the run unless the xmux under test keeps its config and state in the home
+        it is given.
+
+        `xmux doctor` reports an unknown key of the config it read and writes its log into
+        its state directory, so a key only the temporary config holds and a log in the
+        temporary home show which home it resolved.
+        """
+        home = os.path.join(self.workdir, "probe")
+        os.makedirs(os.path.join(home, ".config", "xmux"))
+        key = f"e2e_probe_{random.randrange(10**6)}"
+        with open(os.path.join(home, ".config", "xmux", "config.toml"), "w") as f:
+            f.write(XMUX_CONFIG + f"{key} = true\n")
+        r = subprocess.run([self.xmux, "doctor"], env=self.env(home, os.devnull), cwd=home,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60)
+        if f'unknown key "update.{key}"' not in r.stdout:
+            sys.exit(f"{self.xmux} did not read its config from the temporary home:\n{r.stdout}")
+        state = os.path.join(home, ".xmux")
+        if not (os.path.isdir(state) and os.listdir(state)):
+            sys.exit(f"{self.xmux} did not write its state into the temporary home")
+
+
+# The xmux and ssh directories of the person running the Windows client run, which the
+# run leaves as it found them.
+REAL_DIRS = [os.path.join(os.path.expanduser("~"), *d) for d in
+             [(".xmux",), (".config", "xmux"), (".ssh",)]]
+
+
+def snapshot(dirs):
+    """Every entry under `dirs`, the directories included, with its size and mtime."""
+    entries = {}
+    for top in dirs:
+        for root, subdirs, files in os.walk(top):
+            for p in [root] + [os.path.join(root, n) for n in subdirs + files]:
+                st = os.lstat(p)
+                entries[p] = (st.st_size, st.st_mtime_ns)
+    return entries
 
 
 # ------------------------------------------------------------------------------- app
@@ -649,24 +702,26 @@ def main():
     ap.add_argument("--xmux", default=os.environ.get("XMUX_E2E_BIN", "xmux"))
     ap.add_argument("--out", default=os.environ.get("XMUX_E2E_OUT", "out"))
     args = ap.parse_args()
+    # xmux starts in its scenario's home, so a path given relative to here is resolved now.
+    if os.path.exists(args.xmux):
+        args.xmux = os.path.abspath(args.xmux)
     systems = args.os.split(",")
     muxes = args.mux.split(",")
     default = "first-launch,switch" if args.client == "windows" else ",".join(SCENARIOS)
     scenarios = (args.scenario or default).split(",")
     os.makedirs(args.out, exist_ok=True)
 
-    if args.client == "windows" and os.name == "nt":
-        sys.exit("the Windows client run is blocked by #581: xmux on Windows keeps its config "
-                 "and state in the profile folder whatever HOME says, so a run would use the "
-                 "real ~/.xmux")
-
+    real = snapshot(REAL_DIRS) if args.client == "windows" else None
     workdir = tempfile.mkdtemp(prefix="xmux-e2e-")
     hosts = Hosts(systems, publish=args.client == "windows",
                   attach_self=os.environ.get("XMUX_E2E_SELF"))
     t0 = time.monotonic()
     try:
-        client = (LinuxClient(args.xmux, workdir) if args.client == "linux"
-                  else WindowsClient(args.xmux, workdir, hosts))
+        if args.client == "linux":
+            client = LinuxClient(args.xmux, workdir)
+        else:
+            client = WindowsClient(args.xmux, workdir, hosts)
+            client.check_home()
         log(f"starting hosts for {', '.join(systems)}")
         hosts.up(client.pubkey())
         log(f"hosts up in {time.monotonic() - t0:.0f}s")
@@ -693,6 +748,13 @@ def main():
         f.write(report + "\n")
     failed = [k for k, v in results.items() if v == "FAIL"]
     print(f"\n{len(failed)} failed, {time.monotonic() - t0:.0f}s")
+    if real is not None:
+        after = snapshot(REAL_DIRS)
+        changed = sorted(p for p in real.keys() | after.keys() if real.get(p) != after.get(p))
+        if changed:
+            print("the run changed the home of the person running it:\n  " + "\n  ".join(changed))
+            sys.exit(1)
+        print(f"{len(after)} entries under {', '.join(REAL_DIRS)} unchanged")
     sys.exit(1 if failed else 0)
 
 

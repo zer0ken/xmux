@@ -35,7 +35,9 @@ Each host system has three hosts, started from one image per system:
 | `deb-2`, `alp-2` | key |
 | `deb-pw`, `alp-pw` | password only |
 
-Every host serves two sessions in each mux, `<mux>1` and `<mux>2`:
+Every host serves two sessions in each mux, `<mux>1` and `<mux>2`. A host starts them
+each time it boots, before its sshd accepts a connection, so a host that returns after
+a stop serves them again and xmux never reaches a session that is still starting:
 
 | Mux | Debian 12 | Alpine 3.22 |
 | --- | --- | --- |
@@ -111,10 +113,29 @@ person running the suite. The containers, their network, and their images carry 
 ## Windows Client
 
 `suite.py --client windows` runs the Windows xmux on the machine itself against the same
-hosts through published ssh ports, with a temporary home and an `ssh.exe` wrapper that
-hands Windows OpenSSH the temporary ssh config. The run stops before it starts xmux
-until #581 is resolved: on Windows, xmux keeps its config and state in the profile folder
-whatever `HOME` and `USERPROFILE` say, so a run would use the real `~/.xmux`.
+hosts through published ssh ports. Each scenario gets a temporary home, named by both
+`HOME` and `USERPROFILE`, and an `ssh.exe` wrapper that hands Windows OpenSSH the
+temporary ssh config. It runs `first-launch` and `switch` unless `--scenario` names
+others, and needs the host images `run.sh` builds, `pyte` and `pywinpty`, and `rustc`
+for the wrapper:
+
+```sh
+uv run --with pyte --with pywinpty scripts/e2e/suite.py --client windows --xmux target/debug/xmux.exe
+```
+
+The run proves its isolation from both ends:
+
+- Before it starts the hosts, it runs `xmux doctor` under a temporary home whose config
+  holds a key no other config has. Unless the doctor reports that key as unknown and
+  writes its log into that home, the run stops.
+- After the table, it compares every entry under `~/.xmux`, `~/.config/xmux`, and
+  `~/.ssh` of the person running it with its size and modification time from before the
+  run, and fails when one differs. An xmux of that person's running at the same time
+  changes `~/.xmux` too, so the run expects none.
+
+Every cell of the Windows client run fails until #671 is fixed: the session view starts
+the `ssh` that the registry's `PATH` names instead of the wrapper, and that `ssh` cannot
+resolve the hosts.
 
 psmux, the Windows-only mux, has no cell. Its sessions run on the Windows machine
 itself and register under the user's `~/.psmux`, so a psmux scenario would start

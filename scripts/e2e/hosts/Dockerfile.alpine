@@ -6,9 +6,9 @@ RUN apk add --no-cache openssh-server tmux screen abduco bash curl ca-certificat
  && printf 'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac\nexport PATH\n' > /home/dev/.profile
 COPY fetch-muxes.sh /opt/e2e/
 RUN sh /opt/e2e/fetch-muxes.sh && chown -R dev:dev /home/dev && chmod 700 /home/dev/.ssh
-COPY sessions.sh /opt/e2e/
+COPY sessions.sh boot.sh /opt/e2e/
 COPY whereami /usr/local/bin/whereami
 COPY zellij-new /usr/local/bin/zellij-new
 RUN chmod 755 /usr/local/bin/whereami
 ENV LANG=C.UTF-8
-CMD ["/usr/sbin/sshd", "-D", "-e"]
+CMD ["sh", "/opt/e2e/boot.sh"]
