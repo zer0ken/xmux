@@ -82,12 +82,15 @@ enum LogoutStep {
     /// The ssh config entries xmux did not write are being looked for. Carries what the
     /// key search found.
     FindingEntries(Result<Vec<crate::provision::env::MachineKeyLine>, String>),
-    /// The second confirmation is open over the key lines and entries found, some of
-    /// them not xmux's. `notes` report a key search that found nothing to remove.
+    /// The second confirmation asks about the key lines and entries found, some of
+    /// them not xmux's. `notes` report a key search that found nothing to remove. It
+    /// waits, `shown` false, while another popup the user opened is open, so the
+    /// logout's question never takes that popup's place.
     Asking {
         keys: Vec<crate::provision::env::MachineKeyLine>,
         entries: Vec<crate::provision::config::RemovedEntry>,
         notes: Vec<crate::state::notify::Note>,
+        shown: bool,
     },
     /// The chosen key lines are being removed. `kept` reports what the answer keeps, and
     /// `unmarked` says whether the entries xmux did not write go next.
@@ -570,7 +573,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
         }
         Command::RemoveUnmarked(machine) => {
             let run = model.logout.as_mut().filter(|run| {
-                run.machine == machine && matches!(run.step, LogoutStep::Asking { .. })
+                run.machine == machine && matches!(run.step, LogoutStep::Asking { shown: true, .. })
             })?;
             let LogoutStep::Asking { keys, notes, .. } =
                 std::mem::replace(&mut run.step, LogoutStep::Finding)
@@ -748,6 +751,41 @@ fn logout_entries_found(
     if entries.is_empty() && keys.iter().all(|line| line.marked) {
         return remove_logout_keys(model, keys, notes, Vec::new(), false);
     }
+    if let Some(run) = model.logout.as_mut() {
+        run.step = LogoutStep::Asking {
+            keys,
+            entries,
+            notes,
+            shown: false,
+        };
+    }
+    show_logout_question(model);
+    Vec::new()
+}
+
+/// Opens the logout's second confirmation once no other popup is open. Read on every
+/// update, so a question that waited behind a popup the user opened appears when that
+/// popup closes.
+fn show_logout_question(model: &mut AppModel) {
+    if model.state.modal.is_some() {
+        return;
+    }
+    let Some(run) = model.logout.as_mut() else {
+        return;
+    };
+    let LogoutStep::Asking {
+        keys,
+        entries,
+        shown,
+        ..
+    } = &mut run.step
+    else {
+        return;
+    };
+    if *shown {
+        return;
+    }
+    *shown = true;
     let unmarked: Vec<&str> = keys
         .iter()
         .filter(|line| !line.marked)
@@ -756,15 +794,7 @@ fn logout_entries_found(
     let marked = keys.iter().filter(|line| line.marked).count();
     model
         .switcher
-        .open_logout_keys(&machine, &unmarked, marked, &entries, &mut model.state);
-    if let Some(run) = model.logout.as_mut() {
-        run.step = LogoutStep::Asking {
-            keys,
-            entries,
-            notes,
-        };
-    }
-    Vec::new()
+        .open_logout_keys(&run.machine, &unmarked, marked, entries, &mut model.state);
 }
 
 /// Removes `keys` and then the ssh config entries, or goes straight to the entries when
@@ -805,7 +835,7 @@ fn settle_logout_choice(model: &mut AppModel) -> Vec<Effect> {
     let Some(run) = model
         .logout
         .as_mut()
-        .filter(|run| !asking && matches!(run.step, LogoutStep::Asking { .. }))
+        .filter(|run| !asking && matches!(run.step, LogoutStep::Asking { shown: true, .. }))
     else {
         return Vec::new();
     };
@@ -813,6 +843,7 @@ fn settle_logout_choice(model: &mut AppModel) -> Vec<Effect> {
         keys,
         entries,
         notes,
+        ..
     } = std::mem::replace(&mut run.step, LogoutStep::Finding)
     else {
         return Vec::new();
@@ -1453,6 +1484,7 @@ pub(crate) fn update(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         record_lost_hosts(model, &before);
     }
     settle_rescan(model);
+    show_logout_question(model);
     effects.extend(settle_logout_choice(model));
     if landing {
         effects.extend(settle_landing(model));
@@ -1540,6 +1572,9 @@ fn run_palette_choice(model: &mut AppModel, choice: crate::state::PaletteChoice)
 fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
     match msg {
         Msg::Action(action) => {
+            if let Action::CreateSession { host, .. } = &action {
+                model.switcher.note_create(host);
+            }
             let commands = model.state.apply(action);
             commands
                 .into_iter()
@@ -3648,6 +3683,41 @@ mod tests {
                 "this PC's key removed from box".to_string()
             )]
         );
+    }
+
+    /// The second confirmation is the logout's question, so it waits behind a popup the
+    /// user opened while the keys were searched for rather than taking its place.
+    #[test]
+    fn the_second_confirmation_waits_for_a_popup_the_user_opened() {
+        let mut m = logged_in_box();
+        start_logout(&mut m);
+        m.switcher.toggle_help(&mut m.state);
+        let found = vec![
+            key_line("ssh-ed25519 AAAAkey me xmux-registered", true),
+            key_line("no-pty ssh-ed25519 AAAAkey me", false),
+        ];
+        let effects = update(&mut m, keys_found(Ok(found)));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::FindSshConfigEntries { .. }]
+        ));
+        let effects = update(&mut m, entries_found(Ok(Vec::new())));
+        assert!(effects.is_empty(), "{effects:?}");
+        assert!(
+            matches!(m.state.modal, Some(crate::state::Modal::Help { .. })),
+            "the help the user opened stays"
+        );
+        assert_still_logged_in(&m);
+        m.switcher.toggle_help(&mut m.state);
+        let effects = update(&mut m, Msg::SyncSelection);
+        assert!(
+            effects.is_empty(),
+            "the waiting question is no decline: {effects:?}"
+        );
+        let Some(crate::state::Modal::Input(input)) = m.state.modal.as_ref() else {
+            panic!("the second confirmation opens once the help closes");
+        };
+        assert!(input.mode == crate::state::InputMode::LogoutKeys);
     }
 
     #[test]

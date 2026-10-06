@@ -966,6 +966,12 @@ impl Switcher {
     /// loop to dispatch off-loop. The network call is NOT made here, so the
     /// key-handling path never blocks on an ssh round-trip; [`run_op`] performs it
     /// off-loop and [`Switcher::apply_op_result`] folds the result in.
+    /// Records that a create was asked on `host`, by a key or a ctl verb, so its
+    /// session takes the selection when it is created unless the selection moves first.
+    pub(crate) fn note_create(&mut self, host: &str) {
+        self.create_host = Some(host.to_owned());
+    }
+
     fn queue_create(
         &mut self,
         host: Option<String>,
@@ -975,6 +981,7 @@ impl Switcher {
         let Some(host) = host else {
             return Vec::new();
         };
+        self.note_create(&host);
         state.apply(Action::CreateSession {
             host,
             name: name.to_string(),
@@ -1000,9 +1007,12 @@ impl Switcher {
         match state.fold_op_result(result) {
             OpFollow::Reselect(addr) => {
                 // The created session is what the user asked for, so its card takes the
-                // selection the moment it appears.
-                self.note_user_move();
-                self.interest = Interest::Awaiting(addr.clone());
+                // selection the moment it appears, unless the user moved the selection
+                // while the create ran.
+                if self.create_host.as_deref() == Some(addr.host.as_str()) {
+                    self.note_user_move();
+                    self.interest = Interest::Awaiting(addr.clone());
+                }
                 self.rebuild(state);
                 state.notify.toast(
                     "new session",
