@@ -134,6 +134,13 @@ impl Mux for Zellij {
         };
         // Zellij's session listing has no tab count. One extra non-attaching query
         // per live session is required; run them in order over the same transport.
+        //
+        // The listing already proved each session live, and the count only decorates
+        // its card. zellij 0.45 loses a CLI client's reply when the server hands the
+        // client an id a probe has just released (zellij-org/zellij#5270), so the
+        // query can exit with no tab list while the session runs on. Such a session
+        // keeps an unknown count, which shows no count, for this sweep: failing the
+        // sweep instead would mark a live host unreachable and end its polling.
         for session in &mut sessions {
             let argv = vec![
                 self.bin.clone(),
@@ -143,10 +150,16 @@ impl Mux for Zellij {
                 "list-tabs".into(),
                 "--json".into(),
             ];
-            let out = runner.run_spec(&transport.exec_argv(false, &argv)).await?;
-            session.windows = parse::tab_count(&out).map_err(|e| {
-                RunError::Other(format!("zellij list-tabs for {:?}: {e}", session.name))
-            })?;
+            let counted = match runner.run_spec(&transport.exec_argv(false, &argv)).await {
+                Ok(out) => parse::tab_count(&out).map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            match counted {
+                Ok(windows) => session.windows = windows,
+                Err(error) => {
+                    tracing::debug!(session = %session.name, error, "zellij_tab_count_unanswered")
+                }
+            }
         }
         Ok(sessions)
     }
@@ -345,29 +358,43 @@ mod tests {
         );
     }
 
+    /// Every answer zellij 0.45 gives a tab query whose reply it lost: nothing with
+    /// success, another command's text, a session it failed to find, a panic, a hang.
     #[tokio::test]
-    async fn an_unanswered_tab_count_is_an_enumeration_error() {
+    async fn an_unanswered_tab_count_leaves_the_listed_session_without_a_count() {
         for tabs in [
-            Err(RunError::Other("tab query timed out".into())),
-            Err(RunError::Exit {
-                stderr: "There is no active session!".into(),
-                code: 1,
-            }),
+            Ok(b"".to_vec()),
             Ok(b"not JSON".to_vec()),
             Ok(b"{}".to_vec()),
+            Err(RunError::Exit {
+                stderr: "Session 'api' not found. The following sessions are active:".into(),
+                code: 1,
+            }),
+            Err(RunError::Exit {
+                stderr: "thread 'main' panicked".into(),
+                code: 101,
+            }),
+            Err(RunError::Other("tab query timed out".into())),
         ] {
             let runner = TabRunner {
                 calls: Mutex::new(Vec::new()),
                 tabs,
             };
-            assert!(zellij()
+            let got = zellij()
                 .enumerate(&crate::transport::Local::default(), &runner)
                 .await
-                .is_err());
+                .expect("the listing answered, so the sweep answers");
+            assert_eq!(
+                got.iter()
+                    .map(|s| (s.name.as_str(), s.windows))
+                    .collect::<Vec<_>>(),
+                vec![("my build", 0), ("api", 0)],
+                "each live session stays listed with no count"
+            );
             assert_eq!(
                 runner.calls.lock().unwrap().len(),
-                2,
-                "stop after the failed query"
+                3,
+                "every live session is still asked"
             );
         }
     }
