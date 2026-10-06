@@ -1211,7 +1211,8 @@ impl Chrome {
         // line, and the card carries only that clause, so a screen that clipped would
         // leave the whole message nowhere readable. A value that already fits is passed
         // through untouched, which is what keeps the ssh stanza's own indentation.
-        let value_w = width.saturating_sub(cw as u16 + 4);
+        // The value column starts at `3 + cw + 2`, after the indent, the cell, and the rule.
+        let value_w = width.saturating_sub(cw as u16 + 5);
         let rows: Vec<(ScreenCell, String)> = rows
             .into_iter()
             .flat_map(|(cell, value)| {
@@ -1270,52 +1271,75 @@ impl Chrome {
         let path_col = 1 + level.len() as u16;
         // A host's headline is its path, and the machine half of the path is the link up
         // to the machine's screen.
-        let headline_line = match view.links.first() {
+        let label_len = match view.links.first() {
             Some(up)
                 if !machine_screen
                     && !matches!(kind, ViewScreen::SelfSession | ViewScreen::Landing)
                     && headline.starts_with(&up.label) =>
             {
-                let rest = headline[up.label.len()..].to_string();
+                up.label.chars().count()
+            }
+            _ => 0,
+        };
+        // A path wider than the view continues on the next rows under its first
+        // character. A path is one identifier, so it breaks between characters, and the
+        // link covers its part of every row it reaches.
+        let mut headline_lines = Vec::new();
+        let chars: Vec<char> = headline.chars().collect();
+        let avail = (width.saturating_sub(path_col) as usize).max(1);
+        let mut start = 0;
+        loop {
+            let mut end = start;
+            let mut row_w = 0;
+            while end < chars.len() {
+                let w = unicode_width::UnicodeWidthChar::width(chars[end]).unwrap_or(0);
+                if row_w + w > avail && end > start {
+                    break;
+                }
+                row_w += w;
+                end += 1;
+            }
+            let mut spans = if start == 0 {
+                lead.clone()
+            } else {
+                vec![Span::raw(" ".repeat(path_col as usize))]
+            };
+            let linked: String = chars[start..end.min(label_len.max(start))].iter().collect();
+            let plain: String = chars[end.min(label_len).max(start)..end].iter().collect();
+            if !linked.is_empty() {
                 links.push((
                     0,
-                    1,
+                    1 + headline_lines.len(),
                     path_col,
-                    unicode_width::UnicodeWidthStr::width(up.label.as_str()) as u16,
+                    unicode_width::UnicodeWidthStr::width(linked.as_str()) as u16,
                 ));
-                Line::from(
-                    [
-                        lead,
-                        vec![
-                            Span::styled(
-                                up.label.clone(),
-                                link_style(pal, 0, marks).add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(rest, bold),
-                        ],
-                    ]
-                    .concat(),
-                )
+                spans.push(Span::styled(
+                    linked,
+                    link_style(pal, 0, marks).add_modifier(Modifier::BOLD),
+                ));
             }
-            _ => Line::from([lead, vec![Span::styled(headline, bold)]].concat()),
-        };
-        let mut out = vec![
-            Line::from(""),
-            headline_line,
-            Line::from(Span::styled(
-                format!(
-                    " {}",
-                    if landing {
-                        self.scan_progress(state)
-                    } else if logged_out {
-                        crate::ui::tree::LOGGED_OUT.to_string()
-                    } else {
-                        kind.word().to_string()
-                    }
-                ),
-                state_style,
-            )),
-        ];
+            spans.push(Span::styled(plain, bold));
+            headline_lines.push(Line::from(spans));
+            start = end;
+            if start >= chars.len() {
+                break;
+            }
+        }
+        let mut out = vec![Line::from("")];
+        out.extend(headline_lines);
+        out.extend([Line::from(Span::styled(
+            format!(
+                " {}",
+                if landing {
+                    self.scan_progress(state)
+                } else if logged_out {
+                    crate::ui::tree::LOGGED_OUT.to_string()
+                } else {
+                    kind.word().to_string()
+                }
+            ),
+            state_style,
+        ))]);
         // The login pane OWNS the connection values: they sit at the panel's top,
         // edited in place from the terminal view (no modal, no nav). The inputs come in
         // two groups, what ssh dials with and what happens after it worked, and whitespace
@@ -1796,8 +1820,12 @@ impl Chrome {
             }
         }
         out.push(Line::from(""));
+        // A link's name that wraps keeps reading, and answering, as the link on every row
+        // it continues onto: `link_left` is the part of the name no row has drawn yet.
+        let mut link_left: Option<(usize, String)> = None;
         for (cell, value) in rows {
             if matches!(cell, ScreenCell::Gap) {
+                link_left = None;
                 out.push(Line::from(""));
                 continue;
             }
@@ -1805,25 +1833,44 @@ impl Chrome {
                 Span::styled(format!("   {:<cw$}", cell.text()), cell.style(palette)),
                 rule.clone(),
             ];
-            match cell {
-                ScreenCell::Link(_, i) => {
-                    let label = &view.links[i].label;
-                    let (name, rest) = if value.starts_with(label.as_str()) {
-                        (label.clone(), value[label.len()..].to_string())
-                    } else {
-                        (value.clone(), String::new())
-                    };
-                    let col = 3 + cw as u16 + 2;
-                    links.push((
-                        i,
-                        out.len(),
-                        col,
-                        unicode_width::UnicodeWidthStr::width(name.as_str()) as u16,
+            match &cell {
+                ScreenCell::Link(_, i) => link_left = Some((*i, view.links[*i].label.clone())),
+                ScreenCell::Continued => {}
+                _ => link_left = None,
+            }
+            match link_left.take() {
+                Some((i, left)) => {
+                    // A word wrap drops the space it broke at, so the name's remainder is
+                    // matched without its leading spaces.
+                    let left = left.trim_start();
+                    let shared = value
+                        .char_indices()
+                        .zip(left.chars())
+                        .take_while(|((_, a), b)| a == b)
+                        .last()
+                        .map_or(0, |((at, c), _)| at + c.len_utf8());
+                    // A link row whose value does not open with its name is all link.
+                    let whole = shared == 0 && matches!(cell, ScreenCell::Link(..));
+                    let (name, rest) = value.split_at(if whole { value.len() } else { shared });
+                    if !name.is_empty() {
+                        links.push((
+                            i,
+                            out.len(),
+                            3 + cw as u16 + 2,
+                            unicode_width::UnicodeWidthStr::width(name) as u16,
+                        ));
+                        spans.push(Span::styled(name.to_string(), link_style(pal, i, marks)));
+                    }
+                    spans.push(Span::styled(
+                        rest.to_string(),
+                        Style::default().fg(pal.decoration),
                     ));
-                    spans.push(Span::styled(name, link_style(pal, i, marks)));
-                    spans.push(Span::styled(rest, Style::default().fg(pal.decoration)));
+                    let left = if whole { "" } else { &left[shared..] };
+                    if !left.is_empty() && rest.is_empty() {
+                        link_left = Some((i, left.to_string()));
+                    }
                 }
-                _ => spans.push(Span::raw(value)),
+                None => spans.push(Span::raw(value)),
             }
             out.push(Line::from(spans));
         }
