@@ -158,6 +158,32 @@ predictable, so the terminal view never shows a session the user neither chose, 
 at, nor was led to. A change to how the selection moves is a change to the lineage or to
 what counts as interest, never a special case in one path.
 
+## User-Owned Context
+
+The context the user is looking at, which is the selection, the terminal view, the focus,
+and the open screen or popup, changes only when the user acts or as the direct, expected
+result of the user's own action. A background event, such as a scan or poll answer, a
+discovery, a login, create, or logout step finishing, a reconnect, or a recovery, never
+moves it. A session switch the user makes inside a mux client is the user's own action,
+so the selection follows it.
+
+The one automatic move is upward. When the context itself is lost, as when a logout or a
+network failure drops a session or a host, the selection and the view move up to the
+nearest level that still exists, session to host and host to machine. They never move
+down or sideways, and a lost context that returns does not take the selection back. The
+upward move is the lineage of Selection by Interest, so the two principles name one rule
+for the selection.
+
+The user reads the screen to choose the next input, so a context that moves on its own
+turns a key the user already decided on into an action on something else. A machine
+whose login reveals its hosts therefore stays selected with its screen in view, a
+created session takes the selection only while the user has not moved it since asking,
+the link selected on a screen stays on the node it names while the list changes around
+it, and a question an operation asks waits behind a popup the user opened. Moving up is
+the one exception because a lost node leaves nothing to show; its nearest surviving
+ancestor is the context that contained what the user was looking at, so it is the least
+surprising place to stand.
+
 ## Separate Selection and Execution
 
 Choosing a target and acting on it are separate inputs. The arrow keys move the hard

@@ -22,6 +22,8 @@ to the live terminal or to the headless backend behind the ctl `dump`.
 - Paint and hit-test read the same geometry answer; rendering never computes a second.
 - Every rebuild resolves the selection from the one interest; no path picks a fallback
   card of its own.
+- A background event moves the selection only up its lineage, when the node it names
+  is lost, and never down or sideways.
 - Every card, screen, screen link, and lineage step derives from the three levels: a
   machine with no host has a card and a screen of its own and links to no host, and the
   hosts found on it take over its card while the selection stays on the machine.

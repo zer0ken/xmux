@@ -117,6 +117,7 @@ fn a_created_session_takes_the_selection_and_its_end_returns_it_to_the_section()
     answer(&mut sw, &mut state, "mars:screen", &["s1"]);
     assert!(on_section(&sw, "mars:screen"));
 
+    sw.note_create("mars:screen");
     sw.apply_op_result(
         OpResult::Created {
             session: sess("mars:screen", "fresh"),
@@ -277,6 +278,7 @@ fn a_created_session_the_filter_hides_takes_the_selection_once_shown() {
     answer(&mut sw, &mut state, "prod", &["work"]);
     state.filter = "work".into();
     sw.rebuild(&mut state);
+    sw.note_create("prod");
     sw.apply_op_result(
         OpResult::Created {
             session: sess("prod", "edit"),
@@ -286,4 +288,117 @@ fn a_created_session_the_filter_hides_takes_the_selection_once_shown() {
     state.filter.clear();
     sw.rebuild(&mut state);
     assert!(on_session(&sw, "prod", "edit"), "{}", picked(&sw));
+}
+
+/// The context the user is looking at: the node the selection names, the link selected
+/// on its screen, and the screen the terminal view shows.
+fn context(sw: &Switcher, state: &State) -> (Option<Node>, Option<Node>, Option<ViewScreen>) {
+    (
+        sw.selected_node(),
+        sw.link_node.clone(),
+        sw.current_view_screen(state),
+    )
+}
+
+#[test]
+fn background_answers_leave_the_users_context_alone() {
+    let mut state = State::from_roster(
+        vec!["prod".into(), "zeta".into()],
+        vec!["prod".into(), "zeta".into(), "mars".into()],
+    );
+    let mut sw = Switcher::from_hosts(&mut state);
+    answer(&mut sw, &mut state, "prod", &["a", "b"]);
+    answer(&mut sw, &mut state, "zeta", &["q"]);
+    // The user opens the host prod and selects the link of its second session.
+    sw.note_user_move();
+    sw.select_node(Node::Host("prod".into()));
+    sw.link = 2;
+    sw.link_node = Some(Node::Session(Address::new("prod", "b")));
+    let before = context(&sw, &state);
+    assert_eq!(before.2, Some(ViewScreen::Host));
+
+    // Discovery adds a host whose cards sort above prod's, a poll adds sessions, a
+    // machine joins the roster and fails, and prod itself answers a poll.
+    sw.add_hosts(vec!["mars:tmux".into()], &mut state);
+    assert_eq!(context(&sw, &state), before, "discovery");
+    answer(&mut sw, &mut state, "mars:tmux", &["m1", "m2"]);
+    assert_eq!(context(&sw, &state), before, "a scan answer above");
+    answer(&mut sw, &mut state, "zeta", &["p", "q", "r"]);
+    assert_eq!(context(&sw, &state), before, "a poll below");
+    sw.add_machine("venus".into(), &mut state);
+    sw.apply_machine_result("venus", Some("connection refused".into()), &mut state);
+    assert_eq!(
+        context(&sw, &state),
+        before,
+        "a machine joining and failing"
+    );
+    answer(&mut sw, &mut state, "prod", &["a", "b", "c"]);
+    assert_eq!(context(&sw, &state), before, "a poll of the selected host");
+}
+
+#[test]
+fn a_lost_session_moves_up_and_its_return_does_not_pull_the_selection_down() {
+    let (mut sw, mut state) = launch(&["prod", "zeta"]);
+    answer(&mut sw, &mut state, "prod", &["work"]);
+    answer(&mut sw, &mut state, "zeta", &["q"]);
+    sw.select_address(&Address::new("prod", "work"));
+    assert!(on_session(&sw, "prod", "work"));
+    fail(&mut sw, &mut state, "prod", "connection refused");
+    assert_eq!(sw.selected_node(), machine("prod"), "{}", picked(&sw));
+    answer(&mut sw, &mut state, "prod", &["work"]);
+    assert_eq!(
+        sw.selected_node(),
+        machine("prod"),
+        "the recovery leaves the selection where the loss put it: {}",
+        picked(&sw)
+    );
+    assert!(sw.current_attach_target(&state).is_none());
+}
+
+#[test]
+fn a_created_session_whose_host_failed_meanwhile_does_not_pull_the_selection_down() {
+    let (mut sw, mut state) = launch(&["prod", "zeta"]);
+    answer(&mut sw, &mut state, "prod", &["work"]);
+    answer(&mut sw, &mut state, "zeta", &["q"]);
+    sw.select_address(&Address::new("prod", "work"));
+    assert!(on_session(&sw, "prod", "work"));
+    sw.note_create("prod");
+    // The host stops answering while the create runs; a timed-out scan keeps the
+    // sessions it last listed beside the failure.
+    let group = state.groups.iter_mut().find(|g| g.host == "prod").unwrap();
+    group.err = Some("scan timed out after 10s".into());
+    sw.rebuild(&mut state);
+    assert_eq!(sw.selected_node(), machine("prod"));
+    sw.apply_op_result(
+        OpResult::Created {
+            session: sess("prod", "fresh"),
+        },
+        &mut state,
+    );
+    answer(&mut sw, &mut state, "prod", &["fresh", "work"]);
+    assert_eq!(
+        sw.selected_node(),
+        machine("prod"),
+        "the lost host's return moves nothing down: {}",
+        picked(&sw)
+    );
+}
+
+#[test]
+fn a_move_made_while_a_create_runs_stands_when_it_finishes() {
+    let (mut sw, mut state) = launch(&["prod"]);
+    answer(&mut sw, &mut state, "prod", &["a", "b"]);
+    sw.select_address(&Address::new("prod", "a"));
+    assert!(on_session(&sw, "prod", "a"));
+    sw.note_create("prod");
+    sw.move_selection(1);
+    assert!(on_session(&sw, "prod", "b"));
+    sw.apply_op_result(
+        OpResult::Created {
+            session: sess("prod", "fresh"),
+        },
+        &mut state,
+    );
+    answer(&mut sw, &mut state, "prod", &["a", "b", "fresh"]);
+    assert!(on_session(&sw, "prod", "b"), "{}", picked(&sw));
 }

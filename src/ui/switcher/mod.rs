@@ -424,6 +424,10 @@ pub struct Switcher {
     /// confirmed grid instead of its scanning screen, and only when the session is on
     /// the card's own host, so a scanning host card never shows another host's grid.
     rescan_collapse: Option<Address>,
+    /// The host a create was asked on while the selection has not moved since. The
+    /// created session takes the selection only while it holds, so a move the user made
+    /// while the create ran is not undone when the create finishes.
+    create_host: Option<String>,
     /// The transient offset and in-flight border drag of the active modal popup. Its
     /// frame geometry belongs to the render plan shared with mouse input.
     popup_geo: PopupGeometry,
@@ -472,6 +476,7 @@ impl Switcher {
             terminal_view: false,
             host_band_hidden: false,
             rescan_collapse: None,
+            create_host: None,
             popup_geo: PopupGeometry::default(),
             landing: false,
         }
@@ -663,6 +668,7 @@ impl Switcher {
 
         let old_rows = std::mem::replace(&mut self.rows, rows);
         self.number_cards(unfiltered.as_deref(), settled);
+        let before = prior.node.clone();
         let target = self.resolve_selection(prior, &old_rows, state);
         if self
             .hover
@@ -671,7 +677,7 @@ impl Switcher {
         {
             self.hover = None;
         }
-        self.set_target(target);
+        self.place(before, target);
         self.resolve_link(state);
     }
 
@@ -740,14 +746,19 @@ impl Switcher {
                     self.rescan_collapse = None;
                     return Target::card(i);
                 }
-                // The interest ends only when the host answered without the session.
-                // A session the filter hides is still in the answer, so its card appears
-                // the moment the filter lets it through.
+                // The interest ends when the host answered without the session, or
+                // failed: a session its host can no longer reach is a lost context, and
+                // a later recovery must not pull the selection back down to it. A session
+                // the filter hides is still in the answer, so its card appears the moment
+                // the filter lets it through.
                 let listed = state.groups.iter().any(|g| {
-                    g.host == address.host && g.sessions.iter().any(|s| s.address() == address)
+                    g.host == address.host
+                        && g.err.is_none()
+                        && g.sessions.iter().any(|s| s.address() == address)
                 });
                 if !listed && !state.scanning.contains(&address.host) {
                     self.interest = Interest::Selected;
+                    self.rescan_collapse = None;
                 }
                 self.lineage_target(&prior, old_rows, state)
                     .unwrap_or_else(first_selectable)
@@ -1060,11 +1071,18 @@ impl Switcher {
     /// selection leaves that machine, and the screen's link selection starts over when the
     /// selection names another node.
     fn set_target(&mut self, target: Target) {
+        let before = self.selected_node();
+        self.place(before, target);
+    }
+
+    /// Puts the hard selection on `target`, coming from the node `before` named. A
+    /// rebuild passes the node the selection named on the rows it replaced, so a list
+    /// that changed around an unchanged node keeps that node's selected link.
+    fn place(&mut self, before: Option<Node>, target: Target) {
         if self.rows.is_empty() {
             self.deep = target.deep;
             return;
         }
-        let before = self.selected_node();
         let row = target.row.min(self.rows.len() - 1);
         let part = match (&self.rows[row].reference, target.part) {
             (RowRef::Section { .. }, Part::Card) => Part::Host,
@@ -1168,6 +1186,7 @@ impl Switcher {
     fn note_user_move(&mut self) {
         self.interest = Interest::Selected;
         self.rescan_collapse = None;
+        self.create_host = None;
     }
 
     fn move_selection(&mut self, delta: isize) {
