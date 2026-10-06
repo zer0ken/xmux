@@ -5,7 +5,6 @@
 use super::*;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::style::Modifier;
 use ratatui::Terminal;
 
 const W: u16 = 100;
@@ -317,17 +316,17 @@ fn pl1_a_band_continuation_column_repeats_its_title() {
 }
 
 #[test]
-fn pl2_the_selected_card_reverses_in_both_focus_states() {
+fn pl2_the_selected_card_is_highlighted_in_both_focus_states() {
     for position in ALL {
         for terminal_focused in [false, true] {
             let shot = Shot::new(two_groups(), nav_at(position), terminal_focused);
             let (x, y) = shot
                 .find_in(shot.nav_area(), "1 build")
                 .unwrap_or_else(|| panic!("{position:?}: the card is painted"));
-            let reversed = shot.buf[(x + 2, y)].modifier.contains(Modifier::REVERSED);
+            let highlighted = shot.buf[(x + 2, y)].bg == Color::LightGreen;
             assert!(
-                reversed,
-                "{position:?} terminal_focused={terminal_focused}: the selected card stays reversed"
+                highlighted,
+                "{position:?} terminal_focused={terminal_focused}: the selected card stays highlighted"
             );
         }
     }

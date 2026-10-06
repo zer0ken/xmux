@@ -1,5 +1,7 @@
 //! The one look of the hard selection: on every surface that has one, the selected item's
-//! cells are painted reversed over the terminal's own pair, and no other item's are.
+//! cells are painted on the theme's accent with the theme's text-on-accent slot, and no
+//! other item's are. The harness paints the default `auto-dark` theme: Black on
+//! LightGreen.
 
 use super::tests_hierarchy::{fleet, landed, landing_link, session, H};
 use super::*;
@@ -9,25 +11,35 @@ use ratatui::style::{Color, Modifier};
 const LOGGED_OUT: &str = crate::model::LOGGED_OUT;
 
 impl H {
-    /// Every cell of `rect` carries the selected look: reversed, with the terminal's own
-    /// foreground and background, so no colour of the surface turns into a background.
+    /// Every cell of `rect` carries the selected look: Black on the LightGreen accent,
+    /// neither reversed nor dimmed, so no colour of the surface survives inside the
+    /// highlight.
     fn selected_look(&self, rect: Rect) -> bool {
         let buf = self.term.backend().buffer();
         !rect.is_empty()
             && (rect.x..rect.right()).all(|x| {
                 let cell = &buf[(x, rect.y)];
-                cell.modifier.contains(Modifier::REVERSED)
-                    && cell.fg == Color::Reset
-                    && cell.bg == Color::Reset
+                cell.bg == Color::LightGreen
+                    && cell.fg == Color::Black
+                    && !cell.modifier.intersects(Modifier::REVERSED | Modifier::DIM)
             })
     }
 
-    /// No cell of `rect` is reversed.
+    /// No cell of `rect` sits on the accent or is reversed.
     fn plain(&self, rect: Rect) -> bool {
         let buf = self.term.backend().buffer();
         !rect.is_empty()
-            && (rect.x..rect.right())
-                .all(|x| !buf[(x, rect.y)].modifier.contains(Modifier::REVERSED))
+            && (rect.x..rect.right()).all(|x| {
+                let cell = &buf[(x, rect.y)];
+                cell.bg != Color::LightGreen && !cell.modifier.contains(Modifier::REVERSED)
+            })
+    }
+
+    /// From where `text` is painted in `popup` to the popup's right border: the whole
+    /// row an entry's selection covers, its key, its words, and its padding.
+    fn row_in(&self, popup: Rect, text: &str) -> Rect {
+        let at = self.find_in(popup, text);
+        Rect::new(at.x, at.y, popup.right() - 1 - at.x, 1)
     }
 
     /// Where `text` is first painted inside `area`, reading rows top to bottom.
@@ -56,7 +68,7 @@ impl H {
 }
 
 #[test]
-fn a_selected_nav_card_is_reversed_and_no_other_card_is() {
+fn a_selected_nav_card_is_highlighted_and_no_other_card_is() {
     let mut h = fleet();
     h.select("web", "api");
     let api = h.card_row(|r| matches!(r, RowRef::Session { sess } if sess.name == "api"));
@@ -66,7 +78,7 @@ fn a_selected_nav_card_is_reversed_and_no_other_card_is() {
 }
 
 #[test]
-fn a_selected_section_title_half_is_reversed_and_the_other_half_is_not() {
+fn a_selected_section_title_half_is_highlighted_and_the_other_half_is_not() {
     let mut h = fleet();
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
@@ -76,7 +88,7 @@ fn a_selected_section_title_half_is_reversed_and_the_other_half_is_not() {
 }
 
 #[test]
-fn a_selected_screen_link_is_reversed_and_no_other_link_is() {
+fn a_selected_screen_link_is_highlighted_and_no_other_link_is() {
     let mut h = fleet();
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
@@ -87,14 +99,14 @@ fn a_selected_screen_link_is_reversed_and_no_other_link_is() {
 }
 
 #[test]
-fn a_selected_landing_link_is_reversed_and_no_other_link_is() {
+fn a_selected_landing_link_is_highlighted_and_no_other_link_is() {
     let h = landed();
     assert!(h.selected_look(landing_link(&h, session("gpu", "train"))));
     assert!(h.plain(landing_link(&h, session("web", "api"))));
 }
 
 #[test]
-fn the_selected_help_tab_is_reversed_and_no_other_tab_is() {
+fn the_selected_help_tab_is_highlighted_and_no_other_tab_is() {
     let mut h = fleet();
     h.sw.toggle_help(&mut h.state);
     h.draw();
@@ -108,19 +120,19 @@ fn the_selected_help_tab_is_reversed_and_no_other_tab_is() {
 }
 
 #[test]
-fn the_selected_palette_entry_is_reversed_and_no_other_entry_is() {
+fn the_selected_palette_entry_is_highlighted_and_no_other_entry_is() {
     let mut h = fleet();
     h.sw.toggle_palette(&mut h.state);
     h.draw();
     let entries = h.sw.palette_entries(&h.state, "");
     let name = |i: usize| entries[i].0.chars().take(12).collect::<String>();
     let popup = h.plan.popup_rect;
-    assert!(h.selected_look(h.find_in(popup, &name(0))));
+    assert!(h.selected_look(h.row_in(popup, &name(0))));
     assert!(h.plain(h.find_in(popup, &name(1))));
 }
 
 #[test]
-fn the_selected_check_row_is_reversed_and_no_other_row_is() {
+fn the_selected_check_row_is_highlighted_and_no_other_row_is() {
     let mut h = H::new(&[
         ("gpu", &["train"], None),
         ("db", &[], Some(LOGGED_OUT)),
@@ -130,7 +142,7 @@ fn the_selected_check_row_is_reversed_and_no_other_row_is() {
     h.draw();
     let entries = h.sw.check_entries(&h.state);
     let popup = h.plan.popup_rect;
-    assert!(h.selected_look(h.find_in(popup, &entries[0].host)));
+    assert!(h.selected_look(h.row_in(popup, &entries[0].host)));
     assert!(h.plain(h.find_in(popup, &entries[1].host)));
 }
 
@@ -157,15 +169,21 @@ fn login(focus: crate::state::LoginFocus) -> H {
 }
 
 #[test]
-fn the_focused_login_field_is_reversed_and_no_other_field_is() {
+fn the_focused_login_field_is_highlighted_and_no_other_field_is() {
     let h = login(crate::state::LoginFocus::Address);
     let screen = h.screen();
-    assert!(h.selected_look(h.find_in(screen, "10.0.0.9")));
+    let value = h.find_in(screen, "10.0.0.9");
+    assert!(h.selected_look(value));
     assert!(h.plain(h.find_in(screen, "alice")));
+    // The caret cell after the value is the accent pair swapped, so it reads inside the
+    // highlight without a colour of its own.
+    let caret = &h.term.backend().buffer()[(value.right(), value.y)];
+    assert_eq!((caret.fg, caret.bg), (Color::Black, Color::LightGreen));
+    assert!(caret.modifier.contains(Modifier::REVERSED));
 }
 
 #[test]
-fn the_focused_login_choice_is_reversed_and_no_other_choice_is() {
+fn the_focused_login_choice_is_highlighted_and_no_other_choice_is() {
     let h = login(crate::state::LoginFocus::AfterNothing);
     let screen = h.screen();
     assert!(h.selected_look(h.find_in(screen, "do nothing")));
@@ -174,7 +192,7 @@ fn the_focused_login_choice_is_reversed_and_no_other_choice_is() {
 }
 
 #[test]
-fn the_focused_login_button_is_reversed() {
+fn the_focused_login_button_is_highlighted() {
     let h = login(crate::state::LoginFocus::Submit);
     let screen = h.screen();
     assert!(h.selected_look(h.find_in(screen, "Log in")));

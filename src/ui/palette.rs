@@ -4,8 +4,8 @@
 //! (`docs/principles.md`).
 //!
 //! **The invariant: xmux never emits a colour of its own.** The palette is the sixteen
-//! ANSI slots (one per UI role) plus ATTRIBUTES: reverse video, bold, and dim. Nothing
-//! else. The TERMINAL THEME decides the actual hue, so the whole UI recolours with
+//! ANSI slots (one per UI role) plus ATTRIBUTES: reverse video, bold, dim, and underline.
+//! Nothing else. The TERMINAL THEME decides the actual hue, so the whole UI recolours with
 //! whatever scheme the user runs. A `Color::Rgb` or a `Color::Indexed` above 15 is a
 //! colour xmux picked for somebody else's terminal, and it is wrong on every theme it was
 //! not picked for; a test below fails if one appears. A new colour goes into the palette
@@ -13,12 +13,10 @@
 //!
 //! Anything the sixteen slots cannot say is said with an attribute instead, which the
 //! theme also resolves. "One step off the background" is the case that keeps coming up,
-//! and it is not a slot, so the selection is REVERSE VIDEO rather than a raised surface.
-//! Computing a surface needs the terminal's background, and a terminal is free to answer
-//! no colour query at all (Windows Terminal answers none), which leaves a fixed fallback
-//! as the permanent state rather than a rare one. Reverse video needs no answer and no
-//! choice: the terminal swaps its own foreground and background, which is exactly what a
-//! theme means by "selected".
+//! and it is not a slot: computing a raised surface needs the terminal's background, and
+//! a terminal is free to answer no colour query at all (Windows Terminal answers none).
+//! So the selection is not a raised surface but the ACCENT slot as a background, with
+//! the theme's `on_accent` slot as the text on it: two slots, one look on every surface.
 //!
 //! A THEME is a named role→ANSI-slot assignment, and [`THEMES`] is the registry: the
 //! built-ins are `auto-dark` (the default) and `auto-light`, each an ANSI-only theme for
@@ -36,8 +34,8 @@
 //! those user-named colours are the only ones that may leave the sixteen slots (see
 //! [`Overrides`]). The chrome parses them, never this module, and the chrome's colour
 //! mapping is the only place a `#rrggbb` may enter. A nonempty `NO_COLOR` resets this
-//! palette and the configured chrome colours; the selection stays visible through
-//! reverse video.
+//! palette and the configured chrome colours; with no accent left to paint, the
+//! selection stays visible through reverse video.
 //!
 //! A colour a CHILD program emits passes through untouched: it is that program's own
 //! choice against the same theme, and xmux is not in it.
@@ -68,8 +66,13 @@ pub(crate) struct Palette {
     /// The single accent: the session name, the screen links, the popup titles, and
     /// the view border's drag-hover cue all share it, so "interactive / current" is
     /// one colour everywhere. Painted on the CARD / TERMINAL background, so it
-    /// follows the theme.
+    /// follows the theme. It is also the background of every hard selection.
     pub accent: Color,
+    /// The text of a hard selection, painted on [`accent`](Self::accent). Its own role
+    /// because no level colour reads on the accent: the level colours are picked to
+    /// read on the terminal's background, which the accent is picked to stand out
+    /// from.
+    pub on_accent: Color,
     /// Content furniture: the card number, the `/` separator, the section title, the
     /// band/column rules, the popup borders, and a band's overflow counts (`‹ n` /
     /// `n ›`). All the quiet marks a card needs to read apart without being part of any
@@ -94,9 +97,9 @@ pub(crate) struct Palette {
     /// different surface than the cards), so the slot that reads on one may not read
     /// on the other: a light theme's dark `accent` is invisible on a dark bar.
     pub bar_accent: Color,
-    /// The background `[ui] selection-style` names, or `None` for the default: reverse
-    /// video, the terminal's own "selected" look. Not a colour role - a user's override
-    /// of one - so it is the only field that may hold a colour xmux did not choose.
+    /// The background `[ui] selection-style` names, or `None` for the default: the
+    /// accent. Not a colour role - a user's override of one - so it is the only field
+    /// that may hold a colour xmux did not choose.
     pub selection_bg: Option<Color>,
 }
 
@@ -107,12 +110,15 @@ pub(crate) struct Palette {
 pub(crate) const AUTO_LIGHT: &str = "auto-light";
 
 /// `auto-dark`: for a dark terminal background. Painted with the dark-slot ends of the
-/// ANSI set - the level colours read on black, the accent pops on it.
+/// ANSI set - the level colours read on black, the accent pops on it. A selection is
+/// Black on the bright accent: a dark theme keeps its Black slot near its background,
+/// which is what the bright accent is picked to stand out from.
 const fn auto_dark() -> Palette {
     Palette {
         primary: Color::White,
         secondary: Color::Gray,
         accent: Color::LightGreen,
+        on_accent: Color::Black,
         decoration: Color::DarkGray,
         warning: Color::Yellow,
         error: Color::LightRed,
@@ -127,12 +133,15 @@ const fn auto_dark() -> Palette {
 /// `auto-light`: for a light terminal background. Painted with the dark-slot ends of
 /// the ANSI set (a light background washes the bright slots out), so the level colours
 /// and the accent read against white; the hint bar keeps the dark slots that read on a
-/// bar of its own.
+/// bar of its own. A selection is Black on the Green accent: a light theme's Green is a
+/// mid green, and Black, the theme's own text colour, reads on it where White, close to
+/// the theme's background, washes out.
 const fn auto_light() -> Palette {
     Palette {
         primary: Color::Black,
         secondary: Color::DarkGray,
         accent: Color::Green,
+        on_accent: Color::Black,
         decoration: Color::Gray,
         warning: Color::Yellow,
         error: Color::Red,
@@ -188,7 +197,7 @@ pub(crate) struct Overrides {
     pub bar_bg: Option<Color>,
     pub bar_fg: Option<Color>,
     pub bar_accent: Option<Color>,
-    /// `[ui] selection-style`, parsed to `None` when unset (reverse video).
+    /// `[ui] selection-style`, parsed to `None` when unset (the accent).
     pub selection_bg: Option<Color>,
 }
 
@@ -213,6 +222,7 @@ fn without_color(mut palette: Palette) -> Palette {
     palette.primary = Color::Reset;
     palette.secondary = Color::Reset;
     palette.accent = Color::Reset;
+    palette.on_accent = Color::Reset;
     palette.decoration = Color::Reset;
     palette.warning = Color::Reset;
     palette.error = Color::Reset;
@@ -254,8 +264,8 @@ impl Default for Palette {
 }
 
 /// The style a popup item or a help tab under the pointer is painted with, the soft
-/// selection: an underline, which reads apart from the hard selection's reverse video and
-/// sits on top of it when both mark one item. An attribute, so the theme resolves it.
+/// selection: an underline, which reads apart from the hard selection's accent background
+/// and sits on top of it when both mark one item. An attribute, so the theme resolves it.
 pub(crate) fn soft_selection_style() -> Style {
     Style::default().add_modifier(Modifier::UNDERLINED)
 }
@@ -263,30 +273,34 @@ pub(crate) fn soft_selection_style() -> Style {
 /// The style every hard selection is painted with: a nav card or the half of a section
 /// title, a screen link, a help tab, a list row, and a focused login stop.
 ///
-/// By default reverse video, and nothing else: the terminal swaps its own foreground and
-/// background, so the selection is as legible as that theme's own text and xmux picks no
-/// colour. The `fg`/`bg` are pinned to `Reset` first because the swap happens per CELL -
-/// left alone, a cyan session name would inverse into a cyan BACKGROUND and the card
-/// would come out striped in its level colours.
+/// By default the theme's `on_accent` text on its `accent` background over every cell of
+/// the item: the foreground is pinned along with the background, and dim and reverse
+/// video are cleared, so no level colour, dim number, or swapped cell of the item survives
+/// inside the highlight and the selection reads as one look on every surface.
 ///
-/// `[ui] selection-style` replaces the whole thing with that background, keeping the
-/// level colours on top, for a user who would rather have a surface.
+/// With no accent to paint (`NO_COLOR`, or an accent named `default`) the selection is
+/// reverse video over the terminal's own pair instead, which needs no colour at all. The
+/// `fg`/`bg` are pinned to `Reset` there because the swap happens per cell: left alone, a
+/// cyan session name would invert into a cyan background.
+///
+/// `[ui] selection-style` replaces the accent with that background, keeping the level
+/// colours on top, for a user who names a surface of their own.
 pub(crate) fn selection_style(palette: &Palette) -> Style {
-    selection_style_for(palette.selection_bg)
-}
-
-fn selection_style_for(selection_bg: Option<Color>) -> Style {
-    match selection_bg {
+    match palette.selection_bg {
         Some(bg) => Style::default().bg(bg),
-        None => Style::default()
+        None if palette.accent == Color::Reset => Style::default()
             .fg(Color::Reset)
             .bg(Color::Reset)
             .add_modifier(Modifier::REVERSED),
+        None => Style::default()
+            .fg(palette.on_accent)
+            .bg(palette.accent)
+            .remove_modifier(Modifier::DIM | Modifier::REVERSED),
     }
 }
 
 /// `style` as the hard selection paints it: the selection style patched over it, so the
-/// surface's own colour never stays under the reversal as a second background.
+/// surface's own colour never stays under the highlight as a second background.
 pub(crate) fn selected(style: Style, palette: &Palette) -> Style {
     style.patch(selection_style(palette))
 }
@@ -307,15 +321,22 @@ pub(crate) fn selected_line(line: Line<'static>, palette: &Palette) -> Line<'sta
 }
 
 /// What `xmux doctor` says about the selected card's paint. The selection is the one
-/// place the palette takes an outside colour, and which of the two is in effect is
-/// invisible on a screenshot, so the doctor states it.
-pub(crate) fn selection_report(selection_bg: Option<Color>) -> String {
-    match selection_bg {
+/// place the palette takes an outside colour, and which background is in effect cannot be
+/// told from a screenshot, so the doctor states it.
+pub(crate) fn selection_report(palette: &Palette) -> String {
+    match palette.selection_bg {
         Some(c) => format!(
             "selected card: {} (set by [ui] selection-style)",
             describe(c)
         ),
-        None => "selected card: reverse video (the terminal theme's own selected look)".to_string(),
+        None if palette.accent == Color::Reset => {
+            "selected card: reverse video (no accent colour to paint)".to_string()
+        }
+        None => format!(
+            "selected card: {} on the accent {}",
+            describe(palette.on_accent),
+            describe(palette.accent)
+        ),
     }
 }
 
@@ -351,6 +372,7 @@ mod tests {
         ] {
             assert_eq!(color, Color::Reset);
         }
+        assert_eq!(p.on_accent, Color::Reset);
         assert!(selection_style(&p)
             .add_modifier
             .contains(Modifier::REVERSED));
@@ -368,6 +390,7 @@ mod tests {
                 ("primary", p.primary),
                 ("secondary", p.secondary),
                 ("accent", p.accent),
+                ("on_accent", p.on_accent),
                 ("decoration", p.decoration),
                 ("warning", p.warning),
                 ("error", p.error),
@@ -404,6 +427,7 @@ mod tests {
         assert_eq!(p.primary, Color::White);
         assert_eq!(p.secondary, Color::Gray);
         assert_eq!(p.accent, Color::LightGreen);
+        assert_eq!(p.on_accent, Color::Black);
         assert_eq!(p.decoration, Color::DarkGray);
         assert_eq!(p.warning, Color::Yellow);
         assert_eq!(p.error, Color::LightRed);
@@ -416,6 +440,7 @@ mod tests {
         assert_eq!(p.primary, Color::Black);
         assert_eq!(p.secondary, Color::DarkGray);
         assert_eq!(p.accent, Color::Green);
+        assert_eq!(p.on_accent, Color::Black);
         assert_eq!(p.decoration, Color::Gray);
         assert_eq!(p.warning, Color::Yellow);
         assert_eq!(p.error, Color::Red);
@@ -444,14 +469,42 @@ mod tests {
     }
 
     #[test]
-    fn the_default_selection_is_the_terminals_own_reverse_video() {
-        // No colour at all: the terminal swaps its own pair, so the selection is exactly
-        // as legible as that theme's text. `Reset` on both sides is what keeps the swap
-        // from striping the card in its level colours, cell by cell.
-        let s = selection_style_for(None);
+    fn the_default_selection_is_the_on_accent_text_on_the_accent() {
+        // Each theme's own pair, pinned on both sides and clearing dim and reverse video,
+        // so nothing the item painted on its cells survives inside the highlight.
+        for (theme, fg, bg) in [
+            ("auto-dark", Color::Black, Color::LightGreen),
+            ("auto-light", Color::Black, Color::Green),
+        ] {
+            let s = selection_style(&resolve(theme, Overrides::default()));
+            assert_eq!((s.fg, s.bg), (Some(fg), Some(bg)), "{theme}");
+            assert!(s.sub_modifier.contains(Modifier::DIM), "{theme}");
+            assert!(s.sub_modifier.contains(Modifier::REVERSED), "{theme}");
+            assert!(!s.add_modifier.contains(Modifier::REVERSED), "{theme}");
+        }
+    }
+
+    #[test]
+    fn the_selection_follows_a_user_named_accent() {
+        // The selection IS the accent: naming another accent recolours the highlight with
+        // it, and naming none (`default`) leaves reverse video, which needs no colour.
+        let s = selection_style(&resolve(
+            "auto-dark",
+            Overrides {
+                accent: Some(Color::Cyan),
+                ..Default::default()
+            },
+        ));
+        assert_eq!(s.bg, Some(Color::Cyan));
+        let s = selection_style(&resolve(
+            "auto-dark",
+            Overrides {
+                accent: Some(Color::Reset),
+                ..Default::default()
+            },
+        ));
         assert!(s.add_modifier.contains(Modifier::REVERSED));
-        assert_eq!(s.fg, Some(Color::Reset));
-        assert_eq!(s.bg, Some(Color::Reset));
+        assert_eq!((s.fg, s.bg), (Some(Color::Reset), Some(Color::Reset)));
     }
 
     #[test]
@@ -469,30 +522,38 @@ mod tests {
         assert_eq!(p.primary, Color::Red);
         assert_eq!(p.secondary, auto_dark().secondary);
         assert_eq!(p.accent, auto_dark().accent);
-        // selection_bg is replaced as given, even by None: that is the "reverse video"
-        // default rather than "keep what was there".
+        // selection_bg is replaced as given, even by None: that is the accent default
+        // rather than "keep what was there".
         let p = resolve("auto-dark", Overrides::default());
         assert_eq!(p, auto_dark());
     }
 
     #[test]
     fn the_report_says_which_of_the_two_paints_the_selection() {
-        // Invisible on a screenshot: a reverse-video row and a named-background row both
-        // just look "selected". So the doctor names the source, and spells a colour the
-        // way config does rather than as a Debug triple.
-        let d = selection_report(None);
-        assert!(d.contains("reverse video"), "{d}");
-        let named = selection_report(Some(Color::Rgb(0x2d, 0x4f, 0x6b)));
+        // Invisible on a screenshot: an accent row and a named-background row both just
+        // look "selected". So the doctor names the source, and spells a colour the way
+        // config does rather than as a Debug triple.
+        let d = selection_report(&auto_dark());
+        assert!(d.contains("black on the accent lightgreen"), "{d}");
+        let named = selection_report(&Palette {
+            selection_bg: Some(Color::Rgb(0x2d, 0x4f, 0x6b)),
+            ..auto_dark()
+        });
         assert!(named.contains("[ui] selection-style"), "{named}");
         assert!(named.contains("#2d4f6b"), "{named}");
-        assert!(!named.contains("reverse video"), "{named}");
+        assert!(!named.contains("accent"), "{named}");
+        let bare = selection_report(&without_color(auto_dark()));
+        assert!(bare.contains("reverse video"), "{bare}");
     }
 
     #[test]
     fn a_named_selection_style_is_a_plain_background() {
         // A user who names a colour knows their own theme, so it is used as given - and
         // without REVERSED, which would invert the very colour they asked for.
-        let s = selection_style_for(Some(Color::Blue));
+        let s = selection_style(&Palette {
+            selection_bg: Some(Color::Blue),
+            ..auto_dark()
+        });
         assert_eq!(s.bg, Some(Color::Blue));
         assert!(!s.add_modifier.contains(Modifier::REVERSED));
     }

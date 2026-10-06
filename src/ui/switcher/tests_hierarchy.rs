@@ -138,9 +138,9 @@ impl H {
             .collect()
     }
 
-    fn reversed(&self, rect: Rect) -> bool {
+    fn highlighted(&self, rect: Rect) -> bool {
         let buf = self.term.backend().buffer();
-        (rect.x..rect.right()).all(|x| buf[(x, rect.y)].modifier.contains(Modifier::REVERSED))
+        (rect.x..rect.right()).all(|x| buf[(x, rect.y)].bg == Color::LightGreen)
     }
 
     fn underlined(&self, rect: Rect) -> bool {
@@ -229,10 +229,10 @@ fn a_section_title_is_two_targets_and_paints_only_the_selected_half() {
     assert_eq!(h.node(), machine("web"));
     let (machine_half, host_half) = (h.half(title, Part::Machine), h.half(title, Part::Host));
     assert!(
-        h.reversed(machine_half),
+        h.highlighted(machine_half),
         "the machine half is the selection"
     );
-    assert!(!h.reversed(host_half), "the host half is not");
+    assert!(!h.highlighted(host_half), "the host half is not");
     assert_eq!(
         h.sw.current_view_screen(&h.state),
         Some(ViewScreen::Machine)
@@ -242,7 +242,7 @@ fn a_section_title_is_two_targets_and_paints_only_the_selected_half() {
     h.draw();
     assert_eq!(h.node(), host("web"));
     let (machine_half, host_half) = (h.half(title, Part::Machine), h.half(title, Part::Host));
-    assert!(h.reversed(host_half) && !h.reversed(machine_half));
+    assert!(h.highlighted(host_half) && !h.highlighted(machine_half));
     assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Host));
 }
 
@@ -354,9 +354,9 @@ fn a_host_card_reads_as_two_targets_too() {
     assert_eq!(h.cells(half), "idle");
     h.ctrl(KeyCode::Up);
     assert_eq!(h.node(), machine("idle"));
-    assert!(h.reversed(h.half(idle, Part::Machine)));
+    assert!(h.highlighted(h.half(idle, Part::Machine)));
     assert!(
-        !h.reversed(h.card(idle)),
+        !h.highlighted(h.card(idle)),
         "only the machine half is the selection"
     );
     h.ctrl(KeyCode::Down);
@@ -484,17 +484,17 @@ fn screen_links_take_the_arrows_and_enter_in_the_terminal_view() {
     h.terminal_focused = true;
     h.draw();
     assert!(
-        h.reversed(h.link_rect(0)),
+        h.highlighted(h.link_rect(0)),
         "the first link is the hard selection"
     );
     h.sw.step_link(1, &h.state);
     h.sw.step_link(1, &h.state);
     h.draw();
-    assert!(h.reversed(h.link_rect(2)) && !h.reversed(h.link_rect(0)));
+    assert!(h.highlighted(h.link_rect(2)) && !h.highlighted(h.link_rect(0)));
     h.sw.step_link(5, &h.state);
     h.draw();
     assert!(
-        h.reversed(h.link_rect(2)),
+        h.highlighted(h.link_rect(2)),
         "the arrows stop at the last link"
     );
 
@@ -515,7 +515,7 @@ fn screen_links_take_the_arrows_and_enter_in_the_terminal_view() {
     assert_eq!(h.node(), machine("web"));
     let links = h.sw.screen_links(&Node::Machine("web".into()), &h.state);
     assert_eq!(links[h.sw.link].node, Node::Host("web".into()));
-    assert!(h.reversed(h.link_rect(h.sw.link)));
+    assert!(h.highlighted(h.link_rect(h.sw.link)));
 }
 
 #[test]
@@ -523,10 +523,10 @@ fn a_link_is_drawn_selected_only_while_the_terminal_view_holds_the_focus() {
     let mut h = fleet();
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
-    assert!(!h.reversed(h.link_rect(0)), "the nav holds the focus");
+    assert!(!h.highlighted(h.link_rect(0)), "the nav holds the focus");
     h.terminal_focused = true;
     h.draw();
-    assert!(h.reversed(h.link_rect(0)));
+    assert!(h.highlighted(h.link_rect(0)));
 }
 
 #[test]
@@ -551,7 +551,7 @@ fn hovering_a_nav_target_shows_its_screen_without_moving_the_hard_selection() {
         h.underlined(h.card(deploy)),
         "the soft selection is underlined"
     );
-    assert!(!h.reversed(h.card(deploy)));
+    assert!(!h.highlighted(h.card(deploy)));
 
     let title = h.title_row("web");
     let half = h.half(title, Part::Machine);
@@ -849,7 +849,7 @@ fn the_selected_link_follows_its_node_when_the_links_change() {
     h.draw();
     assert_eq!(h.node(), host("web"));
     assert_eq!(h.sw.link, 1);
-    assert!(h.reversed(h.link_rect(1)));
+    assert!(h.highlighted(h.link_rect(1)));
 
     // deploy ends too: the selection stays on a link the screen still has.
     h.sw.apply_host_result("web".into(), vec![sess("web", "api")], None, &mut h.state);
@@ -875,7 +875,7 @@ fn a_screen_scrolls_to_keep_the_selected_link_in_view() {
     h.sw.step_link(40, &h.state);
     h.draw();
     let last = h.link_rect(40);
-    assert!(h.reversed(last), "the selected link is on screen");
+    assert!(h.highlighted(last), "the selected link is on screen");
     assert_eq!(h.cells(last).trim_end(), "s39");
 }
 
@@ -977,16 +977,16 @@ fn the_landing_states_the_scan_progress_with_the_spinner() {
 fn the_landing_and_the_nav_share_one_selection_that_attaches_nothing() {
     let mut h = landed();
     assert_eq!(h.node(), session("gpu", "train"));
-    assert!(h.reversed(landing_link(&h, session("gpu", "train"))));
+    assert!(h.highlighted(landing_link(&h, session("gpu", "train"))));
     assert_eq!(h.sw.terminal_view_target().target, "");
 
     h.key(KeyCode::Down);
     assert_eq!(h.node(), session("web", "api"));
     assert!(
-        h.reversed(landing_link(&h, session("web", "api"))),
+        h.highlighted(landing_link(&h, session("web", "api"))),
         "the landing marks the card the nav moved to"
     );
-    assert!(!h.reversed(landing_link(&h, session("gpu", "train"))));
+    assert!(!h.highlighted(landing_link(&h, session("gpu", "train"))));
     assert_eq!(
         h.sw.terminal_view_target().target,
         "",

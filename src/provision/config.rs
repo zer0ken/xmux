@@ -228,10 +228,10 @@ pub struct UiConfig {
     /// colour syntax). Empty means the built-in default.
     #[serde(rename = "hint-bar-style", default)]
     pub hint_bar_style: String,
-    /// The selected card's background, in the same colour slots as the view border
-    /// (`bg=<colour>`, or a bare colour token). Empty (default) paints the selected card
-    /// in reverse video, which needs no colour from the terminal; a named colour gives
-    /// it a surface instead.
+    /// The background of every hard selection, in the same colour slots as the view
+    /// border (`bg=<colour>`, or a bare colour token). Empty (default) paints a selection
+    /// in the theme's `on_accent` text on its `accent`; a named colour replaces the accent
+    /// background and leaves the selected item's own text colours on it.
     #[serde(rename = "selection-style", default)]
     pub selection_style: String,
     /// Per-role colour overrides for the chosen theme: `primary`, `secondary`,
@@ -330,7 +330,7 @@ impl Default for UiConfig {
             view_border_hover_style: String::new(),
             // Empty leaves the hint bar at its built-in style.
             hint_bar_style: String::new(),
-            // Empty selects reverse video instead of a named surface colour.
+            // Empty selects the theme's accent instead of a named surface colour.
             selection_style: String::new(),
             // Empty leaves each role at the theme's own slot.
             primary: String::new(),

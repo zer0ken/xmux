@@ -1164,7 +1164,7 @@ pub(crate) const PALETTE_LEAD: u16 = 2;
 /// The command palette's rows for a popup `inner` cells wide with `visible` rows under
 /// [`PALETTE_LEAD`]: the query field, the rule, then one entry per command in the key list's grammar,
 /// the key cell bold in a column as wide as the widest key, then the description, wrapped
-/// under the description column rather than cut. The selected entry is reversed across the
+/// under the description column rather than cut. The selected entry is highlighted across the
 /// whole width, and the window starts late enough to show it
 /// whole. The `hover` entry, the soft selection, is underlined across its rows.
 /// `entries` pairs each key cell with its description; an empty key is a login the
@@ -2071,7 +2071,7 @@ mod tests {
         let lit: Vec<&str> = row
             .spans
             .iter()
-            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
+            .filter(|s| s.style.bg == Some(palette.accent))
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(
@@ -2144,7 +2144,7 @@ mod tests {
         let lit: Vec<String> = lines[HELP_TAB_ROW as usize]
             .spans
             .iter()
-            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
+            .filter(|s| s.style.bg == Some(palette.accent))
             .map(|s| s.content.to_string())
             .collect();
         assert_eq!(lit, [GLYPH_SECTION]);

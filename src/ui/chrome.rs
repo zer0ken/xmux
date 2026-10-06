@@ -159,9 +159,8 @@ pub(crate) fn parse_hint_bar_style(spec: &str, palette: &crate::ui::palette::Pal
     style
 }
 
-/// Parses a `[ui] selection-style` spec into the selected card's background. Empty ⇒
-/// `None`, leaving the selection to reverse video - the terminal theme's own selected
-/// look, and xmux's default. Accepts the same colour slots as the view
+/// Parses a `[ui] selection-style` spec into the selection's background. Empty ⇒
+/// `None`, leaving the selection on the theme's accent, xmux's default. Accepts the same colour slots as the view
 /// border ([`map_color`]): `bg=<colour>`, or a bare colour token, since a selection
 /// surface IS a background and naming it twice would be noise. A `fg=` token is
 /// ignored - the card's text keeps its per-level roles.
@@ -1366,7 +1365,7 @@ impl Chrome {
                 .map(|l| l.chars().count())
                 .max()
                 .unwrap_or(0);
-            let reversed = |style: Style, active: bool| {
+            let lit = |style: Style, active: bool| {
                 if active && taking_keys {
                     crate::ui::palette::selected(style, pal)
                 } else {
@@ -1428,20 +1427,23 @@ impl Chrome {
                 let text = parts.pop().unwrap_or_default();
                 let mut lines = Vec::new();
                 for part in parts {
-                    spans.push(Span::styled(part, reversed(style, active)));
+                    spans.push(Span::styled(part, lit(style, active)));
                     lines.push(Line::from(std::mem::replace(
                         &mut spans,
                         vec![Span::raw(" ".repeat(value_col))],
                     )));
                 }
-                // The focused value is reversed over its own cells and one caret cell,
-                // and the column keeps its width in plain padding.
+                // The focused value is the hard selection over its own cells, and the
+                // caret cell after it is the same pair swapped, so it reads inside the
+                // highlight in no colour of its own. The column keeps its width in plain
+                // padding.
                 let pad = 22usize.saturating_sub(text.chars().count());
                 if active && taking_keys {
-                    spans.push(Span::styled(text, reversed(style, true)));
+                    spans.push(Span::styled(text, lit(style, true)));
                     spans.push(Span::styled(
                         " ",
-                        Style::default().add_modifier(Modifier::REVERSED),
+                        crate::ui::palette::selected(Style::default(), pal)
+                            .add_modifier(Modifier::REVERSED),
                     ));
                     spans.push(Span::raw(" ".repeat(pad.saturating_sub(1))));
                 } else {
@@ -1521,7 +1523,7 @@ impl Chrome {
                         if i == last {
                             body.push_str(close);
                         }
-                        spans.push(Span::styled(body, reversed(style, active)));
+                        spans.push(Span::styled(body, lit(style, active)));
                         Line::from(spans)
                     })
                     .collect::<Vec<_>>()

@@ -34,7 +34,7 @@ fn cause(kind: FailureKind, palette: &Palette) -> (&'static str, Style, &'static
 /// title with its glyph in the state's colour, and each host under it a row in the
 /// key-column grammar: the host bold, then its reason muted, wrapped under the reason
 /// column rather than cut. A host wider than its column takes rows of its own above its
-/// reason. The selected host's rows are reversed across the whole width, and the rows of
+/// reason. The selected host's rows are highlighted across the whole width, and the rows of
 /// the `hover` host, the soft selection, are underlined. Each line comes with the host it
 /// belongs to (none for a cause title), so a click is hit-tested against the rows the
 /// paint shows.

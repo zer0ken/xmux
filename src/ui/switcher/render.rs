@@ -1139,7 +1139,7 @@ impl Switcher {
     /// short region shows three cards as a list and twenty as a grid.
     ///
     /// Nothing but cards, titles and the band parting is painted inside the nav: what is
-    /// off screen is said on a band's seam. The selected card stays in reverse video
+    /// off screen is said on a band's seam. The selected card stays on the accent
     /// when focus moves between views.
     fn render_nav(
         &self,
@@ -1187,7 +1187,7 @@ impl Switcher {
             }
         }
         // The soft selection: the target under the pointer, underlined, unless it is the
-        // hard selection already drawn reversed.
+        // hard selection already drawn on the accent.
         if let Some((reference, part)) = &self.hover {
             if let Some(idx) = self.row_matching(reference) {
                 let hard = self.hard_row() == Some(idx) && *part == self.part;
@@ -1365,12 +1365,12 @@ impl Switcher {
     /// position. A machine's card reads the machine alone with its glyph or spinner.
     ///
     /// The ADDRESS column carries the card's dim number - the thing `prefix <digit>`
-    /// types - on the same row as the session it names, selected or not: the reversal
+    /// types - on the same row as the session it names, selected or not: the highlight
     /// alone marks the selection. Every card's name therefore starts at the same screen
     /// column whatever the selection is doing.
     /// A name that shifts as the cursor passes is what makes a list twitch. Focus
     /// changes nothing else about a card: it does not grow a context line, and the
-    /// session keeps the same style selected or not (the selected look is the inverted
+    /// session keeps the same style selected or not (the selected look is the highlighted
     /// rect the paint applies, not a per-span style here). A section title is one row
     /// whatever the selection does, so no row reflows the list or the columns as the
     /// cursor passes.
