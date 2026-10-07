@@ -27,7 +27,8 @@ state: the focus and modal state machine lives in `app`.
   queries the child sends, each once, with colours and pixel sizes taken from what the
   outer terminal answered xmux at startup.
 - Input decoding, dispatch, paste splitting, and mouse parsing turn terminal bytes into
-  routing decisions or input actions; terminal setup holds prefix parsing, mouse
+  routing decisions or input actions, reading a key in the kitty keyboard protocol's
+  encoding as the legacy key it stands for; terminal setup holds prefix parsing, mouse
   capture, bracketed paste, focus reports, and the terminal guard.
 - Sixel images live in the grid as marker cells its own parser writes, so they scroll,
   erase, and clear with the text. The frame shows a marker cell as a cell ratatui
@@ -45,14 +46,16 @@ state: the focus and modal state machine lives in `app`.
 - The registry is the only way to reach an attachment for input, resize, grid lookup,
   and reap. App and UI code never write to a PTY directly.
 - The renderer owns stdout, so raw stdout passthrough of child output is not an
-  option. The one exception is what a child asks of the terminal around the screen,
-  which the loop writes between frames: a whole OSC 52 clipboard write, a bell, an OSC 9
-  or OSC 777 notification, the window title of the session on screen, and the sixel
+  option. The loop writes only whole control sequences between frames: what a child
+  asks of the terminal around the screen (a whole OSC 52 clipboard write, a bell, an OSC
+  9 or OSC 777 notification, the window title of the session on screen, and the sixel
   image pieces a completed frame left to the terminal view, each drawn inside a saved
-  cursor and never past the cells the frame marked for it. The pump scans OSC 52 out of
-  the raw stream; the grid's parser keeps the bells and notifications it consumes until
-  the pump takes them, and the last title the child set until the grid clears for
-  another session.
+  cursor and never past the cells the frame marked for it), and the kitty keyboard
+  protocol flags of the session the keys reach, which it sets on its own terminal rather
+  than passing the session's requests through. The pump scans OSC 52 out of the raw
+  stream; the grid's parser keeps the bells and notifications it consumes until the
+  pump takes them, and the last title the child set until the grid clears for another
+  session.
 - The live child-environment read has two answers, a value or no signal; absence never
   stands in for a value, and a stale exec-time environment counts as no signal.
 

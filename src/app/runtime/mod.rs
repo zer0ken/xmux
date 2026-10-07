@@ -1596,6 +1596,8 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         rt.flush_held_input();
         rt.sync_child_focus();
         rt.sync_title();
+        let keyboard = rt.keyboard_update();
+        rt.passthrough.extend(keyboard);
         rt.flush_passthrough();
         rt.prepare_and_draw(&mut term);
 
@@ -1737,6 +1739,10 @@ struct Runtime {
     window_focused: bool,
     /// The attachment last told it holds the focus. See [`Runtime::sync_child_focus`].
     child_focus: Option<String>,
+    /// Whether xmux pushed its entry on its terminal's keyboard flag stack, and the
+    /// flags it set there. See [`Runtime::keyboard_update`].
+    keyboard_pushed: bool,
+    keyboard_flags: u8,
     prefix: u8,
     draw_observer: DrawObserver,
     /// What the outer terminal shows of the displayed grid's sixel images.

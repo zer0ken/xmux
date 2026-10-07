@@ -75,6 +75,9 @@ impl Drop for TermGuard {
             let mut out = std::io::stdout();
             let _ = out.write_all(INPUT_MODES_OFF);
             let _ = out.write_all(TITLE_RESTORE);
+            if crate::display::keyboard::supported() {
+                let _ = out.write_all(crate::display::keyboard::POP);
+            }
             let _ = out.flush();
         }
         #[cfg(windows)]

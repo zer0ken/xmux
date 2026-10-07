@@ -2368,6 +2368,8 @@ fn test_rt(env: Env) -> Runtime {
         paste: Default::default(),
         window_focused: true,
         child_focus: None,
+        keyboard_pushed: false,
+        keyboard_flags: 0,
         prefix,
         draw_observer: DrawObserver::default(),
         images: Default::default(),
@@ -8122,4 +8124,92 @@ async fn live_display_attachments_are_counted_as_xmuxs_own_clients() {
     rt.registry.reap(7);
     assert!(rt.sync_display_clients());
     assert!(rt.model.state.display_clients.is_empty());
+}
+
+#[test]
+fn the_prefix_and_its_keys_work_in_the_kitty_keyboard_encoding() {
+    // Keys as a terminal sends them once the session asked for the protocol: the
+    // prefix and the key after it act, and their releases go nowhere.
+    let (mut rt, log) = rt_terminal_focus_with_attachment();
+    rt.on_stdin(b"\x1b[103;5u");
+    assert!(rt.prefix_active(), "Ctrl+g arms the prefix");
+    rt.on_stdin(b"\x1b[103;5:3u");
+    assert!(rt.prefix_active(), "its release is not the key after it");
+    rt.on_stdin(b"\x1b[47:63;2u\x1b[47:63;2:3u");
+    assert!(
+        rt.model.state.is_modal_popup_open(),
+        "Shift+/ is `?`, the help"
+    );
+    assert!(
+        logged(&log).is_empty(),
+        "nothing xmux read reached the session"
+    );
+    rt.on_stdin(b"\x1b");
+    rt.on_stdin(b"\x1b[13;2u\x1b[13;2:3u\x1b[97;5:3u");
+    assert_eq!(
+        logged(&log),
+        b"\x1b[13;2u\x1b[13;2:3u\x1b[97;5:3u",
+        "Shift+Enter and the releases xmux did not read reach the session unchanged"
+    );
+    log.lock().unwrap().clear();
+    rt.on_stdin(b"\x1b[103;5u\x1b[103;5:3u\x1b[103;5u");
+    assert_eq!(
+        logged(&log),
+        b"\x1b[103;5u",
+        "a doubled prefix sends the prefix as it arrived"
+    );
+}
+
+#[test]
+fn xmux_sets_on_its_terminal_the_keyboard_flags_of_the_session_its_keys_reach() {
+    let (mut rt, _log) = rt_terminal_focus_with_attachment();
+    let key = display_key(&rt.hosts, &rt.model.state.selection);
+    rt.registry
+        .grid(&key)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .feed(b"\x1b[>1u");
+    assert!(
+        rt.keyboard_update().is_empty(),
+        "the terminal has not answered"
+    );
+    assert!(crate::display::keyboard::record_support(true));
+    assert_eq!(rt.keyboard_update(), b"\x1b[>0u\x1b[=1;1u");
+    assert!(rt.keyboard_update().is_empty(), "already in force");
+    rt.on_stdin(b"\x07\x1b[D");
+    assert_eq!(
+        rt.keyboard_update(),
+        b"\x1b[=0;1u",
+        "the nav reads legacy keys"
+    );
+    rt.on_stdin(b"\r");
+    assert_eq!(rt.keyboard_update(), b"\x1b[=1;1u");
+    rt.registry
+        .grid(&key)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .feed(b"\x1b[<u");
+    assert_eq!(
+        rt.keyboard_update(),
+        b"\x1b[=0;1u",
+        "the session popped its flags"
+    );
+}
+
+#[test]
+fn a_terminal_without_the_keyboard_protocol_is_left_as_it_is() {
+    let (mut rt, log) = rt_terminal_focus_with_attachment();
+    let key = display_key(&rt.hosts, &rt.model.state.selection);
+    let grid = rt.registry.grid(&key).unwrap();
+    crate::display::keyboard::record_support(false);
+    grid.lock().unwrap().feed(b"\x1b[>1u\x1b[?u");
+    assert!(rt.keyboard_update().is_empty());
+    assert!(
+        grid.lock().unwrap().take_replies().is_empty(),
+        "a session asking is told nothing, so it keeps legacy keys"
+    );
+    rt.on_stdin(b"a");
+    assert_eq!(logged(&log), b"a");
 }

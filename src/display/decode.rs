@@ -22,6 +22,33 @@ impl KeyDecoder {
         while i < self.buf.len() {
             let b = self.buf[i];
             match b {
+                0x1b if crate::display::keyboard::parse(&self.buf[i..]).is_some() => {
+                    // A key in the kitty keyboard protocol's encoding reads as the legacy
+                    // key it stands for. A release and a modifier alone are no key here,
+                    // and a key with no legacy form keeps its code and modifiers.
+                    let key = crate::display::keyboard::parse(&self.buf[i..]).expect("parsed");
+                    i += key.len;
+                    if key.event == crate::display::keyboard::Event::Release || key.is_modifier() {
+                        continue;
+                    }
+                    match key.legacy() {
+                        Some(legacy) => out.extend(KeyDecoder::new().feed(&legacy)),
+                        None => {
+                            let code = match key.code {
+                                27 => Some(KeyCode::Esc),
+                                13 => Some(KeyCode::Enter),
+                                9 => Some(KeyCode::Tab),
+                                127 => Some(KeyCode::Backspace),
+                                c if key.final_byte == b'u' => char::from_u32(c).map(KeyCode::Char),
+                                _ => None,
+                            };
+                            if let Some(code) = code {
+                                let mods = csi_modifiers(format!("1;{}", key.mods + 1).as_bytes());
+                                out.push(KeyEvent::new(code, mods));
+                            }
+                        }
+                    }
+                }
                 0x1b => {
                     // Need at least ESC + `[` to start a CSI.
                     if i + 1 < self.buf.len() && self.buf[i + 1] == b'[' {
@@ -32,7 +59,7 @@ impl KeyDecoder {
                             j += 1;
                         }
                         if j >= self.buf.len() {
-                            // No final byte yet — keep the whole tail buffered.
+                            // No final byte yet - keep the whole tail buffered.
                             break;
                         }
                         // j now points at the final byte.
@@ -73,7 +100,7 @@ impl KeyDecoder {
                             i += csi_len;
                             continue;
                         }
-                        // Any other complete CSI — consume silently (no Esc spurion).
+                        // Any other complete CSI - consume silently (no Esc spurion).
                         // Mouse reports and cursor-position replies land here.
                         i += csi_len;
                         continue;
@@ -245,6 +272,19 @@ mod tests {
         assert!(down[0].modifiers.contains(KeyModifiers::CONTROL));
         // A bare arrow carries no modifiers.
         assert!(KeyDecoder::new().feed(b"\x1b[A")[0].modifiers.is_empty());
+    }
+
+    #[test]
+    fn kitty_protocol_keys_read_as_the_keys_they_are() {
+        // The prefix, a letter, and an arrow read as their legacy keys; a release and a
+        // modifier alone are no key; Shift+Enter keeps its Shift.
+        assert_eq!(
+            codes(b"\x1b[103;5u\x1b[103;5:3u\x1b[57442;5uq\x1b[1;1:1A"),
+            vec![KeyCode::Char('\x07'), KeyCode::Char('q'), KeyCode::Up]
+        );
+        let shift_enter = KeyDecoder::new().feed(b"\x1b[13;2u");
+        assert_eq!(shift_enter[0].code, KeyCode::Enter);
+        assert!(shift_enter[0].modifiers.contains(KeyModifiers::SHIFT));
     }
 
     #[test]

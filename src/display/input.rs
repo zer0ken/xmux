@@ -14,6 +14,9 @@
 //! focus. The prefix is a C0
 //! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI,
 //! and a paste never reaches this path: pastes are taken out of the stream before it.
+//! A key may arrive in the kitty keyboard protocol's encoding when the session asked
+//! for it; the prefix and the keys after it are read the same in either encoding, and
+//! a release whose press xmux kept is kept too.
 use crate::display::dispatch::Action;
 use crate::model::keys::{prefix_command, Chord, KeyCommand};
 use crate::model::NavPosition;
@@ -22,6 +25,24 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub struct TermInput {
     prefix: u8,
     armed: bool,
+    /// The protocol keys whose press xmux kept and whose release it keeps as well.
+    kept_presses: Vec<(u32, u8)>,
+}
+
+/// How many kept presses wait for their release; a key the session did not ask
+/// releases for never sends one, so the oldest is forgotten past this.
+const KEPT_PRESSES: usize = 8;
+
+/// One key at the head of a read, as the prefix logic sees it.
+struct HeadKey<'a> {
+    /// The bytes it took.
+    len: usize,
+    /// The legacy bytes it stands for, which the key table is read with.
+    legacy: std::borrow::Cow<'a, [u8]>,
+    /// The bytes that send it on to the session as it arrived.
+    raw: &'a [u8],
+    /// The protocol key's identity, for keeping its release.
+    id: Option<(u32, u8)>,
 }
 
 impl TermInput {
@@ -29,6 +50,16 @@ impl TermInput {
         Self {
             prefix,
             armed: false,
+            kept_presses: Vec::new(),
+        }
+    }
+
+    fn keep_release(&mut self, id: Option<(u32, u8)>) {
+        if let Some(id) = id {
+            if self.kept_presses.len() == KEPT_PRESSES {
+                self.kept_presses.remove(0);
+            }
+            self.kept_presses.push(id);
         }
     }
 
@@ -58,13 +89,57 @@ impl TermInput {
         let mut fwd: Vec<u8> = Vec::new();
         let mut i = 0;
         while i < bytes.len() {
+            let head = match crate::display::keyboard::parse(&bytes[i..]) {
+                Some(key) => {
+                    let raw = &bytes[i..i + key.len];
+                    if key.event == crate::display::keyboard::Event::Release {
+                        // A release reaches the session unless xmux kept its press.
+                        match self.kept_presses.iter().position(|id| *id == key.id()) {
+                            Some(at) => {
+                                self.kept_presses.remove(at);
+                            }
+                            None => fwd.extend_from_slice(raw),
+                        }
+                        i += key.len;
+                        continue;
+                    }
+                    let legacy = key.legacy();
+                    if key.is_modifier() || legacy.is_none() {
+                        // A modifier alone or a key with no legacy form is neither the
+                        // prefix nor a key after it, and a waiting prefix keeps waiting.
+                        fwd.extend_from_slice(raw);
+                        i += key.len;
+                        continue;
+                    }
+                    HeadKey {
+                        len: key.len,
+                        legacy: std::borrow::Cow::Owned(legacy.unwrap_or_default()),
+                        raw,
+                        id: Some(key.id()),
+                    }
+                }
+                None => {
+                    let (_, len) = Chord::from_bytes(&bytes[i..], self.prefix);
+                    let len = len.max(1);
+                    HeadKey {
+                        len,
+                        legacy: std::borrow::Cow::Borrowed(&bytes[i..i + len]),
+                        raw: &bytes[i..i + len],
+                        id: None,
+                    }
+                }
+            };
             if self.armed {
                 // Any key while ready CONSUMES the prefix (even a no-op like focusing
                 // the already-focused view): ready clears, the bar hides. What the key
                 // runs is read from the one key table, the same lookup the nav path makes.
                 self.armed = false;
-                let (chord, len) = Chord::from_bytes(&bytes[i..], self.prefix);
-                let command = chord.and_then(|c| prefix_command(c, nav_position));
+                let (chord, chord_len) = Chord::from_bytes(&head.legacy, self.prefix);
+                let len = head.len;
+                let command = chord
+                    .filter(|_| chord_len == head.legacy.len())
+                    .and_then(|c| prefix_command(c, nav_position));
+                self.keep_release(head.id);
                 let Some(command) = command else {
                     // An unrecognized follow-up: the chord swallows just this key and the
                     // rest of the read resumes as normal input. A bare Esc lands here.
@@ -93,7 +168,7 @@ impl TermInput {
                     | KeyCommand::RescanMachine
                     | KeyCommand::Logout
                     | KeyCommand::HostInfo => Some(Action::NavKey(KeyEvent::new(
-                        KeyCode::Char(bytes[i] as char),
+                        KeyCode::Char(head.legacy[0] as char),
                         KeyModifiers::NONE,
                     ))),
                     _ => None,
@@ -111,12 +186,12 @@ impl TermInput {
                     // the chord (tmux `send-prefix` parity). A terminal reports no key-up,
                     // so a held prefix's autorepeat is byte-identical to a second tap and
                     // takes this path too: holding the prefix streams literals and blinks
-                    // the hint bar. That is the accepted cost of keeping the input path
-                    // free of the kitty keyboard protocol: requesting key releases would
-                    // bind behaviour to what the terminal, and every enclosing mux, chooses
-                    // to pass through.
+                    // the hint bar. xmux never asks the terminal for key releases for its
+                    // own reading: the keyboard protocol flags in force are the session's,
+                    // and binding the prefix to releases would tie it to what the terminal,
+                    // and every enclosing mux, chooses to pass through.
                     KeyCommand::LiteralPrefix => {
-                        fwd.push(self.prefix);
+                        fwd.extend_from_slice(head.raw);
                         i += len;
                     }
                     // The arrow pair naming the terminal names the view that already has
@@ -144,18 +219,18 @@ impl TermInput {
                 continue;
             }
 
-            let b = bytes[i];
-            if b == self.prefix {
-                // A prefix byte arms ready. A second one while already armed is the
+            if *head.legacy == [self.prefix] {
+                // The prefix arms ready. A second one while already armed is the
                 // doubled-prefix literal, handled above, so this only ever arms.
                 if !fwd.is_empty() {
                     out.push(Action::Forward(std::mem::take(&mut fwd)));
                 }
                 self.armed = true;
+                self.keep_release(head.id);
             } else {
-                fwd.push(b);
+                fwd.extend_from_slice(head.raw);
             }
-            i += 1;
+            i += head.len;
         }
         if !fwd.is_empty() {
             out.push(Action::Forward(fwd));
