@@ -18,6 +18,10 @@ state: the focus and modal state machine lives in `app`.
 
 - An attachment is one PTY client: its handle, events, commands, control thread, and
   output pump. It owns its command's authentication guard until its child is reaped.
+  The pump normalizes underline SGR before feeding the grid: underline colours and
+  their reset are consumed, underline styles become plain underline or its reset,
+  and surrounding bold and text colours survive. The normalizer carries incomplete
+  CSI sequences across reads and leaves control-string payloads untouched.
 - The worker spawns attachments on a dedicated OS thread and never owns the registry.
 - The registry maps display keys to live attachments, parks a fresh attachment while
   it paints, and serves a reaped attachment's last grid until a fresh one installs.
