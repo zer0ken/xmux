@@ -1366,10 +1366,8 @@ pub(crate) fn render_popup(
         let y_end = (rect.y + rect.height).min(area.y + area.height);
         let buf = frame.buffer_mut();
         for y in rect.y..y_end {
-            if crate::display::grid::cell_width(&buf[(x, y)]) > 1 {
-                buf[(x, y)]
-                    .set_symbol(" ")
-                    .set_diff_option(ratatui::buffer::CellDiffOption::None);
+            if buf[(x, y)].symbol().width() > 1 {
+                buf[(x, y)].set_symbol(" ");
             }
         }
     }

@@ -11,7 +11,6 @@ use ratatui::style::{Color as RColor, Modifier, Style};
 
 use crate::display::callbacks::GridCallbacks;
 use crate::display::image::layer::ImageLayer;
-use crate::display::vt100;
 
 /// What a child's output asked of the terminal around the screen: a bell, or a desktop
 /// notification. The grid's parser consumes these, so the grid keeps each one until the
@@ -319,24 +318,6 @@ impl Grid {
                     // clipped pane would overflow the right edge and wrap to col 0
                     // of the next line; blank it so the pane stays aligned.
                     cell.set_symbol(" ");
-                } else if let Some(uri) = vcell
-                    .has_contents()
-                    .then(|| screen.hyperlink_uri(vcell.hyperlink_id()))
-                    .flatten()
-                    .filter(|uri| uri.len() <= LINK_MAX)
-                {
-                    // The cell carries its link inside its symbol, so the diff sees a
-                    // link change as a change of the cell. The forced width tells the
-                    // diff how many columns the cell covers, which the escape text
-                    // would otherwise inflate.
-                    cell.set_symbol(&linked_symbol(uri, vcell.contents()));
-                    cell.set_diff_option(ratatui::buffer::CellDiffOption::ForcedWidth(
-                        if vcell.is_wide() {
-                            std::num::NonZeroU16::MIN.saturating_add(1)
-                        } else {
-                            std::num::NonZeroU16::MIN
-                        },
-                    ));
                 } else if vcell.has_contents() {
                     cell.set_symbol(vcell.contents());
                 } else {
@@ -361,48 +342,6 @@ impl Grid {
 
 fn new_parser(rows: u16, cols: u16) -> vt100::Parser<GridCallbacks> {
     vt100::Parser::new_with_callbacks(rows, cols, 0, GridCallbacks::default())
-}
-
-/// The longest link URI written; a cell with a longer one is drawn without its link.
-const LINK_MAX: usize = 2048;
-
-/// The OSC 8 open sequence's lead, which [`visible_symbol`] looks for.
-const LINK_OPEN: &str = "\x1b]8;";
-/// The OSC 8 sequence that ends a link.
-const LINK_CLOSE: &str = "\x1b]8;;\x1b\\";
-
-/// `text` inside an OSC 8 hyperlink to `uri`. Every linked cell opens and closes its own
-/// link, so a cell drawn alone by the diff is still linked; the `id` derived from the
-/// URI lets the terminal treat the cells of one link as one. Control characters are
-/// left out of the URI so the sequence cannot end early.
-fn linked_symbol(uri: &str, text: &str) -> String {
-    use std::hash::{Hash, Hasher};
-    let uri: String = uri.chars().filter(|c| !c.is_control()).collect();
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    uri.hash(&mut h);
-    format!(
-        "{LINK_OPEN}id=xmux-{:x};{uri}\x1b\\{text}{LINK_CLOSE}",
-        h.finish()
-    )
-}
-
-/// The text a buffer cell shows: its symbol without the OSC 8 link around it, for
-/// readers of the buffer that want what is on screen rather than what is written.
-pub fn visible_symbol(symbol: &str) -> &str {
-    symbol
-        .strip_prefix(LINK_OPEN)
-        .and_then(|rest| rest.split_once("\x1b\\"))
-        .and_then(|(_, rest)| rest.strip_suffix(LINK_CLOSE))
-        .unwrap_or(symbol)
-}
-
-/// How many columns a buffer cell covers: its forced width when it carries a link, the
-/// width of its symbol otherwise.
-pub fn cell_width(cell: &ratatui::buffer::Cell) -> usize {
-    match cell.diff_option {
-        ratatui::buffer::CellDiffOption::ForcedWidth(width) => usize::from(width.get()),
-        _ => unicode_width::UnicodeWidthStr::width(cell.symbol()),
-    }
 }
 
 /// Maps a vt100 colour to a ratatui colour. `Default` → `Reset` (terminal
@@ -1010,149 +949,5 @@ Connection to host closed.
         g.feed(b"session-b output");
         let fp_b = g.fingerprint();
         assert_ne!(fp_a, fp_b, "different content yields different fingerprint");
-    }
-
-    /// What the terminal receives when ratatui flushes `next` over `prev`: the same diff
-    /// and backend calls a frame's flush makes.
-    fn flushed(prev: &Buffer, next: &Buffer) -> String {
-        use ratatui::backend::Backend;
-        let mut out = Vec::new();
-        ratatui::backend::CrosstermBackend::new(&mut out)
-            .draw(prev.diff(next).into_iter())
-            .unwrap();
-        String::from_utf8(out).unwrap()
-    }
-
-    fn rendered(bytes: &[u8], area: Rect) -> Buffer {
-        let mut g = Grid::new(area.height, area.width);
-        g.feed(bytes);
-        let mut buf = Buffer::empty(area);
-        g.render_into(&mut buf, area);
-        buf
-    }
-
-    #[test]
-    fn a_linked_cell_carries_its_link_and_its_width() {
-        let area = Rect::new(0, 0, 8, 1);
-        let buf = rendered(
-            b"a\x1b]8;;https://example.com\x07L\xed\x95\x9c\x1b]8;;\x07b",
-            area,
-        );
-        let open = linked_symbol("https://example.com", "");
-        let open = open.strip_suffix(LINK_CLOSE).unwrap();
-        assert_eq!(
-            buf[(0, 0)].symbol(),
-            "a",
-            "a cell outside the link is plain"
-        );
-        assert_eq!(buf[(1, 0)].symbol(), format!("{open}L{LINK_CLOSE}"));
-        assert_eq!(buf[(2, 0)].symbol(), format!("{open}\u{d55c}{LINK_CLOSE}"));
-        assert_eq!(
-            buf[(4, 0)].symbol(),
-            "b",
-            "the link ends where the child ended it"
-        );
-        assert_eq!(cell_width(&buf[(1, 0)]), 1);
-        assert_eq!(
-            cell_width(&buf[(2, 0)]),
-            2,
-            "a wide glyph keeps both columns"
-        );
-        assert_eq!(visible_symbol(buf[(2, 0)].symbol()), "\u{d55c}");
-        assert_eq!(visible_symbol("x"), "x");
-    }
-
-    #[test]
-    fn the_diffing_renderer_writes_links_and_their_changes_only() {
-        let area = Rect::new(0, 0, 8, 1);
-        let blank = Buffer::empty(area);
-        let linked = rendered(b"\x1b]8;;https://a.example\x07AB\x1b]8;;\x07C", area);
-        let out = flushed(&blank, &linked);
-        let open = "\x1b]8;id=xmux-";
-        assert_eq!(
-            out.matches(open).count(),
-            2,
-            "each linked cell opens its link: {out:?}"
-        );
-        assert!(
-            out.contains(";https://a.example\x1b\\A\x1b]8;;\x1b\\"),
-            "{out:?}"
-        );
-        assert!(
-            out.contains(";https://a.example\x1b\\B\x1b]8;;\x1b\\C"),
-            "{out:?}"
-        );
-
-        let out = flushed(&linked, &linked.clone());
-        assert!(
-            !out.contains("\x1b]8;") && !out.contains('A'),
-            "an unchanged linked frame writes no cell: {out:?}"
-        );
-
-        let relinked = rendered(b"\x1b]8;;https://b.example\x07AB\x1b]8;;\x07C", area);
-        let out = flushed(&linked, &relinked);
-        assert_eq!(out.matches("https://b.example").count(), 2, "{out:?}");
-        assert!(
-            !out.contains('C'),
-            "a cell whose link did not change is not written"
-        );
-
-        let unlinked = rendered(b"ABC", area);
-        let out = flushed(&linked, &unlinked);
-        assert!(
-            !out.contains("\x1b]8;"),
-            "a cell that lost its link is written plain: {out:?}"
-        );
-        assert!(out.contains('A') && out.contains('B'), "{out:?}");
-    }
-
-    #[test]
-    fn a_linked_wide_glyph_moves_the_cursor_past_both_columns() {
-        let area = Rect::new(0, 0, 6, 1);
-        let blank = Buffer::empty(area);
-        let next = rendered(
-            b"\x1b]8;;https://a.example\x07\xed\x95\x9c\x1b]8;;\x07z",
-            area,
-        );
-        let out = flushed(&blank, &next);
-        let glyph = out.find('\u{d55c}').unwrap();
-        let z = out.find('z').unwrap();
-        assert!(
-            out[glyph..z].contains("\x1b[1;3H"),
-            "z is placed after the two columns the linked glyph covers: {out:?}"
-        );
-    }
-
-    /// The link each cell was written under, by column, from the parser itself.
-    fn links(g: &Grid, row: u16, cols: u16) -> Vec<Option<String>> {
-        let screen = g.parser.screen();
-        (0..cols)
-            .map(|c| {
-                let cell = screen.cell(row, c)?;
-                screen
-                    .hyperlink_uri(cell.hyperlink_id())
-                    .map(str::to_string)
-            })
-            .collect()
-    }
-
-    #[test]
-    fn a_link_outlives_an_sgr_reset_and_rides_a_scroll() {
-        let mut g = Grid::new(3, 6);
-        g.feed(b"\x1b]8;id=x;https://a.example/p;q\x07A\x1b[1mB\x1b[0mC\x1b]8;;\x07D");
-        let a = Some("https://a.example/p;q".to_string());
-        assert_eq!(
-            links(&g, 0, 4),
-            vec![a.clone(), a.clone(), a.clone(), None],
-            "an SGR reset leaves the link open, and a `;` in the URI is kept"
-        );
-        g.feed(b"\x1b[3;1H\x1b]8;;https://b.example\x07Z\x1b]8;;\x07\r\n");
-        assert_eq!(
-            links(&g, 1, 1),
-            vec![Some("https://b.example".to_string())],
-            "a linked cell keeps its link as the screen scrolls"
-        );
-        g.feed(b"\x1b[H\x1b]8;;https://a.example/p;q\x07E\x1b]8;;\x07");
-        assert_eq!(links(&g, 0, 1), vec![a], "a URI seen before is reused");
     }
 }
