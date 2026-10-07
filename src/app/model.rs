@@ -5245,6 +5245,48 @@ mod tests {
         !m.state.focus.view_is_nav()
     }
 
+    /// A stopped card selected in the nav attaches nothing, and the focus move Enter makes
+    /// into the terminal view attaches it.
+    #[test]
+    fn executing_a_stopped_session_selects_it_for_the_display() {
+        let mut m = model_with_cards();
+        update(
+            &mut m,
+            Msg::HostEvent {
+                event: crate::link::HostEvent::Sessions {
+                    host: "local".to_owned(),
+                    sessions: vec![
+                        crate::session::Session {
+                            host: "local".to_owned(),
+                            name: "build".to_owned(),
+                            ..Default::default()
+                        },
+                        crate::session::Session {
+                            host: "local".to_owned(),
+                            name: "editor".to_owned(),
+                            stopped: true,
+                            ..Default::default()
+                        },
+                    ],
+                    err: None,
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        update(&mut m, down());
+        sync_frame(&mut m);
+        update(&mut m, Msg::SyncSelection);
+        assert!(
+            m.state.selection.session.is_empty(),
+            "a selected stopped session attaches nothing"
+        );
+        // Enter in the nav resolves to this focus move.
+        update(&mut m, Msg::Focus(crate::model::FocusTarget::Terminal));
+        sync_frame(&mut m);
+        update(&mut m, Msg::SyncSelection);
+        assert_eq!(m.state.selection.session, "editor");
+    }
+
     #[test]
     fn the_landing_selection_attaches_nothing_until_it_is_executed() {
         let mut m = landed();

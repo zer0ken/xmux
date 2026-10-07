@@ -411,6 +411,10 @@ pub struct Switcher {
     /// The sessions that rang their bell or sent a notification while not on screen,
     /// each marked on its card until it is shown.
     alerted: std::collections::HashSet<Address>,
+    /// The stopped session the user executed, which the terminal view attaches to and so
+    /// resumes. It holds while that session stays selected and stopped; a stopped session
+    /// that is only selected shows its screen and attaches nothing.
+    resumed: Option<Address>,
     /// Whether the current sorted list receives contiguous numbers on each rebuild.
     renumbering: bool,
     /// Card numbers keyed by identity. The configured policy either deals them in the
@@ -490,6 +494,7 @@ impl Switcher {
             own_session: None,
             away: None,
             alerted: std::collections::HashSet::new(),
+            resumed: None,
             renumbering: true,
             numbers: std::collections::HashMap::new(),
             next_number: 1,
@@ -636,15 +641,44 @@ impl Switcher {
             // The landing screen is pickable from the nav's focus, so its pointer stays.
             self.link_hover = None;
         }
-        if terminal && !self.terminal_view {
+        let entered = terminal && !self.terminal_view;
+        if entered {
             self.host_band_hidden = matches!(self.current_ref(), Some(RowRef::Session { .. }));
         } else if !terminal {
             self.host_band_hidden = false;
         }
         self.terminal_view = terminal;
-        if hovered {
+        // Moving the focus into the terminal view executes the selection, which is what
+        // resumes a stopped session.
+        if entered {
+            self.execute_stopped();
+        } else if hovered {
             self.on_focus_changed();
         }
+    }
+
+    /// Whether the card of `address` is a stopped session.
+    fn is_stopped(&self, address: &Address) -> bool {
+        self.row_of_session(address).is_some_and(
+            |i| matches!(&self.rows[i].reference, RowRef::Session { sess } if sess.stopped),
+        )
+    }
+
+    /// Whether `address` is a stopped session the user has not executed, which the
+    /// terminal view shows as its screen and does not attach to: attaching resumes it.
+    fn holds_stopped(&self, address: &Address) -> bool {
+        self.is_stopped(address) && self.resumed.as_ref() != Some(address)
+    }
+
+    /// Executes the selection for a stopped session: when the hard selection is one, the
+    /// terminal view attaches to it, and the mux's attach resumes it.
+    pub(crate) fn execute_stopped(&mut self) {
+        if let Some(Node::Session(address)) = self.selected_node() {
+            if self.is_stopped(&address) {
+                self.resumed = Some(address);
+            }
+        }
+        self.on_focus_changed();
     }
 
     /// Whether the paint leaves the host band out: hidden by the move into the terminal
@@ -1640,6 +1674,12 @@ impl Switcher {
         let displayed = (!state.displayed.host.is_empty() && !state.displayed.session.is_empty())
             .then(|| Address::new(&state.displayed.host, &state.displayed.session));
         let node = self.shown_node();
+        if let Some(Node::Session(address)) = &node {
+            if self.holds_stopped(address) && !self.is_own_session(&address.host, &address.session)
+            {
+                return Some(ViewScreen::Stopped);
+            }
+        }
         if let Some(Node::Machine(machine)) = &node {
             let login_open = self
                 .login_target
@@ -1948,14 +1988,24 @@ impl Switcher {
     // --- preview ------------------------------------------------------------
 
     fn on_focus_changed(&mut self) {
+        // An execution resumes a stopped session once: the hold ends when the selection
+        // moves or the session runs, so a session that stops again is not resumed again
+        // without the user asking.
+        let resumed = self.resumed.take().filter(|address| {
+            self.selected_node() == Some(Node::Session(address.clone())) && self.is_stopped(address)
+        });
+        self.resumed = resumed;
         // The shown node's session, never xmux's OWN session. Emptying the target here is
         // what makes the refusal total: the target is the one value the display reconcile,
         // the attach, and the mux-side switch all read, so none of them can reach this
         // session by another path. The landing screen empties it the same way, which is
-        // why a selection made on it attaches nothing.
+        // why a selection made on it attaches nothing, and so does a stopped session the
+        // user has not executed, since attaching resumes it.
         self.terminal_view_target = match self.shown_node() {
             Some(Node::Session(address))
-                if !self.landing && !self.is_own_session(&address.host, &address.session) =>
+                if !self.landing
+                    && !self.is_own_session(&address.host, &address.session)
+                    && !self.holds_stopped(&address) =>
             {
                 TerminalViewTarget {
                     host: address.host,
@@ -1992,14 +2042,18 @@ impl Switcher {
         if self.row_of_session(address).is_some() {
             self.close_landing();
         }
-        match self.row_of_session(address) {
+        let moved = match self.row_of_session(address) {
             Some(i) if self.selected_node() != Some(Node::Session(address.clone())) => {
                 self.note_user_move();
                 self.set_selected(i);
                 true
             }
             _ => false,
+        };
+        if self.row_of_session(address).is_some() {
+            self.execute_stopped();
         }
+        moved
     }
 
     // --- refresh ------------------------------------------------------------
@@ -2600,6 +2654,9 @@ fn session_facts(sess: &Session) -> String {
     }
     if sess.attached {
         facts.push("attached".to_string());
+    }
+    if sess.stopped {
+        facts.push(crate::session::STOPPED.to_string());
     }
     facts.join(", ")
 }

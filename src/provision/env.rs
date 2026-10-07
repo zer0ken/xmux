@@ -896,12 +896,17 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
         .sessions
         .iter()
         .map(|s| {
-            format!(
+            let line = format!(
                 "{:<addr_w$}  {:<nw_w$}  attached={}",
                 path(s),
                 window_word(s.windows),
                 s.attached
-            )
+            );
+            if s.stopped {
+                format!("{line}  {}", crate::session::STOPPED)
+            } else {
+                line
+            }
         })
         .collect();
     (lines, None)
@@ -3226,6 +3231,18 @@ mod tests {
         s.mux.clear();
         let (lines, _) = ls_lines_one(&group("local:zellij", None, vec![s]));
         assert_eq!(lines, vec!["local/zellij/notes  1 window  attached=false"]);
+    }
+
+    /// A stopped session is listed, and its line says it is stopped.
+    #[test]
+    fn ls_lines_one_marks_a_stopped_session() {
+        let mut s = sess("jup", "parked", 0, false);
+        s.stopped = true;
+        let (lines, _) = ls_lines_one(&group("jup", None, vec![s]));
+        assert_eq!(
+            lines,
+            vec!["jup/tmux/parked  0 windows  attached=false  stopped"]
+        );
     }
 
     #[test]

@@ -1582,8 +1582,13 @@ impl Switcher {
             RowRef::Session { sess: s } => self.alerted(&s.host, &s.name),
             _ => false,
         };
+        // A stopped session reads as one: nothing runs in it until it is resumed, so the
+        // card says so after the name.
+        let stopped = matches!(&row.reference, RowRef::Session { sess: s } if s.stopped)
+            .then(|| format!(" {}", crate::session::STOPPED));
         let available = available
             .saturating_sub(away.as_deref().map_or(0, UnicodeWidthStr::width))
+            .saturating_sub(stopped.as_deref().map_or(0, UnicodeWidthStr::width))
             .saturating_sub(if alerted { 2 } else { 0 });
         detail.extend(highlighted_after(
             &crate::session::session_label(machine, mux, ""),
@@ -1591,6 +1596,12 @@ impl Switcher {
             filter,
             session_style,
         ));
+        if let Some(stopped) = stopped {
+            detail.push(Span::styled(
+                stopped,
+                Style::default().fg(palette.secondary),
+            ));
+        }
         if alerted {
             detail.push(Span::raw(" "));
             detail.push(Span::styled(

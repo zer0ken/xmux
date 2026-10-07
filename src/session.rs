@@ -122,6 +122,10 @@ pub fn is_local_host(host: &str) -> bool {
     machine_of(host) == LOCAL_MACHINE
 }
 
+/// The state word of a stopped session ([`Session::stopped`]), the one spelling every
+/// surface that marks one reads.
+pub const STOPPED: &str = "stopped";
+
 /// A host and a session as one value: the pair every internal path carries separately
 /// instead of a joined `host/session` string. The joined spelling exists only at the
 /// text boundary (the ctl/CLI wire, the persisted file) and at UI render time

@@ -307,6 +307,7 @@ impl ViewScreen {
             ViewScreen::ListFailed => crate::ui::tree::host_state_word(false, false, true, true),
             ViewScreen::Unreachable => crate::ui::tree::host_state_word(false, false, false, true),
             ViewScreen::Empty => crate::ui::tree::host_state_word(false, false, false, false),
+            ViewScreen::Stopped => crate::session::STOPPED,
             ViewScreen::Host => "sessions",
             ViewScreen::Machine => crate::ui::tree::MACHINE_REACHABLE,
             ViewScreen::Landing => "",
@@ -735,7 +736,7 @@ impl Chrome {
             // The root of the hierarchy, above every machine.
             ViewScreen::Landing => "xmux".into(),
             ViewScreen::Scanning => self.host_label(&address.host),
-            ViewScreen::SelfSession => {
+            ViewScreen::SelfSession | ViewScreen::Stopped => {
                 if address.session.is_empty() {
                     self.host_label(&address.host)
                 } else {
@@ -832,6 +833,30 @@ impl Chrome {
                  which moves your own client and paints xmux inside itself"
                     .into(),
             ));
+        } else if kind == ViewScreen::Stopped {
+            // A stopped session is shown only once the user resumes it, so the screen says
+            // what resuming means and which key does it.
+            let host_mux = state.chrome.host_mux(host);
+            let mux = state
+                .groups
+                .iter()
+                .flat_map(|g| &g.sessions)
+                .find(|s| s.host == address.host && s.name == address.session)
+                .map_or(host_mux, |s| crate::session::session_mux(s, host_mux))
+                .to_string();
+            rows.push((
+                ScreenCell::Label("state"),
+                format!("{mux} keeps this session, and nothing in it runs"),
+            ));
+            rows.push((ScreenCell::Gap, String::new()));
+            if let Some(entry) =
+                crate::model::keys::entry_for(crate::model::keys::KeyCommand::FocusTerminal)
+            {
+                rows.push((
+                    ScreenCell::Key(entry.full_label(p, self.nav_position)),
+                    format!("resume it through {mux}"),
+                ));
+            }
         } else if matches!(
             kind,
             ViewScreen::Unreachable | ViewScreen::Login | ViewScreen::ListFailed
@@ -1233,6 +1258,7 @@ impl Chrome {
             ViewScreen::ListFailed => pal.primary,
             ViewScreen::Empty
             | ViewScreen::SelfSession
+            | ViewScreen::Stopped
             | ViewScreen::Host
             | ViewScreen::Machine
             | ViewScreen::Landing => pal.decoration,
@@ -1248,6 +1274,7 @@ impl Chrome {
         let level = match kind {
             ViewScreen::SelfSession | ViewScreen::Landing => "",
             _ if headline.is_empty() => "",
+            ViewScreen::Stopped => "session ",
             _ if machine_screen => "machine ",
             _ => "host ",
         };
@@ -1261,7 +1288,10 @@ impl Chrome {
         let label_len = match view.links.first() {
             Some(up)
                 if !machine_screen
-                    && !matches!(kind, ViewScreen::SelfSession | ViewScreen::Landing)
+                    && !matches!(
+                        kind,
+                        ViewScreen::SelfSession | ViewScreen::Stopped | ViewScreen::Landing
+                    )
                     && headline.starts_with(&up.label) =>
             {
                 up.label.chars().count()
