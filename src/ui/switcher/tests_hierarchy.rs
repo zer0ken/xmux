@@ -467,13 +467,65 @@ fn the_host_screen_links_its_machine_and_its_sessions_and_leaves_the_login_to_th
             "the machine states {gone:?}, not its host:\n{view}"
         );
     }
+    assert_eq!(h.cells(h.link_rect(0)), "api");
+    assert_eq!(h.cells(h.link_rect(1)), "deploy");
+    assert_eq!(h.cells(h.link_rect(2)), "start a new session");
+    assert_eq!(h.cells(h.link_rect(3)), "rescan this machine");
+    assert_eq!(h.cells(h.link_rect(4)), "rescan all machines");
     assert_eq!(
-        h.cells(h.link_rect(0)),
+        h.cells(h.link_rect(5)),
         "web",
-        "the machine half of the path is a link"
+        "the machine half of the path is the last link"
     );
-    assert_eq!(h.cells(h.link_rect(1)), "api");
-    assert_eq!(h.cells(h.link_rect(2)), "deploy");
+}
+
+#[test]
+fn a_screen_reads_headline_status_children_then_actions() {
+    let mut h = fleet();
+    h.select("web", "api");
+    h.ctrl(KeyCode::Up);
+    let view = h.view();
+    let at = |want: &str| {
+        view.find(want)
+            .unwrap_or_else(|| panic!("the host screen states {want:?}:\n{view}"))
+    };
+    let order = [
+        at("host web/tmux"),
+        at("updates"),
+        at("sessions"),
+        at("deploy"),
+        at("start a new session"),
+        at("rescan this machine"),
+        at("rescan all machines"),
+    ];
+    assert!(
+        order.windows(2).all(|w| w[0] < w[1]),
+        "headline, status, sessions, actions:\n{view}"
+    );
+
+    h.ctrl(KeyCode::Up);
+    assert_eq!(h.node(), machine("web"));
+    let view = h.view();
+    let at = |want: &str| {
+        view.find(want)
+            .unwrap_or_else(|| panic!("the machine screen states {want:?}:\n{view}"))
+    };
+    let order = [
+        at("machine web"),
+        at("hosts"),
+        at("rescan this machine"),
+        at("rescan all machines"),
+    ];
+    assert!(
+        order.windows(2).all(|w| w[0] < w[1]),
+        "headline, status, hosts, actions:\n{view}"
+    );
+    let links = h.sw.screen_links(&Node::Machine("web".into()), &h.state);
+    assert!(matches!(links[0].node(), Some(Node::Host(_))));
+    assert!(
+        links[1..].iter().all(|l| l.node().is_none()),
+        "a machine screen's actions follow its hosts and nothing follows them"
+    );
 }
 
 #[test]
@@ -484,25 +536,39 @@ fn screen_links_take_the_arrows_and_enter_in_the_terminal_view() {
     h.terminal_focused = true;
     h.draw();
     assert!(
-        h.highlighted(h.link_rect(1)),
+        h.highlighted(h.link_rect(0)),
         "a host screen starts on its first session"
     );
     h.sw.step_link(-1, &h.state);
-    h.sw.step_link(-1, &h.state);
     h.draw();
     assert!(
-        h.highlighted(h.link_rect(0)) && !h.highlighted(h.link_rect(1)),
-        "the arrows stop at the machine link"
+        h.highlighted(h.link_rect(5)) && !h.highlighted(h.link_rect(0)),
+        "a step before the first link wraps to the machine link, the last stop"
     );
-    h.sw.step_link(2, &h.state);
-    h.draw();
-    assert!(h.highlighted(h.link_rect(2)) && !h.highlighted(h.link_rect(0)));
-    h.sw.step_link(5, &h.state);
+    h.sw.step_link(1, &h.state);
     h.draw();
     assert!(
-        h.highlighted(h.link_rect(2)),
-        "the arrows stop at the last link"
+        h.highlighted(h.link_rect(0)) && !h.highlighted(h.link_rect(5)),
+        "a step past the last link wraps to the first"
     );
+    for (step, want) in [
+        (1, 1),
+        (1, 2),
+        (1, 3),
+        (1, 4),
+        (1, 5),
+        (1, 0),
+        (-1, 5),
+        (-1, 4),
+    ] {
+        h.sw.step_link(step, &h.state);
+        h.draw();
+        assert!(
+            h.highlighted(h.link_rect(want)),
+            "the arrows cycle to {want}"
+        );
+    }
+    h.sw.step_link(-3, &h.state);
 
     assert!(h.sw.open_selected_link(&h.state));
     h.draw();
@@ -516,11 +582,16 @@ fn screen_links_take_the_arrows_and_enter_in_the_terminal_view() {
     // Up the path: the host screen, then its machine's, which selects the host it came
     // from among its links.
     h.ctrl(KeyCode::Up);
-    assert!(h.sw.open_link(0, &h.state));
+    let up =
+        h.sw.screen_links(&Node::Host("web".into()), &h.state)
+            .iter()
+            .position(|l| l.node() == Some(&Node::Machine("web".into())))
+            .unwrap();
+    assert!(h.sw.open_link(up, &h.state));
     h.draw();
     assert_eq!(h.node(), machine("web"));
     let links = h.sw.screen_links(&Node::Machine("web".into()), &h.state);
-    assert_eq!(links[h.sw.link].node, Node::Host("web".into()));
+    assert_eq!(links[h.sw.link].node(), Some(&Node::Host("web".into())));
     assert!(h.highlighted(h.link_rect(h.sw.link)));
 }
 
@@ -534,12 +605,56 @@ fn a_host_opened_from_its_machine_screen_starts_on_its_first_session() {
     let host =
         h.sw.screen_links(&Node::Machine("web".into()), &h.state)
             .iter()
-            .position(|l| l.node == Node::Host("web".into()))
+            .position(|l| l.node() == Some(&Node::Host("web".into())))
             .unwrap();
     assert!(h.sw.open_link(host, &h.state));
     let links = h.sw.screen_links(&Node::Host("web".into()), &h.state);
-    assert!(matches!(links[h.sw.link].node, Node::Session(_)));
-    assert_eq!(h.sw.link, 1);
+    let start = h.sw.link_index(&links);
+    assert!(matches!(links[start].node(), Some(Node::Session(_))));
+    assert_eq!(start, 0);
+}
+
+#[test]
+fn a_screen_without_children_starts_on_its_machine_link_and_a_machine_on_its_first_host() {
+    let mut h = fleet();
+    let idle = h.card_row(|r| matches!(r, RowRef::Host { host, .. } if host == "idle"));
+    h.sw.set_selected(idle);
+    h.terminal_focused = true;
+    h.draw();
+    assert_eq!(h.node(), host("idle"));
+    let links = h.sw.screen_links(&Node::Host("idle".into()), &h.state);
+    let up = links.len() - 1;
+    assert_eq!(links[up].node(), Some(&Node::Machine("idle".into())));
+    assert!(
+        links[..up].iter().all(|l| l.node().is_none()),
+        "an empty host lists its actions and no session"
+    );
+    assert!(
+        h.highlighted(h.link_rect(up)),
+        "a host with no session starts on its machine link"
+    );
+    h.sw.step_link(1, &h.state);
+    h.draw();
+    assert!(
+        h.highlighted(h.link_rect(0)),
+        "past the machine link the arrows wrap to the first action"
+    );
+
+    assert!(h.sw.open_link(up, &h.state));
+    h.draw();
+    assert_eq!(h.node(), machine("idle"));
+    let links = h.sw.screen_links(&Node::Machine("idle".into()), &h.state);
+    assert_eq!(
+        links[h.sw.link_index(&links)].node(),
+        Some(&Node::Host("idle".into())),
+        "a step up preselects the host just left"
+    );
+    h.sw.step_link(-1, &h.state);
+    h.draw();
+    assert!(
+        h.highlighted(h.link_rect(links.len() - 1)),
+        "before the first host the arrows wrap to the last action"
+    );
 }
 
 #[test]
@@ -547,10 +662,10 @@ fn a_link_is_drawn_selected_only_while_the_terminal_view_holds_the_focus() {
     let mut h = fleet();
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
-    assert!(!h.highlighted(h.link_rect(1)), "the nav holds the focus");
+    assert!(!h.highlighted(h.link_rect(0)), "the nav holds the focus");
     h.terminal_focused = true;
     h.draw();
-    assert!(h.highlighted(h.link_rect(1)));
+    assert!(h.highlighted(h.link_rect(0)));
 }
 
 #[test]
@@ -719,7 +834,8 @@ fn an_unresolved_machine_screen_links_to_nothing() {
     assert_eq!(h.node(), machine("db"));
     assert!(
         h.sw.screen_links(&Node::Machine("db".into()), &h.state)
-            .is_empty(),
+            .iter()
+            .all(|l| l.node().is_none()),
         "the placeholder host stands for this machine, so it is no link"
     );
     let view = h.view();
@@ -772,7 +888,7 @@ fn a_link_opens_a_host_the_nav_has_no_card_for() {
         h.view()
     );
     let links = h.sw.screen_links(&Node::Machine("db".into()), &h.state);
-    assert_eq!(links[0].node, Node::Host("db:tmux".into()));
+    assert_eq!(links[0].node(), Some(&Node::Host("db:tmux".into())));
     assert!(h.sw.open_link(0, &h.state));
     h.draw();
     assert_eq!(
@@ -860,8 +976,8 @@ fn the_selected_link_follows_its_node_when_the_links_change() {
     h.ctrl(KeyCode::Up);
     h.terminal_focused = true;
     h.draw();
-    h.sw.step_link(2, &h.state);
-    assert_eq!(h.sw.link, 2, "deploy, after the machine and api");
+    h.sw.step_link(1, &h.state);
+    assert_eq!(h.sw.link, 1, "deploy, after api");
 
     // api ends: deploy is still the selected link, one place up.
     h.sw.apply_host_result(
@@ -872,13 +988,13 @@ fn the_selected_link_follows_its_node_when_the_links_change() {
     );
     h.draw();
     assert_eq!(h.node(), host("web"));
-    assert_eq!(h.sw.link, 1);
-    assert!(h.highlighted(h.link_rect(1)));
+    assert_eq!(h.sw.link, 0);
+    assert!(h.highlighted(h.link_rect(0)));
 
     // deploy ends too: the selection stays on a link the screen still has.
     h.sw.apply_host_result("web".into(), vec![sess("web", "api")], None, &mut h.state);
     h.draw();
-    assert_eq!(h.sw.link, 1);
+    assert_eq!(h.sw.link, 0);
     assert!(h.sw.open_selected_link(&h.state), "Enter opens a link");
     assert_eq!(h.node(), session("web", "api"));
 }
@@ -893,12 +1009,12 @@ fn a_screen_scrolls_to_keep_the_selected_link_in_view() {
     h.terminal_focused = true;
     h.draw();
     assert!(
-        !h.plan.view_links.iter().any(|(i, _)| *i == 40),
+        !h.plan.view_links.iter().any(|(i, _)| *i == 39),
         "the last session's link is below the screen at first"
     );
-    h.sw.step_link(40, &h.state);
+    h.sw.step_link(39, &h.state);
     h.draw();
-    let last = h.link_rect(40);
+    let last = h.link_rect(39);
     assert!(h.highlighted(last), "the selected link is on screen");
     assert_eq!(h.cells(last).trim_end(), "s39");
 }
@@ -935,7 +1051,7 @@ pub(super) fn landing_link(h: &H, node: Option<Node>) -> Rect {
     let i =
         h.sw.landing_links()
             .iter()
-            .position(|l| Some(&l.node) == node.as_ref())
+            .position(|l| l.node() == node.as_ref())
             .expect("the landing lists the node");
     h.link_rect(i)
 }
@@ -960,7 +1076,7 @@ fn the_landing_lists_every_card_in_nav_order_under_its_number() {
     assert_eq!(
         links
             .iter()
-            .map(|l| (l.number.unwrap(), l.node.clone()))
+            .map(|l| (l.number.unwrap(), l.node().cloned().unwrap()))
             .collect::<Vec<_>>(),
         cards,
         "the same cards, order and numbers as the nav"
@@ -1052,7 +1168,7 @@ fn opening_a_landing_link_executes_it_and_the_landing_never_returns() {
     let i =
         h.sw.landing_links()
             .iter()
-            .position(|l| l.node == Node::Session(Address::new("web", "deploy")))
+            .position(|l| l.node() == Some(&Node::Session(Address::new("web", "deploy"))))
             .unwrap();
     assert!(h.sw.open_link(i, &h.state));
     h.draw();
@@ -1075,7 +1191,7 @@ fn a_landing_link_to_a_machine_that_needs_a_login_opens_its_login_screen() {
     let i =
         h.sw.landing_links()
             .iter()
-            .position(|l| l.node == Node::Machine("db".into()))
+            .position(|l| l.node() == Some(&Node::Machine("db".into())))
             .unwrap();
     assert!(h.sw.open_link(i, &h.state));
     h.draw();
@@ -1165,7 +1281,8 @@ fn a_machine_with_no_host_known_is_a_machine_and_no_host() {
     assert_eq!(h.node(), machine("db"), "the selection names the machine");
     assert!(
         h.sw.screen_links(&Node::Machine("db".into()), &h.state)
-            .is_empty(),
+            .iter()
+            .all(|l| l.node().is_none()),
         "a machine with no confirmed host links nowhere, least of all to itself"
     );
     let view = h.view();
@@ -1199,7 +1316,7 @@ fn a_machine_still_answering_spins_on_its_own_card() {
     let landing = h.sw.landing_links();
     let link = landing
         .iter()
-        .find(|l| l.node == Node::Machine("win".into()))
+        .find(|l| l.node() == Some(&Node::Machine("win".into())))
         .expect("the landing lists the machine");
     assert_eq!(link.value, "scanning");
     assert!(h.state.scanning_any());

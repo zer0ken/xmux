@@ -392,10 +392,11 @@ pub struct Switcher {
     /// the focus, as a row identity and the part of it. The terminal view shows its
     /// screen; nothing else follows it.
     hover: Option<(RowRef, Part)>,
-    /// The hard-selected link on the shown machine or host screen, by index and by the
-    /// node it names, so a rebuild that adds or drops links keeps the same node selected.
+    /// The hard-selected link on the shown machine or host screen, by index and by what
+    /// it names, so a rebuild that adds or drops links keeps the same link selected. With
+    /// no name the screen stands on its start link.
     link: usize,
-    link_node: Option<Node>,
+    link_node: Option<crate::ui::chrome::LinkTarget>,
     /// The link under the pointer on that screen while the terminal view holds the focus.
     link_hover: Option<usize>,
     /// Host whose login pane was opened explicitly from the check table or palette.
@@ -831,24 +832,26 @@ impl Switcher {
         match self
             .link_node
             .as_ref()
-            .and_then(|node| links.iter().position(|l| l.node == *node))
+            .and_then(|target| links.iter().position(|l| l.target == *target))
         {
             Some(i) => self.link = i,
             None if self.link_node.is_none() => {
                 // A screen nobody has stepped on yet stands on its start link, and
-                // keeps it only once the link names what the start stands for: a host
-                // screen whose sessions have not arrived waits for its first session.
+                // keeps it only once the link names what the start stands for, a node of
+                // the level below: a screen whose children have not arrived waits for
+                // its first child.
                 self.link = start_link(&links);
-                if self
-                    .selected_node()
-                    .is_some_and(|node| !matches!(node, Node::Host(_)) || links.len() > 1)
+                if links
+                    .get(self.link)
+                    .and_then(|l| l.node())
+                    .is_some_and(|node| !matches!(node, Node::Machine(_)))
                 {
-                    self.link_node = links.get(self.link).map(|l| l.node.clone());
+                    self.link_node = links.get(self.link).map(|l| l.target.clone());
                 }
             }
             None => {
                 self.link = self.link.min(links.len().saturating_sub(1));
-                self.link_node = links.get(self.link).map(|l| l.node.clone());
+                self.link_node = links.get(self.link).map(|l| l.target.clone());
             }
         }
         if self.link_hover.is_some_and(|i| i >= links.len()) {
@@ -1275,10 +1278,7 @@ impl Switcher {
             self.login_target = None;
         }
         if before != after {
-            self.link = match after {
-                Some(Node::Host(_)) => 1,
-                _ => 0,
-            };
+            self.link = 0;
             self.link_node = None;
         }
         self.on_focus_changed();
@@ -1682,16 +1682,25 @@ impl Switcher {
         if self.landing_shown() {
             return Some(ViewScreen::Landing);
         }
+        self.view_screen_of(self.shown_node().as_ref(), state)
+    }
+
+    /// Which screen the terminal view shows for `node`, or `None` for a session's grid;
+    /// see [`Self::current_view_screen`].
+    fn view_screen_of(
+        &self,
+        node: Option<&Node>,
+        state: &crate::state::State,
+    ) -> Option<ViewScreen> {
         let displayed = (!state.displayed.host.is_empty() && !state.displayed.session.is_empty())
             .then(|| Address::new(&state.displayed.host, &state.displayed.session));
-        let node = self.shown_node();
-        if let Some(Node::Session(address)) = &node {
+        if let Some(Node::Session(address)) = node {
             if self.holds_stopped(address) && !self.is_own_session(&address.host, &address.session)
             {
                 return Some(ViewScreen::Stopped);
             }
         }
-        if let Some(Node::Machine(machine)) = &node {
+        if let Some(Node::Machine(machine)) = node {
             let login_open = self
                 .login_target
                 .as_deref()
@@ -1716,17 +1725,17 @@ impl Switcher {
                 is_machine_scanning(state, machine),
             ));
         }
-        let selected_host = match &node {
+        let selected_host = match node {
             Some(Node::Host(host)) => Some(host.as_str()),
             _ => None,
         };
-        let selected_address = match &node {
+        let selected_address = match node {
             Some(Node::Session(address)) => Some(address.clone()),
             _ => None,
         };
         let group =
             selected_host.and_then(|host| state.groups.iter().find(|group| group.host == host));
-        let scanning = match &node {
+        let scanning = match node {
             Some(Node::Host(host)) => state.scanning.contains(host),
             None => state.scanning_any(),
             _ => false,
@@ -1769,16 +1778,45 @@ impl Switcher {
         Some((node, address))
     }
 
-    /// The links the screen of `node` offers, in the order the arrow keys walk them: a
-    /// machine's hosts by name, each with its session count or state; a host's machine and
-    /// then its sessions in card order. A session's grid offers none.
+    /// The links the screen of `node` offers, in the order the arrow keys walk them: the
+    /// level below, then the screen's actions, then the level above. A machine's screen
+    /// lists its hosts by name, each with its session count or state; a host's screen its
+    /// sessions in card order, and last its machine, which its headline carries. A
+    /// session's grid offers none.
     pub(crate) fn screen_links(
         &self,
         node: &Node,
         state: &crate::state::State,
     ) -> Vec<crate::ui::chrome::ScreenLink> {
-        use crate::ui::chrome::ScreenLink;
-        match node {
+        use crate::ui::chrome::{LinkTarget, ScreenLink};
+        let machine = match node {
+            Node::Machine(machine) => machine.as_str(),
+            Node::Host(host) => crate::session::machine_of(host),
+            Node::Session(_) => return Vec::new(),
+        };
+        let ssh = state
+            .chrome
+            .host_reach
+            .iter()
+            .any(|(host, reach)| crate::session::machine_of(host) == machine && reach.ssh);
+        let host_details = match node {
+            Node::Host(host) => state.host_details.contains(host),
+            _ => self
+                .current_host()
+                .is_some_and(|host| state.host_details.contains(&host)),
+        };
+        let actions = self
+            .view_screen_of(Some(node), state)
+            .map(|kind| crate::model::screen_actions(kind, ssh))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|action| ScreenLink {
+                target: LinkTarget::Action(action),
+                label: action.words(host_details).to_string(),
+                value: String::new(),
+                number: None,
+            });
+        let mut links: Vec<ScreenLink> = match node {
             Node::Machine(machine) => state
                 .groups
                 .iter()
@@ -1805,37 +1843,37 @@ impl Switcher {
                         }
                     };
                     Some(ScreenLink {
-                        node: Node::Host(g.host.clone()),
+                        target: LinkTarget::Node(Node::Host(g.host.clone())),
                         label,
                         value,
                         number: None,
                     })
                 })
                 .collect(),
-            Node::Host(host) => {
-                let machine = crate::session::machine_of(host);
-                let mut links = vec![ScreenLink {
-                    node: Node::Machine(machine.to_string()),
-                    label: machine.to_string(),
-                    value: String::new(),
+            Node::Host(host) => state
+                .groups
+                .iter()
+                .filter(|g| g.host == *host && g.err.is_none())
+                .flat_map(|g| &g.sessions)
+                .map(|sess| ScreenLink {
+                    target: LinkTarget::Node(Node::Session(sess.address())),
+                    label: sess.name.clone(),
+                    value: session_facts(sess),
                     number: None,
-                }];
-                if let Some(g) = state
-                    .groups
-                    .iter()
-                    .find(|g| g.host == *host && g.err.is_none())
-                {
-                    links.extend(g.sessions.iter().map(|sess| ScreenLink {
-                        node: Node::Session(sess.address()),
-                        label: sess.name.clone(),
-                        value: session_facts(sess),
-                        number: None,
-                    }));
-                }
-                links
-            }
+                })
+                .collect(),
             Node::Session(_) => Vec::new(),
+        };
+        links.extend(actions);
+        if matches!(node, Node::Host(_)) {
+            links.push(ScreenLink {
+                target: LinkTarget::Node(Node::Machine(machine.to_string())),
+                label: machine.to_string(),
+                value: String::new(),
+                number: None,
+            });
         }
+        links
     }
 
     /// The landing screen's links: every card of the nav, in its order and under its
@@ -1855,7 +1893,10 @@ impl Switcher {
                         .to_string(),
                 };
                 ScreenLink {
-                    node: node_of(&row.reference, Part::Card),
+                    target: crate::ui::chrome::LinkTarget::Node(node_of(
+                        &row.reference,
+                        Part::Card,
+                    )),
                     label,
                     value,
                     number: Some(self.card_number(i)),
@@ -1877,9 +1918,7 @@ impl Switcher {
             // marks is the card the nav marks, whichever view holds the focus.
             let links = self.landing_links();
             let selected = self.selected_node();
-            let link = links
-                .iter()
-                .position(|l| Some(&l.node) == selected.as_ref());
+            let link = links.iter().position(|l| l.node() == selected.as_ref());
             return Some(ScreenParts {
                 address: Address::new("", ""),
                 machine_screen: false,
@@ -1926,8 +1965,19 @@ impl Switcher {
         if self.login_pane_shown(state) {
             return (None, self.link_hover);
         }
-        let n = self.shown_links(state).len();
-        (Some(self.link.min(n.saturating_sub(1))), self.link_hover)
+        (
+            Some(self.link_index(&self.shown_links(state))),
+            self.link_hover,
+        )
+    }
+
+    /// Where the hard selection stands among `links`: the start link while nobody has
+    /// stepped on the screen, else the selected link, within the links there are.
+    fn link_index(&self, links: &[crate::ui::chrome::ScreenLink]) -> usize {
+        match self.link_node {
+            None => start_link(links),
+            Some(_) => self.link.min(links.len().saturating_sub(1)),
+        }
     }
 
     /// Where the soft selections stand, as the paint draws them: the nav row and part
@@ -1941,17 +1991,41 @@ impl Switcher {
     }
 
     /// The arrow keys on a machine's or a host's screen while the terminal view holds the
-    /// focus: they walk its links, stopping at both ends.
+    /// focus: they walk its links and cycle, a step past the last link returning to the
+    /// first and a step before the first to the last.
     pub(crate) fn step_link(&mut self, delta: isize, state: &crate::state::State) {
-        let n = self.shown_links(state).len();
+        let links = self.shown_links(state);
+        let n = links.len();
         if n == 0 || self.login_pane_shown(state) {
             return;
         }
-        self.link = (self.link as isize + delta).clamp(0, n as isize - 1) as usize;
-        self.link_node = self
-            .shown_links(state)
-            .get(self.link)
-            .map(|l| l.node.clone());
+        self.link = (self.link_index(&links) as isize + delta).rem_euclid(n as isize) as usize;
+        self.link_node = links.get(self.link).map(|l| l.target.clone());
+    }
+
+    /// The action of link `index` of the shown screen, or of its hard-selected link when
+    /// `index` is `None`, which the update transition runs by the action's key. `None`
+    /// when that link opens a node, or when Enter belongs to the login pane's form or to
+    /// a stopped session's screen.
+    pub(crate) fn link_action(
+        &self,
+        index: Option<usize>,
+        state: &crate::state::State,
+    ) -> Option<crate::model::ScreenAction> {
+        let links = self.shown_links(state);
+        let index = match index {
+            Some(i) => i,
+            None if self.login_pane_shown(state)
+                || self.current_view_screen(state) == Some(ViewScreen::Stopped) =>
+            {
+                return None;
+            }
+            None => self.link_index(&links),
+        };
+        match links.get(index)?.target {
+            crate::ui::chrome::LinkTarget::Action(action) => Some(action),
+            crate::ui::chrome::LinkTarget::Node(_) => None,
+        }
     }
 
     /// Executes link `index` of the shown screen: the node it names becomes the hard
@@ -1959,13 +2033,18 @@ impl Switcher {
     /// node just left is selected on the new screen, so a step back down is one Enter
     /// away; a step down starts the new screen on its start link.
     pub(crate) fn open_link(&mut self, index: usize, state: &crate::state::State) -> bool {
-        let Some(link) = self.shown_links(state).into_iter().nth(index) else {
+        let Some(node) = self
+            .shown_links(state)
+            .into_iter()
+            .nth(index)
+            .and_then(|l| l.node().cloned())
+        else {
             return false;
         };
         let before = self.selected_node();
         self.note_user_move();
         self.link_hover = None;
-        self.select_node(link.node);
+        self.select_node(node);
         // A landing link is the first execution: the screen it opens replaces the landing.
         self.close_landing();
         if let Some(before) = before {
@@ -1976,10 +2055,10 @@ impl Switcher {
                 if let Some(i) = self
                     .screen_links(&node, state)
                     .iter()
-                    .position(|l| l.node == before)
+                    .position(|l| l.node() == Some(&before))
                 {
                     self.link = i;
-                    self.link_node = Some(before);
+                    self.link_node = Some(crate::ui::chrome::LinkTarget::Node(before));
                 }
             }
         }
@@ -1998,8 +2077,8 @@ impl Switcher {
             self.execute_stopped();
             return true;
         }
-        let n = self.shown_links(state).len();
-        self.open_link(self.link.min(n.saturating_sub(1)), state)
+        let index = self.link_index(&self.shown_links(state));
+        self.open_link(index, state)
     }
 
     // --- preview ------------------------------------------------------------
@@ -2449,9 +2528,12 @@ fn context_of(row: &Row) -> (&str, &str, &str) {
 /// The link a screen starts on: a host screen's first session, or its machine link
 /// while it has none; any other screen's first link.
 fn start_link(links: &[crate::ui::chrome::ScreenLink]) -> usize {
-    match links {
-        [first, _, ..] if matches!(first.node, Node::Machine(_)) => 1,
-        _ => 0,
+    let up = links
+        .iter()
+        .position(|l| matches!(l.node(), Some(Node::Machine(_))));
+    match (links.first().and_then(|l| l.node()), up) {
+        (Some(Node::Session(_)), _) | (_, None) => 0,
+        (_, Some(up)) => up,
     }
 }
 

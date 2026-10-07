@@ -38,4 +38,7 @@ pub use operation::{KeyRegistration, LoginOutcome, OpResult, Ops, RegistrationOu
 pub use plan::{DeathSignal, DisplayTty, EventSource};
 pub use selection::{Node, Selection};
 pub use server_model::ServerModel;
-pub use view::{choose_machine_screen, choose_view_screen, ConfirmedDisplay, ViewScreen};
+pub use view::{
+    choose_machine_screen, choose_view_screen, screen_actions, ConfirmedDisplay, ScreenAction,
+    ViewScreen,
+};

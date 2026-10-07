@@ -139,6 +139,23 @@ the hierarchy into the ordinary step would turn the list into a tree whose stops
 with the inventory. Keeping the hierarchy behind its own inputs leaves the card step
 predictable and still lets every machine and host be opened.
 
+## Screen Reading Order
+
+A machine or host screen reads from the top as its headline, its status, the level below
+as links, and its actions as links, and the arrows walk its links in that order with the
+headline's link up as the last stop. The walk cycles: a step past the last link returns
+to the first, and a step before the first returns to the last. Every action a screen
+offers is a link that Enter or a click runs exactly as its key does, with the key written
+beside it.
+
+The user opens a screen to look into the level below or to act on it, so the children
+come first, where the screen starts, and the actions follow them. The level above is
+already named in the headline and is where the user goes once done, so it is the last
+stop, and cycling keeps it one step before the first child. An action the cursor cannot
+reach leaves a user who reads the screen with the arrows in hand unable to do what the
+screen offers, and the key written on the link teaches the shortcut from the row the
+cursor stands on.
+
 ## Hierarchy Separator
 
 Wherever the hierarchy is shown, its levels (machine, host, session, window) are parted

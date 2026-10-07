@@ -2812,6 +2812,63 @@ async fn a_machine_nothing_recorded_gets_no_provider_row() {
 }
 
 #[tokio::test]
+async fn an_unreachable_screen_offers_its_actions_and_its_details_toggle_as_links() {
+    use crate::model::keys::KeyCommand;
+    use crate::model::ScreenAction;
+    let mut h = Harness::from_hosts(&["kyla"]);
+    h.sw.apply_host_result(
+        "kyla".into(),
+        vec![],
+        Some("connection timed out".into()),
+        &mut h.state,
+    );
+    h.draw();
+    let actions: Vec<_> =
+        h.sw.shown_links(&h.state)
+            .into_iter()
+            .filter_map(|l| match l.target {
+                crate::ui::chrome::LinkTarget::Action(action) => Some((action, l.label)),
+                crate::ui::chrome::LinkTarget::Node(_) => None,
+            })
+            .collect();
+    assert_eq!(
+        actions,
+        vec![
+            (
+                ScreenAction::Command(KeyCommand::RescanMachine),
+                "rescan this machine".to_string()
+            ),
+            (
+                ScreenAction::Command(KeyCommand::Rescan),
+                "rescan all machines".to_string()
+            ),
+            (ScreenAction::Details, "show diagnostics".to_string()),
+        ]
+    );
+    let out = h.view_text();
+    let at = |want: &str| {
+        out.find(want)
+            .unwrap_or_else(|| panic!("the screen states {want:?}:\n{out}"))
+    };
+    let order = [
+        at("verdict"),
+        at("What to do"),
+        at("rescan this machine"),
+        at("rescan all machines"),
+        at("show diagnostics"),
+    ];
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "{out}");
+    h.key(KeyCode::Char('d')).await;
+    h.draw();
+    let out = h.view_text();
+    assert!(out.contains("hide diagnostics"), "{out}");
+    assert!(
+        out.find("hide diagnostics") < out.find("reason"),
+        "the diagnostics follow the toggle:\n{out}"
+    );
+}
+
+#[tokio::test]
 async fn unreachable_machine_screen_shows_ssh_config_stanza() {
     let mut h = Harness::from_hosts(&["jupiter00"]);
     h.state.chrome.set_login_defaults(

@@ -100,7 +100,7 @@ fn a_resolved_machine_card_keeps_the_selection_on_its_machine() {
     assert_eq!(
         sw.screen_links(&Node::Machine("mars".into()), &state)
             .into_iter()
-            .map(|l| l.node)
+            .filter_map(|l| l.node().cloned())
             .collect::<Vec<_>>(),
         vec![
             Node::Host("mars:screen".into()),
@@ -328,7 +328,10 @@ fn a_created_session_the_filter_hides_takes_the_selection_once_shown() {
 fn context(sw: &Switcher, state: &State) -> (Option<Node>, Option<Node>, Option<ViewScreen>) {
     (
         sw.selected_node(),
-        sw.link_node.clone(),
+        sw.link_node.clone().and_then(|target| match target {
+            crate::ui::chrome::LinkTarget::Node(node) => Some(node),
+            crate::ui::chrome::LinkTarget::Action(_) => None,
+        }),
         sw.current_view_screen(state),
     )
 }
@@ -345,8 +348,10 @@ fn background_answers_leave_the_users_context_alone() {
     // The user opens the host prod and selects the link of its second session.
     sw.note_user_move();
     sw.select_node(Node::Host("prod".into()));
-    sw.link = 2;
-    sw.link_node = Some(Node::Session(Address::new("prod", "b")));
+    sw.link = 1;
+    sw.link_node = Some(crate::ui::chrome::LinkTarget::Node(Node::Session(
+        Address::new("prod", "b"),
+    )));
     let before = context(&sw, &state);
     assert_eq!(before.2, Some(ViewScreen::Host));
 

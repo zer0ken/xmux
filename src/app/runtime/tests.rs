@@ -2025,7 +2025,7 @@ fn assert_on_the_machine_screen_with_both_hosts(rt: &mut Runtime) {
         .switcher
         .screen_links(&machine, &rt.model.state)
         .into_iter()
-        .map(|l| l.node)
+        .filter_map(|l| l.node().cloned())
         .collect();
     assert_eq!(
         links,
@@ -7111,8 +7111,9 @@ fn the_arrows_and_enter_walk_and_open_a_screens_links_in_terminal_focus() {
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
     rt.model.switcher.sync_view_focus(true);
     sync_test_render_plan(&mut rt);
-    // The host's links are its machine and then its session.
-    rt.handle_stdin_bytes(b"\x1b[B\r", &Selection::default());
+    // The host's links are its session, its actions, and last its machine: ↑ from the
+    // session wraps to the machine and ↓ wraps back to the session.
+    rt.handle_stdin_bytes(b"\x1b[A\x1b[B\r", &Selection::default());
     assert_eq!(selected(&rt), session_node("gpu", "train"));
     rt.handle_stdin_bytes(b"\x1b[1;5A", &Selection::default());
     assert_eq!(
@@ -7189,7 +7190,7 @@ fn a_click_on_a_screen_link_opens_it() {
         .render_plan
         .view_links
         .iter()
-        .find(|(i, _)| *i == 2)
+        .find(|(i, _)| *i == 1)
         .copied()
         .expect("the second session's link is painted");
     let press = crate::display::mouse::MouseEvent {
@@ -7207,6 +7208,92 @@ fn a_click_on_a_screen_link_opens_it() {
         &mut false,
     );
     assert_eq!(selected(&rt), session_node("web", "deploy"));
+}
+
+/// The web host's screen in terminal focus, and the index of its link that starts a new
+/// session.
+fn host_screen_with_new_session_link() -> (Runtime, usize) {
+    use crate::model::keys::KeyCommand;
+    use crate::model::ScreenAction;
+    let mut rt = hierarchy_rt();
+    rt.handle_stdin_bytes(b"\x1b[B\x1b[1;5A", &Selection::default()); // the web host
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    rt.model.switcher.sync_view_focus(true);
+    sync_test_render_plan(&mut rt);
+    let new = rt
+        .model
+        .switcher
+        .shown_links(&rt.model.state)
+        .iter()
+        .position(|l| {
+            l.target
+                == crate::ui::chrome::LinkTarget::Action(ScreenAction::Command(
+                    KeyCommand::NewSession,
+                ))
+        })
+        .expect("the host screen offers a new session");
+    (rt, new)
+}
+
+fn new_session_input_open(rt: &Runtime) -> bool {
+    matches!(
+        &rt.model.state.modal,
+        Some(crate::state::Modal::Input(input)) if input.mode == crate::state::InputMode::New
+    )
+}
+
+#[test]
+fn enter_on_an_action_link_runs_what_its_key_runs() {
+    let (mut rt, new) = host_screen_with_new_session_link();
+    assert_eq!(new, 2, "after the host's two sessions");
+    // Two steps down from the first session reach the action.
+    rt.handle_stdin_bytes(b"\x1b[B\x1b[B", &Selection::default());
+    assert_eq!(rt.model.switcher.link_marks(&rt.model.state).0, Some(new));
+    assert!(!new_session_input_open(&rt));
+    rt.handle_stdin_bytes(b"\r", &Selection::default());
+    assert!(
+        new_session_input_open(&rt),
+        "Enter opens the new session input, as prefix n does"
+    );
+    assert_eq!(
+        selected(&rt),
+        Some(crate::model::Node::Host("web".into())),
+        "running an action moves no selection"
+    );
+}
+
+#[test]
+fn a_click_on_an_action_link_runs_what_its_key_runs() {
+    let (mut rt, new) = host_screen_with_new_session_link();
+    let (_, rect) = rt
+        .model
+        .render_plan
+        .view_links
+        .iter()
+        .find(|(i, _)| *i == new)
+        .copied()
+        .expect("the action's link is painted");
+    let press = crate::display::mouse::MouseEvent {
+        cb: 0,
+        col: rect.x + 1,
+        row: rect.y + 1,
+        pressed: true,
+    };
+    rt.handle_mouse_event(
+        &press,
+        &Selection::default(),
+        &mut false,
+        &mut false,
+        &mut false,
+        &mut false,
+    );
+    assert!(
+        new_session_input_open(&rt),
+        "a click runs the action as Enter does"
+    );
 }
 
 /// `hierarchy_rt` as it stands at launch: the landing screen up in nav focus.
@@ -7236,7 +7323,7 @@ fn a_landing_link_takes_hover_and_a_click_from_the_navs_focus() {
         .switcher
         .landing_links()
         .iter()
-        .position(|l| Some(&l.node) == session_node("web", "deploy").as_ref())
+        .position(|l| l.node() == session_node("web", "deploy").as_ref())
         .unwrap();
     let (_, rect) = rt
         .model
@@ -7566,12 +7653,19 @@ fn a_headline_wider_than_the_view_continues_under_its_path() {
             assert!(view[1].starts_with(&format!(" {level}")), "{out}");
             if !session.is_empty() {
                 // The machine half is the link up on every row it covers.
+                let up = rt
+                    .model
+                    .switcher
+                    .shown_links(&rt.model.state)
+                    .iter()
+                    .position(|l| matches!(l.node(), Some(crate::model::Node::Machine(_))))
+                    .unwrap_or_else(|| panic!("{out}"));
                 let link_rows: Vec<u16> = rt
                     .model
                     .render_plan
                     .view_links
                     .iter()
-                    .filter(|(link, _)| *link == 0)
+                    .filter(|(link, _)| *link == up)
                     .map(|(_, rect)| rect.y)
                     .collect();
                 assert_eq!(link_rows.len(), 2, "{cols}x{rows}: {link_rows:?}\n{out}");

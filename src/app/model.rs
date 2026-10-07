@@ -1658,6 +1658,17 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::OpenLink(index) => {
+            // An action link runs what its key runs, through the same key.
+            if let Some(key) = model
+                .switcher
+                .link_action(index, &model.state)
+                .and_then(crate::model::ScreenAction::key)
+            {
+                return update(
+                    model,
+                    Msg::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+                );
+            }
             let before = model.switcher.selected_node();
             match index {
                 Some(i) => model.switcher.open_link(i, &model.state),
@@ -5389,8 +5400,10 @@ mod tests {
             .landing_links()
             .iter()
             .position(|l| {
-                l.node
-                    == crate::model::Node::Session(crate::session::Address::new("local", "editor"))
+                l.node()
+                    == Some(&crate::model::Node::Session(crate::session::Address::new(
+                        "local", "editor",
+                    )))
             })
             .unwrap();
         update(&mut m, Msg::OpenLink(Some(i)));
