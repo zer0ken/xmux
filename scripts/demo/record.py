@@ -200,9 +200,9 @@ def features(s):
 
     s.caption("Walk up to the host and the machine")
     s.prefix(); s.key("Left"); s.hold(0.6)
-    s.key("Ctrl ↑"); s.answered("live updates", 2.0)
+    s.key("Ctrl ↑"); s.answered("last listed", 2.0)
     s.key("Ctrl ↑"); s.answered("last reached", 2.0)
-    s.key("Ctrl ↓"); s.answered("live updates", 1.4)
+    s.key("Ctrl ↓"); s.answered("last listed", 1.4)
     s.key("Ctrl ↓"); s.answered("epoch 17/50", 2.0)
 
     s.caption("Resize the nav")

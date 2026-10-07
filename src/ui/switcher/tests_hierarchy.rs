@@ -72,7 +72,7 @@ impl H {
                         ssh: true,
                         kind: mux_named(&g.host).into(),
                         mux: mux_named(&g.host).into(),
-                        refresh: "live updates".into(),
+                        refresh: "live".into(),
                         ..Default::default()
                     },
                 )

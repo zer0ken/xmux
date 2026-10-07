@@ -398,7 +398,7 @@ impl State {
         let Some(reach) = self.chrome.host_reach.get(host) else {
             return "on request";
         };
-        if reach.refresh == "live updates" && !self.live_hosts.contains(host) {
+        if reach.refresh == "live" && !self.live_hosts.contains(host) {
             "last observed (channel closed)"
         } else {
             &reach.refresh
