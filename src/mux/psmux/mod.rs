@@ -271,6 +271,7 @@ mod tests {
         let runner = CannedRunner::err(RunError::Exit {
             stderr: "no server running on /tmp/psmux-1000/default".into(),
             code: 1,
+            stdout: Vec::new(),
         });
         assert!(m.enumerate(&ssh("prod"), &runner).await.unwrap().is_empty());
     }

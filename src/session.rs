@@ -169,6 +169,10 @@ pub struct Session {
     pub id: String,
     pub windows: i64,
     pub attached: bool,
+    /// The mux keeps a record of this session while nothing of it runs: a saved tuios
+    /// session, a stopped herdr session, an exited zellij session. The mux's own attach
+    /// resumes it, and no other command reaches it until then.
+    pub stopped: bool,
 }
 
 impl Session {

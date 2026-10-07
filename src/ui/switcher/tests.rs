@@ -370,6 +370,7 @@ fn sess(host: &str, name: &str, windows: i64, attached: bool) -> Session {
         id: String::new(),
         windows,
         attached,
+        stopped: false,
     }
 }
 
@@ -4301,6 +4302,7 @@ fn sess_mux(host: &str, name: &str, mux: &str) -> Session {
         id: String::new(),
         windows: 1,
         attached: false,
+        stopped: false,
     }
 }
 
@@ -7468,6 +7470,7 @@ fn select_address_moves_cursor_to_named_session() {
                     id: String::new(),
                     windows: 1,
                     attached: false,
+                    stopped: false,
                 },
                 Session {
                     host: "jup".into(),
@@ -7476,6 +7479,7 @@ fn select_address_moves_cursor_to_named_session() {
                     id: String::new(),
                     windows: 1,
                     attached: false,
+                    stopped: false,
                 },
             ],
         }],

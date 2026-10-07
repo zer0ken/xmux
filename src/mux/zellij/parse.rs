@@ -35,10 +35,9 @@ const CURRENT_MARKER: &str = "(current)";
 /// and the ` ago]` suffix part the name from the suffix; the age text between
 /// them is not carried further.
 ///
-/// A session marked `EXITED` is SKIPPED. zellij keeps a resurrectable record of a
-/// session after its server is gone and lists it alongside the live ones, so
-/// including it would offer a row with nothing running behind it: attaching would
-/// resurrect the session rather than show it.
+/// A session marked `EXITED` is a stopped session. zellij keeps a resurrectable record
+/// of a session after its server is gone and lists it alongside the live ones; nothing
+/// runs behind it, and attaching resurrects it.
 pub fn parse_sessions(host: &str, out: &str) -> Vec<Session> {
     let mut sessions = Vec::new();
     for ln in out.split('\n') {
@@ -53,9 +52,6 @@ pub fn parse_sessions(host: &str, out: &str) -> Vec<Session> {
         let Some((_, suffix)) = rest.split_once(AGE_SUFFIX) else {
             continue;
         };
-        if suffix.contains(EXITED_MARKER) {
-            continue;
-        }
         sessions.push(Session {
             host: host.to_string(),
             name: name.to_string(),
@@ -66,6 +62,7 @@ pub fn parse_sessions(host: &str, out: &str) -> Vec<Session> {
             // The session listing carries no count; enumeration fills it from list-tabs.
             windows: 0,
             attached: suffix.contains(CURRENT_MARKER),
+            stopped: suffix.contains(EXITED_MARKER),
         });
     }
     sessions
@@ -156,22 +153,23 @@ mod tests {
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["hug", "my build", "fresh"],
+            vec!["hug", "my build", "gone", "fresh"],
             "a name may hold a space, so the split is on the Created marker"
         );
         assert!(got.iter().all(|s| s.host == "jup" && s.mux == "zellij"));
     }
 
     #[test]
-    fn a_resurrectable_session_is_not_offered() {
+    fn a_resurrectable_session_is_stopped() {
         // zellij lists a session it kept a resurrectable record of beside the live
-        // ones. Nothing is running behind it, so attaching would resurrect it rather
-        // than show it.
+        // ones. Nothing is running behind it until an attach resurrects it.
         let got = parse_sessions("jup", SESSIONS);
-        assert!(
-            !got.iter().any(|s| s.name == "gone"),
-            "an EXITED record is not a session to switch to: {got:?}"
-        );
+        let stopped: Vec<&str> = got
+            .iter()
+            .filter(|s| s.stopped)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(stopped, vec!["gone"], "{got:?}");
     }
 
     #[test]

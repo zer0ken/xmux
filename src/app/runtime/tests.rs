@@ -1057,6 +1057,7 @@ fn inventory_rename_precedes_display_session_sync() {
         id: "7$0".into(),
         windows: 2,
         attached: false,
+        stopped: false,
     }];
 
     let (_, followups) = rt.perform_host_effect(crate::model::EventEffect::ApplyInventory {
@@ -1101,6 +1102,7 @@ async fn prefix_r_probes_the_selected_machine_without_a_discovery_pass() {
             name: "api".into(),
             windows: 1,
             attached: false,
+            stopped: false,
         }],
     };
     let mut state = crate::state::State::from_scan(Scan {
@@ -1147,6 +1149,7 @@ async fn capital_r_rescan_rebuilds_nav_and_kicks_discovery() {
                 name: "api".into(),
                 windows: 1,
                 attached: false,
+                stopped: false,
             }],
         }],
     };
@@ -2786,6 +2789,7 @@ fn two_session_scan() -> crate::ui::switcher::Scan {
         name: name.into(),
         windows,
         attached: false,
+        stopped: false,
     };
     Scan {
         groups: vec![Group {
@@ -2879,6 +2883,7 @@ fn jup_sessions(names: &[&str]) -> Vec<crate::session::Session> {
             name: (*name).into(),
             windows: 1,
             attached: false,
+            stopped: false,
         })
         .collect()
 }
@@ -3005,6 +3010,7 @@ fn psmux_scan() -> crate::ui::switcher::Scan {
         name: name.into(),
         windows: 1,
         attached: false,
+        stopped: false,
     };
     crate::ui::switcher::Scan {
         groups: vec![Group {
@@ -3112,6 +3118,7 @@ fn zellij_scan() -> crate::ui::switcher::Scan {
         id: String::new(),
         windows: 1,
         attached: false,
+        stopped: false,
     };
     crate::ui::switcher::Scan {
         groups: vec![crate::ui::tree::Group {
@@ -3239,6 +3246,7 @@ fn a_settled_herdr_runtime() -> Runtime {
         id: String::new(),
         windows: 0,
         attached: false,
+        stopped: false,
     };
     let scan = crate::ui::switcher::Scan {
         groups: vec![crate::ui::tree::Group {
@@ -3954,6 +3962,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
                     name: "api".into(),
                     windows: 1,
                     attached: false,
+                    stopped: false,
                 },
                 Session {
                     mux: String::new(),
@@ -3962,6 +3971,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
                     name: "db".into(),
                     windows: 1,
                     attached: false,
+                    stopped: false,
                 },
             ],
         }],
@@ -4016,6 +4026,7 @@ fn status_line_names_the_listed_mux_before_the_reach_resolves() {
                 name: "api".into(),
                 windows: 1,
                 attached: false,
+                stopped: false,
             }],
         }],
     });
@@ -4040,6 +4051,7 @@ fn status_line_reports_focus_and_address() {
                 name: "api".into(),
                 windows: 1,
                 attached: false,
+                stopped: false,
             }],
         }],
     };
@@ -4090,6 +4102,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
                     name: "api".into(),
                     windows: 1,
                     attached: false,
+                    stopped: false,
                 },
                 Session {
                     mux: String::new(),
@@ -4098,6 +4111,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
                     name: "db".into(),
                     windows: 1,
                     attached: false,
+                    stopped: false,
                 },
             ],
         }],
@@ -4262,6 +4276,7 @@ fn rt_terminal_focus_with_session() -> Runtime {
                 name: "api".into(),
                 windows: 1,
                 attached: false,
+                stopped: false,
             }],
         }],
     };
@@ -5419,6 +5434,7 @@ fn poll_rename_precedes_display_session_sync() {
                     id: "7$0".into(),
                     windows: 2,
                     attached: false,
+                    stopped: false,
                 }],
                 err: None,
             },
@@ -5452,6 +5468,7 @@ fn one_session_scan() -> Scan {
                 id: "7$0".into(),
                 windows: 2,
                 attached: false,
+                stopped: false,
             }],
         }],
     }
@@ -5661,6 +5678,7 @@ fn host_event_sessions_applies_tree_and_emits_sync_on_success() {
         id: String::new(),
         windows: 1,
         attached: false,
+        stopped: false,
     }];
     let effects = host_event_effects_for_test(
         &mut state,
@@ -7479,6 +7497,7 @@ fn headline_rt(machine: &str, session: &str, cols: u16, rows: u16) -> Runtime {
                 id: String::new(),
                 windows: 1,
                 attached: false,
+                stopped: false,
             }],
             None,
             &mut state,

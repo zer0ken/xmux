@@ -115,7 +115,10 @@ impl Mux for Zellij {
         // query can exit with no tab list while the session runs on. Such a session
         // keeps an unknown count, which shows no count, for this sweep: failing the
         // sweep instead would mark a live host unreachable and end its polling.
-        for session in &mut sessions {
+        //
+        // A stopped session has no server to answer, and on Windows an action addressed
+        // at one never returns, so it is not asked.
+        for session in sessions.iter_mut().filter(|s| !s.stopped) {
             let argv = vec![
                 self.bin.clone(),
                 "--session".into(),
@@ -142,7 +145,8 @@ impl Mux for Zellij {
         // Plain `attach`, never `attach -c`: xmux displays sessions it enumerated and
         // must not create one as a side effect of showing it. A session that died
         // between the scan and the attach fails the attach, which is the EOF the death
-        // signal is waiting for.
+        // signal is waiting for. An exited session's record makes the same attach
+        // resurrect it, which is how a stopped card resumes.
         vec![self.bin.clone(), "attach".to_string(), session.to_string()]
     }
 
@@ -276,9 +280,10 @@ mod tests {
             } else {
                 match &self.tabs {
                     Ok(out) => Ok(out.clone()),
-                    Err(RunError::Exit { stderr, code }) => Err(RunError::Exit {
+                    Err(RunError::Exit { stderr, code, .. }) => Err(RunError::Exit {
                         stderr: stderr.clone(),
                         code: *code,
+                        stdout: Vec::new(),
                     }),
                     Err(RunError::Other(reason)) => Err(RunError::Other(reason.clone())),
                 }
@@ -287,7 +292,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enumeration_counts_tabs_without_attaching_and_skips_exited_records() {
+    async fn enumeration_counts_tabs_without_attaching_and_asks_no_exited_record() {
         let runner = TabRunner {
             calls: Mutex::new(Vec::new()),
             tabs: Ok(
@@ -299,8 +304,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            got.iter().map(|s| s.windows).collect::<Vec<_>>(),
-            vec![2, 2]
+            got.iter()
+                .map(|s| (s.name.as_str(), s.windows, s.stopped))
+                .collect::<Vec<_>>(),
+            vec![("my build", 2, false), ("gone", 0, true), ("api", 2, false)]
         );
         assert_eq!(
             *runner.calls.lock().unwrap(),
@@ -337,10 +344,12 @@ mod tests {
             Err(RunError::Exit {
                 stderr: "Session 'api' not found. The following sessions are active:".into(),
                 code: 1,
+                stdout: Vec::new(),
             }),
             Err(RunError::Exit {
                 stderr: "thread 'main' panicked".into(),
                 code: 101,
+                stdout: Vec::new(),
             }),
             Err(RunError::Other("tab query timed out".into())),
         ] {
@@ -356,8 +365,8 @@ mod tests {
                 got.iter()
                     .map(|s| (s.name.as_str(), s.windows))
                     .collect::<Vec<_>>(),
-                vec![("my build", 0), ("api", 0)],
-                "each live session stays listed with no count"
+                vec![("my build", 0), ("gone", 0), ("api", 0)],
+                "each session stays listed with no count"
             );
             assert_eq!(
                 runner.calls.lock().unwrap().len(),
@@ -524,6 +533,7 @@ mod tests {
         let idle = CannedRunner::err(RunError::Exit {
             stderr: "No active zellij sessions found.".into(),
             code: 1,
+            stdout: Vec::new(),
         });
         assert!(zellij()
             .enumerate(&ssh("jup"), &idle)
@@ -538,6 +548,7 @@ mod tests {
         let missing = CannedRunner::err(RunError::Exit {
             stderr: "zellij: command not found".into(),
             code: 127,
+            stdout: Vec::new(),
         });
         assert!(zellij().enumerate(&ssh("jup"), &missing).await.is_err());
     }

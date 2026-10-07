@@ -47,7 +47,7 @@ pub use vocab::*;
 /// a dead one. Only a real command exit (carrying stderr) can be benign; a
 /// missing binary or a connect failure is always unreachable.
 pub(crate) fn is_no_sessions(err: &RunError) -> bool {
-    let RunError::Exit { stderr, code } = err else {
+    let RunError::Exit { stderr, code, .. } = err else {
         return false;
     };
     // command-not-found (127), not-executable (126), and ssh failure (255) are
@@ -1101,6 +1101,7 @@ mod tests {
             Err(RunError::Exit {
                 stderr: format!("exit {}", self.0),
                 code: self.0,
+                stdout: Vec::new(),
             })
         }
     }
@@ -1508,28 +1509,34 @@ Usage: zellij [OPTIONS]",
         assert!(is_no_sessions(&RunError::Exit {
             code: 1,
             stderr: "no server running on /tmp/tmux-1000/default".into(),
+            stdout: Vec::new(),
         }));
         assert!(is_no_sessions(&RunError::Exit {
             code: 1,
             stderr: "no sessions".into(),
+            stdout: Vec::new(),
         }));
         assert!(!is_no_sessions(&RunError::Exit {
             code: 1,
             stderr: "permission denied".into(),
+            stdout: Vec::new(),
         }));
         // A banner line merely CONTAINING the phrase must not misclassify.
         assert!(!is_no_sessions(&RunError::Exit {
             code: 1,
             stderr: "Last login...\nYou have no sessions pending.\n".into(),
+            stdout: Vec::new(),
         }));
         // command-not-found / ssh failure are never benign.
         assert!(!is_no_sessions(&RunError::Exit {
             code: 127,
             stderr: "tmux: command not found\nno sessions\n".into(),
+            stdout: Vec::new(),
         }));
         assert!(!is_no_sessions(&RunError::Exit {
             code: 255,
             stderr: "ssh: connect failed\n".into(),
+            stdout: Vec::new(),
         }));
         // A non-exit error (missing binary / connect failure) is NOT benign.
         assert!(!is_no_sessions(&RunError::Other(

@@ -2080,6 +2080,7 @@ mod tests {
         let runner = ScriptedRunner::new(vec![Err(RunError::Exit {
             stderr: "ssh: connect to host prod port 22: Connection timed out\n".into(),
             code: 255,
+            stdout: Vec::new(),
         })]);
         let error = find_key_lines(&runner, &multiplexing_ssh(), &this_key())
             .await
@@ -2413,6 +2414,7 @@ mod tests {
                      Connection closed by 10.0.0.2 port 22\n"
                 .into(),
             code: 255,
+            stdout: Vec::new(),
         }
     }
 
@@ -2501,10 +2503,12 @@ mod tests {
             RunError::Exit {
                 stderr: "alice@prod: Permission denied (publickey).\n".into(),
                 code: 255,
+                stdout: Vec::new(),
             },
             RunError::Exit {
                 stderr: "ssh: connect to host prod port 22: Connection timed out\n".into(),
                 code: 255,
+                stdout: Vec::new(),
             },
             RunError::Other("spawn failed".into()),
         ] {
@@ -3189,6 +3193,7 @@ mod tests {
             id: String::new(),
             windows,
             attached,
+            stopped: false,
         }
     }
 
