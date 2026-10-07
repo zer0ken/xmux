@@ -1199,23 +1199,18 @@ impl Switcher {
                     .iter()
                     .find(|(i, part, _)| *i == idx && *part == self.part)
                     .map(|(_, _, r)| *r);
-                let target = half.unwrap_or(rect);
-                pad_selected_rect(
-                    frame.buffer_mut(),
-                    target,
-                    plan.nav_inner,
-                    palette::selection_style(palette),
-                );
-                selected = Some(target);
+                let style = palette::selection_style(palette);
+                if let Some(half) = half {
+                    frame.buffer_mut().set_style(half, style);
+                } else {
+                    pad_selected_rect(frame.buffer_mut(), rect, plan.nav_inner, style);
+                    selected = Some(rect);
+                }
             }
         }
-        // While the nav holds the focus, Enter opens the selected session, so its card says
-        // so after its text; in the terminal view Enter reaches the pane. A host card, a
-        // machine card, and a title half go without: the mark is for the card that opens a
-        // session. The mark waits for every card to be painted, so it sees the card that
-        // follows on the same row.
-        let session = matches!(self.selected_node(), Some(crate::model::Node::Session(_)));
-        if let Some(target) = selected.filter(|_| session && !self.terminal_view) {
+        // Enter opens a standalone card while the nav holds focus. A part of a shared
+        // item has no mark. Paint after all cards so neighbouring text stays intact.
+        if let Some(target) = selected.filter(|_| !self.terminal_view) {
             let marked = mark_enter(frame.buffer_mut(), target, plan.nav_inner);
             pad_selected_rect(
                 frame.buffer_mut(),
@@ -1229,21 +1224,24 @@ impl Switcher {
         if let Some((reference, part)) = &self.hover {
             if let Some(idx) = self.row_matching(reference) {
                 let hard = self.hard_row() == Some(idx) && *part == self.part;
-                let rect = plan
+                let half = plan
                     .nav_parts
                     .iter()
                     .find(|(i, p, _)| *i == idx && p == part)
-                    .map(|(_, _, r)| *r)
-                    .or_else(|| {
-                        plan.nav_cells
-                            .iter()
-                            .find(|(i, _)| *i == idx)
-                            .map(|(_, r)| *r)
-                    });
+                    .map(|(_, _, r)| *r);
+                let rect = half.or_else(|| {
+                    plan.nav_cells
+                        .iter()
+                        .find(|(i, _)| *i == idx)
+                        .map(|(_, r)| *r)
+                });
                 if let Some(rect) = rect.filter(|_| !hard) {
-                    frame
-                        .buffer_mut()
-                        .set_style(rect, palette::soft_selection_style(palette));
+                    let style = palette::soft_selection_style(palette);
+                    if half.is_some() {
+                        frame.buffer_mut().set_style(rect, style);
+                    } else {
+                        pad_selected_rect(frame.buffer_mut(), rect, plan.nav_inner, style);
+                    }
                 }
             }
         }
@@ -1993,7 +1991,7 @@ fn history_popup_width(area: Rect) -> u16 {
 /// its text: a side whose edge cell is blank is padded already, and otherwise the blank
 /// cell just outside the rect takes the paint while it lies inside `bounds`. A neighbour
 /// that is text, such as the `/` between a section title's halves, stays unpainted.
-/// The glyph the hard-selected session card writes after its text while the nav holds
+/// The glyph the hard-selected standalone card writes after its text while the nav holds
 /// the focus: the return symbol, the outlined bent arrow a keyboard's Enter key carries, in
 /// one cell and without emoji presentation.
 pub(crate) const ENTER_MARK: &str = "\u{23ce}";

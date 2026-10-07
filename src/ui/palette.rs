@@ -368,8 +368,8 @@ fn is_selected(style: Style, palette: &Palette) -> bool {
     bg.is_some() && style.bg == bg
 }
 
-/// `line` with each run of hard-selected cells padded by one blank cell on each side, so
-/// the highlight never sits tight on the item's text. A side whose cell in the run is
+/// A line of standalone items with each selected or hovered run padded by one blank
+/// cell on each side. A side whose cell in the run is
 /// already blank is padded; otherwise the neighbouring cell takes the run's paint when
 /// it is blank, and a run that ends the line gains one blank cell after it. A neighbour
 /// that is text stays as it is, so the padding never moves a character.
@@ -381,7 +381,12 @@ pub(crate) fn pad_selected(line: Line<'static>, palette: &Palette) -> Line<'stat
         .enumerate()
         .flat_map(|(i, span)| span.content.chars().map(move |c| (i, c, span.style)))
         .collect();
-    let selected = |cells: &[(usize, char, Style)], at: usize| is_selected(cells[at].2, palette);
+    let selected = |cells: &[(usize, char, Style)], at: usize| {
+        let style = cells[at].2;
+        is_selected(style, palette)
+            || (palette.bar_bg != Color::Reset && style.bg == Some(palette.bar_bg))
+            || style.add_modifier.contains(Modifier::UNDERLINED)
+    };
     let mut at = 0;
     while at < cells.len() {
         if !selected(&cells, at) {
@@ -389,7 +394,7 @@ pub(crate) fn pad_selected(line: Line<'static>, palette: &Palette) -> Line<'stat
             continue;
         }
         let start = at;
-        while at < cells.len() && selected(&cells, at) {
+        while at < cells.len() && selected(&cells, at) && cells[at].2 == cells[start].2 {
             at += 1;
         }
         let end = at;
