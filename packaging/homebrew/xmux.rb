@@ -1,5 +1,5 @@
 class Xmux < Formula
-  desc "Cross-environment tmux/psmux session switcher"
+  desc "A cross-machine, cross-mux session switcher"
   homepage "https://github.com/zer0ken/xmux"
   license "MIT"
   version "0.17.5"

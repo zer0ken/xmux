@@ -203,7 +203,7 @@ jobs:
           set -euo pipefail
           cat > packaging/homebrew/xmux.rb <<EOF
           class Xmux < Formula
-            desc "Cross-environment tmux/psmux session switcher"
+            desc "A cross-machine, cross-mux session switcher"
             homepage "https://github.com/zer0ken/xmux"
             license "MIT"
             version "$VERSION"
