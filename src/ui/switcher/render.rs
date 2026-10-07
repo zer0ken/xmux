@@ -1862,15 +1862,28 @@ impl Switcher {
         palette: &palette::Palette,
     ) {
         if let Some((rect, list)) = &plan.key_list {
+            let version = state.chrome.version_label();
+            let update = state.chrome.update_label();
             crate::ui::keylist::render(
                 frame,
                 *rect,
                 list,
-                crate::ui::keylist::Border {
-                    prefix: &state.chrome.ui_prefix,
-                    status: "",
-                    version: &state.chrome.version_label(),
-                    update: state.chrome.update_label().as_deref(),
+                if state.chrome.resizing {
+                    crate::ui::keylist::Border {
+                        title: crate::ui::keylist::RESIZE_TITLE,
+                        status: "",
+                        hints: crate::ui::keylist::RESIZE_HINTS,
+                        version: "",
+                        update: None,
+                    }
+                } else {
+                    crate::ui::keylist::Border {
+                        title: &state.chrome.ui_prefix,
+                        status: "",
+                        hints: &[],
+                        version: &version,
+                        update: update.as_deref(),
+                    }
                 },
                 palette,
             );

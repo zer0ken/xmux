@@ -161,12 +161,17 @@ pub(crate) fn key_list(
     None
 }
 
-/// The title of the list a resize shows.
-const RESIZE_TITLE: &str = "resize: any other key ends it";
+/// The title a resize writes on the box it opens, the popup grammar's name of the box.
+pub(crate) const RESIZE_TITLE: &str = "resize";
+
+/// The key a resize names on its bottom border, as a popup names its way out: every key
+/// but a resize key ends the resize.
+pub(crate) const RESIZE_HINTS: &[crate::ui::modal::Hint] = &[("any other key", "end")];
 
 /// The key list while a prefix resize lasts: only the resize keys of the nav's layout,
-/// under a title saying any other key ends the resize, since every other prefix key does
-/// nothing until it does. `None` when it does not fit.
+/// since every other prefix key does nothing until the resize ends. The box is at least
+/// as wide as [`RESIZE_HINTS`], so its bottom border says how the resize ends. `None`
+/// when it does not fit.
 pub(crate) fn resize_list(
     prefix: &str,
     position: NavPosition,
@@ -197,9 +202,12 @@ pub(crate) fn resize_list(
             _ => 0,
         })
         .max()?;
-    let mut column = vec![Cell::Title(RESIZE_TITLE.to_string())];
-    column.extend(keys);
-    let column_width = column.iter().map(|c| c.width(key_width)).max()?;
+    let column = keys;
+    let column_width = column
+        .iter()
+        .map(|c| c.width(key_width))
+        .max()?
+        .max(crate::ui::modal::hints_width(RESIZE_HINTS) as u16);
     let list = KeyList {
         columns: vec![column],
         key_width,
@@ -365,12 +373,15 @@ pub(crate) fn title_style(palette: &palette::Palette) -> Style {
     Style::default().fg(palette.disabled)
 }
 
-/// What the key list's borders say: the prefix it is titled with, the hidden
-/// host count on the bottom border's left, and the xmux version on its right, followed
-/// by the newer release while one is recorded.
+/// What the key list's borders say: its title, the hidden host count on the bottom
+/// border's left, and on its right either keys in the popup hint style or the xmux
+/// version, followed by the newer release while one is recorded. The full key list is
+/// titled with the prefix and carries the version; the resize box is titled `resize` and
+/// names the key that ends it, as every popup names its keys.
 pub(crate) struct Border<'a> {
-    pub(crate) prefix: &'a str,
+    pub(crate) title: &'a str,
     pub(crate) status: &'a str,
+    pub(crate) hints: &'a [crate::ui::modal::Hint],
     pub(crate) version: &'a str,
     pub(crate) update: Option<&'a str>,
 }
@@ -387,13 +398,14 @@ pub(crate) fn render(
     palette: &palette::Palette,
 ) {
     let Border {
-        prefix,
+        title,
         status,
+        hints,
         version,
         update,
     } = border;
     frame.render_widget(Clear, rect);
-    let mut block = crate::ui::modal::popup_block(prefix, "", rect.width, palette);
+    let mut block = crate::ui::modal::popup_block(title, "", rect.width, palette);
     let status_w = if status.is_empty() {
         0
     } else {
@@ -413,23 +425,34 @@ pub(crate) fn render(
             .left_aligned(),
         );
     }
-    // The version is a build pointer, so it takes the bottom border only where it leaves a
-    // corner's worth of rule on each side. A newer release follows it in the accent, since
-    // it is the one thing on the border the user can act on.
-    let mut version_line = vec![Span::styled(
-        format!(" {version} "),
-        Style::default().fg(palette.disabled),
-    )];
-    if let Some(update) = update {
-        version_line.push(Span::styled("· ", Style::default().fg(palette.disabled)));
-        version_line.push(Span::styled(
-            format!("{update} "),
-            Style::default().fg(palette.accent),
-        ));
-    }
-    let version_line = Line::from(version_line);
-    if status_w + (version_line.width() as u16) + 6 <= rect.width {
-        block = block.title_bottom(version_line.right_aligned());
+    if !hints.is_empty() {
+        // Keys sit where every popup writes them, and are given up from the end as a
+        // popup gives them up, keeping the last.
+        let room = (rect.width as usize).saturating_sub(6 + status_w as usize);
+        let hints = crate::ui::modal::fit_hints(hints, room);
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(crate::ui::modal::hint_spans(&hints, palette));
+        spans.push(Span::raw(" "));
+        block = block.title_bottom(Line::from(spans).right_aligned());
+    } else if !version.is_empty() {
+        // The version is a build pointer, so it takes the bottom border only where it
+        // leaves a corner's worth of rule on each side. A newer release follows it in the
+        // accent, since it is the one thing on the border the user can act on.
+        let mut version_line = vec![Span::styled(
+            format!(" {version} "),
+            Style::default().fg(palette.disabled),
+        )];
+        if let Some(update) = update {
+            version_line.push(Span::styled("· ", Style::default().fg(palette.disabled)));
+            version_line.push(Span::styled(
+                format!("{update} "),
+                Style::default().fg(palette.accent),
+            ));
+        }
+        let version_line = Line::from(version_line);
+        if status_w + (version_line.width() as u16) + 6 <= rect.width {
+            block = block.title_bottom(version_line.right_aligned());
+        }
     }
     frame.render_widget(block, rect);
     let key_style = key_cell_style(palette);
@@ -569,7 +592,12 @@ mod tests {
     fn a_resize_lists_only_the_resize_keys_of_the_layout() {
         let side = resize_list("C-g", NavPosition::Left, 160, 30).unwrap();
         assert_eq!(side.keys(), vec!["C-←/→"]);
-        assert_eq!(side.columns[0][0], Cell::Title(RESIZE_TITLE.to_string()));
+        assert!(
+            side.columns[0]
+                .iter()
+                .all(|c| matches!(c, Cell::Key { .. })),
+            "the body is the resize keys alone"
+        );
         let band = resize_list("C-g", NavPosition::Bottom, 160, 30).unwrap();
         assert_eq!(band.keys(), vec!["C-↑/↓"]);
         assert!(resize_list("C-g", NavPosition::Left, 12, 30).is_none());
