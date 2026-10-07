@@ -256,3 +256,138 @@ impl H {
         out
     }
 }
+
+impl H {
+    /// Puts the open popup's hard selection on `index`: the help's tab, or the row of the
+    /// palette or the machine problems.
+    fn select_in_popup(&mut self, index: usize) {
+        use crate::state::Modal;
+        match self.state.modal.as_mut() {
+            Some(Modal::Help { tab, .. }) => *tab = Some(index),
+            Some(Modal::Palette { selected, .. } | Modal::Check { selected, .. }) => {
+                *selected = index
+            }
+            _ => panic!("no popup with a selection is open"),
+        }
+        self.draw();
+    }
+
+    /// The characters painted in `rect`, row by row, without their styles.
+    fn symbols(&self, rect: Rect) -> Vec<String> {
+        let buf = self.term.backend().buffer();
+        (rect.y..rect.bottom())
+            .map(|y| {
+                (rect.x..rect.right())
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+}
+
+// The highlight grows outward into the blank cells beside the text and never moves the
+// text to make room: each test below paints one surface with the selection on one item
+// and then on another, and the characters of the surface stay in the same cells.
+
+#[test]
+fn selecting_a_nav_card_or_a_title_half_moves_no_text() {
+    let mut h = fleet();
+    h.select("web", "api");
+    let nav = h.plan.nav_inner;
+    let on_api = h.symbols(nav);
+    h.select("web", "deploy");
+    assert_eq!(h.symbols(nav), on_api, "a card selected");
+    h.ctrl(KeyCode::Up);
+    assert_eq!(h.symbols(nav), on_api, "a title's host half selected");
+    h.ctrl(KeyCode::Up);
+    assert_eq!(h.symbols(nav), on_api, "a title's machine half selected");
+}
+
+#[test]
+fn selecting_a_screen_link_moves_no_text() {
+    let mut h = fleet();
+    h.select("web", "api");
+    h.ctrl(KeyCode::Up);
+    h.terminal_focused = true;
+    h.draw();
+    let term = h.plan.regions.terminal;
+    let first = h.symbols(term);
+    h.sw.link = 1;
+    h.draw();
+    assert!(h.selected_look(h.link_rect(1)));
+    assert_eq!(h.symbols(term), first);
+}
+
+#[test]
+fn selecting_a_landing_link_moves_no_text() {
+    let mut h = landed();
+    let term = h.plan.regions.terminal;
+    let first = h.symbols(term);
+    h.key(KeyCode::Down);
+    assert!(h.selected_look(landing_link(&h, session("web", "api"))));
+    assert_eq!(h.symbols(term), first);
+}
+
+#[test]
+fn selecting_a_help_tab_moves_no_text() {
+    let mut h = fleet();
+    h.sw.toggle_help(&mut h.state);
+    h.draw();
+    // From the second tab on, the row leads with `‹` and the tabs keep their columns.
+    h.select_in_popup(1);
+    let titles: Vec<&str> = crate::model::keys::Section::ALL
+        .iter()
+        .map(|s| s.title())
+        .collect();
+    let popup = h.plan.popup_rect;
+    let row = h.find_in(popup, titles[2]).y;
+    let tabs = Rect::new(popup.x, row, popup.width, 1);
+    let second = h.symbols(tabs);
+    h.select_in_popup(2);
+    assert!(h.selected_look(h.find_in(popup, titles[2])));
+    assert_eq!(h.symbols(tabs), second);
+}
+
+#[test]
+fn selecting_a_palette_entry_or_a_check_row_moves_no_text() {
+    let mut h = fleet();
+    h.sw.toggle_palette(&mut h.state);
+    h.draw();
+    let popup = h.plan.popup_rect;
+    let first = h.symbols(popup);
+    h.select_in_popup(1);
+    let entries = h.sw.palette_entries(&h.state, "");
+    let name: String = entries[1].0.chars().take(12).collect();
+    assert!(h.selected_look(h.find_in(popup, &name)));
+    assert_eq!(h.symbols(h.plan.popup_rect), first, "the palette");
+
+    let mut h = H::new(&[
+        ("gpu", &["train"], None),
+        ("db", &[], Some(LOGGED_OUT)),
+        ("dead", &[], Some("connection refused")),
+    ]);
+    h.sw.toggle_check(&mut h.state);
+    h.draw();
+    let entries = h.sw.check_entries(&h.state);
+    let popup = h.plan.popup_rect;
+    let first = h.symbols(popup);
+    h.select_in_popup(1);
+    assert!(h.selected_look(h.find_in(popup, &entries[1].host)));
+    assert_eq!(h.symbols(h.plan.popup_rect), first, "the check list");
+}
+
+#[test]
+fn focusing_a_login_stop_moves_no_text() {
+    use crate::state::LoginFocus;
+    let first = login(LoginFocus::Address);
+    let term = first.plan.regions.terminal;
+    let at_address = first.symbols(term);
+    for focus in [
+        LoginFocus::Username,
+        LoginFocus::AfterNothing,
+        LoginFocus::Submit,
+    ] {
+        let h = login(focus);
+        assert_eq!(h.symbols(term), at_address, "{focus:?}");
+    }
+}
