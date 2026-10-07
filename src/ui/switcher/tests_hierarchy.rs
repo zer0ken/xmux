@@ -1458,3 +1458,45 @@ fn a_scanned_machine_keeps_its_screen_and_reads_scanning() {
         );
     }
 }
+
+#[test]
+fn the_selected_card_ends_in_the_enter_mark_while_the_nav_holds_the_focus() {
+    let enter = super::render::ENTER_MARK;
+    let nav_rows = |h: &H| {
+        let buf = h.term.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..NAV_WIDTH)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut h = fleet();
+    h.select("web", "api");
+    let marked: Vec<_> = nav_rows(&h)
+        .into_iter()
+        .filter(|r| r.contains(enter))
+        .collect();
+    assert_eq!(marked.len(), 1, "one card carries the mark: {marked:?}");
+    assert!(
+        marked[0].trim_end().ends_with(&format!("api {enter}")),
+        "{marked:?}"
+    );
+    h.select("web", "deploy");
+    let marked: Vec<_> = nav_rows(&h)
+        .into_iter()
+        .filter(|r| r.contains(enter))
+        .collect();
+    assert_eq!(marked.len(), 1, "{marked:?}");
+    assert!(
+        marked[0].contains("deploy"),
+        "the mark follows the selection"
+    );
+    h.terminal_focused = true;
+    h.draw();
+    assert!(
+        nav_rows(&h).iter().all(|r| !r.contains(enter)),
+        "Enter reaches the pane, so no card carries the mark"
+    );
+}
