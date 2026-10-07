@@ -312,8 +312,8 @@ fn screen_top(screen: &ScreenLines, selected: Option<usize>, height: u16) -> usi
 }
 
 impl ViewScreen {
-    /// The state word under the headline, empty for a host screen with sessions, which has
-    /// no state beyond its list. The two SETTLED HOST states read theirs from
+    /// The state word under the headline, empty for a host screen with sessions, whose
+    /// count is read from the host's sessions instead. The two SETTLED HOST states read theirs from
     /// the one source the nav cards read, so a card and the screen reached from it can
     /// never name the same state two ways; the self-session state is not a host state and
     /// names itself. A blocked host's word never says what it was blocked on; the login
@@ -1390,6 +1390,13 @@ impl Chrome {
             )
         {
             ViewScreen::Scanning.word().to_string()
+        } else if kind == ViewScreen::Host {
+            let count = state
+                .groups
+                .iter()
+                .find(|g| g.host == address.host)
+                .map_or(0, |g| g.sessions.len());
+            crate::ui::tree::host_sessions_word(count)
         } else {
             kind.word().to_string()
         };

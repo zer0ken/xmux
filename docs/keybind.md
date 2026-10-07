@@ -141,8 +141,9 @@ The terminal view shows a machine screen for a machine and a host screen for one
 on it. Each reads from the top as its level and path, such as `machine db-01` or
 `host db-01/tmux`, then its status, then the level below as links, then its actions. A
 machine screen states how the machine is reached and logged in to and links each of its
-hosts whose mux is confirmed, and none while no mux is; a host screen states how its
-sessions stay current and links each of its sessions, and the machine half of its path
+hosts whose mux is confirmed, and none while no mux is; a host screen states how many
+sessions it has (`no sessions`, `1 session`, `2 sessions`) and how they stay current and
+links each of its sessions, and the machine half of its path
 links to its machine. Every action a screen offers, such as `prefix n  start a new
 session`, is a link written beside the key that runs it, and a failure screen's actions
 are links too.
