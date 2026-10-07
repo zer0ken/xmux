@@ -1367,6 +1367,13 @@ impl Chrome {
             self.scan_progress(state)
         } else if logged_out {
             crate::ui::tree::LOGGED_OUT.to_string()
+        } else if kind == ViewScreen::Machine
+            && crate::ui::switcher::is_machine_scanning(
+                state,
+                crate::session::machine_of(&address.host),
+            )
+        {
+            ViewScreen::Scanning.word().to_string()
         } else {
             kind.word().to_string()
         };

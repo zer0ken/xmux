@@ -179,6 +179,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **machine screen** - the view screen headed `machine {machine}`: how the machine is
   reached and logged in to, its login pane, a link to each of its hosts whose mux is
   confirmed, and its actions as links. A machine with no confirmed mux links to no host.
+  A machine being scanned keeps this screen, with the state `scanning`.
 - **host screen** - the view screen headed `host {machine}/{mux}`: how the host's
   sessions stay current, a link to each session, its actions as links, and a link to its
   machine in its headline.

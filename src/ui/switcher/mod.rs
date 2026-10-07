@@ -1731,10 +1731,9 @@ impl Switcher {
             if login_open || login_reported {
                 return Some(ViewScreen::Login);
             }
-            return Some(crate::model::choose_machine_screen(
-                machine_failure(state, machine),
-                is_machine_scanning(state, machine),
-            ));
+            return Some(crate::model::choose_machine_screen(machine_failure(
+                state, machine,
+            )));
         }
         let selected_host = match node {
             Some(Node::Host(host)) => Some(host.as_str()),
