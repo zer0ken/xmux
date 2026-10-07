@@ -5565,10 +5565,10 @@ fn host_event_client_detached_emits_reap_display_attach_with_no_state_change() {
     assert!(
         matches!(
             effects.as_slice(),
-            [EventEffect::ReapDisplayAttach { host, client }]
-                if host == "jup" && client == "/dev/pts/3"
+            [EventEffect::ReapDisplayAttach { host, client }, EventEffect::Refetch { host: refetched }]
+                if host == "jup" && client == "/dev/pts/3" && refetched == "jup"
         ),
-        "ClientDetached forwards a ReapDisplayAttach effect: {effects:?}"
+        "ClientDetached forwards a ReapDisplayAttach effect and refetches the counts: {effects:?}"
     );
     // ClientDetached mutates no State (the tree group set is untouched).
     assert_eq!(state.groups.len(), before_groups);
@@ -5598,10 +5598,10 @@ fn host_event_client_session_changed_forwards_follow_effect_with_no_state_change
     assert!(
         matches!(
             effects.as_slice(),
-            [EventEffect::FollowDisplaySession { host, client, session }]
-                if host == "jup" && client == "/dev/pts/3" && session == "db"
+            [EventEffect::FollowDisplaySession { host, client, session }, EventEffect::Refetch { host: refetched }]
+                if host == "jup" && client == "/dev/pts/3" && session == "db" && refetched == "jup"
         ),
-        "ClientSessionChanged forwards a FollowDisplaySession effect: {effects:?}"
+        "ClientSessionChanged forwards a FollowDisplaySession effect and refetches the counts: {effects:?}"
     );
     // update mutates no State here (the tree group set is untouched); the tty match +
     // selection follow are loop-owned.

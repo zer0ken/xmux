@@ -1125,18 +1125,27 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
                 EventEffect::ReapHost { host },
             ]
         }
-        HostEvent::ClientDetached { host, client } => {
-            vec![EventEffect::ReapDisplayAttach { host, client }]
-        }
+        // A client arriving on a session, leaving one, or moving between two changes how
+        // many clients the listing counts there, which the mux pushes nothing else for.
+        HostEvent::ClientDetached { host, client } => vec![
+            EventEffect::ReapDisplayAttach {
+                host: host.clone(),
+                client,
+            },
+            EventEffect::Refetch { host },
+        ],
         HostEvent::ClientSessionChanged {
             host,
             client,
             session,
-        } => vec![EventEffect::FollowDisplaySession {
-            host,
-            client,
-            session,
-        }],
+        } => vec![
+            EventEffect::FollowDisplaySession {
+                host: host.clone(),
+                client,
+                session,
+            },
+            EventEffect::Refetch { host },
+        ],
         HostEvent::DisplayTty { host, tty } => {
             vec![EventEffect::RecordDisplayTty { host, tty }]
         }
