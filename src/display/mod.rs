@@ -14,7 +14,6 @@ pub mod outer;
 pub mod paste;
 pub mod registry;
 pub mod term;
-pub mod vt100;
 pub mod worker;
 
 pub use worker::{DisplayEnsure, DisplayEvent, DisplayWorker};
