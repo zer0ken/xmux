@@ -1496,17 +1496,24 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     // is borrowed for the arm body (the send half stays on `rt.worker`).
     let mut worker_events = rt.worker.take_events();
 
-    // Single stdin reader thread: raw host bytes → channel (a loop-local receiver).
+    // Single stdin reader thread: raw host bytes → channel (a loop-local receiver). The
+    // terminal's replies to the probe `TermGuard::enter` sent are taken out here, so
+    // they reach neither the key decoder nor a session.
     let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
     std::thread::spawn(move || {
         let stdin = std::io::stdin();
         let mut stdin = stdin.lock();
         let mut buf = [0u8; 256];
+        let mut replies = crate::display::outer::ReplyFilter::new();
         loop {
             match stdin.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    if stdin_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                    let keys = replies.filter(&buf[..n]);
+                    if keys.is_empty() {
+                        continue;
+                    }
+                    if stdin_tx.blocking_send(keys).is_err() {
                         break;
                     }
                 }

@@ -23,7 +23,9 @@ state: the focus and modal state machine lives in `app`.
   it paints, and serves a reaped attachment's last grid until a fresh one installs.
 - The grid owns the terminal-emulation cell state, a content fingerprint for detecting
   a visible change, its last written line for naming why a child stopped, and the input
-  modes the child set, which outlive a wipe of the cells.
+  modes the child set, which outlive a wipe of the cells. It answers the terminal
+  queries the child sends, each once, with colours and pixel sizes taken from what the
+  outer terminal answered xmux at startup.
 - Input decoding, dispatch, paste splitting, and mouse parsing turn terminal bytes into
   routing decisions or input actions; terminal setup holds prefix parsing, mouse
   capture, bracketed paste, focus reports, and the terminal guard.

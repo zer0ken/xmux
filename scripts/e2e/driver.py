@@ -31,6 +31,20 @@ ACCENT_BG = frozenset({"00ff00", "brightgreen"})
 QUERIES = re.compile(r"\x1b\[6n|\x1b\[0?c|\x1b\[\?u|\x1b\](1[01]);\?(?:\x07|\x1b\\)")
 
 
+class Screen(pyte.Screen):
+    """A pyte screen that takes the private device status reports xmux asks for.
+
+    pyte's stream passes `private=True` for `CSI ? Ps n` (xmux asks the colour scheme
+    with `CSI ? 996 n`), which some pyte releases' screens do not accept; the stream
+    thread would die on it. A private report gets no answer, as from a terminal that
+    does not know it.
+    """
+
+    def report_device_status(self, mode, private=False, **kwargs):
+        if not private:
+            super().report_device_status(mode)
+
+
 class Timeout(Exception):
     """A wait ran out; the message carries what was awaited and the screen."""
 
@@ -40,7 +54,7 @@ class Term:
 
     def __init__(self, argv, env, cols=120, rows=36, cwd=None):
         self.cols, self.rows = cols, rows
-        self.screen = pyte.Screen(cols, rows)
+        self.screen = Screen(cols, rows)
         self.stream = pyte.Stream(self.screen)
         self.lock = threading.Lock()
         self.alive = True
