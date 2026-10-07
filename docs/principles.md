@@ -64,7 +64,7 @@ key, and complete reasons or solutions. The one exception at rest is a nav with 
 its body says in one line why it is empty and which key answers it.
 
 While the user acts, the question is what to do next, and a surface that answers it
-saves a trip to the help. So the selected card names its state, an open filter counts
+saves a trip to the help. So the view screen names its state, an open filter counts
 its matches, a live prefix names every key it unlocks, the selected standalone card can
 show `⏎` while Enter opens it, and a machine screen keeps the failure reason whole. Every
 one of these reads the one key table, so a surface never names a key that
@@ -281,7 +281,7 @@ input caret has its own cell and does not add padding to the value.
 
 Painting and pointer interaction use the same target area, including a standalone
 item's padding and any Enter mark. A clipped part never takes over the containing
-item's area, and no highlight or status word covers another item's text. Hover paints
+item's area, and no highlight covers another item's text. Hover paints
 the item on the hint bar's pair of colours. Where selection and hover overlap, the
 selection background remains and hover adds an underline, including when one target
 is a part of the other. A colour the user names in `[ui] selection-style` replaces the

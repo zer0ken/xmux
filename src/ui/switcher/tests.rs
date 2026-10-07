@@ -696,8 +696,8 @@ async fn from_hosts_renders_scanning_skeletons() {
     );
     assert_eq!(
         out.matches("scanning").count(),
-        1,
-        "only the selected card carries the scanning word:\n{out}"
+        0,
+        "scanning cards carry only their spinner:\n{out}"
     );
     assert!(
         !out.contains("window"),
@@ -726,7 +726,7 @@ async fn a_scanning_host_card_is_one_line_with_a_trailing_spinner() {
     assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
     assert_eq!(
         rows[0],
-        format!("1 local {sp} scanning {}", super::render::ENTER_MARK)
+        format!("1 local {sp} {}", super::render::ENTER_MARK)
     );
 
     // A qualified id already confirms its mux: same shape, the mux in the middle.
@@ -735,7 +735,7 @@ async fn a_scanning_host_card_is_one_line_with_a_trailing_spinner() {
     assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
     assert_eq!(
         rows[0],
-        format!("1 local/zellij {sp} scanning {}", super::render::ENTER_MARK)
+        format!("1 local/zellij {sp} {}", super::render::ENTER_MARK)
     );
 }
 
@@ -1164,12 +1164,11 @@ async fn apply_host_result_empty_shows_empty_status() {
     let mut h = Harness::from_hosts(&["local"]);
     h.sw.apply_host_result("local".into(), vec![], None, &mut h.state);
     h.draw();
-    // The selected card names its state, and the host screen repeats the state with its
-    // available actions.
+    // The host screen states its status and available actions.
     let cards = h.nav_cards_text();
     assert!(
-        cards.contains("no sessions"),
-        "the selected card carries its status word:\n{cards}"
+        !cards.contains("no sessions"),
+        "state words belong on the host screen:\n{cards}"
     );
     assert!(
         !spins(&cards),
@@ -1232,7 +1231,7 @@ async fn apply_host_result_marks_the_card_and_states_the_reason_on_the_screen() 
 }
 
 #[tokio::test]
-async fn host_failures_use_distinct_one_cell_glyphs_and_selected_state_words() {
+async fn host_failures_use_distinct_one_cell_glyphs_without_state_words() {
     let scan = Scan {
         groups: vec![
             Group {
@@ -1267,8 +1266,8 @@ async fn host_failures_use_distinct_one_cell_glyphs_and_selected_state_words() {
     );
     assert_eq!(
         cards.matches("unreachable").count(),
-        1,
-        "only the selected card has a word:\n{cards}"
+        0,
+        "state words stay off the nav:\n{cards}"
     );
     h.key(KeyCode::Down).await;
     let cards = h.nav_cards_text();
@@ -1279,9 +1278,7 @@ async fn host_failures_use_distinct_one_cell_glyphs_and_selected_state_words() {
     assert!(!cards
         .lines()
         .any(|line| line.contains("dead-box") && line.contains("unreachable")));
-    assert!(cards
-        .lines()
-        .any(|line| line.contains("list-box") && line.contains("list failed")));
+    assert!(!cards.contains("list failed"));
     assert!(
         h.view_text().contains("expected value"),
         "the listing reason stays on the host screen:\n{}",
@@ -4088,7 +4085,7 @@ async fn empty_reachable_host_shows_its_host_screen() {
     );
     assert!(
         view.contains("no sessions"),
-        "under it, the same state word its card carries:\n{view}"
+        "the host screen states its status:\n{view}"
     );
     assert!(
         view.contains("start a new session"),
@@ -7879,49 +7876,18 @@ fn portrait_scanning_hosts_start_at_the_left_until_found() {
     for i in 1..3 {
         assert_eq!(cells[&i].x, x0, "every scanning host shares that column");
     }
-    assert!(cells[&0].width >= 20, "the card reserves its status word");
+    assert!(cells[&0].width < 20, "the card fits its identity and Enter");
     let row = (0..band_w)
         .map(|x| term.backend().buffer()[(x, cells[&0].y)].symbol())
         .collect::<String>();
     assert!(
-        row.contains("no sessions"),
-        "the selected status belongs to its card: {row}"
+        !row.contains("no sessions"),
+        "the nav contains no status message: {row}"
     );
 }
 
 #[test]
-fn host_status_and_its_spacing_stay_inside_the_highlighted_card() {
-    let scan = Scan {
-        groups: vec![Group {
-            host: "local".into(),
-            err: None,
-            sessions: vec![],
-        }],
-    };
-    let (_sw, plan, term) = portrait(scan, 60, 12);
-    let card = plan.nav_cells[0].1;
-    let buf = term.backend().buffer();
-    let label = " no sessions ";
-    let start = (0..=buf.area.width - label.len() as u16)
-        .find(|&x| {
-            (x..x + label.len() as u16)
-                .map(|cell_x| buf[(cell_x, card.y)].symbol())
-                .collect::<String>()
-                == label
-        })
-        .expect("the status has one space on each side");
-    assert!(
-        (start..start + label.len() as u16).all(|x| on_accent(&buf[(x, card.y)])),
-        "both spaces belong to the highlighted status"
-    );
-    assert!(
-        start >= card.x && start + label.len() as u16 <= card.right(),
-        "the status belongs to the card"
-    );
-}
-
-#[test]
-fn floating_host_status_preserves_the_selected_card_in_a_narrow_band() {
+fn unreachable_card_keeps_its_name_in_a_narrow_band() {
     let scan = Scan {
         groups: vec![Group {
             host: "very-long-host-name".into(),
@@ -7934,32 +7900,10 @@ fn floating_host_status_preserves_the_selected_card_in_a_narrow_band() {
     let row = (0..24)
         .map(|x| term.backend().buffer()[(x, card.y)].symbol())
         .collect::<String>();
-    assert!(
-        (0..24).any(|x| on_accent(&term.backend().buffer()[(x, card.y)])),
-        "the selected card remains identifiable: {row}"
-    );
-    assert!(
-        row.contains("unreachable"),
-        "the status stays visible: {row}"
-    );
-    assert!(
-        row.contains(" unreachable "),
-        "the narrow status still has both spaces: {row}"
-    );
-    let buf = term.backend().buffer();
-    let label = " unreachable ";
-    let start = (0..=buf.area.width - label.len() as u16)
-        .find(|&x| {
-            (x..x + label.len() as u16)
-                .map(|cell_x| buf[(cell_x, card.y)].symbol())
-                .collect::<String>()
-                == label
-        })
-        .expect("the narrow status fits inside the nav");
-    assert!(
-        (start..start + label.len() as u16).all(|x| on_accent(&buf[(x, card.y)])),
-        "both spaces stay inside the highlighted label"
-    );
+    assert!(row.contains("very-lon…ost-name"), "{row}");
+    assert!(row.contains('▲'), "{row}");
+    assert!(!row.contains("unreachable"), "{row}");
+    assert!((card.x..card.right()).all(|x| on_accent(&term.backend().buffer()[(x, card.y)])));
 }
 
 #[test]

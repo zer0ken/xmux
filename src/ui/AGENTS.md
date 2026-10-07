@@ -43,7 +43,7 @@ layer reads and paints them and owns only transient popup geometry.
   the surface grows.
 - The words on a screen and the values the code runs come from one place: the ssh
   connect wait is printed from the constant the ssh option is built from, and a status
-  word from the one helper the cards read.
+  word from the one shared state helper.
 - No UI module manages a host process or writes to a PTY.
 
 ## Before Editing
