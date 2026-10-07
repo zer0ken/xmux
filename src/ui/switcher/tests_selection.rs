@@ -1,7 +1,8 @@
 //! The one look of the hard selection: on every surface that has one, the selected item's
 //! cells are painted on the theme's accent with the theme's text-on-accent slot, and no
 //! other item's are. The highlight keeps one cell of padding before and after the
-//! item's text wherever the layout leaves that cell blank. The harness paints the default
+//! standalone item's text wherever the layout leaves that cell blank; a part of a shared
+//! item has no padding. The harness paints the default
 //! `auto-dark` theme: Black on LightGreen.
 
 use super::tests_hierarchy::{fleet, landed, landing_link, session, H};
@@ -104,10 +105,66 @@ fn a_selected_section_title_half_is_highlighted_and_the_other_half_is_not() {
     let host = h.half(title, Part::Host);
     assert!(h.selected_look(host));
     assert!(h.plain(h.half(title, Part::Machine)));
-    // The `/` before the host half is the title's own text, so the padding takes only
-    // the blank cell after it.
-    assert!(h.selected_look(Rect::new(host.right(), host.y, 1, 1)));
+    // The host half's highlight ends with its text.
+    assert!(h.plain(Rect::new(host.right(), host.y, 1, 1)));
     assert!(h.plain(Rect::new(host.x - 1, host.y, 1, 1)));
+}
+
+#[test]
+fn a_selected_empty_hosts_machine_half_has_no_highlight_padding() {
+    let mut h = fleet();
+    let idle = h.card_row(|r| matches!(r, RowRef::Host { host, .. } if host == "idle"));
+    h.sw.set_selected(idle);
+    h.ctrl(KeyCode::Up);
+    let machine = h.half(idle, Part::Machine);
+    assert!(h.selected_look(machine));
+    assert!(h.plain(Rect::new(machine.x - 1, machine.y, 1, 1)));
+    assert!(h.plain(Rect::new(machine.right(), machine.y, 1, 1)));
+}
+
+#[test]
+fn hovering_a_shared_items_part_has_no_padding() {
+    let mut h = fleet();
+    h.select("web", "api");
+    let title = h.title_row("web");
+    let idle = h.card_row(|r| matches!(r, RowRef::Host { host, .. } if host == "idle"));
+    for (row, part) in [(title, Part::Host), (idle, Part::Machine)] {
+        let rect = h.half(row, part);
+        h.sw.hover = Some((h.sw.rows[row].reference.clone(), part));
+        h.draw();
+        let buf = h.term.backend().buffer();
+        for x in rect.x - 1..=rect.right() {
+            assert_eq!(
+                buf[(x, rect.y)].bg == crate::ui::palette::Palette::default().bar_bg,
+                x >= rect.x && x < rect.right(),
+                "hover at column {x} of {rect:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn hovering_a_standalone_card_pads_its_background() {
+    let mut h = fleet();
+    h.select("web", "api");
+    let deploy = h.card_row(|r| matches!(r, RowRef::Session { sess } if sess.name == "deploy"));
+    let rect = h.card(deploy);
+    h.sw.hover = Some((h.sw.rows[deploy].reference.clone(), Part::Card));
+    h.draw();
+    let buf = h.term.backend().buffer();
+    let first = (rect.x..rect.right())
+        .find(|&x| buf[(x, rect.y)].symbol() != " ")
+        .unwrap();
+    let last = (rect.x..rect.right())
+        .rev()
+        .find(|&x| buf[(x, rect.y)].symbol() != " ")
+        .unwrap();
+    for x in first - 1..=last + 1 {
+        assert_eq!(
+            buf[(x, rect.y)].bg,
+            crate::ui::palette::Palette::default().bar_bg
+        );
+    }
 }
 
 #[test]
@@ -122,10 +179,10 @@ fn a_selected_screen_link_is_highlighted_and_no_other_link_is() {
     h.sw.step_link(-1, &h.state);
     h.draw();
     assert!(h.selected_look(h.link_rect(5)));
-    // The headline's machine link is followed by the `/` of its host, the headline's own
-    // text, so only the cell before it takes the padding.
+    // The headline's machine link is part of the path and has no padding.
     let link = h.link_rect(5);
-    assert!(h.selected_look(Rect::new(link.x - 1, link.y, link.width + 1, 1)));
+    assert!(h.selected_look(link));
+    assert!(h.plain(Rect::new(link.x - 1, link.y, 1, 1)));
     assert!(h.plain(Rect::new(link.right(), link.y, 1, 1)));
     assert!(h.plain(h.link_rect(0)));
     // An action is a link like the others: the highlight and its padding cover its words

@@ -138,8 +138,9 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **selection lineage** - session, host, machine: the chain a selection walks up when its
   node loses its card.
 - **selection highlight** - the theme's accent as the background and its on-accent
-  text colour over the cells of the item the hard selection is on and one blank cell on
-  each side of its text, the one look every surface gives its selection.
+  text colour over the cells of the item the hard selection is on. Standalone items
+  include one blank cell on each side of their text; parts of a shared item cover only
+  their own text.
 - **card focus** - what selecting a card changes: the selection highlight, and on a
   machine or host card its state word. Its height, its number, and its name's column
   never move.
@@ -156,8 +157,8 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **status row fill** - how much of its row the hint bar paints: the resting indicator
   its text, a floating bar the whole row.
 - **key list** - the box a live prefix opens, naming every key it unlocks.
-- **Enter mark** - the `⏎` after the selected session card's text while the nav holds
-  the focus, where Enter opens that session.
+- **Enter mark** - the `⏎` after a selected standalone card's text while the nav holds
+  the focus, where Enter opens the card's target. A part of a shared item has no mark.
 - **scan indicator** - the `scanning hosts n/m…` progress in the hint bar, counting
   hosts and the machines that have no host yet.
 - **toast** - the result of an action the user took, whether it was done, refused, or

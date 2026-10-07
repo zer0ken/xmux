@@ -65,7 +65,7 @@ its body says in one line why it is empty and which key answers it.
 
 While the user acts, the question is what to do next, and a surface that answers it
 saves a trip to the help. So the selected card names its state, an open filter counts
-its matches, a live prefix names every key it unlocks, the selected session card ends
+its matches, a live prefix names every key it unlocks, the selected standalone card ends
 in `⏎` while Enter opens it, and a machine screen keeps the failure reason whole. Every
 one of these reads the one key table, so a surface never names a key that
 does something else.
@@ -272,11 +272,13 @@ item takes that one pair: its number, its name, its key tokens, and its glyphs a
 no colour or dimming of the item survives inside the highlight. Every surface with a
 hard selection paints it in this one look: the nav's cards and the halves of a section
 title, the links on the landing, machine, and host screens, the rows of a popup list,
-the help's tabs, and the focused stop of the login pane. The highlight keeps one cell of
-padding before and after the item's text, taken from a blank cell the layout already
-leaves there; where that cell holds other text or lies outside the surface, that side
-goes without, because the padding never moves text or wraps a row. The caret of a
-focused login field is the padding cell after its value. The soft selection under the
+the help's tabs, and the focused stop of the login pane. A standalone item keeps one
+cell of padding before and after its text when selected or hovered, taken from a blank
+cell the layout already leaves there; where that cell holds other text or lies outside
+the surface, that side
+goes without, because the padding never moves text or wraps a row. A part of a shared
+item, such as either half of a machine/host path, has no selection or hover padding.
+The caret of a focused login field is the padding cell after its value. The soft selection under the
 pointer paints the item on the hint bar's pair of colours, a background apart from the
 accent, so the item a click would pick is found at a glance; on the item the highlight
 already marks, the pointer underlines it instead, since one cell holds one background. A colour the user names in `[ui] selection-style` replaces the
@@ -293,7 +295,7 @@ so the highlight reads as a block around the item rather than as coloured letter
 look learned on the nav then reads on every popup and screen, while a surface that marks
 its selection with a colour, a weight, or a glyph of its own is one more thing to learn
 and, beside a highlighted surface, reads as a different state. The one glyph a
-selection carries is the `⏎` after the selected session card's text while the nav holds
+selection carries is the `⏎` after a selected standalone card's text while the nav holds
 the focus: the highlight says where the selection is, and the glyph says that Enter opens
-that session there, which matters on the nav because the same Enter reaches the pane once the
-terminal view holds the focus.
+that target there, which matters on the nav because the same Enter reaches the pane once
+the terminal view holds the focus. A part of a shared item has no Enter mark.

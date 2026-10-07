@@ -1503,8 +1503,19 @@ fn the_selected_card_ends_in_the_enter_mark_while_the_nav_holds_the_focus() {
     h.sw.select_node(Node::Machine("db".into()));
     h.draw();
     assert!(
+        nav_rows(&h).iter().any(|r| r.contains(enter)),
+        "a standalone machine card carries the mark"
+    );
+    h.sw.select_node(Node::Host("idle".into()));
+    h.draw();
+    assert!(
+        nav_rows(&h).iter().any(|r| r.contains(enter)),
+        "a standalone host card carries the mark"
+    );
+    h.ctrl(KeyCode::Up);
+    assert!(
         nav_rows(&h).iter().all(|r| !r.contains(enter)),
-        "a machine card carries no mark"
+        "the machine part of a host card carries no mark"
     );
     h.select("web", "deploy");
     h.terminal_focused = true;

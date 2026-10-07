@@ -1379,6 +1379,7 @@ impl Chrome {
         }
         let mut out = vec![Line::from("")];
         out.extend(headline_lines);
+        let headline_end = out.len();
         let word = if landing {
             self.scan_progress(state)
         } else if logged_out {
@@ -1931,11 +1932,18 @@ impl Chrome {
             }
             out.push(Line::from(spans));
         }
-        // The highlight of a link or a focused login stop keeps one blank cell on each
-        // side of its text.
+        // Standalone links and login stops have padding; a link within the headline's
+        // path covers only its own text.
         let out = out
             .into_iter()
-            .map(|line| crate::ui::palette::pad_selected(line, pal))
+            .enumerate()
+            .map(|(i, line)| {
+                if i < headline_end {
+                    line
+                } else {
+                    crate::ui::palette::pad_selected(line, pal)
+                }
+            })
             .collect();
         ScreenLines {
             lines: out,
