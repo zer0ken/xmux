@@ -7,9 +7,15 @@ on:
 
 jobs:
   linux:
-    name: e2e · linux client
+    # One job per mux: the cells of different muxes share nothing, so the jobs run
+    # side by side and the check takes as long as its slowest mux.
+    name: e2e · linux client · ${{ matrix.mux }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        mux: [tmux, screen, zellij, abduco, tuios, herdr]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -23,11 +29,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends musl-tools
           cargo build --locked --target x86_64-unknown-linux-musl
       - name: e2e
-        run: scripts/e2e/run.sh
+        run: scripts/e2e/run.sh --mux ${{ matrix.mux }}
         env:
           XMUX_E2E_BIN: target/x86_64-unknown-linux-musl/debug/xmux
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: e2e-results
+          name: e2e-results-${{ matrix.mux }}
           path: scripts/e2e/out

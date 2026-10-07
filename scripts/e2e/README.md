@@ -23,7 +23,8 @@ container it started. `XMUX_E2E_BIN` names a prebuilt static Linux xmux to test
 instead. The table and a screen dump of each failed cell land in `scripts/e2e/out`.
 The command exits non-zero when any cell fails.
 
-CI runs the same command on every pull request and on pushes to `main`.
+CI runs the same command on every pull request and on pushes to `main`, once per mux
+(`--mux <mux>`) in parallel jobs.
 
 ## Hosts
 
