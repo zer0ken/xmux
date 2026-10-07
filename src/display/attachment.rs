@@ -1032,10 +1032,6 @@ sleep 1
 exit 255
 ";
 
-    #[cfg_attr(
-        windows,
-        ignore = "spawns a real ConPTY child; run only in a real terminal"
-    )]
     #[test]
     fn display_attach_shows_sshs_own_error_in_its_pane() {
         let ssh = fake_ssh(FAILING_SSH_WINDOWS, FAILING_SSH_UNIX);
@@ -1050,10 +1046,6 @@ exit 255
         );
     }
 
-    #[cfg_attr(
-        windows,
-        ignore = "spawns a real ConPTY child; run only in a real terminal"
-    )]
     #[test]
     fn display_attach_gives_ssh_no_log_file() {
         let ssh = fake_ssh(FAILING_SSH_WINDOWS, FAILING_SSH_UNIX);
@@ -1085,10 +1077,6 @@ echo session-frame
 sleep 2
 ";
 
-    #[cfg_attr(
-        windows,
-        ignore = "spawns a real ConPTY child; run only in a real terminal"
-    )]
     #[test]
     fn display_attach_reports_its_method_without_painting_the_report() {
         use std::time::{Duration, Instant};
