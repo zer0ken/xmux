@@ -484,11 +484,17 @@ fn screen_links_take_the_arrows_and_enter_in_the_terminal_view() {
     h.terminal_focused = true;
     h.draw();
     assert!(
-        h.highlighted(h.link_rect(0)),
-        "the first link is the hard selection"
+        h.highlighted(h.link_rect(1)),
+        "a host screen starts on its first session"
     );
-    h.sw.step_link(1, &h.state);
-    h.sw.step_link(1, &h.state);
+    h.sw.step_link(-1, &h.state);
+    h.sw.step_link(-1, &h.state);
+    h.draw();
+    assert!(
+        h.highlighted(h.link_rect(0)) && !h.highlighted(h.link_rect(1)),
+        "the arrows stop at the machine link"
+    );
+    h.sw.step_link(2, &h.state);
     h.draw();
     assert!(h.highlighted(h.link_rect(2)) && !h.highlighted(h.link_rect(0)));
     h.sw.step_link(5, &h.state);
@@ -519,14 +525,32 @@ fn screen_links_take_the_arrows_and_enter_in_the_terminal_view() {
 }
 
 #[test]
+fn a_host_opened_from_its_machine_screen_starts_on_its_first_session() {
+    let mut h = fleet();
+    h.select("web", "api");
+    h.ctrl(KeyCode::Up);
+    h.ctrl(KeyCode::Up);
+    assert_eq!(h.node(), machine("web"));
+    let host =
+        h.sw.screen_links(&Node::Machine("web".into()), &h.state)
+            .iter()
+            .position(|l| l.node == Node::Host("web".into()))
+            .unwrap();
+    assert!(h.sw.open_link(host, &h.state));
+    let links = h.sw.screen_links(&Node::Host("web".into()), &h.state);
+    assert!(matches!(links[h.sw.link].node, Node::Session(_)));
+    assert_eq!(h.sw.link, 1);
+}
+
+#[test]
 fn a_link_is_drawn_selected_only_while_the_terminal_view_holds_the_focus() {
     let mut h = fleet();
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
-    assert!(!h.highlighted(h.link_rect(0)), "the nav holds the focus");
+    assert!(!h.highlighted(h.link_rect(1)), "the nav holds the focus");
     h.terminal_focused = true;
     h.draw();
-    assert!(h.highlighted(h.link_rect(0)));
+    assert!(h.highlighted(h.link_rect(1)));
 }
 
 #[test]

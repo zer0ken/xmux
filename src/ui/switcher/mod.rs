@@ -766,6 +766,18 @@ impl Switcher {
             .and_then(|node| links.iter().position(|l| l.node == *node))
         {
             Some(i) => self.link = i,
+            None if self.link_node.is_none() => {
+                // A screen nobody has stepped on yet stands on its start link, and
+                // keeps it only once the link names what the start stands for: a host
+                // screen whose sessions have not arrived waits for its first session.
+                self.link = start_link(&links);
+                if self
+                    .selected_node()
+                    .is_some_and(|node| !matches!(node, Node::Host(_)) || links.len() > 1)
+                {
+                    self.link_node = links.get(self.link).map(|l| l.node.clone());
+                }
+            }
             None => {
                 self.link = self.link.min(links.len().saturating_sub(1));
                 self.link_node = links.get(self.link).map(|l| l.node.clone());
@@ -1195,7 +1207,10 @@ impl Switcher {
             self.login_target = None;
         }
         if before != after {
-            self.link = 0;
+            self.link = match after {
+                Some(Node::Host(_)) => 1,
+                _ => 0,
+            };
             self.link_node = None;
         }
         self.on_focus_changed();
@@ -1837,7 +1852,8 @@ impl Switcher {
         if self.login_pane_shown(state) {
             return (None, self.link_hover);
         }
-        (Some(self.link), self.link_hover)
+        let n = self.shown_links(state).len();
+        (Some(self.link.min(n.saturating_sub(1))), self.link_hover)
     }
 
     /// Where the soft selections stand, as the paint draws them: the nav row and part
@@ -1865,8 +1881,9 @@ impl Switcher {
     }
 
     /// Executes link `index` of the shown screen: the node it names becomes the hard
-    /// selection and its screen opens. The link standing for the node just left is
-    /// selected on the new screen, so a step back is one Enter away.
+    /// selection and its screen opens. After a step up the path, the link standing for the
+    /// node just left is selected on the new screen, so a step back down is one Enter
+    /// away; a step down starts the new screen on its start link.
     pub(crate) fn open_link(&mut self, index: usize, state: &crate::state::State) -> bool {
         let Some(link) = self.shown_links(state).into_iter().nth(index) else {
             return false;
@@ -1878,7 +1895,10 @@ impl Switcher {
         // A landing link is the first execution: the screen it opens replaces the landing.
         self.close_landing();
         if let Some(before) = before {
-            if let Some(node) = self.selected_node() {
+            if let Some(node) = self
+                .selected_node()
+                .filter(|node| is_step_up(&before, node))
+            {
                 if let Some(i) = self
                     .screen_links(&node, state)
                     .iter()
@@ -1898,7 +1918,8 @@ impl Switcher {
         if self.login_pane_shown(state) {
             return false;
         }
-        self.open_link(self.link, state)
+        let n = self.shown_links(state).len();
+        self.open_link(self.link.min(n.saturating_sub(1)), state)
     }
 
     // --- preview ------------------------------------------------------------
@@ -2331,6 +2352,24 @@ fn context_of(row: &Row) -> (&str, &str, &str) {
 /// A card written as its path in the hierarchy: a session card as
 /// `{machine}/{mux}/{session}`, a host card as `{machine}/{mux}`, and a machine card, or a
 /// host card whose mux no answer confirmed, as its machine alone.
+/// The link a screen starts on: a host screen's first session, or its machine link
+/// while it has none; any other screen's first link.
+fn start_link(links: &[crate::ui::chrome::ScreenLink]) -> usize {
+    match links {
+        [first, _, ..] if matches!(first.node, Node::Machine(_)) => 1,
+        _ => 0,
+    }
+}
+
+/// Whether going from `from` to `to` climbs one level of the path: a session to its
+/// host, or a host to its machine.
+fn is_step_up(from: &Node, to: &Node) -> bool {
+    matches!(
+        (from, to),
+        (Node::Session(_), Node::Host(_)) | (Node::Host(_), Node::Machine(_))
+    )
+}
+
 fn card_path(row: &Row) -> String {
     let (machine, mux, session) = context_of(row);
     [machine, mux, session]

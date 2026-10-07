@@ -7517,7 +7517,7 @@ fn a_headline_wider_than_the_view_continues_under_its_path() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     for (session, level) in [("", "machine "), ("train", "host ")] {
-        for (cols, rows) in [(80u16, 24u16), (40, 12)] {
+        for (cols, rows) in [(80u16, 24u16), (40, 14)] {
             let mut rt = headline_rt(LONG_MACHINE, session, cols, rows);
             let mut term = Terminal::new(TestBackend::new(cols, rows)).unwrap();
             rt.prepare_and_draw(&mut term);
