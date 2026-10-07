@@ -550,7 +550,7 @@ fn help_tab_line(
     if after {
         spans.push(Span::styled(" ›", muted));
     }
-    Line::from(spans)
+    palette::pad_selected(Line::from(spans), palette)
 }
 
 /// The section whose tab covers cell `x` of the help's tab row, counted from the popup's
@@ -2071,7 +2071,7 @@ mod tests {
         let lit: Vec<&str> = row
             .spans
             .iter()
-            .filter(|s| s.style.bg == Some(palette.accent))
+            .filter(|s| s.style.bg == Some(palette.accent) && !s.content.trim().is_empty())
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(
@@ -2144,7 +2144,7 @@ mod tests {
         let lit: Vec<String> = lines[HELP_TAB_ROW as usize]
             .spans
             .iter()
-            .filter(|s| s.style.bg == Some(palette.accent))
+            .filter(|s| s.style.bg == Some(palette.accent) && !s.content.trim().is_empty())
             .map(|s| s.content.to_string())
             .collect();
         assert_eq!(lit, [GLYPH_SECTION]);

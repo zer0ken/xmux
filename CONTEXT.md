@@ -128,8 +128,8 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **selection lineage** - session, host, machine: the chain a selection walks up when its
   node loses its card.
 - **selection highlight** - the theme's accent as the background and its on-accent
-  text colour over the cells of the item the hard selection is on, the one look every
-  surface gives its selection.
+  text colour over the cells of the item the hard selection is on and one blank cell on
+  each side of its text, the one look every surface gives its selection.
 - **card focus** - what selecting a card changes: the selection highlight, and on a
   machine or host card its state word. Its height, its number, and its name's column
   never move.

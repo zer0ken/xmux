@@ -1,7 +1,8 @@
 //! The one look of the hard selection: on every surface that has one, the selected item's
 //! cells are painted on the theme's accent with the theme's text-on-accent slot, and no
-//! other item's are. The harness paints the default `auto-dark` theme: Black on
-//! LightGreen.
+//! other item's are. The highlight keeps one cell of padding before and after the
+//! item's text wherever the layout leaves that cell blank. The harness paints the default
+//! `auto-dark` theme: Black on LightGreen.
 
 use super::tests_hierarchy::{fleet, landed, landing_link, session, H};
 use super::*;
@@ -23,6 +24,19 @@ impl H {
                     && cell.fg == Color::Black
                     && !cell.modifier.intersects(Modifier::REVERSED | Modifier::DIM)
             })
+    }
+
+    /// The text inside `rect`, from its first to its last non-blank cell, is highlighted
+    /// together with one cell of padding on each side.
+    fn padded(&self, rect: Rect) -> bool {
+        let buf = self.term.backend().buffer();
+        let text: Vec<u16> = (rect.x..rect.right())
+            .filter(|&x| buf[(x, rect.y)].symbol() != " ")
+            .collect();
+        let (Some(&first), Some(&last)) = (text.first(), text.last()) else {
+            return false;
+        };
+        first > 0 && self.selected_look(Rect::new(first - 1, rect.y, last - first + 3, 1))
     }
 
     /// No cell of `rect` sits on the accent or is reversed.
@@ -74,6 +88,10 @@ fn a_selected_nav_card_is_highlighted_and_no_other_card_is() {
     let api = h.card_row(|r| matches!(r, RowRef::Session { sess } if sess.name == "api"));
     let deploy = h.card_row(|r| matches!(r, RowRef::Session { sess } if sess.name == "deploy"));
     assert!(h.selected_look(h.card(api)));
+    assert!(
+        h.padded(h.card(api)),
+        "the indent cell and the cell after the name"
+    );
     assert!(h.plain(h.card(deploy)));
 }
 
@@ -83,8 +101,13 @@ fn a_selected_section_title_half_is_highlighted_and_the_other_half_is_not() {
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
     let title = h.title_row("web");
-    assert!(h.selected_look(h.half(title, Part::Host)));
+    let host = h.half(title, Part::Host);
+    assert!(h.selected_look(host));
     assert!(h.plain(h.half(title, Part::Machine)));
+    // The `/` before the host half is the title's own text, so the padding takes only
+    // the blank cell after it.
+    assert!(h.selected_look(Rect::new(host.right(), host.y, 1, 1)));
+    assert!(h.plain(Rect::new(host.x - 1, host.y, 1, 1)));
 }
 
 #[test]
@@ -95,6 +118,11 @@ fn a_selected_screen_link_is_highlighted_and_no_other_link_is() {
     h.terminal_focused = true;
     h.draw();
     assert!(h.selected_look(h.link_rect(0)));
+    // The headline's machine link is followed by the `/` of its host, the headline's own
+    // text, so only the cell before it takes the padding.
+    let link = h.link_rect(0);
+    assert!(h.selected_look(Rect::new(link.x - 1, link.y, link.width + 1, 1)));
+    assert!(h.plain(Rect::new(link.right(), link.y, 1, 1)));
     assert!(h.plain(h.link_rect(1)));
 }
 
@@ -102,6 +130,7 @@ fn a_selected_screen_link_is_highlighted_and_no_other_link_is() {
 fn a_selected_landing_link_is_highlighted_and_no_other_link_is() {
     let h = landed();
     assert!(h.selected_look(landing_link(&h, session("gpu", "train"))));
+    assert!(h.padded(landing_link(&h, session("gpu", "train"))));
     assert!(h.plain(landing_link(&h, session("web", "api"))));
 }
 
@@ -116,6 +145,7 @@ fn the_selected_help_tab_is_highlighted_and_no_other_tab_is() {
         .collect();
     let popup = h.plan.popup_rect;
     assert!(h.selected_look(h.find_in(popup, titles[0])));
+    assert!(h.padded(h.find_in(popup, titles[0])));
     assert!(h.plain(h.find_in(popup, titles[1])));
 }
 
@@ -128,6 +158,7 @@ fn the_selected_palette_entry_is_highlighted_and_no_other_entry_is() {
     let name = |i: usize| entries[i].0.chars().take(12).collect::<String>();
     let popup = h.plan.popup_rect;
     assert!(h.selected_look(h.row_in(popup, &name(0))));
+    assert!(h.padded(h.find_in(popup, &name(0))));
     assert!(h.plain(h.find_in(popup, &name(1))));
 }
 
@@ -143,6 +174,7 @@ fn the_selected_check_row_is_highlighted_and_no_other_row_is() {
     let entries = h.sw.check_entries(&h.state);
     let popup = h.plan.popup_rect;
     assert!(h.selected_look(h.row_in(popup, &entries[0].host)));
+    assert!(h.padded(h.find_in(popup, &entries[0].host)));
     assert!(h.plain(h.find_in(popup, &entries[1].host)));
 }
 
@@ -174,12 +206,10 @@ fn the_focused_login_field_is_highlighted_and_no_other_field_is() {
     let screen = h.screen();
     let value = h.find_in(screen, "10.0.0.9");
     assert!(h.selected_look(value));
+    // The cell after the value is the caret, where the terminal's cursor stands, and it
+    // is the highlight's right padding.
+    assert!(h.padded(value));
     assert!(h.plain(h.find_in(screen, "alice")));
-    // The caret cell after the value is the accent pair swapped, so it reads inside the
-    // highlight without a colour of its own.
-    let caret = &h.term.backend().buffer()[(value.right(), value.y)];
-    assert_eq!((caret.fg, caret.bg), (Color::Black, Color::LightGreen));
-    assert!(caret.modifier.contains(Modifier::REVERSED));
 }
 
 #[test]
@@ -187,6 +217,7 @@ fn the_focused_login_choice_is_highlighted_and_no_other_choice_is() {
     let h = login(crate::state::LoginFocus::AfterNothing);
     let screen = h.screen();
     assert!(h.selected_look(h.find_in(screen, "do nothing")));
+    assert!(h.padded(h.find_in(screen, "(*) do nothing")));
     assert!(h.plain(h.find_in(screen, "register my public key")));
     assert!(h.plain(h.find_in(screen, "10.0.0.9")));
 }
@@ -196,6 +227,7 @@ fn the_focused_login_button_is_highlighted() {
     let h = login(crate::state::LoginFocus::Submit);
     let screen = h.screen();
     assert!(h.selected_look(h.find_in(screen, "Log in")));
+    assert!(h.padded(h.find_in(screen, "[ Log in ]")));
     assert!(h.plain(h.find_in(screen, "do nothing")));
 }
 

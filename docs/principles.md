@@ -253,19 +253,25 @@ item takes that one pair: its number, its name, its key tokens, and its glyphs a
 no colour or dimming of the item survives inside the highlight. Every surface with a
 hard selection paints it in this one look: the nav's cards and the halves of a section
 title, the links on the landing, machine, and host screens, the rows of a popup list,
-the help's tabs, and the focused stop of the login pane. The caret of a focused login
-field is the same pair swapped. The soft selection under the pointer is an underline,
-which reads apart from the highlight and lies on top of it when both mark one item. A
-colour the user names in `[ui] selection-style` replaces the accent background on every
-one of these surfaces alike, and the item keeps its own text colours on it. With no
-accent to paint, under `NO_COLOR`, the selection is reverse video.
+the help's tabs, and the focused stop of the login pane. The highlight keeps one cell of
+padding before and after the item's text, taken from a blank cell the layout already
+leaves there; where that cell holds other text or lies outside the surface, that side
+goes without, because the padding never moves text or wraps a row. The caret of a
+focused login field is the padding cell after its value. The soft selection under the
+pointer is an underline, which reads apart from the highlight and lies on top of it when
+both mark one item. A colour the user names in `[ui] selection-style` replaces the
+accent background on every one of these surfaces alike, and the item keeps its own text
+colours on it. With no accent to paint, under `NO_COLOR`, the selection is reverse
+video.
 
 The hard selection is where the next key lands, so it has to be found at a glance on
 whatever surface the user has moved to. The accent is the colour the theme already
 spends on what is interactive, so the highlight reads as the place to act, and it reads
 as one colour on every theme instead of whatever the item's own colours turn into when
-swapped. One look learned on the nav then reads on every popup and screen, while a
-surface that marks its selection with a colour, a weight, or a glyph of its own is one
-more thing to learn and, beside a highlighted surface, reads as a different state. A
-marker glyph beside a highlighted item says nothing the highlight does not, and takes a
-cell from the number or the name the item carries.
+swapped. The padding cell keeps the first and last character off the highlight's edge,
+so the highlight reads as a block around the item rather than as coloured letters. One
+look learned on the nav then reads on every popup and screen, while a surface that marks
+its selection with a colour, a weight, or a glyph of its own is one more thing to learn
+and, beside a highlighted surface, reads as a different state. A marker glyph beside a
+highlighted item says nothing the highlight does not, and takes a cell from the number
+or the name the item carries.

@@ -1433,18 +1433,13 @@ impl Chrome {
                         vec![Span::raw(" ".repeat(value_col))],
                     )));
                 }
-                // The focused value is the hard selection over its own cells, and the
-                // caret cell after it is the same pair swapped, so it reads inside the
-                // highlight in no colour of its own. The column keeps its width in plain
-                // padding.
+                // The focused value is the hard selection over its own cells and one caret
+                // cell, which is also the highlight's right padding. The column keeps its
+                // width in plain padding.
                 let pad = 22usize.saturating_sub(text.chars().count());
                 if active && taking_keys {
                     spans.push(Span::styled(text, lit(style, true)));
-                    spans.push(Span::styled(
-                        " ",
-                        crate::ui::palette::selected(Style::default(), pal)
-                            .add_modifier(Modifier::REVERSED),
-                    ));
+                    spans.push(Span::styled(" ", lit(Style::default(), true)));
                     spans.push(Span::raw(" ".repeat(pad.saturating_sub(1))));
                 } else {
                     spans.push(Span::styled(text, style));
@@ -1613,7 +1608,7 @@ impl Chrome {
                     .find(|&row| row > first)
                     .unwrap_or(out.len());
                 caret = (first..end).rev().find_map(|row| {
-                    crate::ui::modal::caret_offset(&out[row]).map(|col| (row, col))
+                    crate::ui::palette::last_selected_cell(&out[row], pal).map(|col| (row, col))
                 });
             }
             out.push(Line::from(""));
@@ -1855,6 +1850,12 @@ impl Chrome {
             }
             out.push(Line::from(spans));
         }
+        // The highlight of a link or a focused login stop keeps one blank cell on each
+        // side of its text.
+        let out = out
+            .into_iter()
+            .map(|line| crate::ui::palette::pad_selected(line, pal))
+            .collect();
         ScreenLines {
             lines: out,
             caret,

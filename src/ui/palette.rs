@@ -41,7 +41,7 @@
 //! choice against the same theme, and xmux is not in it.
 
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 
 /// The one bold shape every interaction screen paints a key token in, so a key reads as
 /// a key wherever it is offered.
@@ -320,6 +320,79 @@ pub(crate) fn selected_line(line: Line<'static>, palette: &Palette) -> Line<'sta
     Line::from(spans).style(style)
 }
 
+/// Whether `style` is the hard selection's paint: it carries the selection's background.
+fn is_selected(style: Style, palette: &Palette) -> bool {
+    let bg = selection_style(palette).bg;
+    bg.is_some() && style.bg == bg
+}
+
+/// `line` with each run of hard-selected cells padded by one blank cell on each side, so
+/// the highlight never sits tight on the item's text. A side whose cell in the run is
+/// already blank is padded; otherwise the neighbouring cell takes the run's paint when
+/// it is blank, and a run that ends the line gains one blank cell after it. A neighbour
+/// that is text stays as it is, so the padding never moves a character.
+pub(crate) fn pad_selected(line: Line<'static>, palette: &Palette) -> Line<'static> {
+    // One entry per character: the span it came from, the character, and its style.
+    let mut cells: Vec<(usize, char, Style)> = line
+        .spans
+        .iter()
+        .enumerate()
+        .flat_map(|(i, span)| span.content.chars().map(move |c| (i, c, span.style)))
+        .collect();
+    let selected = |cells: &[(usize, char, Style)], at: usize| is_selected(cells[at].2, palette);
+    let mut at = 0;
+    while at < cells.len() {
+        if !selected(&cells, at) {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < cells.len() && selected(&cells, at) {
+            at += 1;
+        }
+        let end = at;
+        if cells[start].1 != ' ' && start > 0 && cells[start - 1].1 == ' ' {
+            cells[start - 1].2 = cells[start].2;
+            cells[start - 1].0 = usize::MAX - 1;
+        }
+        if cells[end - 1].1 != ' ' {
+            if end == cells.len() {
+                cells.push((usize::MAX, ' ', cells[end - 1].2));
+            } else if cells[end].1 == ' ' {
+                cells[end].2 = cells[end - 1].2;
+                cells[end].0 = usize::MAX;
+                at += 1;
+            }
+        }
+    }
+    // Rebuilt span by span: a padding cell is a span of its own, so every span the
+    // surface built keeps its own text.
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut last: Option<(usize, Style)> = None;
+    for (origin, c, style) in cells {
+        match spans.last_mut() {
+            Some(span) if last == Some((origin, style)) => span.content.to_mut().push(c),
+            _ => spans.push(Span::styled(c.to_string(), style)),
+        }
+        last = Some((origin, style));
+    }
+    Line::from(spans).style(line.style)
+}
+
+/// The cell offset of the last hard-selected cell in `line`.
+pub(crate) fn last_selected_cell(line: &Line, palette: &Palette) -> Option<u16> {
+    let mut x = 0usize;
+    let mut found = None;
+    for span in &line.spans {
+        let w = span.width();
+        if w > 0 && is_selected(span.style, palette) {
+            found = Some(x + w - 1);
+        }
+        x += w;
+    }
+    found.and_then(|x| u16::try_from(x).ok())
+}
+
 /// What `xmux doctor` says about the selected card's paint. The selection is the one
 /// place the palette takes an outside colour, and which background is in effect cannot be
 /// told from a screenshot, so the doctor states it.
@@ -544,6 +617,54 @@ mod tests {
         assert!(!named.contains("accent"), "{named}");
         let bare = selection_report(&without_color(auto_dark()));
         assert!(bare.contains("reverse video"), "{bare}");
+    }
+
+    #[test]
+    fn padding_takes_a_blank_neighbour_and_never_moves_text() {
+        let p = auto_dark();
+        let lit = selected(Style::default(), &p);
+        let text = |line: &Line| {
+            line.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        let lit_text = |line: &Line| {
+            line.spans
+                .iter()
+                .filter(|s| is_selected(s.style, &p))
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        // Blank cells on both sides take the paint.
+        let line = pad_selected(
+            Line::from(vec![
+                Span::raw("a  "),
+                Span::styled("tab", lit),
+                Span::raw("  b"),
+            ]),
+            &p,
+        );
+        assert_eq!(text(&line), "a  tab  b");
+        assert_eq!(lit_text(&line), " tab ");
+        // Text beside the run stays as it is, and a run that ends the line gains a cell.
+        let line = pad_selected(
+            Line::from(vec![Span::raw("x/"), Span::styled("host", lit)]),
+            &p,
+        );
+        assert_eq!(text(&line), "x/host ");
+        assert_eq!(lit_text(&line), "host ");
+        // A run that already opens and closes on a blank cell is left alone.
+        let line = pad_selected(
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(" (*) a ", lit),
+                Span::raw(" "),
+            ]),
+            &p,
+        );
+        assert_eq!(lit_text(&line), " (*) a ");
+        assert_eq!(last_selected_cell(&line, &p), Some(8));
     }
 
     #[test]
