@@ -126,6 +126,8 @@ impl Mux for Herdr {
         };
         if target.stopped {
             self.start_session(transport, runner, session).await?;
+        } else {
+            self.wait_for_client(transport, runner, session).await?;
         }
         Ok(())
     }
@@ -175,6 +177,7 @@ impl Mux for Herdr {
             .iter()
             .any(|session| session.name == name && !session.stopped)
         {
+            self.wait_for_client(transport, runner, name).await?;
             return Ok(Vec::new());
         }
         self.start_session(transport, runner, name).await
@@ -182,6 +185,28 @@ impl Mux for Herdr {
 }
 
 impl Herdr {
+    /// The API handshake precedes the display socket. A workspace response is handled
+    /// by the server's app loop, which starts only after the display listener exists.
+    async fn wait_for_client(
+        &self,
+        transport: &dyn Transport,
+        runner: &dyn Runner,
+        name: &str,
+    ) -> Result<(), RunError> {
+        let command = transport.exec_argv(
+            false,
+            &[
+                self.bin.clone(),
+                "--session".into(),
+                name.into(),
+                "workspace".into(),
+                "list".into(),
+            ],
+        );
+        runner.run_spec(&command).await?;
+        Ok(())
+    }
+
     async fn start_session(
         &self,
         transport: &dyn Transport,
@@ -214,6 +239,7 @@ impl Herdr {
                     RunError::Other(format!("invalid herdr server status: {error}"))
                 })?;
                 if status.running {
+                    self.wait_for_client(transport, runner, name).await?;
                     return Ok(Vec::new());
                 }
                 if tokio::time::Instant::now() + std::time::Duration::from_secs(1) >= deadline {
@@ -360,13 +386,14 @@ pub(crate) mod tests {
             "",
             r#"{"running":false}"#,
             r#"{"running":true}"#,
+            "[]",
         ]);
         herdr()
             .prepare_attach(&crate::transport::local(None), &runner, "parked")
             .await
             .unwrap();
         let commands = runner.commands.lock().unwrap();
-        assert_eq!(commands.len(), 4);
+        assert_eq!(commands.len(), 5);
         let launch = commands[1].last().unwrap();
         assert!(launch.contains("HERDR_STARTUP_CWD"));
         assert!(launch.contains("parked") && launch.contains("server"));
@@ -375,11 +402,15 @@ pub(crate) mod tests {
             argv(&["herdr", "--session", "parked", "status", "server", "--json"])
         );
         assert_eq!(commands[2], commands[3]);
+        assert_eq!(
+            commands[4],
+            argv(&["herdr", "--session", "parked", "workspace", "list"])
+        );
     }
 
     #[tokio::test]
     async fn explicit_creation_completes_the_server_before_returning_its_name() {
-        let runner = TraceRunner::new(&[r#"{"sessions":[]}"#, "", r#"{"running":true}"#]);
+        let runner = TraceRunner::new(&[r#"{"sessions":[]}"#, "", r#"{"running":true}"#, "[]"]);
         let host = crate::model::Host::new(crate::transport::local(None), Box::new(herdr()));
         assert_eq!(
             crate::link::manage::create(&host, &runner, "new")
@@ -387,8 +418,8 @@ pub(crate) mod tests {
                 .unwrap(),
             "new"
         );
-        assert_eq!(runner.commands.lock().unwrap().len(), 3);
-        let running = TraceRunner::new(&[r#"{"sessions":[{"name":"new","running":true}]}"#]);
+        assert_eq!(runner.commands.lock().unwrap().len(), 4);
+        let running = TraceRunner::new(&[r#"{"sessions":[{"name":"new","running":true}]}"#, "[]"]);
         assert_eq!(
             crate::link::manage::create(&host, &running, "new")
                 .await
@@ -397,7 +428,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             running.commands.lock().unwrap().len(),
-            1,
+            2,
             "an existing server is kept"
         );
     }
@@ -411,6 +442,25 @@ pub(crate) mod tests {
             .unwrap_err()
             .to_string()
             .contains("invalid herdr server status"));
+    }
+
+    #[tokio::test]
+    async fn an_api_handshake_does_not_complete_creation_until_the_app_loop_answers() {
+        let runner = TraceRunner::new(&[r#"{"sessions":[]}"#, "", r#"{"running":true}"#]);
+        runner
+            .outputs
+            .lock()
+            .unwrap()
+            .push_back(Err(RunError::Other("app loop is not ready".into())));
+        let error = herdr()
+            .create_session(&crate::transport::local(None), &runner, "new")
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "app loop is not ready");
+        assert_eq!(
+            runner.commands.lock().unwrap().last().unwrap(),
+            &argv(&["herdr", "--session", "new", "workspace", "list"])
+        );
     }
 
     fn argv(parts: &[&str]) -> Vec<String> {
