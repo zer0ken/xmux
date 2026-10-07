@@ -25,7 +25,10 @@ state: the focus and modal state machine lives in `app`.
   a visible change, its last written line for naming why a child stopped, and the input
   modes the child set, which outlive a wipe of the cells. It answers the terminal
   queries the child sends, each once, with colours and pixel sizes taken from what the
-  outer terminal answered xmux at startup.
+  outer terminal answered xmux at startup. A synchronized update holds the completed
+  screen on view until the client ends it or one second passes; a grid restart releases
+  the held screen. The frame cadence keeps drawing while the screen is held so a
+  silent client cannot leave its partial update hidden indefinitely.
 - Input decoding, dispatch, paste splitting, and mouse parsing turn terminal bytes into
   routing decisions or input actions, reading a key in the kitty keyboard protocol's
   encoding as the legacy key it stands for; terminal setup holds prefix parsing, mouse
@@ -48,6 +51,8 @@ state: the focus and modal state machine lives in `app`.
 - The registry is the only way to reach an attachment for input, resize, grid lookup,
   and reap. App and UI code never write to a PTY directly.
 - The renderer owns stdout, so raw stdout passthrough of child output is not an option.
+  Each frame, its screen clear and cursor placement included, reaches the terminal
+  inside one synchronized update.
   The loop writes only whole control sequences between frames: what a child asks of the
   terminal around the screen (a whole OSC 52 clipboard write, a bell, an OSC 9 or OSC
   777 notification, the window title of the session on screen, the cursor shape of the

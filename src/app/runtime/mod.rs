@@ -1662,6 +1662,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                     || rt.model.render_plan.view_screen.is_some()
                     || rt.model.state.scanning_any()
                     || !rt.model.state.chrome.spinner.is_empty()
+                    || rt.display_sync_held
                     || rt
                         .model
                         .state
@@ -1785,6 +1786,9 @@ struct Runtime {
     /// The `CSI Ps SP q` shape the last frame's cursor wants: the session client's own while
     /// its cursor is the one shown, else 0, the terminal's default.
     cursor_shape: u8,
+    /// Whether a synchronized update held the session on view at the last frame, so
+    /// the frame cadence keeps drawing until the update ends or its hold runs out.
+    display_sync_held: bool,
     rescan_pending: bool,
     display_probe: DisplayProbe,
     /// Terminal input typed for a selection whose attachment does not exist yet; see

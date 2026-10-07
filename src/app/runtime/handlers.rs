@@ -881,6 +881,7 @@ impl Runtime {
             clear_pending: false,
             last_draw: std::time::Instant::now() - initial_frame_interval,
             cursor_shape: 0,
+            display_sync_held: false,
             rescan_pending: false,
             display_probe: DisplayProbe::default(),
             held_input: None,
@@ -1080,6 +1081,7 @@ impl Runtime {
                 }
             }
             let mut grid_shape = None;
+            self.display_sync_held = false;
             let draw_result = match &grid_arc {
                 Some(g) => {
                     let t_lock = std::time::Instant::now();
@@ -1103,6 +1105,7 @@ impl Runtime {
                     }
                     Self::sync_kitty_images(&mut self.kitty_images, guard.as_deref());
                     grid_shape = guard.as_deref().map(|g| g.cursor_shape());
+                    self.display_sync_held = guard.as_deref().is_some_and(|g| g.sync_held());
                     // Split-borrow so the draw closure captures only these fields, not all
                     // of `self` (the fingerprint block's borrows have ended above).
                     let switcher = &self.model.switcher;
