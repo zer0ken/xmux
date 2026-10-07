@@ -1195,6 +1195,22 @@ impl Chrome {
             };
             rows.push((ScreenCell::Link(cell, i), value));
         }
+        // A machine asked again links its hosts as they answer. Until one is linked, the
+        // hosts row states the scan, with the spinner every in-flight marker reads.
+        if machine_screen
+            && children.is_empty()
+            && crate::ui::switcher::is_machine_scanning(state, crate::session::machine_of(host))
+        {
+            part(&mut rows);
+            rows.push((
+                ScreenCell::Label("hosts"),
+                format!(
+                    "{} {}",
+                    crate::ui::spinner_glyph(self.spinner_frame),
+                    ViewScreen::Scanning.word()
+                ),
+            ));
+        }
         // What the user can do here, after what the screen states and lists. Each action
         // is a link written with the key that runs it, so the key is learned from the row
         // the cursor stands on.
@@ -1749,7 +1765,6 @@ impl Chrome {
                         ),
                         LoginStep::Save => "write address, port, username to ssh config".into(),
                         LoginStep::RegisterKey => "register my public key".into(),
-                        LoginStep::FindMux => "find mux".into(),
                     };
                     let (glyph, glyph_style, text_style) = match row.state {
                         StepState::Pending => {

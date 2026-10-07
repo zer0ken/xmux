@@ -229,10 +229,6 @@ pub(crate) enum Msg {
     LoginSettled {
         host: String,
         credential_held: bool,
-        machine_has_hosts: bool,
-        /// The machine probe the runtime starts for this login, whose answer alone
-        /// settles the login's mux search.
-        probe: u64,
     },
     CredentialInventory {
         held: HashSet<String>,
@@ -1174,17 +1170,6 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             Vec::new()
         }
         HostEvent::MuxesFound { machine, muxes } => {
-            // Discovery that found nothing ends a login's mux search here: no host
-            // result follows it, since the machine's card goes instead.
-            match &muxes {
-                Ok(found) if found.is_empty() => model
-                    .state
-                    .login_mux_answered(&machine, &crate::model::MuxAnswer::NoMux),
-                Err(reason) => model
-                    .state
-                    .login_mux_answered(&machine, &crate::model::MuxAnswer::Failed(reason.clone())),
-                Ok(_) => {}
-            }
             vec![EventEffect::AddDiscoveredHosts { machine, muxes }]
         }
         HostEvent::RosterResolved { roster, rescan } => vec![EventEffect::ApplyRoster {
@@ -1221,17 +1206,6 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             detected,
             err,
         } => {
-            // Detection that found no mux ends a login's mux search whether or not a
-            // host result follows: a host no longer scanning gets none.
-            if detected.is_none() {
-                let answer = match &err {
-                    Some(reason) => crate::model::MuxAnswer::Failed(reason.clone()),
-                    None => crate::model::MuxAnswer::NoMux,
-                };
-                model
-                    .state
-                    .login_mux_answered(crate::session::machine_of(&host), &answer);
-            }
             if detected.is_none() && model.state.scanning.contains(&host) {
                 let reason = err.clone().unwrap_or_else(|| "mux not detected".to_owned());
                 return vec![
@@ -1263,13 +1237,10 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
             credential_generation,
             current_credential_generation,
             rescan,
-            probe,
         } => {
-            // The login steps take every machine answer, including one the generation
-            // check below sets aside: the probe a login started answers that login.
-            model
-                .state
-                .login_probe_answered(&machine, probe, err.as_deref());
+            // Every machine answer, including one the generation check below sets aside,
+            // is a newer look at the machine than the login steps that already settled.
+            model.state.drop_settled_login(&machine);
             let result_generation =
                 credential_rejection_generation.unwrap_or(credential_generation);
             if result_generation != current_credential_generation {
@@ -1854,23 +1825,19 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         Msg::LoginSettled {
             host,
             credential_held,
-            machine_has_hosts,
-            probe,
         } => {
-            if let Some(progress) = model.state.login_progress.get_mut(&host) {
-                progress.arm_probe(probe);
-            }
             let machine = crate::session::machine_of(&host);
             if credential_held {
                 model.state.logged_in.insert(machine.to_owned());
             } else {
                 model.state.logged_in.remove(machine);
             }
-            if !machine_has_hosts {
-                model
-                    .switcher
-                    .mark_machine_scanning(machine, &mut model.state);
-            }
+            // The working login hands the terminal view to the machine screen at once:
+            // the machine is asked again, so its failure is no longer what it answers,
+            // and the login pane, open only while a failure is left to answer, closes.
+            model
+                .switcher
+                .mark_machine_scanning(machine, &mut model.state);
             if model
                 .state
                 .login
@@ -3118,7 +3085,6 @@ mod tests {
                     credential_generation: 1,
                     current_credential_generation: 1,
                     rescan: true,
-                    probe: 0,
                 },
                 logged_in: HashSet::new(),
             },
@@ -4597,7 +4563,7 @@ mod tests {
         assert_eq!(m.state.chrome.ssh_stanzas["box"], facts.stanza);
     }
 
-    fn probed(machine: &str, probe: u64, err: Option<&str>) -> Msg {
+    fn probed(machine: &str, err: Option<&str>) -> Msg {
         Msg::HostEvent {
             event: crate::link::HostEvent::MachineProbed {
                 machine: machine.to_owned(),
@@ -4609,34 +4575,9 @@ mod tests {
                 credential_generation: 0,
                 current_credential_generation: 0,
                 rescan: false,
-                probe,
             },
             logged_in: HashSet::new(),
         }
-    }
-
-    /// A working login whose re-probe got `probe` and found the machine answering.
-    fn logged_in_awaiting_mux(hosts: &[&str], probe: u64) -> AppModel {
-        let (mut m, attempt) = submitted_login(hosts);
-        let host = hosts[0];
-        update(
-            &mut m,
-            login_result(host, attempt, crate::link::unlock::UnlockOutcome::Ok),
-        );
-        update(
-            &mut m,
-            Msg::LoginSettled {
-                host: host.to_owned(),
-                credential_held: false,
-                machine_has_hosts: true,
-                probe,
-            },
-        );
-        update(
-            &mut m,
-            probed(crate::session::machine_of(host), probe, None),
-        );
-        m
     }
 
     #[test]
@@ -4667,98 +4608,51 @@ mod tests {
             .iter()
             .any(|e| matches!(e, Effect::LoginApplied { .. })));
         assert_eq!(step(&m, "pwbox", LoginStep::Authenticate), StepState::Done);
-        assert_eq!(step(&m, "pwbox", LoginStep::FindMux), StepState::Running);
+        assert!(m.state.login_progress["pwbox"].succeeded());
 
         update(
             &mut m,
             Msg::LoginSettled {
                 host: "pwbox".to_owned(),
                 credential_held: false,
-                machine_has_hosts: true,
-                probe: 9,
             },
         );
-        // A probe already in flight, and the host answer it leads to, came before the
-        // login's own probe: neither settles the search.
-        update(&mut m, probed("pwbox", 0, None));
-        answer(&mut m, "pwbox", &["work"], None);
-        assert_eq!(step(&m, "pwbox", LoginStep::FindMux), StepState::Running);
-
-        update(&mut m, probed("pwbox", 9, None));
+        update(&mut m, probed("pwbox", None));
         answer(&mut m, "pwbox", &["work"], None);
         assert!(
             !m.state.login_progress.contains_key("pwbox"),
-            "a mux answered, so the steps leave with the pane"
+            "a mux answered, so the settled steps leave"
         );
     }
 
     #[test]
-    fn detection_that_finds_no_mux_settles_the_search() {
-        use crate::model::{LoginStep, StepState};
-        // The host was blocked at launch, so it is undetected and no longer scanning:
-        // detection's answer is the only one it gets.
-        let mut m = logged_in_awaiting_mux(&["pwbox"], 3);
-        m.state.scanning.clear();
-        update(
-            &mut m,
-            Msg::HostEvent {
-                event: crate::link::HostEvent::Scanned {
-                    host: "pwbox".to_owned(),
-                    detected: None,
-                    err: None,
+    fn a_working_login_closes_the_login_pane_and_asks_the_machine_again() {
+        use crate::link::unlock::UnlockOutcome;
+        for hosts in [&["box:tmux", "box:zellij"][..], &["pwbox"][..]] {
+            let (mut m, attempt) = submitted_login(hosts);
+            let machine = crate::session::machine_of(hosts[0]);
+            assert_eq!(
+                m.switcher.current_view_screen(&m.state),
+                Some(crate::model::ViewScreen::Login)
+            );
+            update(&mut m, login_result(hosts[0], attempt, UnlockOutcome::Ok));
+            update(
+                &mut m,
+                Msg::LoginSettled {
+                    host: hosts[0].to_owned(),
+                    credential_held: false,
                 },
-                logged_in: HashSet::new(),
-            },
-        );
-        assert_eq!(step(&m, "pwbox", LoginStep::FindMux), StepState::Failed);
-        assert!(
-            !m.state.login_progress["pwbox"].running(),
-            "nothing keeps the frame redrawing"
-        );
-
-        let mut m = logged_in_awaiting_mux(&["pwbox"], 3);
-        m.state.scanning.clear();
-        update(
-            &mut m,
-            Msg::HostEvent {
-                event: crate::link::HostEvent::Scanned {
-                    host: "pwbox".to_owned(),
-                    detected: None,
-                    err: Some("tmux: command not found".to_owned()),
-                },
-                logged_in: HashSet::new(),
-            },
-        );
-        assert_eq!(step(&m, "pwbox", LoginStep::FindMux), StepState::Failed);
-        assert_eq!(
-            m.state.login_progress["pwbox"].steps[2].note.as_deref(),
-            Some("tmux: command not found")
-        );
-    }
-
-    #[test]
-    fn discovery_that_finds_no_mux_settles_the_search_and_the_card_takes_its_steps() {
-        use crate::model::{LoginStep, StepState};
-        let mut m = logged_in_awaiting_mux(&["pwbox"], 3);
-        update(
-            &mut m,
-            Msg::HostEvent {
-                event: crate::link::HostEvent::MuxesFound {
-                    machine: "pwbox".to_owned(),
-                    muxes: Ok(Vec::new()),
-                },
-                logged_in: HashSet::new(),
-            },
-        );
-        assert_eq!(step(&m, "pwbox", LoginStep::FindMux), StepState::Failed);
-        update(
-            &mut m,
-            Msg::RemoveHost {
-                host: "pwbox".to_owned(),
-                clear_tracking: false,
-            },
-        );
-        assert!(m.state.login_progress.is_empty());
+            );
+            assert_ne!(
+                m.switcher.current_view_screen(&m.state),
+                Some(crate::model::ViewScreen::Login),
+                "{hosts:?}: the login pane leaves once the login worked"
+            );
+            assert!(
+                crate::ui::switcher::is_machine_scanning(&m.state, machine),
+                "{hosts:?}: the machine is asked again"
+            );
+        }
     }
 
     #[test]
@@ -4823,11 +4717,7 @@ mod tests {
         // A probe the login did not start is a newer look at the machine.
         update(
             &mut m,
-            probed(
-                "pwbox",
-                0,
-                Some("alice@box: Permission denied (publickey)."),
-            ),
+            probed("pwbox", Some("alice@box: Permission denied (publickey).")),
         );
         assert!(!m.state.login_progress.contains_key("pwbox"));
     }
@@ -4847,7 +4737,7 @@ mod tests {
         );
         // A newer look at the machine arrives before the result and takes the settled
         // steps with it.
-        update(&mut m, probed("pwbox", 0, None));
+        update(&mut m, probed("pwbox", None));
         assert!(!m.state.login_progress.contains_key("pwbox"));
         update(&mut m, login_result("pwbox", attempt, refused()));
         assert!(m.state.login_run.is_none(), "the pane offers a login again");

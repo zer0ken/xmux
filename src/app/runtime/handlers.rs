@@ -429,7 +429,7 @@ impl Runtime {
                     .chain(delta.machines_added.iter().map(String::as_str));
                 for machine in added {
                     if probed.insert(machine) {
-                        probe_machine(machine, hosts, mgr.events(), scan_pool, false, 0);
+                        probe_machine(machine, hosts, mgr.events(), scan_pool, false);
                     }
                 }
                 // The nav now holds what this roster added and dropped, so a re-scan that
@@ -876,7 +876,6 @@ impl Runtime {
             images: Default::default(),
             kitty_images: Default::default(),
             spinner_start: std::time::Instant::now(),
-            login_probes: 0,
             dirty: true,
             clear_pending: false,
             last_draw: std::time::Instant::now() - initial_frame_interval,

@@ -2477,8 +2477,7 @@ async fn login_steps_show_each_state_as_the_login_reports_it() {
         row(&h, "· register my public key"),
         "· register my public key"
     );
-    assert_eq!(row(&h, "find mux"), "· find mux");
-    let (steps_end, _) = h.view_cell_of("· find mux").unwrap();
+    let (steps_end, _) = h.view_cell_of("· register my public key").unwrap();
     let (verdict, _) = h.view_cell_of("✗ the password was refused").unwrap();
     assert!(steps_end < verdict, "the steps lead to the verdict");
 }

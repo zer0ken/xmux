@@ -106,7 +106,8 @@ against, naming no source file, function, or test.
   and the login pane, with the failing input field marked `✗`.
 - **FR-B27** - The login pane takes the address, port, username, and an optional masked
   password prefilled from what ssh would use, and lists each login step's progress after
-  submit. What ssh would use for a machine is read again after xmux records or removes the
+  submit. A login that works closes the pane at once, and the machine screen states the
+  scan of its hosts with a spinner. What ssh would use for a machine is read again after xmux records or removes the
   machine's ssh config entries and on `prefix r`, so the login pane and the machine screen
   follow the file as it is.
 - **FR-B28** - A submitted password is held only in process memory, released to ssh only
