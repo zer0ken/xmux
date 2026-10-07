@@ -173,7 +173,7 @@ fn a_vanished_host_goes_to_its_machine_on_the_machines_remaining_title() {
 /// attaching nothing.
 fn names_nothing(sw: &Switcher, state: &State) -> bool {
     sw.selected_node().is_none()
-        && sw.hard_row().is_none()
+        && sw.selection_row().is_none()
         && sw.current_view_screen(state) == Some(ViewScreen::Landing)
         && sw.current_attach_target(state).is_none()
 }
@@ -328,10 +328,12 @@ fn a_created_session_the_filter_hides_takes_the_selection_once_shown() {
 fn context(sw: &Switcher, state: &State) -> (Option<Node>, Option<Node>, Option<ViewScreen>) {
     (
         sw.selected_node(),
-        sw.link_node.clone().and_then(|target| match target {
-            crate::ui::chrome::LinkTarget::Node(node) => Some(node),
-            crate::ui::chrome::LinkTarget::Action(_) => None,
-        }),
+        sw.link_selection_node
+            .clone()
+            .and_then(|target| match target {
+                crate::ui::chrome::LinkTarget::Node(node) => Some(node),
+                crate::ui::chrome::LinkTarget::Action(_) => None,
+            }),
         sw.current_view_screen(state),
     )
 }
@@ -348,8 +350,8 @@ fn background_answers_leave_the_users_context_alone() {
     // The user opens the host prod and selects the link of its second session.
     sw.note_user_move();
     sw.select_node(Node::Host("prod".into()));
-    sw.link = 1;
-    sw.link_node = Some(crate::ui::chrome::LinkTarget::Node(Node::Session(
+    sw.link_selection = 1;
+    sw.link_selection_node = Some(crate::ui::chrome::LinkTarget::Node(Node::Session(
         Address::new("prod", "b"),
     )));
     let before = context(&sw, &state);

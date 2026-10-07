@@ -135,8 +135,9 @@ against, naming no source file, function, or test.
   paths and every key surface read.
 - **FR-B36** - Pressing the prefix opens the key list at once, naming every key the
   prefix unlocks by section and never dropping the jump, help, or quit keys.
-- **FR-B37** - While the nav holds the focus, the selected standalone card ends in `⏎`,
-  and a selected part of a shared item carries none; a move of the selection leaves the
+- **FR-B37** - While the nav holds the focus, the selected standalone card may end in
+  `⏎` when it fits inside the card without covering text or padding, and a selected
+  part of a shared item carries none; a move of the selection leaves the
   hint bar as it is.
 - **FR-B38** - The help lists every key by section and a legend of every glyph, with
   section tabs, scrolling, and case-insensitive search, closed by `Esc` or `prefix ?`.
@@ -161,7 +162,7 @@ against, naming no source file, function, or test.
 - **FR-B43** - From launch until the first execution the terminal view attaches to no
   session and shows the landing screen: how many machines the scan has reached, with the
   scan spinner, and every nav card in nav order and numbering as its `/`-separated path.
-  The landing list and the nav share one hard selection, which only highlights; the
+  The landing list and the nav share one selection, which only highlights; the
   first execution closes the landing screen for the rest of the run, opens the chosen
   card, and focuses the terminal view.
 - **FR-B44** - Every surface names the levels machine, host, and session, with `host`

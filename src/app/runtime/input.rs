@@ -306,8 +306,8 @@ impl Runtime {
         // A modal popup is mouse-modal: while one is open, every mouse
         // event that is not its drag (handled above) is swallowed,
         // so clicks, wheels, view border grabs, and hovers never reach the
-        // nav/terminal/view border behind it. Bare motion sets the popup's soft
-        // selection: the help tab or the list item under the pointer.
+        // nav/terminal/view border behind it. Bare motion sets the popup's
+        // hover: the help tab or the list item under the pointer.
         if self.model.state.is_modal_popup_open() {
             if idle_motion {
                 let before = self.model.state.modal_hover();
@@ -383,12 +383,9 @@ impl Runtime {
                 debug_assert!(effects.is_empty());
                 dirty = true;
             }
-            if over_view_border {
-                return dirty;
-            }
-            // The soft selection follows the pointer: a nav target while the nav holds
+            // The hover follows the pointer: a nav target while the nav holds
             // the focus, a screen link while the terminal view does.
-            let before = self.model.switcher.soft_marks();
+            let before = self.model.switcher.hover_targets();
             let effects = update(
                 &mut self.model,
                 Msg::Hover {
@@ -397,12 +394,15 @@ impl Runtime {
                 },
             );
             debug_assert!(effects.is_empty());
-            if self.model.switcher.soft_marks() != before {
+            if self.model.switcher.hover_targets() != before {
                 dirty = true;
+            }
+            if over_view_border {
+                return dirty;
             }
         }
         // A click on a link of the machine or host screen the terminal view shows opens
-        // it, the same as Enter on the hard-selected link. The landing screen's links
+        // it, the same as Enter on the selected link. The landing screen's links
         // take a click from either view's focus.
         let landing = self.model.switcher.landing_open();
         if is_left_press
@@ -425,7 +425,7 @@ impl Runtime {
                 return true;
             }
         }
-        // Off its links the landing screen has no soft selection, so a click there
+        // Off its links the landing screen has no hover, so a click there
         // executes nothing.
         if is_left_press && landing && in_mux.is_some() {
             return dirty;
@@ -456,7 +456,7 @@ impl Runtime {
                 *mouse_focus_toggle = true;
             }
             ChainAction::SelectRow => {
-                // Left-click a nav target executes it: it becomes the hard selection and
+                // Left-click a nav target executes it: it becomes the selection and
                 // its screen takes the focus, as Enter does. The loop top commits the new
                 // selection (attach); ensure the clicked row's host connects so its
                 // subtree streams in.

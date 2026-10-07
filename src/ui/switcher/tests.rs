@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::tests_support::auto_nav;
 
-/// A cell painted in the hard selection's look under the default `auto-dark` theme: the
+/// A cell painted in the selection's look under the default `auto-dark` theme: the
 /// LightGreen accent behind it.
 fn on_accent(cell: &ratatui::buffer::Cell) -> bool {
     cell.bg == Color::LightGreen
@@ -3243,7 +3243,7 @@ async fn the_selected_card_is_painted_in_the_themes_accent() {
         "and only that row is: {other}"
     );
     assert_eq!(
-        h.buf()[(CARD_INDENT, sel)].symbol(),
+        h.buf()[(CARD_INDENT + 1, sel)].symbol(),
         "2",
         "the selected card keeps its number; the highlight alone marks it"
     );
@@ -4032,7 +4032,7 @@ async fn filter_keeps_the_selection_while_its_card_survives_and_names_nothing_on
         None,
         "a hidden machine leaves nothing selected"
     );
-    assert_eq!(h.sw.hard_row(), None);
+    assert_eq!(h.sw.selection_row(), None);
     h.key(KeyCode::Backspace).await;
     assert!(
         matches!(
@@ -4592,7 +4592,7 @@ async fn a_section_title_stands_alone_over_its_cards() {
     for name in ["build", "editor"] {
         let painted = band_line(&top, row_of(top.buf(), name, w).expect(name));
         assert!(
-            painted.starts_with(' ') && !painted.starts_with("  "),
+            painted.starts_with("  ") && !painted.starts_with("   "),
             "{name} is indented under its title with nothing in the indent:\n{painted}"
         );
     }
@@ -4618,10 +4618,8 @@ async fn a_split_sections_cards_read_at_one_offset_in_every_column() {
 }
 
 #[tokio::test]
-async fn the_selections_highlight_pads_the_card_into_its_indent() {
-    // The indent stays blank text, so the highlight's left padding takes it: the card
-    // rect starts past the indent, and the indent cell beside it carries the accent
-    // without moving the card's number.
+async fn the_selections_padding_stays_inside_the_card() {
+    // The card owns its inner padding; the surrounding indent remains unpainted.
     let h = Harness::new_sized(sample(), 60, 70);
     assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
     let sel = h.sw.selected;
@@ -4642,7 +4640,8 @@ async fn the_selections_highlight_pads_the_card_into_its_indent() {
     );
     let strip = &buf[(rect.x - CARD_INDENT, rect.y)];
     assert_eq!(strip.symbol(), " ", "the indent is blank");
-    assert!(on_accent(strip), "and it is the highlight's left padding");
+    assert!(!on_accent(strip), "the indent is outside the card");
+    assert_eq!(buf[(rect.x, rect.y)].symbol(), " ", "inner padding");
 }
 
 #[tokio::test]
@@ -5063,7 +5062,7 @@ async fn focus_changes_only_the_address_column() {
     );
     // The number stays in the address column, on the same row that carries the session.
     assert_eq!(
-        h.buf()[(CARD_INDENT, beta_row)].symbol(),
+        h.buf()[(CARD_INDENT + 1, beta_row)].symbol(),
         "2",
         "the selected card keeps its number in the address column"
     );
@@ -5818,7 +5817,7 @@ fn every_unselected_card_carries_its_1_based_number_beside_its_session() {
         let want = sw.card_number(i).to_string();
         // Every card is one row, so the number sits on that single row.
         assert_eq!(
-            read(rect.x, rect.y, num_w).trim(),
+            read(rect.x + 1, rect.y, num_w).trim(),
             want,
             "card {i} address on its row (selected={selected})"
         );
@@ -6121,7 +6120,7 @@ async fn the_two_digit_boundary_starts_at_exactly_ten_cards() {
             .iter()
             .find(|(i, _)| *i == row)
             .expect("every row was drawn");
-        (rect.x..rect.x + 3)
+        (rect.x + 1..rect.x + 4)
             .map(|x| h.buf()[(x, rect.y)].symbol())
             .collect()
     };
@@ -6892,7 +6891,7 @@ impl HelpOnScreen {
         };
         let at = |x| modal::help_tab_at(prefix, pos, "", scroll, tab, inner, visible, x);
         let x = if gap {
-            (1..inner).find(|&x| at(x - 1) == Some(section) && at(x).is_none())
+            (0..inner).find(|&x| at(x).is_none())
         } else {
             (0..inner).find(|&x| at(x) == Some(section))
         }
@@ -7022,11 +7021,11 @@ fn a_click_on_a_help_tab_executes_it_and_a_drag_from_it_moves_the_popup() {
     assert_eq!(
         h.help(),
         (map.scroll_to(2), Some(2), None),
-        "the click made the tab the hard selection and scrolled its section up"
+        "the click made the tab the selection and scrolled its section up"
     );
     h.paint();
     // A press on a tab that moves before its release is a drag: the popup follows, and
-    // the hard selection stays.
+    // the selection stays.
     let before = h.plan.popup_rect;
     let (col, row) = h.tab_cell(0, false);
     assert!(h.sw.begin_popup_drag_in_plan(&h.plan, col, row, &h.state));
@@ -7052,7 +7051,7 @@ fn hovering_a_help_tab_shows_its_section_until_the_pointer_leaves() {
     assert_eq!(
         h.help(),
         (0, None, Some(2)),
-        "the hover leaves the hard selection where it was"
+        "the hover leaves the selection where it was"
     );
     h.paint();
     assert_eq!(
@@ -7063,16 +7062,16 @@ fn hovering_a_help_tab_shows_its_section_until_the_pointer_leaves() {
     let buf = h.term.backend().buffer();
     assert_eq!(
         Some(buf[(col, row)].bg),
-        crate::ui::palette::soft_selection_style(&h.sw.palette).bg,
+        crate::ui::palette::hover_style(&h.sw.palette).bg,
         "the hovered tab is drawn apart"
     );
     let (lit_col, _) = h.tab_cell(0, false);
     assert!(
         !buf[(lit_col, row)].modifier.contains(Modifier::UNDERLINED)
             && on_accent(&buf[(lit_col, row)]),
-        "the hard-selected tab keeps its own look"
+        "the selected tab keeps its own look"
     );
-    // The pointer moves down onto the body: the body returns to the hard selection.
+    // The pointer moves down onto the body: the body returns to the selection.
     h.sw.hover_popup(&h.plan, col, row + 2, &mut h.state);
     assert_eq!(h.help(), (0, None, None));
     h.paint();
@@ -7767,7 +7766,13 @@ async fn moving_selection_does_not_reflow_machine_cards_in_a_band() {
     assert_eq!(h.plan.layout, ViewLayout::Band);
     let before = cells_of(&h.plan);
     h.key(KeyCode::Down).await;
-    assert_eq!(cells_of(&h.plan), before, "selection keeps every card rect");
+    for (i, rect) in cells_of(&h.plan) {
+        assert_eq!(
+            (rect.x, rect.y),
+            (before[&i].x, before[&i].y),
+            "selection keeps every card position"
+        );
+    }
 }
 
 #[test]
@@ -7874,21 +7879,18 @@ fn portrait_scanning_hosts_start_at_the_left_until_found() {
     for i in 1..3 {
         assert_eq!(cells[&i].x, x0, "every scanning host shares that column");
     }
-    assert!(
-        cells[&0].width < 20,
-        "the status word takes no column width"
-    );
+    assert!(cells[&0].width >= 20, "the card reserves its status word");
     let row = (0..band_w)
         .map(|x| term.backend().buffer()[(x, cells[&0].y)].symbol())
         .collect::<String>();
     assert!(
         row.contains("no sessions"),
-        "the selected status floats over the row: {row}"
+        "the selected status belongs to its card: {row}"
     );
 }
 
 #[test]
-fn floating_host_status_has_highlighted_padding_on_both_sides() {
+fn host_status_and_its_spacing_stay_inside_the_highlighted_card() {
     let scan = Scan {
         groups: vec![Group {
             host: "local".into(),
@@ -7912,7 +7914,10 @@ fn floating_host_status_has_highlighted_padding_on_both_sides() {
         (start..start + label.len() as u16).all(|x| on_accent(&buf[(x, card.y)])),
         "both spaces belong to the highlighted status"
     );
-    assert!(card.width < 20, "the status does not widen the card");
+    assert!(
+        start >= card.x && start + label.len() as u16 <= card.right(),
+        "the status belongs to the card"
+    );
 }
 
 #[test]
@@ -8111,11 +8116,14 @@ fn the_side_lists_overflow_thickens_the_seam_and_spares_every_card() {
         .find(|(i, _)| *i == selected)
         .map(|(_, r)| *r)
         .unwrap();
-    assert_eq!(
-        sel_rect.right(),
-        NAV_WIDTH,
-        "the selected card reaches the nav's last column"
+    assert!(
+        sel_rect.right() <= NAV_WIDTH,
+        "the selected card fits within the nav"
     );
+    assert_eq!(buf[(sel_rect.right() - 1, sel_rect.y)].symbol(), " ");
+    if sel_rect.right() < NAV_WIDTH {
+        assert!(!on_accent(&buf[(sel_rect.right(), sel_rect.y)]));
+    }
     assert!(
         on_accent(&buf[(sel_rect.x, sel_rect.y)]),
         "the selected card itself is still highlighted"

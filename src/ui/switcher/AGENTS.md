@@ -9,7 +9,7 @@ to the live terminal or to the headless backend behind the ctl `dump`.
 
 ## Module Seams
 
-- The switcher state holds the cards, the hard and soft selections, the interest, and
+- The switcher state holds the cards, the selection and hover, the interest, and
   the hierarchy trail; key handling, mouse handling, and rendering each extend it.
 - Card geometry is pure and backend-free: the side list places cards by their heights,
   and the band places them in column flow. Each returns rects that the paint, the mouse

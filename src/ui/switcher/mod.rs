@@ -346,7 +346,7 @@ pub(crate) enum Part {
     Host,
 }
 
-/// Where the hard selection stands: a row, the part of it, and a node deeper than any
+/// Where the selection stands: a row, the part of it, and a node deeper than any
 /// nav target when a screen link or a step down opened one the nav has no card for. The
 /// nav paints the row and part, which then name that node's nearest ancestor on the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -380,23 +380,23 @@ pub struct Switcher {
 
     rows: Vec<Row>,
     selected: usize,
-    /// The part of the selected row the hard selection is on.
+    /// The part of the selected row the selection is on.
     part: Part,
-    /// A node the hard selection names that has no nav target of its own; the selected
+    /// A node the selection names that has no nav target of its own; the selected
     /// row and part then stand for its nearest ancestor on the list.
     deep: Option<Node>,
     /// For each node the selection stepped up from, the child it left, so a step down
     /// returns to it.
     trail: std::collections::HashMap<Node, Node>,
-    /// The soft selection in the nav: the target under the pointer while the nav holds
+    /// The hover in the nav: the target under the pointer while the nav holds
     /// the focus, as a row identity and the part of it. The terminal view shows its
     /// screen; nothing else follows it.
     hover: Option<(RowRef, Part)>,
-    /// The hard-selected link on the shown machine or host screen, by index and by what
+    /// The selected link on the shown machine or host screen, by index and by what
     /// it names, so a rebuild that adds or drops links keeps the same link selected. With
     /// no name the screen stands on its start link.
-    link: usize,
-    link_node: Option<crate::ui::chrome::LinkTarget>,
+    link_selection: usize,
+    link_selection_node: Option<crate::ui::chrome::LinkTarget>,
     /// The link under the pointer on that screen while the terminal view holds the focus.
     link_hover: Option<usize>,
     /// Host whose login pane was opened explicitly from the check table or palette.
@@ -453,7 +453,7 @@ pub struct Switcher {
     /// first executes a target, and never again in the run. While it is open the
     /// selection highlights and attaches nothing.
     landing: bool,
-    /// Whether the hard selection names nothing: the node it named was lost with nothing
+    /// Whether the selection names nothing: the node it named was lost with nothing
     /// of its machine left on the list. The selected row then only marks the place the
     /// lost card stood, which the next arrow key starts from, and the terminal view shows
     /// the landing list.
@@ -494,8 +494,8 @@ impl Switcher {
             deep: None,
             trail: std::collections::HashMap::new(),
             hover: None,
-            link: 0,
-            link_node: None,
+            link_selection: 0,
+            link_selection_node: None,
             link_hover: None,
             login_target: None,
             terminal_view_target: TerminalViewTarget::default(),
@@ -643,7 +643,7 @@ impl Switcher {
     /// move from the nav into the terminal view decides whether the host band is hidden
     /// (see `host_band_hidden`); the move back into the nav shows it again.
     pub fn sync_view_focus(&mut self, terminal: bool) {
-        // Each surface's soft selection lives only while that surface holds the focus.
+        // Each surface's hover lives only while that surface holds the focus.
         let hovered = self.hover.is_some() || self.link_hover.is_some();
         if terminal {
             self.hover = None;
@@ -685,7 +685,7 @@ impl Switcher {
         self.is_stopped(address) && self.resumed.as_ref() != Some(address)
     }
 
-    /// Executes the selection for a stopped session: when the hard selection is one, the
+    /// Executes the selection for a stopped session: when the selection is one, the
     /// terminal view attaches to it, and the mux's attach resumes it.
     pub(crate) fn execute_stopped(&mut self) {
         if let Some(Node::Session(address)) = self.selected_node() {
@@ -790,6 +790,25 @@ impl Switcher {
         let settled = state.scanning.is_empty() && state.machine_scanning.is_empty();
 
         let old_rows = std::mem::replace(&mut self.rows, rows);
+        // A pointer target belongs to the layout it was read from. Inventory can
+        // replace a whole host card with a shared title or reorder its neighbours.
+        if old_rows.len() != self.rows.len()
+            || old_rows.iter().zip(&self.rows).any(|(before, after)| {
+                std::mem::discriminant(&before.reference)
+                    != std::mem::discriminant(&after.reference)
+                    || !same_node(&before.reference, &after.reference)
+            })
+        {
+            self.clear_hover(true, true);
+            if let Some(
+                Modal::Help { hover, .. }
+                | Modal::Check { hover, .. }
+                | Modal::Palette { hover, .. },
+            ) = &mut state.modal
+            {
+                *hover = None;
+            }
+        }
         self.number_cards(unfiltered.as_deref(), settled);
         let refiltered = state.filter != self.last_filter;
         self.last_filter = state.filter.clone();
@@ -841,28 +860,29 @@ impl Switcher {
             .map(|node| self.screen_links(&node, state))
             .unwrap_or_default();
         match self
-            .link_node
+            .link_selection_node
             .as_ref()
             .and_then(|target| links.iter().position(|l| l.target == *target))
         {
-            Some(i) => self.link = i,
-            None if self.link_node.is_none() => {
+            Some(i) => self.link_selection = i,
+            None if self.link_selection_node.is_none() => {
                 // A screen nobody has stepped on yet stands on its start link, and
                 // keeps it only once the link names what the start stands for, a node of
                 // the level below: a screen whose children have not arrived waits for
                 // its first child.
-                self.link = start_link(&links);
+                self.link_selection = start_link(&links);
                 if links
-                    .get(self.link)
+                    .get(self.link_selection)
                     .and_then(|l| l.node())
                     .is_some_and(|node| !matches!(node, Node::Machine(_)))
                 {
-                    self.link_node = links.get(self.link).map(|l| l.target.clone());
+                    self.link_selection_node =
+                        links.get(self.link_selection).map(|l| l.target.clone());
                 }
             }
             None => {
-                self.link = self.link.min(links.len().saturating_sub(1));
-                self.link_node = links.get(self.link).map(|l| l.target.clone());
+                self.link_selection = self.link_selection.min(links.len().saturating_sub(1));
+                self.link_selection_node = links.get(self.link_selection).map(|l| l.target.clone());
             }
         }
         if self.link_hover.is_some_and(|i| i >= links.len()) {
@@ -884,10 +904,10 @@ impl Switcher {
         };
         match self.interest.clone() {
             Interest::FirstSession => {
-                // A session answering later than the first one does not take the cursor:
+                // A session answering later than the first one does not take the selection:
                 // the interest is settled by the first, so the launch attaches one session
                 // rather than one per answer, and the terminal view shows the session
-                // the cursor names throughout the scan.
+                // the selection names throughout the scan.
                 match self
                     .rows
                     .iter()
@@ -987,7 +1007,7 @@ impl Switcher {
             .unwrap_or(0)
     }
 
-    /// Leaves the hard selection naming nothing, at row `at`, remembering `lost`.
+    /// Leaves the selection naming nothing, at row `at`, remembering `lost`.
     fn vacate(&mut self, at: usize, lost: Option<Node>) {
         let was = self.selected_node();
         self.selected = at.min(self.rows.len().saturating_sub(1));
@@ -1000,8 +1020,8 @@ impl Switcher {
         self.lost = lost;
         self.login_target = None;
         if was.is_some() {
-            self.link = 0;
-            self.link_node = None;
+            self.link_selection = 0;
+            self.link_selection_node = None;
         }
         self.on_focus_changed();
     }
@@ -1230,7 +1250,7 @@ impl Switcher {
     /// the side placement pulls the list back to show a title when the card under it and
     /// the title fit on screen together.
     fn selected_section_title(&self) -> Option<usize> {
-        let sel = self.hard_row()?;
+        let sel = self.selection_row()?;
         let r = self.rows.get(sel)?;
         if !matches!(r.reference, RowRef::Session { .. }) {
             return None;
@@ -1240,13 +1260,13 @@ impl Switcher {
             .rposition(|r| matches!(r.reference, RowRef::Section { .. }))
     }
 
-    /// Puts the hard selection on card `idx` as a whole (the host half of a section
+    /// Puts the selection on card `idx` as a whole (the host half of a section
     /// title, which is no card).
     fn set_selected(&mut self, idx: usize) {
         self.set_target(Target::card(idx));
     }
 
-    /// Puts the hard selection on `target`. A section title is never selected whole: its
+    /// Puts the selection on `target`. A section title is never selected whole: its
     /// host half stands for it. The login a machine's screen was opened for ends when the
     /// selection leaves that machine, and the screen's link selection starts over when the
     /// selection names another node.
@@ -1255,7 +1275,7 @@ impl Switcher {
         self.place(before, target);
     }
 
-    /// Puts the hard selection on `target`, coming from the node `before` named. A
+    /// Puts the selection on `target`, coming from the node `before` named. A
     /// rebuild passes the node the selection named on the rows it replaced, so a list
     /// that changed around an unchanged node keeps that node's selected link.
     fn place(&mut self, before: Option<Node>, target: Target) {
@@ -1289,13 +1309,13 @@ impl Switcher {
             self.login_target = None;
         }
         if before != after {
-            self.link = 0;
-            self.link_node = None;
+            self.link_selection = 0;
+            self.link_selection_node = None;
         }
         self.on_focus_changed();
     }
 
-    /// The node the hard selection names.
+    /// The node the selection names.
     pub(crate) fn selected_node(&self) -> Option<Node> {
         if self.vacant {
             return None;
@@ -1307,8 +1327,8 @@ impl Switcher {
         })
     }
 
-    /// The node whose screen the terminal view shows: the soft selection while the pointer
-    /// is on a nav target, else the hard selection.
+    /// The node whose screen the terminal view shows: the hover while the pointer
+    /// is on a nav target, else the selection.
     pub(crate) fn shown_node(&self) -> Option<Node> {
         match &self.hover {
             Some((reference, part)) => Some(node_of(reference, *part)),
@@ -1316,7 +1336,7 @@ impl Switcher {
         }
     }
 
-    /// Moves the hard selection to `node`: onto its nav target, or onto the nearest
+    /// Moves the selection to `node`: onto its nav target, or onto the nearest
     /// ancestor's target as a node the nav has no target for. A machine keeps the row the
     /// selection leaves when that row is one of its. A move from a node to its parent
     /// records the child, so a step down returns to it.
@@ -1490,8 +1510,8 @@ impl Switcher {
         self.rows.get(self.selected).map(|r| &r.reference)
     }
 
-    /// The row the hard selection is drawn on, `None` while it names nothing.
-    pub(crate) fn hard_row(&self) -> Option<usize> {
+    /// The row the selection is drawn on, `None` while it names nothing.
+    pub(crate) fn selection_row(&self) -> Option<usize> {
         (!self.vacant).then_some(self.selected)
     }
 
@@ -1553,8 +1573,8 @@ impl Switcher {
     }
 
     /// Which screen the terminal view shows in place of the grid, or `None` for a session.
-    /// It is the screen of the shown node: the soft selection's while the pointer is on a
-    /// nav target, else the hard selection's.
+    /// It is the screen of the shown node: the hover's while the pointer is on a
+    /// nav target, else the selection's.
     pub(crate) fn current_view_screen(&self, state: &crate::state::State) -> Option<ViewScreen> {
         if self.landing_shown() {
             return Some(ViewScreen::Landing);
@@ -1788,7 +1808,7 @@ impl Switcher {
     }
 
     /// What the screen of `kind` paints: the address it is reached by, whether it is a
-    /// machine's, its links, and which link is hard-selected and which is under the pointer.
+    /// machine's, its links, and which link is selected and which is under the pointer.
     /// `None` when the screen is about no node.
     pub(crate) fn screen_parts(
         &self,
@@ -1796,7 +1816,7 @@ impl Switcher {
         state: &crate::state::State,
     ) -> Option<ScreenParts> {
         if kind == ViewScreen::Landing {
-            // The landing list and the nav share the one hard selection, so the link it
+            // The landing list and the nav share the one selection, so the link it
             // marks is the card the nav marks, whichever view holds the focus.
             let links = self.landing_links(state);
             let selected = self.selected_node();
@@ -1805,7 +1825,7 @@ impl Switcher {
                 address: Address::new("", ""),
                 machine_screen: false,
                 links,
-                marks: (link, self.link_hover),
+                selection_and_hover: (link, self.link_hover),
             });
         }
         let (node, address) = self
@@ -1815,7 +1835,7 @@ impl Switcher {
             address,
             machine_screen: matches!(node, Node::Machine(_)),
             links: self.screen_links(&node, state),
-            marks: self.link_marks(state),
+            selection_and_hover: self.link_selection_and_hover(state),
         })
     }
 
@@ -1835,12 +1855,15 @@ impl Switcher {
         }
     }
 
-    /// Which link of the shown screen is hard-selected and which is under the pointer.
+    /// Which link of the shown screen is selected and which is under the pointer.
     /// Both belong to the terminal view, so neither is drawn while the nav holds the focus
-    /// or while the nav's soft selection is showing another screen there. The login pane
-    /// owns the keyboard, so on its screen no link holds the hard selection and only the
+    /// or while the nav's hover is showing another screen there. The login pane
+    /// owns the keyboard, so on its screen no link holds the selection and only the
     /// pointer reaches the links.
-    pub(crate) fn link_marks(&self, state: &crate::state::State) -> (Option<usize>, Option<usize>) {
+    pub(crate) fn link_selection_and_hover(
+        &self,
+        state: &crate::state::State,
+    ) -> (Option<usize>, Option<usize>) {
         if !self.terminal_view || self.hover.is_some() {
             return (None, None);
         }
@@ -1848,28 +1871,38 @@ impl Switcher {
             return (None, self.link_hover);
         }
         (
-            Some(self.link_index(&self.shown_links(state))),
+            Some(self.selection_link_index(&self.shown_links(state))),
             self.link_hover,
         )
     }
 
-    /// Where the hard selection stands among `links`: the start link while nobody has
+    /// Where the selection stands among `links`: the start link while nobody has
     /// stepped on the screen, else the selected link, within the links there are.
-    fn link_index(&self, links: &[crate::ui::chrome::ScreenLink]) -> usize {
-        match self.link_node {
+    fn selection_link_index(&self, links: &[crate::ui::chrome::ScreenLink]) -> usize {
+        match self.link_selection_node {
             None => start_link(links),
-            Some(_) => self.link.min(links.len().saturating_sub(1)),
+            Some(_) => self.link_selection.min(links.len().saturating_sub(1)),
         }
     }
 
-    /// Where the soft selections stand, as the paint draws them: the nav row and part
+    /// Where the hover targets stand, as the paint draws them: the nav row and part
     /// under the pointer, and the screen link under it.
-    pub(crate) fn soft_marks(&self) -> (Option<(usize, Part)>, Option<usize>) {
+    pub(crate) fn hover_targets(&self) -> (Option<(usize, Part)>, Option<usize>) {
         let nav = self
             .hover
             .as_ref()
             .and_then(|(reference, part)| self.row_matching(reference).map(|i| (i, *part)));
         (nav, self.link_hover)
+    }
+
+    /// Ends pointer targets whose geometry or inventory is no longer current.
+    pub(crate) fn clear_hover(&mut self, nav: bool, links: bool) {
+        if nav && self.hover.take().is_some() {
+            self.on_focus_changed();
+        }
+        if links {
+            self.link_hover = None;
+        }
     }
 
     /// The arrow keys on a machine's or a host's screen while the terminal view holds the
@@ -1881,11 +1914,12 @@ impl Switcher {
         if n == 0 || self.login_pane_shown(state) {
             return;
         }
-        self.link = (self.link_index(&links) as isize + delta).rem_euclid(n as isize) as usize;
-        self.link_node = links.get(self.link).map(|l| l.target.clone());
+        self.link_selection =
+            (self.selection_link_index(&links) as isize + delta).rem_euclid(n as isize) as usize;
+        self.link_selection_node = links.get(self.link_selection).map(|l| l.target.clone());
     }
 
-    /// The action of link `index` of the shown screen, or of its hard-selected link when
+    /// The action of link `index` of the shown screen, or of its selected link when
     /// `index` is `None`, which the update transition runs by the action's key. `None`
     /// when that link opens a node, or when Enter belongs to the login pane's form or to
     /// a stopped session's screen.
@@ -1902,7 +1936,7 @@ impl Switcher {
             {
                 return None;
             }
-            None => self.link_index(&links),
+            None => self.selection_link_index(&links),
         };
         match links.get(index)?.target {
             crate::ui::chrome::LinkTarget::Action(action) => Some(action),
@@ -1910,7 +1944,7 @@ impl Switcher {
         }
     }
 
-    /// Executes link `index` of the shown screen: the node it names becomes the hard
+    /// Executes link `index` of the shown screen: the node it names becomes the
     /// selection and its screen opens. After a step up the path, the link standing for the
     /// node just left is selected on the new screen, so a step back down is one Enter
     /// away; a step down starts the new screen on its start link.
@@ -1939,15 +1973,15 @@ impl Switcher {
                     .iter()
                     .position(|l| l.node() == Some(&before))
                 {
-                    self.link = i;
-                    self.link_node = Some(crate::ui::chrome::LinkTarget::Node(before));
+                    self.link_selection = i;
+                    self.link_selection_node = Some(crate::ui::chrome::LinkTarget::Node(before));
                 }
             }
         }
         true
     }
 
-    /// Opens the hard-selected link of the shown screen (Enter in the terminal view).
+    /// Opens the selected link of the shown screen (Enter in the terminal view).
     /// The login pane's screen has none: Enter there belongs to the form. A stopped
     /// session's screen has none either, and Enter there executes the session, as it does
     /// from the nav.
@@ -1959,7 +1993,7 @@ impl Switcher {
             self.execute_stopped();
             return true;
         }
-        let index = self.link_index(&self.shown_links(state));
+        let index = self.selection_link_index(&self.shown_links(state));
         self.open_link(index, state)
     }
 
@@ -2645,10 +2679,10 @@ pub(crate) struct ScreenParts {
     pub(crate) address: Address,
     pub(crate) machine_screen: bool,
     pub(crate) links: Vec<crate::ui::chrome::ScreenLink>,
-    pub(crate) marks: (Option<usize>, Option<usize>),
+    pub(crate) selection_and_hover: (Option<usize>, Option<usize>),
 }
 
-/// The hard selection as a rebuild found it, before the rows are re-derived.
+/// The selection as a rebuild found it, before the rows are re-derived.
 struct Prior {
     node: Option<Node>,
     row: Option<RowRef>,

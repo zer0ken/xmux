@@ -1,6 +1,6 @@
 //! The machine / host / session hierarchy in the nav and the terminal view: the two halves
 //! of a section title, the card step and the level step, the machine's and the host's
-//! screens and their links, the soft selection under the pointer, and a machine none of
+//! screens and their links, the hover under the pointer, and a machine none of
 //! whose hosts connected standing as one card, and the landing screen above them all.
 
 use super::*;
@@ -142,10 +142,10 @@ impl H {
         (rect.x..rect.right()).all(|x| buf[(x, rect.y)].bg == Color::LightGreen)
     }
 
-    /// Whether every cell of `rect` wears the soft selection's background.
-    fn soft_selected(&self, rect: Rect) -> bool {
+    /// Whether every cell of `rect` wears the hover's background.
+    fn has_hover_style(&self, rect: Rect) -> bool {
         let buf = self.term.backend().buffer();
-        let bg = crate::ui::palette::soft_selection_style(&self.sw.palette).bg;
+        let bg = crate::ui::palette::hover_style(&self.sw.palette).bg;
         bg.is_some() && (rect.x..rect.right()).all(|x| Some(buf[(x, rect.y)].bg) == bg)
     }
 
@@ -593,8 +593,11 @@ fn screen_links_take_the_arrows_and_enter_in_the_terminal_view() {
     h.draw();
     assert_eq!(h.node(), machine("web"));
     let links = h.sw.screen_links(&Node::Machine("web".into()), &h.state);
-    assert_eq!(links[h.sw.link].node(), Some(&Node::Host("web".into())));
-    assert!(h.highlighted(h.link_rect(h.sw.link)));
+    assert_eq!(
+        links[h.sw.link_selection].node(),
+        Some(&Node::Host("web".into()))
+    );
+    assert!(h.highlighted(h.link_rect(h.sw.link_selection)));
 }
 
 #[test]
@@ -611,7 +614,7 @@ fn a_host_opened_from_its_machine_screen_starts_on_its_first_session() {
             .unwrap();
     assert!(h.sw.open_link(host, &h.state));
     let links = h.sw.screen_links(&Node::Host("web".into()), &h.state);
-    let start = h.sw.link_index(&links);
+    let start = h.sw.selection_link_index(&links);
     assert!(matches!(links[start].node(), Some(Node::Session(_))));
     assert_eq!(start, 0);
 }
@@ -647,7 +650,7 @@ fn a_screen_without_children_starts_on_its_machine_link_and_a_machine_on_its_fir
     assert_eq!(h.node(), machine("idle"));
     let links = h.sw.screen_links(&Node::Machine("idle".into()), &h.state);
     assert_eq!(
-        links[h.sw.link_index(&links)].node(),
+        links[h.sw.selection_link_index(&links)].node(),
         Some(&Node::Host("idle".into())),
         "a step up preselects the host just left"
     );
@@ -671,26 +674,22 @@ fn a_link_is_drawn_selected_only_while_the_terminal_view_holds_the_focus() {
 }
 
 #[test]
-fn hovering_a_nav_target_shows_its_screen_without_moving_the_hard_selection() {
+fn hovering_a_nav_target_shows_its_screen_without_moving_the_selection() {
     let mut h = fleet();
     h.select("gpu", "train");
     let deploy = h.card_row(|r| matches!(r, RowRef::Session { sess } if sess.name == "deploy"));
     let rect = h.card(deploy);
     assert!(h.sw.mouse_hover(&h.plan.clone(), rect.x, rect.y));
     h.draw();
-    assert_eq!(
-        h.node(),
-        session("gpu", "train"),
-        "the hard selection stays"
-    );
+    assert_eq!(h.node(), session("gpu", "train"), "the selection stays");
     assert_eq!(
         h.sw.terminal_view_target().target,
         "deploy",
         "the hovered card's session is shown"
     );
     assert!(
-        h.soft_selected(h.card(deploy)),
-        "the soft selection wears its background"
+        h.has_hover_style(h.card(deploy)),
+        "the hover wears its background"
     );
     assert!(!h.highlighted(h.card(deploy)));
 
@@ -704,7 +703,7 @@ fn hovering_a_nav_target_shows_its_screen_without_moving_the_hard_selection() {
     );
     assert!(h.view().contains("hosts"), "{}", h.view());
 
-    // Off every target the hard selection's screen comes back.
+    // Off every target the selection's screen comes back.
     assert!(h.sw.mouse_hover(&h.plan.clone(), 100, 10));
     h.draw();
     assert_eq!(h.sw.terminal_view_target().target, "train");
@@ -712,7 +711,7 @@ fn hovering_a_nav_target_shows_its_screen_without_moving_the_hard_selection() {
 }
 
 #[test]
-fn the_nav_takes_no_soft_selection_while_the_terminal_view_holds_the_focus() {
+fn the_nav_takes_no_hover_while_the_terminal_view_holds_the_focus() {
     let mut h = fleet();
     h.select("gpu", "train");
     h.terminal_focused = true;
@@ -724,7 +723,7 @@ fn the_nav_takes_no_soft_selection_while_the_terminal_view_holds_the_focus() {
 }
 
 #[test]
-fn a_hovered_link_wears_the_soft_selection_in_the_terminal_view() {
+fn a_hovered_link_wears_the_hover_in_the_terminal_view() {
     let mut h = fleet();
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
@@ -733,7 +732,7 @@ fn a_hovered_link_wears_the_soft_selection_in_the_terminal_view() {
     let rect = h.link_rect(2);
     assert!(h.sw.link_hover_at(&h.plan.clone(), rect.x, rect.y));
     h.draw();
-    assert!(h.soft_selected(h.link_rect(2)));
+    assert!(h.has_hover_style(h.link_rect(2)));
     assert_eq!(h.node(), host("web"), "hovering a link opens nothing");
 }
 
@@ -860,9 +859,9 @@ fn the_login_form_keeps_the_keyboard_from_the_screen_links() {
     h.draw();
     assert!(h.sw.login_pane_shown(&h.state));
     assert_eq!(
-        h.sw.link_marks(&h.state).0,
+        h.sw.link_selection_and_hover(&h.state).0,
         None,
-        "no link holds the hard selection beside the form"
+        "no link holds the selection beside the form"
     );
     h.sw.step_link(1, &h.state);
     assert!(
@@ -947,7 +946,7 @@ fn a_click_on_a_nav_target_selects_it_and_reports_the_hit() {
     let mut h = fleet();
     let title = h.title_row("gpu");
     let rect = h.card(title);
-    let blank = rect.right() - 1;
+    let blank = rect.right();
     assert!(
         !h.sw.mouse_select(&h.plan.clone(), blank, rect.y),
         "a title's blank tail is no target"
@@ -979,7 +978,7 @@ fn the_selected_link_follows_its_node_when_the_links_change() {
     h.terminal_focused = true;
     h.draw();
     h.sw.step_link(1, &h.state);
-    assert_eq!(h.sw.link, 1, "deploy, after api");
+    assert_eq!(h.sw.link_selection, 1, "deploy, after api");
 
     // api ends: deploy is still the selected link, one place up.
     h.sw.apply_host_result(
@@ -990,13 +989,13 @@ fn the_selected_link_follows_its_node_when_the_links_change() {
     );
     h.draw();
     assert_eq!(h.node(), host("web"));
-    assert_eq!(h.sw.link, 0);
+    assert_eq!(h.sw.link_selection, 0);
     assert!(h.highlighted(h.link_rect(0)));
 
     // deploy ends too: the selection stays on a link the screen still has.
     h.sw.apply_host_result("web".into(), vec![sess("web", "api")], None, &mut h.state);
     h.draw();
-    assert_eq!(h.sw.link, 0);
+    assert_eq!(h.sw.link_selection, 0);
     assert!(h.sw.open_selected_link(&h.state), "Enter opens a link");
     assert_eq!(h.node(), session("web", "api"));
 }
@@ -1203,8 +1202,8 @@ fn a_landing_link_takes_the_pointer_from_the_navs_focus() {
     assert!(h.sw.link_hover_at(&h.plan.clone(), rect.x, rect.y));
     h.draw();
     assert!(
-        h.soft_selected(landing_link(&h, session("web", "deploy"))),
-        "the soft selection wears its background and survives the frame's focus sync"
+        h.has_hover_style(landing_link(&h, session("web", "deploy"))),
+        "the hover wears its background and survives the frame's focus sync"
     );
     assert_eq!(
         h.node(),
@@ -1346,7 +1345,7 @@ fn a_machine_with_no_host_known_is_a_machine_and_no_host() {
         "the login pane takes the keys"
     );
     assert_eq!(
-        h.sw.link_marks(&h.state).0,
+        h.sw.link_selection_and_hover(&h.state).0,
         None,
         "no link holds the keyboard on the login pane"
     );

@@ -228,7 +228,7 @@ pub struct UiConfig {
     /// colour syntax). Empty means the built-in default.
     #[serde(rename = "hint-bar-style", default)]
     pub hint_bar_style: String,
-    /// The background of every hard selection, in the same colour slots as the view
+    /// The background of every selection, in the same colour slots as the view
     /// border (`bg=<colour>`, or a bare colour token). Empty (default) paints a selection
     /// in the theme's `on_accent` text on its `accent`; a named colour replaces the accent
     /// background and leaves the selected item's own text colours on it.

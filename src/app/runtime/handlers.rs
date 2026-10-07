@@ -1107,11 +1107,13 @@ impl Runtime {
                     self.display_sync_held = guard.as_deref().is_some_and(|g| g.sync_held());
                     // Split-borrow so the draw closure captures only these fields, not all
                     // of `self` (the fingerprint block's borrows have ended above).
-                    let switcher = &self.model.switcher;
-                    let state = &self.model.state;
                     let drawn = term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        let plan = switcher.layout(f.area(), nav, state, &previous_plan);
+                        let plan = self
+                            .model
+                            .prepare_render_plan(f.area(), nav, &previous_plan);
+                        let switcher = &self.model.switcher;
+                        let state = &self.model.state;
                         switcher.render(f, guard.as_deref(), terminal_focused, state, &plan);
                         next_plan = Some(plan);
                         DrawObserver::slow_step("render", t_render);
@@ -1123,11 +1125,13 @@ impl Runtime {
                 None => {
                     let nav = self.nav_size();
                     Self::sync_kitty_images(&mut self.kitty_images, None);
-                    let switcher = &self.model.switcher;
-                    let state = &self.model.state;
                     let drawn = term.draw(|f| {
                         let t_render = std::time::Instant::now();
-                        let plan = switcher.layout(f.area(), nav, state, &previous_plan);
+                        let plan = self
+                            .model
+                            .prepare_render_plan(f.area(), nav, &previous_plan);
+                        let switcher = &self.model.switcher;
+                        let state = &self.model.state;
                         switcher.render(f, None, terminal_focused, state, &plan);
                         next_plan = Some(plan);
                         DrawObserver::slow_step("render", t_render);
@@ -1853,6 +1857,22 @@ impl Runtime {
                     width: 80,
                     height: 24,
                 });
+                let previous = self.model.render_plan.clone();
+                let nav = self.model.nav_size();
+                let before = (
+                    self.model.switcher.hover_targets(),
+                    self.model.state.modal_hover(),
+                );
+                let plan = self.model.prepare_render_plan(
+                    ratatui::layout::Rect::new(0, 0, sz.width, sz.height),
+                    nav,
+                    &previous,
+                );
+                self.dirty |= before
+                    != (
+                        self.model.switcher.hover_targets(),
+                        self.model.state.modal_hover(),
+                    );
                 let grid_arc = current_grid(
                     &self.model.state.displayed,
                     &crate::driver::DriverCtx {
@@ -1875,7 +1895,7 @@ impl Runtime {
                             sz.width,
                             sz.height,
                             &self.model.state,
-                            &self.model.render_plan,
+                            &plan,
                         )
                     }
                     None => dump_screen(
@@ -1884,7 +1904,7 @@ impl Runtime {
                         sz.width,
                         sz.height,
                         &self.model.state,
-                        &self.model.render_plan,
+                        &plan,
                     ),
                 };
                 let _ = reply.send(dump);

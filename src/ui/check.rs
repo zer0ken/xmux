@@ -34,8 +34,8 @@ fn cause(kind: FailureKind, palette: &Palette) -> (&'static str, Style, &'static
 /// title with its glyph in the state's colour, and each host under it a row in the
 /// key-column grammar: the host bold, then its reason muted, wrapped under the reason
 /// column rather than cut. A host wider than its column takes rows of its own above its
-/// reason. The selected host's rows are highlighted across the whole width, and the rows of
-/// the `hover` host, the soft selection, take the soft selection's background. Each line comes with the host it
+/// reason. Selection and hover cover each host row with one blank on each side,
+/// leaving the surrounding layout plain. Each line comes with the host it
 /// belongs to (none for a cause title), so a click is hit-tested against the rows the
 /// paint shows.
 pub(crate) fn check_lines(
@@ -69,7 +69,7 @@ pub(crate) fn check_lines(
     let bold = palette::interaction_key_style();
     let mut lines = Vec::new();
     let mut last: Option<FailureKind> = None;
-    let mut selected_line = 0;
+    let mut selection_line = 0;
     for (i, entry) in entries.iter().enumerate() {
         if last != Some(entry.kind) {
             let (glyph, style, word) = cause(entry.kind, palette);
@@ -82,7 +82,7 @@ pub(crate) fn check_lines(
             ));
             last = Some(entry.kind);
         }
-        let chosen = i == selected;
+        let is_selected = i == selected;
         let mark = "   ".to_string();
         let label_w = UnicodeWidthStr::width(entry.label.as_str());
         let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
@@ -106,25 +106,17 @@ pub(crate) fn check_lines(
         }
         rows.extend(reason.map(|c| vec![Span::raw(" ".repeat(lead)), Span::styled(c, dim)]));
         let hovered = hover == Some(i);
-        for (n, mut spans) in rows.into_iter().enumerate() {
-            let mut line = if chosen {
-                if n == 0 {
-                    selected_line = lines.len();
-                }
-                let used: usize = spans.iter().map(|s| s.width()).sum();
-                spans.push(Span::raw(" ".repeat((width as usize).saturating_sub(used))));
-                palette::selected_line(Line::from(spans), palette)
-            } else {
-                Line::from(spans)
-            };
-            if hovered {
-                line = palette::soft_selected_line(line, chosen, palette);
+        for (n, spans) in rows.into_iter().enumerate() {
+            if is_selected && n == 0 {
+                selection_line = lines.len();
             }
+            let line =
+                palette::standalone_line(Line::from(spans), is_selected, hovered, width, palette);
             lines.push((Some(i), line));
         }
     }
     if lines.len() > visible_rows && visible_rows > 0 {
-        let start = selected_line
+        let start = selection_line
             .saturating_sub(visible_rows.saturating_sub(2))
             .min(lines.len() - visible_rows);
         lines = lines.into_iter().skip(start).take(visible_rows).collect();
@@ -134,6 +126,17 @@ pub(crate) fn check_lines(
 
 #[cfg(test)]
 mod tests {
+    fn cell_style(line: &ratatui::text::Line, column: usize) -> ratatui::style::Style {
+        let mut x = 0;
+        for span in &line.spans {
+            if column < x + span.width() {
+                return line.style.patch(span.style);
+            }
+            x += span.width();
+        }
+        line.style
+    }
+
     use super::*;
 
     fn entry(host: &str, kind: FailureKind) -> CheckEntry {
@@ -178,11 +181,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            lines[3].style,
+            cell_style(&lines[3], 2),
             palette::selection_style(&p),
             "the selected row"
         );
-        assert_ne!(lines[1].style, palette::selection_style(&p));
+        assert_ne!(cell_style(&lines[1], 2), palette::selection_style(&p));
     }
 
     #[test]
@@ -206,9 +209,10 @@ mod tests {
         assert!(lines
             .iter()
             .any(|line| text(line).contains("host-19 said no")));
-        assert!(lines
+        assert!(lines.iter().any(|line| line
+            .spans
             .iter()
-            .any(|line| line.style == palette::selection_style(&Palette::default())));
+            .any(|span| span.style.bg == Some(Palette::default().accent))));
     }
 
     #[test]
@@ -239,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hovered_host_is_underlined_and_every_row_names_its_host() {
+    fn the_host_has_hover_and_every_row_names_its_host() {
         let entries = vec![
             entry("gpu-02", FailureKind::Blocked),
             entry("web-03", FailureKind::Unreachable),
@@ -252,7 +256,20 @@ mod tests {
             [None, Some(0), None, Some(1)],
             "a cause title names no host"
         );
-        assert_eq!(lines[1].1.style, palette::selection_style(&p));
-        assert_eq!(lines[3].1.style, palette::soft_selection_style(&p));
+        assert_eq!(cell_style(&lines[1].1, 2), palette::selection_style(&p));
+        assert_eq!(cell_style(&lines[3].1, 2), palette::hover_style(&p));
+    }
+    #[test]
+    fn host_item_owns_only_one_blank_beside_its_content() {
+        let p = Palette::default();
+        let entries = vec![entry("web", FailureKind::Unreachable)];
+        let (_, rows) = check_lines(&entries, 0, Some(0), 60, 20, &p);
+        let row = &rows.iter().find(|(item, _)| *item == Some(0)).unwrap().1;
+        let bounds = palette::standalone_bounds(row, 60);
+        assert_eq!(bounds.start, 2);
+        assert_eq!(cell_style(row, 1).bg, None);
+        assert_eq!(cell_style(row, bounds.start as usize).bg, Some(p.accent));
+        assert_eq!(cell_style(row, bounds.end as usize - 1).bg, Some(p.accent));
+        assert_eq!(cell_style(row, bounds.end as usize).bg, None);
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "xmux"
-version = "0.17.2"
+version = "0.17.3"
 edition = "2021"
 description = "Cross-environment terminal multiplexer session switcher"
 license = "MIT"
@@ -49,6 +49,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 vt100 = "0.16"
 portable-pty = "0.9"
 unicode-width = "0.2"
+unicode-segmentation = "1.13"
 sha2 = "0.10"
 
 [dev-dependencies]

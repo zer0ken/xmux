@@ -248,16 +248,16 @@ pub(crate) struct ViewScreenRender<'a> {
     /// The links the screen offers, in the order the arrow keys walk them. A host's
     /// last link is its machine, written as the machine half of the headline.
     pub(crate) links: &'a [ScreenLink],
-    /// The hard-selected link, drawn while the terminal view holds the focus.
-    pub(crate) link: Option<usize>,
+    /// The selected link, drawn while the terminal view holds the focus.
+    pub(crate) link_selection: Option<usize>,
     /// The link under the pointer.
     pub(crate) link_hover: Option<usize>,
 }
 
 /// One link a screen offers: what it opens or runs, the name it is written as, what the
 /// screen states beside it, and the card number it carries on the landing screen. In
-/// terminal focus a link is a selection target: the arrow keys move its hard selection,
-/// the pointer its soft one, and Enter or a click opens it.
+/// terminal focus a link is a selection target: the arrow keys move its selection,
+/// the pointer its hover, and Enter or a click opens it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ScreenLink {
     pub(crate) target: LinkTarget,
@@ -299,7 +299,7 @@ struct ScreenLines {
 }
 
 /// The first line of a view screen shown in `height` rows: the top, unless the
-/// hard-selected link or the login pane's focused stop would fall below the area, in
+/// selected link or the login pane's focused stop would fall below the area, in
 /// which case the screen scrolls just far enough to show it on its last row. A link the
 /// user can select is a link the user can see before opening it, and a stop that takes
 /// keys is a stop the user can see while typing into it.
@@ -483,20 +483,18 @@ impl ScreenCell {
     }
 }
 
-/// How a link reads: the accent, the hard selection's look while it is the hard
-/// selection and the soft selection's while the pointer is on it, the same two looks a
-/// nav target takes.
+/// A link's accent text with selection and hover styles applied from its state.
 fn link_style(
     palette: &crate::ui::palette::Palette,
     index: usize,
-    view: (Option<usize>, Option<usize>),
+    (selection, hover): (Option<usize>, Option<usize>),
 ) -> Style {
     let mut style = Style::default().fg(palette.accent);
-    if view.0 == Some(index) {
-        style = crate::ui::palette::selected(style, palette);
+    if selection == Some(index) {
+        style = crate::ui::palette::apply_selection(style, palette);
     }
-    if view.1 == Some(index) {
-        style = crate::ui::palette::soft_selected(style, view.0 == Some(index), palette);
+    if hover == Some(index) {
+        style = crate::ui::palette::apply_hover(style, selection == Some(index), palette);
     }
     style
 }
@@ -652,7 +650,7 @@ impl Chrome {
         palette: &crate::ui::palette::Palette,
     ) -> Option<ratatui::layout::Position> {
         let screen = self.view_screen_lines(state, &view, area.width, palette);
-        let top = screen_top(&screen, view.link, area.height);
+        let top = screen_top(&screen, view.link_selection, area.height);
         let caret = screen.caret;
         let lines: Vec<Line<'static>> = screen.lines.into_iter().skip(top).collect();
         let content_rows = lines.len().min(area.height as usize) as u16;
@@ -719,7 +717,7 @@ impl Chrome {
         palette: &crate::ui::palette::Palette,
     ) -> Vec<(usize, Rect)> {
         let screen = self.view_screen_lines(state, view, area.width, palette);
-        let top = screen_top(&screen, view.link, area.height);
+        let top = screen_top(&screen, view.link_selection, area.height);
         screen
             .links
             .into_iter()
@@ -825,7 +823,7 @@ impl Chrome {
     ) -> ScreenLines {
         let (address, kind, focused, machine_screen) =
             (view.address, view.kind, view.focused, view.machine_screen);
-        let marks = (view.link, view.link_hover);
+        let selection_and_hover = (view.link_selection, view.link_hover);
         // The login pane is a machine's: a host refused until a login reads its failure,
         // and its machine's screen is where the login is.
         let pane = kind == ViewScreen::Login && machine_screen;
@@ -1367,7 +1365,7 @@ impl Chrome {
                 ));
                 spans.push(Span::styled(
                     linked,
-                    link_style(pal, up, marks).add_modifier(Modifier::BOLD),
+                    link_style(pal, up, selection_and_hover).add_modifier(Modifier::BOLD),
                 ));
             }
             spans.push(Span::styled(plain, bold));
@@ -1379,7 +1377,6 @@ impl Chrome {
         }
         let mut out = vec![Line::from("")];
         out.extend(headline_lines);
-        let headline_end = out.len();
         let word = if landing {
             self.scan_progress(state)
         } else if logged_out {
@@ -1447,7 +1444,7 @@ impl Chrome {
                 .unwrap_or(0);
             let lit = |style: Style, active: bool| {
                 if active && taking_keys {
-                    crate::ui::palette::selected(style, pal)
+                    crate::ui::palette::apply_selection(style, pal)
                 } else {
                     style
                 }
@@ -1506,6 +1503,7 @@ impl Chrome {
                 }
                 let text = parts.pop().unwrap_or_default();
                 let mut lines = Vec::new();
+                let mut caret = None;
                 for part in parts {
                     spans.push(Span::styled(part, lit(style, active)));
                     lines.push(Line::from(std::mem::replace(
@@ -1513,12 +1511,15 @@ impl Chrome {
                         vec![Span::raw(" ".repeat(value_col))],
                     )));
                 }
-                // The focused value is the hard selection over its own cells and one caret
-                // cell, which is also the highlight's right padding. The column keeps its
-                // width in plain padding.
+                // The focused value owns only its text and the input caret. Alignment
+                // space belongs to the column, outside the selection.
                 let pad = 22usize.saturating_sub(text.chars().count());
                 if active && taking_keys {
                     spans.push(Span::styled(text, lit(style, true)));
+                    caret = Some((
+                        lines.len(),
+                        spans.iter().map(Span::width).sum::<usize>() as u16,
+                    ));
                     spans.push(Span::styled(" ", lit(Style::default(), true)));
                     spans.push(Span::raw(" ".repeat(pad.saturating_sub(1))));
                 } else {
@@ -1552,10 +1553,10 @@ impl Chrome {
                     line.spans.push(note);
                 }
                 lines.push(line);
-                lines
+                (lines, caret)
             };
             // Choice labels stay plain; the value and its padding carry focus. The focused
-            // stop is the hard selection over its own text, only while the pane takes
+            // stop is the selection over its own text, only while the pane takes
             // keys. One radio choice under "After login" selects doing
             // nothing, saving the connection values, or registering this machine's public
             // key. Saving is offered only while it would change what ssh uses.
@@ -1598,8 +1599,14 @@ impl Chrome {
                         if i == last {
                             body.push_str(close);
                         }
-                        spans.push(Span::styled(body, lit(style, active)));
-                        Line::from(spans)
+                        spans.push(Span::styled(body, style));
+                        crate::ui::palette::standalone_line(
+                            Line::from(spans),
+                            active && taking_keys,
+                            false,
+                            width,
+                            pal,
+                        )
                     })
                     .collect::<Vec<_>>()
             };
@@ -1623,73 +1630,55 @@ impl Chrome {
             // The line each stop of the form stands on, so the screen can scroll the
             // focused one into view in a window too short for the whole form.
             let mut stops: Vec<(LoginFocus, usize)> = Vec::new();
-            stops.push((LoginFocus::Address, out.len()));
-            out.extend(field(
-                "address",
-                true,
-                &d.address,
-                false,
-                d.focus == LoginFocus::Address,
-                provenance(&d.address, &d.default_address, defaults.address.provenance),
-                LoginField::Address,
-            ));
-            stops.push((LoginFocus::Port, out.len()));
-            out.extend(field(
-                "port",
-                true,
-                &d.port,
-                false,
-                d.focus == LoginFocus::Port,
-                provenance(&d.port, &d.default_port, defaults.port.provenance),
-                LoginField::Port,
-            ));
-            stops.push((LoginFocus::Username, out.len()));
-            out.extend(field(
-                "username",
-                true,
-                &d.username,
-                false,
-                d.focus == LoginFocus::Username,
-                provenance(
-                    &d.username,
-                    &d.default_username,
-                    defaults.username.provenance,
+            for (focus, name, required, value, mask, source, which) in [
+                (
+                    LoginFocus::Address,
+                    "address",
+                    true,
+                    d.address.as_str(),
+                    false,
+                    provenance(&d.address, &d.default_address, defaults.address.provenance),
+                    LoginField::Address,
                 ),
-                LoginField::Username,
-            ));
-            stops.push((LoginFocus::Password, out.len()));
-            out.extend(field(
-                "password",
-                false,
-                &d.password,
-                true,
-                d.focus == LoginFocus::Password,
-                "",
-                LoginField::Password,
-            ));
-            // The terminal's own cursor sits on the focused field's caret, where an input
-            // method draws what it is composing.
-            let focused_field = stops
-                .iter()
-                .find(|&&(stop, _)| stop == d.focus)
-                .map(|&(_, row)| row);
-            let field_focused = matches!(
-                d.focus,
-                LoginFocus::Address
-                    | LoginFocus::Port
-                    | LoginFocus::Username
-                    | LoginFocus::Password
-            );
-            // A wrapped value carries its caret on the last of its rows.
-            if let Some(first) = focused_field.filter(|_| taking_keys && field_focused) {
-                let end = stops
-                    .iter()
-                    .map(|&(_, row)| row)
-                    .find(|&row| row > first)
-                    .unwrap_or(out.len());
-                caret = (first..end).rev().find_map(|row| {
-                    crate::ui::palette::last_selected_cell(&out[row], pal).map(|col| (row, col))
-                });
+                (
+                    LoginFocus::Port,
+                    "port",
+                    true,
+                    d.port.as_str(),
+                    false,
+                    provenance(&d.port, &d.default_port, defaults.port.provenance),
+                    LoginField::Port,
+                ),
+                (
+                    LoginFocus::Username,
+                    "username",
+                    true,
+                    d.username.as_str(),
+                    false,
+                    provenance(
+                        &d.username,
+                        &d.default_username,
+                        defaults.username.provenance,
+                    ),
+                    LoginField::Username,
+                ),
+                (
+                    LoginFocus::Password,
+                    "password",
+                    false,
+                    d.password.as_str(),
+                    true,
+                    "",
+                    LoginField::Password,
+                ),
+            ] {
+                stops.push((focus, out.len()));
+                let (lines, field_caret) =
+                    field(name, required, value, mask, d.focus == focus, source, which);
+                if let Some((row, col)) = field_caret {
+                    caret = Some((out.len() + row, col));
+                }
+                out.extend(lines);
             }
             out.push(Line::from(""));
             out.push(group("After login"));
@@ -1917,7 +1906,10 @@ impl Chrome {
                             3 + cw as u16 + 2,
                             unicode_width::UnicodeWidthStr::width(name) as u16,
                         ));
-                        spans.push(Span::styled(name.to_string(), link_style(pal, i, marks)));
+                        spans.push(Span::styled(
+                            name.to_string(),
+                            link_style(pal, i, selection_and_hover),
+                        ));
                     }
                     spans.push(Span::styled(
                         rest.to_string(),
@@ -1932,19 +1924,6 @@ impl Chrome {
             }
             out.push(Line::from(spans));
         }
-        // Standalone links and login stops have padding; a link within the headline's
-        // path covers only its own text.
-        let out = out
-            .into_iter()
-            .enumerate()
-            .map(|(i, line)| {
-                if i < headline_end {
-                    line
-                } else {
-                    crate::ui::palette::pad_selected(line, pal)
-                }
-            })
-            .collect();
         ScreenLines {
             lines: out,
             caret,

@@ -42,6 +42,8 @@
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// The one bold shape every interaction screen paints a key token in, so a key reads as
 /// a key wherever it is offered.
@@ -66,9 +68,9 @@ pub(crate) struct Palette {
     /// The single accent: the session name, the screen links, the popup titles, and
     /// the view border's drag-hover cue all share it, so "interactive / current" is
     /// one colour everywhere. Painted on the CARD / TERMINAL background, so it
-    /// follows the theme. It is also the background of every hard selection.
+    /// follows the theme. It is also the background of every selection.
     pub accent: Color,
-    /// The text of a hard selection, painted on [`accent`](Self::accent). Its own role
+    /// The text of a selection, painted on [`accent`](Self::accent). Its own role
     /// because no level colour reads on the accent: the level colours are picked to
     /// read on the terminal's background, which the accent is picked to stand out
     /// from.
@@ -263,15 +265,14 @@ impl Default for Palette {
     }
 }
 
-/// The style the item under the pointer is painted with, the soft selection, on the nav,
-/// a screen link, a popup list, and a help tab alike.
+/// The hover style shared by nav items, screen links, popup lists, and help tabs.
 ///
 /// The hint bar's pair, `bar_fg` text on `bar_bg`, over the whole item, with dim and
-/// reverse video cleared as the hard selection clears them: a background reads at a
+/// reverse video cleared as the selection clears them: a background reads at a
 /// glance where an underline is a thin mark, and the bar's pair is the one the theme
 /// already keeps legible on a surface of its own, apart from the accent. With no colour
-/// to paint (`NO_COLOR`) the soft selection is an underline.
-pub(crate) fn soft_selection_style(palette: &Palette) -> Style {
+/// to paint (`NO_COLOR`) the hover is an underline.
+pub(crate) fn hover_style(palette: &Palette) -> Style {
     if palette.bar_bg == Color::Reset {
         return Style::default().add_modifier(Modifier::UNDERLINED);
     }
@@ -281,18 +282,18 @@ pub(crate) fn soft_selection_style(palette: &Palette) -> Style {
         .remove_modifier(Modifier::DIM | Modifier::REVERSED)
 }
 
-/// `style` under the pointer: the soft selection's background, or, on an item the hard
+/// `style` under the pointer: the hover's background, or, on an item the
 /// selection already paints, an underline over the accent, since one cell holds one
-/// background and the hard selection is where the next key lands.
-pub(crate) fn soft_selected(style: Style, hard: bool, palette: &Palette) -> Style {
-    if hard {
+/// background and the selection is where the next key lands.
+pub(crate) fn apply_hover(style: Style, selected: bool, palette: &Palette) -> Style {
+    if selected {
         style.add_modifier(Modifier::UNDERLINED)
     } else {
-        style.patch(soft_selection_style(palette))
+        style.patch(hover_style(palette))
     }
 }
 
-/// The style every hard selection is painted with: a nav card or the half of a section
+/// The style every selection is painted with: a nav card or the half of a section
 /// title, a screen link, a help tab, a list row, and a focused login stop.
 ///
 /// By default the theme's `on_accent` text on its `accent` background over every cell of
@@ -321,123 +322,76 @@ pub(crate) fn selection_style(palette: &Palette) -> Style {
     }
 }
 
-/// `style` as the hard selection paints it: the selection style patched over it, so the
+/// `style` as the selection paints it: the selection style patched over it, so the
 /// surface's own colour never stays under the highlight as a second background.
-pub(crate) fn selected(style: Style, palette: &Palette) -> Style {
+pub(crate) fn apply_selection(style: Style, palette: &Palette) -> Style {
     style.patch(selection_style(palette))
 }
 
-/// `line` as the hard selection paints it: [`selected`] over the line and over each of its
-/// spans, so every cell the line covers reads as the one selected look.
-pub(crate) fn selected_line(line: Line<'static>, palette: &Palette) -> Line<'static> {
-    let style = selected(line.style, palette);
-    let spans = line
-        .spans
-        .into_iter()
-        .map(|span| {
-            let style = selected(span.style, palette);
-            span.style(style)
-        })
-        .collect::<Vec<_>>();
-    Line::from(spans).style(style)
+/// The cells owned by a standalone item, including one available blank on each side.
+/// Indentation and trailing layout space remain outside the interactive item.
+pub(crate) fn standalone_bounds(line: &Line, width: u16) -> std::ops::Range<u16> {
+    let mut x = 0usize;
+    let mut first = None;
+    let mut last = 0;
+    for span in &line.spans {
+        for grapheme in span.content.graphemes(true) {
+            let w = grapheme.width();
+            if grapheme != " " && w > 0 {
+                first.get_or_insert(x);
+                last = x + w;
+            }
+            x += w;
+        }
+    }
+    match first {
+        Some(first) => {
+            (first.saturating_sub(1).min(width as usize) as u16)
+                ..(last.saturating_add(1).min(width as usize) as u16)
+        }
+        None => 0..0,
+    }
 }
 
-/// `line` under the pointer: [`soft_selected`] over the line and over each of its spans,
-/// so a span's own colour, which a span keeps over its line's, cannot vanish into the
-/// soft selection's background.
-pub(crate) fn soft_selected_line(
-    line: Line<'static>,
-    hard: bool,
+/// Paint a standalone item's explicit selection and hover state inside its own bounds.
+pub(crate) fn standalone_line(
+    mut line: Line<'static>,
+    selection: bool,
+    hover: bool,
+    width: u16,
     palette: &Palette,
 ) -> Line<'static> {
-    let style = soft_selected(line.style, hard, palette);
-    let spans = line
-        .spans
-        .into_iter()
-        .map(|span| {
-            let style = soft_selected(span.style, hard, palette);
-            span.style(style)
-        })
-        .collect::<Vec<_>>();
-    Line::from(spans).style(style)
-}
-
-/// Whether `style` is the hard selection's paint: it carries the selection's background.
-fn is_selected(style: Style, palette: &Palette) -> bool {
-    let bg = selection_style(palette).bg;
-    bg.is_some() && style.bg == bg
-}
-
-/// A line of standalone items with each selected or hovered run padded by one blank
-/// cell on each side. A side whose cell in the run is
-/// already blank is padded; otherwise the neighbouring cell takes the run's paint when
-/// it is blank, and a run that ends the line gains one blank cell after it. A neighbour
-/// that is text stays as it is, so the padding never moves a character.
-pub(crate) fn pad_selected(line: Line<'static>, palette: &Palette) -> Line<'static> {
-    // One entry per character: the span it came from, the character, and its style.
-    let mut cells: Vec<(usize, char, Style)> = line
-        .spans
-        .iter()
-        .enumerate()
-        .flat_map(|(i, span)| span.content.chars().map(move |c| (i, c, span.style)))
-        .collect();
-    let selected = |cells: &[(usize, char, Style)], at: usize| {
-        let style = cells[at].2;
-        is_selected(style, palette)
-            || (palette.bar_bg != Color::Reset && style.bg == Some(palette.bar_bg))
-            || style.add_modifier.contains(Modifier::UNDERLINED)
-    };
-    let mut at = 0;
-    while at < cells.len() {
-        if !selected(&cells, at) {
-            at += 1;
-            continue;
-        }
-        let start = at;
-        while at < cells.len() && selected(&cells, at) && cells[at].2 == cells[start].2 {
-            at += 1;
-        }
-        let end = at;
-        if cells[start].1 != ' ' && start > 0 && cells[start - 1].1 == ' ' {
-            cells[start - 1].2 = cells[start].2;
-            cells[start - 1].0 = usize::MAX - 1;
-        }
-        if cells[end - 1].1 != ' ' {
-            if end == cells.len() {
-                cells.push((usize::MAX, ' ', cells[end - 1].2));
-            } else if cells[end].1 == ' ' {
-                cells[end].2 = cells[end - 1].2;
-                cells[end].0 = usize::MAX;
-                at += 1;
-            }
-        }
+    let bounds = standalone_bounds(&line, width);
+    if line.width() < bounds.end as usize {
+        line.spans
+            .push(Span::raw(" ".repeat(bounds.end as usize - line.width())));
     }
-    // Rebuilt span by span: a padding cell is a span of its own, so every span the
-    // surface built keeps its own text.
+    if !selection && !hover {
+        return line;
+    }
+    let mut x = 0usize;
     let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut last: Option<(usize, Style)> = None;
-    for (origin, c, style) in cells {
-        match spans.last_mut() {
-            Some(span) if last == Some((origin, style)) => span.content.to_mut().push(c),
-            _ => spans.push(Span::styled(c.to_string(), style)),
+    for span in line.spans {
+        for grapheme in span.content.graphemes(true) {
+            let mut style = span.style;
+            if bounds.contains(&(x.min(u16::MAX as usize) as u16)) {
+                if selection {
+                    style = apply_selection(style, palette);
+                }
+                if hover {
+                    style = apply_hover(style, selection, palette);
+                }
+            }
+            match spans.last_mut() {
+                Some(previous) if previous.style == style => {
+                    previous.content.to_mut().push_str(grapheme)
+                }
+                _ => spans.push(Span::styled(grapheme.to_string(), style)),
+            }
+            x += grapheme.width();
         }
-        last = Some((origin, style));
     }
     Line::from(spans).style(line.style)
-}
-
-/// The cell offset of the last hard-selected cell in `line`.
-pub(crate) fn last_selected_cell(line: &Line, palette: &Palette) -> Option<u16> {
-    let mut x = 0usize;
-    let mut found = None;
-    for span in &line.spans {
-        let w = span.width();
-        if w > 0 && is_selected(span.style, palette) {
-            found = Some(x + w - 1);
-        }
-        x += w;
-    }
-    found.and_then(|x| u16::try_from(x).ok())
 }
 
 /// What `xmux doctor` says about the selected card's paint. The selection is the one
@@ -667,51 +621,47 @@ mod tests {
     }
 
     #[test]
-    fn padding_takes_a_blank_neighbour_and_never_moves_text() {
-        let p = auto_dark();
-        let lit = selected(Style::default(), &p);
-        let text = |line: &Line| {
-            line.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        };
-        let lit_text = |line: &Line| {
-            line.spans
-                .iter()
-                .filter(|s| is_selected(s.style, &p))
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        };
-        // Blank cells on both sides take the paint.
-        let line = pad_selected(
-            Line::from(vec![
-                Span::raw("a  "),
-                Span::styled("tab", lit),
-                Span::raw("  b"),
-            ]),
-            &p,
+    fn standalone_padding_uses_explicit_state_and_keeps_layout_space_plain() {
+        for p in [
+            auto_dark(),
+            without_color(auto_dark()),
+            Palette {
+                selection_bg: Some(Color::Blue),
+                ..auto_dark()
+            },
+        ] {
+            for (selection, hover) in [(true, false), (false, true), (true, true)] {
+                let line = standalone_line(Line::from("   tab      "), selection, hover, 12, &p);
+                assert_eq!(line.to_string(), "   tab      ");
+                assert_eq!(standalone_bounds(&line, 12), 2..7);
+                let mut expected = Style::default();
+                if selection {
+                    expected = apply_selection(expected, &p);
+                }
+                if hover {
+                    expected = apply_hover(expected, selection, &p);
+                }
+                let styles: Vec<_> = line
+                    .spans
+                    .iter()
+                    .flat_map(|s| s.content.chars().map(move |_| s.style))
+                    .collect();
+                assert!(styles[..2].iter().all(|s| *s == Style::default()));
+                assert!(styles[2..7].iter().all(|s| *s == expected));
+                assert!(styles[7..].iter().all(|s| *s == Style::default()));
+                assert_eq!(line.style, Style::default());
+            }
+        }
+        let underline = Style::default().add_modifier(Modifier::UNDERLINED);
+        let line = standalone_line(
+            Line::from(vec![Span::raw("  "), Span::styled("fact", underline)]),
+            false,
+            false,
+            20,
+            &auto_dark(),
         );
-        assert_eq!(text(&line), "a  tab  b");
-        assert_eq!(lit_text(&line), " tab ");
-        // Text beside the run stays as it is, and a run that ends the line gains a cell.
-        let line = pad_selected(
-            Line::from(vec![Span::raw("x/"), Span::styled("host", lit)]),
-            &p,
-        );
-        assert_eq!(text(&line), "x/host ");
-        assert_eq!(lit_text(&line), "host ");
-        // A run that already opens and closes on a blank cell is left alone.
-        let line = pad_selected(
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(" (*) a ", lit),
-                Span::raw(" "),
-            ]),
-            &p,
-        );
-        assert_eq!(lit_text(&line), " (*) a ");
-        assert_eq!(last_selected_cell(&line, &p), Some(8));
+        assert_eq!(line.spans[0].style, Style::default());
+        assert_eq!(line.spans.last().unwrap().style, Style::default());
     }
 
     #[test]
@@ -724,5 +674,16 @@ mod tests {
         });
         assert_eq!(s.bg, Some(Color::Blue));
         assert!(!s.add_modifier.contains(Modifier::REVERSED));
+    }
+    #[test]
+    fn standalone_geometry_uses_terminal_grapheme_width() {
+        let p = auto_dark();
+        for text in ["   한글 ", "   e\u{301} ", "   👩‍💻 "] {
+            let line = standalone_line(Line::from(text.to_string()), true, false, 40, &p);
+            assert_eq!(line.to_string(), text);
+            assert_eq!(standalone_bounds(&line, 40), 2..text.width() as u16);
+            assert_eq!(line.spans.first().unwrap().content, "  ");
+            assert_eq!(line.spans.last().unwrap().style.bg, Some(p.accent));
+        }
     }
 }
