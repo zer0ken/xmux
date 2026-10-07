@@ -779,13 +779,7 @@ echo probe-ok
         }
     }
 
-    // LIVE: the timeout path runs a real hung command for the full POLL_CMD_TIMEOUT
-    // (6s), so it is ignored and run on demand:
-    //   cargo test --lib model::host_def::tests::exec_runner_times_out_and_kills -- --ignored
-    // It asserts the command's own budget returns a timeout error AND that the child is
-    // reaped (the process is gone) rather than left behind - the teardown that on
-    // Windows avoids the "IO is still pending on closed socket" crash (#116).
-    #[ignore = "live: sleeps for the full 6s command budget"]
+    /// A disposable child must be killed and reaped when its command deadline expires.
     #[tokio::test]
     async fn exec_runner_times_out_and_kills() {
         // A command that outlives the budget and runs as a SINGLE process: a shell
@@ -805,18 +799,21 @@ echo probe-ok
         #[cfg(not(windows))]
         let (name, args) = ("sleep", vec!["30".to_string()]);
         let t0 = std::time::Instant::now();
+        let command = CommandSpec::new(name, args);
         let err = ExecRunner
-            .run(name, &args)
+            .run_spec_until(
+                &command,
+                tokio::time::Instant::now() + std::time::Duration::from_millis(100),
+            )
             .await
             .expect_err("must time out");
         assert!(
             err.to_string().contains("did not answer"),
             "timeout names the hung command, got {err:?}"
         );
-        // The budget is the 6s command budget (plus scheduling slack), NOT the full 30s
-        // hang - proof the child was killed and not left running.
+        // Returning before the child finishes its sleep proves teardown drained its pipes.
         assert!(
-            t0.elapsed() < std::time::Duration::from_secs(20),
+            t0.elapsed() < std::time::Duration::from_secs(5),
             "child was killed and reaped, took {:?}",
             t0.elapsed()
         );

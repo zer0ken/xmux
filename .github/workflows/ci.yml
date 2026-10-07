@@ -7,8 +7,12 @@ on:
 
 jobs:
   gate:
-    name: fmt · clippy · test
-    runs-on: windows-latest
+    name: fmt · clippy · test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

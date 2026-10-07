@@ -442,10 +442,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "real -CC is the live gate; this just proves a piped child spawns + tears down"]
     fn host_client_spawns_piped_child() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
+        #[cfg(windows)]
         let argv: Vec<String> = ["cmd.exe", "/c", "echo", "hi"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        #[cfg(not(windows))]
+        let argv: Vec<String> = ["sh", "-c", "printf hi"]
             .iter()
             .map(|s| s.to_string())
             .collect();

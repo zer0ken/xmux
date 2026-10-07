@@ -7,7 +7,7 @@ The GitHub Actions workflows.
 ## Module Seams
 
 - `ci.yml` runs format, lint, and the test suite on every pull request and on pushes to
-  `main`.
+  `main`, on Linux and Windows.
 - `e2e.yml` runs the end-to-end suite with the Linux client (`scripts/e2e/`) on every
   pull request and on pushes to `main`, as one parallel job per mux.
 - `release.yml` builds, publishes, and refreshes the packaging on a version tag.

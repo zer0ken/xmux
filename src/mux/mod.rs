@@ -919,23 +919,6 @@ mod tests {
         assert_eq!(t.bin(), "custom");
     }
 
-    // LIVE: enumerate over a real local tmux server. `#[ignore]` (needs tmux + a
-    // server). Run on demand:
-    //   cargo test --lib mux::tests::tmux_enumerate_live -- --ignored --nocapture
-    #[ignore = "live: needs a running local tmux server"]
-    #[tokio::test]
-    async fn tmux_enumerate_live() {
-        let t = crate::transport::local(None);
-        let sessions = tmux()
-            .enumerate(&t, &crate::model::host_def::ExecRunner)
-            .await
-            .expect("reachable tmux (empty is Ok)");
-        eprintln!(
-            "local tmux sessions: {:?}",
-            sessions.iter().map(|s| &s.name).collect::<Vec<_>>()
-        );
-    }
-
     #[test]
     fn psmux_is_per_session_and_named() {
         let m = psmux();
@@ -1324,27 +1307,6 @@ Usage: zellij [OPTIONS]",
         let got = detect_backend(&transport, "tmux", &runner).await.0.unwrap();
         assert_eq!(got.kind(), "tmux");
         assert_eq!(got.server_model(), ServerModel::Shared);
-    }
-
-    // LIVE: probe the REAL detect_backend against the configured machines. `#[ignore]`
-    // (needs ssh jupiter00 + a local psmux). Run on demand:
-    //   cargo test --lib mux::tests::detect_backend_live -- --ignored --nocapture
-    #[ignore = "live: needs ssh jupiter00 and local psmux"]
-    #[tokio::test]
-    async fn detect_backend_live() {
-        use crate::model::host_def::ExecRunner;
-        let ssh = crate::transport::ssh("jupiter00".into(), String::new(), "windows".into());
-        let (got, _) = detect_backend(&ssh, "tmux", &ExecRunner).await;
-        eprintln!(
-            "DETECT jupiter00/tmux -> {:?}",
-            got.as_ref().map(|m| (m.kind(), m.server_model()))
-        );
-        let local = crate::transport::local(None);
-        let (got, _) = detect_backend(&local, "psmux", &ExecRunner).await;
-        eprintln!(
-            "DETECT local/psmux -> {:?}",
-            got.as_ref().map(|m| (m.kind(), m.server_model()))
-        );
     }
 
     #[tokio::test]
