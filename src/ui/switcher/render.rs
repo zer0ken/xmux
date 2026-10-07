@@ -1221,8 +1221,8 @@ impl Switcher {
                 palette::selection_style(palette),
             );
         }
-        // The soft selection: the target under the pointer, underlined, unless it is the
-        // hard selection already drawn on the accent.
+        // The soft selection: the target under the pointer on its own background, unless
+        // it is the hard selection already drawn on the accent.
         if let Some((reference, part)) = &self.hover {
             if let Some(idx) = self.row_matching(reference) {
                 let hard = self.hard_row() == Some(idx) && *part == self.part;
@@ -1240,7 +1240,7 @@ impl Switcher {
                 if let Some(rect) = rect.filter(|_| !hard) {
                     frame
                         .buffer_mut()
-                        .set_style(rect, palette::soft_selection_style());
+                        .set_style(rect, palette::soft_selection_style(palette));
                 }
             }
         }

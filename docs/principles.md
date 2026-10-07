@@ -276,8 +276,9 @@ padding before and after the item's text, taken from a blank cell the layout alr
 leaves there; where that cell holds other text or lies outside the surface, that side
 goes without, because the padding never moves text or wraps a row. The caret of a
 focused login field is the padding cell after its value. The soft selection under the
-pointer is an underline, which reads apart from the highlight and lies on top of it when
-both mark one item. A colour the user names in `[ui] selection-style` replaces the
+pointer paints the item on the hint bar's pair of colours, a background apart from the
+accent, so the item a click would pick is found at a glance; on the item the highlight
+already marks, the pointer underlines it instead, since one cell holds one background. A colour the user names in `[ui] selection-style` replaces the
 accent background on every one of these surfaces alike, and the item keeps its own text
 colours on it. With no accent to paint, under `NO_COLOR`, the selection is reverse
 video.

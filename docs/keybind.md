@@ -229,7 +229,7 @@ the window's bottom left.
 
 Every popup opens where the key list opens and is moved by dragging it. Its rows wrap
 to its width rather than being cut, and only a text field stays on one row. In a popup
-with items to pick, the arrows move its selection, the pointer underlines an item without
+with items to pick, the arrows move its selection, the pointer marks an item without
 moving that selection, and a click executes the item as `Enter` would. A popup that
 cannot accept what was typed in it says so beside its field in the error colour, led by
 `✗`, until the next key, and stays open for the correction; it raises no toast.
@@ -276,7 +276,7 @@ toasts off; the history still records every result.
 | left-click a card or title part | open it: select it and focus the terminal view |
 | point at a card or title part | preview it in the terminal view without moving the selection |
 | left-click a screen link | open the screen it names, or run the action it names as its key does |
-| point at or left-click a landing card | underline it, or open it as `Enter` does, from either focus |
+| point at or left-click a landing card | mark it, or open it as `Enter` does, from either focus |
 | left-click a view | focus that view |
 | left-click a collapsed nav | expand the nav |
 | left-click `‹ 5` or `7 ›` | select the nearest card scrolled off that side |

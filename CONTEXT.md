@@ -132,7 +132,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **selection** - the hard selection: the node (machine, host, or session) the arrows
   and execution move and the terminal view shows.
 - **soft selection** - the target under the pointer. It previews without moving the
-  selection and paints as an underline.
+  selection and paints on the hint bar's background, apart from the accent.
 - **interest** - what the user is on or asked for, the one value the selection is
   resolved from on every rebuild.
 - **selection lineage** - session, host, machine: the chain a selection walks up when its
