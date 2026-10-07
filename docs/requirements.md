@@ -175,6 +175,8 @@ against, naming no source file, function, or test.
   session on screen set. Once a title xmux wrote is no longer backed by the session on
   screen, the title is `xmux`, and on exit xmux restores the title the terminal had at
   launch where the terminal keeps a title stack.
+- **FR-B47** - A psmux card attaches only to its named existing session; a missing
+  session is not created, and a failed display attach reports a toast and history entry.
 
 ## C. Switching (the keystone)
 

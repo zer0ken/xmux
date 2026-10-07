@@ -919,12 +919,10 @@ mod tests {
 
     #[test]
     fn psmux_attach_plan_routes_to_the_per_session_server() {
-        // psmux is one-server-per-session, so the display attach must use
-        // `new-session -A -s <name>` (routes to that session's own server) rather
-        // than a bare `attach -t <name>` on the default socket (a warm clone).
+        // An explicit target resolves the session's own server without creating it.
         assert_eq!(
             psmux().attach_plan("work"),
-            argv(&["psmux", "new-session", "-A", "-s", "work"])
+            argv(&["psmux", "-f", "NUL", "attach", "-t", "work"])
         );
     }
 
@@ -944,7 +942,7 @@ mod tests {
         let m = Psmux { bin: "tmux".into() };
         assert_eq!(
             m.attach_plan("api"),
-            argv(&["tmux", "new-session", "-A", "-s", "api"])
+            argv(&["tmux", "-f", "NUL", "attach", "-t", "api"])
         );
         assert_eq!(m.server_model(), ServerModel::PerSession);
         assert_eq!(m.kind(), "psmux");
@@ -1211,7 +1209,7 @@ mod tests {
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(
             got.attach_plan("api"),
-            argv(&["tmux", "new-session", "-A", "-s", "api"])
+            argv(&["tmux", "-f", "NUL", "attach", "-t", "api"])
         );
     }
 
@@ -1233,7 +1231,7 @@ mod tests {
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(
             got.attach_plan("api"),
-            argv(&["psmux", "new-session", "-A", "-s", "api"])
+            argv(&["psmux", "-f", "NUL", "attach", "-t", "api"])
         );
     }
 

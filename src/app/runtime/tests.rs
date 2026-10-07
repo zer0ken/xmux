@@ -3819,6 +3819,7 @@ async fn an_early_end_on_a_mux_that_keeps_its_clients_reattaches_nothing() {
     the_reattach_lands(&mut rt, "b");
     the_client_detaches(&mut rt, OWN_CLIENT + 1);
     assert_eq!(rt.model.state.displayed.session, "b");
+    assert_eq!(rt.model.state.notify.toasts.len(), 1);
 
     assert!(
         !passes_attach_anything(&mut rt, t),
@@ -3856,6 +3857,11 @@ async fn a_failed_attach_waits_for_the_user_to_ask_again() {
             });
         };
         fail(&mut rt);
+        assert_eq!(rt.model.state.notify.toasts.len(), 1);
+        assert_eq!(
+            rt.model.state.notify.toasts[0].notes[0].text,
+            "spawn failed"
+        );
         assert!(
             !passes_attach_anything(&mut rt, t),
             "the beat does not retry a failed attach (psmux={psmux})"
@@ -3892,6 +3898,45 @@ async fn a_failed_attach_waits_for_the_user_to_ask_again() {
             local_in_flight(&rt),
             "selecting the card again asks for the attach again (psmux={psmux})"
         );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_stale_psmux_card_reports_attach_failure_from_keys_and_ctl() {
+    for keys in [true, false] {
+        let mut rt = a_settled_psmux_runtime();
+        rt.worker = crate::display::DisplayWorker::with_spawner(
+            tokio::sync::mpsc::unbounded_channel().0,
+            Box::new(|command, _, _, _, _, _| {
+                assert_eq!(command.argv(), &["psmux", "-f", "NUL", "attach", "-t", "b"]);
+                anyhow::bail!("psmux: can't find session: b")
+            }),
+        );
+        if keys {
+            let mut width_changed = false;
+            rt.handle_nav_bytes(b"\x1b[B\r", &mut width_changed);
+        } else {
+            let crate::link::control::CtlRequest::Op(action) =
+                crate::link::control::parse_ctl_op("switch local b")
+            else {
+                panic!("switch resolves to an action");
+            };
+            rt.dispatch_action(action);
+        }
+        let t = std::time::Instant::now();
+        one_pass(&mut rt, t);
+        one_pass(&mut rt, t + std::time::Duration::from_millis(200));
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rt.worker.recv())
+            .await
+            .expect("the attach answers")
+            .expect("the worker is live");
+        rt.on_display_event(event);
+        assert_eq!(rt.model.state.notify.toasts.len(), 1, "keys={keys}");
+        assert_eq!(
+            rt.model.state.notify.toasts[0].notes[0].text,
+            "psmux: can't find session: b"
+        );
+        assert!(!passes_attach_anything(&mut rt, t), "no retry: keys={keys}");
     }
 }
 

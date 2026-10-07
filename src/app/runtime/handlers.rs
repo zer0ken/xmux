@@ -1429,7 +1429,7 @@ impl Runtime {
                     // from a reattach decision gone wrong.
                     tracing::info!(id, established = true, last = %last, "attach_exited");
                     if ended_early {
-                        self.on_selection_attach_lost(id, true, now);
+                        self.on_selection_attach_lost(id, true, now, last);
                     }
                 }
                 Some(id) == displayed_attach_id
@@ -1524,8 +1524,18 @@ impl Runtime {
                     // The selection's own client ended before its Ready: it never carried
                     // the display, so it is answered like a start that failed.
                     Some(crate::model::ReadyOutcome::TearDownReaped) if current_for_selection => {
+                        let last = attachment
+                            .grid
+                            .lock()
+                            .ok()
+                            .and_then(|g| {
+                                g.last_line_except(
+                                    crate::transport::diagnostic::is_verbose_report_line,
+                                )
+                            })
+                            .unwrap_or_default();
                         attachment.teardown();
-                        self.on_selection_attach_lost(id, false, std::time::Instant::now());
+                        self.on_selection_attach_lost(id, false, std::time::Instant::now(), last);
                     }
                     // Reaped-race, stale seq, or unknown host: tear the fresh attachment down
                     // (resolve_ready already cleared the bookkeeping for the first two).
@@ -1547,6 +1557,8 @@ impl Runtime {
                         &mut self.model,
                         Msg::Action(crate::model::Action::AttachFailed),
                     );
+                    debug_assert!(effects.is_empty());
+                    let effects = update(&mut self.model, Msg::AttachFailure(message));
                     debug_assert!(effects.is_empty());
                 }
             }
@@ -1573,11 +1585,27 @@ impl Runtime {
     /// selection is attached once more, and the state bounds that to once per selection.
     /// Any other mux ended the client for a reason of its own: an unconfirmed attach then
     /// waits for the user, and a confirmed one is the ordinary ended display.
-    fn on_selection_attach_lost(&mut self, id: u64, confirmed: bool, now: std::time::Instant) {
+    fn on_selection_attach_lost(
+        &mut self,
+        id: u64,
+        confirmed: bool,
+        now: std::time::Instant,
+        message: String,
+    ) {
         let drops = self
             .hosts
             .get(&self.model.state.selection.host)
             .is_some_and(|h| h.mux.drops_fresh_client());
+        if !drops {
+            let message = if matches!(message.as_str(), "" | "(no pane)" | "(no grid)" | "(blank)")
+            {
+                "The display client ended before the session could be attached.".to_string()
+            } else {
+                message
+            };
+            let effects = update(&mut self.model, Msg::AttachFailure(message));
+            debug_assert!(effects.is_empty());
+        }
         let action = if drops {
             tracing::info!(id, confirmed, "attach_dropped_early");
             crate::model::Action::FreshClientDropped { now }

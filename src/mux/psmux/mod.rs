@@ -105,19 +105,16 @@ impl Mux for Psmux {
     }
 
     fn attach_plan(&self, session: &str) -> Vec<String> {
-        // psmux is one-server-per-session: each session is its own server on its own
-        // port (`~/.psmux/<name>.port`). A bare `attach -t <name>` on the DEFAULT
-        // socket does not reach that session's server - it lands on a warm clone / the
-        // default session - so selecting another session shows the wrong content.
-        // `new-session -A -s <name>` (attach-if-exists, no `-d`) routes to the
-        // session's OWN server and attaches the REAL session (verified: `-A -s
-        // <existing>` finds it without creating a duplicate; cf. the `-CC` form in
-        // 679bf3b).
+        // An explicit target resolves the session's own server and refuses a missing
+        // session. An empty client config disables startup-session bootstrapping;
+        // existing servers supply their own prefix and bindings. Creating a session
+        // belongs to the new-session operation.
         vec![
             self.bin.clone(),
-            "new-session".to_string(),
-            "-A".to_string(),
-            "-s".to_string(),
+            "-f".to_string(),
+            "NUL".to_string(),
+            "attach".to_string(),
+            "-t".to_string(),
             session.to_string(),
         ]
     }

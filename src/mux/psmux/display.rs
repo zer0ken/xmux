@@ -7,8 +7,8 @@ use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
 /// Per-session mux (psmux): one server per session, displayed through ONE per-host PTY
-/// that is REATTACHED whenever the selected session changes (`new-session -A -s <name>`
-/// routes to that session's own server - the 4a5f053 correctness fix). `Psmux::driver`
+/// that is REATTACHED whenever the selected session changes (`-f NUL attach -t <name>`
+/// routes to that session's own server). `Psmux::driver`
 /// constructs it for a `PerSession` host.
 pub struct PsmuxDriver;
 
@@ -514,9 +514,7 @@ mod tests {
         );
     }
 
-    /// FALLBACK (the 4a5f053 guard): with NO captured tty, even a live attachment
-    /// REATTACHES (drop + new-session -A -s) rather than switching - so a box where the
-    /// tty is never captured behaves exactly like today (no regression).
+    /// With no captured tty, even a live attachment reattaches by session name.
     #[tokio::test(flavor = "current_thread")]
     async fn psmux_driver_show_reattaches_when_tty_unknown() {
         let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
