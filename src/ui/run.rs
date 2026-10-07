@@ -65,7 +65,7 @@ fn flatten_buffer(buf: &ratatui::buffer::Buffer) -> String {
     for y in 0..buf.area.height {
         let mut line = String::new();
         for x in 0..buf.area.width {
-            line.push_str(buf[(x, y)].symbol());
+            line.push_str(crate::display::grid::visible_symbol(buf[(x, y)].symbol()));
         }
         out.push_str(line.trim_end());
         out.push('\n');
@@ -315,7 +315,7 @@ mod tests {
         let mut state = crate::state::State::from_scan(sample());
         let sw = Switcher::new(&mut state);
         let mut grid = crate::display::grid::Grid::new(30, 100);
-        grid.feed(b"LIVEGRID");
+        grid.feed(b"LIVE\x1b]8;;https://example.com\x07GRID\x1b]8;;\x07");
         // A dump with a live grid includes both the tree and the grid content (the
         // terminal view), so a headless `dump` reflects the live grid.
         let out = dump_screen(
@@ -329,7 +329,7 @@ mod tests {
         assert!(out.contains("editor"), "tree still rendered:\n{out}");
         assert!(
             out.contains("LIVEGRID"),
-            "live grid content rendered:\n{out}"
+            "live grid content rendered, a link as its text:\n{out}"
         );
     }
 }

@@ -1,6 +1,6 @@
 use unicode_width::UnicodeWidthChar as _;
 
-// chosen to make the size of the cell struct 32 bytes
+// chosen with the attributes to make the size of the cell struct 36 bytes
 const CONTENT_BYTES: usize = 22;
 
 const IS_WIDE: u8 = 0b1000_0000;
@@ -14,7 +14,7 @@ pub struct Cell {
     len: u8,
     attrs: crate::display::vt100::attrs::Attrs,
 }
-const _: () = assert!(std::mem::size_of::<Cell>() == 32);
+const _: () = assert!(std::mem::size_of::<Cell>() == 36);
 
 impl PartialEq<Self> for Cell {
     fn eq(&self, other: &Self) -> bool {
@@ -175,5 +175,13 @@ impl Cell {
     #[must_use]
     pub fn inverse(&self) -> bool {
         self.attrs.inverse()
+    }
+
+    /// Returns the OSC 8 link the cell was written under, 0 for none. The
+    /// screen's [`hyperlink_uri`](crate::display::vt100::Screen::hyperlink_uri)
+    /// names its URI.
+    #[must_use]
+    pub fn hyperlink_id(&self) -> u16 {
+        self.attrs.link
     }
 }

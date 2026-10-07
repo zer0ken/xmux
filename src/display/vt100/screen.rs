@@ -62,7 +62,14 @@ pub struct Screen {
     modes: u8,
     mouse_protocol_mode: MouseProtocolMode,
     mouse_protocol_encoding: MouseProtocolEncoding,
+
+    /// The URIs OSC 8 opened, each once; a cell's link is an index into it plus one.
+    hyperlinks: Vec<String>,
 }
+
+/// The most distinct URIs a screen keeps. A link opened past it is written as plain
+/// text, so a child that names a new URI on every line cannot grow the screen.
+const HYPERLINKS_MAX: usize = 4096;
 
 impl Screen {
     pub(crate) fn new(size: crate::display::vt100::grid::Size, scrollback_len: usize) -> Self {
@@ -78,6 +85,8 @@ impl Screen {
             modes: 0,
             mouse_protocol_mode: MouseProtocolMode::default(),
             mouse_protocol_encoding: MouseProtocolEncoding::default(),
+
+            hyperlinks: Vec::new(),
         }
     }
 
@@ -485,6 +494,30 @@ impl Screen {
         // instance) and then calls cursor_state_formatted. just documenting
         // it and letting the user handle it on their own is more
         // straightforward.
+    }
+
+    /// Returns the URI of the OSC 8 link a cell's
+    /// [`hyperlink_id`](crate::display::vt100::Cell::hyperlink_id) names.
+    #[must_use]
+    pub fn hyperlink_uri(&self, id: u16) -> Option<&str> {
+        let index = usize::from(id).checked_sub(1)?;
+        self.hyperlinks.get(index).map(String::as_str)
+    }
+
+    /// Opens an OSC 8 link to `uri` for the text written next, or closes the open
+    /// one when `uri` is empty.
+    pub(crate) fn set_hyperlink(&mut self, uri: &[u8]) {
+        let uri = String::from_utf8_lossy(uri);
+        self.attrs.link = if uri.is_empty() {
+            0
+        } else if let Some(i) = self.hyperlinks.iter().position(|u| *u == uri) {
+            u16::try_from(i + 1).unwrap_or(0)
+        } else if self.hyperlinks.len() < HYPERLINKS_MAX {
+            self.hyperlinks.push(uri.into_owned());
+            u16::try_from(self.hyperlinks.len()).unwrap_or(0)
+        } else {
+            0
+        };
     }
 
     /// Returns the [`Cell`](crate::display::vt100::Cell) object at the given location in the
@@ -1149,12 +1182,21 @@ impl Screen {
     }
 
     // CSI m
+    /// SGR 0: back to the default rendition. An open OSC 8 link stays open, as
+    /// it does in a terminal, because the link is not part of the rendition.
+    fn reset_rendition(&mut self) {
+        self.attrs = crate::display::vt100::attrs::Attrs {
+            link: self.attrs.link,
+            ..Default::default()
+        };
+    }
+
     pub(crate) fn sgr(&mut self, params: &vte::Params, mut unhandled: impl FnMut(&mut Self)) {
         // XXX really i want to just be able to pass in a default Params
         // instance with a 0 in it, but vte doesn't allow creating new Params
         // instances
         if params.is_empty() {
-            self.attrs = crate::display::vt100::attrs::Attrs::default();
+            self.reset_rendition();
             return;
         }
 
@@ -1191,7 +1233,7 @@ impl Screen {
 
         loop {
             match next_param!() {
-                [0] => self.attrs = crate::display::vt100::attrs::Attrs::default(),
+                [0] => self.reset_rendition(),
                 [1] => self.attrs.set_bold(),
                 [2] => self.attrs.set_dim(),
                 [3] => self.attrs.set_italic(true),

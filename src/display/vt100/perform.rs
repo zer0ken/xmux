@@ -181,6 +181,11 @@ impl<CB: crate::display::vt100::callbacks::Callbacks> vte::Perform for WrappedSc
             [b"1", s] => {
                 self.callbacks.set_window_icon_name(&mut self.screen, s);
             }
+            // OSC 8 ; params ; URI. A URI may hold `;`, which the parser splits
+            // on, so the fields after the params are joined back.
+            [b"8", _params, uri @ ..] => {
+                self.screen.set_hyperlink(&uri.join(&b';'));
+            }
             [b"2", s] => {
                 self.callbacks.set_window_title(&mut self.screen, s);
             }

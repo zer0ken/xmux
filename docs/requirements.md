@@ -175,6 +175,9 @@ against, naming no source file, function, or test.
   session on screen set. Once a title xmux wrote is no longer backed by the session on
   screen, the title is `xmux`, and on exit xmux restores the title the terminal had at
   launch where the terminal keeps a title stack.
+- **FR-B47** - Text a session's client writes inside an OSC 8 hyperlink keeps the link in
+  the terminal view, so the terminal xmux runs in opens it as it would for the client
+  itself.
 
 ## C. Switching (the keystone)
 

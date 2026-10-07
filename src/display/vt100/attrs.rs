@@ -26,6 +26,10 @@ pub struct Attrs {
     pub fgcolor: Color,
     pub bgcolor: Color,
     pub mode: u8,
+    /// The OSC 8 link the text is written under: an index into the screen's links
+    /// plus one, or 0 for none. It rides with the colours so a cell keeps its link
+    /// through every scroll, insert, and copy that moves the cell.
+    pub link: u16,
 }
 
 impl Attrs {
