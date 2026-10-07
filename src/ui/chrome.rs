@@ -521,6 +521,7 @@ impl Default for Chrome {
             log_path: String::new(),
             ui_prefix: "C-g".into(),
             armed: false,
+            resizing: false,
             nav_position: crate::ui::switcher::NavPosition::Left,
             colors: ViewBorderColors::from_palette(&palette),
             hint_bar_style: hint_bar_default_style(&palette),

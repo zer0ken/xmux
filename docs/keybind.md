@@ -64,8 +64,8 @@ removes the collision.
 | `prefix :` | open the command palette |
 | `prefix t` | toggle auto-hide-nav |
 | `prefix z` | collapse or expand the nav |
-| `prefix Ctrl-←` / `prefix Ctrl-→` | move a side nav's view border, then bare `Ctrl-←` / `Ctrl-→` keep resizing for a moment |
-| `prefix Ctrl-↑` / `prefix Ctrl-↓` | move a band's view border, then bare `Ctrl-↑` / `Ctrl-↓` keep resizing for a moment |
+| `prefix Ctrl-←` / `prefix Ctrl-→` | move a side nav's view border, then bare `Ctrl-←` / `Ctrl-→` keep resizing until another key |
+| `prefix Ctrl-↑` / `prefix Ctrl-↓` | move a band's view border, then bare `Ctrl-↑` / `Ctrl-↓` keep resizing until another key |
 | the prefix arrow pair facing the terminal | focus the terminal view |
 | the other prefix arrow pair | focus the nav |
 | `prefix prefix` | send one literal prefix byte to the focused pane |
@@ -208,8 +208,10 @@ floating over it without moving a card. A terminal view too narrow beside a side
 lends the box the window's whole width. When the keys do not fit, the box shortens every
 description, then gives up the keys needed least behind `+N more`, never the jump, help,
 or quit keys. The box closes when the function the prefix started ends: at once for most
-keys, when Enter or Esc closes an input, or when a resize's repeat window lapses. A focus
-switch or any mouse action outside the box cancels the prefix; dragging the box moves it.
+keys, when Enter or Esc closes an input, or when a key other than a resize key ends a
+resize, which then acts as it would have. While a resize lasts, the box names only the
+resize keys and that any other key ends it. A focus switch or any mouse action outside
+the box cancels the prefix; dragging the box moves it.
 A held prefix sends one literal per repeat and blinks the box, because a terminal sends
 no key-up.
 

@@ -50,23 +50,35 @@ pub(crate) fn view_border_drag_height(
     };
     (h >= NAV_HEIGHT_MIN).then(|| h.min(NAV_HEIGHT_MAX))
 }
-/// If `bytes` STARTS with a Ctrl-arrow (`ESC [ 1 ; 5 A/B/C/D`), returns `(horizontal,
-/// delta, len)`: the axis (true = ←/→ width, false = ↑/↓ height), the signed step (→/↓ = +1,
-/// ←/↑ = -1), and the 6 bytes it consumed; else `None`. Peeling leading Ctrl-arrows (rather
-/// than matching the whole read) lets a coalesced autorepeat burst - several presses in one
-/// stdin read - keep resizing. Restricted to Ctrl-arrows (not bare arrows or h/l) so it never
-/// hijacks navigation or typed pane input outside the repeat window.
+/// If `bytes` STARTS with a Ctrl-arrow, legacy (`ESC [ 1 ; 5 A/B/C/D`) or in the kitty
+/// keyboard protocol's form, returns `(horizontal, delta, len)`: the axis (true = ←/→
+/// width, false = ↑/↓ height), the signed step (→/↓ = +1, ←/↑ = -1, and 0 for a key
+/// release, which moves nothing), and the bytes it consumed; else `None`. Peeling
+/// leading Ctrl-arrows (rather than matching the whole read) lets a coalesced autorepeat
+/// burst - several presses in one stdin read - keep resizing. Restricted to Ctrl-arrows
+/// (not bare arrows or h/l) so it never hijacks navigation or typed pane input outside
+/// the resize mode.
 pub(crate) fn leading_ctrl_arrow(bytes: &[u8]) -> Option<(bool, i32, usize)> {
+    let step = |final_byte: u8| match final_byte {
+        b'C' => Some((true, 1)),   // Ctrl+→ : width +
+        b'D' => Some((true, -1)),  // Ctrl+← : width -
+        b'B' => Some((false, 1)),  // Ctrl+↓ : height +
+        b'A' => Some((false, -1)), // Ctrl+↑ : height -
+        _ => None,
+    };
     if bytes.len() >= 6 && bytes[0] == 0x1b && bytes[1] == b'[' && &bytes[2..5] == b"1;5" {
-        match bytes[5] {
-            b'C' => return Some((true, 1, 6)),   // Ctrl+→ : width +
-            b'D' => return Some((true, -1, 6)),  // Ctrl+← : width -
-            b'B' => return Some((false, 1, 6)),  // Ctrl+↓ : height +
-            b'A' => return Some((false, -1, 6)), // Ctrl+↑ : height -
-            _ => {}
+        if let Some((h, d)) = step(bytes[5]) {
+            return Some((h, d, 6));
         }
     }
-    None
+    let key = crate::display::keyboard::parse(bytes)?;
+    // Ctrl alone, whatever the lock keys.
+    if key.code != 1 || key.mods & !(64 | 128) != 4 {
+        return None;
+    }
+    let (horizontal, delta) = step(key.final_byte)?;
+    let released = key.event == crate::display::keyboard::Event::Release;
+    Some((horizontal, if released { 0 } else { delta }, key.len))
 }
 
 /// Maps a 1-based SGR mouse cell to 1-based grid-local coords if it falls inside
@@ -243,8 +255,9 @@ pub(crate) struct MouseState {
     pub(crate) dragging_view_border: bool,
     /// True while the mouse hovers the view border rule (no button) - the drag-resize cue.
     pub(crate) hovered_view_border: bool,
-    /// The resize-repeat window: a bare Ctrl+←/→ keeps resizing until it lapses.
-    pub(crate) repeat_until: Option<std::time::Instant>,
+    /// The resize mode a prefix resize starts: bare Ctrl+arrows keep resizing until
+    /// another key ends it.
+    pub(crate) resizing: bool,
     /// True while a prefix has been pressed in nav focus, awaiting the command key.
     pub(crate) nav_armed: bool,
 }
@@ -862,7 +875,7 @@ mod tests {
     #[test]
     fn a_command_consumes_ready() {
         // A command key CONSUMES the prefix: ready clears, so the hint bar hides.
-        // Resize continuation is the RUNTIME repeat window (bare Ctrl-arrows), not a
+        // Resize continuation is the RUNTIME resize mode (bare Ctrl-arrows), not a
         // re-armed prefix, so a plain `h` after consumption is a bare nav key again.
         use ratatui::crossterm::event::KeyEvent;
         let mut armed = false;

@@ -159,9 +159,13 @@ impl Runtime {
                     .is_some_and(|(rect, _)| rect.contains(at)));
         if !idle_motion
             && !grabs_key_list
-            && (self.model.mouse_state.nav_armed || self.term_input.is_armed())
+            && (self.model.mouse_state.nav_armed
+                || self.term_input.is_armed()
+                || self.model.mouse_state.resizing)
         {
             let effects = update(&mut self.model, Msg::SetMouseNavArmed(false));
+            debug_assert!(effects.is_empty());
+            let effects = update(&mut self.model, Msg::SetResizing(false));
             debug_assert!(effects.is_empty());
             self.term_input.disarm();
             dirty = true;
@@ -508,27 +512,22 @@ impl Runtime {
     }
 
     /// A keyboard resize step: apply the delta on its axis (no-op for zero, or for the
-    /// perpendicular axis of the current layout) and open the bare-Ctrl-arrow repeat window
-    /// so the next arrows keep resizing without re-pressing the prefix. Returns whether the
+    /// perpendicular axis of the current layout) and start the resize mode, so the next
+    /// bare Ctrl-arrows keep resizing without re-pressing the prefix. Returns whether the
     /// size changed (for the debounced persist).
     fn resize_and_repeat(&mut self, horizontal: bool, delta: i32) -> bool {
         if delta == 0 {
             return false;
         }
         let changed = self.resize_axis(horizontal, delta);
-        let effects = update(
-            &mut self.model,
-            Msg::SetResizeRepeat(Some(
-                std::time::Instant::now() + std::time::Duration::from_millis(RESIZE_REPEAT_MS),
-            )),
-        );
+        let effects = update(&mut self.model, Msg::SetResizing(true));
         debug_assert!(effects.is_empty());
         changed
     }
 
     /// The whole `stdin_rx` arm body, lifted. Scans the read for SGR mouse sequences
     /// (routed via [`Runtime::handle_mouse_event`]) vs a non-mouse byte stream, runs the
-    /// lost-release watchdogs, the resize-repeat window, and the help-modal / nav-focus /
+    /// lost-release watchdogs, the resize mode, and the help-modal / nav-focus /
     /// terminal-view focus routing - in the SAME order as the inline arm. The final focus
     /// toggles (+ replay) run on `self.model.state.focus`, so the caller only acts on the returned
     /// `dirty`/`quit`. No behavior change.
@@ -537,7 +536,6 @@ impl Runtime {
         bytes: &[u8],
         selection: &Selection,
     ) -> StdinOutcome {
-        use std::time::Duration;
         // A live prefix opens the key list, so an arm/disarm is a VISIBLE change even when
         // the read moves nothing else. Snapshot it here and mark the frame dirty below if
         // it flipped, or the key list would only appear on the next unrelated redraw (a
@@ -639,27 +637,24 @@ impl Runtime {
                 self.model.nav_width,
             );
         }
-        // Resize-repeat: while the window from a prefix-driven resize is open, a
-        // bare Ctrl+←/→ (no prefix, in either focus) keeps resizing and refreshes
-        // the window. Gated on NOT being mid-prefix (an armed prefix's next key is
-        // a command, not a repeat - else skipping the input path would leave the
-        // prefix armed and mis-read the following key). A pure-mouse read (empty
-        // non_mouse) leaves the window untouched. Leading Ctrl-arrows are peeled off
-        // (handles a coalesced autorepeat burst); any remaining bytes end the window
-        // and fall through to the normal nav/terminal routing below.
+        // Resize mode: after a prefix-driven resize, a bare Ctrl-arrow (no prefix, in
+        // either focus) keeps resizing while the key list names the resize keys, until
+        // another key ends the mode. Gated on NOT being mid-prefix (an armed prefix's
+        // next key is a command, not a repeat - else skipping the input path would
+        // leave the prefix armed and mis-read the following key). A pure-mouse read
+        // (empty non_mouse) leaves the mode alone. Leading Ctrl-arrows are peeled off
+        // (handles a coalesced autorepeat burst); any remaining bytes end the mode and
+        // fall through to the normal nav/terminal routing below, so the key that ended
+        // it does what it would have done.
         let mut consumed_by_repeat = false;
-        if self
-            .model
-            .mouse_state
-            .repeat_until
-            .is_some_and(|d| std::time::Instant::now() < d)
+        if self.model.mouse_state.resizing
             && !self.model.mouse_state.nav_armed
             && !self.term_input.is_armed()
             && !non_mouse.is_empty()
         {
             let mut n = 0;
             while let Some((horizontal, d, len)) = leading_ctrl_arrow(&non_mouse[n..]) {
-                if self.resize_axis(horizontal, d) {
+                if d != 0 && self.resize_axis(horizontal, d) {
                     *width_changed = true;
                 }
                 n += len;
@@ -668,21 +663,14 @@ impl Runtime {
                 non_mouse.drain(0..n);
                 *dirty = true;
                 if non_mouse.is_empty() {
-                    let effects = update(
-                        &mut self.model,
-                        Msg::SetResizeRepeat(Some(
-                            std::time::Instant::now() + Duration::from_millis(RESIZE_REPEAT_MS),
-                        )),
-                    );
-                    debug_assert!(effects.is_empty());
                     consumed_by_repeat = true;
                 } else {
-                    let effects = update(&mut self.model, Msg::SetResizeRepeat(None));
+                    let effects = update(&mut self.model, Msg::SetResizing(false));
                     debug_assert!(effects.is_empty()); // trailing non-arrow bytes end + route below
                 }
             } else {
-                let effects = update(&mut self.model, Msg::SetResizeRepeat(None));
-                debug_assert!(effects.is_empty()); // first key isn't a Ctrl-arrow → end the window
+                let effects = update(&mut self.model, Msg::SetResizing(false));
+                debug_assert!(effects.is_empty()); // first key isn't a Ctrl-arrow → end the mode
             }
         }
         if !consumed_by_repeat
@@ -722,7 +710,7 @@ impl Runtime {
             // the mouse arm above), so the keys' verdict adds to it, never replaces it.
             *quit |= q;
             // A prefix-driven resize: width (Ctrl-←/→) or height (Ctrl-↑/↓); each applies only in
-            // its layout, and opens the bare-Ctrl-arrow repeat window.
+            // its layout, and starts the resize mode.
             let rw = self.resize_and_repeat(true, wd);
             let rh = self.resize_and_repeat(false, hd);
             if rw || rh {
@@ -955,8 +943,8 @@ impl Runtime {
     /// Routes one paste. Pasted text is data for wherever it goes, never a key: the
     /// focused session reads it as a paste, a text field types it, and with no field to
     /// take it, as over the nav or a machine or host screen, it is dropped. A prefix
-    /// waiting for its key and a resize's repeat window end, as on any input that is not
-    /// their key.
+    /// waiting for its key and the resize mode end, as on any input that is not their
+    /// key.
     pub(super) fn handle_paste(&mut self, text: Vec<u8>) -> StdinOutcome {
         let mut outcome = StdinOutcome {
             dirty: true,
@@ -967,8 +955,8 @@ impl Runtime {
             debug_assert!(effects.is_empty());
             self.term_input.disarm();
         }
-        if self.model.mouse_state.repeat_until.is_some() {
-            let effects = update(&mut self.model, Msg::SetResizeRepeat(None));
+        if self.model.mouse_state.resizing {
+            let effects = update(&mut self.model, Msg::SetResizing(false));
             debug_assert!(effects.is_empty());
         }
         if !self.model.state.chrome.first_key_seen
