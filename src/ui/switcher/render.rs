@@ -1209,10 +1209,13 @@ impl Switcher {
                 selected = Some(target);
             }
         }
-        // While the nav holds the focus, Enter runs the selected card, so the card says so
-        // after its text; in the terminal view Enter reaches the pane. The mark waits for
-        // every card to be painted, so it sees the card that follows on the same row.
-        if let Some(target) = selected.filter(|_| !self.terminal_view) {
+        // While the nav holds the focus, Enter opens the selected session, so its card says
+        // so after its text; in the terminal view Enter reaches the pane. A host card, a
+        // machine card, and a title half go without: the mark is for the card that opens a
+        // session. The mark waits for every card to be painted, so it sees the card that
+        // follows on the same row.
+        let session = matches!(self.selected_node(), Some(crate::model::Node::Session(_)));
+        if let Some(target) = selected.filter(|_| session && !self.terminal_view) {
             let marked = mark_enter(frame.buffer_mut(), target, plan.nav_inner);
             pad_selected_rect(
                 frame.buffer_mut(),
@@ -1990,8 +1993,8 @@ fn history_popup_width(area: Rect) -> u16 {
 /// its text: a side whose edge cell is blank is padded already, and otherwise the blank
 /// cell just outside the rect takes the paint while it lies inside `bounds`. A neighbour
 /// that is text, such as the `/` between a section title's halves, stays unpainted.
-/// The glyph the hard-selected nav card writes after its text while the nav holds the
-/// focus: the return symbol, the outlined bent arrow a keyboard's Enter key carries, in
+/// The glyph the hard-selected session card writes after its text while the nav holds
+/// the focus: the return symbol, the outlined bent arrow a keyboard's Enter key carries, in
 /// one cell and without emoji presentation.
 pub(crate) const ENTER_MARK: &str = "\u{23ce}";
 

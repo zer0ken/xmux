@@ -65,8 +65,8 @@ its body says in one line why it is empty and which key answers it.
 
 While the user acts, the question is what to do next, and a surface that answers it
 saves a trip to the help. So the selected card names its state, an open filter counts
-its matches, a live prefix names every key it unlocks, the selected nav card ends in
-`⏎` while Enter runs it, and a machine screen keeps the failure reason whole. Every
+its matches, a live prefix names every key it unlocks, the selected session card ends
+in `⏎` while Enter opens it, and a machine screen keeps the failure reason whole. Every
 one of these reads the one key table, so a surface never names a key that
 does something else.
 
@@ -293,7 +293,7 @@ so the highlight reads as a block around the item rather than as coloured letter
 look learned on the nav then reads on every popup and screen, while a surface that marks
 its selection with a colour, a weight, or a glyph of its own is one more thing to learn
 and, beside a highlighted surface, reads as a different state. The one glyph a
-selection carries is the `⏎` after the selected nav card's text while the nav holds the
-focus: the highlight says where the selection is, and the glyph says that Enter runs it
-there, which matters on the nav because the same Enter reaches the pane once the
+selection carries is the `⏎` after the selected session card's text while the nav holds
+the focus: the highlight says where the selection is, and the glyph says that Enter opens
+that session there, which matters on the nav because the same Enter reaches the pane once the
 terminal view holds the focus.
