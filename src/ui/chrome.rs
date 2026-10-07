@@ -525,6 +525,7 @@ impl Default for Chrome {
             nav_position: crate::ui::switcher::NavPosition::Left,
             colors: ViewBorderColors::from_palette(&palette),
             hint_bar_style: hint_bar_default_style(&palette),
+            update_available: None,
         }
     }
 }
@@ -1057,7 +1058,17 @@ impl Chrome {
                 rows.push((ScreenCell::Label("last listed"), reached_at(*reached)));
             }
         } else if kind == ViewScreen::Landing {
-            // The landing screen is its list of cards and nothing else.
+            // The landing screen is its list of cards, headed by a newer release while
+            // the running build is behind one.
+            if let Some(latest) = &self.update_available {
+                rows.push((
+                    ScreenCell::Label("update"),
+                    format!(
+                        "xmux {latest} available (running {}): run `xmux update`",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                ));
+            }
         } else if kind == ViewScreen::Scanning {
             // A scan has no answer yet, so the screen states only when the host last
             // answered. A key is not offered: the re-scan it would start is under way.
@@ -2018,6 +2029,14 @@ impl Chrome {
     /// `xmux --version` reports.
     pub(crate) fn version_label(&self) -> String {
         format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+    }
+
+    /// What the prefix key list writes beside the version while a newer release is
+    /// recorded: the version to move to and the command that moves there.
+    pub(crate) fn update_label(&self) -> Option<String> {
+        self.update_available
+            .as_ref()
+            .map(|latest| format!("v{latest} available: xmux update"))
     }
 
     pub(crate) fn render_hint_bar(

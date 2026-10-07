@@ -1585,24 +1585,21 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         tokio::spawn(async move { crate::link::control::prune_stale(&dir, &keep).await });
     }
 
-    // What the newest release is, from the answer recorded on disk. A toast carries
-    // it, so the user reads it where every other result appears rather than in a banner
-    // of its own.
+    // What the newest release is, from the answer recorded on disk. The landing screen
+    // and the prefix key list name it on every launch while the running build is behind,
+    // rather than a toast that leaves after five seconds.
     //
-    // Nothing here waits on the network: the line comes from the recorded answer, and
+    // Nothing here waits on the network: the version comes from the recorded answer, and
     // the refresh below runs on its own thread and only writes the file. So a launch
     // with no network paints exactly as fast as one with it, and the release that
     // arrived today is announced on tomorrow's launch.
     {
         let check_enabled = rt.env.with_roster(|r| r.cfg.update.check);
         let current = env!("CARGO_PKG_VERSION");
-        if let Some(line) = crate::cli::update::notify::notice(
+        rt.model.state.chrome.update_available = crate::cli::update::notify::available(
             crate::cli::update::notify::read(&rt.env.xmux_dir).as_ref(),
             current,
-        ) {
-            let effects = update(&mut rt.model, Msg::Notice(line));
-            debug_assert!(effects.is_empty());
-        }
+        );
         crate::cli::update::notify::refresh_in_background(&rt.env.xmux_dir, check_enabled);
     }
 

@@ -123,7 +123,7 @@ against, naming no source file, function, or test.
   fonts render, and a terminal smaller than 24 columns by 4 rows shows only a size
   screen.
 - **FR-B32** - The result of a user action (a login, a new session, a re-scan, or the
-  reason an action was refused) and a newer release at launch appear as a toast in the terminal view's corner, which `[ui]
+  reason an action was refused) appear as a toast in the terminal view's corner, which `[ui]
   notifications` can turn off. A value typed into a popup that the popup cannot accept is
   stated inside that popup beside its field, and the popup stays open, with no toast.
 - **FR-B33** - `prefix m` opens the history of every toast and background event, newest
@@ -247,7 +247,9 @@ against, naming no source file, function, or test.
   path (in-place verified replace, the install script, winget, or Homebrew), with
   `--check` and `--method`.
 - **FR-D11** - xmux asks the release feed at most once a day without delaying launch and
-  reports a newer version as a toast and in `doctor`, and one config key turns this off.
+  names a newer version on the landing screen, beside the version on the prefix key
+  list's bottom border, and in `doctor`, on every launch while the running version is
+  older, and one config key turns this off.
 - **FR-D12** - `doctor` opens with the running version, its binary path, the install
   method, and any recorded newer version, without network access.
 - **FR-D13** - `xmux uninstall` removes xmux by its install method after a `y` or `yes`

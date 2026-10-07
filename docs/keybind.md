@@ -160,7 +160,8 @@ focused stop scrolls just far enough to show it on its last row.
 
 At launch the terminal view shows the landing screen in place of a session: how many
 machines the scan has reached, and every nav card under its number as a
-`machine/mux/session` path. The landing list and the nav share one selection, which only
+`machine/mux/session` path. While a newer release is recorded, an `update` row above the
+list names it and `xmux update`. The landing list and the nav share one selection, which only
 highlights there. The first execution (`Enter`, a click on a nav card or a landing card,
 a landed `prefix <digit>` jump, or a ctl `switch`) closes the landing screen for the
 rest of the run, opens the chosen card, and focuses the terminal view.
@@ -204,7 +205,8 @@ the stretch of the view border beside the cards on screen to `┃`; a band write
 `7 ›` on its view border row, counting the cards scrolled off each side.
 
 Pressing the prefix opens the key list from the indicator toward the terminal view,
-floating over it without moving a card. A terminal view too narrow beside a side column
+floating over it without moving a card. Its bottom border carries the xmux version,
+followed by a newer release and `xmux update` while one is recorded. A terminal view too narrow beside a side column
 lends the box the window's whole width. When the keys do not fit, the box shortens every
 description, then gives up the keys needed least behind `+N more`, never the jump, help,
 or quit keys. The box closes when the function the prefix started ends: at once for most

@@ -1855,6 +1855,7 @@ impl Switcher {
                     prefix: &state.chrome.ui_prefix,
                     status: "",
                     version: &state.chrome.version_label(),
+                    update: state.chrome.update_label().as_deref(),
                 },
                 palette,
             );

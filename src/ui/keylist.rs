@@ -366,11 +366,13 @@ pub(crate) fn title_style(palette: &palette::Palette) -> Style {
 }
 
 /// What the key list's borders say: the prefix it is titled with, the hidden
-/// host count on the bottom border's left, and the xmux version on its right.
+/// host count on the bottom border's left, and the xmux version on its right, followed
+/// by the newer release while one is recorded.
 pub(crate) struct Border<'a> {
     pub(crate) prefix: &'a str,
     pub(crate) status: &'a str,
     pub(crate) version: &'a str,
+    pub(crate) update: Option<&'a str>,
 }
 
 /// Paints the list in `rect`: a rounded box titled with the prefix, the nav status and the
@@ -388,6 +390,7 @@ pub(crate) fn render(
         prefix,
         status,
         version,
+        update,
     } = border;
     frame.render_widget(Clear, rect);
     let mut block = crate::ui::modal::popup_block(prefix, "", rect.width, palette);
@@ -411,15 +414,22 @@ pub(crate) fn render(
         );
     }
     // The version is a build pointer, so it takes the bottom border only where it leaves a
-    // corner's worth of rule on each side.
-    if status_w + (version.width() as u16) + 2 + 6 <= rect.width {
-        block = block.title_bottom(
-            Line::from(Span::styled(
-                format!(" {version} "),
-                Style::default().fg(palette.disabled),
-            ))
-            .right_aligned(),
-        );
+    // corner's worth of rule on each side. A newer release follows it in the accent, since
+    // it is the one thing on the border the user can act on.
+    let mut version_line = vec![Span::styled(
+        format!(" {version} "),
+        Style::default().fg(palette.disabled),
+    )];
+    if let Some(update) = update {
+        version_line.push(Span::styled("· ", Style::default().fg(palette.disabled)));
+        version_line.push(Span::styled(
+            format!("{update} "),
+            Style::default().fg(palette.accent),
+        ));
+    }
+    let version_line = Line::from(version_line);
+    if status_w + (version_line.width() as u16) + 6 <= rect.width {
+        block = block.title_bottom(version_line.right_aligned());
     }
     frame.render_widget(block, rect);
     let key_style = key_cell_style(palette);

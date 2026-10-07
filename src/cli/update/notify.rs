@@ -90,19 +90,11 @@ pub fn is_stale(checked_at: u64, now: u64) -> bool {
     now.saturating_sub(checked_at) >= MAX_AGE.as_secs()
 }
 
-/// The line the app shows when a newer version has been released, or `None` when the
-/// recorded answer is not newer than what is running.
-///
-/// It names the command rather than describing it, because the whole point of the
-/// line is that the reader can act on it without looking anything up.
-pub fn notice(cached: Option<&Cached>, current: &str) -> Option<String> {
+/// The recorded release when it is newer than `current`, or `None` when the recorded
+/// answer is not newer than what is running.
+pub fn available(cached: Option<&Cached>, current: &str) -> Option<String> {
     let c = cached?;
-    super::release::is_newer(&c.latest, current).then(|| {
-        format!(
-            "xmux {} is available (running {current}) - run `xmux update`",
-            c.latest
-        )
-    })
+    super::release::is_newer(&c.latest, current).then(|| c.latest.clone())
 }
 
 /// Refreshes the cache if the recorded answer is older than a day. Runs the request
@@ -171,29 +163,17 @@ mod tests {
     }
 
     #[test]
-    fn the_notice_appears_only_for_a_version_newer_than_the_running_one() {
+    fn a_release_is_available_only_when_newer_than_the_running_one() {
         let at = |v: &str| Cached {
             latest: v.into(),
             checked_at: 0,
         };
-        assert!(notice(Some(&at("0.9.7")), "0.9.6").is_some());
-        assert_eq!(notice(Some(&at("0.9.6")), "0.9.6"), None);
-        assert_eq!(notice(Some(&at("0.9.5")), "0.9.6"), None);
-        assert_eq!(notice(None, "0.9.6"), None);
-    }
-
-    #[test]
-    fn the_notice_names_the_command_that_acts_on_it() {
-        let n = notice(
-            Some(&Cached {
-                latest: "1.0.0".into(),
-                checked_at: 0,
-            }),
-            "0.9.6",
-        )
-        .unwrap();
-        assert!(n.contains("1.0.0"), "{n}");
-        assert!(n.contains("0.9.6"), "{n}");
-        assert!(n.contains("xmux update"), "{n}");
+        assert_eq!(
+            available(Some(&at("0.9.7")), "0.9.6"),
+            Some("0.9.7".to_owned())
+        );
+        assert_eq!(available(Some(&at("0.9.6")), "0.9.6"), None);
+        assert_eq!(available(Some(&at("0.9.5")), "0.9.6"), None);
+        assert_eq!(available(None, "0.9.6"), None);
     }
 }
