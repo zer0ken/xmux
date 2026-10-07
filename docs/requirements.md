@@ -91,7 +91,8 @@ against, naming no source file, function, or test.
 - **FR-B20** - A held prefix key counts as repeated taps, each sending the
   doubled-prefix literal to the pane.
 - **FR-B21** - The nav shows three groups in order (session cards, reachable hosts with
-  no sessions, unresolved machines) separated by one blank row or column.
+  no sessions, unresolved machines) separated by one blank row in a side nav or one
+  blank character column in a top or bottom nav, including while scrolling.
 - **FR-B22** - A machine and its mux are always shown as one `{machine}/{mux}` label, except
   for a mux not yet known, where the card reads the machine alone.
 - **FR-B23** - When the mux moves xmux's own display client to another session, the nav

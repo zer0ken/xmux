@@ -697,6 +697,17 @@ fn standalone_cards_preserve_enter_and_neighboring_cards() {
         h.draw_at(nav_at(position).with_height(1));
         assert!(h.symbols(h.card(second))[0].contains("b/tmux"));
         assert!(h.plain(h.card(second)));
+        assert_eq!(h.card(second).x - h.card(first).right(), 1);
+
+        let mut h = H::new(&[
+            ("a", &[], Some("connection refused")),
+            ("b", &[], Some("connection refused")),
+        ]);
+        let first = h.card_row(|r| matches!(r, RowRef::Machine { machine, .. } if machine == "a"));
+        let second = h.card_row(|r| matches!(r, RowRef::Machine { machine, .. } if machine == "b"));
+        h.sw.set_selected(first);
+        h.draw_at(nav_at(position).with_height(1));
+        assert_eq!(h.card(second).x - h.card(first).right(), 1);
 
         let mut h = H::new(&[("db", &[], Some(LOGGED_OUT))]);
         let row = h.card_row(|r| matches!(r, RowRef::Machine { .. }));
