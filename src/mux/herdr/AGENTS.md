@@ -5,9 +5,9 @@
 `mux/herdr` owns both herdr-facing paths: JSON session enumeration and the display
 driver that attaches a real herdr client for the selected session. herdr has one
 persistent server per session and no control stream, so inventory changes arrive only
-on an asked-for poll. Creating a session is completed by its first display attachment:
-the create operation runs the listing as a prompt health check and reselects the
-requested session, and `herdr session attach <name>` starts it.
+on an asked-for poll. Explicit creation starts a detached server and waits for readiness.
+An attachment validates the current session listing, resumes an existing stopped
+session, and uses `herdr --session <name> client` to connect to its server.
 
 ## Module Seams
 
@@ -32,6 +32,9 @@ requested session, and `herdr session attach <name>` starts it.
   herdr client on that machine. A saved machine on the client's own machine is one of
   the host's sessions; any other is a place no card covers.
 - An attachment ending is not reported as a session ending.
+- A missing session fails attachment with a notification and no server creation.
+  Creation belongs to the explicit new-session action; a saved stopped session can
+  be resumed when its card is executed. Preparation stays off the runtime thread.
 
 ## Common Pitfalls
 

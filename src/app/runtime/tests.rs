@@ -2294,11 +2294,12 @@ fn test_rt(env: Env) -> Runtime {
     let (host_tx, _host_rx) = tokio::sync::mpsc::unbounded_channel();
     let mgr = HostManager::new(host_tx);
     let (wtx, _wrx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-    let worker = DisplayWorker::with_spawner(
+    let worker = DisplayWorker::with_spawner_and_runner(
         wtx,
         Box::new(|_argv, _cols, _rows, id, _events, _env_clear| {
             Ok(crate::display::attachment::fake_attachment(id))
         }),
+        crate::mux::herdr_attach_runner(),
     );
     let (pty_tx, _pty_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
     let roster = env.roster();
@@ -3936,6 +3937,43 @@ async fn a_stale_psmux_card_reports_attach_failure_from_keys_and_ctl() {
         assert_eq!(
             rt.model.state.notify.toasts[0].notes[0].text,
             "psmux: can't find session: b"
+        );
+        assert!(!passes_attach_anything(&mut rt, t), "no retry: keys={keys}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_stale_herdr_card_reports_attach_failure_from_keys_and_ctl_without_spawning_a_client() {
+    for keys in [true, false] {
+        let mut rt = a_settled_herdr_runtime();
+        rt.worker = crate::display::DisplayWorker::with_spawner_and_runner(
+            tokio::sync::mpsc::unbounded_channel().0,
+            Box::new(|_, _, _, _, _, _| panic!("a missing session must not spawn a client")),
+            crate::mux::herdr_missing_attach_runner(),
+        );
+        if keys {
+            let mut width_changed = false;
+            rt.handle_nav_bytes(b"\x1b[B\r", &mut width_changed);
+        } else {
+            let crate::link::control::CtlRequest::Op(action) =
+                crate::link::control::parse_ctl_op("switch local b")
+            else {
+                panic!("switch resolves to an action");
+            };
+            rt.dispatch_action(action);
+        }
+        let t = std::time::Instant::now();
+        one_pass(&mut rt, t);
+        one_pass(&mut rt, t + std::time::Duration::from_millis(200));
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rt.worker.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        rt.on_display_event(event);
+        assert_eq!(rt.model.state.notify.toasts.len(), 1, "keys={keys}");
+        assert_eq!(
+            rt.model.state.notify.toasts[0].notes[0].text,
+            "herdr: session 'b' no longer exists"
         );
         assert!(!passes_attach_anything(&mut rt, t), "no retry: keys={keys}");
     }

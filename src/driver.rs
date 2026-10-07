@@ -94,7 +94,16 @@ impl DriverCtx<'_> {
         command: impl FnOnce(u64, &str, &str) -> crate::transport::CommandSpec,
     ) -> Option<u64> {
         let key = self.display_key(selection);
-        let display = &mut self.hosts.get_mut(&selection.host)?.display;
+        let host = self.hosts.get_mut(&selection.host)?;
+        let preparation =
+            host.mux
+                .needs_attach_preparation()
+                .then(|| crate::mux::AttachPreparation {
+                    mux: host.mux.clone_box(),
+                    transport: host.transport.clone_box(),
+                    session: selection.session.clone(),
+                });
+        let display = &mut host.display;
         // A new request owns this key. Any fresh attachment still waiting to paint belongs
         // to the superseded selection and must not receive input or survive as an orphan.
         display.cancel_pending_paint(&key);
@@ -118,6 +127,7 @@ impl DriverCtx<'_> {
             seq: *self.attach_seq,
             key: key.to_string(),
             command,
+            preparation,
             cols: self.viewport.0,
             rows: self.viewport.1,
             id,
@@ -591,12 +601,13 @@ pub(crate) mod tests {
 
             let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
             let (viewport_tx, viewport_rx) = std::sync::mpsc::channel();
-            let worker = crate::display::DisplayWorker::with_spawner(
+            let worker = crate::display::DisplayWorker::with_spawner_and_runner(
                 ptx,
                 Box::new(move |_argv, cols, rows, id, _events, _env_clear| {
                     viewport_tx.send((cols, rows)).unwrap();
                     Ok(crate::display::attachment::fake_attachment(id))
                 }),
+                crate::mux::herdr_attach_runner(),
             );
             let mut registry = AttachRegistry::new();
             registry.insert("local", crate::display::attachment::fake_attachment(99));
@@ -658,12 +669,13 @@ pub(crate) mod tests {
         hosts.insert(host);
         let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
         let (argv_tx, argv_rx) = std::sync::mpsc::channel();
-        let worker = crate::display::DisplayWorker::with_spawner(
+        let worker = crate::display::DisplayWorker::with_spawner_and_runner(
             ptx,
             Box::new(move |command, _cols, _rows, id, _events, _env_clear| {
                 argv_tx.send(command.argv().to_vec()).unwrap();
                 Ok(crate::display::attachment::fake_attachment(id))
             }),
+            crate::mux::herdr_attach_runner(),
         );
         let mut registry = AttachRegistry::new();
         let mut attach_seq = 0u64;
@@ -743,6 +755,18 @@ pub(crate) mod tests {
         assert_eq!(
             display_attach_argv(host).await,
             ["psmux", "-f", "NUL", "attach", "-t", "target"]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn herdr_display_attach_cannot_create_a_missing_session() {
+        let host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("herdr").unwrap(),
+        );
+        assert_eq!(
+            display_attach_argv(host).await,
+            ["herdr", "--session", "target", "client"]
         );
     }
 }

@@ -98,16 +98,38 @@ impl Mux for Herdr {
         parse_sessions(transport.host_id(), self.kind(), &out)
     }
 
-    /// `herdr session attach <name>` starts a stopped or missing session before attaching,
-    /// so the first display attachment is what completes a create and what resumes a
-    /// stopped session.
+    /// Connect-only client mode cannot start a missing session server.
     fn attach_plan(&self, session: &str) -> Vec<String> {
         vec![
             self.bin.clone(),
-            "session".to_string(),
-            "attach".to_string(),
+            "--session".to_string(),
             session.to_string(),
+            "client".to_string(),
         ]
+    }
+
+    fn needs_attach_preparation(&self) -> bool {
+        true
+    }
+
+    async fn prepare_attach(
+        &self,
+        transport: &dyn Transport,
+        runner: &dyn Runner,
+        session: &str,
+    ) -> Result<(), RunError> {
+        let sessions = self.enumerate(transport, runner).await?;
+        let Some(target) = sessions.iter().find(|target| target.name == session) else {
+            return Err(RunError::Other(format!(
+                "herdr: session '{session}' no longer exists"
+            )));
+        };
+        if target.stopped {
+            self.start_session(transport, runner, session).await?;
+        } else {
+            self.wait_for_client(transport, runner, session).await?;
+        }
+        Ok(())
     }
 
     /// The user's herdr processes, xmux's client pid, the host name, and herdr's saved
@@ -134,11 +156,101 @@ impl Mux for Herdr {
         EventSource::Poll
     }
 
-    fn new_session_plan(&self, _name: &str) -> Vec<String> {
-        // ponytail: herdr has no detached create; this prompt health check is the
-        // ceiling until it adds one, and the reselected session's first attach creates it.
-        // `herdr --session <name> server` is no create command: it does not return.
-        self.list_sessions_plan()
+    fn new_session_plan(&self, name: &str) -> Vec<String> {
+        vec![
+            self.bin.clone(),
+            "--session".into(),
+            name.into(),
+            "server".into(),
+        ]
+    }
+
+    async fn create_session(
+        &self,
+        transport: &dyn Transport,
+        runner: &dyn Runner,
+        name: &str,
+    ) -> Result<Vec<u8>, RunError> {
+        if self
+            .enumerate(transport, runner)
+            .await?
+            .iter()
+            .any(|session| session.name == name && !session.stopped)
+        {
+            self.wait_for_client(transport, runner, name).await?;
+            return Ok(Vec::new());
+        }
+        self.start_session(transport, runner, name).await
+    }
+}
+
+impl Herdr {
+    /// The API handshake precedes the display socket. A workspace response is handled
+    /// by the server's app loop, which starts only after the display listener exists.
+    async fn wait_for_client(
+        &self,
+        transport: &dyn Transport,
+        runner: &dyn Runner,
+        name: &str,
+    ) -> Result<(), RunError> {
+        let command = transport.exec_argv(
+            false,
+            &[
+                self.bin.clone(),
+                "--session".into(),
+                name.into(),
+                "workspace".into(),
+                "list".into(),
+            ],
+        );
+        runner.run_spec(&command).await?;
+        Ok(())
+    }
+
+    async fn start_session(
+        &self,
+        transport: &dyn Transport,
+        runner: &dyn Runner,
+        name: &str,
+    ) -> Result<Vec<u8>, RunError> {
+        let deadline = tokio::time::Instant::now() + crate::mux::POLL_SWEEP_BUDGET;
+        crate::model::host_def::within_deadline(deadline, async {
+            let start =
+                transport.detached_argv(&self.new_session_plan(name), Some("HERDR_STARTUP_CWD"));
+            runner.run_spec(&start).await?;
+            let status = transport.exec_argv(
+                false,
+                &[
+                    self.bin.clone(),
+                    "--session".into(),
+                    name.into(),
+                    "status".into(),
+                    "server".into(),
+                    "--json".into(),
+                ],
+            );
+            loop {
+                let out = runner.run_spec(&status).await?;
+                #[derive(Deserialize)]
+                struct ServerStatus {
+                    running: bool,
+                }
+                let status: ServerStatus = serde_json::from_slice(&out).map_err(|error| {
+                    RunError::Other(format!("invalid herdr server status: {error}"))
+                })?;
+                if status.running {
+                    self.wait_for_client(transport, runner, name).await?;
+                    return Ok(Vec::new());
+                }
+                if tokio::time::Instant::now() + std::time::Duration::from_secs(1) >= deadline {
+                    return Err(RunError::Other(format!(
+                        "herdr: session '{name}' server did not become ready"
+                    )));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
     }
 }
 
@@ -171,7 +283,7 @@ fn parse_sessions(host: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, Run
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
@@ -199,6 +311,156 @@ mod tests {
         Herdr {
             bin: "herdr".into(),
         }
+    }
+
+    pub(crate) fn attach_runner() -> std::sync::Arc<dyn Runner> {
+        struct RunningSessions;
+        #[async_trait]
+        impl Runner for RunningSessions {
+            crate::model::host_def::runner_spec_via_argv!();
+            async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+                Ok(br#"{"sessions":[{"name":"a","running":true},{"name":"b","running":true},{"name":"target","running":true}]}"#.to_vec())
+            }
+        }
+        std::sync::Arc::new(RunningSessions)
+    }
+
+    pub(crate) fn missing_attach_runner() -> std::sync::Arc<dyn Runner> {
+        std::sync::Arc::new(CannedRunner::ok(r#"{"sessions":[]}"#))
+    }
+
+    struct TraceRunner {
+        outputs: Mutex<std::collections::VecDeque<Result<Vec<u8>, RunError>>>,
+        commands: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl TraceRunner {
+        fn new(outputs: &[&str]) -> Self {
+            Self {
+                outputs: Mutex::new(
+                    outputs
+                        .iter()
+                        .map(|out| Ok(out.as_bytes().to_vec()))
+                        .collect(),
+                ),
+                commands: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Runner for TraceRunner {
+        crate::model::host_def::runner_spec_via_argv!();
+        async fn run(&self, name: &str, args: &[String]) -> Result<Vec<u8>, RunError> {
+            self.commands.lock().unwrap().push(
+                std::iter::once(name.to_string())
+                    .chain(args.iter().cloned())
+                    .collect(),
+            );
+            self.outputs
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("only expected commands run")
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_attach_runs_only_the_listing() {
+        let runner = TraceRunner::new(&[r#"{"sessions":[]}"#]);
+        let error = herdr()
+            .prepare_attach(&crate::transport::local(None), &runner, "gone")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no longer exists"));
+        assert_eq!(
+            *runner.commands.lock().unwrap(),
+            vec![argv(&["herdr", "session", "list", "--json"])]
+        );
+    }
+
+    #[tokio::test]
+    async fn stopped_attach_starts_only_the_existing_saved_session_and_waits_for_readiness() {
+        let runner = TraceRunner::new(&[
+            r#"{"sessions":[{"name":"parked","running":false}]}"#,
+            "",
+            r#"{"running":false}"#,
+            r#"{"running":true}"#,
+            "[]",
+        ]);
+        herdr()
+            .prepare_attach(&crate::transport::local(None), &runner, "parked")
+            .await
+            .unwrap();
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 5);
+        let launch = commands[1].last().unwrap();
+        assert!(launch.contains("HERDR_STARTUP_CWD"));
+        assert!(launch.contains("parked") && launch.contains("server"));
+        assert_eq!(
+            commands[2],
+            argv(&["herdr", "--session", "parked", "status", "server", "--json"])
+        );
+        assert_eq!(commands[2], commands[3]);
+        assert_eq!(
+            commands[4],
+            argv(&["herdr", "--session", "parked", "workspace", "list"])
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_creation_completes_the_server_before_returning_its_name() {
+        let runner = TraceRunner::new(&[r#"{"sessions":[]}"#, "", r#"{"running":true}"#, "[]"]);
+        let host = crate::model::Host::new(crate::transport::local(None), Box::new(herdr()));
+        assert_eq!(
+            crate::link::manage::create(&host, &runner, "new")
+                .await
+                .unwrap(),
+            "new"
+        );
+        assert_eq!(runner.commands.lock().unwrap().len(), 4);
+        let running = TraceRunner::new(&[r#"{"sessions":[{"name":"new","running":true}]}"#, "[]"]);
+        assert_eq!(
+            crate::link::manage::create(&host, &running, "new")
+                .await
+                .unwrap(),
+            "new"
+        );
+        assert_eq!(
+            running.commands.lock().unwrap().len(),
+            2,
+            "an existing server is kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_readiness_answer_is_a_creation_failure() {
+        let runner = TraceRunner::new(&[r#"{"sessions":[]}"#, "", "not json"]);
+        assert!(herdr()
+            .create_session(&crate::transport::local(None), &runner, "new")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("invalid herdr server status"));
+    }
+
+    #[tokio::test]
+    async fn an_api_handshake_does_not_complete_creation_until_the_app_loop_answers() {
+        let runner = TraceRunner::new(&[r#"{"sessions":[]}"#, "", r#"{"running":true}"#]);
+        runner
+            .outputs
+            .lock()
+            .unwrap()
+            .push_back(Err(RunError::Other("app loop is not ready".into())));
+        let error = herdr()
+            .create_session(&crate::transport::local(None), &runner, "new")
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "app loop is not ready");
+        assert_eq!(
+            runner.commands.lock().unwrap().last().unwrap(),
+            &argv(&["herdr", "--session", "new", "workspace", "list"])
+        );
     }
 
     fn argv(parts: &[&str]) -> Vec<String> {
@@ -234,9 +496,12 @@ mod tests {
         let listing = argv(&["herdr", "session", "list", "--json"]);
         assert_eq!(
             mux.attach_plan("api"),
-            argv(&["herdr", "session", "attach", "api"])
+            argv(&["herdr", "--session", "api", "client"])
         );
-        assert_eq!(mux.new_session_plan("dev"), listing);
+        assert_eq!(
+            mux.new_session_plan("dev"),
+            argv(&["herdr", "--session", "dev", "server"])
+        );
         assert_eq!(mux.list_sessions_plan(), listing);
     }
 

@@ -344,6 +344,18 @@ async fn run_direct_attach(env: &Env, host_id: &str, session: &str) -> i32 {
             return 1;
         }
     };
+    if let Err(e) = host
+        .mux
+        .prepare_attach(
+            host.transport.as_ref(),
+            &crate::model::host_def::ExecRunner,
+            session,
+        )
+        .await
+    {
+        eprintln!("xmux: attach failed: {e}");
+        return 1;
+    }
     if let Err(e) = attach::run_attach(&OsExecer, &host.cli_attach_command(session)) {
         eprintln!("xmux: attach failed: {e}");
         return 1;

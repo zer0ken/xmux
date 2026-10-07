@@ -1,7 +1,7 @@
 //! Shared transport-axis shell helpers: rendering an argv safe for the POSIX
 //! shell an ssh connection hands its remote command to. The ssh transport
-//! (`super::ssh::Ssh`) is the sole consumer — a local transport never issues a
-//! remote shell command. This is the transport axis's own vocab home, the peer of
+//! and detached process startup on local and shell-based machines.
+//! This is the transport axis's own vocab home, the peer of
 //! `mux/vocab.rs`.
 
 /// The command that asks a remote which shell family answers it, and the number of
@@ -116,6 +116,59 @@ fn is_shell_safe(s: &str) -> bool {
         .all(|r| r.is_ascii_alphanumeric() || matches!(r, '-' | '_' | '.' | '/'))
 }
 
+/// A background launch in the machine's shell, with every argv value quoted.
+pub(super) fn detached_command(argv: &[String], cwd_env: Option<&str>, windows: bool) -> String {
+    if windows {
+        let literal = |s: &str| format!("'{}'", s.replace('\'', "''"));
+        let args = argv[1..]
+            .iter()
+            .map(|s| windows_argument(s))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let env = cwd_env
+            .map(|key| {
+                format!(
+                    "[Environment]::SetEnvironmentVariable({}, (Get-Location).Path); ",
+                    literal(key)
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            "$ErrorActionPreference='Stop'; {env}Start-Process -FilePath {} -ArgumentList {} -WindowStyle Hidden",
+            literal(&argv[0]),
+            literal(&args)
+        )
+    } else {
+        let env = cwd_env
+            .map(|key| format!("{}=\"$PWD\" ", quote(key)))
+            .unwrap_or_default();
+        format!(
+            "{env}nohup {} </dev/null >/dev/null 2>&1 &",
+            remote_command(argv)
+        )
+    }
+}
+
+fn windows_argument(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    let mut slashes = 0;
+    for ch in value.chars() {
+        if ch == '\\' {
+            slashes += 1;
+            continue;
+        }
+        quoted.extend(std::iter::repeat_n(
+            '\\',
+            if ch == '"' { slashes * 2 + 1 } else { slashes },
+        ));
+        quoted.push(ch);
+        slashes = 0;
+    }
+    quoted.extend(std::iter::repeat_n('\\', slashes * 2));
+    quoted.push('"');
+    quoted
+}
+
 /// Joins a mux argv into a single shell command line, quoting each element, for
 /// execution by the remote shell ssh hands it to.
 ///
@@ -136,6 +189,29 @@ pub fn remote_command(argv: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detached_commands_preserve_argument_boundaries_in_both_shell_families() {
+        let argv = vec![
+            "C:\\Program Files\\herdr.exe".into(),
+            "--session".into(),
+            "a' b\"c\\".into(),
+            "server".into(),
+        ];
+        let windows = detached_command(&argv, Some("HERDR_STARTUP_CWD"), true);
+        assert!(windows.contains("-FilePath 'C:\\Program Files\\herdr.exe'"));
+        assert!(windows.contains("-ArgumentList '\"--session\" \"a'' b\\\"c\\\\\" \"server\"'"));
+        assert!(windows.contains("-WindowStyle Hidden"));
+        assert!(windows.contains("(Get-Location).Path"));
+        let argv = vec![
+            "/opt/mux bin/herdr".into(),
+            "--session".into(),
+            "a'; touch unexpected; 'b".into(),
+            "server".into(),
+        ];
+        let posix = detached_command(&argv, Some("HERDR_STARTUP_CWD"), false);
+        assert_eq!(posix, "HERDR_STARTUP_CWD=\"$PWD\" nohup '/opt/mux bin/herdr' --session 'a'\\''; touch unexpected; '\\''b' server </dev/null >/dev/null 2>&1 &");
+    }
 
     #[test]
     fn the_shell_probe_reads_every_family_from_its_own_answer() {

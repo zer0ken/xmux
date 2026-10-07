@@ -177,6 +177,9 @@ against, naming no source file, function, or test.
   launch where the terminal keeps a title stack.
 - **FR-B47** - A psmux card attaches only to its named existing session; a missing
   session is not created, and a failed display attach reports a toast and history entry.
+- **FR-B48** - A herdr card attaches only to an existing running or saved stopped
+  session; a missing session fails with a notification, and explicit new-session
+  actions complete server creation before selecting the new session.
 
 ## C. Switching (the keystone)
 

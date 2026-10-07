@@ -95,7 +95,9 @@ fn client_session(args: &str) -> Option<String> {
     let rest: Vec<&str> = parts.collect();
     match rest.as_slice() {
         [] => Some("default".to_string()),
-        ["--session", session] | ["session", "attach", session] => Some(session.to_string()),
+        ["--session", session]
+        | ["--session", session, "client"]
+        | ["session", "attach", session] => Some(session.to_string()),
         _ => None,
     }
 }
@@ -167,6 +169,22 @@ mod tests {
         assert_eq!(
             parse(&output(&own_client(), 41, "jup", NONE_SELECTED)),
             Some(ClientAt::Session("herdr1".into()))
+        );
+    }
+
+    #[test]
+    fn connect_only_client_is_attributed_and_a_server_is_not_a_client() {
+        let processes = vec![
+            proc_line(40, &["herdr", "--session", "herdr1", "server"]),
+            proc_line(41, &["herdr", "--session", "herdr1", "client"]),
+        ];
+        assert_eq!(
+            parse(&output(&processes, 41, "jup", NONE_SELECTED)),
+            Some(ClientAt::Session("herdr1".into()))
+        );
+        assert_eq!(
+            parse(&output(&processes, 41, "jup", AWAY)),
+            Some(ClientAt::Away("web/agents".into()))
         );
     }
 
