@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use super::sixel::{self, Bitmap};
+use crate::display::vt100;
 
 /// The first private-use character a marker uses.
 const MARKER_BASE: u32 = 0xF0000;

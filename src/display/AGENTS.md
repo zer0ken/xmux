@@ -21,11 +21,13 @@ state: the focus and modal state machine lives in `app`.
 - The worker spawns attachments on a dedicated OS thread and never owns the registry.
 - The registry maps display keys to live attachments, parks a fresh attachment while
   it paints, and serves a reaped attachment's last grid until a fresh one installs.
-- The grid owns the terminal-emulation cell state, a content fingerprint for detecting
-  a visible change, its last written line for naming why a child stopped, and the input
-  modes the child set, which outlive a wipe of the cells. It answers the terminal
-  queries the child sends, each once, with colours and pixel sizes taken from what the
-  outer terminal answered xmux at startup.
+- The grid owns the terminal-emulation cell state, including the OSC 8 link of each
+  cell, a content fingerprint for detecting a visible change, its last written line
+  for naming why a child stopped, and the input modes the child set, which outlive a
+  wipe of the cells. It answers the terminal queries the child sends, each once, with
+  colours and pixel sizes taken from what the outer terminal answered xmux at startup.
+- `vt100/` is the terminal parser behind the grid, the `vt100` crate carried in xmux
+  with the changes its own Working Notes list.
 - Input decoding, dispatch, paste splitting, and mouse parsing turn terminal bytes into
   routing decisions or input actions, reading a key in the kitty keyboard protocol's
   encoding as the legacy key it stands for; terminal setup holds prefix parsing, mouse
@@ -55,7 +57,8 @@ state: the focus and modal state machine lives in `app`.
   than passing the session's requests through. The pump scans OSC 52 out of the raw
   stream; the grid's parser keeps the bells and notifications it consumes until the
   pump takes them, and the last title the child set until the grid clears for another
-  session.
+  session. An OSC 8 link is not an exception: the grid writes it into the frame's
+  cell, around the cell's text, and the renderer's diff writes it with the cell.
 - The live child-environment read has two answers, a value or no signal; absence never
   stands in for a value, and a stale exec-time environment counts as no signal.
 

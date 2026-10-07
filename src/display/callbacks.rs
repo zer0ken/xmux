@@ -9,6 +9,7 @@
 //! learn the terminal's features falls back to guessing from `TERM`.
 
 use crate::display::outer::OuterTerminal;
+use crate::display::vt100;
 
 /// The grid's primary device attributes: a VT220 (62) with ANSI colour (22). The grid
 /// has no rectangular editing and no left and right margins, so it claims neither.
