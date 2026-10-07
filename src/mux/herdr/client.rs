@@ -77,7 +77,10 @@ pub(super) fn parse(out: &str) -> Option<ClientAt> {
     if is_this_machine(&selected.target, host) {
         Some(ClientAt::Session(selected.session))
     } else {
-        Some(ClientAt::Away(selected.label))
+        // The label is drawn on a card, so a control character in it never reaches the
+        // terminal.
+        let label = selected.label.chars().filter(|c| !c.is_control()).collect();
+        Some(ClientAt::Away(label))
     }
 }
 
@@ -172,6 +175,11 @@ mod tests {
         assert_eq!(
             parse(&output(&own_client(), 41, "jup", AWAY)),
             Some(ClientAt::Away("web/agents".into()))
+        );
+        let escaped = AWAY.replace("web/agents", "web/\\u001b[2Jagents");
+        assert_eq!(
+            parse(&output(&own_client(), 41, "jup", &escaped)),
+            Some(ClientAt::Away("web/[2Jagents".into()))
         );
     }
 
