@@ -34,6 +34,8 @@ pub struct OuterTerminal {
     pub scheme: Option<u8>,
     /// One cell as `(height, width)` in pixels.
     pub cell_px: Option<(u16, u16)>,
+    /// Whether the primary device attributes list sixel graphics (attribute 4).
+    pub sixel: bool,
 }
 
 impl OuterTerminal {
@@ -54,6 +56,7 @@ static OUTER: Mutex<OuterTerminal> = Mutex::new(OuterTerminal {
     palette: [const { None }; 16],
     scheme: None,
     cell_px: None,
+    sixel: false,
 });
 
 fn outer_mut() -> MutexGuard<'static, OuterTerminal> {
@@ -154,6 +157,7 @@ impl ReplyFilter {
                         Reply::Whole(len)
                     } else if probing && final_byte == b'c' && body.first() == Some(&b'?') {
                         self.probing_until = None;
+                        outer_mut().sixel = body[1..].split(|&b| b == b';').any(|a| a == b"4");
                         Reply::Whole(len)
                     } else {
                         Reply::No
@@ -317,9 +321,22 @@ mod tests {
         assert_eq!(o.palette[1].as_deref(), Some("rgb:cd/00/00"));
         assert_eq!(o.scheme, Some(1));
         assert_eq!(o.cell_px, Some((18, 9)));
+        assert!(!o.sixel, "the device attributes list no sixel");
         // The probe ended at the device attributes reply: a later one is a key sequence
         // xmux did not ask for, and passes through.
         assert_eq!(f.filter(b"\x1b[?62c"), b"\x1b[?62c");
+    }
+
+    /// A device attributes reply listing attribute 4 records sixel support.
+    #[test]
+    fn the_filter_records_sixel_from_the_device_attributes() {
+        let _g = lock();
+        set_outer_for_test(OuterTerminal::default());
+        let mut f = ReplyFilter::new();
+        let read = b"\x1b[6;20;10t\x1b[?61;4;6;7;14;21;22;23;24;28;32;42;52c";
+        assert_eq!(f.filter(read), b"");
+        assert!(outer().sixel);
+        assert_eq!(outer().cell_px, Some((20, 10)));
     }
 
     /// Sixteen palette replies outgrow one stdin read, so a reply arrives split: the

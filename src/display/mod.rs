@@ -5,6 +5,7 @@ pub mod child_env;
 pub mod decode;
 pub mod dispatch;
 pub mod grid;
+pub mod image;
 pub mod input;
 pub mod modes;
 pub mod mouse;

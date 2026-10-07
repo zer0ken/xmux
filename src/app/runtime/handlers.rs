@@ -838,6 +838,7 @@ impl Runtime {
             // The draw hot path's observability (per-key grid fingerprints + slow-step
             // probe), owned off the draw block so it does nothing but lock → render.
             draw_observer: DrawObserver::default(),
+            images: Default::default(),
             spinner_start: std::time::Instant::now(),
             login_probes: 0,
             dirty: true,
@@ -966,6 +967,7 @@ impl Runtime {
                 if let Err(e) = clear_screen(term) {
                     tracing::warn!(error = %e, "term_clear_failed");
                 }
+                self.images.forget();
             }
             self.dirty = true;
         }
@@ -1057,25 +1059,29 @@ impl Runtime {
                     // of `self` (the fingerprint block's borrows have ended above).
                     let switcher = &self.model.switcher;
                     let state = &self.model.state;
-                    term.draw(|f| {
+                    let drawn = term.draw(|f| {
                         let t_render = std::time::Instant::now();
                         let plan = switcher.layout(f.area(), nav, state, &previous_plan);
                         switcher.render(f, guard.as_deref(), terminal_focused, state, &plan);
                         next_plan = Some(plan);
                         DrawObserver::slow_step("render", t_render);
+                    });
+                    drawn.map(|frame| {
+                        Self::paint_images(&mut self.images, frame.buffer, guard.as_deref())
                     })
                 }
                 None => {
                     let nav = self.nav_size();
                     let switcher = &self.model.switcher;
                     let state = &self.model.state;
-                    term.draw(|f| {
+                    let drawn = term.draw(|f| {
                         let t_render = std::time::Instant::now();
                         let plan = switcher.layout(f.area(), nav, state, &previous_plan);
                         switcher.render(f, None, terminal_focused, state, &plan);
                         next_plan = Some(plan);
                         DrawObserver::slow_step("render", t_render);
-                    })
+                    });
+                    drawn.map(|frame| Self::paint_images(&mut self.images, frame.buffer, None))
                 }
             };
             if let Err(e) = draw_result {
@@ -1120,6 +1126,25 @@ impl Runtime {
             }
         }
         DrawObserver::slow_step("host_drain", t);
+    }
+
+    /// Draws the sixel image pieces a completed frame shows onto the outer terminal,
+    /// right after ratatui flushed the frame, so the write never lands mid-frame.
+    fn paint_images(
+        painter: &mut crate::display::image::paint::Painter,
+        frame: &ratatui::buffer::Buffer,
+        grid: Option<&crate::display::grid::Grid>,
+    ) {
+        let Some(cell_px) = crate::display::image::sixel_cell_px() else {
+            return;
+        };
+        let bytes = painter.paint(frame, |id| grid?.image(id), cell_px);
+        if !bytes.is_empty() {
+            use std::io::Write;
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(&bytes);
+            let _ = out.flush();
+        }
     }
 
     /// Writes the sequences a child asked the terminal above xmux for (an OSC 52
@@ -2161,6 +2186,7 @@ impl Runtime {
                 if let Err(e) = clear_screen(term) {
                     tracing::warn!(error = %e, "term_clear_failed");
                 }
+                self.images.forget();
                 self.dirty = true;
             }
         }

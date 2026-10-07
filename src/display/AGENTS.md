@@ -29,6 +29,12 @@ state: the focus and modal state machine lives in `app`.
 - Input decoding, dispatch, paste splitting, and mouse parsing turn terminal bytes into
   routing decisions or input actions; terminal setup holds prefix parsing, mouse
   capture, bracketed paste, focus reports, and the terminal guard.
+- Sixel images live in the grid as marker cells its own parser writes, so they scroll,
+  erase, and clear with the text. The frame shows a marker cell as a cell ratatui
+  never writes, and the painter draws onto the terminal only the image cells that
+  survive the whole frame. All of it is off unless the outer terminal reported sixel
+  and its cell size, and it is always off on a Windows host, whose ConPTY breaks a
+  sixel string on its way to xmux.
 - The live child-environment read answers one caller-named variable from a running
   attach child. It names no mux and no variable.
 
@@ -41,10 +47,12 @@ state: the focus and modal state machine lives in `app`.
 - The renderer owns stdout, so raw stdout passthrough of child output is not an
   option. The one exception is what a child asks of the terminal around the screen,
   which the loop writes between frames: a whole OSC 52 clipboard write, a bell, an OSC 9
-  or OSC 777 notification, and the window title of the session on screen. The pump
-  scans OSC 52 out of the raw stream; the grid's parser keeps the bells and
-  notifications it consumes until the pump takes them, and the last title the child
-  set until the grid clears for another session.
+  or OSC 777 notification, the window title of the session on screen, and the sixel
+  image pieces a completed frame left to the terminal view, each drawn inside a saved
+  cursor and never past the cells the frame marked for it. The pump scans OSC 52 out of
+  the raw stream; the grid's parser keeps the bells and notifications it consumes until
+  the pump takes them, and the last title the child set until the grid clears for
+  another session.
 - The live child-environment read has two answers, a value or no signal; absence never
   stands in for a value, and a stale exec-time environment counts as no signal.
 
