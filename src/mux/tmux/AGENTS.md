@@ -31,6 +31,8 @@ reattaches instead.
   sessions.
 - The `-CC` metadata client sets `ignore-size` and never sends a client size, so it
   cannot shrink the session it lands in, which is often the one xmux itself runs in.
+- tmux counts the metadata client on the session it is attached to, so the session
+  `%session-changed` names is reported for the app to leave that client out.
 
 ## Common Pitfalls
 

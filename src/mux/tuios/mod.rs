@@ -147,7 +147,7 @@ fn parse_sessions(host: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, Run
             mux: mux.to_string(),
             id: session.id,
             windows: session.window_count,
-            attached: session.attached,
+            clients: u32::from(session.attached),
             stopped: session.saved,
         })
         .collect())
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(sessions[0].name, "session-0");
         assert_eq!(sessions[0].id, "2569c353-385d-40e3-842a-3d58ded8a03e");
         assert_eq!(sessions[0].windows, 1);
-        assert!(sessions[0].attached);
+        assert_eq!(sessions[0].clients, 1);
         assert!(!sessions[0].stopped);
         assert_eq!(sessions[1].name, "saved");
         assert_eq!(sessions[1].windows, 2);

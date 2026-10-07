@@ -142,7 +142,7 @@ pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
             // The listing names a session only; abduco has no rename to tell apart.
             id: String::new(),
             windows: 1,
-            attached: status == '*',
+            clients: u32::from(status == '*'),
             stopped: false,
         });
     }
@@ -252,8 +252,8 @@ mod tests {
         let got = m.enumerate(&ssh("jup"), &runner).await.unwrap();
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["sess1", "build"]);
-        assert!(got[0].attached, "the * marker means a client is attached");
-        assert!(!got[1].attached, "the space marker means unattached");
+        assert_eq!(got[0].clients, 1, "the * marker means a client is attached");
+        assert_eq!(got[1].clients, 0, "the space marker means unattached");
         assert!(got.iter().all(|s| s.host == "jup" && s.mux == "abduco"));
         assert_eq!(got[0].windows, 1);
     }
@@ -273,8 +273,8 @@ mod tests {
         let got = m.enumerate(&ssh("jup"), &runner).await.unwrap();
         let names: Vec<&str> = got.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["x", "2048", "proj\tname"]);
-        assert!(got[0].attached, "the * marker means a client is attached");
-        assert!(!got[1].attached);
+        assert_eq!(got[0].clients, 1, "the * marker means a client is attached");
+        assert_eq!(got[1].clients, 0);
     }
 
     #[tokio::test]

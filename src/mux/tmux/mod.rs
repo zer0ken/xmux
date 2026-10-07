@@ -290,10 +290,15 @@ impl ControlProtocol for TmuxControl {
                     session: name.to_string(),
                 })
             }
-            // `%session-changed` (the metadata client's own auto-attached session) and
-            // `%window-pane-changed` (a pane became active) do not affect the nav
-            // tree - the per-session PTY attachments own the live pane - so they are inert.
-            Notif::SessionChanged { .. } | Notif::WindowPaneChanged { .. } => None,
+            // `%session-changed` names the session the metadata client itself is
+            // attached to, where tmux counts it as a client like any other.
+            Notif::SessionChanged { name, .. } => Some(HostEvent::ControlSession {
+                host: host.to_string(),
+                session: name.to_string(),
+            }),
+            // `%window-pane-changed` (a pane became active) does not affect the nav tree:
+            // the per-session PTY attachments own the live pane.
+            Notif::WindowPaneChanged { .. } => None,
             Notif::Exit { reason } => {
                 // `%exit` may carry its own reason; otherwise fall back to the last error
                 // block ("no sessions" / "no server running") so an empty mux is not

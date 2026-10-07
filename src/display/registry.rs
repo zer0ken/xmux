@@ -51,6 +51,11 @@ impl AttachRegistry {
         self.map.contains_key(addr)
     }
 
+    /// Whether a fresh attachment is parked under `addr`.
+    pub fn contains_pending(&self, addr: &str) -> bool {
+        self.pending.contains_key(addr)
+    }
+
     /// The number of installed attachments supplying visible grids.
     pub fn len(&self) -> usize {
         self.map.len()

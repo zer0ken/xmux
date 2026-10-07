@@ -66,7 +66,7 @@ pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
             mux: mux.to_string(),
             id: pid.to_string(),
             windows: 0,
-            attached,
+            clients: u32::from(attached),
             stopped: false,
         });
     }
@@ -116,9 +116,9 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].name, "parsetest");
         assert_eq!(got[0].id, "2589", "the pid, which a rename keeps");
-        assert!(!got[0].attached);
+        assert_eq!(got[0].clients, 0);
         assert_eq!(got[1].name, "alpha");
-        assert!(got[1].attached);
+        assert_eq!(got[1].clients, 1);
         assert!(got.iter().all(|s| s.host == "jup" && s.mux == "screen"));
     }
 
@@ -150,7 +150,7 @@ mod tests {
         let got = parse_sessions("alp", "screen", out);
         assert_eq!(
             got.iter()
-                .map(|s| (s.name.as_str(), s.attached))
+                .map(|s| (s.name.as_str(), s.clients > 0))
                 .collect::<Vec<_>>(),
             vec![("a", false), ("b.c", false)]
         );
@@ -170,7 +170,7 @@ mod tests {
             let got = parse_sessions("jup", "screen", &out);
             assert_eq!(
                 got.iter()
-                    .map(|s| (s.name.as_str(), s.attached))
+                    .map(|s| (s.name.as_str(), s.clients > 0))
                     .collect::<Vec<_>>(),
                 vec![
                     ("work", false),

@@ -1056,7 +1056,7 @@ fn inventory_rename_precedes_display_session_sync() {
         mux: "tmux".into(),
         id: "7$0".into(),
         windows: 2,
-        attached: false,
+        clients: 0,
         stopped: false,
     }];
 
@@ -1101,7 +1101,7 @@ async fn prefix_r_probes_the_selected_machine_without_a_discovery_pass() {
             host: host.into(),
             name: "api".into(),
             windows: 1,
-            attached: false,
+            clients: 0,
             stopped: false,
         }],
     };
@@ -1148,7 +1148,7 @@ async fn capital_r_rescan_rebuilds_nav_and_kicks_discovery() {
                 host: "jup".into(),
                 name: "api".into(),
                 windows: 1,
-                attached: false,
+                clients: 0,
                 stopped: false,
             }],
         }],
@@ -2790,7 +2790,7 @@ fn two_session_scan() -> crate::ui::switcher::Scan {
         host: "jup".into(),
         name: name.into(),
         windows,
-        attached: false,
+        clients: 0,
         stopped: false,
     };
     Scan {
@@ -2884,7 +2884,7 @@ fn jup_sessions(names: &[&str]) -> Vec<crate::session::Session> {
             host: "jup".into(),
             name: (*name).into(),
             windows: 1,
-            attached: false,
+            clients: 0,
             stopped: false,
         })
         .collect()
@@ -3011,7 +3011,7 @@ fn psmux_scan() -> crate::ui::switcher::Scan {
         host: "local".into(),
         name: name.into(),
         windows: 1,
-        attached: false,
+        clients: 0,
         stopped: false,
     };
     crate::ui::switcher::Scan {
@@ -3119,7 +3119,7 @@ fn zellij_scan() -> crate::ui::switcher::Scan {
         mux: "zellij".into(),
         id: String::new(),
         windows: 1,
-        attached: false,
+        clients: 0,
         stopped: false,
     };
     crate::ui::switcher::Scan {
@@ -3247,7 +3247,7 @@ fn a_settled_herdr_runtime() -> Runtime {
         mux: "herdr".into(),
         id: String::new(),
         windows: 0,
-        attached: false,
+        clients: 0,
         stopped: false,
     };
     let scan = crate::ui::switcher::Scan {
@@ -3963,7 +3963,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
                     host: "jup".into(),
                     name: "api".into(),
                     windows: 1,
-                    attached: false,
+                    clients: 0,
                     stopped: false,
                 },
                 Session {
@@ -3972,7 +3972,7 @@ fn dispatch_action_switch_moves_cursor_focus_toggles_width_and_quit() {
                     host: "jup".into(),
                     name: "db".into(),
                     windows: 1,
-                    attached: false,
+                    clients: 0,
                     stopped: false,
                 },
             ],
@@ -4027,7 +4027,7 @@ fn status_line_names_the_listed_mux_before_the_reach_resolves() {
                 host: "jup".into(),
                 name: "api".into(),
                 windows: 1,
-                attached: false,
+                clients: 0,
                 stopped: false,
             }],
         }],
@@ -4052,7 +4052,7 @@ fn status_line_reports_focus_and_address() {
                 host: "jup".into(),
                 name: "api".into(),
                 windows: 1,
-                attached: false,
+                clients: 0,
                 stopped: false,
             }],
         }],
@@ -4103,7 +4103,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
                     host: "jup".into(),
                     name: "api".into(),
                     windows: 1,
-                    attached: false,
+                    clients: 0,
                     stopped: false,
                 },
                 Session {
@@ -4112,7 +4112,7 @@ fn ctl_switch_syncs_canonical_selection_immediately() {
                     host: "jup".into(),
                     name: "db".into(),
                     windows: 1,
-                    attached: false,
+                    clients: 0,
                     stopped: false,
                 },
             ],
@@ -4277,7 +4277,7 @@ fn rt_terminal_focus_with_session() -> Runtime {
                 host: "jup".into(),
                 name: "api".into(),
                 windows: 1,
-                attached: false,
+                clients: 0,
                 stopped: false,
             }],
         }],
@@ -5435,7 +5435,7 @@ fn poll_rename_precedes_display_session_sync() {
                     mux: "tmux".into(),
                     id: "7$0".into(),
                     windows: 2,
-                    attached: false,
+                    clients: 0,
                     stopped: false,
                 }],
                 err: None,
@@ -5469,7 +5469,7 @@ fn one_session_scan() -> Scan {
                 mux: "tmux".into(),
                 id: "7$0".into(),
                 windows: 2,
-                attached: false,
+                clients: 0,
                 stopped: false,
             }],
         }],
@@ -5565,10 +5565,10 @@ fn host_event_client_detached_emits_reap_display_attach_with_no_state_change() {
     assert!(
         matches!(
             effects.as_slice(),
-            [EventEffect::ReapDisplayAttach { host, client }]
-                if host == "jup" && client == "/dev/pts/3"
+            [EventEffect::ReapDisplayAttach { host, client }, EventEffect::Refetch { host: refetched }]
+                if host == "jup" && client == "/dev/pts/3" && refetched == "jup"
         ),
-        "ClientDetached forwards a ReapDisplayAttach effect: {effects:?}"
+        "ClientDetached forwards a ReapDisplayAttach effect and refetches the counts: {effects:?}"
     );
     // ClientDetached mutates no State (the tree group set is untouched).
     assert_eq!(state.groups.len(), before_groups);
@@ -5598,10 +5598,10 @@ fn host_event_client_session_changed_forwards_follow_effect_with_no_state_change
     assert!(
         matches!(
             effects.as_slice(),
-            [EventEffect::FollowDisplaySession { host, client, session }]
-                if host == "jup" && client == "/dev/pts/3" && session == "db"
+            [EventEffect::FollowDisplaySession { host, client, session }, EventEffect::Refetch { host: refetched }]
+                if host == "jup" && client == "/dev/pts/3" && session == "db" && refetched == "jup"
         ),
-        "ClientSessionChanged forwards a FollowDisplaySession effect: {effects:?}"
+        "ClientSessionChanged forwards a FollowDisplaySession effect and refetches the counts: {effects:?}"
     );
     // update mutates no State here (the tree group set is untouched); the tty match +
     // selection follow are loop-owned.
@@ -5679,7 +5679,7 @@ fn host_event_sessions_applies_tree_and_emits_sync_on_success() {
         mux: "tmux".into(),
         id: String::new(),
         windows: 1,
-        attached: false,
+        clients: 0,
         stopped: false,
     }];
     let effects = host_event_effects_for_test(
@@ -7322,7 +7322,7 @@ fn a_landing_link_takes_hover_and_a_click_from_the_navs_focus() {
     let deploy = rt
         .model
         .switcher
-        .landing_links()
+        .landing_links(&rt.model.state)
         .iter()
         .position(|l| l.node() == session_node("web", "deploy").as_ref())
         .unwrap();
@@ -7585,7 +7585,7 @@ fn headline_rt(machine: &str, session: &str, cols: u16, rows: u16) -> Runtime {
                 mux: "tmux".into(),
                 id: String::new(),
                 windows: 1,
-                attached: false,
+                clients: 0,
                 stopped: false,
             }],
             None,
@@ -8097,4 +8097,29 @@ async fn the_terminal_title_follows_the_session_on_screen() {
         "a title no longer on screen gives way to xmux's own"
     );
     assert_eq!(synced(&mut rt), "");
+}
+
+/// The display attachments xmux holds are counted on the session each one is on while
+/// the registry holds it, and stop counting once their client ends.
+#[tokio::test(flavor = "current_thread")]
+async fn live_display_attachments_are_counted_as_xmuxs_own_clients() {
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+    assert!(
+        !rt.sync_display_clients(),
+        "a record with no live attachment counts nothing"
+    );
+    rt.registry.insert_fake("jup", 7);
+    assert!(rt.sync_display_clients());
+    let api = crate::session::Address::new("jup", "api");
+    assert_eq!(rt.model.state.display_clients.get(&api), Some(&1));
+    assert!(!rt.sync_display_clients(), "unchanged, so nothing to tell");
+    rt.registry.reap(7);
+    assert!(rt.sync_display_clients());
+    assert!(rt.model.state.display_clients.is_empty());
 }

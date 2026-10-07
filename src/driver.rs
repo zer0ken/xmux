@@ -382,7 +382,7 @@ pub(crate) mod tests {
             mux: String::new(),
             id: String::new(),
             windows: 1,
-            attached: false,
+            clients: 0,
             stopped: false,
         }
     }

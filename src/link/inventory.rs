@@ -108,6 +108,9 @@ pub enum HostEvent {
     /// ConPTY consumes the marker's OSC before the pump can read it). Recorded on
     /// `Host.display_tty` so a later `switch-client -c <tty>` targets xmux's own client.
     DisplayTty { host: String, tty: Option<String> },
+    /// `%session-changed $id <name>` - the session this -CC metadata connection is itself
+    /// attached to, which the mux counts as a client on that session.
+    ControlSession { host: String, session: String },
     /// A machine's MUX DISCOVERY resolved: `muxes` is every mux xmux supports that
     /// answered on `machine` (empty when none did), or the reason the machine could not
     /// be asked at all. Emitted once per machine by a

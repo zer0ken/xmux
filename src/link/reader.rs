@@ -388,6 +388,31 @@ mod tests {
     }
 
     #[test]
+    fn session_changed_names_the_metadata_clients_own_session() {
+        // The metadata client is a client of the session it is attached to, so the app
+        // has to know which one to leave it out of that session's clients.
+        let state = test_state(80, 24);
+        let in_flight: InFlight = Default::default();
+        let mut events = Vec::new();
+        run_reader(
+            "jupiter00",
+            test_control_proto(),
+            vec!["%session-changed $1 api".to_string()].into_iter(),
+            &state,
+            &in_flight,
+            |e| events.push(e),
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                HostEvent::ControlSession { host, session }
+                    if host == "jupiter00" && session == "api"
+            )),
+            "%session-changed must emit ControlSession with the session it names"
+        );
+    }
+
+    #[test]
     fn reader_session_changed_and_pane_changed_are_inert() {
         // `%session-changed` (the metadata client's own attach) and
         // `%window-pane-changed` do not affect the nav, so they must NOT

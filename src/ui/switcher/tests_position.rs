@@ -46,7 +46,7 @@ fn sess(host: &str, name: &str) -> Session {
         mux: String::new(),
         id: String::new(),
         windows: 1,
-        attached: false,
+        clients: 0,
         stopped: false,
     }
 }
