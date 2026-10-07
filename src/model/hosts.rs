@@ -416,7 +416,9 @@ impl Hosts {
             // owns the registry + the recover-from-detach rearm); the Hosts map holds no
             // per-attach state to fold here. `ClientSessionChanged` is the same: the tty match
             // + display-belief sync + nav follow run in the supervisor's effect handler.
-            ClientDetached { .. } | ClientSessionChanged { .. } => {}
+            // Setting whether the display client sizes its session is a command to the host,
+            // also the supervisor's.
+            ClientDetached { .. } | ClientSessionChanged { .. } | DisplaySessionClients { .. } => {}
             // The metadata channel's own session is a fact the state keeps for the client
             // count; no Host-owned field holds it.
             ControlSession { .. } => {}

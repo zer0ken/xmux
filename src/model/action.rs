@@ -299,6 +299,17 @@ pub enum EventEffect {
     /// by `list-clients`) on the Host, behind the loop's reach. With the tty known, a
     /// session switch is an in-place `switch-client -c <tty>`. `None` clears a stale tty.
     RecordDisplayTty { host: String, tty: Option<String> },
+    /// A client of `host` came, went, or moved, or the display tty became known: ask
+    /// which clients are attached to the session xmux's display client shows.
+    SettleDisplaySize { host: String },
+    /// `DisplaySessionClients`: set whether xmux's display client `tty` sizes the session
+    /// it shows, yielding while the session is `shared`, IFF `tty` is still the host's
+    /// display tty.
+    SizeDisplayClient {
+        host: String,
+        tty: String,
+        shared: bool,
+    },
     /// `MachineProbed` (connected): resolve every host `machine` serves onto its
     /// metadata channel and, when the machine left its mux list to xmux, ask which
     /// muxes it serves. The loop owns it because it needs the host registry (the
@@ -436,6 +447,16 @@ impl std::fmt::Debug for EventEffect {
                 .debug_struct("RecordDisplayTty")
                 .field("host", host)
                 .field("tty", tty)
+                .finish(),
+            EventEffect::SettleDisplaySize { host } => f
+                .debug_struct("SettleDisplaySize")
+                .field("host", host)
+                .finish(),
+            EventEffect::SizeDisplayClient { host, tty, shared } => f
+                .debug_struct("SizeDisplayClient")
+                .field("host", host)
+                .field("tty", tty)
+                .field("shared", shared)
                 .finish(),
             EventEffect::MachineConnected {
                 machine,

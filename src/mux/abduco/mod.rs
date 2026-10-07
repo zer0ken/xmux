@@ -90,6 +90,18 @@ impl Mux for Abduco {
         vec![self.bin.clone(), "-a".to_string(), session.to_string()]
     }
 
+    /// `-l` attaches with the lowest priority: abduco sizes a session by its first
+    /// client and moves a `-l` client to the end, so xmux's view sizes the session only
+    /// while no other client is attached and never shrinks the user's own client.
+    fn display_attach_plan(&self, session: &str) -> Vec<String> {
+        vec![
+            self.bin.clone(),
+            "-l".to_string(),
+            "-a".to_string(),
+            session.to_string(),
+        ]
+    }
+
     fn control_argv(&self) -> Option<Vec<String>> {
         // abduco has no control-mode channel: its CLI is one process per query.
         None

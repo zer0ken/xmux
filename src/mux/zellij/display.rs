@@ -77,7 +77,7 @@ impl MuxDriver for ZellijDriver {
                 .expect("the selected host exists");
             host.display.clear(&key);
             (
-                host.mux.attach_plan(&sel.session),
+                host.mux.display_attach_plan(&sel.session),
                 crate::driver::attach_records_client(host.transport.as_ref()),
                 host.transport.clone_box(),
             )

@@ -33,6 +33,10 @@ reattaches instead.
   cannot shrink the session it lands in, which is often the one xmux itself runs in.
 - tmux counts the metadata client on the session it is attached to, so the session
   `%session-changed` names is reported for the app to leave that client out.
+- The display client attaches and moves with `ignore-size`, and keeps it only while
+  another window-sizing client is attached to its session: tmux honours the flag only
+  while some client without it is attached anywhere on the server, so a display client
+  that kept it alone would never size its session.
 
 ## Common Pitfalls
 

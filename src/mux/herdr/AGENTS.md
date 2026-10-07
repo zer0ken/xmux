@@ -25,6 +25,8 @@ requested session, and `herdr session attach <name>` starts it.
   session, except the stopped reserved `default` entry, which herdr lists on every
   machine.
 - A session change xmux makes creates a fresh attachment; no in-place switch is claimed.
+  herdr sizes a session by the client that last had input and has no way to leave one
+  out.
   An attachment whose client the user already moved to the selected session is kept.
 - The endpoint selection is attributed to xmux's client only while it is the user's one
   herdr client on that machine. A saved machine on the client's own machine is one of

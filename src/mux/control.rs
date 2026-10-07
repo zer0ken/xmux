@@ -3,7 +3,7 @@
 //! A mux with a host-level control stream (tmux) hides ALL its `-CC` wire details
 //! behind this trait: line framing/classification, the notification→event policy
 //! table, and the control-mode command-line builders. `host.rs` drives the reader
-//! state machine + FIFO correlation but names no tmux protocol specifics directly —
+//! state machine + FIFO correlation but names no tmux protocol specifics directly -
 //! it reaches them only through `Mux::control_protocol`.
 
 use crate::link::HostEvent;
@@ -13,7 +13,7 @@ pub use crate::mux::tmux::control_proto::{Line, Notif};
 /// The tmux-flavored control-mode protocol. Stateless: every method is a pure
 /// function of its arguments, so the implementor is a unit struct shared `'static`.
 pub trait ControlProtocol: Send + Sync {
-    /// The canonical identity of the mux this protocol speaks for — stamped onto
+    /// The canonical identity of the mux this protocol speaks for - stamped onto
     /// the sessions parsed out of its control-mode replies.
     fn mux_kind(&self) -> &'static str;
 
@@ -38,16 +38,36 @@ pub trait ControlProtocol: Send + Sync {
     /// correlated `Query`.
     fn connect_lines(&self) -> Vec<String>;
 
-    /// `list-sessions -F <fmt>` — the correlated query whose block resolves the inventory.
+    /// `list-sessions -F <fmt>` - the correlated query whose block resolves the inventory.
     fn list_sessions_line(&self) -> String;
 
-    /// `switch-client -c <display_tty> -t <session>` — moves the named display client.
+    /// `switch-client -c <display_tty> -t <session>` - moves the named display client.
     fn switch_client_line(&self, display_tty: &str, session: &str) -> String;
 
-    /// `refresh-client -t <display_tty>` — forces a full redraw of the named client. A
+    /// `refresh-client -t <display_tty>` - forces a full redraw of the named client. A
     /// `switch-client` moves the client but need not repaint a locally-cleared grid; a
     /// fresh attach repaints fully, and this gives an in-place switch the same full repaint.
     fn refresh_client_line(&self, display_tty: &str) -> String;
+
+    /// The query listing the clients attached to `session`, whose block
+    /// [`ControlProtocol::session_shared`] reads.
+    fn session_clients_line(&self, session: &str) -> String;
+
+    /// Whether a [`ControlProtocol::session_clients_line`] block lists a client besides
+    /// `display_tty` that sizes windows: a control client sizes none, so it does not
+    /// count.
+    fn session_shared(&self, body: &[String], display_tty: &str) -> bool;
+
+    /// The lines that set whether xmux's display client `display_tty` sizes the session
+    /// it shows (it does not while `shared`, so the user's own client keeps its size),
+    /// then have the mux size its windows again. Each line is one command answering with
+    /// one block, so the reply correlation stays in step.
+    fn display_size_lines(&self, display_tty: &str, shared: bool) -> Vec<String>;
+
+    /// Stops `display_tty` from sizing the session it lands on next, sent before the
+    /// client moves, so the move cannot resize a client the user already has there
+    /// before the session's clients have been asked.
+    fn display_size_yield_line(&self, display_tty: &str) -> String;
 
     /// The lines that resolve xmux's OWN display-client tty for `host_key`. They must
     /// identify the client by something only xmux's own display attach could have

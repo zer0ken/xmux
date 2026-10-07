@@ -2738,6 +2738,148 @@ async fn client_session_changed_matching_our_tty_syncs_display_belief() {
     );
 }
 
+/// The command lines a recording control client received, in order, leaving out the
+/// session listing a client report also refetches.
+fn sent_lines(commands: &std::sync::mpsc::Receiver<crate::link::HostCmd>) -> Vec<String> {
+    let listing = crate::link::test_control_proto().list_sessions_line();
+    commands
+        .try_iter()
+        .filter_map(|cmd| match cmd {
+            crate::link::HostCmd::Send(line) => Some(line),
+            crate::link::HostCmd::Query { line, .. } => Some(line),
+            crate::link::HostCmd::Shutdown => None,
+        })
+        .filter(|line| *line != listing)
+        .collect()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn every_client_change_asks_who_shares_the_displayed_session() {
+    // A client the user attaches to the session xmux shows, or one leaving it, changes
+    // whether xmux's display client may size that session. Each report asks which clients
+    // are attached to the session the display client is on, the new one when the report
+    // is the display client's own move.
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    let commands = rt.mgr.insert_recording("jup");
+    rt.hosts.get_mut("jup").unwrap().display_tty =
+        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+    let proto = crate::link::test_control_proto();
+
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/9".into(),
+        session: "api".into(),
+    });
+    assert_eq!(
+        sent_lines(&commands),
+        vec![proto.session_clients_line("api")],
+        "a user's client arriving on the shown session asks about that session"
+    );
+
+    rt.handle_host_event(HostEvent::ClientSessionChanged {
+        host: "jup".into(),
+        client: "/dev/pts/3".into(),
+        session: "db".into(),
+    });
+    assert_eq!(
+        sent_lines(&commands),
+        vec![proto.session_clients_line("db")],
+        "the display client's own move asks about the session it moved to"
+    );
+
+    rt.handle_host_event(HostEvent::ClientDetached {
+        host: "jup".into(),
+        client: "/dev/pts/9".into(),
+    });
+    assert_eq!(
+        sent_lines(&commands),
+        vec![proto.session_clients_line("db")],
+        "a user's client leaving asks again"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn asking_who_shares_the_displayed_session_waits_for_the_display_tty() {
+    // Without its tty the display client cannot be named, so nothing is sent and it keeps
+    // the ignore-size its attach set; the captured tty then asks.
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    let commands = rt.mgr.insert_recording("jup");
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "api");
+    let proto = crate::link::test_control_proto();
+
+    rt.handle_host_event(HostEvent::ClientDetached {
+        host: "jup".into(),
+        client: "/dev/pts/9".into(),
+    });
+    assert!(sent_lines(&commands).is_empty(), "no tty, nothing to name");
+
+    rt.handle_host_event(HostEvent::DisplayTty {
+        host: "jup".into(),
+        tty: Some("/dev/pts/3".into()),
+    });
+    assert_eq!(
+        sent_lines(&commands),
+        vec![proto.session_clients_line("api")],
+        "the captured tty asks about the session the display client shows"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_answer_sets_whether_the_display_client_sizes_its_session() {
+    // A session another window-sizing client shares keeps that client's size, so xmux's
+    // display client yields; alone, it sizes the session. An answer about a client that is
+    // no longer the display client changes nothing.
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    let commands = rt.mgr.insert_recording("jup");
+    rt.hosts.get_mut("jup").unwrap().display_tty =
+        crate::model::DisplayTty(Some("/dev/pts/3".into()));
+    let proto = crate::link::test_control_proto();
+
+    rt.handle_host_event(HostEvent::DisplaySessionClients {
+        host: "jup".into(),
+        display_tty: "/dev/pts/3".into(),
+        shared: true,
+    });
+    assert_eq!(
+        sent_lines(&commands),
+        proto.display_size_lines("/dev/pts/3", true),
+        "a shared session keeps the user's size"
+    );
+
+    rt.handle_host_event(HostEvent::DisplaySessionClients {
+        host: "jup".into(),
+        display_tty: "/dev/pts/3".into(),
+        shared: false,
+    });
+    assert_eq!(
+        sent_lines(&commands),
+        proto.display_size_lines("/dev/pts/3", false),
+        "alone, the display client sizes its session"
+    );
+
+    rt.handle_host_event(HostEvent::DisplaySessionClients {
+        host: "jup".into(),
+        display_tty: "/dev/pts/7".into(),
+        shared: false,
+    });
+    assert!(
+        sent_lines(&commands).is_empty(),
+        "an answer about a client that is no longer the display client is dropped"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn a_client_session_change_before_the_tty_is_known_lands_once_it_is_captured() {
     // A remote attach records its tty on the machine before it execs the mux client, so the
@@ -5568,10 +5710,14 @@ fn host_event_client_detached_emits_reap_display_attach_with_no_state_change() {
     assert!(
         matches!(
             effects.as_slice(),
-            [EventEffect::ReapDisplayAttach { host, client }, EventEffect::Refetch { host: refetched }]
-                if host == "jup" && client == "/dev/pts/3" && refetched == "jup"
+            [
+                EventEffect::ReapDisplayAttach { host, client },
+                EventEffect::Refetch { host: refetched },
+                EventEffect::SettleDisplaySize { host: settled },
+            ] if host == "jup" && client == "/dev/pts/3" && refetched == "jup" && settled == "jup"
         ),
-        "ClientDetached forwards a ReapDisplayAttach effect and refetches the counts: {effects:?}"
+        "ClientDetached forwards a ReapDisplayAttach effect, refetches the counts, and asks \
+         which clients share the displayed session: {effects:?}"
     );
     // ClientDetached mutates no State (the tree group set is untouched).
     assert_eq!(state.groups.len(), before_groups);
@@ -5601,10 +5747,18 @@ fn host_event_client_session_changed_forwards_follow_effect_with_no_state_change
     assert!(
         matches!(
             effects.as_slice(),
-            [EventEffect::FollowDisplaySession { host, client, session }, EventEffect::Refetch { host: refetched }]
-                if host == "jup" && client == "/dev/pts/3" && session == "db" && refetched == "jup"
+            [
+                EventEffect::FollowDisplaySession { host, client, session },
+                EventEffect::Refetch { host: refetched },
+                EventEffect::SettleDisplaySize { host: settled },
+            ] if host == "jup"
+                && client == "/dev/pts/3"
+                && session == "db"
+                && refetched == "jup"
+                && settled == "jup"
         ),
-        "ClientSessionChanged forwards a FollowDisplaySession effect and refetches the counts: {effects:?}"
+        "ClientSessionChanged forwards a FollowDisplaySession effect, refetches the counts, \
+         and asks which clients share the displayed session: {effects:?}"
     );
     // update mutates no State here (the tree group set is untouched); the tty match +
     // selection follow are loop-owned.

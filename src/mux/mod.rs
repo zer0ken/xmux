@@ -328,6 +328,14 @@ pub trait Mux: Send + Sync {
     /// The interactive attach argv (`argv[0]` = binary).
     fn attach_plan(&self, session: &str) -> Vec<String>;
 
+    /// The attach argv of xmux's own display client. That client joins whatever clients
+    /// the user has attached to the same session, so a mux that can keep one client from
+    /// sizing a shared session overrides this to keep the user's own clients at their
+    /// size. The default is [`Mux::attach_plan`].
+    fn display_attach_plan(&self, session: &str) -> Vec<String> {
+        self.attach_plan(session)
+    }
+
     /// An opaque plan that moves xmux's OWN display client to `session` IN PLACE (no
     /// teardown). The driver runs the returned [`SwitchPlan`] blind through the transport,
     /// never inspecting the variant; the `tty >file` / read-back mechanism a shared mux
