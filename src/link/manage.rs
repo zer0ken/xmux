@@ -9,17 +9,6 @@
 use crate::model::host_def::{RunError, Runner};
 use crate::model::Host;
 
-/// Composes a mux argv (from the host's `Mux`) through the machine `Transport` and
-/// runs it via the injected runner, returning stdout.
-async fn run_plan(
-    host: &Host,
-    runner: &dyn Runner,
-    mux_argv: &[String],
-) -> Result<Vec<u8>, RunError> {
-    let command = host.transport.exec_argv(false, mux_argv);
-    runner.run_spec(&command).await
-}
-
 /// Creates a DETACHED session on the host and returns its name. A mux that names its
 /// own creations ([`Mux::assigns_new_session_name`]) auto-names an empty request and
 /// prints the final name, so its stdout is read back (trailing whitespace trimmed). A
@@ -30,7 +19,10 @@ async fn run_plan(
 /// [`Mux::assigns_new_session_name`]: crate::mux::Mux::assigns_new_session_name
 pub async fn create(host: &Host, runner: &dyn Runner, name: &str) -> Result<String, RunError> {
     if host.mux.assigns_new_session_name() {
-        let out = run_plan(host, runner, &host.mux.new_session_plan(name)).await?;
+        let out = host
+            .mux
+            .create_session(host.transport.as_ref(), runner, name)
+            .await?;
         let printed = String::from_utf8_lossy(&out).trim().to_string();
         return Ok(if printed.is_empty() {
             name.to_string()
@@ -43,7 +35,9 @@ pub async fn create(host: &Host, runner: &dyn Runner, name: &str) -> Result<Stri
     } else {
         name.to_string()
     };
-    run_plan(host, runner, &host.mux.new_session_plan(&name)).await?;
+    host.mux
+        .create_session(host.transport.as_ref(), runner, &name)
+        .await?;
     Ok(name)
 }
 

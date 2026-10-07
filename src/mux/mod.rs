@@ -4,8 +4,8 @@
 //! stay with the mux itself. The manage layer routes every mux argv through the mux
 //! rather than building it off a bare binary name. The mux owns its binary name and
 //! `ServerModel`, so nothing above threads a `bin: &str` or branches on a `remote` bool
-//! to pick the model. Every method is transport-blind except `enumerate` (which runs a
-//! probe).
+//! to pick the model. Command plans are transport-blind; operations compose those
+//! plans with the supplied transport and runner.
 
 use async_trait::async_trait;
 
@@ -29,6 +29,10 @@ mod zellij;
 
 pub use abduco::{Abduco, AbducoDriver};
 pub use control::{ControlProtocol, DisplayTtyRead, Line, Notif};
+#[cfg(test)]
+pub(crate) use herdr::tests::attach_runner as herdr_attach_runner;
+#[cfg(test)]
+pub(crate) use herdr::tests::missing_attach_runner as herdr_missing_attach_runner;
 pub use herdr::{Herdr, HerdrDriver};
 pub use psmux::Psmux;
 pub use screen::Screen;
@@ -36,6 +40,21 @@ pub(crate) use tmux::display_tty_key;
 pub use tmux::{Tmux, TmuxControl};
 pub use tuios::{Tuios, TuiosDriver};
 pub use zellij::Zellij;
+
+/// Owned mux and machine values for attachment preparation off the runtime thread.
+pub struct AttachPreparation {
+    pub mux: Box<dyn Mux>,
+    pub transport: Box<dyn Transport>,
+    pub session: String,
+}
+
+impl AttachPreparation {
+    pub async fn run(&self, runner: &dyn Runner) -> Result<(), RunError> {
+        self.mux
+            .prepare_attach(self.transport.as_ref(), runner, &self.session)
+            .await
+    }
+}
 // Re-export the pure mux builders at the crate::mux root so `crate::mux::<fn>`
 // call sites resolve unchanged whether the item is the Mux trait/factory or a
 // vocab builder/parser.
@@ -328,6 +347,21 @@ pub trait Mux: Send + Sync {
     /// The interactive attach argv (`argv[0]` = binary).
     fn attach_plan(&self, session: &str) -> Vec<String>;
 
+    /// Whether an attach needs host-side validation or an existing-session resume.
+    fn needs_attach_preparation(&self) -> bool {
+        false
+    }
+
+    /// Prepares an existing session for the connect-only display or CLI client.
+    async fn prepare_attach(
+        &self,
+        _transport: &dyn Transport,
+        _runner: &dyn Runner,
+        _session: &str,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
     /// The attach argv of xmux's own display client. That client joins whatever clients
     /// the user has attached to the same session, so a mux that can keep one client from
     /// sizing a shared session overrides this to keep the user's own clients at their
@@ -444,6 +478,18 @@ pub trait Mux: Send + Sync {
     /// the host's `Transport` and reads back the assigned name.
     fn new_session_plan(&self, name: &str) -> Vec<String> {
         mux::new_session(self.bin(), name)
+    }
+
+    /// Completes an explicit session creation, including any server readiness check.
+    async fn create_session(
+        &self,
+        transport: &dyn Transport,
+        runner: &dyn Runner,
+        name: &str,
+    ) -> Result<Vec<u8>, RunError> {
+        runner
+            .run_spec(&transport.exec_argv(false, &self.new_session_plan(name)))
+            .await
     }
 }
 
@@ -1343,7 +1389,7 @@ Usage: zellij [OPTIONS]",
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(
             got.attach_plan("api"),
-            argv(&["herdr", "session", "attach", "api"])
+            argv(&["herdr", "--session", "api", "client"])
         );
     }
 

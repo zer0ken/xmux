@@ -35,7 +35,7 @@ several hosts at one destination.
   another, and no code reads them to pick a server model.
 - The transport composes a fixed set of command shapes: a non-interactive command,
   an attach into the terminal handover and its command-line form, a control-mode
-  child, a raw shell command (only the shell-based implementations answer), and a
+  child, a detached background process, a raw shell command (only the shell-based implementations answer), and a
   login command, a key-only login check, and closing a shared connection (only ssh
   answers these three). The key-only check holds no credential and shares no master.
 - Every untrusted argv element crossing into a remote shell passes through the shared

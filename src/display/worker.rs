@@ -7,6 +7,8 @@ pub struct DisplayEnsure {
     pub seq: u64,
     pub key: String,
     pub command: crate::transport::CommandSpec,
+    /// Optional mux validation and existing-session startup before the PTY opens.
+    pub preparation: Option<crate::mux::AttachPreparation>,
     pub cols: u16,
     pub rows: u16,
     pub id: u64,
@@ -64,23 +66,46 @@ impl DisplayWorker {
         pty_tx: tokio::sync::mpsc::UnboundedSender<PtyEvent>,
         spawner: AttachmentSpawner,
     ) -> Self {
+        Self::with_spawner_and_runner(
+            pty_tx,
+            spawner,
+            std::sync::Arc::new(crate::model::host_def::ExecRunner),
+        )
+    }
+
+    pub(crate) fn with_spawner_and_runner(
+        pty_tx: tokio::sync::mpsc::UnboundedSender<PtyEvent>,
+        spawner: AttachmentSpawner,
+        runner: std::sync::Arc<dyn crate::model::host_def::Runner>,
+    ) -> Self {
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<DisplayEnsure>();
         std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("display worker runtime");
             while let Ok(req) = cmd_rx.recv() {
                 // Resolve the mux session vars to strip from the attach child here,
                 // at the spawn call site, so the low-level `spawn_attachment` never
                 // names a mux var — the list stays in `mux::vocab`.
                 let env_clear =
                     crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
-                let event = match spawner(
-                    &req.command,
-                    req.cols,
-                    req.rows,
-                    req.id,
-                    pty_tx.clone(),
-                    &env_clear,
-                ) {
+                let prepared = match &req.preparation {
+                    Some(preparation) => runtime.block_on(preparation.run(runner.as_ref())),
+                    None => Ok(()),
+                };
+                let result = prepared.map_err(anyhow::Error::from).and_then(|()| {
+                    spawner(
+                        &req.command,
+                        req.cols,
+                        req.rows,
+                        req.id,
+                        pty_tx.clone(),
+                        &env_clear,
+                    )
+                });
+                let event = match result {
                     Ok(attachment) => DisplayEvent::Ready {
                         seq: req.seq,
                         key: req.key,
@@ -127,6 +152,55 @@ mod tests {
     use super::*;
 
     #[tokio::test(flavor = "current_thread")]
+    async fn slow_preparation_does_not_block_runtime_and_rejects_a_missing_target_before_spawn() {
+        use crate::model::host_def::{RunError, Runner};
+        struct SlowListing;
+        #[async_trait::async_trait]
+        impl Runner for SlowListing {
+            crate::model::host_def::runner_spec_via_argv!();
+            async fn run(&self, _name: &str, _args: &[String]) -> Result<Vec<u8>, RunError> {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                Ok(br#"{"sessions":[]}"#.to_vec())
+            }
+        }
+        let mut worker = DisplayWorker::with_spawner_and_runner(
+            tokio::sync::mpsc::unbounded_channel().0,
+            Box::new(|_, _, _, _, _, _| panic!("missing target cannot open a PTY")),
+            std::sync::Arc::new(SlowListing),
+        );
+        worker.ensure(DisplayEnsure {
+            seq: 9,
+            key: "local".into(),
+            command: crate::transport::CommandSpec::from_argv(vec!["herdr".into()]),
+            preparation: Some(crate::mux::AttachPreparation {
+                mux: crate::mux::for_binary("herdr").unwrap(),
+                transport: crate::transport::local(None),
+                session: "gone".into(),
+            }),
+            cols: 80,
+            rows: 24,
+            id: 42,
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            tokio::time::sleep(std::time::Duration::from_millis(1)),
+        )
+        .await
+        .expect("the runtime tick stays responsive");
+        match tokio::time::timeout(std::time::Duration::from_secs(1), worker.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            DisplayEvent::Failed { seq, key, message } => {
+                assert_eq!((seq, key.as_str()), (9, "local"));
+                assert!(message.contains("no longer exists"));
+            }
+            DisplayEvent::Ready { .. } => panic!("missing target cannot attach"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn display_worker_slow_ensure_does_not_block_runtime_ticks() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
@@ -152,6 +226,7 @@ mod tests {
                 "/c".to_string(),
                 "rem".to_string(),
             ]),
+            preparation: None,
             cols: 80,
             rows: 24,
             id: 42,

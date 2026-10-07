@@ -410,6 +410,33 @@ pub trait Transport: Send + Sync {
     /// to spawn.
     fn exec_argv(&self, tty: bool, mux_argv: &[String]) -> CommandSpec;
 
+    /// Starts a background process with closed standard streams. `cwd_env` names an
+    /// optional environment variable in which the process receives its working directory.
+    fn detached_argv(&self, argv: &[String], cwd_env: Option<&str>) -> CommandSpec {
+        let windows = if self.runs_through_shell() {
+            !self.remote_shell().runs_posix_snippets()
+        } else {
+            cfg!(windows)
+        };
+        let script = vocab::detached_command(argv, cwd_env, windows);
+        if self.runs_through_shell() {
+            self.raw_shell_argv(&script)
+                .expect("a shell transport can run a shell command")
+        } else if windows {
+            CommandSpec::new(
+                "powershell.exe",
+                vec![
+                    "-NoProfile".into(),
+                    "-NonInteractive".into(),
+                    "-Command".into(),
+                    script,
+                ],
+            )
+        } else {
+            CommandSpec::new("sh", vec!["-c".into(), script])
+        }
+    }
+
     /// Lowers a mux attach argv into the interactive terminal-handover (cmd, args).
     /// This is the SOLE owner of the `exec`/ssh-tty machinery.
     fn interactive_attach_argv(&self, mux_attach_argv: &[String]) -> CommandSpec;
@@ -481,6 +508,9 @@ impl Clone for Box<dyn Transport> {
 impl Transport for Box<dyn Transport> {
     fn host_id(&self) -> &str {
         (**self).host_id()
+    }
+    fn detached_argv(&self, argv: &[String], cwd_env: Option<&str>) -> CommandSpec {
+        (**self).detached_argv(argv, cwd_env)
     }
     fn is_remote(&self) -> bool {
         (**self).is_remote()
