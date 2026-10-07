@@ -244,6 +244,27 @@ impl Runtime {
             }
             return dirty;
         }
+        // A drag that started in the terminal view keeps reaching the session past the
+        // view: its motion at the view's nearest edge, and its release wherever it lands,
+        // so the session never stays mid-drag or mid-selection. Motion without a button
+        // means the release was lost, and ends the drag here.
+        if self.model.mouse_state.view_drag && !is_wheel {
+            let motion = ev.cb & 0x20 != 0;
+            let held = ev.cb & 0x03 != 0x03;
+            if !ev.pressed || (motion && held) {
+                let (gc, gr) = clamp_to_grid(regions.terminal, ev.col, ev.row);
+                self.forward_mouse(ev, gc, gr, selection);
+                if !ev.pressed {
+                    let effects = update(&mut self.model, Msg::SetViewDrag(false));
+                    debug_assert!(effects.is_empty());
+                }
+                return dirty;
+            }
+            if motion {
+                let effects = update(&mut self.model, Msg::SetViewDrag(false));
+                debug_assert!(effects.is_empty());
+            }
+        }
         let is_left_press = is_press && (ev.cb & 0x03) == 0;
         // The key list and a modal popup move when dragged from anywhere on them. Once
         // grabbed the drag owns every mouse event until release, like the view border
@@ -457,10 +478,13 @@ impl Runtime {
                 // the whole interaction, not just at the next poll. No-op off Windows.
                 crate::display::term::ensure_mouse_capture();
                 if let Some((gc, gr)) = in_mux {
-                    self.registry.input(
-                        &display_key(&self.hosts, selection),
-                        crate::display::mouse::encode_sgr_mouse(ev, gc, gr),
-                    );
+                    self.forward_mouse(ev, gc, gr, selection);
+                    // A button press starts a drag the session follows to its release.
+                    let button = ev.cb & 0x60 == 0;
+                    if button && ev.pressed != self.model.mouse_state.view_drag {
+                        let effects = update(&mut self.model, Msg::SetViewDrag(ev.pressed));
+                        debug_assert!(effects.is_empty());
+                    }
                 }
             }
             ChainAction::Nothing => {}
@@ -484,6 +508,23 @@ impl Runtime {
 }
 
 impl Runtime {
+    /// Sends `ev` at the 1-based grid cell `(col, row)` to the session the terminal view
+    /// shows, in the form its client's mouse modes ask for, or nothing when they do not
+    /// ask for this event.
+    fn forward_mouse(
+        &mut self,
+        ev: &crate::display::mouse::MouseEvent,
+        col: u16,
+        row: u16,
+        selection: &Selection,
+    ) {
+        let key = display_key(&self.hosts, selection);
+        let modes = self.registry.input_modes(&key);
+        if let Some(bytes) = crate::display::mouse::encode_for(ev, col, row, &modes) {
+            self.registry.input(&key, bytes);
+        }
+    }
+
     /// Applies a nav-resize delta on ONE axis, gated to the layout that actually shows that
     /// axis so a key never resizes a dimension the user cannot see: `horizontal` (Ctrl-←/→)
     /// resizes the WIDTH only in a column, `!horizontal` (↑/↓) the HEIGHT only in a band; the

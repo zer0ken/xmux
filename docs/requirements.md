@@ -203,6 +203,10 @@ against, naming no source file, function, or test.
   session in the terminal view encoded with the protocol flags its client pushed, and
   the client's query for its flags is answered; without the protocol the client is told
   nothing and reads legacy keys. The prefix and every xmux key work in either encoding.
+- **FR-C9** - The session in the terminal view gets only the mouse events its client's
+  mouse mode asks for, encoded in the form the client enabled, and a drag that starts in
+  the terminal view reaches it until its release, with motion past the view at the
+  view's nearest edge.
 
 ## D. App lifecycle
 

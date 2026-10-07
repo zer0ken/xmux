@@ -286,7 +286,9 @@ toasts off; the history still records every result.
 | left-click a toast | dismiss it |
 
 There is no context menu. While the terminal view is focused, mouse events over it reach
-the pane, which needs the mux's own mouse mode to use them.
+the pane, which needs the mux's own mouse mode to use them. The pane gets only the events
+its program's mouse mode asks for, in the form it asked for, and a drag that starts over
+the terminal view keeps reaching it past the view's edge until the button is released.
 
 ## Automation
 

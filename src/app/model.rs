@@ -302,6 +302,7 @@ pub(crate) enum Msg {
     },
     SetMouseNavArmed(bool),
     SetMouseDragging(bool),
+    SetViewDrag(bool),
     EndNavDrag {
         band: bool,
     },
@@ -2113,6 +2114,10 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             .collect(),
         Msg::SetMouseNavArmed(armed) => {
             model.mouse_state.nav_armed = armed;
+            Vec::new()
+        }
+        Msg::SetViewDrag(dragging) => {
+            model.mouse_state.view_drag = dragging;
             Vec::new()
         }
         Msg::SetMouseDragging(dragging) => {

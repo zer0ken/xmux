@@ -16,6 +16,27 @@ pub struct InputModes {
     /// The kitty keyboard protocol flags in force: the top of the flag stack the client
     /// pushed for the screen it is on, 0 when it pushed none.
     pub keyboard_flags: u8,
+    /// The mouse events the client asked for.
+    pub mouse: MouseMode,
+    /// `?1006`, `?1015`, and `?1005`: the mouse report forms the client enabled.
+    pub mouse_sgr: bool,
+    pub mouse_urxvt: bool,
+    pub mouse_utf8: bool,
+}
+
+/// The mouse events a client asked for; the last mode set is the one in force.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MouseMode {
+    #[default]
+    Off,
+    /// `?9`: button presses.
+    Press,
+    /// `?1000`: presses and releases.
+    PressRelease,
+    /// `?1002`: those, and motion while a button is held.
+    ButtonMotion,
+    /// `?1003`: those, and every motion.
+    AnyMotion,
 }
 
 /// Longest CSI parameter run kept; a longer one is not a mode change and is skipped.
@@ -108,6 +129,13 @@ impl ModeScanner {
                         b"2004" => self.modes.bracketed_paste = set,
                         b"1004" => self.modes.focus_events = set,
                         b"1049" | b"1047" | b"47" => self.alternate = set,
+                        b"9" => set_mouse(&mut self.modes, MouseMode::Press, set),
+                        b"1000" => set_mouse(&mut self.modes, MouseMode::PressRelease, set),
+                        b"1002" => set_mouse(&mut self.modes, MouseMode::ButtonMotion, set),
+                        b"1003" => set_mouse(&mut self.modes, MouseMode::AnyMotion, set),
+                        b"1006" => self.modes.mouse_sgr = set,
+                        b"1015" => self.modes.mouse_urxvt = set,
+                        b"1005" => self.modes.mouse_utf8 = set,
                         _ => {}
                     }
                 }
@@ -146,6 +174,16 @@ impl ModeScanner {
             .last()
             .copied()
             .unwrap_or(0);
+    }
+}
+
+/// Setting a mouse mode replaces the one in force; resetting it turns the mouse off only
+/// when it is the one in force, as a terminal does.
+fn set_mouse(modes: &mut InputModes, mode: MouseMode, set: bool) {
+    if set {
+        modes.mouse = mode;
+    } else if modes.mouse == mode {
+        modes.mouse = MouseMode::Off;
     }
 }
 
@@ -210,6 +248,27 @@ mod tests {
             modes_after(&[b"\x1b[>4;2m"]).keyboard_flags,
             0,
             "not this protocol"
+        );
+    }
+
+    #[test]
+    fn the_last_mouse_mode_set_is_in_force() {
+        assert_eq!(modes_after(&[b""]).mouse, MouseMode::Off);
+        assert_eq!(
+            modes_after(&[b"\x1b[?1000h"]).mouse,
+            MouseMode::PressRelease
+        );
+        let both = modes_after(&[b"\x1b[?1000h\x1b[?1002h\x1b[?1006h"]);
+        assert_eq!(both.mouse, MouseMode::ButtonMotion);
+        assert!(both.mouse_sgr);
+        assert_eq!(
+            modes_after(&[b"\x1b[?1002h\x1b[?1000l"]).mouse,
+            MouseMode::ButtonMotion,
+            "resetting a mode not in force changes nothing"
+        );
+        assert_eq!(
+            modes_after(&[b"\x1b[?1003h\x1b[?1003l"]).mouse,
+            MouseMode::Off
         );
     }
 
