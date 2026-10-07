@@ -248,6 +248,12 @@ impl Grid {
         self.modes.modes()
     }
 
+    /// The cursor shape the child set with DECSCUSR, as its `CSI Ps SP q` value (0
+    /// for the terminal's default).
+    pub fn cursor_shape(&self) -> u8 {
+        self.parser.callbacks().cursor_shape()
+    }
+
     /// Whether the child has hidden its cursor.
     pub fn hide_cursor(&self) -> bool {
         self.parser.screen().hide_cursor()
@@ -740,6 +746,19 @@ Connection to host closed.
         assert_eq!(replies(&mut g, b"\x1b[16t"), b"\x1b[6;18;9t");
         assert_eq!(replies(&mut g, b"\x1b[14t"), b"\x1b[4;432;720t");
         set_outer_for_test(OuterTerminal::default());
+    }
+
+    /// The child's cursor shape is kept until it sets another or soft-resets.
+    #[test]
+    fn the_grid_keeps_the_cursor_shape() {
+        let mut g = Grid::new(24, 80);
+        assert_eq!(g.cursor_shape(), 0);
+        g.feed(b"\x1b[6 q");
+        assert_eq!(g.cursor_shape(), 6);
+        g.feed(b"\x1b[4 q\x1b[9 q");
+        assert_eq!(g.cursor_shape(), 4, "an unknown shape keeps the last one");
+        g.feed(b"\x1b[!p");
+        assert_eq!(g.cursor_shape(), 0);
     }
 
     /// A parser reset after a vt100 panic keeps the answers owed for the queries it

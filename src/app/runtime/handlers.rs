@@ -880,6 +880,7 @@ impl Runtime {
             dirty: true,
             clear_pending: false,
             last_draw: std::time::Instant::now() - initial_frame_interval,
+            cursor_shape: 0,
             rescan_pending: false,
             display_probe: DisplayProbe::default(),
             held_input: None,
@@ -1078,6 +1079,7 @@ impl Runtime {
                     tracing::warn!(error = %e, "term_clear_failed");
                 }
             }
+            let mut grid_shape = None;
             let draw_result = match &grid_arc {
                 Some(g) => {
                     let t_lock = std::time::Instant::now();
@@ -1100,6 +1102,7 @@ impl Runtime {
                         }
                     }
                     Self::sync_kitty_images(&mut self.kitty_images, guard.as_deref());
+                    grid_shape = guard.as_deref().map(|g| g.cursor_shape());
                     // Split-borrow so the draw closure captures only these fields, not all
                     // of `self` (the fingerprint block's borrows have ended above).
                     let switcher = &self.model.switcher;
@@ -1140,6 +1143,20 @@ impl Runtime {
                 let effects = update(&mut self.model, Msg::SetRenderPlan(plan));
                 debug_assert!(effects.is_empty());
             }
+            // The child's cursor shape belongs to its cursor only; every other cursor
+            // (a field caret, the nav) keeps the terminal's default.
+            self.cursor_shape = match grid_shape {
+                Some(shape)
+                    if self.model.switcher.shows_grid_cursor(
+                        terminal_focused,
+                        &self.model.state,
+                        &self.model.render_plan,
+                    ) =>
+                {
+                    shape
+                }
+                _ => 0,
+            };
             DrawObserver::slow_step("draw", t_draw);
             // The grids are now on screen - clear every attachment's output-coalescing flag.
             self.registry.clear_all_pending();

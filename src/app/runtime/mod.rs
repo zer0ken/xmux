@@ -1615,6 +1615,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         tokio::time::interval_at(tokio::time::Instant::now() + frame_period, frame_period);
     frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    let mut cursor_shape = crate::display::term::CursorShape::default();
     loop {
         rt.flush_held_input();
         rt.sync_child_focus();
@@ -1623,6 +1624,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         rt.passthrough.extend(keyboard);
         rt.flush_passthrough();
         rt.prepare_and_draw(&mut term);
+        let _ = cursor_shape.apply(rt.cursor_shape, term.backend_mut());
 
         // NOT biased: a biased select polls host_rx first every iteration, so a
         // sustained output flood would starve stdin, the control socket, ops,
@@ -1780,6 +1782,9 @@ struct Runtime {
     /// reach the terminal in one synchronized update and the blank screen never shows.
     clear_pending: bool,
     last_draw: std::time::Instant,
+    /// The `CSI Ps SP q` shape the last frame's cursor wants: the session client's own while
+    /// its cursor is the one shown, else 0, the terminal's default.
+    cursor_shape: u8,
     rescan_pending: bool,
     display_probe: DisplayProbe,
     /// Terminal input typed for a selection whose attachment does not exist yet; see
