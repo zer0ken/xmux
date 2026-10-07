@@ -151,6 +151,7 @@ impl Grid {
     /// yet and the answers still owed survive, and so do the cursor shape and modes the
     /// client set, since a wipe of the cells does not change the client.
     fn reset_parser(&mut self, rows: u16, cols: u16) {
+        self.parser.callbacks_mut().clear_sync();
         let sink = std::mem::take(self.parser.callbacks_mut());
         self.parser = vt100::Parser::new_with_callbacks(rows, cols, 0, sink);
     }
@@ -195,7 +196,7 @@ impl Grid {
     /// Every kitty image this grid's cells show, by the id the outer terminal knows it
     /// under, with the cells its placement covers.
     pub fn kitty_in_use(&self) -> Vec<(u32, crate::display::image::kitty_grid::Placed)> {
-        self.images.kitty_in_use(self.parser.screen())
+        self.images.kitty_in_use(self.visible())
     }
 
     /// The bitmap of a sixel image this grid's cells show.
@@ -680,6 +681,7 @@ Connection to host closed.
     /// query that ends a read is not answered again by the next one.
     #[test]
     fn the_keyboard_flags_query_is_answered_before_the_attributes_over_the_protocol() {
+        let _lock = plain_outer_terminal();
         let mut g = Grid::new(4, 10);
         assert_eq!(
             replies(&mut g, b"\x1b[>1u\x1b[?u"),
@@ -769,6 +771,31 @@ Connection to host closed.
         let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));
         g.render_into(&mut buf, Rect::new(0, 0, 8, 1));
         (0..8).map(|x| buf[(x, 0)].symbol()).collect::<String>()
+    }
+
+    #[test]
+    fn a_grid_restart_releases_the_synchronized_screen() {
+        let mut g = Grid::new(1, 8);
+        g.feed(b"old\x1b[?2026h\x1b[Hnew");
+        g.clear_on_next_feed();
+        g.feed(b"next");
+        assert_eq!(row_text(&g).trim_end(), "next");
+        assert!(!g.sync_held());
+        assert_eq!(replies(&mut g, b"\x1b[?2026$p"), b"\x1b[?2026;2$y");
+    }
+
+    #[test]
+    fn a_held_screen_keeps_its_kitty_image_on_the_terminal() {
+        use crate::display::image::kitty::placeholder;
+        let _lock = kitty_outer_terminal();
+        let mut g = Grid::new(1, 8);
+        g.feed(format!("\x1b_Ga=T,q=2,f=100,U=1,c=1,r=1,i=3;{PNG}\x1b\\").as_bytes());
+        g.feed(format!("\x1b[38;2;0;0;3m{}\x1b[39m", placeholder(0, 0)).as_bytes());
+        let id = g.kitty_in_use()[0].0;
+        g.feed(b"\x1b[?2026h\x1b[Hnew");
+        assert_eq!(g.kitty_in_use()[0].0, id);
+        g.feed(b"\x1b[?2026l");
+        assert!(g.kitty_in_use().is_empty());
     }
 
     /// While the child holds a synchronized update open, the view keeps the screen it

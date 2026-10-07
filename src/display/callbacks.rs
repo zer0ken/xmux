@@ -89,6 +89,10 @@ impl GridCallbacks {
         self.sync.is_some()
     }
 
+    pub fn clear_sync(&mut self) {
+        self.sync = None;
+    }
+
     /// Mode 2026 set (`h`) or reset (`l`) among a DECSET or DECRST's modes.
     fn set_sync(&mut self, screen: &vt100::Screen, params: &[&[u16]], set: bool) {
         if !params.iter().any(|p| p.first() == Some(&2026)) {
