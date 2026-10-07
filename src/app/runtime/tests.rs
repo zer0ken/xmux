@@ -2370,6 +2370,7 @@ fn test_rt(env: Env) -> Runtime {
         child_focus: None,
         prefix,
         draw_observer: DrawObserver::default(),
+        images: Default::default(),
         spinner_start: std::time::Instant::now(),
         dirty: true,
         last_draw: std::time::Instant::now(),

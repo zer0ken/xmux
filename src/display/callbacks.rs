@@ -11,9 +11,11 @@
 use crate::display::outer::OuterTerminal;
 
 /// The grid's primary device attributes: a VT220 (62) with ANSI colour (22). The grid
-/// has no sixel, no rectangular editing, and no left and right margins, so it claims
-/// none of them.
+/// has no rectangular editing and no left and right margins, so it claims neither.
 const PRIMARY_DA: &[u8] = b"\x1b[?62;22c";
+/// The same with sixel graphics (4), claimed while the outer terminal can show the
+/// sixel images the grid keeps.
+const PRIMARY_DA_SIXEL: &[u8] = b"\x1b[?62;4;22c";
 
 #[derive(Default)]
 pub struct GridCallbacks {
@@ -167,7 +169,13 @@ impl vt100::Callbacks for GridCallbacks {
     ) {
         match (i1, i2, c) {
             // Primary device attributes.
-            (None, None, 'c') if param(params, 0) == 0 => self.reply(PRIMARY_DA),
+            (None, None, 'c') if param(params, 0) == 0 => {
+                self.reply(if crate::display::image::sixel_cell_px().is_some() {
+                    PRIMARY_DA_SIXEL
+                } else {
+                    PRIMARY_DA
+                })
+            }
             // Secondary device attributes: no VT model number (0), the xmux version, and
             // no ROM cartridge (0).
             (Some(b'>'), None, 'c') if param(params, 0) == 0 => {

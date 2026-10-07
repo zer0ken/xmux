@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color as RColor, Modifier, Style};
 
 use crate::display::callbacks::GridCallbacks;
+use crate::display::image::layer::ImageLayer;
 
 /// What a child's output asked of the terminal around the screen: a bell, or a desktop
 /// notification. The grid's parser consumes these, so the grid keeps each one until the
@@ -132,6 +133,8 @@ pub struct Grid {
     clear_on_feed: bool,
     /// The input modes the client has set, kept across a wipe of the cells.
     modes: crate::display::modes::ModeScanner,
+    /// The sixel images the grid's marker cells name.
+    images: ImageLayer,
 }
 
 impl Grid {
@@ -140,6 +143,7 @@ impl Grid {
             parser: new_parser(rows, cols),
             clear_on_feed: false,
             modes: Default::default(),
+            images: ImageLayer::default(),
         }
     }
 
@@ -177,13 +181,20 @@ impl Grid {
         // grid shrink. Catch it so the PTY pump thread survives; reset the parser so
         // the next mux repaint refills the grid cleanly instead of re-panicking on the
         // same stale cursor.
+        let cell_px = crate::display::image::sixel_cell_px();
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.parser.process(bytes);
+            self.images.feed(bytes, cell_px, &mut self.parser);
         }));
         if res.is_err() {
             let (rows, cols) = self.parser.screen().size();
             self.reset_parser(rows, cols);
+            self.images.clear();
         }
+    }
+
+    /// The bitmap of a sixel image this grid's cells show.
+    pub fn image(&self, id: u32) -> Option<std::sync::Arc<crate::display::image::sixel::Bitmap>> {
+        self.images.image(id).cloned()
     }
 
     /// The answers to the terminal queries the fed output held, in order, each once.
@@ -208,6 +219,7 @@ impl Grid {
         self.reset_parser(rows, cols);
         // The title belongs to the session the grid showed; the next one sets its own.
         self.parser.callbacks_mut().clear_title();
+        self.images.clear();
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -297,6 +309,10 @@ impl Grid {
                     continue;
                 };
                 let cell = &mut buf[(area.x + c, area.y + r)];
+                if let Some(piece) = self.images.piece(vcell) {
+                    crate::display::image::paint::mark(cell, piece);
+                    continue;
+                }
                 if vcell.is_wide() && c + 1 >= cols {
                     // A double-width char whose second half falls outside the
                     // clipped pane would overflow the right edge and wrap to col 0
@@ -387,6 +403,81 @@ Connection to host closed.
         );
     }
 
+    /// Holds the terminal facts at their defaults (no sixel) for a test that reads them.
+    fn plain_outer_terminal() -> std::sync::MutexGuard<'static, ()> {
+        use crate::display::outer::{set_outer_for_test, OuterTerminal, TEST_LOCK};
+        let lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_outer_for_test(OuterTerminal::default());
+        lock
+    }
+
+    /// Holds the terminal facts of a sixel terminal with 10x20 px cells.
+    fn sixel_outer_terminal() -> std::sync::MutexGuard<'static, ()> {
+        use crate::display::outer::{set_outer_for_test, OuterTerminal, TEST_LOCK};
+        let lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_outer_for_test(OuterTerminal {
+            cell_px: Some((20, 10)),
+            sixel: true,
+            ..OuterTerminal::default()
+        });
+        lock
+    }
+
+    /// A 30x40 px red sixel.
+    const SIXEL: &[u8] = b"\x1bPq\"1;1;30;40#1;2;100;0;0#1!30~-!30~-!30~-!30~-!30~-!30~-!30N\x1b\\";
+
+    /// A sixel image the child draws shows in the frame as cells ratatui leaves to the
+    /// image, at the image's place in the view, and the painter draws it there.
+    #[test]
+    fn a_sixel_from_the_child_reaches_the_frame_as_image_cells() {
+        let _lock = sixel_outer_terminal();
+        let mut g = Grid::new(10, 20);
+        g.feed(b"ab\x1b[2;3H");
+        g.feed(SIXEL);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 12));
+        g.render_into(&mut buf, Rect::new(5, 1, 20, 10));
+        let skipped: Vec<(u16, u16)> = (0..12)
+            .flat_map(|y| (0..30).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[(x, y)].diff_option == ratatui::buffer::CellDiffOption::Skip)
+            .collect();
+        // 30x40 px is 3x2 cells at grid (2, 1), drawn at view offset (5, 1).
+        assert_eq!(
+            skipped,
+            vec![(7, 2), (8, 2), (9, 2), (7, 3), (8, 3), (9, 3)]
+        );
+        assert_eq!(buf[(5, 1)].symbol(), "a");
+        let mut painter = crate::display::image::paint::Painter::default();
+        let out = painter.paint(&buf, |id| g.image(id), (20, 10));
+        let out = String::from_utf8_lossy(&out);
+        assert!(out.contains("\x1b[3;8H\x1bP0;0;0q\"1;1;30;40"), "{out}");
+    }
+
+    /// The grid claims sixel to the child only while the outer terminal can show it.
+    #[test]
+    fn device_attributes_claim_sixel_only_for_a_sixel_terminal() {
+        {
+            let _lock = sixel_outer_terminal();
+            let mut g = Grid::new(24, 80);
+            assert_eq!(replies(&mut g, b"\x1b[c"), b"\x1b[?62;4;22c");
+            let size = crate::display::image::pty_size(24, 80);
+            assert_eq!((size.pixel_width, size.pixel_height), (800, 480));
+        }
+        let _lock = plain_outer_terminal();
+        let mut g = Grid::new(24, 80);
+        assert_eq!(replies(&mut g, b"\x1b[c"), b"\x1b[?62;22c");
+        g.feed(b"a");
+        g.feed(SIXEL);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 24));
+        let area = buf.area;
+        g.render_into(&mut buf, area);
+        assert!(buf
+            .content
+            .iter()
+            .all(|c| c.diff_option != ratatui::buffer::CellDiffOption::Skip));
+        let size = crate::display::image::pty_size(24, 80);
+        assert_eq!((size.pixel_width, size.pixel_height), (0, 0));
+    }
+
     fn replies(g: &mut Grid, bytes: &[u8]) -> Vec<u8> {
         g.feed(bytes);
         g.take_replies()
@@ -396,6 +487,7 @@ Connection to host closed.
     /// device attributes claim only what the grid models.
     #[test]
     fn the_grid_answers_status_and_attribute_queries() {
+        let _lock = plain_outer_terminal();
         let mut g = Grid::new(24, 80);
         assert_eq!(replies(&mut g, b"\x1b[3;5H\x1b[6nmore"), b"\x1b[3;5R");
         assert_eq!(replies(&mut g, b"\x1b[H\x1b[?6n"), b"\x1b[?1;1;1R");
@@ -420,6 +512,7 @@ Connection to host closed.
     /// query that ends a read is not answered again by the next one.
     #[test]
     fn a_split_query_is_answered_exactly_once() {
+        let _lock = plain_outer_terminal();
         let mut g = Grid::new(24, 80);
         assert!(replies(&mut g, b"prompt\x1b[").is_empty());
         assert_eq!(replies(&mut g, b"6n more\x1b[c"), b"\x1b[1;7R\x1b[?62;22c");
@@ -471,6 +564,7 @@ Connection to host closed.
             palette,
             scheme: None,
             cell_px: Some((18, 9)),
+            sixel: false,
         });
         assert_eq!(
             replies(&mut g, b"\x1b]11;?\x07\x1b]10;?\x1b\\"),

@@ -11,7 +11,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty};
 
 use crate::display::grid::Grid;
 
@@ -331,12 +331,9 @@ impl PtySink for MasterSink {
         let _ = self.writer.flush();
     }
     fn resize(&mut self, cols: u16, rows: u16) {
-        let _ = self.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
+        let _ = self
+            .master
+            .resize(crate::display::image::pty_size(rows, cols));
     }
 }
 
@@ -531,12 +528,7 @@ pub fn spawn_attachment(
         "spawn_attachment: argv must not be empty"
     );
     let pty = native_pty_system();
-    let pair = pty.openpty(PtySize {
-        rows,
-        cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
+    let pair = pty.openpty(crate::display::image::pty_size(rows, cols))?;
     // The name the PTY carries, read at open time so it is known before the child even
     // runs (no probing, no waiting for the mux to register a client). A Windows ConPTY
     // has no name, so this side reports nothing there.
@@ -842,7 +834,7 @@ mod inherited_env_tests {
         );
 
         let pty = native_pty_system()
-            .openpty(PtySize {
+            .openpty(portable_pty::PtySize {
                 rows: 24,
                 cols: 80,
                 pixel_width: 0,
