@@ -49,7 +49,9 @@ fn fake_env_from(roster: crate::provision::env::Roster) -> Env {
     // A real throwaway dir, not `.`: tests that exercise pref persistence (e.g.
     // resize_axis saving nav_height) write `<xmux_dir>/<file>`, and `.` would
     // pollute the repository root with stray pref files.
-    let xmux_dir = std::env::temp_dir().join(format!("xmux-test-env-{}", std::process::id()));
+    static NEXT_ENV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = NEXT_ENV.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let xmux_dir = std::env::temp_dir().join(format!("xmux-test-env-{}-{id}", std::process::id()));
     let _ = std::fs::create_dir_all(&xmux_dir);
     Env::new(roster, "C-g".into(), xmux_dir, None, None)
 }
@@ -166,17 +168,60 @@ fn scan_result_corrects_psmux_config_to_tmux_control() {
     ));
 }
 
+/// A remote-shaped transport whose control channel runs only a disposable local child.
+#[derive(Clone)]
+struct TestRemote(String);
+
+impl crate::transport::Transport for TestRemote {
+    fn host_id(&self) -> &str {
+        &self.0
+    }
+    fn is_remote(&self) -> bool {
+        true
+    }
+    fn runs_through_shell(&self) -> bool {
+        true
+    }
+    fn exec_argv(&self, _tty: bool, _argv: &[String]) -> crate::transport::CommandSpec {
+        #[cfg(windows)]
+        let argv = ["cmd.exe", "/c", "exit 0"];
+        #[cfg(not(windows))]
+        let argv = ["sh", "-c", "exit 0"];
+        crate::transport::CommandSpec::from_argv(argv.map(String::from).to_vec())
+    }
+    fn interactive_attach_argv(&self, argv: &[String]) -> crate::transport::CommandSpec {
+        self.exec_argv(true, argv)
+    }
+    fn control_argv(&self, argv: &[String]) -> crate::transport::CommandSpec {
+        self.exec_argv(false, argv)
+    }
+    fn clone_box(&self) -> Box<dyn crate::transport::Transport> {
+        Box::new(self.clone())
+    }
+    fn clone_as(&self, id: &str) -> Box<dyn crate::transport::Transport> {
+        Box::new(Self(id.into()))
+    }
+    fn machine_kind(&self) -> crate::transport::MachineKind {
+        crate::transport::MachineKind::Ssh {
+            id: self.0.clone(),
+            alias: "fixture.invalid".into(),
+            control_path: String::new(),
+            os: "linux".into(),
+        }
+    }
+}
+
 #[tokio::test]
 async fn dispatch_detected_host_connects_remote_hosts() {
     // Control-event (tmux) hosts get a control client at startup; poll hosts
     // enumerate off the loop (no control client). The gate is the host's
     // event_source, read off the Host - not the transport remote flag. The
-    // control child spawns and dies at once on a machine that is not there.
+    // control child runs locally in isolation.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<HostEvent>();
     let mut mgr = HostManager::new(tx);
     let mut hosts = crate::model::Hosts::default();
     let mut host = crate::model::Host::new(
-        crate::transport::ssh("jupiter06".into(), String::new(), "linux".into()),
+        Box::new(TestRemote("jupiter06".into())),
         crate::mux::for_binary("tmux").unwrap(), // Control event source
     );
     host.detected = true;
@@ -242,7 +287,7 @@ async fn a_detach_reopens_the_control_channel_once() {
     // opens one new channel. That channel's exit before it lists sessions reopens nothing.
     let mut rt = test_rt(fake_env_with_machines(&[]));
     let mut host = crate::model::Host::new(
-        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
+        Box::new(TestRemote("jup".into())),
         crate::mux::for_binary("tmux").unwrap(),
     );
     host.detected = true;
@@ -271,12 +316,11 @@ async fn a_detach_reopens_the_control_channel_once() {
 #[tokio::test]
 async fn machine_connected_dispatches_a_detected_control_host() {
     // A machine that connected resolves each host it serves onto its metadata channel.
-    // A detected tmux host gets a `-CC` control client (the child spawns and dies at once
-    // on a machine that is not really there, which is fine for the map-insert check).
+    // A detected tmux host gets a control client backed by a disposable local child.
     let mut rt = test_rt(fake_env_with_machines(&[]));
     let mut hosts = crate::model::Hosts::default();
     let mut host = crate::model::Host::new(
-        crate::transport::ssh("jup".into(), String::new(), "linux".into()),
+        Box::new(TestRemote("jup".into())),
         crate::mux::for_binary("tmux").unwrap(),
     );
     host.detected = true;

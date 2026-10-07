@@ -1367,16 +1367,7 @@ sleep 2
         assert_eq!(out, vec![b"\x1b]52;c;real\x07".to_vec()]);
     }
 
-    // End-to-end smoke of the real PTY-attach path: spawn a non-interactive child on
-    // a ConPTY, and confirm its stdout round-trips into the `Grid` (the pump fed it),
-    // an `Output` event was emitted, and `connecting` cleared.
-    //
-    // `#[ignore]` and MUST be run in a REAL terminal, which CI does not have:
-    //   cargo test -p xmux display::attachment::tests::spawn_attachment -- --ignored --nocapture
-    // A mux pane is a real terminal for this purpose - the app runs there and its
-    // ConPTY children feed their grids - so this is a real-terminal gate, not a
-    // non-nested one.
-    #[ignore = "spawns a real ConPTY child; run only in a non-nested real terminal"]
+    // A disposable child writes into a virtual terminal owned by the test.
     #[test]
     fn spawn_attachment_feeds_grid_smoke() {
         use std::time::{Duration, Instant};
@@ -1384,10 +1375,17 @@ sleep 2
         const MARKER: &str = "XMUXPTYSMOKE";
         // A NON-interactive child that prints the marker at once then idles briefly
         // (ping keeps the pty open so the pump reads the output before EOF).
+        #[cfg(windows)]
         let argv: Vec<String> = vec![
             "cmd.exe".into(),
             "/c".into(),
             format!("echo {MARKER}& ping -n 5 127.0.0.1 >nul"),
+        ];
+        #[cfg(not(windows))]
+        let argv = vec![
+            "sh".into(),
+            "-c".into(),
+            format!("printf '{MARKER}'; sleep 1"),
         ];
         let env_clear = crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
         let command = crate::transport::CommandSpec::from_argv(argv);
@@ -1412,30 +1410,28 @@ sleep 2
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+        let mut output_event = false;
+        while Instant::now() < deadline {
+            if matches!(ev_rx.try_recv(), Ok(PtyEvent::Output { id: 1 })) {
+                output_event = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let connecting = att.connecting.load(Ordering::Acquire);
+        att.teardown();
         assert!(
             seen,
             "child output `{MARKER}` must round-trip into the grid via the pump"
         );
+        assert!(!connecting, "first output must clear `connecting`");
         assert!(
-            !att.connecting.load(Ordering::Acquire),
-            "first output must clear `connecting`"
-        );
-        assert!(
-            matches!(ev_rx.try_recv(), Ok(PtyEvent::Output { id: 1 }) | Err(_)),
+            output_event,
             "the pump emits Output events for the attachment"
         );
-        att.teardown();
     }
 
-    // End-to-end smoke of the OSC 52 forwarding path: spawn a NON-interactive child on
-    // a real ConPTY that writes an OSC 52 clipboard sequence to its tty, and confirm the
-    // pump hands the WHOLE sequence back as a `PtyEvent::Osc52` (what the loop then
-    // re-emits on xmux's stdout). Proves the sequence survives the vt100 parser, which
-    // would otherwise eat it.
-    //
-    // `#[ignore]` and MUST be run in a REAL terminal, which CI does not have:
-    //   cargo test -p xmux display::attachment::tests::spawn_attachment_forwards_osc52 -- --ignored --nocapture
-    #[ignore = "spawns a real ConPTY child; run only in a non-nested real terminal"]
+    // The virtual terminal must forward a complete OSC 52 sequence from its child.
     #[test]
     fn spawn_attachment_forwards_osc52_smoke() {
         use std::time::{Duration, Instant};
@@ -1443,12 +1439,19 @@ sleep 2
         // A NON-interactive child that writes `ESC ] 52;c;aGVsbG8= BEL` to its tty,
         // then idles briefly (sleep keeps the pty open so the pump reads the output
         // before EOF).
+        #[cfg(windows)]
         let argv: Vec<String> = vec![
             "powershell.exe".into(),
             "-NoProfile".into(),
             "-Command".into(),
             "$s = [char]27 + ']52;c;aGVsbG8=' + [char]7; [Console]::Out.Write($s); Start-Sleep -Milliseconds 500"
                 .into(),
+        ];
+        #[cfg(not(windows))]
+        let argv = vec![
+            "sh".into(),
+            "-c".into(),
+            "printf '\\033]52;c;aGVsbG8=\\007'; sleep 1".into(),
         ];
         let env_clear = crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
         let command = crate::transport::CommandSpec::from_argv(argv);
@@ -1466,11 +1469,11 @@ sleep 2
                 Err(_) => std::thread::sleep(Duration::from_millis(25)),
             }
         }
+        att.teardown();
         assert_eq!(
             forwarded.as_deref(),
             Some(b"\x1b]52;c;aGVsbG8=\x07".as_slice()),
             "the child's OSC 52 must reach the loop as a whole sequence"
         );
-        att.teardown();
     }
 }

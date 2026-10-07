@@ -346,17 +346,8 @@ mod tests {
 }
 
 #[cfg(all(test, windows))]
-mod live_tests {
-    /// Proves the read reaches a REAL running process, which the block tests above cannot:
-    /// they exercise the parser over a block built in this process, while everything that
-    /// can be wrong about reaching another process (the information class, the PEB walk,
-    /// the environment offset, the stepped read) lives outside them. A child is spawned
-    /// through the same PTY machinery a display attach uses, carrying a marker variable,
-    /// and the marker is read back out of it.
-    ///
-    /// `#[ignore]`, because it spawns a real ConPTY child:
-    ///   cargo test display::child_env::live_tests -- --ignored --nocapture
-    #[ignore = "spawns a real ConPTY child; run on demand"]
+mod process_tests {
+    /// A disposable ConPTY child exposes only the environment given to it by the test.
     #[test]
     fn reads_a_variable_out_of_a_real_child() {
         use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -393,68 +384,6 @@ mod live_tests {
             got.as_deref(),
             Some("vfy-ps-b"),
             "the live child's own environment answers the variable it was given"
-        );
-    }
-
-    /// What the read COSTS, on a real child, so the decision to run it on the runtime
-    /// loop rests on a number. It is timed over many repeats of the whole call: the
-    /// process-information query, the PEB walk, and the stepped block read together.
-    ///
-    /// `#[ignore]`, because it spawns a real ConPTY child:
-    ///   cargo test display::child_env::live_tests::the_read_costs -- --ignored --nocapture
-    #[ignore = "spawns a real ConPTY child; run on demand"]
-    #[test]
-    fn the_read_costs_far_less_than_the_beat_that_runs_it() {
-        use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-        use std::time::{Duration, Instant};
-
-        let pty = native_pty_system()
-            .openpty(PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("open a pty");
-        let mut cmd = CommandBuilder::new("cmd.exe");
-        cmd.args(["/c", "pause"]);
-        cmd.env("XMUX_CHILD_ENV_PROBE", "vfy-ps-b");
-        let child = pty.slave.spawn_command(cmd).expect("spawn a child");
-        drop(pty.slave);
-
-        // The block is in place only once the image runs, so wait for the first answer
-        // before timing anything: a read of a process too young to have one is a
-        // different (and cheaper) path than the one being measured.
-        let mut ready = false;
-        for _ in 0..50 {
-            if super::read(&*child, "XMUX_CHILD_ENV_PROBE").is_some() {
-                ready = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-
-        let mut worst = Duration::ZERO;
-        let mut total = Duration::ZERO;
-        const REPEATS: u32 = 500;
-        for _ in 0..REPEATS {
-            let t = Instant::now();
-            let got = super::read(&*child, "XMUX_CHILD_ENV_PROBE");
-            let took = t.elapsed();
-            assert_eq!(got.as_deref(), Some("vfy-ps-b"));
-            worst = worst.max(took);
-            total += took;
-        }
-        let mean = total / REPEATS;
-        let mut child = child;
-        let _ = child.kill();
-        let _ = child.wait();
-
-        assert!(ready, "the child answered before the timing began");
-        println!("child_env::read over {REPEATS} repeats: mean {mean:?}, worst {worst:?}");
-        assert!(
-            worst < Duration::from_millis(5),
-            "worst {worst:?} is a visible share of a 120 ms beat"
         );
     }
 }

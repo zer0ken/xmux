@@ -298,21 +298,27 @@ fn pl1_group_titles_are_dim_and_their_cards_indent_at_every_position() {
 }
 
 #[test]
-fn pl1_a_band_continuation_column_repeats_its_title() {
+fn pl1_a_band_continuation_starts_with_sessions_without_a_title() {
     for position in [NavPosition::Top, NavPosition::Bottom] {
-        let nav = nav_at(position).with_height(4);
-        let shot = Shot::new(many_sessions(6, 2), nav, false);
-        let tree = shot.plan.regions.tree;
-        let first_row = Rect { height: 1, ..tree };
-        let (x, _) = shot
-            .find_in(first_row, "local …")
-            .unwrap_or_else(|| panic!("{position:?}: {}", shot.area_text(tree)));
-        assert!(x > 0, "{position:?}: the repeat leads a later column");
-        assert_eq!(
-            shot.buf[(x, tree.y)].fg,
-            shot.sw.palette().decoration,
-            "{position:?}: the repeated title is as dim as the title"
-        );
+        for height in [2, 3, 4] {
+            let nav = nav_at(position).with_height(height);
+            let mut scan = many_sessions(9, 2);
+            scan.groups.push(Group {
+                host: "remote".into(),
+                err: None,
+                sessions: vec![sess("remote", "work")],
+            });
+            let shot = Shot::new(scan, nav, false);
+            let tree = shot.plan.nav_inner;
+            let text = shot.area_text(tree);
+            assert_eq!(text.matches("local").count(), 1, "{position:?}: {text}");
+            assert_eq!(text.matches("remote").count(), 1, "{position:?}: {text}");
+            for i in 0..9 {
+                let name = format!("{i:02}");
+                let (_, y) = shot.find_in(tree, &name).expect("every session is visible");
+                assert_eq!(y, tree.y + (i + 1) % tree.height, "{position:?}: {text}");
+            }
+        }
     }
 }
 

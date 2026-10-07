@@ -494,14 +494,4 @@ mod tests {
         assert_eq!(parse_prefix(None), 0x07);
         assert_eq!(parse_prefix(Some("garbage")), 0x07);
     }
-
-    /// Human visual gate: verifies that `TermGuard` enters the alternate screen
-    /// and restores the user's pre-launch screen on drop.  Requires a real
-    /// console - raw-mode toggling is not available in the test harness.
-    #[test]
-    #[ignore]
-    fn term_guard_enters_and_restores() {
-        let _guard = TermGuard::enter().expect("TermGuard::enter failed");
-        // drop restores LeaveAlternateScreen + disable_raw_mode
-    }
 }

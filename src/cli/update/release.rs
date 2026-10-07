@@ -340,39 +340,4 @@ mod tests {
             "https://github.com/zer0ken/xmux/releases/download/v0.6.4/xmux-v0.6.4-x86_64-pc-windows-msvc.exe"
         );
     }
-
-    /// Real Windows-only behavior check: the detached updater must copy the staged
-    /// build over the target. Ignored by default because it waits for no xmux
-    /// process to be running and touches real process state; run explicitly with
-    /// `cargo test -- --ignored`.
-    #[cfg(windows)]
-    #[test]
-    #[ignore]
-    fn detached_updater_swaps_binary() {
-        let base = std::env::temp_dir().join(format!("xmux-upd-test-{}", std::process::id()));
-        let staged_dir = base.join("stage");
-        let target_dir = base.join("target");
-        std::fs::create_dir_all(&staged_dir).unwrap();
-        std::fs::create_dir_all(&target_dir).unwrap();
-        let staged = staged_dir.join("new.exe");
-        let target = target_dir.join("target.exe");
-        std::fs::write(&staged, b"new-binary").unwrap();
-        std::fs::write(&target, b"old-binary").unwrap();
-        super::spawn_detached_updater(&staged, &target).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        let mut done = false;
-        while std::time::Instant::now() < deadline {
-            if std::fs::read(&target)
-                .map(|b| b == b"new-binary")
-                .unwrap_or(false)
-            {
-                done = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-        assert!(done, "updater did not swap the target");
-        assert!(!staged_dir.exists(), "staging dir should be cleaned up");
-        let _ = std::fs::remove_dir_all(&base);
-    }
 }

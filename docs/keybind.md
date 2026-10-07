@@ -90,9 +90,9 @@ never moves on its own.
 
 The layout inside the nav is identical at every side: a right column is the same list
 as a left one, and a bottom band is the same down-then-right flow as a top one, a whole
-section per column. A band column that continues a split section repeats its title on
-its top row followed by `…`, and a band one row tall runs titles and cards along its row
-and scrolls sideways.
+section per column. A band column that continues a split section starts with session
+cards on its top row; the machine/host title appears only where the section starts.
+A band one row tall runs titles and cards along its row and scrolls sideways.
 
 The prefix arrow pair facing the terminal's side focuses the terminal: `prefix →` and
 `prefix ↓` with the nav on the left or above, `prefix ←` and `prefix ↑` with it on the

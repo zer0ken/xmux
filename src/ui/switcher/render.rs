@@ -200,9 +200,6 @@ pub struct RenderPlan {
     /// indicator alone and the whole of it is one hit target.
     pub expand_area: Rect,
     overflow_marks: Vec<OverflowMark>,
-    /// The repeated title on the top row of each band column that continues a section,
-    /// paired with the title's row index.
-    title_repeats: Vec<(usize, Rect)>,
     nav_rule: Option<NavRule>,
     pub(super) seam_thumb: Rect,
     pub(super) floating_hint_bar: bool,
@@ -235,7 +232,6 @@ impl Default for RenderPlan {
             nav_guidance: None,
             expand_area: Rect::default(),
             overflow_marks: Vec::new(),
-            title_repeats: Vec::new(),
             nav_rule: None,
             seam_thumb: Rect::default(),
             floating_hint_bar: false,
@@ -822,7 +818,6 @@ impl Switcher {
             .collect();
         let boundary = self.painted_boundary().unwrap_or(cards.len());
         let placed = columns::place(&cards, band.height, boundary);
-        let continuations = columns::continuations(&cards, &placed);
         let widths = columns::widths(&cards, &placed, band.width);
         let sel_col = placed.get(self.selected).map_or(0, |p| p.col);
         plan.nav_col_offset = columns::scroll_to(
@@ -834,19 +829,6 @@ impl Switcher {
         );
         let cells = columns::cells(&placed, &widths, band, plan.nav_col_offset, COL_GUTTER);
         for cell in cells {
-            let p = &placed[cell.idx];
-            if p.y == 1 {
-                if let Some(&(_, title)) = continuations.iter().find(|(c, _)| *c == p.col) {
-                    plan.title_repeats.push((
-                        title,
-                        Rect {
-                            y: band.y,
-                            height: 1,
-                            ..cell.rect
-                        },
-                    ));
-                }
-            }
             let indent = if self.starts_run(cell.idx) { 0 } else { indent };
             plan.nav_cells.push((
                 cell.idx,
@@ -1185,14 +1167,6 @@ impl Switcher {
     /// when focus moves between views.
     fn render_nav(&self, frame: &mut Frame, plan: &RenderPlan, palette: &palette::Palette) {
         let dim = Style::default().fg(palette.decoration);
-        for &(title, rect) in &plan.title_repeats {
-            let room = (rect.width as usize).saturating_sub(CONTINUED.chars().count() + 1);
-            let text = format!(
-                "{}{CONTINUED}",
-                middle_ellipsize(&self.section_title(title), room)
-            );
-            frame.render_widget(Paragraph::new(Line::from(Span::styled(text, dim))), rect);
-        }
         let target_rect = |idx: usize, part: Part| {
             if part == Part::Card && !matches!(self.rows[idx].reference, RowRef::Section { .. }) {
                 plan.nav_cells
@@ -1267,15 +1241,6 @@ impl Switcher {
         frame.render_widget(Paragraph::new(Line::from(spans)), mark.rect);
     }
 
-    /// A section title's `{machine}/{mux}`, or the machine alone when no mux is confirmed.
-    fn section_title(&self, i: usize) -> String {
-        let (machine, mux, _) = context_of(&self.rows[i]);
-        if mux.is_empty() {
-            machine.to_string()
-        } else {
-            format!("{machine}/{mux}")
-        }
-    }
     /// How many columns the card numbers need: the digit count of the highest number a
     /// card on the list carries. One width for the whole frame, so the names stay aligned
     /// with each other instead of stepping right as the numbers gain a digit, and the

@@ -525,6 +525,31 @@ def password_login(c):
     if f"Host {c.pw}" in config:
         raise Failure(f"logout left the ssh config entry of {c.pw}")
 
+    try:
+        app = c.launch(c.pw)
+        app.t.wait(lambda ls: any(re.search(rf"\d+\s+{c.pw}\s+login needed", l) for l in ls),
+                   f"{c.pw} as login needed", 40)
+        app.open(None, c.pw)
+        app.t.wait(lambda ls: "address*" in ls[app.t.cursor()[0]], "the login pane focus", 10)
+        app.tab_to("password ")
+        app.t.send(PASSWORD, gap=0.3)
+        app.tab_to("register my public key")
+        app.t.send(" ")
+        app.tab_to("[ Log in ]")
+        app.t.send("Enter")
+        app.card(f"{c.pw}/{m}", f"{m}1", 40)
+        ssh_dir = os.path.join(app.home, ".ssh")
+        result = subprocess.run(
+            ["ssh", "-F", os.path.join(ssh_dir, "config"),
+             "-i", os.path.join(ssh_dir, "id_ed25519"), "-o", "BatchMode=yes",
+             "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
+             "-o", "ControlMaster=no", "-o", "ControlPath=none", c.pw, "exit 0"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
+        if result.returncode:
+            raise Failure(f"registered key did not authenticate to {c.pw}: {result.stderr}")
+    finally:
+        c.hosts.sh(c.pw, ": > ~/.ssh/authorized_keys")
+
 
 def unreachable(c):
     m = c.mux

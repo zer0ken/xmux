@@ -963,17 +963,4 @@ broadcast 143.248.140.255 dev eno1 table local proto kernel scope link src 143.2
         assert!(reached_this_box(mine, mine));
         assert!(!reached_this_box(mine, theirs));
     }
-
-    /// The whole provider against this machine's real network state. Prints what it
-    /// offers, so the pipeline can be seen end to end on a box whose neighbours are
-    /// known. Ignored by default: it reads the OS and opens connections.
-    #[tokio::test]
-    #[ignore = "reads this machine's network state and probes its neighbours"]
-    async fn live_neighbors_of_this_machine() {
-        let found = neighbors().await;
-        for (name, addr) in &found {
-            println!("{name}\t{}", addr.as_deref().unwrap_or("-"));
-        }
-        println!("{} neighbours", found.len());
-    }
 }

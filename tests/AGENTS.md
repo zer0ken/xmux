@@ -8,11 +8,14 @@ Integration tests that run against the crate from outside it.
 
 - The architecture test enforces the Layer Direction table of the root `AGENTS.md` over
   every source file, test modules included.
-- The live password test is ignored by default and runs only against a machine named by its
-  `XMUX_LIVE_PW_*` environment variables.
+- Password login, session discovery, and remote attachment are exercised by the
+  isolated Docker hosts in `scripts/e2e/`.
 
 ## Invariants
 
 - An allowed edge is changed in the root `AGENTS.md` table and in the architecture test
   together.
-- A test that needs a real machine stays ignored by default, so the suite runs offline.
+- Tests use synthetic inputs, disposable child processes, virtual terminals, or
+  container hosts. They never require a user's machines, sessions, or console.
+- Every test runs automatically in its supported platform's suite; no manual or
+  ignored live-environment gates are required.
