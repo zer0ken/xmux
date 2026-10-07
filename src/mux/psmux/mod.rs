@@ -106,9 +106,13 @@ impl Mux for Psmux {
 
     fn attach_plan(&self, session: &str) -> Vec<String> {
         // An explicit target resolves the session's own server and refuses a missing
-        // session. Creating a session belongs to the new-session operation.
+        // session. An empty client config disables startup-session bootstrapping;
+        // existing servers supply their own prefix and bindings. Creating a session
+        // belongs to the new-session operation.
         vec![
             self.bin.clone(),
+            "-f".to_string(),
+            "NUL".to_string(),
             "attach".to_string(),
             "-t".to_string(),
             session.to_string(),

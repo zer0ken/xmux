@@ -742,7 +742,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             display_attach_argv(host).await,
-            ["psmux", "attach", "-t", "target"]
+            ["psmux", "-f", "NUL", "attach", "-t", "target"]
         );
     }
 }

@@ -5,7 +5,7 @@
 `mux/psmux` is the psmux implementation: one server per session on its own port,
 recorded in a per-machine registry under the user's home directory. psmux can name no
 client from outside its own session, so the display driver REATTACHES its one
-per-host PTY with `attach -t <name>` on every session change; a reattach is
+per-host PTY with `-f NUL attach -t <name>` on every session change; a reattach is
 addressed by session NAME, so it can only land on xmux's own PTY. psmux also moves its
 own client inside the client process, and `PSMUX_SESSION_NAME` in that process's
 environment is the only record of where it went, readable only for a client on THIS
@@ -23,9 +23,10 @@ machine. A remote psmux host is enumerated and displayed the generic way.
 
 ## Invariants
 
-- A per-session attach uses `attach -t <name>`, whose explicit target resolves the
+- A per-session attach uses `-f NUL attach -t <name>`, whose explicit target resolves the
   session's own server and refuses a missing session. Creating a session belongs to
-  the explicit new-session action. psmux has no
+  the explicit new-session action. The display client reads an empty config to
+  prevent startup-session bootstrapping; the server supplies its prefix and bindings. psmux has no
   `ignore-size` for a client that is not a control client, so the display client sizes
   windows like any client.
 - A session change ALWAYS reattaches, at any client tty on record and whatever the

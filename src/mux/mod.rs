@@ -922,7 +922,7 @@ mod tests {
         // An explicit target resolves the session's own server without creating it.
         assert_eq!(
             psmux().attach_plan("work"),
-            argv(&["psmux", "attach", "-t", "work"])
+            argv(&["psmux", "-f", "NUL", "attach", "-t", "work"])
         );
     }
 
@@ -940,7 +940,10 @@ mod tests {
     #[test]
     fn psmux_behavior_is_decoupled_from_invoked_binary() {
         let m = Psmux { bin: "tmux".into() };
-        assert_eq!(m.attach_plan("api"), argv(&["tmux", "attach", "-t", "api"]));
+        assert_eq!(
+            m.attach_plan("api"),
+            argv(&["tmux", "-f", "NUL", "attach", "-t", "api"])
+        );
         assert_eq!(m.server_model(), ServerModel::PerSession);
         assert_eq!(m.kind(), "psmux");
     }
@@ -1206,7 +1209,7 @@ mod tests {
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(
             got.attach_plan("api"),
-            argv(&["tmux", "attach", "-t", "api"])
+            argv(&["tmux", "-f", "NUL", "attach", "-t", "api"])
         );
     }
 
@@ -1228,7 +1231,7 @@ mod tests {
         assert_eq!(got.server_model(), ServerModel::PerSession);
         assert_eq!(
             got.attach_plan("api"),
-            argv(&["psmux", "attach", "-t", "api"])
+            argv(&["psmux", "-f", "NUL", "attach", "-t", "api"])
         );
     }
 

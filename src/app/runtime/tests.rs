@@ -3908,7 +3908,7 @@ async fn a_stale_psmux_card_reports_attach_failure_from_keys_and_ctl() {
         rt.worker = crate::display::DisplayWorker::with_spawner(
             tokio::sync::mpsc::unbounded_channel().0,
             Box::new(|command, _, _, _, _, _| {
-                assert_eq!(command.argv(), &["psmux", "attach", "-t", "b"]);
+                assert_eq!(command.argv(), &["psmux", "-f", "NUL", "attach", "-t", "b"]);
                 anyhow::bail!("psmux: can't find session: b")
             }),
         );

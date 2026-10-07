@@ -7,7 +7,7 @@ use crate::driver::{DriverCtx, MuxDriver};
 use crate::model::Selection;
 
 /// Per-session mux (psmux): one server per session, displayed through ONE per-host PTY
-/// that is REATTACHED whenever the selected session changes (`attach -t <name>`
+/// that is REATTACHED whenever the selected session changes (`-f NUL attach -t <name>`
 /// routes to that session's own server). `Psmux::driver`
 /// constructs it for a `PerSession` host.
 pub struct PsmuxDriver;

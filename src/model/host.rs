@@ -484,7 +484,7 @@ impl Host {
     /// (over `ssh -t` for a remote).
     ///
     /// Composes the two axes: the MUX supplies the attach argv via `Mux::attach_plan`
-    /// (so psmux uses `attach -t <name>` to reach the session's own server without
+    /// (so psmux uses `-f NUL attach -t <name>` to reach the session's own server without
     /// creating a missing one), and the MACHINE wraps it via
     /// `Transport::interactive_attach_argv` (local `-S` injection, or `ssh -t` with
     /// `exec <attach>`).
@@ -1258,13 +1258,13 @@ mod tests {
         let loc = attach_host("psmux", false);
         assert_eq!(
             loc.interactive_attach_command("dev"),
-            vec!["psmux", "attach", "-t", "dev"]
+            vec!["psmux", "-f", "NUL", "attach", "-t", "dev"]
         );
     }
 
     #[test]
     fn interactive_attach_local_tmux_is_a_plain_attach() {
-        // A LOCAL tmux (Shared) attach stays `attach -t <name>`.
+        // A LOCAL tmux (Shared) attach stays `-f NUL attach -t <name>`.
         let loc = attach_host("tmux", false);
         assert_eq!(
             loc.interactive_attach_command("dev"),
@@ -1287,7 +1287,7 @@ mod tests {
     #[test]
     fn interactive_attach_remote_psmux_uses_attach_plan_over_ssh() {
         // A REMOTE psmux host is attached the generic way; the attach argv still comes
-        // from Mux::attach_plan (`attach -t`) and is `exec`d through the login
+        // from Mux::attach_plan (`-f NUL attach -t`) and is `exec`d through the login
         // shell over `ssh -t`.
         let rem = attach_host("psmux", true);
         let got = rem.interactive_attach_command("api");
@@ -1295,7 +1295,7 @@ mod tests {
         assert!(got.iter().any(|s| s == "-t"), "{got:?}");
         assert_eq!(
             got.last().unwrap(),
-            "sh -lc '{ exec psmux attach -t api\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null"
+            "sh -lc '{ exec psmux -f NUL attach -t api\n} 1>&3 2>&4 3>&- 4>&-' 3>&1 4>&2 1>/dev/null 2>/dev/null"
         );
     }
 
@@ -1432,7 +1432,7 @@ mod tests {
         assert_eq!(h.mux.server_model(), ServerModel::PerSession);
         assert_eq!(
             h.mux.attach_plan("api"),
-            vec!["tmux", "attach", "-t", "api"]
+            vec!["tmux", "-f", "NUL", "attach", "-t", "api"]
         );
         assert!(h.detected);
 
