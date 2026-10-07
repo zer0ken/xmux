@@ -3153,7 +3153,7 @@ fn the_query_answers(rt: &mut Runtime, id: u64, session: Option<&str>) {
     rt.on_pty_event(
         PtyEvent::DisplayClientSession {
             id,
-            session: session.map(str::to_string),
+            at: session.map(|session| crate::mux::ClientAt::Session(session.to_string())),
         },
         &mut rx,
     );
@@ -3219,6 +3219,200 @@ async fn a_query_answer_about_another_client_or_mid_reattach_is_not_recorded() {
         Some("a"),
         "an answer arriving mid-reattach is dropped"
     );
+}
+
+// --- herdr display client moves -------------------------------------------------
+// A herdr client moves itself between saved machines, one of which can be another
+// session on the same machine. The host-side query reports where it went.
+
+/// The settled herdr world: sessions `a` and `b` on `local`, the nav on `a`, and
+/// xmux's own display client live on `a`.
+fn a_settled_herdr_runtime() -> Runtime {
+    let sess = |name: &str| crate::session::Session {
+        host: "local".into(),
+        name: name.into(),
+        mux: "herdr".into(),
+        id: String::new(),
+        windows: 0,
+        attached: false,
+    };
+    let scan = crate::ui::switcher::Scan {
+        groups: vec![crate::ui::tree::Group {
+            host: "local".into(),
+            err: None,
+            sessions: vec![sess("a"), sess("b")],
+        }],
+    };
+    let mut state = crate::state::State::from_scan(scan);
+    let mut switcher = crate::ui::switcher::Switcher::new(&mut state);
+    switcher.select_address(&crate::session::Address::new("local", "a"));
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    let mut hosts = crate::model::Hosts::default();
+    hosts.insert(crate::model::Host::new(
+        crate::transport::local(None),
+        crate::mux::for_binary("herdr").unwrap(),
+    ));
+    rt.hosts = hosts;
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.hosts
+        .get_mut("local")
+        .unwrap()
+        .display
+        .set_shows("local", "a");
+    rt.registry.insert(
+        "local",
+        crate::display::attachment::fake_attachment(OWN_CLIENT),
+    );
+    settled(&mut rt);
+    rt
+}
+
+fn the_herdr_query_answers(rt: &mut Runtime, id: u64, at: crate::mux::ClientAt) {
+    let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    rt.on_pty_event(PtyEvent::DisplayClientSession { id, at: Some(at) }, &mut rx);
+}
+
+fn focus_terminal(rt: &mut Runtime) {
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+}
+
+fn nav_text(rt: &mut Runtime) -> String {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    rt.cols = 80;
+    rt.body_rows = 19;
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    drawn_text(&term)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_herdr_move_to_a_session_here_in_terminal_focus_moves_the_nav_and_keeps_the_client() {
+    // The user moved xmux's herdr client to a saved machine that is session `b` on the
+    // same machine. The nav goes to `b`, and the client the user moved stays on screen.
+    let mut rt = a_settled_herdr_runtime();
+    focus_terminal(&mut rt);
+    let t0 = std::time::Instant::now();
+
+    the_herdr_query_answers(
+        &mut rt,
+        OWN_CLIENT,
+        crate::mux::ClientAt::Session("b".into()),
+    );
+    for _ in 0..3 {
+        one_pass(&mut rt, t0);
+    }
+    one_pass(&mut rt, t0 + std::time::Duration::from_secs(1));
+
+    assert_eq!(rt.model.state.selection.session, "b");
+    assert_eq!(
+        rt.registry.get("local").map(|a| a.id()),
+        Some(OWN_CLIENT),
+        "the moved client is kept, not reattached"
+    );
+    assert!(rt.hosts.get("local").unwrap().display.in_flight_is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_herdr_move_elsewhere_names_the_place_on_the_card_and_moves_nothing() {
+    // The client went to a saved machine the nav has no card for. The selection and the
+    // client stay, in either focus, and the card of the session xmux opened says where
+    // the view is.
+    for terminal in [false, true] {
+        let mut rt = a_settled_herdr_runtime();
+        if terminal {
+            focus_terminal(&mut rt);
+        }
+        let t0 = std::time::Instant::now();
+        let away = crate::mux::ClientAt::Away("web/agents".into());
+
+        the_herdr_query_answers(&mut rt, OWN_CLIENT, away.clone());
+        let mut now = t0;
+        for _ in 0..5 {
+            one_pass(&mut rt, now);
+            the_herdr_query_answers(&mut rt, OWN_CLIENT, away.clone());
+            now += std::time::Duration::from_millis(400);
+        }
+
+        assert_eq!(rt.model.state.selection.session, "a");
+        assert_eq!(rt.registry.get("local").map(|a| a.id()), Some(OWN_CLIENT));
+        assert!(rt.hosts.get("local").unwrap().display.in_flight_is_empty());
+        let out = nav_text(&mut rt);
+        assert!(out.contains("a \u{2192} web/agents"), "{out}");
+
+        // Back on the session it was attached for, the note goes.
+        the_herdr_query_answers(
+            &mut rt,
+            OWN_CLIENT,
+            crate::mux::ClientAt::Session("a".into()),
+        );
+        let out = nav_text(&mut rt);
+        assert!(!out.contains("web/agents"), "{out}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_herdr_client_that_starts_on_another_session_is_named_not_carried_back() {
+    // herdr starts a client on the machine its user last chose, so a fresh attachment
+    // for `a` can open on `b`. With the nav focused, carrying it back would reattach into
+    // the same start again; the nav keeps `a` and its card names `b`.
+    let mut rt = a_settled_herdr_runtime();
+    let t0 = std::time::Instant::now();
+
+    let mut now = t0;
+    for _ in 0..10 {
+        the_herdr_query_answers(
+            &mut rt,
+            OWN_CLIENT,
+            crate::mux::ClientAt::Session("b".into()),
+        );
+        one_pass(&mut rt, now);
+        now += std::time::Duration::from_millis(400);
+    }
+    assert_eq!(rt.model.state.selection.session, "a");
+    assert_eq!(
+        rt.registry.get("local").map(|a| a.id()),
+        Some(OWN_CLIENT),
+        "no reattach chases the start"
+    );
+    assert!(rt.hosts.get("local").unwrap().display.in_flight_is_empty());
+    let out = nav_text(&mut rt);
+    assert!(out.contains("a \u{2192} b"), "{out}");
+
+    // A move the user then makes inside the client is followed as usual.
+    focus_terminal(&mut rt);
+    the_herdr_query_answers(
+        &mut rt,
+        OWN_CLIENT,
+        crate::mux::ClientAt::Away("web/x".into()),
+    );
+    the_herdr_query_answers(
+        &mut rt,
+        OWN_CLIENT,
+        crate::mux::ClientAt::Session("b".into()),
+    );
+    one_pass(&mut rt, now);
+    assert_eq!(rt.model.state.selection.session, "b");
+    assert_eq!(rt.registry.get("local").map(|a| a.id()), Some(OWN_CLIENT));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_away_note_goes_with_the_attachment_it_is_about() {
+    let mut rt = a_settled_herdr_runtime();
+    the_herdr_query_answers(
+        &mut rt,
+        OWN_CLIENT,
+        crate::mux::ClientAt::Away("web/agents".into()),
+    );
+    assert!(nav_text(&mut rt).contains("web/agents"));
+    rt.registry.remove("local");
+    assert!(rt.drop_stale_display_away());
+    assert!(!nav_text(&mut rt).contains("web/agents"));
 }
 
 #[tokio::test(flavor = "current_thread")]

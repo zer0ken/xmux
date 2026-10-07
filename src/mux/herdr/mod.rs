@@ -7,6 +7,7 @@ use crate::session::Session;
 use crate::transport::Transport;
 use serde::Deserialize;
 
+mod client;
 pub mod display;
 
 pub use display::HerdrDriver;
@@ -103,6 +104,16 @@ impl Mux for Herdr {
             "attach".to_string(),
             session.to_string(),
         ]
+    }
+
+    /// The user's herdr processes, xmux's client pid, the host name, and herdr's saved
+    /// machine listing; see the `client` module for why each is needed.
+    fn display_client_query(&self, client: &DisplayClient) -> Option<Vec<String>> {
+        Some(client::query(&self.bin, client))
+    }
+
+    fn parse_display_client(&self, out: &str) -> Option<ClientAt> {
+        client::parse(out)
     }
 
     fn control_argv(&self) -> Option<Vec<String>> {

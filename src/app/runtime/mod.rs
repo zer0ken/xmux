@@ -1673,6 +1673,15 @@ const DISPLAY_PROBE_EVERY: std::time::Duration = std::time::Duration::from_secs(
 struct DisplayProbe {
     next: Option<std::time::Instant>,
     in_flight: bool,
+    /// The attachment the last recorded answer was about, so the first answer about a
+    /// fresh attachment is told apart from the ones after it.
+    answered: Option<u64>,
+    /// A session a fresh attachment's client started on other than the one it was
+    /// attached for, held back from the record while the client stays there.
+    held: Option<(u64, String)>,
+    /// The attachment whose client is away from its card, the card that says so, and
+    /// the label of where the client is.
+    away: Option<(u64, crate::session::Address, String)>,
 }
 
 /// The persistent app's WORLD STATE: everything the `select!` loop mutates across

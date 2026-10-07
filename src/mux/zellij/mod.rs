@@ -13,45 +13,9 @@ mod parse;
 
 pub use display::ZellijDriver;
 
-/// Where an attach run through the machine's shell records its client's process id, keyed
-/// per attachment so a query never reads the record of a client an earlier attach left.
-/// Under `/tmp`, which every POSIX machine has and lets its user write.
-fn pid_record_path(record_key: &str) -> String {
-    let token: String = record_key
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    format!("/tmp/.xmux-zc-{token}")
-}
-
 /// The shell text, run after `p` holds the client's process id, that prints the `ss -xn`
 /// rows of the server ends connected to that client's sockets.
 const CONNECTED_SERVER_END: &str = r#"[ -n "$p" ] || exit 0; i=$(ls -l /proc/"$p"/fd 2>/dev/null | sed -n 's/.*socket:\[\([0-9]*\)\].*/\1/p' | tr '\n' ' '); [ -n "$i" ] || exit 0; ss -xn 2>/dev/null | awk -v i="$i" 'BEGIN { n = split(i, a, " "); for (k = 1; k <= n; k++) w[a[k]] = 1 } $NF in w && $5 != "*"'"#;
-
-/// The attach `attach` run so that the shell running it records its own process id at
-/// the record for `record_key`, then becomes the client with `exec`, so the recorded id
-/// is the client's. A record that cannot be written leaves the attach unaffected.
-pub(super) fn recording_attach(attach: &[String], record_key: &str) -> Vec<String> {
-    let attach: Vec<String> = attach
-        .iter()
-        .map(|arg| crate::transport::vocab::quote(arg))
-        .collect();
-    vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        format!(
-            "{{ echo $$ >{}; }} 2>/dev/null; exec {}",
-            pid_record_path(record_key),
-            attach.join(" ")
-        ),
-    ]
-}
 
 /// zellij: one server per session, enumerated from `list-sessions`, polled for change,
 /// each session displayed through its own attachment.
@@ -212,21 +176,15 @@ impl Mux for Zellij {
     /// reads two kernel tables and attaches to nothing. A machine without `/proc` or `ss`
     /// prints nothing, which is no signal.
     fn display_client_query(&self, client: &DisplayClient) -> Option<Vec<String>> {
-        let pid = match client {
-            DisplayClient::Pid(pid) => pid.to_string(),
-            DisplayClient::Recorded(key) => {
-                format!("$(cat {} 2>/dev/null)", pid_record_path(key))
-            }
-        };
         Some(vec![
             "sh".to_string(),
             "-c".to_string(),
-            format!("p={pid}; {CONNECTED_SERVER_END}"),
+            format!("{}{CONNECTED_SERVER_END}", client_pid_assignment(client)),
         ])
     }
 
-    fn parse_display_client(&self, out: &str) -> Option<String> {
-        parse::connected_session(out)
+    fn parse_display_client(&self, out: &str) -> Option<ClientAt> {
+        parse::connected_session(out).map(ClientAt::Session)
     }
 
     fn control_argv(&self) -> Option<Vec<String>> {
@@ -489,7 +447,7 @@ mod tests {
             argv(&[
                 "sh",
                 "-c",
-                "{ echo $$ >/tmp/.xmux-zc-jup-x_rm-1; } 2>/dev/null; exec zellij attach 'my build'"
+                "{ echo $$ >/tmp/.xmux-client-jup-x_rm-1; } 2>/dev/null; exec zellij attach 'my build'"
             ])
         );
     }
@@ -508,18 +466,16 @@ mod tests {
             .display_client_query(&DisplayClient::Recorded("jup-x;rm-1".into()))
             .unwrap();
         assert!(
-            recorded[2].starts_with("p=$(cat /tmp/.xmux-zc-jup-x_rm-1 2>/dev/null); "),
+            recorded[2].starts_with("p=$(cat /tmp/.xmux-client-jup-x_rm-1 2>/dev/null); "),
             "{recorded:?}"
         );
         assert!(by_pid[2].ends_with(CONNECTED_SERVER_END));
         assert_eq!(
-            zellij()
-                .parse_display_client(
-                    "u_str ESTAB 0 0 /tmp/zellij-1000/contract_version_1/api 7 * 8
+            zellij().parse_display_client(
+                "u_str ESTAB 0 0 /tmp/zellij-1000/contract_version_1/api 7 * 8
 "
-                )
-                .as_deref(),
-            Some("api")
+            ),
+            Some(ClientAt::Session("api".into()))
         );
     }
 

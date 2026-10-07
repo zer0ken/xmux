@@ -488,7 +488,7 @@ pub(crate) mod tests {
             command
                 .last()
                 .unwrap()
-                .contains(&format!("/tmp/.xmux-zc-{token}")),
+                .contains(&format!("/tmp/.xmux-client-{token}")),
             "{command:?}"
         );
 

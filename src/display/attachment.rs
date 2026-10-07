@@ -40,9 +40,12 @@ pub enum PtyEvent {
     /// the loop re-emits the same sequence on xmux's stdout between frames so the
     /// terminal above sets the clipboard.
     Osc52 { seq: Vec<u8> },
-    /// A host-side query answered which session `id`'s mux client is on, or answered
-    /// nothing (`None`). Sent once per query, so the loop knows the query ended.
-    DisplayClientSession { id: u64, session: Option<String> },
+    /// A host-side query answered where `id`'s mux client is, or answered nothing
+    /// (`None`). Sent once per query, so the loop knows the query ended.
+    DisplayClientSession {
+        id: u64,
+        at: Option<crate::mux::ClientAt>,
+    },
 }
 
 /// A command for a kept attachment's dedicated PTY control thread: bytes to write

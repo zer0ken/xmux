@@ -53,6 +53,7 @@ only through the login profile, as an install without root leaves them. Each mux
 on both systems. A host user has seen herdr's first-run screen, and abduco starts the
 login shell, since no host installs dvtm. Every host has `ss` from iproute2, as a
 server install does, because xmux reads it to follow a zellij client's session switch.
+Every host has an ssh client, which herdr's saved machines connect through.
 
 ## Scenarios
 
@@ -74,6 +75,10 @@ The native workflow group, typed through xmux's terminal view:
 | `detach-inside` | the mux's own detach key leaves the session alive, and selecting it again attaches it |
 | `shared-client` | a client attached directly on the host stays attached while xmux attaches the same session, and shows what was typed through xmux |
 | `in-client-switch` | moving the client to another session with the mux's own input moves the nav selection with it |
+
+herdr moves its client between saved machines, so `in-client-switch` saves `localhost` with
+`herdr2` as a machine of the second host for its herdr cell, moves the client there with
+`C-b w`, `Down`, and `Enter`, and removes the machine afterwards.
 
 `native-keys` runs on a session of its own, and checks each mux this way:
 
@@ -100,7 +105,7 @@ issue is fixed.
 | `in-client-switch`, zellij | `KNOWN #670` | zellij can drop the client right after `switch-session` moves it |
 | `switch`, zellij | `KNOWN #675` | zellij can drop a client that attaches right after another client of the session ended, and the reattach with it |
 | `in-client-switch`, tuios | `KNOWN #333` | tuios gives no signal that its client moved |
-| `in-client-switch`, screen, abduco, and herdr | `n/a` | a client belongs to one session's server and cannot move |
+| `in-client-switch`, screen and abduco | `n/a` | a client belongs to one session's server and cannot move |
 | `native-keys`, abduco | `n/a` | abduco has no keys besides detach |
 | `first-launch`, tmux, Alpine, Windows client | `KNOWN #673` | the tail of a terminal reply reaches tmux 3.5a as typed text |
 | `switch`, Alpine, Windows client | `KNOWN #673` | each of these cells shows Alpine's tmux, for the same reason |

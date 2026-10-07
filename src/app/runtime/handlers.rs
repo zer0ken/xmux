@@ -1248,9 +1248,9 @@ impl Runtime {
                 Self::emit_osc52(&seq);
                 false
             }
-            PtyEvent::DisplayClientSession { id, session } => {
+            PtyEvent::DisplayClientSession { id, at } => {
                 self.display_probe.in_flight = false;
-                if session.is_some_and(|session| self.record_display_client_session(id, &session)) {
+                if at.is_some_and(|at| self.record_display_client(id, at)) {
                     self.dirty = true;
                 }
                 false
@@ -1911,33 +1911,43 @@ impl Runtime {
         };
         let mux = host.mux.clone_box();
         let events = self.driver_pty_tx.clone();
-        self.display_probe = DisplayProbe {
-            next: Some(now + DISPLAY_PROBE_EVERY),
-            in_flight: true,
-        };
+        self.display_probe.next = Some(now + DISPLAY_PROBE_EVERY);
+        self.display_probe.in_flight = true;
         tokio::spawn(async move {
             use crate::model::host_def::Runner;
-            let session = match crate::model::host_def::ExecRunner.run_spec(&command).await {
+            let at = match crate::model::host_def::ExecRunner.run_spec(&command).await {
                 Ok(out) => mux.parse_display_client(&String::from_utf8_lossy(&out)),
                 Err(error) => {
                     tracing::debug!(id, error = %error, "display_client_query_failed");
                     None
                 }
             };
-            let _ = events.send(PtyEvent::DisplayClientSession { id, session });
+            let _ = events.send(PtyEvent::DisplayClientSession { id, at });
         });
     }
 
-    /// Records the session a host-side query found attachment `id`'s mux client on, as
+    /// Records where a host-side query found attachment `id`'s mux client, as
     /// [`observe_display_session`](Self::observe_display_session) records a local read.
-    /// Returns true when the record moved.
+    /// Returns true when the record or the nav moved.
     ///
     /// The answer is about the attachment the query was started for, and it is recorded
     /// only while that attachment is still the live one for its key and no reattach is
     /// in flight or waiting to paint there. A reattach the nav started after the query
     /// leaves the old client on the old session until it is torn down, so its answer
     /// would name a session the display is leaving.
-    pub(super) fn record_display_client_session(&mut self, id: u64, session: &str) -> bool {
+    ///
+    /// A client on another of the host's sessions is recorded as what the display shows,
+    /// and the comparison the loop makes on every pass decides which side follows. One
+    /// answer is held back: the FIRST about a fresh attachment, naming a session other
+    /// than the one it was attached for, while the nav holds the focus. Such a client
+    /// started where the mux put it, not where the user moved it, and carrying it back
+    /// would reattach into the same start again. The nav names the session it is on
+    /// instead, until the client moves.
+    ///
+    /// A client somewhere no card covers leaves the selection and the record where they
+    /// are, since the attachment is still the session xmux opened, and the nav names the
+    /// place on that session's card instead.
+    pub(super) fn record_display_client(&mut self, id: u64, at: crate::mux::ClientAt) -> bool {
         let Some(key) = self
             .registry
             .address_of_id(id)
@@ -1949,19 +1959,82 @@ impl Runtime {
         let Some(host) = self.hosts.get_mut(&host_id) else {
             return false;
         };
-        if host.display.in_flight_contains(&key)
-            || host.display.pending_paint_contains(&key)
-            || host.display.shows(&key) == Some(session)
+        if host.display.in_flight_contains(&key) || host.display.pending_paint_contains(&key) {
+            return false;
+        }
+        let Some(shown) = host.display.shows(&key).map(str::to_string) else {
+            return false;
+        };
+        let fresh = self.display_probe.answered != Some(id);
+        self.display_probe.answered = Some(id);
+        let place = match at {
+            crate::mux::ClientAt::Session(session) => {
+                if session == shown {
+                    self.display_probe.held = None;
+                    return self.clear_display_away();
+                }
+                let nav_focused = !self.model.state.focus.is_terminal_focused();
+                if fresh && nav_focused {
+                    self.display_probe.held = Some((id, session.clone()));
+                }
+                if self.display_probe.held.as_ref() != Some(&(id, session.clone())) {
+                    self.display_probe.held = None;
+                    if let Some(h) = self.hosts.get_mut(&host_id) {
+                        h.display.set_shows(&key, &session);
+                    }
+                    tracing::info!(
+                        host = %host_id,
+                        session = %session,
+                        "display_client_session_changed"
+                    );
+                    self.clear_display_away();
+                    return true;
+                }
+                session
+            }
+            crate::mux::ClientAt::Away(label) => {
+                self.display_probe.held = None;
+                label
+            }
+        };
+        let address = crate::session::Address::new(&host_id, shown);
+        if self
+            .display_probe
+            .away
+            .as_ref()
+            .is_some_and(|(was, at, label)| *was == id && *at == address && *label == place)
         {
             return false;
         }
-        host.display.set_shows(&key, session);
-        tracing::info!(
-            host = %host_id,
-            session = %session,
-            "display_client_session_changed"
-        );
+        tracing::info!(host = %host_id, place = %place, "display_client_away");
+        self.display_probe.away = Some((id, address.clone(), place.clone()));
+        let effects = update(&mut self.model, Msg::DisplayAway(Some((address, place))));
+        debug_assert!(effects.is_empty());
         true
+    }
+
+    /// Takes back the nav's note of a display client away from its card. Returns true
+    /// when there was one.
+    fn clear_display_away(&mut self) -> bool {
+        if self.display_probe.away.take().is_none() {
+            return false;
+        }
+        let effects = update(&mut self.model, Msg::DisplayAway(None));
+        debug_assert!(effects.is_empty());
+        true
+    }
+
+    /// Clears the nav's note of a display client away from its card once the attachment
+    /// it is about is no longer the live one for its key. Returns true when it cleared.
+    pub(super) fn drop_stale_display_away(&mut self) -> bool {
+        let Some((id, _, _)) = self.display_probe.away else {
+            return false;
+        };
+        let live = self
+            .registry
+            .address_of_id(id)
+            .is_some_and(|key| self.registry.get(&key).is_some_and(|a| a.id() == id));
+        !live && self.clear_display_away()
     }
 
     /// The animation-tick arm: detect a console resize (push the new size to PTYs +
@@ -1998,6 +2071,9 @@ impl Runtime {
             }
         }
         if self.observe_display_session() {
+            self.dirty = true;
+        }
+        if self.drop_stale_display_away() {
             self.dirty = true;
         }
         self.start_display_probe(std::time::Instant::now());

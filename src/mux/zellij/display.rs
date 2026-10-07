@@ -86,7 +86,7 @@ impl MuxDriver for ZellijDriver {
             .request_attach_with_id(sel, |id, key, instance_name| {
                 if records {
                     let record = crate::mux::display_tty_key(key, instance_name, id);
-                    transport.exec_argv(true, &super::recording_attach(&attach, &record))
+                    transport.exec_argv(true, &crate::mux::recording_attach(&attach, &record))
                 } else {
                     transport.exec_argv(true, &attach)
                 }

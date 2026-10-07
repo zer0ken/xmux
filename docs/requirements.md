@@ -302,6 +302,12 @@ The seamless cross-host switch is bought with these costs, accepted by design:
 - A zellij client moved to another session from inside itself is followed only on
   Windows locally and on a Linux machine with `ss` reached locally, through WSL, or over a
   shared ssh connection; elsewhere the nav stays on the card it was on.
+- A herdr client moved to a saved machine from inside itself is followed only while it is
+  its user's one herdr client on its machine, and only on a machine with `/proc`. A saved
+  machine on the client's own machine moves the selection to that session; any other
+  saved machine is named on the card of the session xmux opened, and the selection stays
+  there. A herdr client that starts on the saved machine its user chose last is named on
+  its card the same way while the nav holds the focus.
 - A session listed without an identity, which is every zellij session and every local
   psmux session its own server does not answer for, is not followed through a rename made
   inside its mux: the rename reads as a lost session and a new one, and the selection
