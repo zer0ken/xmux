@@ -26,7 +26,7 @@ state: the focus and modal state machine lives in `app`.
   modes the child set, which outlive a wipe of the cells.
 - Input decoding, dispatch, paste splitting, and mouse parsing turn terminal bytes into
   routing decisions or input actions; terminal setup holds prefix parsing, mouse
-  capture, bracketed paste, and the terminal guard.
+  capture, bracketed paste, focus reports, and the terminal guard.
 - The live child-environment read answers one caller-named variable from a running
   attach child. It names no mux and no variable.
 
