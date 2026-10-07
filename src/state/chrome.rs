@@ -125,6 +125,10 @@ pub struct Chrome {
     pub(crate) colors: ViewBorderColors,
     /// The hint bar style resolved from the active palette and configuration.
     pub(crate) hint_bar_style: Style,
+    /// The newest recorded release while it is newer than the running xmux (set once by
+    /// the app at launch). The landing screen and the prefix key list name it for as long
+    /// as the running build is behind, so it is never a result that comes and goes.
+    pub(crate) update_available: Option<String>,
 }
 
 impl Chrome {

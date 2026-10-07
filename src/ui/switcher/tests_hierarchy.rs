@@ -1114,6 +1114,55 @@ fn the_landing_states_the_scan_progress_with_the_spinner() {
 }
 
 #[test]
+fn the_landing_names_a_newer_release_and_the_command_that_installs_it() {
+    let mut h = landed();
+    assert!(!h.view().contains("xmux update"), "{}", h.view());
+    h.state.chrome.update_available = Some("99.0.0".into());
+    h.draw();
+    let view = h.view();
+    let line = view
+        .lines()
+        .find(|l| l.contains("99.0.0"))
+        .unwrap_or_else(|| panic!("{view}"));
+    assert!(line.contains("update"), "{line}");
+    assert!(line.contains(env!("CARGO_PKG_VERSION")), "{line}");
+    assert!(line.contains("`xmux update`"), "{line}");
+}
+
+#[test]
+fn the_prefix_key_list_names_a_newer_release_beside_the_version() {
+    let screen = |h: &H| {
+        let buf = h.term.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut h = landed();
+    h.state.chrome.armed = true;
+    h.draw();
+    let version = format!("xmux v{}", env!("CARGO_PKG_VERSION"));
+    let row = screen(&h)
+        .into_iter()
+        .find(|l| l.contains(&version))
+        .expect("the key list writes the version");
+    assert!(!row.contains("available"), "{row}");
+    h.state.chrome.update_available = Some("99.0.0".into());
+    h.draw();
+    let row = screen(&h)
+        .into_iter()
+        .find(|l| l.contains(&version))
+        .expect("the key list writes the version");
+    assert!(
+        row.contains(&format!("{version} · v99.0.0 available: xmux update")),
+        "{row}"
+    );
+}
+
+#[test]
 fn the_landing_and_the_nav_share_one_selection_that_attaches_nothing() {
     let mut h = landed();
     assert_eq!(h.node(), session("gpu", "train"));

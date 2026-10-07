@@ -386,7 +386,6 @@ pub(crate) enum Msg {
         >,
     },
     ConfigError(String),
-    Notice(String),
     DetectionStarted(String),
     Shutdown,
 }
@@ -2484,17 +2483,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             );
             Vec::new()
         }
-        // The release notice answers the launch, so it is a toast like any other result.
-        Msg::Notice(line) => {
-            model.state.notify.toast(
-                "update",
-                vec![crate::state::notify::Note::new(
-                    crate::state::notify::Level::Info,
-                    line,
-                )],
-            );
-            Vec::new()
-        }
         Msg::DetectionStarted(host) => {
             model.detecting.insert(host);
             Vec::new()
@@ -3507,15 +3495,6 @@ mod tests {
             m.state.notify.toasts.is_empty(),
             "the click took the error down"
         );
-    }
-
-    #[test]
-    fn the_release_notice_is_an_info_toast() {
-        let mut m = model();
-        update(&mut m, Msg::Notice("xmux 9.9.9 is available".to_owned()));
-        let toast = &m.state.notify.toasts[0];
-        assert_eq!(toast.notes[0].level, crate::state::notify::Level::Info);
-        assert!(toast.until.is_some());
     }
 
     #[test]
