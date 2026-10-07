@@ -260,6 +260,7 @@ mod tests {
             Err(RunError::Exit {
                 stderr: "No active zellij sessions found.".into(),
                 code: 1,
+                stdout: Vec::new(),
             }),
             Ok(Vec::new()),
         ]);

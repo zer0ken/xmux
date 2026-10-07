@@ -17,8 +17,9 @@ stream, so inventory changes arrive only on an asked-for poll.
 ## Invariants
 
 - Enumeration issues exactly one `tuios ls --json` command.
-- Exit 3 means no live daemon and produces an empty live-session list.
-- Saved records never become session cards.
+- Exit 3 means no live daemon. Its stdout still lists the sessions the daemon saved,
+  and each saved record becomes a stopped session; a stdout that is no listing lists
+  nothing.
 - Every display selection creates a fresh attachment; no in-place switch is claimed.
 - An attachment ending is not reported as a session ending.
 

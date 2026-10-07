@@ -197,6 +197,7 @@ mod tests {
         let idle = CannedRunner::err(RunError::Exit {
             stderr: String::new(),
             code: 1,
+            stdout: Vec::new(),
         });
         assert!(screen()
             .enumerate(&ssh("jup"), &idle)
@@ -210,6 +211,7 @@ mod tests {
         let missing = CannedRunner::err(RunError::Exit {
             stderr: "screen: command not found".into(),
             code: 127,
+            stdout: Vec::new(),
         });
         assert!(screen().enumerate(&ssh("jup"), &missing).await.is_err());
     }

@@ -142,6 +142,7 @@ pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
             id: session_identity(fields[2]),
             windows,
             attached: attached_n > 0,
+            stopped: false,
         });
     }
     sessions
@@ -306,6 +307,7 @@ mod tests {
                     id: "4711$0".into(),
                     windows: 3,
                     attached: true,
+                    stopped: false,
                 },
                 Session {
                     host: "local".into(),
@@ -314,6 +316,7 @@ mod tests {
                     id: "4711$1".into(),
                     windows: 2,
                     attached: false,
+                    stopped: false,
                 },
             ]
         );
@@ -341,6 +344,7 @@ mod tests {
                 name: "proj/a\tb:c".into(),
                 windows: 4,
                 attached: true,
+                stopped: false,
             }]
         );
     }
@@ -366,6 +370,7 @@ mod tests {
                 id: String::new(),
                 windows: 2,
                 attached: true,
+                stopped: false,
             }]
         );
     }
@@ -398,6 +403,7 @@ mod tests {
                 id: String::new(),
                 windows: 1,
                 attached: true,
+                stopped: false,
             }]
         );
     }

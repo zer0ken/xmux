@@ -17,6 +17,9 @@ pub enum ViewScreen {
     ListFailed,
     /// The host answered and serves no session.
     Empty,
+    /// A selected session the mux keeps while nothing of it runs. Attaching resumes it, so
+    /// the terminal view attaches only once the user executes it.
+    Stopped,
     /// A selected host section with sessions to inspect.
     Host,
     /// A machine that answered through at least one of its hosts: how it is reached and

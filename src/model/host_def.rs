@@ -72,10 +72,15 @@ impl RemoteShells {
 /// [`RunError::Other`] (never benign).
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
-    /// A real process exit: carries stderr and the exit code. `126/127/255` are
-    /// never a healthy-but-empty mux.
+    /// A real process exit: carries stderr, the exit code, and stdout. `126/127/255` are
+    /// never a healthy-but-empty mux. Stdout is kept because a mux can answer through a
+    /// non-zero exit: tuios lists its saved sessions while it reports its daemon down.
     #[error("{stderr}\ncommand exited with status {code}")]
-    Exit { stderr: String, code: i32 },
+    Exit {
+        stderr: String,
+        code: i32,
+        stdout: Vec<u8>,
+    },
     /// A spawn/transport failure (missing binary, connect failure) - never benign.
     #[error("{0}")]
     Other(String),
@@ -307,6 +312,7 @@ impl ExecRunner {
                 // error reads as one line wherever it is rendered.
                 stderr,
                 code,
+                stdout: out,
             })
         }
     }
@@ -674,7 +680,7 @@ echo probe-ok
         let big = BigOutput::new("stderr");
         let (name, args) = big.stderr_command();
         let err = ExecRunner.run(&name, &args).await.expect_err("must fail");
-        let RunError::Exit { stderr, code } = &err else {
+        let RunError::Exit { stderr, code, .. } = &err else {
             panic!("expected an exit error, got {err:?}");
         };
         assert_eq!(*code, 1);

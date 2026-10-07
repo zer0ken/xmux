@@ -143,6 +143,7 @@ pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
             id: String::new(),
             windows: 1,
             attached: status == '*',
+            stopped: false,
         });
     }
     sessions
@@ -318,6 +319,7 @@ mod tests {
         let missing = CannedRunner::err(RunError::Exit {
             stderr: "abduco: command not found".into(),
             code: 127,
+            stdout: Vec::new(),
         });
         assert!(abduco().enumerate(&ssh("jup"), &missing).await.is_err());
     }

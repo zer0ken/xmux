@@ -822,6 +822,7 @@ impl Switcher {
                             self.close_input(state);
                             // A landed jump executes the card it names.
                             self.close_landing();
+                            self.execute_stopped();
                         } else if !val.is_empty() {
                             if let Some(Modal::Input(input)) = state.modal.as_mut() {
                                 input.error = Some(format!("no card {val}"));

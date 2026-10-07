@@ -1258,6 +1258,7 @@ mod tests {
                     id: String::new(),
                     windows: 2,
                     attached: false,
+                    stopped: false,
                 }],
             }],
         }

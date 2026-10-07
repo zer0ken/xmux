@@ -47,6 +47,7 @@ fn sess(host: &str, name: &str) -> Session {
         id: String::new(),
         windows: 1,
         attached: false,
+        stopped: false,
     }
 }
 

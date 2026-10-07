@@ -232,13 +232,19 @@ against, naming no source file, function, or test.
 
 ## E. Session management
 
-xmux aggregates and switches, so creating a session is the only session change it makes.
+xmux aggregates and switches, so creating a session and resuming a stopped one are the
+only session changes it makes.
 
 - **FR-E1** - `prefix n` creates a session on the selected card's host and mux, which
   then appears in the nav, and is refused with a toast under an unreachable host.
 - **FR-E2** - There is no rename, kill, or window or pane command anywhere in xmux.
 - **FR-E3** - Creating a session runs off the key path, so a slow ssh round trip never
   freezes rendering or the control channel.
+- **FR-E4** - A session the mux keeps while nothing of it runs (a tuios session saved
+  while its daemon is down, a stopped herdr session, an exited zellij session) is listed
+  with a card marked `stopped` and `xmux ls` marks its line. Selecting it shows its
+  screen and attaches nothing, and executing it attaches it, which resumes it through
+  the mux's own attach.
 
 ## F. Control channel
 

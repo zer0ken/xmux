@@ -22,6 +22,9 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   confirmed to serve, one the config writes or mux discovery found, so a machine whose
   muxes are not known yet has none. Every surface writes it as its host label.
 - **session** - one session of a host's mux (`db-01/tmux/pg-primary`).
+- **stopped session** - a session the mux keeps while nothing of it runs: a tuios session
+  saved while its daemon is down, a stopped herdr session, an exited zellij session.
+  The mux's own attach resumes it.
 - **level words** - `machine`, `host`, and `session`, the three levels a session lives
   in, one word for each level in the code, the docs, and every surface: `host` always
   names one mux on a machine and never the machine.

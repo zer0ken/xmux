@@ -122,6 +122,10 @@ pub fn is_local_host(host: &str) -> bool {
     machine_of(host) == LOCAL_MACHINE
 }
 
+/// The state word of a stopped session ([`Session::stopped`]), the one spelling every
+/// surface that marks one reads.
+pub const STOPPED: &str = "stopped";
+
 /// A host and a session as one value: the pair every internal path carries separately
 /// instead of a joined `host/session` string. The joined spelling exists only at the
 /// text boundary (the ctl/CLI wire, the persisted file) and at UI render time
@@ -169,6 +173,10 @@ pub struct Session {
     pub id: String,
     pub windows: i64,
     pub attached: bool,
+    /// The mux keeps a record of this session while nothing of it runs: a saved tuios
+    /// session, a stopped herdr session, an exited zellij session. The mux's own attach
+    /// resumes it, and no other command reaches it until then.
+    pub stopped: bool,
 }
 
 impl Session {

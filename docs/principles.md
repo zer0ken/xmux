@@ -48,8 +48,9 @@ loop.
 
 ## Minimal Persistent Surface
 
-The always-visible nav carries names, numbers, one state glyph per card, the highlighted
-selection, and the resting prefix, and nothing else. A long name keeps its beginning and end
+The always-visible nav carries names, numbers, one state glyph per card, the word
+`stopped` on a stopped session's card, the highlighted selection, and the resting
+prefix, and nothing else. A long name keeps its beginning and end
 around a middle ellipsis rather than displacing a state or navigation cell.
 
 The nav is read at a glance between tasks, so every cell it spends on a hint or a
@@ -214,7 +215,8 @@ Executing opens the screen the target names and gives it the focus, or runs the 
 the target stands for. A binding that selects and executes at once is a deliberate
 shortcut that names its target directly, such as a digit jump or a prefix chord, never
 an arrow key or a hover. Gestures that are neither keep their own meaning: a drag moves
-or resizes, the wheel scrolls, and typing edits a text field.
+or resizes, the wheel scrolls, and typing edits a text field. Attaching to a stopped
+session resumes it, so its selection shows its screen and only executing it attaches.
 
 The landing screen is the one surface on which a selection shows nothing: from launch
 until the first execution the hard selection only highlights and a hover previews

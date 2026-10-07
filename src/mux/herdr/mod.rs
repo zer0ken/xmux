@@ -26,6 +26,9 @@ struct SessionListing {
 struct ListedSession {
     name: String,
     running: bool,
+    /// herdr's reserved session, listed on every machine whether or not it was used.
+    #[serde(default)]
+    default: bool,
     #[serde(default)]
     connection_error: Option<String>,
 }
@@ -96,7 +99,8 @@ impl Mux for Herdr {
     }
 
     /// `herdr session attach <name>` starts a stopped or missing session before attaching,
-    /// so the first display attachment is what completes a create.
+    /// so the first display attachment is what completes a create and what resumes a
+    /// stopped session.
     fn attach_plan(&self, session: &str) -> Vec<String> {
         vec![
             self.bin.clone(),
@@ -138,19 +142,21 @@ impl Mux for Herdr {
     }
 }
 
-/// Parses `herdr session list --json`, the complete metadata answer. Only a running entry
-/// without a connection error is offered: a stopped entry (the always-present `default`
-/// among them) is saved state, not a live session, and an entry with a connection error
-/// has no reachable live server to back it. The listing reports no window count or
-/// attachment state, so offered sessions keep the domain defaults for both rather than
-/// invented values.
+/// Parses `herdr session list --json`, the complete metadata answer. A running entry is a
+/// live session and a stopped one a stopped session, which the attach starts again. An
+/// entry with a connection error is not offered, since no server answers for it, and
+/// neither is the stopped `default` entry: herdr lists it on every machine, so it does not
+/// say a session was ever there. The listing reports no window count or attachment state,
+/// so offered sessions keep the domain defaults for both rather than invented values.
 fn parse_sessions(host: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, RunError> {
     let listing: SessionListing = serde_json::from_slice(out)
         .map_err(|e| RunError::Other(format!("invalid herdr session listing: {e}")))?;
     Ok(listing
         .sessions
         .into_iter()
-        .filter(|session| session.running && session.connection_error.is_none())
+        .filter(|session| {
+            session.connection_error.is_none() && (session.running || !session.default)
+        })
         .map(|session| Session {
             host: host.to_string(),
             name: session.name,
@@ -159,6 +165,7 @@ fn parse_sessions(host: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, Run
             id: String::new(),
             windows: 0,
             attached: false,
+            stopped: !session.running,
         })
         .collect())
 }
@@ -244,23 +251,41 @@ mod tests {
           "future_field": {"ignored": true}
         },
         {"default": true, "name": "default", "running": false},
+        {"default": false, "name": "parked", "running": false, "session_dir": "/tmp/herdr/parked"},
         {"name": "denied", "running": false, "connection_error": "permission denied"},
         {"name": "inconsistent", "running": true, "connection_error": "unreachable"}
       ]
     }"#;
 
     #[tokio::test]
-    async fn enumerate_offers_only_running_reachable_sessions() {
+    async fn enumerate_offers_reachable_sessions_running_or_stopped() {
         let sessions = herdr()
             .enumerate(&ssh("jup"), &CannedRunner::ok(LISTING))
             .await
             .unwrap();
-        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].host, "jup");
         assert_eq!(sessions[0].mux, "herdr");
         assert_eq!(sessions[0].name, "live");
         assert_eq!(sessions[0].windows, 0);
         assert!(!sessions[0].attached);
+        assert!(!sessions[0].stopped);
+        assert_eq!(sessions[1].name, "parked");
+        assert!(sessions[1].stopped, "a stopped entry is a stopped session");
+    }
+
+    /// herdr lists its reserved session on every machine, stopped until something starts
+    /// it, so a stopped `default` says nothing about the user's sessions. A running one is
+    /// a session like any other.
+    #[tokio::test]
+    async fn the_reserved_session_is_offered_only_while_it_runs() {
+        let running = r#"{"sessions":[{"default":true,"name":"default","running":true}]}"#;
+        let sessions = herdr()
+            .enumerate(&ssh("jup"), &CannedRunner::ok(running))
+            .await
+            .unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert!(!sessions[0].stopped);
     }
 
     #[tokio::test]
@@ -292,7 +317,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             HostEvent::Sessions { sessions, err, .. } => {
-                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions.len(), 2);
                 assert!(err.is_none());
             }
             _ => panic!("want Sessions"),

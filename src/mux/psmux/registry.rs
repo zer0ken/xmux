@@ -70,6 +70,7 @@ pub(crate) fn merge_psmux_sessions(
                 id: String::new(),
                 windows: 1,
                 attached: false,
+                stopped: false,
             });
         }
     }
@@ -148,6 +149,7 @@ mod tests {
             id: String::new(),
             windows: 3,
             attached: true,
+            stopped: false,
         }];
         let names = vec!["editor".to_string(), "build".to_string()];
         let got = merge_psmux_sessions("local", names, detail);
@@ -174,6 +176,7 @@ mod tests {
             id: String::new(),
             windows: 1,
             attached: false,
+            stopped: false,
         }];
         let got = merge_psmux_sessions("local", Vec::new(), detail);
         assert_eq!(got.len(), 1);

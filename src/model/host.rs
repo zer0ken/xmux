@@ -1016,6 +1016,7 @@ mod tests {
                     id: String::new(),
                     windows: 1,
                     attached: false,
+                    stopped: false,
                 })
                 .collect();
             EnumMux {
@@ -1207,6 +1208,7 @@ mod tests {
         let r = CannedRunner::err(RunError::Exit {
             stderr: "no server running on /tmp/tmux-1000/default".into(),
             code: 1,
+            stdout: Vec::new(),
         });
         h.enumerate_with(&r).await.unwrap();
         assert!(h.inventory.sessions.is_empty());
@@ -1393,9 +1395,10 @@ mod tests {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             match &*self.result.lock().unwrap() {
                 Ok(out) => Ok(out.clone()),
-                Err(RunError::Exit { stderr, code }) => Err(RunError::Exit {
+                Err(RunError::Exit { stderr, code, .. }) => Err(RunError::Exit {
                     stderr: stderr.clone(),
                     code: *code,
+                    stdout: Vec::new(),
                 }),
                 Err(RunError::Other(e)) => Err(RunError::Other(e.clone())),
             }

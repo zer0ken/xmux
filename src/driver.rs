@@ -383,6 +383,7 @@ pub(crate) mod tests {
             id: String::new(),
             windows: 1,
             attached: false,
+            stopped: false,
         }
     }
 

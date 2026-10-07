@@ -89,12 +89,18 @@ impl Mux for Tuios {
         let command = transport.exec_argv(false, &argv);
         match runner.run_spec(&command).await {
             Ok(out) => parse_sessions(transport.host_id(), self.kind(), &out),
-            // Exit 3 means no live daemon: a reachable host with no live session.
-            Err(RunError::Exit { code: 3, .. }) => Ok(Vec::new()),
+            // Exit 3 means no live daemon: a reachable host with no live session. The
+            // daemon saved its sessions when it stopped, and the same exit lists them on
+            // stdout; with none saved it prints only a message, which lists nothing.
+            Err(RunError::Exit {
+                code: 3, stdout, ..
+            }) => Ok(parse_sessions(transport.host_id(), self.kind(), &stdout).unwrap_or_default()),
             Err(e) => Err(e),
         }
     }
 
+    /// A saved session needs no other command: the attach starts the daemon, which
+    /// restores every saved session before the client attaches to this one.
     fn attach_plan(&self, session: &str) -> Vec<String> {
         vec![self.bin.clone(), "attach".to_string(), session.to_string()]
     }
@@ -128,14 +134,13 @@ impl Mux for Tuios {
 
 /// Parses `tuios ls --json`, the complete metadata answer: it carries each session's
 /// window count and attachment state, so no per-session window query exists, and another
-/// command would break the one-command poll. Saved records are not live sessions and are
-/// never offered.
+/// command would break the one-command poll. A saved record is a session the daemon kept
+/// when it stopped, offered as stopped.
 fn parse_sessions(host: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, RunError> {
     let listed: Vec<ListedSession> = serde_json::from_slice(out)
         .map_err(|e| RunError::Other(format!("invalid tuios session listing: {e}")))?;
     Ok(listed
         .into_iter()
-        .filter(|session| !session.saved)
         .map(|session| Session {
             host: host.to_string(),
             name: session.name,
@@ -143,6 +148,7 @@ fn parse_sessions(host: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, Run
             id: session.id,
             windows: session.window_count,
             attached: session.attached,
+            stopped: session.saved,
         })
         .collect())
 }
@@ -234,29 +240,62 @@ mod tests {
     ]"#;
 
     #[tokio::test]
-    async fn enumerate_parses_live_json_and_ignores_saved_entries() {
+    async fn enumerate_parses_live_json_and_offers_saved_entries_as_stopped() {
         let sessions = tuios()
             .enumerate(&ssh("jup"), &CannedRunner::ok(LISTING))
             .await
             .unwrap();
-        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].host, "jup");
         assert_eq!(sessions[0].mux, "tuios");
         assert_eq!(sessions[0].name, "session-0");
         assert_eq!(sessions[0].id, "2569c353-385d-40e3-842a-3d58ded8a03e");
         assert_eq!(sessions[0].windows, 1);
         assert!(sessions[0].attached);
+        assert!(!sessions[0].stopped);
+        assert_eq!(sessions[1].name, "saved");
+        assert_eq!(sessions[1].windows, 2);
+        assert!(sessions[1].stopped, "a saved record is a stopped session");
+    }
+
+    /// Verbatim from tuios 0.8.5 after `tuios kill-server`: the listing exits 3 and still
+    /// prints every session the daemon saved.
+    const SAVED_WHILE_DOWN: &str = r#"[
+  {
+    "name": "work",
+    "id": "",
+    "created": 0,
+    "last_active": 1791341141,
+    "window_count": 1,
+    "attached": false,
+    "width": 0,
+    "height": 0,
+    "saved": true
+  }
+]"#;
+
+    #[tokio::test]
+    async fn daemon_down_exit_three_lists_the_saved_sessions() {
+        let runner = CannedRunner::err(RunError::Exit {
+            stderr: String::new(),
+            code: 3,
+            stdout: SAVED_WHILE_DOWN.as_bytes().to_vec(),
+        });
+        let sessions = tuios().enumerate(&ssh("jup"), &runner).await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].name, "work");
+        assert_eq!(sessions[0].windows, 1);
+        assert!(sessions[0].stopped);
     }
 
     #[tokio::test]
-    async fn daemon_down_exit_three_is_empty_for_both_messages() {
-        for stderr in [
-            "The TUIOS daemon is not running, and no sessions are saved on disk.",
-            "",
-        ] {
+    async fn daemon_down_exit_three_with_nothing_saved_is_empty() {
+        let message = "The TUIOS daemon is not running, and no sessions are saved on disk.";
+        for (stderr, stdout) in [(message, ""), ("", message), ("", "")] {
             let runner = CannedRunner::err(RunError::Exit {
                 stderr: stderr.into(),
                 code: 3,
+                stdout: stdout.as_bytes().to_vec(),
             });
             assert!(tuios()
                 .enumerate(&ssh("jup"), &runner)
@@ -272,6 +311,7 @@ mod tests {
             RunError::Exit {
                 stderr: "tuios: command not found".into(),
                 code: 127,
+                stdout: Vec::new(),
             },
             RunError::Other("connection timed out".into()),
         ] {
@@ -296,7 +336,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             HostEvent::Sessions { sessions, err, .. } => {
-                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions.len(), 2);
                 assert!(err.is_none());
             }
             _ => panic!("want Sessions"),

@@ -67,6 +67,7 @@ pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
             id: pid.to_string(),
             windows: 0,
             attached,
+            stopped: false,
         });
     }
     sessions

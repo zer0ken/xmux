@@ -370,6 +370,7 @@ fn sess(host: &str, name: &str, windows: i64, attached: bool) -> Session {
         id: String::new(),
         windows,
         attached,
+        stopped: false,
     }
 }
 
@@ -4301,6 +4302,7 @@ fn sess_mux(host: &str, name: &str, mux: &str) -> Session {
         id: String::new(),
         windows: 1,
         attached: false,
+        stopped: false,
     }
 }
 
@@ -7468,6 +7470,7 @@ fn select_address_moves_cursor_to_named_session() {
                     id: String::new(),
                     windows: 1,
                     attached: false,
+                    stopped: false,
                 },
                 Session {
                     host: "jup".into(),
@@ -7476,6 +7479,7 @@ fn select_address_moves_cursor_to_named_session() {
                     id: String::new(),
                     windows: 1,
                     attached: false,
+                    stopped: false,
                 },
             ],
         }],
@@ -9144,4 +9148,168 @@ fn a_session_that_asked_for_attention_wears_the_alert_mark_until_cleared() {
     );
     sw.clear_alert("local", "build");
     assert!(!card_row(&sw, &state).contains('!'), "cleared once shown");
+}
+
+fn stopped_mux(host: &str, name: &str, mux: &str) -> Session {
+    Session {
+        stopped: true,
+        ..sess_mux(host, name, mux)
+    }
+}
+
+/// A host with one running session and one stopped one, the running one selected.
+fn host_with_a_stopped_session() -> Harness {
+    let mut h = Harness::from_hosts(&["jup"]);
+    h.sw.apply_host_result(
+        "jup".into(),
+        vec![
+            sess_mux("jup", "live", "herdr"),
+            stopped_mux("jup", "parked", "herdr"),
+        ],
+        None,
+        &mut h.state,
+    );
+    h.draw();
+    h
+}
+
+#[tokio::test]
+async fn a_stopped_session_has_a_card_that_says_it_is_stopped() {
+    let h = host_with_a_stopped_session();
+    let nav = h.nav_cards_text();
+    assert!(
+        nav.lines().any(|l| l.contains("parked stopped")),
+        "the stopped session is listed and marked:\n{nav}"
+    );
+    assert!(
+        !nav.lines().any(|l| l.contains("live stopped")),
+        "a running session is not:\n{nav}"
+    );
+}
+
+#[tokio::test]
+async fn selecting_a_stopped_session_shows_its_screen_and_attaches_nothing() {
+    // Attaching resumes a stopped session, which changes it, and a selection never
+    // changes a session; the screen says what executing it does instead.
+    let mut h = host_with_a_stopped_session();
+    h.key(KeyCode::Down).await;
+    h.draw();
+    assert_eq!(
+        h.sw.selected_node(),
+        Some(Node::Session(Address::new("jup", "parked")))
+    );
+    assert_eq!(h.sw.terminal_view_target().target, "", "nothing attaches");
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        Some(ViewScreen::Stopped)
+    );
+    let out = h.view_text();
+    assert!(out.contains("session jup/herdr/parked"), "{out}");
+    assert!(out.contains("herdr keeps this session"), "{out}");
+    assert!(out.contains("Enter"), "the key that resumes it:\n{out}");
+}
+
+#[tokio::test]
+async fn executing_a_stopped_session_attaches_it_until_the_selection_moves() {
+    let mut h = host_with_a_stopped_session();
+    h.key(KeyCode::Down).await;
+    // Enter or a click moves the focus into the terminal view: the execution.
+    h.sw.sync_view_focus(true);
+    assert_eq!(h.sw.terminal_view_target().target, "parked", "it attaches");
+    assert_eq!(h.sw.current_view_screen(&h.state), None, "its grid shows");
+    // The listing can still read it stopped while the mux resumes it, and the focus can
+    // go back to the nav: the attach holds through both.
+    h.sw.apply_host_result(
+        "jup".into(),
+        vec![
+            sess_mux("jup", "live", "herdr"),
+            stopped_mux("jup", "parked", "herdr"),
+        ],
+        None,
+        &mut h.state,
+    );
+    h.sw.sync_view_focus(false);
+    assert_eq!(h.sw.terminal_view_target().target, "parked");
+    // A move away and back is a new selection, which executes nothing.
+    h.key(KeyCode::Up).await;
+    h.key(KeyCode::Down).await;
+    assert_eq!(h.sw.terminal_view_target().target, "");
+}
+
+#[tokio::test]
+async fn a_switch_xmux_is_told_to_make_resumes_a_stopped_session() {
+    let mut h = host_with_a_stopped_session();
+    assert!(h.sw.select_address(&Address::new("jup", "parked")));
+    assert_eq!(h.sw.terminal_view_target().target, "parked");
+}
+
+#[tokio::test]
+async fn a_session_that_stops_again_is_not_resumed_without_the_user() {
+    let mut h = host_with_a_stopped_session();
+    h.key(KeyCode::Down).await;
+    h.sw.sync_view_focus(true);
+    // It runs, so the execution is spent.
+    h.sw.apply_host_result(
+        "jup".into(),
+        vec![
+            sess_mux("jup", "live", "herdr"),
+            sess_mux("jup", "parked", "herdr"),
+        ],
+        None,
+        &mut h.state,
+    );
+    assert_eq!(h.sw.terminal_view_target().target, "parked");
+    // It stops while selected: its screen replaces the grid and nothing attaches again.
+    h.sw.apply_host_result(
+        "jup".into(),
+        vec![
+            sess_mux("jup", "live", "herdr"),
+            stopped_mux("jup", "parked", "herdr"),
+        ],
+        None,
+        &mut h.state,
+    );
+    assert_eq!(h.sw.terminal_view_target().target, "");
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        Some(ViewScreen::Stopped)
+    );
+}
+
+#[tokio::test]
+async fn the_selection_hint_names_a_stopped_session_stopped() {
+    let mut h = host_with_a_stopped_session();
+    h.key(KeyCode::Down).await;
+    let (_, fact) = h.sw.selection_hint(&h.state, true).unwrap();
+    assert_eq!(fact, "1 window, stopped");
+}
+
+#[tokio::test]
+async fn enter_on_a_stopped_sessions_screen_in_the_terminal_view_resumes_it() {
+    // A session that stops while the terminal view shows it keeps the focus there, and
+    // its screen names Enter as the key that resumes it.
+    let mut h = host_with_a_stopped_session();
+    h.key(KeyCode::Down).await;
+    h.sw.sync_view_focus(true);
+    h.sw.apply_host_result(
+        "jup".into(),
+        vec![
+            sess_mux("jup", "live", "herdr"),
+            sess_mux("jup", "parked", "herdr"),
+        ],
+        None,
+        &mut h.state,
+    );
+    h.sw.apply_host_result(
+        "jup".into(),
+        vec![
+            sess_mux("jup", "live", "herdr"),
+            stopped_mux("jup", "parked", "herdr"),
+        ],
+        None,
+        &mut h.state,
+    );
+    assert_eq!(h.sw.terminal_view_target().target, "");
+    assert!(h.sw.open_selected_link(&h.state));
+    assert_eq!(h.sw.terminal_view_target().target, "parked");
 }

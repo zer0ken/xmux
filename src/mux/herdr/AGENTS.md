@@ -21,7 +21,9 @@ requested session, and `herdr session attach <name>` starts it.
 ## Invariants
 
 - Enumeration issues exactly one `herdr session list --json` command.
-- Only running entries without a connection error become session cards.
+- Every entry without a connection error becomes a session, a stopped entry a stopped
+  session, except the stopped reserved `default` entry, which herdr lists on every
+  machine.
 - A session change xmux makes creates a fresh attachment; no in-place switch is claimed.
   An attachment whose client the user already moved to the selected session is kept.
 - The endpoint selection is attributed to xmux's client only while it is the user's one
