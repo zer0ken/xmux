@@ -11,6 +11,7 @@ use ratatui::style::{Color as RColor, Modifier, Style};
 
 use crate::display::callbacks::GridCallbacks;
 use crate::display::image::layer::ImageLayer;
+use crate::display::vt100;
 
 /// What a child's output asked of the terminal around the screen: a bell, or a desktop
 /// notification. The grid's parser consumes these, so the grid keeps each one until the

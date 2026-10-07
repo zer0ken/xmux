@@ -26,6 +26,8 @@ state: the focus and modal state machine lives in `app`.
   modes the child set, which outlive a wipe of the cells. It answers the terminal
   queries the child sends, each once, with colours and pixel sizes taken from what the
   outer terminal answered xmux at startup.
+- `vt100/` is the terminal parser behind the grid, the `vt100` crate carried in xmux
+  with the changes its own Working Notes list.
 - Input decoding, dispatch, paste splitting, and mouse parsing turn terminal bytes into
   routing decisions or input actions, reading a key in the kitty keyboard protocol's
   encoding as the legacy key it stands for; terminal setup holds prefix parsing, mouse
