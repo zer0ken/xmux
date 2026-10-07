@@ -1,6 +1,6 @@
 //! The terminal behaviour a session's client expects that the vt100 cell model does
-//! not keep: the answers to its terminal queries, and the bells, notifications, and
-//! window title it sends, which the grid keeps for the loop.
+//! not keep: the answers to its terminal queries, the cursor shape it sets, and the
+//! bells, notifications, and window title it sends, which the grid keeps for the loop.
 //!
 //! The vt100 parser hands every sequence it does not model to these callbacks, at its
 //! place in the byte stream and whole however the reads split it, so each query the
@@ -30,6 +30,9 @@ pub struct GridCallbacks {
     /// The input modes the grid's mode scanner read, which outlive a wipe of the cells
     /// and so answer a mode report for them.
     input_modes: crate::display::modes::InputModes,
+    /// The last DECSCUSR shape, `CSI Ps SP q`: 0 the terminal's default, 1 to 6 a
+    /// blinking or steady block, underline, or bar.
+    cursor_shape: u8,
 }
 
 impl GridCallbacks {
@@ -49,6 +52,10 @@ impl GridCallbacks {
     /// The bells and notifications the client sent since the last call, oldest first.
     pub fn take_alerts(&mut self) -> Vec<crate::display::grid::Alert> {
         std::mem::take(&mut self.sink.alerts)
+    }
+
+    pub fn cursor_shape(&self) -> u8 {
+        self.cursor_shape
     }
 
     /// The answers owed to the client since the last call, in the order it asked.
@@ -202,6 +209,13 @@ impl vt100::Callbacks for GridCallbacks {
                 let value = self.private_mode(screen, mode);
                 self.reply_fmt(format_args!("\x1b[?{mode};{value}$y"));
             }
+            (Some(b' '), None, 'q') => {
+                if let Ok(shape @ 0..=6) = u8::try_from(param(params, 0)) {
+                    self.cursor_shape = shape;
+                }
+            }
+            // DECSTR, the soft reset, returns the cursor to the default shape.
+            (Some(b'!'), None, 'p') => self.cursor_shape = 0,
             (Some(b'$'), None, 'p') => {
                 self.reply_fmt(format_args!("\x1b[{};0$y", param(params, 0)))
             }

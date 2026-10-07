@@ -47,18 +47,18 @@ state: the focus and modal state machine lives in `app`.
   output streams; the metadata control path never supplies display pixels.
 - The registry is the only way to reach an attachment for input, resize, grid lookup,
   and reap. App and UI code never write to a PTY directly.
-- The renderer owns stdout, so raw stdout passthrough of child output is not an
-  option. The loop writes only whole control sequences between frames: what a child
-  asks of the terminal around the screen (a whole OSC 52 clipboard write, a bell, an OSC
-  9 or OSC 777 notification, the window title of the session on screen, and the sixel
-  image pieces a completed frame left to the terminal view, each drawn inside a saved
-  cursor and never past the cells the frame marked for it, and quiet kitty graphics
-  transmissions and deletions, which draw nothing themselves), and the kitty keyboard
-  protocol flags of the session the keys reach, which it sets on its own terminal rather
-  than passing the session's requests through. The pump scans OSC 52 out of the raw
-  stream; the grid's parser keeps the bells and notifications it consumes until the
-  pump takes them, and the last title the child set until the grid clears for another
-  session.
+- The renderer owns stdout, so raw stdout passthrough of child output is not an option.
+  The loop writes only whole control sequences between frames: what a child asks of the
+  terminal around the screen (a whole OSC 52 clipboard write, a bell, an OSC 9 or OSC
+  777 notification, the window title of the session on screen, the cursor shape of the
+  child whose cursor the frame shows, and the sixel image pieces a completed frame left
+  to the terminal view, each drawn inside a saved cursor and never past the cells the
+  frame marked for it, and quiet kitty graphics transmissions and deletions, which draw
+  nothing themselves), and the kitty keyboard protocol flags of the session the keys
+  reach, which it sets on its own terminal rather than passing the session's requests
+  through. The pump scans OSC 52 out of the raw stream; the grid's parser keeps the
+  bells and notifications it consumes until the pump takes them, the cursor shape the
+  child set, and the last title the child set until the grid clears for another session.
 - The live child-environment read has two answers, a value or no signal; absence never
   stands in for a value, and a stale exec-time environment counts as no signal.
 

@@ -1055,6 +1055,18 @@ impl Switcher {
         self.render_modal_popup(frame, area, state, plan.popup_rect, &palette);
     }
 
+    /// Whether the cursor a frame shows is the session grid's, the one a focused terminal
+    /// view places for the session's client. A modal or a view screen owns the keys and
+    /// its own caret instead.
+    pub fn shows_grid_cursor(
+        &self,
+        terminal_focused: bool,
+        state: &crate::state::State,
+        plan: &RenderPlan,
+    ) -> bool {
+        (terminal_focused || plan.nav_hidden) && plan.view_screen.is_none() && state.modal.is_none()
+    }
+
     /// Puts the terminal's own cursor on the caret of the text field taking keys, over the
     /// session grid's cursor. A terminal's input method draws what it is composing at that
     /// cursor, so a syllable being composed shows in the field it is typed into. A modal's

@@ -2378,6 +2378,7 @@ fn test_rt(env: Env) -> Runtime {
         dirty: true,
         clear_pending: false,
         last_draw: std::time::Instant::now(),
+        cursor_shape: 0,
         rescan_pending: false,
         display_probe: DisplayProbe::default(),
         held_input: None,
@@ -3438,6 +3439,21 @@ fn focus_terminal(rt: &mut Runtime) {
         .state
         .focus
         .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_cursor_takes_the_session_clients_shape_only_while_its_view_has_focus() {
+    // An editor in the session asks for a bar cursor. The terminal shows that shape
+    // only while the cursor it shows is the session's; the nav keeps the default.
+    let mut rt = a_settled_herdr_runtime();
+    let grid = rt.registry.grid("local").expect("the displayed grid");
+    grid.lock().unwrap().feed(b"\x1b[6 q");
+    nav_text(&mut rt);
+    assert_eq!(rt.cursor_shape, 0, "nav focus keeps the terminal's default");
+    focus_terminal(&mut rt);
+    rt.dirty = true;
+    nav_text(&mut rt);
+    assert_eq!(rt.cursor_shape, 6);
 }
 
 fn nav_text(rt: &mut Runtime) -> String {

@@ -113,8 +113,10 @@ impl TermGuard {
 impl Drop for TermGuard {
     fn drop(&mut self) {
         {
+            // A session client's cursor shape must not outlive xmux in the user's shell.
             use std::io::Write;
             let mut out = std::io::stdout();
+            let _ = out.write_all(b"\x1b[0 q");
             let _ = out.write_all(INPUT_MODES_OFF);
             let _ = out.write_all(TITLE_RESTORE);
             if crate::display::keyboard::supported() {
@@ -285,6 +287,27 @@ pub fn ensure_mouse_capture() {
 #[cfg(not(windows))]
 pub fn ensure_mouse_capture() {}
 
+/// The cursor shape last written to the terminal. A session's client sets its cursor's
+/// shape on the grid, and the terminal shows one cursor, so the shape follows whose
+/// cursor the frame shows; writing only a change keeps it off the per-frame output.
+#[derive(Default)]
+pub struct CursorShape {
+    written: u8,
+}
+
+impl CursorShape {
+    /// Writes `CSI <shape> SP q` when `shape` differs from the shape last written.
+    pub fn apply(&mut self, shape: u8, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        if shape == self.written {
+            return Ok(());
+        }
+        write!(out, "\x1b[{shape} q")?;
+        out.flush()?;
+        self.written = shape;
+        Ok(())
+    }
+}
+
 /// Parse a prefix-key spec (the `[ui] prefix` config value) into a C0 control byte.
 ///
 /// Recognised forms:
@@ -449,6 +472,18 @@ mod tests {
         // and quick-edit clear, so it is only caught by the VT-input check.
         let mode = ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS; // no VIRTUAL_TERMINAL_INPUT
         assert!(should_reassert(mode));
+    }
+
+    #[test]
+    fn the_cursor_shape_is_written_only_when_it_changes() {
+        let mut shape = CursorShape::default();
+        let mut out = Vec::new();
+        shape.apply(0, &mut out).unwrap();
+        assert!(out.is_empty(), "the terminal starts on its default shape");
+        shape.apply(6, &mut out).unwrap();
+        shape.apply(6, &mut out).unwrap();
+        shape.apply(0, &mut out).unwrap();
+        assert_eq!(out, b"\x1b[6 q\x1b[0 q");
     }
 
     #[test]
