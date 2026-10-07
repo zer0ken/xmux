@@ -173,6 +173,27 @@ impl AppModel {
         }
     }
 
+    /// Resolves pointer state against new geometry before the frame is painted.
+    pub(crate) fn prepare_render_plan(
+        &mut self,
+        area: ratatui::layout::Rect,
+        nav: NavSize,
+        previous: &RenderPlan,
+    ) -> RenderPlan {
+        let plan = self.switcher.layout(area, nav, &self.state, previous);
+        let before = (self.switcher.hover_targets(), self.state.modal_hover());
+        if before == ((None, None), None) {
+            return plan;
+        }
+        let effects = update(self, Msg::ReconcileHoverGeometry(plan.clone()));
+        debug_assert!(effects.is_empty());
+        if before != (self.switcher.hover_targets(), self.state.modal_hover()) {
+            self.switcher.layout(area, nav, &self.state, previous)
+        } else {
+            plan
+        }
+    }
+
     #[cfg(test)]
     fn layout_for_test(&self, area: ratatui::layout::Rect) -> RenderPlan {
         self.switcher
@@ -198,15 +219,15 @@ pub(crate) enum Msg {
         row: u16,
         execute: bool,
     },
-    /// The pointer resting at a cell: the soft selection follows it.
+    /// The pointer resting at a cell: the hover follows it.
     Hover {
         col: u16,
         row: u16,
     },
     /// An arrow key on a machine's or a host's screen while the terminal view holds the
-    /// focus: the hard-selected link moves by this many.
+    /// focus: the selected link moves by this many.
     StepLink(isize),
-    /// Opens a link of the shown screen: the one clicked, or the hard-selected one.
+    /// Opens a link of the shown screen: the one clicked, or the selected one.
     OpenLink(Option<usize>),
     MouseScroll {
         down: bool,
@@ -309,7 +330,7 @@ pub(crate) enum Msg {
     EndPopupDrag,
     /// Ends a popup drag whose button-up was lost, as no click.
     AbandonPopupDrag,
-    /// Idle pointer motion over an open popup: sets its soft selection.
+    /// Idle pointer motion over an open popup: sets its hover.
     HoverPopup {
         col: u16,
         row: u16,
@@ -356,6 +377,7 @@ pub(crate) enum Msg {
         force: bool,
     },
     SetRenderPlan(RenderPlan),
+    ReconcileHoverGeometry(RenderPlan),
     FollowDisplay(crate::session::Address),
     /// The display client of the session at the address went where the nav has no card,
     /// named by the mux's label, or `None` once it is back on a card.
@@ -1535,8 +1557,8 @@ fn settle_landing(model: &mut AppModel) -> Vec<Effect> {
     }
 }
 
-/// Executes the item a list popup was told to execute, by an Enter on its hard selection
-/// or a click on its soft selection: one shared execution, whichever input asked.
+/// Executes the item a list popup was told to execute, by an Enter on its selection
+/// or a click on its hover: one shared execution, whichever input asked.
 fn execute_list_choice(model: &mut AppModel) -> Vec<Effect> {
     if model.switcher.open_checked_host(&mut model.state) {
         return update(model, Msg::Focus(crate::model::FocusTarget::Terminal));
@@ -2321,6 +2343,26 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             } else {
                 Vec::new()
             }
+        }
+        Msg::ReconcileHoverGeometry(plan) => {
+            use crate::state::Modal;
+            let previous = &model.render_plan;
+            model.switcher.clear_hover(
+                previous.nav_cells != plan.nav_cells || previous.nav_parts != plan.nav_parts,
+                previous.view_links != plan.view_links
+                    || previous.view_link_targets != plan.view_link_targets,
+            );
+            if previous.popup_rect != plan.popup_rect {
+                if let Some(
+                    Modal::Help { hover, .. }
+                    | Modal::Check { hover, .. }
+                    | Modal::Palette { hover, .. },
+                ) = &mut model.state.modal
+                {
+                    *hover = None;
+                }
+            }
+            Vec::new()
         }
         Msg::SetRenderPlan(plan) => {
             model.render_plan = plan;
@@ -5018,6 +5060,18 @@ mod tests {
         update(
             &mut m,
             Msg::HoverPopup {
+                col: r.x + 1,
+                row: r.y + 3 + crate::ui::modal::PALETTE_LEAD,
+            },
+        );
+        assert_eq!(
+            palette_selection(&m),
+            (0, None),
+            "the unpainted row indent is no target"
+        );
+        update(
+            &mut m,
+            Msg::HoverPopup {
                 col: r.x + 3,
                 row: r.y + 1,
             },
@@ -5044,7 +5098,7 @@ mod tests {
         assert_eq!(
             palette_selection(&m),
             (1, None),
-            "the arrow moves the hard selection and ends the soft one"
+            "the arrow moves the selection and ends hover"
         );
     }
 

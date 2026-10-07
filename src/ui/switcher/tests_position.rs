@@ -288,7 +288,7 @@ fn pl1_group_titles_are_dim_and_their_cards_indent_at_every_position() {
             .find_in(nav, "3 inference")
             .unwrap_or_else(|| panic!("{position:?}: the card is painted"));
         assert_eq!(cy, ty + 1, "{position:?}: the card hangs under its title");
-        assert_eq!(cx, tx + 1, "{position:?}: the card indents under its title");
+        assert_eq!(cx, tx + 2, "{position:?}: the card indents under its title");
         let after = shot.row(ty, tx + 9, shot.plan.regions.tree.right());
         assert!(
             !after.contains('─') && !after.contains('│'),
@@ -453,10 +453,10 @@ fn pl7_a_one_row_band_runs_title_and_cards_on_one_line() {
         let tree = shot.plan.regions.tree;
         assert_eq!(tree.height, 1, "{position:?}");
         let line = shot.row(tree.y, 0, W);
-        // The selected card's Enter mark takes the first of the two cells between cards.
+        // Each card owns its padding and Enter mark without touching the next card.
         let enter = super::render::ENTER_MARK;
         assert!(
-            line.contains(&format!("local  1 build{enter} 2 editor")),
+            line.contains(&format!("local  1 build {enter} ")) && line.contains(" 2 editor "),
             "{position:?}: the title runs straight into its cards: {line:?}"
         );
     }

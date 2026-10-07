@@ -170,8 +170,8 @@ pub(crate) enum Modal {
     /// `scroll` counts the display rows scrolled past from the top of what matches. `tab`
     /// is the section a tab key or a tab click chose, held while the scroll stays where
     /// that choice put it; `None` makes the active tab the section the scroll reached.
-    /// `hover` is the tab under the pointer, the soft selection: the body shows that
-    /// tab's section while it is set, and `scroll` and `tab` stay the hard selection the
+    /// `hover` is the tab under the pointer, the hover: the body shows that
+    /// tab's section while it is set, and `scroll` and `tab` stay the selection the
     /// body returns to. `decoder` lives as long as the help, so a key split across two
     /// reads is still one key.
     Help {
@@ -275,7 +275,7 @@ impl HelpMap {
 /// typing: a printable key extends the query and Backspace shortens it, each returning the
 /// view to the top of what matches. `←`/`→` move the active tab and scroll its section's
 /// title to the top; `↑`/`↓`, `PgUp`/`PgDn`, and `Home`/`End` scroll and hand the active
-/// tab back to the scroll. A key ends the soft selection of the help, the palette, and the
+/// tab back to the scroll. A key ends the hover of the help, the palette, and the
 /// machine problems, until the pointer moves again. `help` lays the help out for a query, so every key is held to
 /// the layout the paint shows. Every other key is swallowed. Returns false when neither
 /// is open, so the read falls through to normal routing.

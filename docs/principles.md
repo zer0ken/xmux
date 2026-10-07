@@ -65,8 +65,8 @@ its body says in one line why it is empty and which key answers it.
 
 While the user acts, the question is what to do next, and a surface that answers it
 saves a trip to the help. So the selected card names its state, an open filter counts
-its matches, a live prefix names every key it unlocks, the selected standalone card ends
-in `⏎` while Enter opens it, and a machine screen keeps the failure reason whole. Every
+its matches, a live prefix names every key it unlocks, the selected standalone card can
+show `⏎` while Enter opens it, and a machine screen keeps the failure reason whole. Every
 one of these reads the one key table, so a surface never names a key that
 does something else.
 
@@ -220,14 +220,14 @@ surprising place to stand.
 
 ## Separate Selection and Execution
 
-Choosing a target and acting on it are separate inputs. The arrow keys move the hard
-selection and Enter executes it; the pointer sets the soft selection and a click
+Choosing a target and acting on it are separate inputs. The arrow keys move the
+selection and Enter executes it; the pointer sets the hover and a click
 executes it, with the same effect as Enter.
 
 When one input both looks and acts, the user cannot look at a thing without acting on
 it and cannot tell which inputs are safe to try. A selection may show its target, as a
 hovered card previews its screen, but it never moves the focus, runs a command, or
-changes a machine, a mux, or a session, and the soft selection never moves the hard one.
+changes a machine, a mux, or a session, and the hover never moves selection.
 Executing opens the screen the target names and gives it the focus, or runs the command
 the target stands for. A binding that selects and executes at once is a deliberate
 shortcut that names its target directly, such as a digit jump or a prefix chord, never
@@ -236,7 +236,7 @@ or resizes, the wheel scrolls, and typing edits a text field. Attaching to a sto
 session resumes it, so its selection shows its screen and only executing it attaches.
 
 The landing screen is the one surface on which a selection shows nothing: from launch
-until the first execution the hard selection only highlights and a hover previews
+until the first execution the selection only highlights and a hover previews
 nothing, so nothing attaches before the user has chosen. The target the first execution
 opens is the user's choice from then on, so a session card that appears later does not
 take the selection from it.
@@ -270,23 +270,26 @@ A selected item has the theme's accent colour as its background, with the theme'
 colour for the accent on it, and nothing else marks it as selected. Every cell of the
 item takes that one pair: its number, its name, its key tokens, and its glyphs alike, so
 no colour or dimming of the item survives inside the highlight. Every surface with a
-hard selection paints it in this one look: the nav's cards and the halves of a section
+selection paints it in this one look: the nav's cards and the halves of a section
 title, the links on the landing, machine, and host screens, the rows of a popup list,
-the help's tabs, and the focused stop of the login pane. A standalone item keeps one
-cell of padding before and after its text when selected or hovered, taken from a blank
-cell the layout already leaves there; where that cell holds other text or lies outside
-the surface, that side
-goes without, because the padding never moves text or wraps a row. A part of a shared
-item, such as either half of a machine/host path, has no selection or hover padding.
-The caret of a focused login field is the padding cell after its value. The soft selection under the
-pointer paints the item on the hint bar's pair of colours, a background apart from the
-accent, so the item a click would pick is found at a glance; on the item the highlight
-already marks, the pointer underlines it instead, since one cell holds one background. A colour the user names in `[ui] selection-style` replaces the
+the help's tabs, and the focused stop of the login pane. A standalone item reserves
+exactly one blank cell inside each side of its selection or hover background. Its
+layout reserves this room before painting, so selecting it moves no text. A part of
+a shared item, such as either half of a machine/host path, a screen link beside other
+content, or a login value beside its label, has no selection or hover padding. An
+input caret has its own cell and does not add padding to the value.
+
+Painting and pointer interaction use the same target area, including a standalone
+item's padding and any Enter mark. A clipped part never takes over the containing
+item's area, and no highlight or status word covers another item's text. Hover paints
+the item on the hint bar's pair of colours. Where selection and hover overlap, the
+selection background remains and hover adds an underline, including when one target
+is a part of the other. A colour the user names in `[ui] selection-style` replaces the
 accent background on every one of these surfaces alike, and the item keeps its own text
 colours on it. With no accent to paint, under `NO_COLOR`, the selection is reverse
 video.
 
-The hard selection is where the next key lands, so it has to be found at a glance on
+The selection is where the next key lands, so it has to be found at a glance on
 whatever surface the user has moved to. The accent is the colour the theme already
 spends on what is interactive, so the highlight reads as the place to act, and it reads
 as one colour on every theme instead of whatever the item's own colours turn into when
@@ -295,7 +298,8 @@ so the highlight reads as a block around the item rather than as coloured letter
 look learned on the nav then reads on every popup and screen, while a surface that marks
 its selection with a colour, a weight, or a glyph of its own is one more thing to learn
 and, beside a highlighted surface, reads as a different state. The one glyph a
-selection carries is the `⏎` after a selected standalone card's text while the nav holds
+selection can carry is the `⏎` after a selected standalone card's text while the nav holds
 the focus: the highlight says where the selection is, and the glyph says that Enter opens
 that target there, which matters on the nav because the same Enter reaches the pane once
-the terminal view holds the focus. A part of a shared item has no Enter mark.
+the terminal view holds the focus. The mark is omitted when it cannot fit with the
+card's padding and text intact. A part of a shared item has no Enter mark.

@@ -418,7 +418,7 @@ impl State {
         is_popup_open(&self.modal)
     }
 
-    /// The open popup's soft selection: the help tab or the list item under the pointer.
+    /// The open popup's hover: the help tab or the list item under the pointer.
     pub(crate) fn modal_hover(&self) -> Option<usize> {
         match &self.modal {
             Some(

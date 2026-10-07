@@ -129,18 +129,19 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **hierarchy** - session, host, and machine, the levels a session lives in. It is
   reached through `Ctrl+↑`/`Ctrl+↓`, the parts of a section title, and screen links,
   never through the card step.
-- **selection** - the hard selection: the node (machine, host, or session) the arrows
+- **selection** - the node (machine, host, or session) the arrows
   and execution move and the terminal view shows.
-- **soft selection** - the target under the pointer. It previews without moving the
-  selection and paints on the hint bar's background, apart from the accent.
+- **hover** - the target under the pointer. It previews without moving the
+  selection and paints on the hint bar's background, or underlines cells already
+  painted by the selection.
 - **interest** - what the user is on or asked for, the one value the selection is
   resolved from on every rebuild.
 - **selection lineage** - session, host, machine: the chain a selection walks up when its
   node loses its card.
 - **selection highlight** - the theme's accent as the background and its on-accent
-  text colour over the cells of the item the hard selection is on. Standalone items
-  include one blank cell on each side of their text; parts of a shared item cover only
-  their own text.
+  text colour over the cells of the item the selection is on. Standalone items
+  include exactly one blank cell inside each side of their background; parts of a
+  shared item cover only their own text. Hover follows the same geometry.
 - **card focus** - what selecting a card changes: the selection highlight, and on a
   machine or host card its state word. Its height, its number, and its name's column
   never move.
@@ -157,8 +158,9 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **status row fill** - how much of its row the hint bar paints: the resting indicator
   its text, a floating bar the whole row.
 - **key list** - the box a live prefix opens, naming every key it unlocks.
-- **Enter mark** - the `⏎` after a selected standalone card's text while the nav holds
-  the focus, where Enter opens the card's target. A part of a shared item has no mark.
+- **Enter mark** - an optional `⏎` after a selected standalone card's text while the
+  nav holds the focus, where Enter opens the card's target. It fits inside the card's
+  padding and never covers text. A part of a shared item has no mark.
 - **scan indicator** - the `scanning hosts n/m…` progress in the hint bar, counting
   hosts and the machines that have no host yet.
 - **toast** - the result of an action the user took, whether it was done, refused, or
@@ -185,7 +187,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   host has, how they stay current, a link to each session, its actions as links, and a link to its
   machine in its headline.
 - **landing screen** - the view screen from launch until the first execution: the scan
-  progress and every nav card as a link, sharing the one hard selection.
+  progress and every nav card as a link, sharing the one selection.
 - **screen link** - a selectable link on a machine, host, or failure screen that opens
   another node's screen or runs one of the screen's actions through the key written
   beside it. While the login pane is open it owns the keyboard, so a link there holds no

@@ -29,13 +29,13 @@ impl Switcher {
     }
 
     /// Ends a popup drag. A press released on the cell it grabbed is a click, and a click
-    /// executes the help tab or the list item under it the way Enter executes the hard
-    /// selection: a tab becomes the hard selection and scrolls its section's title to the
-    /// top of the body, and an item becomes the hard selection and is marked for the
+    /// executes the help tab or the list item under it the way Enter executes the
+    /// selection: a tab becomes the selection and scrolls its section's title to the
+    /// top of the body, and an item becomes the selection and is marked for the
     /// switcher to act on as an Enter.
     pub fn end_popup_drag_in_plan(&mut self, plan: &RenderPlan, state: &mut crate::state::State) {
         let Some((col, row)) = self.popup_geo.end_drag() else {
-            // A drag moved the popup under the pointer, so the soft selection set before
+            // A drag moved the popup under the pointer, so the hover set before
             // it names a cell the pointer may no longer be on. The next motion sets it
             // again from where the popup now is.
             if let Some(
@@ -80,7 +80,7 @@ impl Switcher {
         }
     }
 
-    /// Sets the soft selection of the open popup to the help tab or the list item under
+    /// Sets the hover of the open popup to the help tab or the list item under
     /// `(col, row)`, or clears it when the pointer is on neither.
     pub fn hover_popup(
         &mut self,
@@ -142,7 +142,11 @@ impl Switcher {
             }
             Some(Modal::Check { .. } | Modal::Palette { .. }) => {
                 let (_, lines) = self.list_popup_lines(state, plan.popup_rect)?;
-                lines.get((row - inner.y) as usize)?.0
+                let (target, line) = lines.get((row - inner.y) as usize)?;
+                crate::ui::palette::standalone_bounds(line, inner.width)
+                    .contains(&(col - inner.x))
+                    .then_some(*target)
+                    .flatten()
             }
             _ => None,
         }
@@ -186,7 +190,7 @@ impl Switcher {
             .map(|i| (i, Part::Card))
     }
 
-    /// A click on a nav target: the target becomes the hard selection. Returns whether the
+    /// A click on a nav target: the target becomes the selection. Returns whether the
     /// click landed on one, so the caller can execute it.
     pub fn mouse_select(&mut self, plan: &RenderPlan, col: u16, row: u16) -> bool {
         let Some((idx, part)) = self.target_at(plan, col, row) else {
@@ -211,9 +215,9 @@ impl Switcher {
     }
 
     /// The pointer resting at `(col, row)` while the nav holds the focus: the nav target
-    /// under it becomes the soft selection, whose screen the terminal view shows. Off any
-    /// target the soft selection ends and the hard selection's screen shows again.
-    /// Returns whether the soft selection changed.
+    /// under it becomes the hover, whose screen the terminal view shows. Off any
+    /// target the hover ends and the selection's screen shows again.
+    /// Returns whether the hover changed.
     pub fn mouse_hover(&mut self, plan: &RenderPlan, col: u16, row: u16) -> bool {
         let hover = if self.terminal_view {
             None
@@ -245,7 +249,7 @@ impl Switcher {
     }
 
     /// The pointer resting at `(col, row)` while the terminal view holds the focus: the
-    /// link under it is the screen's soft selection. Returns whether it changed.
+    /// link under it is the screen's hover. Returns whether it changed.
     pub fn link_hover_at(&mut self, plan: &RenderPlan, col: u16, row: u16) -> bool {
         // The landing screen is pickable from either view's focus.
         let hover = if self.terminal_view || self.landing {

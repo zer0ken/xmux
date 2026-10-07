@@ -2,6 +2,7 @@ use super::*;
 
 use ratatui::style::Modifier;
 use ratatui::widgets::Paragraph;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::state::PaletteChoice;
 use crate::ui::palette;
@@ -50,27 +51,27 @@ fn middle_ellipsize(text: &str, width: usize) -> String {
     if width == 1 {
         return MIDDLE_ELLIPSIS.into();
     }
-    let chars: Vec<char> = text.chars().collect();
+    let chars: Vec<&str> = text.graphemes(true).collect();
     let front_budget = (width - 1).div_ceil(2);
     let back_budget = width - 1 - front_budget;
     let mut front = String::new();
     let mut used = 0;
     for ch in &chars {
-        let cw = unicode_width::UnicodeWidthChar::width(*ch).unwrap_or(0);
+        let cw = UnicodeWidthStr::width(*ch);
         if used + cw > front_budget {
             break;
         }
-        front.push(*ch);
+        front.push_str(ch);
         used += cw;
     }
     let mut back = String::new();
     let mut used = 0;
     for ch in chars.iter().rev() {
-        let cw = unicode_width::UnicodeWidthChar::width(*ch).unwrap_or(0);
+        let cw = UnicodeWidthStr::width(*ch);
         if used + cw > back_budget {
             break;
         }
-        back.insert(0, *ch);
+        back.insert_str(0, ch);
         used += cw;
     }
     format!("{front}{MIDDLE_ELLIPSIS}{back}")
@@ -88,11 +89,15 @@ fn highlighted_after(before: &str, text: String, filter: &str, style: Style) -> 
         return vec![Span::styled(text, style)];
     }
     let marks = crate::ui::tree::match_marks(filter, &format!("{before}{text}"));
-    text.chars()
-        .zip(marks.into_iter().skip(before.chars().count()))
-        .map(|(ch, matched)| {
+    let mut marks = marks.into_iter().skip(before.chars().count());
+    text.graphemes(true)
+        .map(|grapheme| {
+            let matched = marks
+                .by_ref()
+                .take(grapheme.chars().count())
+                .fold(false, |a, b| a | b);
             Span::styled(
-                ch.to_string(),
+                grapheme.to_string(),
                 if matched {
                     style.add_modifier(Modifier::BOLD)
                 } else {
@@ -105,7 +110,7 @@ fn highlighted_after(before: &str, text: String, filter: &str, style: Style) -> 
 
 /// The thick segment of a side nav's view border: where the cards on screen sit in the
 /// whole list, as a scrollbar thumb would, drawn on the border rather than in a column of
-/// its own, so the cards keep the nav's full width. Counted in cards over the placement
+/// its own, without taking space from card content. Counted in cards over the placement
 /// the cards were painted with. Empty when everything fits.
 fn seam_thumb(track: Rect, total: usize, offset: usize, visible: usize) -> Rect {
     if track.height == 0 || total == 0 || visible >= total {
@@ -166,11 +171,15 @@ pub struct RenderPlan {
     pub regions: Regions,
     pub nav_inner: Rect,
     pub nav_cells: Vec<(usize, Rect)>,
+    /// The exact text measured for each nav target, including standalone padding.
+    nav_lines: Vec<(usize, Line<'static>)>,
     /// The halves of the rows that read as two targets: a section title's machine half and
     /// host half, and a host card's machine half, each with the rect it painted in.
     pub(crate) nav_parts: Vec<(usize, Part, Rect)>,
     /// The links of the shown machine or host screen and where each was painted.
     pub(crate) view_links: Vec<(usize, Rect)>,
+    /// Link identities distinguish equal-size labels that execute different actions.
+    pub(crate) view_link_targets: Vec<crate::ui::chrome::LinkTarget>,
     pub nav_row_offset: usize,
     pub nav_col_offset: usize,
     pub popup_rect: Rect,
@@ -214,8 +223,10 @@ impl Default for RenderPlan {
             regions: Regions::default(),
             nav_inner: Rect::default(),
             nav_cells: Vec::new(),
+            nav_lines: Vec::new(),
             nav_parts: Vec::new(),
             view_links: Vec::new(),
+            view_link_targets: Vec::new(),
             nav_row_offset: 0,
             nav_col_offset: 0,
             popup_rect: Rect::default(),
@@ -404,25 +415,7 @@ impl Switcher {
                 Rect::default()
             };
             self.layout_nav(&mut plan, state, track);
-            let num_w = self.number_width();
-            let column = plan.layout == ViewLayout::Column;
-            plan.nav_parts = plan
-                .nav_cells
-                .iter()
-                .flat_map(|&(i, rect)| {
-                    let (machine, host) = self.halves(i, rect.width, num_w, column);
-                    let at = |(x, w): (u16, u16)| Rect {
-                        x: rect.x + x,
-                        width: w.min(rect.width.saturating_sub(x)),
-                        ..rect
-                    };
-                    machine
-                        .map(|h| (i, Part::Machine, at(h)))
-                        .into_iter()
-                        .chain(host.map(|h| (i, Part::Host, at(h))))
-                })
-                .filter(|(_, _, rect)| !rect.is_empty())
-                .collect();
+            self.plan_nav_items(&mut plan, state);
             if self.rows.is_empty() {
                 let body = plan.nav_inner;
                 plan.nav_guidance = Some((Rect { height: 1, ..body }, self.nav_guidance(state)));
@@ -435,6 +428,8 @@ impl Switcher {
                 plan.regions.terminal
             };
             if let Some(parts) = self.screen_parts(kind, state) {
+                plan.view_link_targets =
+                    parts.links.iter().map(|link| link.target.clone()).collect();
                 plan.view_links = state.chrome.view_link_rects(
                     state,
                     &crate::ui::chrome::ViewScreenRender {
@@ -443,8 +438,8 @@ impl Switcher {
                         focused: self.terminal_view,
                         machine_screen: parts.machine_screen,
                         links: &parts.links,
-                        link: parts.marks.0,
-                        link_hover: parts.marks.1,
+                        link_selection: parts.selection_and_hover.0,
+                        link_hover: parts.selection_and_hover.1,
                     },
                     area,
                     &self.palette,
@@ -454,11 +449,70 @@ impl Switcher {
         plan
     }
 
-    /// Where the machine half and the host half of row `i` paint inside a cell `width`
-    /// wide, as (offset, width) pairs: a section title has both, a host card's
-    /// `{machine}/{mux}` has its machine half (the rest of the card is the card), and any other
-    /// row has neither. Read from the same text the paint writes, so the halves the
-    /// pointer finds are the halves on screen.
+    /// Builds text and hit regions together. A missing partial target stays missing;
+    /// its enclosing card is never a substitute for it.
+    fn plan_nav_items(&self, plan: &mut RenderPlan, state: &crate::state::State) {
+        let num_w = self.number_width();
+        let spinner = crate::ui::spinner_glyph(state.chrome.spinner_frame);
+        for (i, rect) in &mut plan.nav_cells {
+            let title = matches!(self.rows[*i].reference, RowRef::Section { .. });
+            let content_width = if title {
+                rect.width
+            } else {
+                rect.width.saturating_sub(2)
+            };
+            let width = content_width;
+            let mut line = self
+                .nav_row_lines(
+                    *i,
+                    num_w,
+                    spinner,
+                    NavRowPaint {
+                        width: width.max(1),
+                        filter: &state.filter,
+                        palette: &self.palette,
+                        show_state_word: true,
+                    },
+                )
+                .remove(0);
+            trim_line_end(&mut line);
+            clip_line(&mut line, width as usize);
+            let (machine, host) = self.halves(*i, width.max(1), num_w, true);
+            let inset = u16::from(!title);
+            for (part, run) in [(Part::Machine, machine), (Part::Host, host)] {
+                if let Some((x, w)) = run {
+                    let w = w.min(width.saturating_sub(x));
+                    if w > 0 && x + inset < rect.width {
+                        plan.nav_parts.push((
+                            *i,
+                            part,
+                            Rect::new(
+                                rect.x + inset + x,
+                                rect.y,
+                                w.min(rect.width.saturating_sub(inset + x)),
+                                1,
+                            ),
+                        ));
+                    }
+                }
+            }
+            if !title {
+                if self.part == Part::Card
+                    && self.selection_row() == Some(*i)
+                    && !self.terminal_view
+                    && line.width() + 2 <= content_width as usize
+                {
+                    line.spans.push(Span::raw(format!(" {ENTER_MARK}")));
+                }
+                line.spans.insert(0, Span::raw(" "));
+                line.spans.push(Span::raw(" "));
+            }
+            clip_line(&mut line, rect.width as usize);
+            rect.width = line.width().min(rect.width as usize) as u16;
+            plan.nav_lines.push((*i, line));
+        }
+    }
+
     fn halves(
         &self,
         i: usize,
@@ -466,63 +520,85 @@ impl Switcher {
         num_w: usize,
         show_state_word: bool,
     ) -> (Option<CellRun>, Option<CellRun>) {
-        let w = |t: &str| unicode_width::UnicodeWidthStr::width(t) as u16;
-        match &self.rows[i].reference {
-            RowRef::Section { .. } => {
-                let title = self.title_text(i, width);
-                match title.split_once('/') {
-                    Some((machine, mux)) => (Some((0, w(machine))), Some((w(machine) + 1, w(mux)))),
-                    None => (None, Some((0, w(&title)))),
-                }
-            }
+        let (machine, mux) = match &self.rows[i].reference {
+            RowRef::Section { .. } => self.path_parts(i, width as usize),
             RowRef::Host { .. } => {
-                let identity = self.host_identity(i, width, num_w, show_state_word);
-                let machine = identity
-                    .split_once('/')
-                    .map_or(identity.as_str(), |(h, _)| h);
-                (Some((num_w as u16 + 1, w(machine))), None)
+                self.path_parts(i, self.host_room(i, width, num_w, show_state_word))
             }
-            _ => (None, None),
-        }
-    }
-
-    /// A section title as painted in a cell `width` wide: the `{machine}/{mux}` shortened
-    /// to the room left. A `width` of 0 measures it whole.
-    fn title_text(&self, i: usize, width: u16) -> String {
-        let title = self.section_title(i);
-        if width == 0 {
-            title
+            _ => return (None, None),
+        };
+        let m = UnicodeWidthStr::width(machine.as_str()) as u16;
+        let h = UnicodeWidthStr::width(mux.as_str()) as u16;
+        if matches!(self.rows[i].reference, RowRef::Section { .. }) {
+            if context_of(&self.rows[i]).1.is_empty() {
+                return (None, (m > 0).then_some((0, m)));
+            }
+            ((m > 0).then_some((0, m)), (h > 0).then_some((m + 1, h)))
         } else {
-            middle_ellipsize(&title, width.saturating_sub(1) as usize)
+            ((m > 0).then_some((num_w as u16 + 1, m)), None)
         }
     }
 
-    /// A host card's `{machine}/{mux}` (or its machine alone while no mux is confirmed) as
-    /// painted in a cell `width` wide, shortened to the room its number, glyph and state
-    /// word leave.
-    fn host_identity(&self, i: usize, width: u16, num_w: usize, show_state_word: bool) -> String {
+    /// Shortens each domain component separately so a slash inside a machine name is
+    /// never mistaken for the machine/mux separator.
+    fn path_parts(&self, i: usize, width: usize) -> (String, String) {
         let (machine, mux, _) = context_of(&self.rows[i]);
-        let identity = if mux.is_empty() {
-            machine.to_string()
+        let mw = UnicodeWidthStr::width(machine);
+        let hw = UnicodeWidthStr::width(mux);
+        if mux.is_empty() {
+            return (middle_ellipsize(machine, width), String::new());
+        }
+        if mw + 1 + hw <= width {
+            return (machine.into(), mux.into());
+        }
+        if width < 3 {
+            return (middle_ellipsize(machine, width), String::new());
+        }
+        let mroom = mw
+            .min((width - 1).div_ceil(2))
+            .max(width.saturating_sub(hw + 1));
+        (
+            middle_ellipsize(machine, mroom),
+            middle_ellipsize(mux, width - 1 - mroom),
+        )
+    }
+
+    fn title_text(&self, i: usize, width: u16) -> String {
+        let (machine, mux) = self.path_parts(
+            i,
+            if width == 0 {
+                usize::MAX
+            } else {
+                width as usize
+            },
+        );
+        if mux.is_empty() {
+            machine
         } else {
             format!("{machine}/{mux}")
-        };
-        let word_w = match &self.rows[i].reference {
-            reference @ RowRef::Host { .. }
-                if show_state_word && self.hard_row() == Some(i) && self.part == Part::Card =>
-            {
-                crate::ui::tree::card_state_word(reference).map_or(0, |word| word.len() + 1)
-            }
-            _ => 0,
-        };
+        }
+    }
+
+    fn host_room(&self, i: usize, width: u16, num_w: usize, show_state_word: bool) -> usize {
         if width == 0 {
-            identity
+            return usize::MAX;
+        }
+        let word_w =
+            if show_state_word && self.selection_row() == Some(i) && self.part == Part::Card {
+                crate::ui::tree::card_state_word(&self.rows[i].reference)
+                    .map_or(0, |word| word.len() + 1)
+            } else {
+                0
+            };
+        (width as usize).saturating_sub(num_w + 1 + 2 + word_w)
+    }
+
+    fn host_identity(&self, i: usize, width: u16, num_w: usize, show_state_word: bool) -> String {
+        let (machine, mux) = self.path_parts(i, self.host_room(i, width, num_w, show_state_word));
+        if mux.is_empty() {
+            machine
         } else {
-            let suffix_w = 2 + word_w;
-            middle_ellipsize(
-                &identity,
-                (width as usize).saturating_sub(num_w + 1 + suffix_w + 1),
-            )
+            format!("{machine}/{mux}")
         }
     }
 
@@ -909,8 +985,8 @@ impl Switcher {
                 focused,
                 machine_screen: parts.machine_screen,
                 links: &parts.links,
-                link: parts.marks.0,
-                link_hover: parts.marks.1,
+                link_selection: parts.selection_and_hover.0,
+                link_hover: parts.selection_and_hover.1,
             },
             &self.palette,
         )
@@ -985,7 +1061,7 @@ impl Switcher {
         // side by side (Column) or stacked (Band), parted by the view
         // border, and the hint bar rests on a column's bottom row or a band's view border
         // row. The hint bar is one row (see `hint_bar_floats` / `hint_bar_rect`).
-        self.render_nav(frame, state, plan, &palette);
+        self.render_nav(frame, plan, &palette);
         // The view border is the one line the nav draws: its colour says which view holds
         // the focus, and a side nav's overflow thickens the stretch beside the cards on
         // screen.
@@ -1158,15 +1234,7 @@ impl Switcher {
     /// Nothing but cards, titles and the band parting is painted inside the nav: what is
     /// off screen is said on a band's seam. The selected card stays on the accent
     /// when focus moves between views.
-    fn render_nav(
-        &self,
-        frame: &mut Frame,
-        state: &crate::state::State,
-        plan: &RenderPlan,
-        palette: &palette::Palette,
-    ) {
-        let spinner_glyph = crate::ui::spinner_glyph(state.chrome.spinner_frame);
-        let num_w = self.number_width();
+    fn render_nav(&self, frame: &mut Frame, plan: &RenderPlan, palette: &palette::Palette) {
         let dim = Style::default().fg(palette.decoration);
         for &(title, rect) in &plan.title_repeats {
             let room = (rect.width as usize).saturating_sub(CONTINUED.chars().count() + 1);
@@ -1176,72 +1244,38 @@ impl Switcher {
             );
             frame.render_widget(Paragraph::new(Line::from(Span::styled(text, dim))), rect);
         }
-        let mut selected = None;
-        for &(idx, rect) in &plan.nav_cells {
-            let lines = self.nav_row_lines(
-                idx,
-                num_w,
-                spinner_glyph,
-                NavRowPaint {
-                    width: rect.width,
-                    filter: &state.filter,
-                    palette,
-                    show_state_word: plan.layout == ViewLayout::Column,
-                },
-            );
-            frame.render_widget(Paragraph::new(lines), rect);
-            if self.hard_row() == Some(idx) {
-                // A row read as two targets inverts only the half the selection is on. The
-                // inversion holds in both focus states; the view border's colour alone
-                // says which view holds the focus.
-                let half = plan
-                    .nav_parts
+        let target_rect = |idx: usize, part: Part| {
+            if part == Part::Card && !matches!(self.rows[idx].reference, RowRef::Section { .. }) {
+                plan.nav_cells
                     .iter()
-                    .find(|(i, part, _)| *i == idx && *part == self.part)
-                    .map(|(_, _, r)| *r);
-                let style = palette::selection_style(palette);
-                if let Some(half) = half {
-                    frame.buffer_mut().set_style(half, style);
-                } else {
-                    pad_selected_rect(frame.buffer_mut(), rect, plan.nav_inner, style);
-                    selected = Some(rect);
-                }
+                    .find(|(i, _)| *i == idx)
+                    .map(|(_, r)| *r)
+            } else {
+                plan.nav_parts
+                    .iter()
+                    .find(|(i, p, _)| *i == idx && *p == part)
+                    .map(|(_, _, r)| *r)
             }
+        };
+        for ((_, line), (_, rect)) in plan.nav_lines.iter().zip(&plan.nav_cells) {
+            frame.render_widget(Paragraph::new(line.clone()), *rect);
         }
-        // Enter opens a standalone card while the nav holds focus. A part of a shared
-        // item has no mark. Paint after all cards so neighbouring text stays intact.
-        if let Some(target) = selected.filter(|_| !self.terminal_view) {
-            let marked = mark_enter(frame.buffer_mut(), target, plan.nav_inner);
-            pad_selected_rect(
-                frame.buffer_mut(),
-                marked,
-                plan.nav_inner,
-                palette::selection_style(palette),
-            );
+        let selection = self.selection_row().and_then(|i| target_rect(i, self.part));
+        let hover = self.hover.as_ref().and_then(|(reference, part)| {
+            self.row_matching(reference)
+                .and_then(|i| target_rect(i, *part))
+        });
+        if let Some(rect) = selection {
+            frame
+                .buffer_mut()
+                .set_style(rect, palette::selection_style(palette));
         }
-        // The soft selection: the target under the pointer on its own background, unless
-        // it is the hard selection already drawn on the accent.
-        if let Some((reference, part)) = &self.hover {
-            if let Some(idx) = self.row_matching(reference) {
-                let hard = self.hard_row() == Some(idx) && *part == self.part;
-                let half = plan
-                    .nav_parts
-                    .iter()
-                    .find(|(i, p, _)| *i == idx && p == part)
-                    .map(|(_, _, r)| *r);
-                let rect = half.or_else(|| {
-                    plan.nav_cells
-                        .iter()
-                        .find(|(i, _)| *i == idx)
-                        .map(|(_, r)| *r)
-                });
-                if let Some(rect) = rect.filter(|_| !hard) {
-                    let style = palette::soft_selection_style(palette);
-                    if half.is_some() {
-                        frame.buffer_mut().set_style(rect, style);
-                    } else {
-                        pad_selected_rect(frame.buffer_mut(), rect, plan.nav_inner, style);
-                    }
+        if let Some(hover) = hover {
+            for y in hover.y..hover.bottom() {
+                for x in hover.x..hover.right() {
+                    let selected = selection.is_some_and(|r| r.contains(Position { x, y }));
+                    let cell = &mut frame.buffer_mut()[(x, y)];
+                    cell.set_style(palette::apply_hover(cell.style(), selected, palette));
                 }
             }
         }
@@ -1256,56 +1290,6 @@ impl Switcher {
                 *rect,
             );
         }
-        if plan.layout == ViewLayout::Band {
-            self.render_selected_host_word(frame, plan, palette);
-        }
-    }
-
-    /// Floats the selected host card's state word beside it in a band, with one blank
-    /// cell on each side. Both cells take the word's selection highlight, and the card
-    /// itself does not widen.
-    fn render_selected_host_word(
-        &self,
-        frame: &mut Frame,
-        plan: &RenderPlan,
-        palette: &palette::Palette,
-    ) {
-        let Some(&(_, card)) = plan
-            .nav_cells
-            .iter()
-            .find(|(i, _)| Some(*i) == self.hard_row())
-        else {
-            return;
-        };
-        if card.is_empty() {
-            return;
-        }
-        if self.part != Part::Card {
-            return;
-        }
-        let Some(word) = crate::ui::tree::card_state_word(&self.rows[self.selected].reference)
-        else {
-            return;
-        };
-        let label = format!(" {word} ");
-        let width = label.len() as u16;
-        let room_right = plan.nav_inner.right().saturating_sub(card.right());
-        let x = if room_right >= width.saturating_sub(1) {
-            card.right().saturating_sub(1)
-        } else if card.x.saturating_sub(plan.nav_inner.x) >= width {
-            card.x - width
-        } else {
-            plan.nav_inner.right().saturating_sub(width)
-        };
-        let rect = Rect {
-            x,
-            y: card.y,
-            width: width.min(plan.nav_inner.right().saturating_sub(x)),
-            height: 1,
-        };
-        let style = palette::selection_style(palette);
-        frame.render_widget(Clear, rect);
-        frame.render_widget(Paragraph::new(label).style(style), rect);
     }
 
     /// The rule parting the side list's two bands once they scroll as one run. A single
@@ -1354,8 +1338,8 @@ impl Switcher {
 
     /// One row measured for the column flow: whether it opens a unit, how wide its
     /// content paints, and how many rows it takes. A section title measures its
-    /// `{machine}/{mux}` alone, which is the whole of what it paints in the band: the
-    /// trailing rule belongs to the side list.
+    /// `{machine}/{mux}` alone. Standalone cards reserve padding, status, and the Enter
+    /// mark so painting stays inside their column.
     fn flow_card(
         &self,
         i: usize,
@@ -1384,7 +1368,14 @@ impl Switcher {
         columns::Card {
             separates_group,
             starts_run,
-            width: w(0) + indent,
+            width: w(0)
+                + indent
+                + if matches!(self.rows[i].reference, RowRef::Section { .. }) {
+                    0
+                } else {
+                    4 + crate::ui::tree::card_state_word(&self.rows[i].reference)
+                        .map_or(0, |word| word.len() as u16 + 1)
+                },
             lines: 1,
         }
     }
@@ -1427,7 +1418,7 @@ impl Switcher {
             show_state_word,
         } = paint;
         let row = &self.rows[i];
-        let selected = self.hard_row() == Some(i);
+        let selected = self.selection_row() == Some(i);
         let accent = Style::default().fg(palette.accent);
         let number = Style::default().fg(palette.decoration);
         // The address column every card writes on - the only line, now that a card has
@@ -1444,16 +1435,7 @@ impl Switcher {
             let style = Style::default()
                 .fg(palette.decoration)
                 .add_modifier(Modifier::BOLD);
-            let mut spans = Vec::new();
-            match title.split_once('/') {
-                Some((machine, mux)) => {
-                    spans.push(Span::styled(machine.to_string(), style));
-                    spans.push(Span::styled("/", style));
-                    spans.push(Span::styled(mux.to_string(), style));
-                }
-                None => spans.push(Span::styled(title, style)),
-            }
-            spans.push(Span::raw(" "));
+            let spans = vec![Span::styled(title, style)];
             return vec![Line::from(spans)];
         }
         // A machine's card names the machine alone, with its state glyph, or the spinner
@@ -1987,62 +1969,42 @@ fn history_popup_width(area: Rect) -> u16 {
         .min(area.width.max(1))
 }
 
-/// Paints `rect` in the hard selection's `style` with one cell of padding on each side of
-/// its text: a side whose edge cell is blank is padded already, and otherwise the blank
-/// cell just outside the rect takes the paint while it lies inside `bounds`. A neighbour
-/// that is text, such as the `/` between a section title's halves, stays unpainted.
-/// The glyph the hard-selected standalone card writes after its text while the nav holds
-/// the focus: the return symbol, the outlined bent arrow a keyboard's Enter key carries, in
-/// one cell and without emoji presentation.
+/// The Enter action available on a standalone navigation card.
 pub(crate) const ENTER_MARK: &str = "\u{23ce}";
 
-/// Writes [`ENTER_MARK`] after the text on the first row of `rect` and returns `rect`
-/// grown to cover it, so the highlight takes the mark in. The mark stands one blank cell
-/// after the text where a blank cell still parts it from whatever follows, and right
-/// after the text where only that much room is left, as between the cards of a band. A
-/// row with no blank cell after its text goes without, because the mark never covers a
-/// name or a state.
-fn mark_enter(buf: &mut ratatui::buffer::Buffer, rect: Rect, bounds: Rect) -> Rect {
-    if rect.is_empty() {
-        return rect;
-    }
-    let y = rect.y;
-    let Some(last) = (rect.x..rect.right())
-        .rev()
-        .find(|&x| buf[(x, y)].symbol() != " ")
-    else {
-        return rect;
-    };
-    // A cell is free when it is blank, and stays parted from what follows when the cell
-    // after it is blank or past the bounds.
-    let blank = |x: u16| x >= bounds.right() || buf[(x, y)].symbol() == " ";
-    let free = |x: u16| x < bounds.right() && blank(x) && blank(x + 1);
-    let at = if blank(last + 1) && free(last + 2) {
-        last + 2
-    } else if free(last + 1) {
-        last + 1
-    } else {
-        return rect;
-    };
-    buf[(at, y)].set_symbol(ENTER_MARK);
-    Rect {
-        width: rect.width.max(at + 1 - rect.x),
-        ..rect
+fn trim_line_end(line: &mut Line<'static>) {
+    while let Some(span) = line.spans.last_mut() {
+        span.content = span.content.trim_end().to_string().into();
+        if span.content.is_empty() {
+            line.spans.pop();
+        } else {
+            break;
+        }
     }
 }
 
-fn pad_selected_rect(buf: &mut ratatui::buffer::Buffer, rect: Rect, bounds: Rect, style: Style) {
-    buf.set_style(rect, style);
-    if rect.is_empty() {
-        return;
+/// Clips only at grapheme boundaries so measured text and painted cells agree.
+fn clip_line(line: &mut Line<'static>, width: usize) {
+    let mut remaining = width;
+    let mut spans = Vec::new();
+    for span in &line.spans {
+        let mut text = String::new();
+        let mut clipped = false;
+        for g in span.content.graphemes(true) {
+            let w = UnicodeWidthStr::width(g);
+            if w > remaining {
+                clipped = true;
+                break;
+            }
+            text.push_str(g);
+            remaining -= w;
+        }
+        if !text.is_empty() {
+            spans.push(Span::styled(text, span.style));
+        }
+        if clipped {
+            break;
+        }
     }
-    let y = rect.y;
-    let blank = |buf: &ratatui::buffer::Buffer, x: u16| buf[(x, y)].symbol() == " ";
-    let last = rect.right() - 1;
-    if !blank(buf, rect.x) && rect.x > bounds.x && blank(buf, rect.x - 1) {
-        buf.set_style(Rect::new(rect.x - 1, y, 1, 1), style);
-    }
-    if !blank(buf, last) && rect.right() < bounds.right() && blank(buf, rect.right()) {
-        buf.set_style(Rect::new(rect.right(), y, 1, 1), style);
-    }
+    line.spans = spans;
 }

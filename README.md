@@ -96,6 +96,13 @@ The landing screen lists every session as the machines answer. In the nav:
 - `Ctrl-g` then `Tab` returns focus to the nav.
 - `Ctrl-g ?` lists every key, and `Ctrl-g q` quits.
 
+The accent background marks the **selection**, where the next key acts. **Hover**
+previews the item under the pointer without moving the selection; over a selected
+item, it adds an underline. A standalone card has one blank cell inside each side
+of its selection or hover background. A part of a shared label, such as the machine
+or mux in `machine/mux`, highlights only its text. A selected standalone card can
+show `⏎` while the nav has focus; shared label parts carry no Enter mark.
+
 ## Supported muxes
 
 | Platform   | Muxes                                                      |

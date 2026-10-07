@@ -6896,7 +6896,7 @@ fn a_popup_takes_hover_and_a_click_on_its_entry_runs_it_as_enter_does() {
     assert_eq!(
         event(&mut rt, mouse(35, col, row, true)),
         (true, false),
-        "bare motion onto the entry sets the soft selection and redraws"
+        "bare motion onto the entry sets the hover and redraws"
     );
     assert_eq!(rt.model.state.modal_hover(), Some(0));
     assert_eq!(
@@ -6914,10 +6914,10 @@ fn a_popup_takes_hover_and_a_click_on_its_entry_runs_it_as_enter_does() {
     assert!(rt.model.state.modal.is_none());
 }
 
-/// A drag moves the popup under the pointer, so the soft selection set before it does not
-/// outlive it: the popup shows its hard selection until the pointer moves again.
+/// A drag moves the popup under the pointer, so the hover set before it does not
+/// outlive it: the popup shows its selection until the pointer moves again.
 #[test]
-fn a_popup_drag_drops_the_soft_selection_it_started_on() {
+fn a_popup_drag_drops_the_hover_it_started_on() {
     let sel = Selection::default();
     let mut rt = collapse_rt(crate::ui::switcher::NavPosition::Left);
     let effects = update(&mut rt.model, Msg::TogglePalette);
@@ -7440,7 +7440,7 @@ fn hovering_a_nav_card_previews_it_and_a_click_executes_it() {
         &mut false,
         &mut false,
     );
-    assert!(dirty, "a new soft selection repaints");
+    assert!(dirty, "a new hover repaints");
     assert_eq!(
         selected(&rt),
         session_node("gpu", "train"),
@@ -7462,6 +7462,148 @@ fn hovering_a_nav_card_previews_it_and_a_click_executes_it() {
         rt.model.state.focus.is_terminal_focused(),
         "a click executes: the terminal view takes the focus"
     );
+}
+
+#[test]
+fn moving_to_the_view_border_ends_nav_and_link_hover() {
+    for terminal in [false, true] {
+        let mut rt = if terminal {
+            host_screen_with_new_session_link().0
+        } else {
+            hierarchy_rt()
+        };
+        let rect = if terminal {
+            rt.model.render_plan.view_links[0].1
+        } else {
+            let row = rt.model.switcher.session_row("web", "deploy").unwrap();
+            rt.model
+                .render_plan
+                .nav_cells
+                .iter()
+                .find(|(i, _)| *i == row)
+                .unwrap()
+                .1
+        };
+        for rect in [rect, rt.model.render_plan.regions.view_border] {
+            let event = crate::display::mouse::MouseEvent {
+                cb: 35,
+                col: rect.x + 1,
+                row: rect.y + 1,
+                pressed: true,
+            };
+            rt.handle_mouse_event(
+                &event,
+                &Selection::default(),
+                &mut false,
+                &mut false,
+                &mut false,
+                &mut false,
+            );
+        }
+        assert_eq!(rt.model.switcher.hover_targets(), (None, None));
+        assert!(rt.model.mouse_state.hovered_view_border);
+    }
+}
+
+#[test]
+fn inventory_changes_end_hover_before_a_host_card_becomes_a_title() {
+    let mut rt = hierarchy_rt();
+    update(
+        &mut rt.model,
+        Msg::ApplyInventory {
+            host: "web".into(),
+            sessions: vec![],
+            live: true,
+        },
+    );
+    sync_test_render_plan(&mut rt);
+    // The host card follows gpu's session in nav order; its trailing cell is outside
+    // the machine half and targets the whole host.
+    let host_row = rt.model.render_plan.nav_cells.last().unwrap().1;
+    update(
+        &mut rt.model,
+        Msg::Hover {
+            col: host_row.right() - 1,
+            row: host_row.y,
+        },
+    );
+    assert!(rt.model.switcher.hover_targets().0.is_some());
+    assert_eq!(
+        rt.model.switcher.shown_node(),
+        Some(crate::model::Node::Host("web".into()))
+    );
+    update(
+        &mut rt.model,
+        Msg::ApplyInventory {
+            host: "web".into(),
+            sessions: vec![crate::session::Session {
+                host: "web".into(),
+                name: "new".into(),
+                ..Default::default()
+            }],
+            live: true,
+        },
+    );
+    assert_eq!(rt.model.switcher.hover_targets(), (None, None));
+}
+
+#[test]
+fn changed_link_geometry_ends_hover_without_moving_selection() {
+    let (mut rt, _) = host_screen_with_new_session_link();
+    let rect = rt.model.render_plan.view_links[0].1;
+    update(
+        &mut rt.model,
+        Msg::Hover {
+            col: rect.x,
+            row: rect.y,
+        },
+    );
+    assert!(rt.model.switcher.hover_targets().1.is_some());
+    let selection = rt.model.switcher.selected_node();
+    let mut resized = rt.model.render_plan.clone();
+    resized.view_links[0].1.y += 1;
+    update(&mut rt.model, Msg::ReconcileHoverGeometry(resized));
+    assert_eq!(rt.model.switcher.hover_targets(), (None, None));
+    assert_eq!(rt.model.switcher.selected_node(), selection);
+}
+
+#[test]
+fn reordered_inventory_does_not_retarget_a_stationary_link_hover() {
+    let (mut rt, _) = host_screen_with_new_session_link();
+    let rect = rt.model.render_plan.view_links[0].1;
+    update(
+        &mut rt.model,
+        Msg::Hover {
+            col: rect.x,
+            row: rect.y,
+        },
+    );
+    assert!(rt.model.switcher.hover_targets().1.is_some());
+    let selection = rt.model.switcher.selected_node();
+    let mut sessions = rt
+        .model
+        .state
+        .groups
+        .iter()
+        .find(|g| g.host == "web")
+        .unwrap()
+        .sessions
+        .clone();
+    sessions.push(crate::session::Session {
+        host: "web".into(),
+        name: "aaa".into(),
+        ..Default::default()
+    });
+    update(
+        &mut rt.model,
+        Msg::ApplyInventory {
+            host: "web".into(),
+            sessions,
+            live: true,
+        },
+    );
+    assert_eq!(rt.model.switcher.hover_targets(), (None, None));
+    assert_eq!(rt.model.switcher.selected_node(), selection);
 }
 
 #[test]
@@ -7541,7 +7683,13 @@ fn enter_on_an_action_link_runs_what_its_key_runs() {
     assert_eq!(new, 2, "after the host's two sessions");
     // Two steps down from the first session reach the action.
     rt.handle_stdin_bytes(b"\x1b[B\x1b[B", &Selection::default());
-    assert_eq!(rt.model.switcher.link_marks(&rt.model.state).0, Some(new));
+    assert_eq!(
+        rt.model
+            .switcher
+            .link_selection_and_hover(&rt.model.state)
+            .0,
+        Some(new)
+    );
     assert!(!new_session_input_open(&rt));
     rt.handle_stdin_bytes(b"\r", &Selection::default());
     assert!(
@@ -7624,7 +7772,7 @@ fn a_landing_link_takes_hover_and_a_click_from_the_navs_focus() {
         .copied()
         .expect("the landing paints the card's link");
     assert!(click(&mut rt, 35, rect.x, rect.y), "hover repaints");
-    assert_eq!(rt.model.switcher.soft_marks().1, Some(deploy));
+    assert_eq!(rt.model.switcher.hover_targets().1, Some(deploy));
     assert!(
         rt.model.switcher.landing_open(),
         "hovering executes nothing"
@@ -8655,4 +8803,62 @@ async fn a_held_synchronized_update_keeps_the_frame_cadence_drawing() {
     rt.dirty = true;
     nav_text(&mut rt);
     assert!(!rt.display_sync_held);
+}
+
+#[test]
+fn unchanged_inventory_keeps_a_stationary_link_hover() {
+    let (mut rt, _) = host_screen_with_new_session_link();
+    let rect = rt.model.render_plan.view_links[0].1;
+    update(
+        &mut rt.model,
+        Msg::Hover {
+            col: rect.x,
+            row: rect.y,
+        },
+    );
+    let before = rt.model.switcher.hover_targets();
+    let sessions = rt
+        .model
+        .state
+        .groups
+        .iter()
+        .find(|g| g.host == "web")
+        .unwrap()
+        .sessions
+        .clone();
+    update(
+        &mut rt.model,
+        Msg::ApplyInventory {
+            host: "web".into(),
+            sessions,
+            live: true,
+        },
+    );
+    assert_eq!(rt.model.switcher.hover_targets(), before);
+}
+
+#[test]
+fn resized_frame_clears_stale_hover_before_painting() {
+    let (mut rt, _) = host_screen_with_new_session_link();
+    let rect = rt.model.render_plan.view_links[0].1;
+    update(
+        &mut rt.model,
+        Msg::Hover {
+            col: rect.x,
+            row: rect.y,
+        },
+    );
+    let previous = rt.model.render_plan.clone();
+    let nav = rt.model.nav_size();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            let plan = rt.model.prepare_render_plan(frame.area(), nav, &previous);
+            assert_eq!(rt.model.switcher.hover_targets(), (None, None));
+            rt.model
+                .switcher
+                .render(frame, None, true, &rt.model.state, &plan);
+        })
+        .unwrap();
+    assert_eq!(rt.model.switcher.hover_targets(), (None, None));
 }

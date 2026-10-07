@@ -528,8 +528,8 @@ fn help_tabs(titles: &[String], active: usize, inner: u16) -> (Vec<HelpTab>, boo
             x += gap;
             tabs.push(HelpTab {
                 section: i,
-                x: x as u16,
-                width: w as u16,
+                x: (x - 1) as u16,
+                width: (w + 2) as u16,
             });
             x += w;
         }
@@ -544,16 +544,16 @@ fn help_tabs(titles: &[String], active: usize, inner: u16) -> (Vec<HelpTab>, boo
     (
         vec![HelpTab {
             section: active,
-            x: x as u16,
-            width: width as u16,
+            x: (x - 1) as u16,
+            width: (width + 2) as u16,
         }],
         active > 0,
         active + 1 < n,
     )
 }
 
-/// The tab row's line: the active tab as the hard selection, the others muted, and the
-/// `hover` tab underlined as the soft selection.
+/// The tab row's line: the active tab as the selection, the others muted, and the
+/// `hover` tab painted with the hover style.
 fn help_tab_line(
     titles: &[String],
     active: usize,
@@ -562,21 +562,24 @@ fn help_tab_line(
     palette: &palette::Palette,
 ) -> Line<'static> {
     let muted = Style::default().fg(palette.decoration);
-    let lit = palette::selected(muted, palette);
+    let lit = palette::apply_selection(muted, palette);
     let (tabs, before, after) = help_tabs(titles, active, inner);
-    let mut spans = vec![Span::raw(" ")];
-    let mut x = 1;
+    let mut spans = Vec::new();
+    let mut x = 0;
     if before {
-        spans.push(Span::styled("‹ ", muted));
+        spans.push(Span::styled(" ‹", muted));
         x += 2;
     }
     for t in &tabs {
         spans.push(Span::raw(" ".repeat((t.x as usize).saturating_sub(x))));
         let style = if t.section == active { lit } else { muted };
         spans.push(Span::styled(
-            middle_cut(&titles[t.section], t.width as usize),
+            format!(
+                " {} ",
+                middle_cut(&titles[t.section], t.width.saturating_sub(2) as usize)
+            ),
             if hover == Some(t.section) {
-                palette::soft_selected(style, t.section == active, palette)
+                palette::apply_hover(style, t.section == active, palette)
             } else {
                 style
             },
@@ -584,14 +587,14 @@ fn help_tab_line(
         x = (t.x + t.width) as usize;
     }
     if after {
-        spans.push(Span::styled(" ›", muted));
+        spans.push(Span::styled("›", muted));
     }
-    palette::pad_selected(Line::from(spans), palette)
+    Line::from(spans)
 }
 
 /// The section whose tab covers cell `x` of the help's tab row, counted from the popup's
 /// inner left edge, as the row is painted for `query`, `scroll`, and `tab` in a popup
-/// `inner` cells wide with `visible` inner rows. A cell between tabs names none.
+/// `inner` cells wide with `visible` inner rows. Each tab owns its padding cells.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn help_tab_at(
     prefix: &str,
@@ -622,7 +625,7 @@ pub(crate) fn help_tab_at(
 /// starts `scroll` rows down, held so the last page stays full. The rows read like the key
 /// list: a left-aligned bold key cell, whitespace, then the muted description. The active
 /// tab is `tab` when a tab was chosen, and otherwise the section the scroll reached. A
-/// `hover` tab, the soft selection, is underlined and the body shows its section instead,
+/// `hover` tab has the hover style and the body shows its section instead,
 /// while the active tab stays lit. The meta says which rows are on screen whenever they
 /// are not all of them.
 #[allow(clippy::too_many_arguments)]
@@ -1200,9 +1203,9 @@ pub(crate) const PALETTE_LEAD: u16 = 2;
 /// The command palette's rows for a popup `inner` cells wide with `visible` rows under
 /// [`PALETTE_LEAD`]: the query field, the rule, then one entry per command in the key list's grammar,
 /// the key cell bold in a column as wide as the widest key, then the description, wrapped
-/// under the description column rather than cut. The selected entry is highlighted across the
-/// whole width, and the window starts late enough to show it
-/// whole. The `hover` entry, the soft selection, is underlined across its rows.
+/// under the description column rather than cut. Selection and hover cover each row
+/// of the item with one blank on each side; the surrounding layout stays plain.
+/// The window starts late enough to show the selected entry whole.
 /// `entries` pairs each key cell with its description; an empty key is a login the
 /// palette offers, marked with the login-needed glyph. Each line comes with the entry it
 /// belongs to, so a click is hit-tested against the rows the paint shows.
@@ -1256,7 +1259,7 @@ pub(crate) fn palette_lines(
         if body.len() >= visible {
             break;
         }
-        let chosen = i == selected;
+        let is_selected = i == selected;
         let (cell, cell_style) = if k.is_empty() {
             (
                 crate::ui::chrome::BLOCK_MARK.to_string(),
@@ -1267,7 +1270,7 @@ pub(crate) fn palette_lines(
         };
         let pad = key_w.saturating_sub(UnicodeWidthStr::width(cell.as_str()));
         for (n, chunk) in desc.iter().enumerate() {
-            let mut spans = if n == 0 {
+            let spans = if n == 0 {
                 vec![
                     Span::raw("   "),
                     Span::styled(cell.clone(), cell_style),
@@ -1280,15 +1283,13 @@ pub(crate) fn palette_lines(
                     Span::raw(chunk.clone()),
                 ]
             };
-            let used: usize = spans.iter().map(|s| s.width()).sum();
-            spans.push(Span::raw(" ".repeat((inner as usize).saturating_sub(used))));
-            let mut line = Line::from(spans);
-            if chosen {
-                line = palette::selected_line(line, palette);
-            }
-            if hover == Some(i) {
-                line = palette::soft_selected_line(line, chosen, palette);
-            }
+            let line = palette::standalone_line(
+                Line::from(spans),
+                is_selected,
+                hover == Some(i),
+                inner,
+                palette,
+            );
             body.push((Some(i), line));
         }
     }
@@ -1410,6 +1411,17 @@ pub(crate) fn render_popup(
 
 #[cfg(test)]
 mod tests {
+    fn cell_style(line: &ratatui::text::Line, column: usize) -> ratatui::style::Style {
+        let mut x = 0;
+        for span in &line.spans {
+            if column < x + span.width() {
+                return line.style.patch(span.style);
+            }
+            x += span.width();
+        }
+        line.style
+    }
+
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
@@ -2107,12 +2119,12 @@ mod tests {
             .spans
             .iter()
             .filter(|s| s.style.bg == Some(palette.accent) && !s.content.trim().is_empty())
-            .map(|s| s.content.as_ref())
+            .map(|s| s.content.trim())
             .collect();
         assert_eq!(
             lit,
             ["move (nav focus)"],
-            "the active tab alone is the hard selection"
+            "the active tab alone is the selection"
         );
     }
 
@@ -2180,7 +2192,7 @@ mod tests {
             .spans
             .iter()
             .filter(|s| s.style.bg == Some(palette.accent) && !s.content.trim().is_empty())
-            .map(|s| s.content.to_string())
+            .map(|s| s.content.trim().to_string())
             .collect();
         assert_eq!(lit, [GLYPH_SECTION]);
         assert!(flat(&lines[HELP_LEAD..]).contains(&format!(" {GLYPH_SECTION}")));
@@ -2266,7 +2278,7 @@ mod tests {
             tabs.iter().any(|t| t.section == 4) && before && !after,
             "{tabs:?}"
         );
-        assert!(tabs.iter().all(|t| (t.x + t.width) as usize <= 29));
+        assert!(tabs.iter().all(|t| (t.x + t.width) as usize <= 30));
         let line = help_tab_line(&titles, 4, None, 30, &palette::Palette::default());
         assert!(line.to_string().starts_with(" ‹ "), "{line}");
         assert!(line.width() <= 30);
@@ -2276,7 +2288,7 @@ mod tests {
             1,
             "an active title wider than the row is shown cut"
         );
-        assert!((tabs[0].x + tabs[0].width) as usize <= 9);
+        assert!((tabs[0].x + tabs[0].width) as usize <= 10);
     }
 
     #[test]
@@ -2314,7 +2326,12 @@ mod tests {
             all.contains(&squeeze(&entries[5].1)),
             "the selected entry is whole: {all}"
         );
-        assert!(lines.last().unwrap().style == palette::selection_style(&p));
+        assert!(lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .any(|span| span.style.bg == Some(p.accent)));
         assert_eq!(palette_rows(&entries, 5, 30), 6 * rows);
     }
 
@@ -2363,7 +2380,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hovered_palette_entry_is_underlined_apart_from_the_selected_one() {
+    fn the_palette_entry_has_hover_apart_from_selection() {
         let p = palette::Palette::default();
         let entries: Vec<(String, String)> = ["one", "two", "three"]
             .map(|d| ("k".to_string(), d.to_string()))
@@ -2375,19 +2392,52 @@ mod tests {
             [None, None, Some(0), Some(1), Some(2)],
             "each row names its entry, and the query and its rule none"
         );
-        let style = |i: usize| lines[i].1.style;
-        assert_eq!(style(2), palette::selection_style(&p), "the hard selection");
-        assert_eq!(
-            style(3),
-            palette::soft_selection_style(&p),
-            "the soft selection"
-        );
+        let style = |i: usize| cell_style(&lines[i].1, 2);
+        assert_eq!(style(2), palette::selection_style(&p), "the selection");
+        assert_eq!(style(3), palette::hover_style(&p), "the hover");
         assert_eq!(style(4), Style::default());
         let both = palette_lines("", &entries, 1, 1, Some(1), 10, 40, &p);
         assert_eq!(
-            both[3].1.style,
+            cell_style(&both[3].1, 2),
             palette::selection_style(&p).add_modifier(Modifier::UNDERLINED),
             "one entry under both keeps the accent and underlines it"
         );
+    }
+    #[test]
+    fn help_tab_padding_is_part_of_its_pointer_target() {
+        let p = palette::Palette::default();
+        let body = help_layout("C-g", POS, "", 120, &p);
+        let (tabs, _, _) = help_tabs(&body.titles(), 0, 120);
+        let (_, lines) = help_lines("C-g", POS, &p, "", 0, Some(0), Some(1), 30, 120);
+        let row = &lines[HELP_TAB_ROW as usize];
+        for (index, style) in [
+            (0, palette::selection_style(&p)),
+            (1, palette::hover_style(&p)),
+        ] {
+            let tab = tabs.iter().find(|t| t.section == index).unwrap();
+            for x in [tab.x, tab.x + tab.width - 1] {
+                assert_eq!(cell_style(row, x as usize).bg, style.bg);
+                assert_eq!(
+                    help_tab_at("C-g", POS, "", 0, Some(0), 120, 30, x),
+                    Some(index)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn palette_item_paints_one_blank_each_side_without_painting_layout_indent() {
+        let p = palette::Palette::default();
+        let entries = vec![("x".into(), "run".into())];
+        for hover in [None, Some(0)] {
+            let lines = palette_lines("", &entries, 1, 0, hover, 10, 30, &p);
+            let row = &lines[PALETTE_LEAD as usize].1;
+            assert_eq!(row.to_string(), "   x  run ");
+            assert_eq!(palette::standalone_bounds(row, 30), 2..10);
+            assert_eq!(cell_style(row, 1).bg, None);
+            assert_eq!(cell_style(row, 2).bg, Some(p.accent));
+            assert_eq!(cell_style(row, 9).bg, Some(p.accent));
+            assert_eq!(cell_style(row, 10).bg, None);
+        }
     }
 }
