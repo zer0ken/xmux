@@ -78,14 +78,8 @@ where
     Ok(())
 }
 
-/// How long the resize-repeat window stays open after a prefix-driven nav resize:
-/// during it a bare Ctrl+←/→ (no prefix) keeps resizing and refreshes the window -
-/// tmux's `bind -r` repeat applied to the nav width. Each repeat resets the window.
-const RESIZE_REPEAT_MS: u64 = 400;
-
-/// How long after the last resize tick before the debounced nav-width persist fires.
-/// Longer than `RESIZE_REPEAT_MS` so a held Ctrl-arrow autorepeat burst persists once
-/// at the end, not per tick.
+/// How long after the last resize tick before the debounced nav-width persist fires, so
+/// a held Ctrl-arrow autorepeat burst persists once at the end, not per tick.
 const WIDTH_FLUSH_MS: u64 = 400;
 
 /// Adjusts the natural nav width by `wd`, clamped to the allowed range. Returns

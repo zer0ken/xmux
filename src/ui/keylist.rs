@@ -161,6 +161,55 @@ pub(crate) fn key_list(
     None
 }
 
+/// The title of the list a resize shows.
+const RESIZE_TITLE: &str = "resize: any other key ends it";
+
+/// The key list while a prefix resize lasts: only the resize keys of the nav's layout,
+/// under a title saying any other key ends the resize, since every other prefix key does
+/// nothing until it does. `None` when it does not fit.
+pub(crate) fn resize_list(
+    prefix: &str,
+    position: NavPosition,
+    max_w: u16,
+    max_h: u16,
+) -> Option<KeyList> {
+    use crate::model::keys::{KeyCommand, Keys};
+    let band = matches!(position, NavPosition::Top | NavPosition::Bottom);
+    let keys: Vec<Cell> = TABLE
+        .iter()
+        .filter(|e| match e.keys {
+            Keys::Prefix(chords) => chords.iter().any(|(_, command)| match command {
+                KeyCommand::Width(_) => !band,
+                KeyCommand::Height(_) => band,
+                _ => false,
+            }),
+            _ => false,
+        })
+        .map(|e| Cell::Key {
+            key: e.key_label(prefix, position),
+            desc: e.long.to_string(),
+        })
+        .collect();
+    let key_width = keys
+        .iter()
+        .map(|c| match c {
+            Cell::Key { key, .. } => key.width() as u16,
+            _ => 0,
+        })
+        .max()?;
+    let mut column = vec![Cell::Title(RESIZE_TITLE.to_string())];
+    column.extend(keys);
+    let column_width = column.iter().map(|c| c.width(key_width)).max()?;
+    let list = KeyList {
+        columns: vec![column],
+        key_width,
+        column_width,
+        rung: Rung::Long,
+    };
+    let (w, h) = list.size();
+    (w <= max_w && h <= max_h).then_some(list)
+}
+
 fn pack(items: &[&Item], rung: Rung, more: usize, max_w: u16, max_h: u16) -> Option<KeyList> {
     if max_w <= 2 + 2 * PAD || max_h < 4 {
         return None;
@@ -504,6 +553,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_resize_lists_only_the_resize_keys_of_the_layout() {
+        let side = resize_list("C-g", NavPosition::Left, 160, 30).unwrap();
+        assert_eq!(side.keys(), vec!["C-←/→"]);
+        assert_eq!(side.columns[0][0], Cell::Title(RESIZE_TITLE.to_string()));
+        let band = resize_list("C-g", NavPosition::Bottom, 160, 30).unwrap();
+        assert_eq!(band.keys(), vec!["C-↑/↓"]);
+        assert!(resize_list("C-g", NavPosition::Left, 12, 30).is_none());
     }
 
     #[test]

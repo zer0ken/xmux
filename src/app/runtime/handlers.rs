@@ -890,8 +890,8 @@ impl Runtime {
         // Advance the spinner from wall-clock so it animates regardless of which arm fired.
         let spinner_frame = spinner_frame_at(self.spinner_start.elapsed());
         let view_border_hovered = self.model.mouse_state.hovered_view_border;
-        // The repeat window lapses on the clock, not on an event, so compare before
-        // storing: a bar that just went idle must repaint even though nothing arrived.
+        // Compare before storing: a bar whose interaction just ended must repaint even
+        // when nothing else in the pass moved.
         let prefix_active = self.prefix_active();
         if self.model.state.chrome.armed != prefix_active {
             self.dirty = true;
@@ -1846,19 +1846,15 @@ impl Runtime {
     /// - READY, awaiting the command key (the two focus paths' armed latches).
     /// - INPUTTING: a command that opened an input row owns the prefix until Enter or
     ///   Esc closes the row.
-    /// - REPEATING: a resize command opened the bare-Ctrl-arrow repeat window; the
-    ///   function is still running until the window lapses.
+    /// - RESIZING: a resize command started the resize mode, in which bare Ctrl-arrows
+    ///   keep resizing; the function runs until another key ends the mode.
     ///
     /// Ready also clears on a focus switch or a mouse action (canceled).
     pub(super) fn prefix_active(&self) -> bool {
         self.model.mouse_state.nav_armed
             || self.term_input.is_armed()
             || self.model.state.is_inputting()
-            || self
-                .model
-                .mouse_state
-                .repeat_until
-                .is_some_and(|d| std::time::Instant::now() < d)
+            || self.model.mouse_state.resizing
     }
 
     /// The op-result arm: fold a finished create back into the nav/state. A successful

@@ -315,7 +315,12 @@ impl Switcher {
         // sized to the room there.
         let key_list = if key_list_open(state) {
             let room = crate::ui::keylist::room(resting_bar, regions.terminal, area, nav.position);
-            crate::ui::keylist::key_list(
+            let list = if state.chrome.resizing {
+                crate::ui::keylist::resize_list
+            } else {
+                crate::ui::keylist::key_list
+            };
+            list(
                 &state.chrome.ui_prefix,
                 nav.position,
                 room.width,

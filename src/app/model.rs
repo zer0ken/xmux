@@ -306,7 +306,7 @@ pub(crate) enum Msg {
         band: bool,
     },
     SetMouseHovered(bool),
-    SetResizeRepeat(Option<std::time::Instant>),
+    SetResizing(bool),
     /// The button-up that ends a popup drag: a release on the grabbed cell is a click.
     EndPopupDrag,
     /// Ends a popup drag whose button-up was lost, as no click.
@@ -2131,8 +2131,8 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.mouse_state.hovered_view_border = hovered;
             Vec::new()
         }
-        Msg::SetResizeRepeat(repeat_until) => {
-            model.mouse_state.repeat_until = repeat_until;
+        Msg::SetResizing(resizing) => {
+            model.mouse_state.resizing = resizing;
             Vec::new()
         }
         Msg::EndPopupDrag => {
@@ -2252,6 +2252,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .chrome
                 .set_view_border_hovered(view_border_hovered);
             model.state.chrome.set_armed(prefix_active);
+            model.state.chrome.resizing = model.mouse_state.resizing;
             model.switcher.sync_prefix_armed(prefix_active);
             model.switcher.settle_popup_position(&model.state);
             // The session on screen is the one the user is looking at, so its mark goes.

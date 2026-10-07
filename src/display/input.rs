@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn a_command_consumes_ready() {
         // A command key CONSUMES the prefix: ready clears (the bar hides). Resize
-        // continuation after the first arrow is the RUNTIME repeat window (bare
+        // continuation after the first arrow is the RUNTIME resize mode (bare
         // Ctrl-arrows), not a re-armed prefix, so a plain `h` after consumption is
         // ordinary input again.
         let mut t = m();

@@ -114,6 +114,9 @@ pub struct Chrome {
     /// opens beside it, so the keys appear exactly when they are needed and never compete
     /// with the cards for room.
     pub(crate) armed: bool,
+    /// Whether the live prefix interaction is the resize mode, in which the key list
+    /// names only the resize keys.
+    pub(crate) resizing: bool,
     /// The side the nav is attached to this frame (set by the app each frame from the
     /// runtime's resolved position). The key list's focus rows name the arrow pair the
     /// placement makes active.

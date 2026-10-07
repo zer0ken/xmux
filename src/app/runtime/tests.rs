@@ -4352,25 +4352,25 @@ fn repeated_prefix_bytes_keep_the_nav_steady_in_nav_focus() {
 }
 
 #[test]
-fn a_resize_keeps_the_prefix_live_for_its_repeat_window() {
-    // A prefix is consumed when its FUNCTION ends. A resize opens the bare-Ctrl-arrow
-    // repeat window, so the function is still running: the bar and the auto-hide nav
-    // show stay up across the whole burst instead of dropping on the first arrow.
+fn a_resize_keeps_the_prefix_live_for_its_resize_mode() {
+    // A prefix is consumed when its FUNCTION ends. A resize starts the resize mode, so
+    // the function is still running: the bar and the auto-hide nav show stay up across
+    // the whole burst instead of dropping on the first arrow.
     let mut rt = rt_terminal_focus_with_session();
     rt.handle_stdin_bytes(b"\x07", &Selection::default()); // prefix: ready
     assert!(rt.prefix_active(), "the bar shows while ready");
     rt.handle_stdin_bytes(b"\x1b[1;5C", &Selection::default()); // Ctrl+Right resizes
     assert!(
         rt.prefix_active(),
-        "the resize opened the repeat window, so the function has not ended"
+        "the resize started the resize mode, so the function has not ended"
     );
     rt.handle_stdin_bytes(b"\x1b[1;5C", &Selection::default()); // bare Ctrl+Right
-    assert!(rt.prefix_active(), "each repeat refreshes the window");
-    // A key that is not a repeat key ends the window at once.
+    assert!(rt.prefix_active(), "a bare repeat keeps the mode");
+    // A key that is not a resize key ends the mode at once.
     rt.handle_stdin_bytes(b"z", &Selection::default());
     assert!(
         !rt.prefix_active(),
-        "a non-repeat key closes the window, ending the function"
+        "a key that is not a resize key ends the mode, ending the function"
     );
 }
 
@@ -7097,9 +7097,9 @@ fn ctrl_arrows_in_nav_focus_walk_the_hierarchy_and_the_prefix_layer_keeps_its_ow
     // Behind the prefix, Ctrl+↑ is the band border, never a level step.
     rt.handle_stdin_bytes(b"\x07\x1b[1;5B", &Selection::default());
     assert_eq!(selected(&rt), Some(Node::Machine("gpu".into())));
-    // A bare Ctrl+arrow right after it repeats the resize; once that window lapses, the
-    // bare keys step the levels again.
-    rt.model.mouse_state.repeat_until = None;
+    // A bare Ctrl+arrow right after it repeats the resize; once another key ends the
+    // resize mode, the bare keys step the levels again.
+    rt.model.mouse_state.resizing = false;
     rt.handle_stdin_bytes(b"\x1b[1;5B\x1b[1;5B", &Selection::default());
     assert_eq!(selected(&rt), session_node("gpu", "train"));
 }
@@ -8212,4 +8212,31 @@ fn a_terminal_without_the_keyboard_protocol_is_left_as_it_is() {
     );
     rt.on_stdin(b"a");
     assert_eq!(logged(&log), b"a");
+}
+
+#[test]
+fn bare_ctrl_arrows_resize_only_in_the_visible_resize_mode() {
+    let (mut rt, log) = rt_terminal_focus_with_attachment();
+    let width = rt.model.nav_width_natural;
+    rt.on_stdin(b"\x07\x1b[1;5C");
+    assert!(
+        rt.model.mouse_state.resizing,
+        "a prefix resize starts the mode"
+    );
+    assert_eq!(rt.model.nav_width_natural, width + 1);
+    // In the mode, a bare Ctrl+arrow and its release move the border, not the session.
+    rt.on_stdin(b"\x1b[1;5D\x1b[1;5:3D");
+    assert_eq!(rt.model.nav_width_natural, width);
+    assert_eq!(logged(&log), b"");
+    // Any other key ends the mode and reaches the session as typed.
+    rt.on_stdin(b"x");
+    assert!(!rt.model.mouse_state.resizing);
+    assert!(!rt.prefix_active(), "the key list closes with the mode");
+    rt.on_stdin(b"\x1b[1;5D");
+    assert_eq!(
+        logged(&log),
+        b"x\x1b[1;5D",
+        "outside the mode it is the session's"
+    );
+    assert_eq!(rt.model.nav_width_natural, width);
 }

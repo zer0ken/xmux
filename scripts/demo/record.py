@@ -16,7 +16,7 @@ import pyte
 TYPE = 0.11       # typing a command
 KEY = 0.45        # pressing one key in the app
 CHORD = 0.6       # after the prefix, before its command key
-HOLD = 0.3        # a held Ctrl-arrow; inside the app's 400 ms resize repeat window
+HOLD = 0.3        # a held Ctrl-arrow, repeating inside the app's resize mode
 REACT = 0.6       # after the screen answers, before the next command
 
 # The nav leaves room for card padding around "3 my-important-session".
