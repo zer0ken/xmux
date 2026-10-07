@@ -551,6 +551,11 @@ Connection to host closed.
             outer.sync(&[]),
             format!("\x1b_Ga=d,d=I,q=2,i={id}\x1b\\").into_bytes()
         );
+        // A session switch starts the grid over, and tmux draws the placeholder cells
+        // again without the image: the grid still has it.
+        g.clear();
+        g.feed(format!("\x1b[38;2;103;53;218m{}{}\x1b[39m", cell(0), cell(1)).as_bytes());
+        assert_eq!(g.kitty_in_use().len(), 1);
     }
 
     /// A direct placement covers cells at the cursor from the image's pixel size,

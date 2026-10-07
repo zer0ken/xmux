@@ -148,10 +148,12 @@ impl ImageLayer {
             .collect()
     }
 
-    /// Drops every image, for a grid that starts over.
+    /// Drops the sixel images, for a grid that starts over. The kitty images stay: a
+    /// kitty terminal keeps transmitted images across a clear, and tmux, which
+    /// forwards an image once, draws its placeholder cells again on every redraw of
+    /// the pane, such as after a session switch.
     pub fn clear(&mut self) {
         self.images.clear();
-        self.kitty = KittyStore::default();
         self.scan = Scan::Ground;
     }
 
