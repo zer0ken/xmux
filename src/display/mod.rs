@@ -13,6 +13,7 @@ pub mod mouse;
 pub mod outer;
 pub mod paste;
 pub mod registry;
+mod sgr;
 pub mod term;
 pub mod worker;
 

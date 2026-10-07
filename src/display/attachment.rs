@@ -592,6 +592,7 @@ pub fn spawn_attachment(
         let mut marker_acc: Vec<u8> = Vec::new();
         let mut marker_done = false;
         let mut painted = false;
+        let mut sgr = super::sgr::SgrNormalizer::default();
         // Holds OSC-in-progress between reads so an OSC 52 split at a read boundary
         // is still found (and a non-52 OSC's payload is skipped, not misread).
         let mut osc52 = Osc52Scanner::default();
@@ -605,7 +606,7 @@ pub fn spawn_attachment(
                             Ok(g) => g,
                             Err(_) => break,
                         };
-                        g.feed(&buf[..n]);
+                        sgr.feed(&mut g, &buf[..n]);
                         // Only checked until the first visible frame: after that every
                         // chunk counts, so a full-grid scan never runs per chunk. ssh's
                         // own authentication report is not a frame of the session, so
@@ -868,6 +869,52 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
+
+    fn sgr_cells(bytes: &[u8]) -> ratatui::buffer::Buffer {
+        let mut grid = Grid::new(1, 16);
+        super::super::sgr::SgrNormalizer::default().feed(&mut grid, bytes);
+        let area = ratatui::layout::Rect::new(0, 0, 16, 1);
+        let mut cells = ratatui::buffer::Buffer::empty(area);
+        grid.render_into(&mut cells, area);
+        cells
+    }
+
+    #[test]
+    fn underline_colour_sgr_preserves_bold_and_text_colours() {
+        use ratatui::style::{Color, Modifier};
+        let commands: &[&[u8]] = &[
+            b"\x1b[58;2;0;128;255m",
+            b"\x1b[58;5;0m",
+            b"\x1b[58:2::0:128:255m",
+            b"\x1b[58:5:0m",
+            b"\x1b[59m",
+        ];
+        for command in commands {
+            let mut bytes = b"\x1b[1;38;2;11;22;33;48;5;77m".to_vec();
+            bytes.extend_from_slice(command);
+            bytes.push(b'X');
+            let cells = sgr_cells(&bytes);
+            let cell = &cells[(0, 0)];
+            assert!(cell.modifier.contains(Modifier::BOLD), "{command:?}");
+            assert!(!cell.modifier.contains(Modifier::DIM), "{command:?}");
+            assert_eq!(cell.fg, Color::Rgb(11, 22, 33), "{command:?}");
+            assert_eq!(cell.bg, Color::Indexed(77), "{command:?}");
+        }
+    }
+
+    #[test]
+    fn underline_style_sgr_uses_plain_underline_without_resetting_attributes() {
+        use ratatui::style::{Color, Modifier};
+        for style in 0..=5 {
+            let bytes = format!("\x1b[1;31;44;4m\x1b[4:{style}mX");
+            let cells = sgr_cells(bytes.as_bytes());
+            let cell = &cells[(0, 0)];
+            assert_eq!(cell.modifier.contains(Modifier::UNDERLINED), style != 0);
+            assert!(cell.modifier.contains(Modifier::BOLD));
+            assert_eq!(cell.fg, Color::Indexed(1));
+            assert_eq!(cell.bg, Color::Indexed(4));
+        }
+    }
 
     #[test]
     fn attach_auth_watch_reports_its_own_method() {
