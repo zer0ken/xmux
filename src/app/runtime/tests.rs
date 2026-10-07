@@ -2377,6 +2377,7 @@ fn test_rt(env: Env) -> Runtime {
         display_probe: DisplayProbe::default(),
         held_input: None,
         passthrough: Vec::new(),
+        title: None,
         discovery_runs: 0,
         machine_rescans: Vec::new(),
     };
@@ -7964,4 +7965,41 @@ async fn alerts_reach_the_terminal_and_mark_a_session_not_on_screen() {
         &mut rx,
     );
     assert_eq!(rt.passthrough, b"\x07");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_terminal_title_follows_the_session_on_screen() {
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.registry.insert_fake("jup", 7);
+    let feed = |rt: &Runtime, bytes: &[u8]| {
+        rt.registry.grid("jup").unwrap().lock().unwrap().feed(bytes);
+    };
+    let synced = |rt: &mut Runtime| {
+        rt.passthrough.clear();
+        rt.sync_title();
+        String::from_utf8(rt.passthrough.clone()).unwrap()
+    };
+
+    feed(&rt, b"\x1b]2;vim notes.md\x07");
+    assert_eq!(
+        synced(&mut rt),
+        "",
+        "no session on screen, no title written"
+    );
+    rt.model.state.displayed = Selection {
+        host: "jup".into(),
+        session: "work".into(),
+    };
+    assert_eq!(synced(&mut rt), "\x1b]2;vim notes.md\x07");
+    assert_eq!(synced(&mut rt), "", "an unchanged title is written once");
+    feed(&rt, b"\x1b]0;htop\x07");
+    assert_eq!(synced(&mut rt), "\x1b]2;htop\x07");
+    rt.model.state.displayed = Selection::default();
+    assert_eq!(
+        synced(&mut rt),
+        "\x1b]2;xmux\x07",
+        "a title no longer on screen gives way to xmux's own"
+    );
+    assert_eq!(synced(&mut rt), "");
 }

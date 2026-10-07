@@ -38,13 +38,18 @@ const ALERTS_MAX: usize = 16;
 /// The longest notification payload re-emitted; a longer one is dropped whole.
 const NOTIFY_MAX: usize = 4096;
 
-/// Collects the alerts the parser reports while it processes a chunk.
+/// The longest window title kept; a longer one is cut at a character boundary.
+const TITLE_MAX: usize = 256;
+
+/// Collects what the parser reports beside the cells while it processes a chunk: the
+/// alerts, and the window title the child set.
 #[derive(Default)]
-struct AlertSink {
+struct ParserSink {
     alerts: Vec<Alert>,
+    title: Option<String>,
 }
 
-impl AlertSink {
+impl ParserSink {
     fn push(&mut self, alert: Alert) {
         // One bell per take says everything a run of bells says.
         if alert == Alert::Bell && self.alerts.contains(&Alert::Bell) {
@@ -56,9 +61,25 @@ impl AlertSink {
     }
 }
 
-impl vt100::Callbacks for AlertSink {
+impl vt100::Callbacks for ParserSink {
     fn audible_bell(&mut self, _: &mut vt100::Screen) {
         self.push(Alert::Bell);
+    }
+
+    /// OSC 0 and OSC 2. An empty title takes the child's title back, and control
+    /// characters are dropped so a title is only ever text when it is re-emitted.
+    fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
+        let title: String = String::from_utf8_lossy(title)
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        let end = title
+            .char_indices()
+            .map(|(i, c)| i + c.len_utf8())
+            .take_while(|&end| end <= TITLE_MAX)
+            .last()
+            .unwrap_or(0);
+        self.title = Some(title[..end].to_string()).filter(|t| !t.is_empty());
     }
 
     fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
@@ -101,7 +122,7 @@ fn notification(params: &[&[u8]]) -> Option<Alert> {
 }
 
 pub struct Grid {
-    parser: vt100::Parser<AlertSink>,
+    parser: vt100::Parser<ParserSink>,
     /// Set by a session switch: the next `feed` wipes the grid before applying the
     /// chunk, so the prior session's content stays on screen until the mux's fresh
     /// repaint arrives (no blank window between the switch and the repaint) and the
@@ -114,7 +135,7 @@ pub struct Grid {
 impl Grid {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self {
-            parser: vt100::Parser::new_with_callbacks(rows, cols, 0, AlertSink::default()),
+            parser: vt100::Parser::new_with_callbacks(rows, cols, 0, ParserSink::default()),
             clear_on_feed: false,
             modes: Default::default(),
         }
@@ -124,6 +145,11 @@ impl Grid {
     fn reset_parser(&mut self, rows: u16, cols: u16) {
         let sink = std::mem::take(self.parser.callbacks_mut());
         self.parser = vt100::Parser::new_with_callbacks(rows, cols, 0, sink);
+    }
+
+    /// The window title the child set with OSC 0 or OSC 2, if it set one.
+    pub fn title(&self) -> Option<&str> {
+        self.parser.callbacks().title.as_deref()
     }
 
     /// The alerts the output fed since the last take asked for, oldest first.
@@ -165,6 +191,8 @@ impl Grid {
     pub fn clear(&mut self) {
         let (rows, cols) = self.parser.screen().size();
         self.reset_parser(rows, cols);
+        // The title belongs to the session the grid showed; the next one sets its own.
+        self.parser.callbacks_mut().title = None;
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -375,6 +403,30 @@ Connection to host closed.
         let mut g = Grid::new(4, 20);
         g.feed(b"\x1b]0;title\x07\x1b]9;4;1;50\x07\x1b]52;c;aGk=\x07");
         assert!(g.take_alerts().is_empty());
+    }
+
+    #[test]
+    fn the_title_the_child_set_is_kept_until_it_is_taken_back_or_the_grid_clears() {
+        let mut g = Grid::new(4, 20);
+        assert_eq!(g.title(), None);
+        g.feed(b"\x1b]0;first\x07");
+        assert_eq!(g.title(), Some("first"));
+        g.feed(b"\x1b]2;vim \x1b\\");
+        assert_eq!(g.title(), Some("vim "), "OSC 2 with an ST terminator");
+        g.feed(b"\x1b]1;icon only\x07");
+        assert_eq!(
+            g.title(),
+            Some("vim "),
+            "OSC 1 names the icon, not the window"
+        );
+        g.feed(b"\x1b]2;\x07");
+        assert_eq!(g.title(), None, "an empty title takes it back");
+        g.feed(b"\x1b]2;a\xc2\x9bb\x07");
+        assert_eq!(g.title(), Some("ab"), "control characters are dropped");
+        g.feed(format!("\x1b]2;{}\x07", "\u{d55c}".repeat(200)).as_bytes());
+        assert_eq!(g.title().unwrap().len(), 255, "cut at a character boundary");
+        g.clear();
+        assert_eq!(g.title(), None, "the next session sets its own");
     }
 
     #[test]

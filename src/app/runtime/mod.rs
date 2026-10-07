@@ -1588,6 +1588,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     loop {
         rt.flush_held_input();
         rt.sync_child_focus();
+        rt.sync_title();
         rt.flush_passthrough();
         rt.prepare_and_draw(&mut term);
 
@@ -1663,6 +1664,9 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     rt.mgr.teardown_all();
     0
 }
+
+/// The window title xmux writes when the session on screen has none after another did.
+const OWN_TITLE: &str = "xmux";
 
 /// How often a host-side query asks where xmux's own display client is. A switch the
 /// client makes inside itself reaches the nav within this long, and a query rides the
@@ -1740,6 +1744,9 @@ struct Runtime {
     held_input: Option<HeldInput>,
     /// Sequences a child sent for the terminal above xmux, written between frames.
     passthrough: Vec<u8>,
+    /// The window title xmux last wrote: `None` until it writes one, then the title of
+    /// the session on screen, or `Some(None)` for [`OWN_TITLE`].
+    title: Option<Option<String>>,
     #[cfg(test)]
     discovery_runs: usize,
     /// The machines a one-machine re-scan probed, in order, for tests.
