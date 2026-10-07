@@ -142,9 +142,9 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   text colour over the cells of the item the selection is on. Standalone items
   include exactly one blank cell inside each side of their background; parts of a
   shared item cover only their own text. Hover follows the same geometry.
-- **card focus** - what selecting a card changes: the selection highlight, and on a
-  machine or host card its state word. Its height, its number, and its name's column
-  never move.
+- **card focus** - what selecting a card changes: the selection highlight and an
+  optional Enter glyph. The card's height, number, and name column never move.
+  State words belong on the view screen.
 
 ## Interaction Surfaces
 

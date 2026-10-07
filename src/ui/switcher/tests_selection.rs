@@ -688,7 +688,7 @@ fn standalone_padding_and_enter_mark_are_pointer_targets() {
 }
 
 #[test]
-fn standalone_state_words_preserve_enter_and_neighboring_cards() {
+fn standalone_cards_preserve_enter_and_neighboring_cards() {
     for position in [NavPosition::Top, NavPosition::Bottom] {
         let mut h = H::new(&[("a", &[], None), ("b", &[], None)]);
         let first = h.card_row(|r| matches!(r, RowRef::Host { host, .. } if host == "a"));

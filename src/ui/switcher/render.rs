@@ -38,7 +38,6 @@ struct NavRowPaint<'a> {
     width: u16,
     filter: &'a str,
     palette: &'a palette::Palette,
-    show_state_word: bool,
 }
 
 fn middle_ellipsize(text: &str, width: usize) -> String {
@@ -471,13 +470,12 @@ impl Switcher {
                         width: width.max(1),
                         filter: &state.filter,
                         palette: &self.palette,
-                        show_state_word: true,
                     },
                 )
                 .remove(0);
             trim_line_end(&mut line);
             clip_line(&mut line, width as usize);
-            let (machine, host) = self.halves(*i, width.max(1), num_w, true);
+            let (machine, host) = self.halves(*i, width.max(1), num_w);
             let inset = u16::from(!title);
             for (part, run) in [(Part::Machine, machine), (Part::Host, host)] {
                 if let Some((x, w)) = run {
@@ -513,18 +511,10 @@ impl Switcher {
         }
     }
 
-    fn halves(
-        &self,
-        i: usize,
-        width: u16,
-        num_w: usize,
-        show_state_word: bool,
-    ) -> (Option<CellRun>, Option<CellRun>) {
+    fn halves(&self, i: usize, width: u16, num_w: usize) -> (Option<CellRun>, Option<CellRun>) {
         let (machine, mux) = match &self.rows[i].reference {
             RowRef::Section { .. } => self.path_parts(i, width as usize),
-            RowRef::Host { .. } => {
-                self.path_parts(i, self.host_room(i, width, num_w, show_state_word))
-            }
+            RowRef::Host { .. } => self.path_parts(i, Self::host_room(width, num_w)),
             _ => return (None, None),
         };
         let m = UnicodeWidthStr::width(machine.as_str()) as u16;
@@ -579,22 +569,15 @@ impl Switcher {
         }
     }
 
-    fn host_room(&self, i: usize, width: u16, num_w: usize, show_state_word: bool) -> usize {
+    fn host_room(width: u16, num_w: usize) -> usize {
         if width == 0 {
             return usize::MAX;
         }
-        let word_w =
-            if show_state_word && self.selection_row() == Some(i) && self.part == Part::Card {
-                crate::ui::tree::card_state_word(&self.rows[i].reference)
-                    .map_or(0, |word| word.len() + 1)
-            } else {
-                0
-            };
-        (width as usize).saturating_sub(num_w + 1 + 2 + word_w)
+        (width as usize).saturating_sub(num_w + 1 + 2)
     }
 
-    fn host_identity(&self, i: usize, width: u16, num_w: usize, show_state_word: bool) -> String {
-        let (machine, mux) = self.path_parts(i, self.host_room(i, width, num_w, show_state_word));
+    fn host_identity(&self, i: usize, width: u16, num_w: usize) -> String {
+        let (machine, mux) = self.path_parts(i, Self::host_room(width, num_w));
         if mux.is_empty() {
             machine
         } else {
@@ -1338,7 +1321,7 @@ impl Switcher {
 
     /// One row measured for the column flow: whether it opens a unit, how wide its
     /// content paints, and how many rows it takes. A section title measures its
-    /// `{machine}/{mux}` alone. Standalone cards reserve padding, status, and the Enter
+    /// `{machine}/{mux}` alone. Standalone cards reserve padding and the Enter
     /// mark so painting stays inside their column.
     fn flow_card(
         &self,
@@ -1357,7 +1340,6 @@ impl Switcher {
                 width: 0,
                 filter: "",
                 palette,
-                show_state_word: false,
             },
         );
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
@@ -1373,8 +1355,7 @@ impl Switcher {
                 + if matches!(self.rows[i].reference, RowRef::Section { .. }) {
                     0
                 } else {
-                    4 + crate::ui::tree::card_state_word(&self.rows[i].reference)
-                        .map_or(0, |word| word.len() as u16 + 1)
+                    4
                 },
             lines: 1,
         }
@@ -1415,10 +1396,8 @@ impl Switcher {
             width,
             filter,
             palette,
-            show_state_word,
         } = paint;
         let row = &self.rows[i];
-        let selected = self.selection_row() == Some(i);
         let accent = Style::default().fg(palette.accent);
         let number = Style::default().fg(palette.decoration);
         // The address column every card writes on - the only line, now that a card has
@@ -1439,7 +1418,7 @@ impl Switcher {
             return vec![Line::from(spans)];
         }
         // A machine's card names the machine alone, with its state glyph, or the spinner
-        // while its answer is on its way, and the state word while it is selected.
+        // while its answer is on its way.
         if let RowRef::Machine {
             machine,
             blocked,
@@ -1463,16 +1442,10 @@ impl Switcher {
                     Style::default().fg(palette.error),
                 )
             };
-            let word = crate::ui::tree::card_state_word(&row.reference).unwrap_or_default();
-            let suffix_w = 2 + if selected && show_state_word {
-                word.len() + 1
-            } else {
-                0
-            };
             let room = if width == 0 {
                 usize::MAX
             } else {
-                (width as usize).saturating_sub(num_w + 1 + suffix_w + 1)
+                (width as usize).saturating_sub(num_w + 1 + 2 + 1)
             };
             let mut line = address();
             line.extend(highlighted(
@@ -1482,19 +1455,11 @@ impl Switcher {
             ));
             line.push(Span::raw(" "));
             line.push(Span::styled(glyph, glyph_style));
-            if selected && show_state_word {
-                line.push(Span::styled(
-                    format!(" {word}"),
-                    Style::default().fg(palette.secondary),
-                ));
-            }
             line.push(Span::raw(" "));
             return vec![Line::from(line)];
         }
         // Host-state cards keep one fixed glyph slot after the machine/mux identity. The
-        // selected card adds its state word after that slot. Column measurement reserves
-        // the word on every host card, so moving the selection changes paint but never
-        // moves the columns. A scanning card turns the ONE spinner in that slot, in the
+        // scanning card turns the one spinner in that slot, in the
         // same place whatever the host has or has not resolved, so all scanning cards read
         // as the same thing loading; a settled card shows its glyph and no spinner.
         if let RowRef::Host {
@@ -1506,7 +1471,6 @@ impl Switcher {
         } = &row.reference
         {
             let pending = Style::default().fg(palette.warning);
-            let word = crate::ui::tree::card_state_word(&row.reference).unwrap_or_default();
             // A host-state card's number sits on the machine/mux line: the row is a word
             // about the host, not the thing the number names.
             let (glyph, glyph_style) = if *scanning {
@@ -1530,7 +1494,7 @@ impl Switcher {
                 (" ".into(), Style::default())
             };
             let mut line = address();
-            let identity = self.host_identity(i, width, num_w, show_state_word);
+            let identity = self.host_identity(i, width, num_w);
             let identity = if filter.is_empty() {
                 if let Some((machine, mux)) = identity.split_once('/') {
                     vec![
@@ -1557,12 +1521,6 @@ impl Switcher {
             line.extend(identity);
             line.push(Span::raw(" "));
             line.push(Span::styled(glyph, glyph_style));
-            if selected && show_state_word && self.part == Part::Card {
-                line.push(Span::styled(
-                    format!(" {word}"),
-                    Style::default().fg(palette.secondary),
-                ));
-            }
             line.push(Span::raw(" "));
             return vec![Line::from(line)];
         }

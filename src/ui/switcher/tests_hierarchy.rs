@@ -764,8 +764,8 @@ fn a_logout_gathers_the_selection_onto_the_machines_one_card() {
     assert_eq!(h.node(), machine("db"));
     let card = h.card_row(|r| matches!(r, RowRef::Machine { .. }));
     assert!(
-        h.cells(h.card(card)).contains("logged out"),
-        "the machine's card states the logout: {}",
+        h.cells(h.card(card)).contains('?'),
+        "the machine's card carries the login glyph: {}",
         h.cells(h.card(card))
     );
     assert_eq!(h.sw.current_view_screen(&h.state), Some(ViewScreen::Login));
