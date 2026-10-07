@@ -1117,8 +1117,8 @@ fn a_scanning_host_screen_states_its_headline_word_and_facts() {
         });
     assert_eq!(lines[headline + 1], "scanning", "{view}");
     assert!(
-        view.contains("failures") && view.contains("2 in a row"),
-        "{view}"
+        !view.contains("failures") && !view.contains("2 in a row"),
+        "a scan in flight names no earlier failures: {view}"
     );
     assert!(
         !view.contains("re-scan"),
@@ -4060,7 +4060,15 @@ async fn a_section_opens_host_freshness_by_key_and_click_without_numbering_it() 
     assert!(matches!(h.sw.current_ref(), Some(RowRef::Section { host }) if host == "local"));
     let screen = h.view_text();
     assert!(screen.contains("sessions"), "{screen}");
-    assert!(screen.contains("live updates"), "{screen}");
+    let lines: Vec<&str> = screen.lines().map(str::trim).collect();
+    let headline = lines.iter().position(|l| l.starts_with("host ")).unwrap();
+    assert_eq!(
+        lines[headline + 1],
+        "",
+        "a host screen with sessions has no state word: {screen}"
+    );
+    let updates = lines.iter().find(|l| l.starts_with("updates")).unwrap();
+    assert!(updates.ends_with(" live"), "{screen}");
     assert!(h.sw.current_attach_target(&h.state).is_none());
     let section = h.sw.selected;
     assert_eq!(h.sw.card_number(section), 0);
@@ -4187,16 +4195,11 @@ async fn both_host_screens_share_one_grammar() {
         );
     }
     let empty_lines = empty.view_text();
-    let lines: Vec<_> = empty_lines.lines().collect();
-    let action = lines
-        .iter()
-        .position(|line| line.contains("start a new session"));
-    let fact = lines
-        .iter()
-        .position(|line| line.trim_start().starts_with("sessions"));
     assert!(
-        action < fact,
-        "empty-host actions precede facts: {empty_lines}"
+        !empty_lines
+            .lines()
+            .any(|line| line.trim_start().starts_with("sessions")),
+        "the no sessions word is not repeated as a count: {empty_lines}"
     );
 }
 
@@ -8138,7 +8141,7 @@ fn reach(mux: &str, machine: &str, socket: &str, probe: &str) -> crate::ui::chro
         // The binary a test names IS its kind: no test reaches a mux through an alias.
         kind: mux.into(),
         socket: socket.into(),
-        refresh: "live updates".into(),
+        refresh: "live".into(),
     }
 }
 

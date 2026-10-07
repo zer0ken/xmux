@@ -294,7 +294,8 @@ fn screen_top(screen: &ScreenLines, selected: Option<usize>, height: u16) -> usi
 }
 
 impl ViewScreen {
-    /// The state word under the headline. The two SETTLED HOST states read theirs from
+    /// The state word under the headline, empty for a host screen with sessions, which has
+    /// no state beyond its list. The two SETTLED HOST states read theirs from
     /// the one source the nav cards read, so a card and the screen reached from it can
     /// never name the same state two ways; the self-session state is not a host state and
     /// names itself. A blocked host's word never says what it was blocked on; the login
@@ -308,7 +309,7 @@ impl ViewScreen {
             ViewScreen::Unreachable => crate::ui::tree::host_state_word(false, false, false, true),
             ViewScreen::Empty => crate::ui::tree::host_state_word(false, false, false, false),
             ViewScreen::Stopped => crate::session::STOPPED,
-            ViewScreen::Host => "sessions",
+            ViewScreen::Host => "",
             ViewScreen::Machine => crate::ui::tree::MACHINE_REACHABLE,
             ViewScreen::Landing => "",
         }
@@ -1023,12 +1024,6 @@ impl Chrome {
             }
             rows.push((ScreenCell::Gap, String::new()));
         } else if kind == ViewScreen::Host {
-            let count = state
-                .groups
-                .iter()
-                .find(|g| g.host == host)
-                .map_or(0, |g| g.sessions.len());
-            rows.push((ScreenCell::Label("sessions"), count.to_string()));
             if self.host_reach.contains_key(host) {
                 rows.push((
                     ScreenCell::Label("updates"),
@@ -1046,17 +1041,13 @@ impl Chrome {
         } else if kind == ViewScreen::Landing {
             // The landing screen is its list of cards and nothing else.
         } else if kind == ViewScreen::Scanning {
-            // A scan has no answer yet, so the screen states only what earlier answers
-            // observed. A key is not offered: the re-scan it would start is under way.
-            if let Some(runs) = state.failure_runs.get(host) {
-                rows.push((ScreenCell::Label("failures"), failure_run_words(*runs)));
-            }
+            // A scan has no answer yet, so the screen states only when the host last
+            // answered. A key is not offered: the re-scan it would start is under way.
             if let Some(reached) = state.last_reached.get(host) {
                 rows.push((ScreenCell::Label("last reached"), reached_at(*reached)));
             }
         } else {
             if kind == ViewScreen::Empty {
-                rows.push((ScreenCell::Label("sessions"), "0".into()));
                 if self.host_reach.contains_key(host) {
                     rows.push((
                         ScreenCell::Label("updates"),
@@ -1344,19 +1335,16 @@ impl Chrome {
         }
         let mut out = vec![Line::from("")];
         out.extend(headline_lines);
-        out.extend([Line::from(Span::styled(
-            format!(
-                " {}",
-                if landing {
-                    self.scan_progress(state)
-                } else if logged_out {
-                    crate::ui::tree::LOGGED_OUT.to_string()
-                } else {
-                    kind.word().to_string()
-                }
-            ),
-            state_style,
-        ))]);
+        let word = if landing {
+            self.scan_progress(state)
+        } else if logged_out {
+            crate::ui::tree::LOGGED_OUT.to_string()
+        } else {
+            kind.word().to_string()
+        };
+        if !word.is_empty() {
+            out.push(Line::from(Span::styled(format!(" {word}"), state_style)));
+        }
         // The login pane OWNS the connection values: they sit at the panel's top,
         // edited in place from the terminal view (no modal, no nav). The inputs come in
         // two groups, what ssh dials with and what happens after it worked, and whitespace
