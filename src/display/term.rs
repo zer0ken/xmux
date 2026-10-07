@@ -32,9 +32,10 @@ pub const FOCUS_IN: &[u8] = b"\x1b[I";
 pub const FOCUS_OUT: &[u8] = b"\x1b[O";
 
 /// RAII guard owning the terminal for the app's lifetime: enables raw mode,
-/// enters the alternate screen, enables SGR mouse capture, bracketed paste, and
-/// focus reports, and saves the title on construction, then on drop disables them,
-/// restores the title, leaves the alternate screen, and disables raw mode.
+/// enters the alternate screen, enables SGR mouse capture, bracketed paste, and focus
+/// reports, saves the title, and asks the terminal the questions a session's client
+/// asks of its own terminal on construction, then on drop disables them, restores the
+/// title, leaves the alternate screen, and disables raw mode.
 /// Restores the user's pre-launch screen on normal return AND on a panic (release
 /// builds unwind; see Cargo.toml `panic`).
 pub struct TermGuard;
@@ -60,6 +61,7 @@ impl TermGuard {
             let mut out = std::io::stdout();
             out.write_all(INPUT_MODES_ON)?;
             out.write_all(TITLE_SAVE)?;
+            out.write_all(crate::display::outer::PROBE)?;
             out.flush()?;
         }
         Ok(TermGuard)

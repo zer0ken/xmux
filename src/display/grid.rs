@@ -9,6 +9,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color as RColor, Modifier, Style};
 
+use crate::display::callbacks::GridCallbacks;
+
 /// What a child's output asked of the terminal around the screen: a bell, or a desktop
 /// notification. The grid's parser consumes these, so the grid keeps each one until the
 /// pump takes it and hands it to the loop, which re-emits it on xmux's own output.
@@ -44,9 +46,9 @@ const TITLE_MAX: usize = 256;
 /// Collects what the parser reports beside the cells while it processes a chunk: the
 /// alerts, and the window title the child set.
 #[derive(Default)]
-struct ParserSink {
-    alerts: Vec<Alert>,
-    title: Option<String>,
+pub(crate) struct ParserSink {
+    pub(crate) alerts: Vec<Alert>,
+    pub(crate) title: Option<String>,
 }
 
 impl ParserSink {
@@ -122,7 +124,7 @@ fn notification(params: &[&[u8]]) -> Option<Alert> {
 }
 
 pub struct Grid {
-    parser: vt100::Parser<ParserSink>,
+    parser: vt100::Parser<GridCallbacks>,
     /// Set by a session switch: the next `feed` wipes the grid before applying the
     /// chunk, so the prior session's content stays on screen until the mux's fresh
     /// repaint arrives (no blank window between the switch and the repaint) and the
@@ -135,13 +137,15 @@ pub struct Grid {
 impl Grid {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self {
-            parser: vt100::Parser::new_with_callbacks(rows, cols, 0, ParserSink::default()),
+            parser: new_parser(rows, cols),
             clear_on_feed: false,
             modes: Default::default(),
         }
     }
 
-    /// A fresh parser at `rows` x `cols` that keeps the alerts not taken yet.
+    /// A fresh parser at `rows` x `cols` that keeps its callbacks: the alerts not taken
+    /// yet and the answers still owed survive, and so do the cursor shape and modes the
+    /// client set, since a wipe of the cells does not change the client.
     fn reset_parser(&mut self, rows: u16, cols: u16) {
         let sink = std::mem::take(self.parser.callbacks_mut());
         self.parser = vt100::Parser::new_with_callbacks(rows, cols, 0, sink);
@@ -149,12 +153,12 @@ impl Grid {
 
     /// The window title the child set with OSC 0 or OSC 2, if it set one.
     pub fn title(&self) -> Option<&str> {
-        self.parser.callbacks().title.as_deref()
+        self.parser.callbacks().title()
     }
 
     /// The alerts the output fed since the last take asked for, oldest first.
     pub fn take_alerts(&mut self) -> Vec<Alert> {
-        std::mem::take(&mut self.parser.callbacks_mut().alerts)
+        self.parser.callbacks_mut().take_alerts()
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -163,6 +167,11 @@ impl Grid {
             self.clear_on_feed = false;
             self.clear();
         }
+        // The modes the scanner read stand for the whole chunk, so a mode report
+        // answered within it reads the chunk's end state.
+        self.parser
+            .callbacks_mut()
+            .set_input_modes(self.modes.modes());
         // vt100 0.16.2 panics (screen.rs `Screen::text` unwrap on None) when a wide
         // (CJK) glyph lands on the last column in some cursor states - common after a
         // grid shrink. Catch it so the PTY pump thread survives; reset the parser so
@@ -175,6 +184,12 @@ impl Grid {
             let (rows, cols) = self.parser.screen().size();
             self.reset_parser(rows, cols);
         }
+    }
+
+    /// The answers to the terminal queries the fed output held, in order, each once.
+    /// The caller writes them to the child.
+    pub fn take_replies(&mut self) -> Vec<u8> {
+        self.parser.callbacks_mut().take_replies()
     }
 
     /// Wipes the grid to a blank slate (a fresh parser at the same size) at the start
@@ -192,7 +207,7 @@ impl Grid {
         let (rows, cols) = self.parser.screen().size();
         self.reset_parser(rows, cols);
         // The title belongs to the session the grid showed; the next one sets its own.
-        self.parser.callbacks_mut().title = None;
+        self.parser.callbacks_mut().clear_title();
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -309,6 +324,10 @@ impl Grid {
     }
 }
 
+fn new_parser(rows: u16, cols: u16) -> vt100::Parser<GridCallbacks> {
+    vt100::Parser::new_with_callbacks(rows, cols, 0, GridCallbacks::default())
+}
+
 /// Maps a vt100 colour to a ratatui colour. `Default` → `Reset` (terminal
 /// default), `Idx` → 256-colour index, `Rgb` → true colour.
 pub fn vt_color_to_ratatui(c: vt100::Color) -> RColor {
@@ -366,6 +385,117 @@ Connection to host closed.
             Some("Connection to host closed."),
             "the trailing blank rows are skipped for the last written line"
         );
+    }
+
+    fn replies(g: &mut Grid, bytes: &[u8]) -> Vec<u8> {
+        g.feed(bytes);
+        g.take_replies()
+    }
+
+    /// The cursor report names the cursor where the query sits in the stream, and the
+    /// device attributes claim only what the grid models.
+    #[test]
+    fn the_grid_answers_status_and_attribute_queries() {
+        let mut g = Grid::new(24, 80);
+        assert_eq!(replies(&mut g, b"\x1b[3;5H\x1b[6nmore"), b"\x1b[3;5R");
+        assert_eq!(replies(&mut g, b"\x1b[H\x1b[?6n"), b"\x1b[?1;1;1R");
+        assert_eq!(replies(&mut g, b"\x1b[5n"), b"\x1b[0n");
+        assert_eq!(
+            replies(&mut g, b"\x1b[c\x1b[0c"),
+            b"\x1b[?62;22c\x1b[?62;22c"
+        );
+        let version = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            replies(&mut g, b"\x1b[>c"),
+            format!("\x1b[>0;{};0c", super::super::callbacks::version_number()).as_bytes()
+        );
+        assert_eq!(
+            replies(&mut g, b"\x1b[>q"),
+            format!("\x1bP>|xmux({version})\x1b\\").as_bytes()
+        );
+        assert!(replies(&mut g, b"plain output\r\n").is_empty());
+    }
+
+    /// A query split across two reads is answered once, when it completes, and a
+    /// query that ends a read is not answered again by the next one.
+    #[test]
+    fn a_split_query_is_answered_exactly_once() {
+        let mut g = Grid::new(24, 80);
+        assert!(replies(&mut g, b"prompt\x1b[").is_empty());
+        assert_eq!(replies(&mut g, b"6n more\x1b[c"), b"\x1b[1;7R\x1b[?62;22c");
+        assert!(replies(&mut g, b" tail").is_empty());
+    }
+
+    /// DECRQM reports the modes the grid keeps as set or reset and every other mode as
+    /// not recognized.
+    #[test]
+    fn the_grid_reports_the_modes_it_keeps() {
+        let mut g = Grid::new(24, 80);
+        assert_eq!(replies(&mut g, b"\x1b[?2004$p"), b"\x1b[?2004;2$y");
+        assert_eq!(
+            replies(&mut g, b"\x1b[?2004h\x1b[?2004$p\x1b[?1049h\x1b[?1049$p"),
+            b"\x1b[?2004;1$y\x1b[?1049;1$y"
+        );
+        assert_eq!(
+            replies(&mut g, b"\x1b[?1006h\x1b[?1006$p"),
+            b"\x1b[?1006;1$y"
+        );
+        assert_eq!(replies(&mut g, b"\x1b[?1004$p"), b"\x1b[?1004;2$y");
+        assert_eq!(
+            replies(&mut g, b"\x1b[?1004h\x1b[?1004$p"),
+            b"\x1b[?1004;1$y"
+        );
+        assert_eq!(replies(&mut g, b"\x1b[?25l\x1b[?25$p"), b"\x1b[?25;2$y");
+        assert_eq!(replies(&mut g, b"\x1b[?7727$p"), b"\x1b[?7727;0$y");
+        assert_eq!(replies(&mut g, b"\x1b[4$p"), b"\x1b[4;0$y");
+    }
+
+    /// Colours, the colour scheme, and pixel sizes come from what the real terminal
+    /// answered xmux; what it never answered stays unanswered.
+    #[test]
+    fn the_grid_answers_with_the_outer_terminals_facts() {
+        use crate::display::outer::{set_outer_for_test, OuterTerminal, TEST_LOCK};
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = Grid::new(24, 80);
+
+        set_outer_for_test(OuterTerminal::default());
+        assert!(replies(&mut g, b"\x1b]11;?\x07\x1b]10;?\x1b\\x1b]4;1;?\x07").is_empty());
+        assert!(replies(&mut g, b"\x1b[?996n\x1b[16t\x1b[14t").is_empty());
+        assert_eq!(replies(&mut g, b"\x1b[18t"), b"\x1b[8;24;80t");
+
+        let mut palette: [Option<String>; 16] = Default::default();
+        palette[1] = Some("rgb:cdcd/0000/0000".into());
+        set_outer_for_test(OuterTerminal {
+            foreground: Some("rgb:cccc/cccc/cccc".into()),
+            background: Some("rgb:1e1e/1e1e/2e2e".into()),
+            palette,
+            scheme: None,
+            cell_px: Some((18, 9)),
+        });
+        assert_eq!(
+            replies(&mut g, b"\x1b]11;?\x07\x1b]10;?\x1b\\"),
+            b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\x1b]10;rgb:cccc/cccc/cccc\x1b\\"
+        );
+        assert_eq!(
+            replies(&mut g, b"\x1b]4;1;?;2;?\x07"),
+            b"\x1b]4;1;rgb:cdcd/0000/0000\x1b\\",
+            "a palette slot the terminal never reported stays unanswered"
+        );
+        assert_eq!(replies(&mut g, b"\x1b[?996n"), b"\x1b[?997;1n");
+        assert_eq!(replies(&mut g, b"\x1b[16t"), b"\x1b[6;18;9t");
+        assert_eq!(replies(&mut g, b"\x1b[14t"), b"\x1b[4;432;720t");
+        set_outer_for_test(OuterTerminal::default());
+    }
+
+    /// A parser reset after a vt100 panic keeps the answers owed for the queries it
+    /// parsed before the panic.
+    #[test]
+    fn replies_survive_a_parser_reset() {
+        let mut g = Grid::new(1, 4);
+        g.feed(b"\x1b[6n\x1b[1;4H");
+        g.feed("한".as_bytes());
+        g.feed(b"\x1b[K");
+        assert_eq!(g.take_replies(), b"\x1b[1;1R");
     }
 
     #[test]

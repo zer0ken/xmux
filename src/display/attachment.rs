@@ -95,7 +95,7 @@ fn scan_marker_once(acc: &mut Vec<u8>, captured: &mut Option<String>, chunk: &[u
     } else {
         // No whole marker yet: bound `acc` to a rolling tail so a never-completing
         // marker (or an empty `$(tty)`) cannot grow it without limit or force an
-        // O(n²) re-scan. Same drain idiom as the pump's `qtail` carry. Append →
+        // O(n²) re-scan. Append →
         // parse (above) → cap, so a whole marker inside a big chunk is captured
         // before any truncation.
         let cap = crate::model::death::DISPLAY_TTY_MARKER_MAX;
@@ -280,67 +280,6 @@ impl Osc52Scanner {
         self.oversized = false;
         self.state = Osc52State::Idle;
     }
-}
-
-/// Builds the responses a vt100 host owes the child for the terminal QUERIES in
-/// `data`, so the child does not block waiting on them. With raw passthrough there
-/// is a real terminal behind the PTY to answer; rendering into a `Grid` instead, the
-/// pump must answer itself or the child (a shell, tmux, ssh's remote tty) stalls on
-/// startup and produces NO output (the empty-pane bug). `cursor` is the grid's
-/// current cursor as `(col, row)`, 0-based.
-///
-/// Answered: `ESC[6n` (DSR cursor-position report → `ESC[<row>;<col>R`, 1-based) and
-/// `ESC[c` / `ESC[0c` (primary Device Attributes → a VT100-with-AVO `ESC[?1;2c`).
-/// Returns the concatenated responses (empty when there are no queries).
-pub(super) fn query_responses(data: &[u8], cursor: (u16, u16)) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i + 1 < data.len() {
-        if data[i] != 0x1b || data[i + 1] != b'[' {
-            i += 1;
-            continue;
-        }
-        // ESC [ 6 n  → cursor-position report
-        if i + 3 < data.len() && data[i + 2] == b'6' && data[i + 3] == b'n' {
-            let (col, row) = cursor;
-            out.extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
-            i += 4;
-            continue;
-        }
-        // ESC [ c  or  ESC [ 0 c  → primary device attributes
-        if i + 2 < data.len() && data[i + 2] == b'c' {
-            out.extend_from_slice(b"\x1b[?1;2c");
-            i += 3;
-            continue;
-        }
-        if i + 3 < data.len() && data[i + 2] == b'0' && data[i + 3] == b'c' {
-            out.extend_from_slice(b"\x1b[?1;2c");
-            i += 4;
-            continue;
-        }
-        i += 1;
-    }
-    out
-}
-
-/// The longest trailing suffix of `data` that is an INCOMPLETE prefix of a query we
-/// answer, so it can be completed by the next read and must be carried over. A
-/// COMPLETE query is never returned here (it was already answered by
-/// [`query_responses`]), which is what prevents a duplicate reply when a whole query
-/// lands at a read boundary. Recognized partial prefixes: `ESC`, `ESC[`, `ESC[6`,
-/// `ESC[0` (the strict prefixes of `ESC[6n` / `ESC[0c` / `ESC[c`).
-pub(super) fn trailing_partial_query(data: &[u8]) -> &[u8] {
-    for p in [
-        b"\x1b[6".as_slice(),
-        b"\x1b[0".as_slice(),
-        b"\x1b[".as_slice(),
-        b"\x1b".as_slice(),
-    ] {
-        if data.ends_with(p) {
-            return &data[data.len() - p.len()..];
-        }
-    }
-    &[]
 }
 
 /// The blocking PTY operations the control thread performs, behind a trait so
@@ -652,14 +591,12 @@ pub fn spawn_attachment(
     let pump_pending = pending.clone();
     let auth_transcript = observed.then(|| Arc::new(Mutex::new(Vec::new())));
     let mut pump_transcript = auth_transcript.clone();
-    // The pump answers the child's terminal queries (DSR/DA) over this sender, since
-    // there is no real terminal behind the PTY to answer - without it the child
-    // stalls on startup and the grid stays blank.
+    // The pump answers the child's terminal queries over this sender, since there is
+    // no real terminal behind the PTY to answer - without it the child stalls on
+    // startup and the grid stays blank.
     let pump_ctl = control_tx.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
-        // Carries up to the last 3 bytes so a query split across reads is still seen.
-        let mut qtail: Vec<u8> = Vec::new();
         let mut marker_acc: Vec<u8> = Vec::new();
         let mut marker_done = false;
         let mut painted = false;
@@ -671,7 +608,7 @@ pub fn spawn_attachment(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let (cursor, visible, alerts) = {
+                    let (replies, visible, alerts) = {
                         let mut g = match pump_grid.lock() {
                             Ok(g) => g,
                             Err(_) => break,
@@ -685,19 +622,13 @@ pub fn spawn_attachment(
                             || !g.is_blank_except(
                                 crate::transport::diagnostic::is_verbose_report_line,
                             );
-                        (g.cursor(), visible, g.take_alerts())
+                        (g.take_replies(), visible, g.take_alerts())
                     };
-                    // Answer DSR/DA queries so the child does not block (empty-pane bug).
-                    // Carry only an INCOMPLETE trailing query prefix to the next read -
-                    // never a complete query (already answered), so no duplicate reply.
-                    qtail.extend_from_slice(&buf[..n]);
-                    let resp = query_responses(&qtail, cursor);
-                    if !resp.is_empty() {
-                        let _ = pump_ctl.send(PtyCmd::Input(resp));
+                    // Answer the child's terminal queries so it does not block (the
+                    // empty-pane bug).
+                    if !replies.is_empty() {
+                        let _ = pump_ctl.send(PtyCmd::Input(replies));
                     }
-                    let keep = trailing_partial_query(&qtail).len();
-                    let cut = qtail.len() - keep;
-                    qtail.drain(0..cut);
                     // Paint time starts at the first chunk that leaves something visible
                     // on the grid. A client that clears the screen and then waits on its
                     // own terminal queries has produced bytes but no frame, and swapping
@@ -1203,21 +1134,6 @@ sleep 2
     }
 
     #[test]
-    fn query_responses_answers_dsr_and_da() {
-        // ESC[6n (DSR cursor-position) → ESC[<row>;<col>R, 1-based from the (col,row).
-        assert_eq!(query_responses(b"\x1b[6n", (4, 2)), b"\x1b[3;5R");
-        // ESC[c and ESC[0c (primary Device Attributes) → a VT100-with-AVO reply.
-        assert_eq!(query_responses(b"\x1b[c", (0, 0)), b"\x1b[?1;2c");
-        assert_eq!(query_responses(b"\x1b[0c", (0, 0)), b"\x1b[?1;2c");
-        // Plain output with no query → no response (the empty-pane bug was the pump
-        // never answering these, so the child stalled and produced nothing).
-        assert!(query_responses(b"hello world\r\n", (1, 1)).is_empty());
-        // A query embedded in other bytes is still answered.
-        let r = query_responses(b"abc\x1b[6ndef", (0, 0));
-        assert_eq!(r, b"\x1b[1;1R");
-    }
-
-    #[test]
     fn first_visible_chunk_notifies_while_output_is_pending() {
         let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
         let pending = AtomicBool::new(false);
@@ -1247,44 +1163,6 @@ sleep 2
             received.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
-    }
-
-    #[test]
-    fn trailing_partial_query_carries_only_incomplete_prefixes() {
-        // A COMPLETE query is NOT carried (already answered) → no duplicate reply.
-        assert_eq!(trailing_partial_query(b"out\x1b[c"), b"");
-        assert_eq!(trailing_partial_query(b"out\x1b[6n"), b"");
-        assert_eq!(trailing_partial_query(b"out\x1b[0c"), b"");
-        // INCOMPLETE trailing prefixes ARE carried so the next read can complete them.
-        assert_eq!(trailing_partial_query(b"out\x1b"), b"\x1b");
-        assert_eq!(trailing_partial_query(b"out\x1b["), b"\x1b[");
-        assert_eq!(trailing_partial_query(b"out\x1b[6"), b"\x1b[6");
-        assert_eq!(trailing_partial_query(b"out\x1b[0"), b"\x1b[0");
-        // Plain trailing bytes carry nothing.
-        assert_eq!(trailing_partial_query(b"plain"), b"");
-    }
-
-    #[test]
-    fn split_query_answered_once_across_reads() {
-        // Mirrors the pump's carry: a DSR split across reads 1-2, and a DA landing at
-        // the end of read 2 (a read boundary). Each must be answered EXACTLY ONCE -
-        // the boundary DA must NOT be re-answered on read 3 (the dup-reply bug).
-        let mut qtail: Vec<u8> = Vec::new();
-        let mut all: Vec<u8> = Vec::new();
-        for chunk in [&b"prompt\x1b[6"[..], &b"n more\x1b[c"[..], &b" tail"[..]] {
-            qtail.extend_from_slice(chunk);
-            all.extend_from_slice(&query_responses(&qtail, (0, 0)));
-            let keep = trailing_partial_query(&qtail).len();
-            let cut = qtail.len() - keep;
-            qtail.drain(0..cut);
-        }
-        let dsr = all.windows(3).filter(|w| *w == b"1;1").count(); // ESC[1;1R cursor reply body
-        let da = all.windows(7).filter(|w| *w == b"\x1b[?1;2c").count();
-        assert_eq!(dsr, 1, "DSR answered exactly once (split across reads)");
-        assert_eq!(
-            da, 1,
-            "DA answered exactly once (no duplicate at the read boundary)"
-        );
     }
 
     #[test]
