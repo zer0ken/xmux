@@ -724,13 +724,15 @@ async fn a_scanning_host_card_is_one_line_with_a_trailing_spinner() {
     let h = Harness::from_hosts(&["local"]);
     let rows = non_empty(&h);
     assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
-    assert_eq!(rows[0], format!("1 local {sp} scanning"));
+    // The selected card, with the nav focused, ends in the Enter mark.
+    let enter = super::render::ENTER_MARK;
+    assert_eq!(rows[0], format!("1 local {sp} scanning {enter}"));
 
     // A qualified id already confirms its mux: same shape, the mux in the middle.
     let h = Harness::from_hosts(&["local:zellij"]);
     let rows = non_empty(&h);
     assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
-    assert_eq!(rows[0], format!("1 local/zellij {sp} scanning"));
+    assert_eq!(rows[0], format!("1 local/zellij {sp} scanning {enter}"));
 }
 
 #[tokio::test]
@@ -7026,8 +7028,9 @@ fn hovering_a_help_tab_shows_its_section_until_the_pointer_leaves() {
         "the body shows its section"
     );
     let buf = h.term.backend().buffer();
-    assert!(
-        buf[(col, row)].modifier.contains(Modifier::UNDERLINED),
+    assert_eq!(
+        Some(buf[(col, row)].bg),
+        crate::ui::palette::soft_selection_style(&h.sw.palette).bg,
         "the hovered tab is drawn apart"
     );
     let (lit_col, _) = h.tab_cell(0, false);
@@ -9273,7 +9276,8 @@ fn a_session_that_asked_for_attention_wears_the_alert_mark_until_cleared() {
     );
     let row = card_row(&sw, &state);
     assert!(
-        row.trim_end().ends_with("build !"),
+        row.trim_end()
+            .ends_with(&format!("build ! {}", super::render::ENTER_MARK)),
         "the mark follows the session name:\n{row:?}"
     );
     sw.clear_alert("local", "build");
@@ -9404,14 +9408,6 @@ async fn a_session_that_stops_again_is_not_resumed_without_the_user() {
         h.sw.current_view_screen(&h.state),
         Some(ViewScreen::Stopped)
     );
-}
-
-#[tokio::test]
-async fn the_selection_hint_names_a_stopped_session_stopped() {
-    let mut h = host_with_a_stopped_session();
-    h.key(KeyCode::Down).await;
-    let (_, fact) = h.sw.selection_hint(&h.state, true).unwrap();
-    assert_eq!(fact, "1 window, stopped");
 }
 
 #[tokio::test]

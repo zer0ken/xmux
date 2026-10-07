@@ -17,8 +17,8 @@ layer reads and paints them and owns only transient popup geometry.
 - The chrome renders the view border, the hint bar, and the view screens, and reads
   inventory from the runtime state, not from the switcher. It also holds the override
   layer of user-named colours over the semantic palette.
-- The key list, the help, and the selection hint read every key and its words from the
-  model's key table; a surface never spells a key itself.
+- The key list and the help read every key and its words from the model's key table; a
+  surface never spells a key itself.
 - Slow mux effects run behind the operations module: a committing key emits a
   deferred-operation command for the run loop to spawn and never calls the mux itself.
 - Off-screen dump rendering lives beside the other rendering code.

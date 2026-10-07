@@ -263,11 +263,33 @@ impl Default for Palette {
     }
 }
 
-/// The style a popup item or a help tab under the pointer is painted with, the soft
-/// selection: an underline, which reads apart from the hard selection's accent background
-/// and sits on top of it when both mark one item. An attribute, so the theme resolves it.
-pub(crate) fn soft_selection_style() -> Style {
-    Style::default().add_modifier(Modifier::UNDERLINED)
+/// The style the item under the pointer is painted with, the soft selection, on the nav,
+/// a screen link, a popup list, and a help tab alike.
+///
+/// The hint bar's pair, `bar_fg` text on `bar_bg`, over the whole item, with dim and
+/// reverse video cleared as the hard selection clears them: a background reads at a
+/// glance where an underline is a thin mark, and the bar's pair is the one the theme
+/// already keeps legible on a surface of its own, apart from the accent. With no colour
+/// to paint (`NO_COLOR`) the soft selection is an underline.
+pub(crate) fn soft_selection_style(palette: &Palette) -> Style {
+    if palette.bar_bg == Color::Reset {
+        return Style::default().add_modifier(Modifier::UNDERLINED);
+    }
+    Style::default()
+        .fg(palette.bar_fg)
+        .bg(palette.bar_bg)
+        .remove_modifier(Modifier::DIM | Modifier::REVERSED)
+}
+
+/// `style` under the pointer: the soft selection's background, or, on an item the hard
+/// selection already paints, an underline over the accent, since one cell holds one
+/// background and the hard selection is where the next key lands.
+pub(crate) fn soft_selected(style: Style, hard: bool, palette: &Palette) -> Style {
+    if hard {
+        style.add_modifier(Modifier::UNDERLINED)
+    } else {
+        style.patch(soft_selection_style(palette))
+    }
 }
 
 /// The style every hard selection is painted with: a nav card or the half of a section
@@ -314,6 +336,26 @@ pub(crate) fn selected_line(line: Line<'static>, palette: &Palette) -> Line<'sta
         .into_iter()
         .map(|span| {
             let style = selected(span.style, palette);
+            span.style(style)
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans).style(style)
+}
+
+/// `line` under the pointer: [`soft_selected`] over the line and over each of its spans,
+/// so a span's own colour, which a span keeps over its line's, cannot vanish into the
+/// soft selection's background.
+pub(crate) fn soft_selected_line(
+    line: Line<'static>,
+    hard: bool,
+    palette: &Palette,
+) -> Line<'static> {
+    let style = soft_selected(line.style, hard, palette);
+    let spans = line
+        .spans
+        .into_iter()
+        .map(|span| {
+            let style = soft_selected(span.style, hard, palette);
             span.style(style)
         })
         .collect::<Vec<_>>();

@@ -8,7 +8,6 @@ use crate::model::Node;
 use crate::state::State;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::style::Modifier;
 use ratatui::Terminal;
 
 const LOGGED_OUT: &str = crate::model::LOGGED_OUT;
@@ -143,9 +142,11 @@ impl H {
         (rect.x..rect.right()).all(|x| buf[(x, rect.y)].bg == Color::LightGreen)
     }
 
-    fn underlined(&self, rect: Rect) -> bool {
+    /// Whether every cell of `rect` wears the soft selection's background.
+    fn soft_selected(&self, rect: Rect) -> bool {
         let buf = self.term.backend().buffer();
-        (rect.x..rect.right()).all(|x| buf[(x, rect.y)].modifier.contains(Modifier::UNDERLINED))
+        let bg = crate::ui::palette::soft_selection_style(&self.sw.palette).bg;
+        bg.is_some() && (rect.x..rect.right()).all(|x| Some(buf[(x, rect.y)].bg) == bg)
     }
 
     fn view(&self) -> String {
@@ -687,8 +688,8 @@ fn hovering_a_nav_target_shows_its_screen_without_moving_the_hard_selection() {
         "the hovered card's session is shown"
     );
     assert!(
-        h.underlined(h.card(deploy)),
-        "the soft selection is underlined"
+        h.soft_selected(h.card(deploy)),
+        "the soft selection wears its background"
     );
     assert!(!h.highlighted(h.card(deploy)));
 
@@ -722,7 +723,7 @@ fn the_nav_takes_no_soft_selection_while_the_terminal_view_holds_the_focus() {
 }
 
 #[test]
-fn a_hovered_link_is_underlined_in_the_terminal_view() {
+fn a_hovered_link_wears_the_soft_selection_in_the_terminal_view() {
     let mut h = fleet();
     h.select("web", "api");
     h.ctrl(KeyCode::Up);
@@ -731,7 +732,7 @@ fn a_hovered_link_is_underlined_in_the_terminal_view() {
     let rect = h.link_rect(2);
     assert!(h.sw.link_hover_at(&h.plan.clone(), rect.x, rect.y));
     h.draw();
-    assert!(h.underlined(h.link_rect(2)));
+    assert!(h.soft_selected(h.link_rect(2)));
     assert_eq!(h.node(), host("web"), "hovering a link opens nothing");
 }
 
@@ -1201,8 +1202,8 @@ fn a_landing_link_takes_the_pointer_from_the_navs_focus() {
     assert!(h.sw.link_hover_at(&h.plan.clone(), rect.x, rect.y));
     h.draw();
     assert!(
-        h.underlined(landing_link(&h, session("web", "deploy"))),
-        "the soft selection is underlined and survives the frame's focus sync"
+        h.soft_selected(landing_link(&h, session("web", "deploy"))),
+        "the soft selection wears its background and survives the frame's focus sync"
     );
     assert_eq!(
         h.node(),
@@ -1457,4 +1458,46 @@ fn a_scanned_machine_keeps_its_screen_and_reads_scanning() {
 {during}"
         );
     }
+}
+
+#[test]
+fn the_selected_card_ends_in_the_enter_mark_while_the_nav_holds_the_focus() {
+    let enter = super::render::ENTER_MARK;
+    let nav_rows = |h: &H| {
+        let buf = h.term.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..NAV_WIDTH)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut h = fleet();
+    h.select("web", "api");
+    let marked: Vec<_> = nav_rows(&h)
+        .into_iter()
+        .filter(|r| r.contains(enter))
+        .collect();
+    assert_eq!(marked.len(), 1, "one card carries the mark: {marked:?}");
+    assert!(
+        marked[0].trim_end().ends_with(&format!("api {enter}")),
+        "{marked:?}"
+    );
+    h.select("web", "deploy");
+    let marked: Vec<_> = nav_rows(&h)
+        .into_iter()
+        .filter(|r| r.contains(enter))
+        .collect();
+    assert_eq!(marked.len(), 1, "{marked:?}");
+    assert!(
+        marked[0].contains("deploy"),
+        "the mark follows the selection"
+    );
+    h.terminal_focused = true;
+    h.draw();
+    assert!(
+        nav_rows(&h).iter().all(|r| !r.contains(enter)),
+        "Enter reaches the pane, so no card carries the mark"
+    );
 }

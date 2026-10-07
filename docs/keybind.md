@@ -218,11 +218,10 @@ A held prefix sends one literal per repeat and blinks the box, because a termina
 no key-up.
 
 The hint bar shows one thing at a time, in this order: the prefix alone while the key
-list or an input is open, the hint after a selection move, the scan progress, the active
-filter, and the resting prefix. What a key did, or why it did nothing, is a toast. The
-hint after a selection move names the card's next keys and one fact about
-it for three seconds; when the terminal view holds focus it offers only prefix keys, and
-a selection xmux was told to make raises none. With the nav auto-hidden, a prefix
+list or an input is open, the scan progress, the active filter, and the resting prefix.
+What a key did, or why it did nothing, is a toast. Moving the selection leaves the bar
+as it is: while the nav holds the focus, the selected card ends in `⏎`, the key that
+runs it. With the nav auto-hidden, a prefix
 interaction brings the nav back until it ends, and the key list and the bar open over
 the window's bottom left.
 
@@ -231,7 +230,7 @@ the window's bottom left.
 Every popup opens where the key list opens, at the same place each time. Dragging a popup
 moves only that popup, and only until it closes. Its rows wrap
 to its width rather than being cut, and only a text field stays on one row. In a popup
-with items to pick, the arrows move its selection, the pointer underlines an item without
+with items to pick, the arrows move its selection, the pointer marks an item without
 moving that selection, and a click executes the item as `Enter` would. A popup that
 cannot accept what was typed in it says so beside its field in the error colour, led by
 `✗`, until the next key, and stays open for the correction; it raises no toast.
@@ -278,7 +277,7 @@ toasts off; the history still records every result.
 | left-click a card or title part | open it: select it and focus the terminal view |
 | point at a card or title part | preview it in the terminal view without moving the selection |
 | left-click a screen link | open the screen it names, or run the action it names as its key does |
-| point at or left-click a landing card | underline it, or open it as `Enter` does, from either focus |
+| point at or left-click a landing card | mark it, or open it as `Enter` does, from either focus |
 | left-click a view | focus that view |
 | left-click a collapsed nav | expand the nav |
 | left-click `‹ 5` or `7 ›` | select the nearest card scrolled off that side |
