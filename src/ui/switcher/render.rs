@@ -1570,12 +1570,23 @@ impl Switcher {
             (width as usize).saturating_sub(num_w + 2)
         };
         let session_style = accent;
+        // A display client that moved somewhere the nav has no card for names that place
+        // after the session, so the card says where the view is.
+        let away = match &row.reference {
+            RowRef::Session { sess: s } => self.away_of(&s.host, &s.name),
+            _ => None,
+        }
+        .map(|label| format!(" \u{2192} {label}"));
+        let available = available.saturating_sub(away.as_deref().map_or(0, UnicodeWidthStr::width));
         detail.extend(highlighted_after(
             &crate::session::session_label(machine, mux, ""),
             middle_ellipsize(sess, available),
             filter,
             session_style,
         ));
+        if let Some(away) = away {
+            detail.push(Span::styled(away, Style::default().fg(palette.secondary)));
+        }
         detail.push(Span::raw(" "));
         vec![Line::from(detail)]
     }

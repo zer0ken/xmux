@@ -359,6 +359,9 @@ pub(crate) enum Msg {
     },
     SetRenderPlan(RenderPlan),
     FollowDisplay(crate::session::Address),
+    /// The display client of the session at the address went where the nav has no card,
+    /// named by the mux's label, or `None` once it is back on a card.
+    DisplayAway(Option<(crate::session::Address, String)>),
     Tick {
         now: std::time::Instant,
         spinner: HashSet<String>,
@@ -2276,6 +2279,10 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         }
         Msg::FollowDisplay(address) => {
             model.switcher.select_address(&address);
+            Vec::new()
+        }
+        Msg::DisplayAway(away) => {
+            model.switcher.set_away(away);
             Vec::new()
         }
         Msg::Tick { now, spinner } => {

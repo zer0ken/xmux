@@ -405,6 +405,9 @@ pub struct Switcher {
     /// The session xmux is ITSELF running in, when it is inside one. The
     /// one session the terminal view refuses: see [`Switcher::is_own_session`].
     own_session: Option<Address>,
+    /// The session card whose display client moved somewhere this nav lists no card for,
+    /// and the mux's label for that place.
+    away: Option<(Address, String)>,
     /// Whether the current sorted list receives contiguous numbers on each rebuild.
     renumbering: bool,
     /// Card numbers keyed by identity. The configured policy either deals them in the
@@ -482,6 +485,7 @@ impl Switcher {
             login_target: None,
             terminal_view_target: TerminalViewTarget::default(),
             own_session: None,
+            away: None,
             renumbering: true,
             numbers: std::collections::HashMap::new(),
             next_number: 1,
@@ -571,6 +575,21 @@ impl Switcher {
     /// named, it is never called and nothing is refused.
     pub fn set_own_session(&mut self, address: Option<Address>) {
         self.own_session = address;
+    }
+
+    /// Records where the display client of the session at an address went, when the nav
+    /// lists no card for that place, or clears it with `None`.
+    pub fn set_away(&mut self, away: Option<(Address, String)>) {
+        self.away = away;
+    }
+
+    /// The label of the place the display client of `host`'s session `name` went, when
+    /// that place has no card.
+    fn away_of(&self, host: &str, name: &str) -> Option<&str> {
+        self.away
+            .as_ref()
+            .filter(|(address, _)| address.host == host && address.session == name)
+            .map(|(_, label)| label.as_str())
     }
 
     /// Applies the card-number policy to the current list and subsequent rebuilds.

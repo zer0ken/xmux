@@ -41,19 +41,31 @@ KNOWN = {
     ("first-launch", "tmux", "alpine", "windows"): "#673",
     ("switch", None, "alpine", "windows"): "#673",
 }
-# Cells that do not apply: the mux cannot move a client between sessions (a screen,
-# abduco, or herdr client belongs to one session's server), and abduco has no keys of its
-# own beyond the detach key `detach-inside` covers.
+# Cells that do not apply: the mux cannot move a client between sessions (a screen or
+# abduco client belongs to one session's server), and abduco has no keys of its own
+# beyond the detach key `detach-inside` covers.
 NOT_APPLICABLE = {("in-client-switch", "screen"), ("in-client-switch", "abduco"),
-                  ("in-client-switch", "herdr"), ("native-keys", "abduco")}
+                  ("native-keys", "abduco")}
 
 # The in-client keys that detach a mux's own client, and the input that moves the client
 # from <mux>1 to <mux>2 from inside it: tmux's next-session key, zellij's action, which
-# acts on the one client the pane has, and tuios's next-session key (Alt+Shift+N).
+# acts on the one client the pane has, tuios's next-session key (Alt+Shift+N), and
+# herdr's workspace navigation onto the saved machine that is <mux>2 on the same host.
 DETACH = {"tmux": "\x02d", "screen": "\x01d", "zellij": "\x0fd", "abduco": "\x1c",
           "tuios": "\x02d", "herdr": "\x02q"}
 INSIDE_SWITCH = {"tmux": ["\x02", ")"], "zellij": ["zellij action switch-session zellij2", "Enter"],
-                 "tuios": ["\x1bN"]}
+                 "tuios": ["\x1bN"], "herdr": ["\x02", "w", "Down", "Enter"]}
+# herdr moves a client between saved SSH machines, each one session on one host. A saved
+# machine at localhost makes herdr2 a place the client can move to. Saving it needs a
+# herdr2 server that herdr started for saved machines, so the one the host started is
+# stopped first; removing the machine after the scenario returns later clients to Local.
+HERDR_SAVE = ("herdr session stop herdr2 >/dev/null 2>&1; "
+              "[ -f .ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f .ssh/id_ed25519; "
+              "cat .ssh/id_ed25519.pub >> .ssh/authorized_keys; "
+              "ssh-keyscan -H localhost >> .ssh/known_hosts 2>/dev/null; "
+              "herdr machine add localhost --remote-session herdr2 </dev/null")
+HERDR_FORGET = ("herdr machine list --json | sed -n 's/.*\"id\": *\"\\([0-9a-f]*\\)\".*/\\1/p'"
+                " | while read -r id; do herdr machine remove \"$id\"; done")
 # A client attached directly on the host, beside xmux's own.
 DIRECT_ATTACH = {"tmux": "tmux attach -t {s}", "screen": "screen -x {s}",
                  "zellij": "zellij attach {s}", "abduco": "abduco -a {s}",
@@ -572,12 +584,23 @@ def in_client_switch(c):
     # The second host: no other scenario adds sessions there, so <mux>1 is the first
     # session of its source xmux attaches.
     m = c.mux
-    app = c.launch(c.h2)
-    app.open(f"{c.h2}/{m}", f"{m}1")
-    app.whereami(c.path(c.h2, f"{m}1"))
-    app.t.send(*INSIDE_SWITCH[m])
-    app.selected(f"{c.h2}/{m}", f"{m}2", 20)
-    app.whereami(c.path(c.h2, f"{m}2"))
+    if m == "herdr":
+        c.hosts.sh(c.h2, HERDR_SAVE)
+    try:
+        app = c.launch(c.h2)
+        app.open(f"{c.h2}/{m}", f"{m}1")
+        app.whereami(c.path(c.h2, f"{m}1"))
+        if m == "herdr":
+            # The client connects to the saved machine in the background, and herdr's
+            # workspace navigation skips a machine that is not connected yet.
+            app.t.wait_text("localhost/herdr2", 30)
+            time.sleep(2)
+        app.t.send(*INSIDE_SWITCH[m], gap=0.5)
+        app.selected(f"{c.h2}/{m}", f"{m}2", 20)
+        app.whereami(c.path(c.h2, f"{m}2"))
+    finally:
+        if m == "herdr":
+            c.hosts.sh(c.h2, HERDR_FORGET, check=False)
 
 
 def wait_regex(app, pattern, what, timeout=15):

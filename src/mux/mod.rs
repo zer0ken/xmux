@@ -150,6 +150,62 @@ pub enum DisplayClient {
     Recorded(String),
 }
 
+/// Where a host-side query found xmux's own display client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientAt {
+    /// On this session of the host the attachment belongs to.
+    Session(String),
+    /// Somewhere this host's sessions do not cover, named by the mux's own label for it.
+    Away(String),
+}
+
+/// Where an attach run through the machine's shell records its client's process id, keyed
+/// per attachment so a query never reads the record of a client an earlier attach left.
+/// Under `/tmp`, which every POSIX machine has and lets its user write.
+pub(crate) fn pid_record_path(record_key: &str) -> String {
+    let token: String = record_key
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("/tmp/.xmux-client-{token}")
+}
+
+/// The attach `attach` run so that the shell running it records its own process id at
+/// the record for `record_key`, then becomes the client with `exec`, so the recorded id
+/// is the client's. A record that cannot be written leaves the attach unaffected.
+pub(crate) fn recording_attach(attach: &[String], record_key: &str) -> Vec<String> {
+    let attach: Vec<String> = attach
+        .iter()
+        .map(|arg| crate::transport::vocab::quote(arg))
+        .collect();
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "{{ echo $$ >{}; }} 2>/dev/null; exec {}",
+            pid_record_path(record_key),
+            attach.join(" ")
+        ),
+    ]
+}
+
+/// The shell text a client query starts with: `p` holds the client's process id, read
+/// from the attach's record when the attach ran through the machine's shell.
+pub(crate) fn client_pid_assignment(client: &DisplayClient) -> String {
+    match client {
+        DisplayClient::Pid(pid) => format!("p={pid}; "),
+        DisplayClient::Recorded(key) => {
+            format!("p=$(cat {} 2>/dev/null); ", pid_record_path(key))
+        }
+    }
+}
+
 /// An opaque, mux-authored plan for an in-place display-client switch. The driver runs
 /// it BLIND through the host's transport and never inspects which variant it is - the
 /// variant↔dispatch mapping is `run_switch_plan`'s job, not the driver's. Each variant
@@ -313,10 +369,10 @@ pub trait Mux: Send + Sync {
         None
     }
 
-    /// The session a [`display_client_query`](Self::display_client_query) output names.
-    /// `None` is no signal: the client is gone, the host could not answer, or the answer
-    /// names no single session.
-    fn parse_display_client(&self, _out: &str) -> Option<String> {
+    /// Where a [`display_client_query`](Self::display_client_query) output places the
+    /// client. `None` is no signal: the client is gone, the host could not answer, or the
+    /// answer cannot be pinned on xmux's own client or on a single place.
+    fn parse_display_client(&self, _out: &str) -> Option<ClientAt> {
         None
     }
 
