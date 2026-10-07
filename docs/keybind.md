@@ -47,6 +47,12 @@ environment-variable override. It accepts `C-<letter>` (for example `C-g`, `C-b`
 single control byte, so it never collides with typed text, and a prefix pasted as data
 (bracketed paste) passes through untouched.
 
+A mux that binds the same key reaches that bind through a doubled prefix: the second
+press sends one literal prefix to the session, as tmux's `send-prefix` does. The default
+`C-g` is zellij's lock-mode key and a common dvtm MOD key, so with either one `C-g C-g`
+does what `C-g` does outside xmux. Setting `[ui] prefix` to a key the mux leaves free
+removes the collision.
+
 ## Other Keys
 
 | Key | Action |
