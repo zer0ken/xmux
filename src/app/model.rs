@@ -182,6 +182,7 @@ impl AppModel {
 
 pub(crate) enum Msg {
     Action(Action),
+    AttachFailure(String),
     #[cfg(test)]
     Commands(Vec<Command>),
     SyncSelection,
@@ -1625,6 +1626,18 @@ fn run_palette_choice(model: &mut AppModel, choice: crate::state::PaletteChoice)
 
 fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
     match msg {
+        Msg::AttachFailure(message) => {
+            let selection = &model.state.selection;
+            let address = crate::session::Address::new(&selection.host, &selection.session);
+            model.state.notify.toast(
+                format!("attach {}", model.state.session_label(&address)),
+                vec![crate::state::notify::Note::new(
+                    crate::state::notify::Level::Error,
+                    message,
+                )],
+            );
+            Vec::new()
+        }
         Msg::Action(action) => {
             if let Action::CreateSession { host, .. } = &action {
                 model.switcher.note_create(host);

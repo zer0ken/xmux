@@ -733,4 +733,16 @@ pub(crate) mod tests {
             "the remote attach sets ignore-size on its client: {argv:?}"
         );
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn psmux_display_attach_cannot_create_a_missing_session() {
+        let host = crate::model::Host::new(
+            crate::transport::local(None),
+            crate::mux::for_binary("psmux").unwrap(),
+        );
+        assert_eq!(
+            display_attach_argv(host).await,
+            ["psmux", "attach", "-t", "target"]
+        );
+    }
 }
