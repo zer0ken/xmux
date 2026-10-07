@@ -9115,3 +9115,33 @@ fn every_rendered_surface_names_a_session_by_its_three_level_path() {
     named("toasts", "gpu-01/tmux/serve");
     named("history", "gpu-01/tmux/serve");
 }
+
+#[test]
+fn a_session_that_asked_for_attention_wears_the_alert_mark_until_cleared() {
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    let nav_w = 30u16;
+    let card_row = |sw: &Switcher, state: &crate::state::State| -> String {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| sw.render_test(f, None, false, NavSize::visible(nav_w), state))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        (0..buf.area.height)
+            .map(|y| (0..nav_w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .find(|row| row.contains("build"))
+            .expect("the build card is on screen")
+    };
+    assert!(!card_row(&sw, &state).contains('!'), "no mark at rest");
+    assert!(sw.mark_alert(Address::new("local", "build")));
+    assert!(
+        !sw.mark_alert(Address::new("local", "build")),
+        "marked once"
+    );
+    let row = card_row(&sw, &state);
+    assert!(
+        row.trim_end().ends_with("build !"),
+        "the mark follows the session name:\n{row:?}"
+    );
+    sw.clear_alert("local", "build");
+    assert!(!card_row(&sw, &state).contains('!'), "cleared once shown");
+}

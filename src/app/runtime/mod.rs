@@ -1588,6 +1588,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
     loop {
         rt.flush_held_input();
         rt.sync_child_focus();
+        rt.flush_passthrough();
         rt.prepare_and_draw(&mut term);
 
         // NOT biased: a biased select polls host_rx first every iteration, so a
@@ -1737,6 +1738,8 @@ struct Runtime {
     /// Terminal input typed for a selection whose attachment does not exist yet; see
     /// [`input_route`].
     held_input: Option<HeldInput>,
+    /// Sequences a child sent for the terminal above xmux, written between frames.
+    passthrough: Vec<u8>,
     #[cfg(test)]
     discovery_runs: usize,
     /// The machines a one-machine re-scan probed, in order, for tests.

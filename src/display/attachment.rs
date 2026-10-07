@@ -40,6 +40,13 @@ pub enum PtyEvent {
     /// the loop re-emits the same sequence on xmux's stdout between frames so the
     /// terminal above sets the clipboard.
     Osc52 { seq: Vec<u8> },
+    /// A bell or a desktop notification `id`'s child sent. The grid's parser consumed
+    /// it and kept it for the pump; the loop re-emits it on xmux's stdout between
+    /// frames and, for a session not on screen, marks its card.
+    Alert {
+        id: u64,
+        alert: crate::display::grid::Alert,
+    },
     /// A host-side query answered where `id`'s mux client is, or answered nothing
     /// (`None`). Sent once per query, so the loop knows the query ended.
     DisplayClientSession {
@@ -664,7 +671,7 @@ pub fn spawn_attachment(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let (cursor, visible) = {
+                    let (cursor, visible, alerts) = {
                         let mut g = match pump_grid.lock() {
                             Ok(g) => g,
                             Err(_) => break,
@@ -678,7 +685,7 @@ pub fn spawn_attachment(
                             || !g.is_blank_except(
                                 crate::transport::diagnostic::is_verbose_report_line,
                             );
-                        (g.cursor(), visible)
+                        (g.cursor(), visible, g.take_alerts())
                     };
                     // Answer DSR/DA queries so the child does not block (empty-pane bug).
                     // Carry only an INCOMPLETE trailing query prefix to the next read -
@@ -739,6 +746,11 @@ pub fn spawn_attachment(
                     osc52.feed(&buf[..n], &mut osc);
                     for seq in osc.drain(..) {
                         if events.send(PtyEvent::Osc52 { seq }).is_err() {
+                            break 'pump; // the app is gone - stop pumping
+                        }
+                    }
+                    for alert in alerts {
+                        if events.send(PtyEvent::Alert { id, alert }).is_err() {
                             break 'pump; // the app is gone - stop pumping
                         }
                     }

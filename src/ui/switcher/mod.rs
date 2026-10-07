@@ -408,6 +408,9 @@ pub struct Switcher {
     /// The session card whose display client moved somewhere this nav lists no card for,
     /// and the mux's label for that place.
     away: Option<(Address, String)>,
+    /// The sessions that rang their bell or sent a notification while not on screen,
+    /// each marked on its card until it is shown.
+    alerted: std::collections::HashSet<Address>,
     /// Whether the current sorted list receives contiguous numbers on each rebuild.
     renumbering: bool,
     /// Card numbers keyed by identity. The configured policy either deals them in the
@@ -486,6 +489,7 @@ impl Switcher {
             terminal_view_target: TerminalViewTarget::default(),
             own_session: None,
             away: None,
+            alerted: std::collections::HashSet::new(),
             renumbering: true,
             numbers: std::collections::HashMap::new(),
             next_number: 1,
@@ -581,6 +585,25 @@ impl Switcher {
     /// lists no card for that place, or clears it with `None`.
     pub fn set_away(&mut self, away: Option<(Address, String)>) {
         self.away = away;
+    }
+
+    /// Marks the session at `address` as having asked for attention. Returns true when it
+    /// was not marked yet.
+    pub fn mark_alert(&mut self, address: Address) -> bool {
+        self.alerted.insert(address)
+    }
+
+    /// Takes the mark off `host`'s session `name`, once it is on screen.
+    pub fn clear_alert(&mut self, host: &str, name: &str) {
+        self.alerted
+            .retain(|address| address.host != host || address.session != name);
+    }
+
+    /// Whether `host`'s session `name` asked for attention since it was last shown.
+    pub(crate) fn alerted(&self, host: &str, name: &str) -> bool {
+        self.alerted
+            .iter()
+            .any(|address| address.host == host && address.session == name)
     }
 
     /// The label of the place the display client of `host`'s session `name` went, when

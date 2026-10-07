@@ -167,6 +167,10 @@ against, naming no source file, function, or test.
   and path (`machine db-01`, `host db-01/tmux`), and each states only the facts of its
   own level. A surface that names a session apart from its host's section, title, or
   screen writes its whole path (`db-01/tmux/pg-primary`).
+- **FR-B45** - A bell, an OSC 9 notification, or an OSC 777 notification that any kept
+  session's client sends reaches the terminal xmux runs in. A session whose grid is not
+  on screen also marks its card with `!` until it is shown, and the history records the
+  bell or the notification's words.
 
 ## C. Switching (the keystone)
 

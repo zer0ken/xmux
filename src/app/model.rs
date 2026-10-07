@@ -362,6 +362,12 @@ pub(crate) enum Msg {
     /// The display client of the session at the address went where the nav has no card,
     /// named by the mux's label, or `None` once it is back on a card.
     DisplayAway(Option<(crate::session::Address, String)>),
+    /// The session at the address rang its bell (`text` is `None`) or sent a desktop
+    /// notification while its grid was not on screen.
+    SessionAlert {
+        address: crate::session::Address,
+        text: Option<String>,
+    },
     Tick {
         now: std::time::Instant,
         spinner: HashSet<String>,
@@ -2221,6 +2227,13 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .set_view_border_hovered(view_border_hovered);
             model.state.chrome.set_armed(prefix_active);
             model.switcher.settle_popup_position(&model.state);
+            // The session on screen is the one the user is looking at, so its mark goes.
+            let displayed = &model.state.displayed;
+            if !displayed.is_empty() {
+                model
+                    .switcher
+                    .clear_alert(&displayed.host, &displayed.session);
+            }
             let modal_kind = model.state.modal_kind();
             model.state.focus.sync_modal(modal_kind);
             let nav_focused = model.state.focus.view_is_nav();
@@ -2283,6 +2296,32 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
         }
         Msg::DisplayAway(away) => {
             model.switcher.set_away(away);
+            Vec::new()
+        }
+        // A background event, so the history only: nobody asked for it just now. A run of
+        // bells is one record until the user shows the session; a notification carries
+        // its own words, so each one is recorded.
+        Msg::SessionAlert { address, text } => {
+            let fresh = model.switcher.mark_alert(address.clone());
+            if fresh || text.is_some() {
+                let title = format!(
+                    "{}{}{}",
+                    model.state.chrome.host_label_when(&address.host, true),
+                    crate::session::MUX_LABEL_SEP,
+                    address.session
+                );
+                let note = text.map_or_else(
+                    || "bell".to_string(),
+                    |text| format!("notification: {}", crate::driver::escape_controls(&text)),
+                );
+                model.state.notify.record(
+                    title,
+                    vec![crate::state::notify::Note::new(
+                        crate::state::notify::Level::Info,
+                        note,
+                    )],
+                );
+            }
             Vec::new()
         }
         Msg::Tick { now, spinner } => {

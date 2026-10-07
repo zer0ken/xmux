@@ -109,6 +109,9 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **status** - a host-state card's one-cell glyph: `?` login needed, `▲` unreachable,
   `✗` listing failure, blank for an empty host, the spinner while scanning. Never a
   "hint".
+- **alert mark** - the `!` after a session card's name: the session rang its bell or
+  sent a desktop notification while its grid was not on screen, and has not been shown
+  since.
 - **level colour** - the palette role of each part of a card. The accent goes to the
   lowest level the card shows.
 - **spinner** - the braille glyph marking work in flight, one frame counter for the whole

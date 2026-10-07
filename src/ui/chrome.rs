@@ -233,6 +233,9 @@ const LOGIN_HINTS: &[crate::ui::modal::Hint] = &[
 pub(crate) const BLOCK_MARK: &str = "?";
 pub(crate) const UNREACHABLE_MARK: &str = "▲";
 pub(crate) const LIST_FAILED_MARK: &str = "✗";
+/// The mark a session card wears after its name while the session has rung its bell or
+/// sent a notification since it was last on screen: tmux's own bell flag.
+pub(crate) const ALERT_MARK: &str = "!";
 
 use crate::model::ViewScreen;
 

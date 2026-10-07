@@ -9,8 +9,99 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color as RColor, Modifier, Style};
 
+/// What a child's output asked of the terminal around the screen: a bell, or a desktop
+/// notification. The grid's parser consumes these, so the grid keeps each one until the
+/// pump takes it and hands it to the loop, which re-emits it on xmux's own output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Alert {
+    /// A BEL outside any escape sequence.
+    Bell,
+    /// An OSC 9 or OSC 777 `notify` desktop notification: its readable text and the
+    /// whole sequence to re-emit, BEL-terminated.
+    Notify { text: String, seq: Vec<u8> },
+}
+
+impl Alert {
+    /// The bytes that ask the terminal above xmux for the same thing.
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            Alert::Bell => b"\x07",
+            Alert::Notify { seq, .. } => seq,
+        }
+    }
+}
+
+/// The most alerts one grid holds between two takes. A child that rings without pause
+/// still reaches the terminal once per pump read, and nothing it sends grows the grid.
+const ALERTS_MAX: usize = 16;
+
+/// The longest notification payload re-emitted; a longer one is dropped whole.
+const NOTIFY_MAX: usize = 4096;
+
+/// Collects the alerts the parser reports while it processes a chunk.
+#[derive(Default)]
+struct AlertSink {
+    alerts: Vec<Alert>,
+}
+
+impl AlertSink {
+    fn push(&mut self, alert: Alert) {
+        // One bell per take says everything a run of bells says.
+        if alert == Alert::Bell && self.alerts.contains(&Alert::Bell) {
+            return;
+        }
+        if self.alerts.len() < ALERTS_MAX {
+            self.alerts.push(alert);
+        }
+    }
+}
+
+impl vt100::Callbacks for AlertSink {
+    fn audible_bell(&mut self, _: &mut vt100::Screen) {
+        self.push(Alert::Bell);
+    }
+
+    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        if let Some(alert) = notification(params) {
+            self.push(alert);
+        }
+    }
+}
+
+/// The notification an OSC carries, when it is one: OSC 9 with free text (iTerm2), or
+/// OSC 777 `notify` with a title and a body (rxvt, VTE). An OSC 9 whose first field is a
+/// number is a ConEmu command such as the `9;4` progress report, not a notification.
+fn notification(params: &[&[u8]]) -> Option<Alert> {
+    let (ps, text) = match params {
+        [b"9", first, ..] if !first.is_empty() && !first.iter().all(u8::is_ascii_digit) => {
+            ("9", params[1..].join(&b';'))
+        }
+        [b"777", b"notify", title, body @ ..] => {
+            let body = body.join(&b';');
+            let text = match (title.is_empty(), body.is_empty()) {
+                (true, _) => body,
+                (false, true) => title.to_vec(),
+                (false, false) => [*title, b": ", &body].concat(),
+            };
+            ("777", text)
+        }
+        _ => return None,
+    };
+    let payload = params[1..].join(&b';');
+    if payload.len() > NOTIFY_MAX {
+        return None;
+    }
+    let mut seq = format!("\x1b]{ps};").into_bytes();
+    seq.extend_from_slice(&payload);
+    seq.push(0x07);
+    Some(Alert::Notify {
+        text: String::from_utf8_lossy(&text).into_owned(),
+        seq,
+    })
+}
+
 pub struct Grid {
-    parser: vt100::Parser,
+    parser: vt100::Parser<AlertSink>,
     /// Set by a session switch: the next `feed` wipes the grid before applying the
     /// chunk, so the prior session's content stays on screen until the mux's fresh
     /// repaint arrives (no blank window between the switch and the repaint) and the
@@ -23,10 +114,21 @@ pub struct Grid {
 impl Grid {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self {
-            parser: vt100::Parser::new(rows, cols, 0),
+            parser: vt100::Parser::new_with_callbacks(rows, cols, 0, AlertSink::default()),
             clear_on_feed: false,
             modes: Default::default(),
         }
+    }
+
+    /// A fresh parser at `rows` x `cols` that keeps the alerts not taken yet.
+    fn reset_parser(&mut self, rows: u16, cols: u16) {
+        let sink = std::mem::take(self.parser.callbacks_mut());
+        self.parser = vt100::Parser::new_with_callbacks(rows, cols, 0, sink);
+    }
+
+    /// The alerts the output fed since the last take asked for, oldest first.
+    pub fn take_alerts(&mut self) -> Vec<Alert> {
+        std::mem::take(&mut self.parser.callbacks_mut().alerts)
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -45,7 +147,7 @@ impl Grid {
         }));
         if res.is_err() {
             let (rows, cols) = self.parser.screen().size();
-            self.parser = vt100::Parser::new(rows, cols, 0);
+            self.reset_parser(rows, cols);
         }
     }
 
@@ -62,7 +164,7 @@ impl Grid {
     /// the same size. Also used directly by tests.
     pub fn clear(&mut self) {
         let (rows, cols) = self.parser.screen().size();
-        self.parser = vt100::Parser::new(rows, cols, 0);
+        self.reset_parser(rows, cols);
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -236,6 +338,69 @@ Connection to host closed.
             Some("Connection to host closed."),
             "the trailing blank rows are skipped for the last written line"
         );
+    }
+
+    #[test]
+    fn a_bell_and_notifications_are_kept_for_the_loop() {
+        let mut g = Grid::new(4, 20);
+        g.feed(b"a\x07b\x07\x1b]9;build done\x07\x1b]777;notify;Claude;needs input\x1b\\");
+        assert_eq!(
+            g.take_alerts(),
+            vec![
+                Alert::Bell,
+                Alert::Notify {
+                    text: "build done".into(),
+                    seq: b"\x1b]9;build done\x07".to_vec(),
+                },
+                Alert::Notify {
+                    text: "Claude: needs input".into(),
+                    seq: b"\x1b]777;notify;Claude;needs input\x07".to_vec(),
+                },
+            ],
+            "a run of bells is one bell, and each notification is re-emitted whole"
+        );
+        assert!(
+            g.take_alerts().is_empty(),
+            "a take empties the grid's alerts"
+        );
+        assert_eq!(
+            g.last_line().as_deref(),
+            Some("ab"),
+            "no alert reaches the cells"
+        );
+    }
+
+    #[test]
+    fn a_bell_terminating_an_osc_and_conemu_commands_are_not_alerts() {
+        let mut g = Grid::new(4, 20);
+        g.feed(b"\x1b]0;title\x07\x1b]9;4;1;50\x07\x1b]52;c;aGk=\x07");
+        assert!(g.take_alerts().is_empty());
+    }
+
+    #[test]
+    fn a_notification_text_keeps_its_semicolons() {
+        let mut g = Grid::new(4, 20);
+        g.feed(b"\x1b]9;a;b\x07");
+        assert_eq!(
+            g.take_alerts(),
+            vec![Alert::Notify {
+                text: "a;b".into(),
+                seq: b"\x1b]9;a;b\x07".to_vec(),
+            }]
+        );
+    }
+
+    #[test]
+    fn alerts_survive_a_clear_and_stay_bounded() {
+        let mut g = Grid::new(4, 20);
+        g.feed(b"\x07");
+        g.clear();
+        for i in 0..40 {
+            g.feed(format!("\x1b]9;n{i}\x07").as_bytes());
+        }
+        let alerts = g.take_alerts();
+        assert_eq!(alerts[0], Alert::Bell, "a clear keeps what was not taken");
+        assert_eq!(alerts.len(), ALERTS_MAX);
     }
 
     #[test]

@@ -1555,8 +1555,9 @@ impl Switcher {
         }
 
         // Session card: the address column + the session name on a single detail line.
-        // It carries no state glyph or spinner: a session is a plain card from the
-        // moment its host resolves.
+        // It carries no spinner: a session is a plain card from the moment its host
+        // resolves. Its one state glyph is the alert mark of a session that asked for
+        // attention while it was not on screen.
         // The `{machine}/{mux}` it used to restate now lives on the section title above it.
         // The session name is normal weight between the bold title and dim number.
         //
@@ -1577,13 +1578,26 @@ impl Switcher {
             _ => None,
         }
         .map(|label| format!(" \u{2192} {label}"));
-        let available = available.saturating_sub(away.as_deref().map_or(0, UnicodeWidthStr::width));
+        let alerted = match &row.reference {
+            RowRef::Session { sess: s } => self.alerted(&s.host, &s.name),
+            _ => false,
+        };
+        let available = available
+            .saturating_sub(away.as_deref().map_or(0, UnicodeWidthStr::width))
+            .saturating_sub(if alerted { 2 } else { 0 });
         detail.extend(highlighted_after(
             &crate::session::session_label(machine, mux, ""),
             middle_ellipsize(sess, available),
             filter,
             session_style,
         ));
+        if alerted {
+            detail.push(Span::raw(" "));
+            detail.push(Span::styled(
+                crate::ui::chrome::ALERT_MARK,
+                Style::default().fg(palette.warning),
+            ));
+        }
         if let Some(away) = away {
             detail.push(Span::styled(away, Style::default().fg(palette.secondary)));
         }

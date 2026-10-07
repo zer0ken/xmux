@@ -845,6 +845,7 @@ impl Runtime {
             rescan_pending: false,
             display_probe: DisplayProbe::default(),
             held_input: None,
+            passthrough: Vec::new(),
             #[cfg(test)]
             discovery_runs: 0,
             #[cfg(test)]
@@ -1120,17 +1121,65 @@ impl Runtime {
         DrawObserver::slow_step("host_drain", t);
     }
 
-    /// Re-emits an OSC 52 clipboard sequence on xmux's own stdout so the terminal
-    /// above it sets the clipboard. Called from [`Runtime::on_pty_event`], which the
-    /// `select!` loop runs strictly between ratatui frames - ratatui owns stdout and a
-    /// write from anywhere else (the pump thread) would land mid-frame. Re-emitting
-    /// the escape, not calling a clipboard API, is what keeps this working when xmux
-    /// itself runs over ssh.
-    fn emit_osc52(seq: &[u8]) {
+    /// Writes the sequences a child asked the terminal above xmux for (an OSC 52
+    /// clipboard write, a bell, a desktop notification) on xmux's own stdout. The loop
+    /// calls it strictly between ratatui frames: ratatui owns stdout, and a write from
+    /// anywhere else (the pump thread) would land mid-frame. Re-emitting the escape,
+    /// not calling a clipboard or notification API, is what keeps this working when
+    /// xmux itself runs over ssh.
+    pub(super) fn flush_passthrough(&mut self) {
+        if self.passthrough.is_empty() {
+            return;
+        }
         use std::io::Write;
         let mut out = std::io::stdout().lock();
-        let _ = out.write_all(seq);
+        let _ = out.write_all(&self.passthrough);
         let _ = out.flush();
+        self.passthrough.clear();
+    }
+
+    /// A bell or a notification from attachment `id`. Every one reaches the terminal
+    /// above xmux, the way tmux's `bell-action any` passes a bell from any window, so
+    /// the user is told wherever they are looking. One from a session whose grid is not
+    /// on screen also marks that session's card, so the user can tell which one asked.
+    fn on_alert(&mut self, id: u64, alert: crate::display::grid::Alert) {
+        self.passthrough.extend_from_slice(alert.bytes());
+        let Some(key) = self
+            .registry
+            .address_of_id(id)
+            .filter(|key| self.registry.get(key).is_some_and(|a| a.id() == id))
+        else {
+            return;
+        };
+        let host = host_of_key(&key);
+        let Some(session) = self
+            .hosts
+            .get(host)
+            .and_then(|h| h.display.shows(&key))
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let displayed = &self.model.state.displayed;
+        if displayed.host == host
+            && displayed.session == session
+            && display_key(&self.hosts, displayed) == key
+        {
+            return;
+        }
+        let text = match alert {
+            crate::display::grid::Alert::Bell => None,
+            crate::display::grid::Alert::Notify { text, .. } => Some(text),
+        };
+        let effects = update(
+            &mut self.model,
+            Msg::SessionAlert {
+                address: crate::session::Address::new(host, session),
+                text,
+            },
+        );
+        debug_assert!(effects.is_empty());
+        self.dirty = true;
     }
 
     /// The `pty_rx` arm: a kept attachment fed its grid or hit EOF (reap). Detach-to-recover
@@ -1248,7 +1297,11 @@ impl Runtime {
                 false
             }
             PtyEvent::Osc52 { seq } => {
-                Self::emit_osc52(&seq);
+                self.passthrough.extend_from_slice(&seq);
+                false
+            }
+            PtyEvent::Alert { id, alert } => {
+                self.on_alert(id, alert);
                 false
             }
             PtyEvent::DisplayClientSession { id, at } => {
