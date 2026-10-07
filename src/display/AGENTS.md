@@ -30,12 +30,14 @@ state: the focus and modal state machine lives in `app`.
   routing decisions or input actions, reading a key in the kitty keyboard protocol's
   encoding as the legacy key it stands for; terminal setup holds prefix parsing, mouse
   capture, bracketed paste, focus reports, and the terminal guard.
-- Sixel images live in the grid as marker cells its own parser writes, so they scroll,
-  erase, and clear with the text. The frame shows a marker cell as a cell ratatui
-  never writes, and the painter draws onto the terminal only the image cells that
-  survive the whole frame. All of it is off unless the outer terminal reported sixel
-  and its cell size, and it is always off on a Windows host, whose ConPTY breaks a
-  sixel string on its way to xmux.
+- Images live in the grid as marker cells its own parser writes, so they scroll,
+  erase, and clear with the text. The frame shows a sixel marker cell as a cell
+  ratatui never writes, and the painter draws onto the terminal only the image cells
+  that survive the whole frame. The frame shows a kitty image cell, a marker or the
+  child's own placeholder cell, as a Unicode placeholder cell, and the terminal
+  receives each image those cells name before the frame. Each protocol is off unless
+  the outer terminal reported it, and both are always off on a Windows host, whose
+  ConPTY breaks a sixel or APC string on its way to xmux.
 - The live child-environment read answers one caller-named variable from a running
   attach child. It names no mux and no variable.
 
@@ -50,7 +52,8 @@ state: the focus and modal state machine lives in `app`.
   asks of the terminal around the screen (a whole OSC 52 clipboard write, a bell, an OSC
   9 or OSC 777 notification, the window title of the session on screen, and the sixel
   image pieces a completed frame left to the terminal view, each drawn inside a saved
-  cursor and never past the cells the frame marked for it), and the kitty keyboard
+  cursor and never past the cells the frame marked for it, and quiet kitty graphics
+  transmissions and deletions, which draw nothing themselves), and the kitty keyboard
   protocol flags of the session the keys reach, which it sets on its own terminal rather
   than passing the session's requests through. The pump scans OSC 52 out of the raw
   stream; the grid's parser keeps the bells and notifications it consumes until the
