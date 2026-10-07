@@ -17,6 +17,12 @@ const PRIMARY_DA: &[u8] = b"\x1b[?62;22c";
 /// sixel images the grid keeps.
 const PRIMARY_DA_SIXEL: &[u8] = b"\x1b[?62;4;22c";
 
+impl crate::display::image::layer::Replies for GridCallbacks {
+    fn reply(&mut self, bytes: &[u8]) {
+        self.replies.extend_from_slice(bytes);
+    }
+}
+
 #[derive(Default)]
 pub struct GridCallbacks {
     replies: Vec<u8>,

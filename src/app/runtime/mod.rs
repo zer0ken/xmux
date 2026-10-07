@@ -56,7 +56,9 @@ fn frame_interval(fps: u16) -> std::time::Duration {
 
 /// The ratatui terminal the app draws into. Loop-local in [`run_app`] (owns stdout);
 /// passed to the `Runtime` methods that draw / resize / dump.
-type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
+type Term = ratatui::Terminal<
+    ratatui::backend::CrosstermBackend<crate::display::term::FrameWriter<std::io::Stdout>>,
+>;
 
 /// A backend that can make the terminal present one frame at once.
 ///
@@ -1543,14 +1545,15 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
 
     // The ratatui terminal: loop-local I/O the draw/tick/dump methods borrow as a
     // param (kept off `Runtime` so a headless test never constructs one).
-    let mut term =
-        match ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout())) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("xmux: {e}");
-                return 1;
-            }
-        };
+    let mut term = match ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(
+        crate::display::term::FrameWriter::new(std::io::stdout()),
+    )) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("xmux: {e}");
+            return 1;
+        }
+    };
     if let Err(e) = clear_screen(&mut term) {
         tracing::warn!(error = %e, "term_clear_failed");
     }
@@ -1767,6 +1770,8 @@ struct Runtime {
     draw_observer: DrawObserver,
     /// What the outer terminal shows of the displayed grid's sixel images.
     images: crate::display::image::paint::Painter,
+    /// The kitty images the outer terminal holds for the displayed grid.
+    kitty_images: crate::display::image::paint::KittyOuter,
     spinner_start: std::time::Instant,
     /// The last number given to a machine probe a login started.
     login_probes: u64,

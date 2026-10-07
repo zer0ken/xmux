@@ -874,6 +874,7 @@ impl Runtime {
             // probe), owned off the draw block so it does nothing but lock → render.
             draw_observer: DrawObserver::default(),
             images: Default::default(),
+            kitty_images: Default::default(),
             spinner_start: std::time::Instant::now(),
             login_probes: 0,
             dirty: true,
@@ -1098,6 +1099,7 @@ impl Runtime {
                             }
                         }
                     }
+                    Self::sync_kitty_images(&mut self.kitty_images, guard.as_deref());
                     // Split-borrow so the draw closure captures only these fields, not all
                     // of `self` (the fingerprint block's borrows have ended above).
                     let switcher = &self.model.switcher;
@@ -1115,6 +1117,7 @@ impl Runtime {
                 }
                 None => {
                     let nav = self.nav_size();
+                    Self::sync_kitty_images(&mut self.kitty_images, None);
                     let switcher = &self.model.switcher;
                     let state = &self.model.state;
                     let drawn = term.draw(|f| {
@@ -1170,6 +1173,26 @@ impl Runtime {
             }
         }
         DrawObserver::slow_step("host_drain", t);
+    }
+
+    /// Gives the outer terminal the kitty images the displayed grid's cells name, and
+    /// frees the ones it no longer names, before the frame whose placeholder cells
+    /// show them.
+    fn sync_kitty_images(
+        outer: &mut crate::display::image::paint::KittyOuter,
+        grid: Option<&crate::display::grid::Grid>,
+    ) {
+        if !crate::display::image::Caps::current().kitty {
+            return;
+        }
+        let need = grid.map(|g| g.kitty_in_use()).unwrap_or_default();
+        let bytes = outer.sync(&need);
+        if !bytes.is_empty() {
+            use std::io::Write;
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(&bytes);
+            let _ = out.flush();
+        }
     }
 
     /// Draws the sixel image pieces a completed frame shows onto the outer terminal,

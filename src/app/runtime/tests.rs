@@ -2373,6 +2373,7 @@ fn test_rt(env: Env) -> Runtime {
         prefix,
         draw_observer: DrawObserver::default(),
         images: Default::default(),
+        kitty_images: Default::default(),
         spinner_start: std::time::Instant::now(),
         dirty: true,
         clear_pending: false,
