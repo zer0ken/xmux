@@ -4,6 +4,48 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 
+/// Accumulates renderer commands until flush instead of sending individual cell
+/// writes during serialization. The buffer grows with the update and keeps its
+/// allocation for the next one.
+pub(crate) struct FrameWriter<W> {
+    writer: W,
+    pending: Vec<u8>,
+}
+
+impl<W> FrameWriter<W> {
+    pub(crate) fn new(writer: W) -> Self {
+        Self {
+            writer,
+            pending: Vec::new(),
+        }
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for FrameWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.pending.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut written = 0;
+        let result = loop {
+            if written == self.pending.len() {
+                break Ok(());
+            }
+            match self.writer.write(&self.pending[written..]) {
+                Ok(0) => break Err(std::io::ErrorKind::WriteZero.into()),
+                Ok(n) => written += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => break Err(e),
+            }
+        };
+        self.pending.drain(..written);
+        result?;
+        self.writer.flush()
+    }
+}
+
 // SGR mouse tracking: button press/release (1000h) + drag (1002h) + any-motion
 // (1003h) + SGR encoding (1006h). 1003h is on so the app sees idle moves for the
 // view border hover cue; it CONSUMES idle motion (never forwards it to the mux), so the
@@ -272,6 +314,105 @@ pub fn parse_prefix(spec: Option<&str>) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    #[derive(Default)]
+    struct RecordedWrites(Vec<Vec<u8>>);
+
+    impl Write for RecordedWrites {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.push(bytes.to_vec());
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn renderer_output_reaches_the_terminal_only_at_flush() {
+        use ratatui::backend::{Backend, CrosstermBackend};
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::style::Color;
+
+        let area = Rect::new(0, 0, 200, 100);
+        let mut frame = Buffer::empty(area);
+        for (i, cell) in frame.content.iter_mut().enumerate() {
+            cell.set_symbol("界");
+            cell.set_fg(if i % 2 == 0 { Color::Red } else { Color::Green });
+        }
+        let cells = || {
+            frame
+                .content
+                .iter()
+                .enumerate()
+                .map(|(i, cell)| ((i % 200) as u16, (i / 200) as u16, cell))
+        };
+        let mut expected = Vec::new();
+        CrosstermBackend::new(&mut expected).draw(cells()).unwrap();
+        assert!(expected.len() > 64 * 1024);
+
+        let mut output = FrameWriter::new(RecordedWrites::default());
+        CrosstermBackend::new(&mut output).draw(cells()).unwrap();
+        assert!(
+            output.writer.0.is_empty(),
+            "the frame is still being queued"
+        );
+        output.flush().unwrap();
+        assert_eq!(output.writer.0, vec![expected]);
+        output.flush().unwrap();
+        assert_eq!(
+            output.writer.0.len(),
+            1,
+            "an empty flush sends no frame bytes"
+        );
+        output.write_all(b"\x1b[1;1Hnext").unwrap();
+        output.flush().unwrap();
+        assert_eq!(output.writer.0[1], b"\x1b[1;1Hnext");
+    }
+
+    #[test]
+    fn renderer_flush_keeps_only_bytes_the_terminal_has_not_accepted() {
+        struct ShortWriter {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for ShortWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                match self.calls {
+                    1 => {
+                        self.bytes.extend_from_slice(&bytes[..2]);
+                        Ok(2)
+                    }
+                    2 => Err(std::io::ErrorKind::Interrupted.into()),
+                    3 => Err(std::io::ErrorKind::BrokenPipe.into()),
+                    _ => {
+                        self.bytes.extend_from_slice(bytes);
+                        Ok(bytes.len())
+                    }
+                }
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = FrameWriter::new(ShortWriter {
+            calls: 0,
+            bytes: Vec::new(),
+        });
+        output.write_all(b"frame").unwrap();
+        assert_eq!(
+            output.flush().unwrap_err().kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(output.writer.bytes, b"fr");
+        output.flush().unwrap();
+        assert_eq!(output.writer.bytes, b"frame");
+    }
     #[cfg(windows)]
     use windows_sys::Win32::System::Console::{
         ENABLE_EXTENDED_FLAGS, ENABLE_MOUSE_INPUT, ENABLE_QUICK_EDIT_MODE,
