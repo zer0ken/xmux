@@ -2362,6 +2362,7 @@ fn test_rt(env: Env) -> Runtime {
         body_rows: 24,
         term_input: crate::display::input::TermInput::new(prefix),
         nav_decoder: crate::display::decode::KeyDecoder::new(),
+        paste: Default::default(),
         prefix,
         draw_observer: DrawObserver::default(),
         spinner_start: std::time::Instant::now(),
@@ -7668,4 +7669,93 @@ async fn a_click_on_every_palette_entry_does_what_enter_on_it_does() {
             assert_eq!(click, enter, "{name} from {focus:?} focus");
         }
     }
+}
+
+/// A session in the terminal view with focus there, and the input its attachment reads.
+fn rt_terminal_focus_with_attachment() -> (Runtime, std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>)
+{
+    let mut rt = rt_terminal_focus_with_session();
+    let selection = rt.model.state.selection.clone();
+    rt.model.state.displayed = selection.clone();
+    let (att, log) = crate::display::attachment::fake_attachment_with_input_log(7);
+    rt.registry.insert(&display_key(&rt.hosts, &selection), att);
+    rt.on_stdin(b"x");
+    assert_eq!(
+        logged(&log),
+        b"x",
+        "precondition: typed keys reach the session"
+    );
+    log.lock().unwrap().clear();
+    (rt, log)
+}
+
+#[test]
+fn a_paste_reaches_a_session_that_did_not_ask_for_bracketed_paste_as_plain_text() {
+    // The outer terminal wraps a paste because xmux asked it to; the session's client did
+    // not ask, so it reads the pasted text alone, and a prefix byte inside it is text.
+    let (mut rt, log) = rt_terminal_focus_with_attachment();
+    rt.on_stdin(b"\x1b[200~echo a\recho \x07b\r\x1b[201~");
+    assert_eq!(logged(&log), b"echo a\recho \x07b\r");
+    assert!(!rt.prefix_active(), "a pasted prefix byte arms nothing");
+}
+
+#[test]
+fn a_paste_reaches_a_session_that_asked_for_bracketed_paste_wrapped() {
+    let (mut rt, log) = rt_terminal_focus_with_attachment();
+    let key = display_key(&rt.hosts, &rt.model.state.selection);
+    rt.registry
+        .grid(&key)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .feed(b"\x1b[?2004h$ ");
+    // Split across reads, the paste still arrives once, between the markers.
+    rt.on_stdin(b"\x1b[200~ls\r");
+    assert!(logged(&log).is_empty(), "held until the paste ends");
+    rt.on_stdin(b"pwd\r\x1b[201~q");
+    assert_eq!(logged(&log), b"\x1b[200~ls\rpwd\r\x1b[201~q");
+}
+
+#[test]
+fn a_paste_after_the_prefix_is_text_for_the_session_not_a_command() {
+    let (mut rt, log) = rt_terminal_focus_with_attachment();
+    rt.on_stdin(b"\x07");
+    assert!(rt.prefix_active(), "the prefix waits for its key");
+    let out = rt.on_stdin(b"\x1b[200~q\x1b[201~");
+    assert!(!out, "a pasted q does not quit");
+    assert!(!rt.prefix_active(), "the paste ends the waiting prefix");
+    assert_eq!(logged(&log), b"q");
+}
+
+#[test]
+fn a_paste_over_the_nav_moves_nothing_and_a_filter_takes_its_text() {
+    use crate::state::{InputMode, Modal};
+    let (mut rt, log) = rt_terminal_focus_with_attachment();
+    rt.model
+        .state
+        .apply(crate::model::Action::Focus(crate::model::FocusTarget::Nav));
+    let before = rt.model.state.selection.clone();
+    rt.on_stdin(b"\x1b[200~kkjj\x07q\r\x1b[201~");
+    assert_eq!(
+        rt.model.state.selection, before,
+        "no key in the paste moved it"
+    );
+    assert!(
+        rt.model.state.focus.is_nav_focused(),
+        "Enter in the paste is text"
+    );
+    assert!(rt.model.state.modal.is_none());
+    rt.on_stdin(b"\x07/");
+    rt.on_stdin(b"\x1b[200~ap\ri\x1b[201~");
+    match &rt.model.state.modal {
+        Some(Modal::Input(input)) => {
+            assert!(matches!(input.mode, InputMode::Filter));
+            assert_eq!(
+                input.buffer, "api",
+                "the line break is left out of the field"
+            );
+        }
+        _ => panic!("the filter stays open"),
+    }
+    assert!(logged(&log).is_empty(), "nothing reached the session");
 }

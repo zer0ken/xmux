@@ -115,6 +115,16 @@ impl AttachRegistry {
             .is_some_and(|att| att.output_times().is_some())
     }
 
+    /// The input modes the child [`input`](Self::input) reaches under `addr` has set;
+    /// none when nothing is attached there.
+    pub fn input_modes(&self, addr: &str) -> crate::display::modes::InputModes {
+        self.pending
+            .get(addr)
+            .or_else(|| self.map.get(addr))
+            .and_then(|att| att.grid.lock().ok().map(|g| g.input_modes()))
+            .unwrap_or_default()
+    }
+
     /// Queue input bytes to `addr`'s child (a no-op if it is not attached).
     pub fn input(&self, addr: &str, bytes: Vec<u8>) {
         if let Some(att) = self.pending.get(addr).or_else(|| self.map.get(addr)) {

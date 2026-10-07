@@ -12,8 +12,8 @@
 //! prefix sends one literal prefix byte. The command set matches
 //! nav focus, so those commands behave identically regardless of which view holds
 //! focus. The prefix is a C0
-//! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI;
-//! bracketed paste is respected so a prefix pasted as data is never intercepted.
+//! control byte, so it cannot collide with a UTF-8 continuation byte or appear mid-CSI,
+//! and a paste never reaches this path: pastes are taken out of the stream before it.
 use crate::display::dispatch::Action;
 use crate::model::keys::{prefix_command, Chord, KeyCommand};
 use crate::model::NavPosition;
@@ -22,20 +22,13 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub struct TermInput {
     prefix: u8,
     armed: bool,
-    in_paste: bool,
-    paste_scan: Vec<u8>,
 }
-
-const PASTE_START: &[u8] = b"\x1b[200~";
-const PASTE_END: &[u8] = b"\x1b[201~";
 
 impl TermInput {
     pub fn new(prefix: u8) -> Self {
         Self {
             prefix,
             armed: false,
-            in_paste: false,
-            paste_scan: Vec::new(),
         }
     }
 
@@ -52,18 +45,6 @@ impl TermInput {
     /// half-open.
     pub fn disarm(&mut self) {
         self.armed = false;
-    }
-
-    fn track_paste(&mut self, byte: u8) {
-        self.paste_scan.push(byte);
-        if self.paste_scan.len() > PASTE_START.len().max(PASTE_END.len()) {
-            self.paste_scan.remove(0);
-        }
-        if !self.in_paste && self.paste_scan.ends_with(PASTE_START) {
-            self.in_paste = true;
-        } else if self.in_paste && self.paste_scan.ends_with(PASTE_END) {
-            self.in_paste = false;
-        }
     }
 
     /// Processes one stdin read. Forwarded bytes are coalesced; an intercepted
@@ -164,8 +145,7 @@ impl TermInput {
             }
 
             let b = bytes[i];
-            self.track_paste(b);
-            if !self.in_paste && b == self.prefix {
+            if b == self.prefix {
                 // A prefix byte arms ready. A second one while already armed is the
                 // doubled-prefix literal, handled above, so this only ever arms.
                 if !fwd.is_empty() {
@@ -690,25 +670,6 @@ mod tests {
         assert_eq!(
             out,
             vec![Action::Forward(b"hi".to_vec()), Action::FocusNav(vec![])]
-        );
-    }
-
-    #[test]
-    fn prefix_inside_bracketed_paste_is_literal() {
-        let mut t = m();
-        for b in b"\x1b[200~" {
-            let _ = t.feed(&[*b], NavPosition::Left);
-        }
-        // a 0x07 inside the paste forwards literally, never arms
-        assert_eq!(fwd(&t.feed(&[0x07], NavPosition::Left)), vec![0x07]);
-        for b in b"\x1b[201~" {
-            let _ = t.feed(&[*b], NavPosition::Left);
-        }
-        // after the paste the prefix arms again
-        assert!(t.feed(&[0x07], NavPosition::Left).is_empty());
-        assert_eq!(
-            t.feed(b"\t", NavPosition::Left),
-            vec![Action::FocusNav(vec![])]
         );
     }
 }

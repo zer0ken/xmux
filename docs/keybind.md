@@ -72,7 +72,9 @@ removes the collision.
 | `d` on an unreachable screen | unfold the full failure diagnostic |
 
 When the terminal view has focus, every key that is not a prefix chord reaches the
-session's active pane unchanged.
+session's active pane unchanged. A paste reaches it as one paste, bracketed only when the
+pane's program asked for bracketed paste. Pasted text never acts as the prefix or a key:
+a text field takes it without its line breaks, and over the nav it is dropped.
 
 ## Nav Placement
 

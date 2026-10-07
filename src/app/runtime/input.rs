@@ -941,6 +941,90 @@ impl Runtime {
         outcome
     }
 
+    /// Routes one paste. Pasted text is data for wherever it goes, never a key: the
+    /// focused session reads it as a paste, a text field types it, and with no field to
+    /// take it, as over the nav or a machine or host screen, it is dropped. A prefix
+    /// waiting for its key and a resize's repeat window end, as on any input that is not
+    /// their key.
+    pub(super) fn handle_paste(&mut self, text: Vec<u8>) -> StdinOutcome {
+        let mut outcome = StdinOutcome {
+            dirty: true,
+            ..StdinOutcome::default()
+        };
+        if self.model.mouse_state.nav_armed || self.term_input.is_armed() {
+            let effects = update(&mut self.model, Msg::SetMouseNavArmed(false));
+            debug_assert!(effects.is_empty());
+            self.term_input.disarm();
+        }
+        if self.model.mouse_state.repeat_until.is_some() {
+            let effects = update(&mut self.model, Msg::SetResizeRepeat(None));
+            debug_assert!(effects.is_empty());
+        }
+        if !self.model.state.chrome.first_key_seen
+            || self.model.state.chrome.selection_hint.is_some()
+        {
+            let effects = update(&mut self.model, Msg::KeysRead);
+            let _ = self.execute_effects(effects);
+        }
+        let field = crate::display::paste::field_text(&text);
+        if crate::state::is_reader(&self.model.state.modal) {
+            let effects = update(
+                &mut self.model,
+                Msg::ReaderBytes {
+                    bytes: field,
+                    prefix: self.prefix,
+                },
+            );
+            let (quit, width_changed, _) = self.execute_effects(effects);
+            outcome.quit = quit;
+            outcome.width_changed = width_changed;
+        } else if self.model.state.focus.is_nav_focused() || self.model.state.focus.is_modal() {
+            if self.model.state.is_inputting() {
+                let (_, quit, ..) = self.handle_nav_bytes(&field, &mut outcome.width_changed);
+                outcome.quit = quit;
+            }
+        } else {
+            let login_running =
+                self.model.state.login_run.as_ref().is_some_and(|l| {
+                    self.model.switcher.current_host().as_deref() == Some(&l.host)
+                });
+            // A running login takes no input, and a screen without the login pane has
+            // no field.
+            if login_running {
+                return outcome;
+            }
+            if self.model.switcher.login_pane_shown(&self.model.state) {
+                if let Some(host) = self.model.switcher.current_host() {
+                    let effects = update(&mut self.model, Msg::FeedLogin { host, bytes: field });
+                    let (quit, width_changed, _) = self.execute_effects(effects);
+                    outcome.quit = quit;
+                    outcome.width_changed = width_changed;
+                }
+            } else if self
+                .model
+                .switcher
+                .current_view_screen(&self.model.state)
+                .is_none()
+            {
+                self.forward_paste(text);
+            }
+        }
+        self.flush_rescan();
+        outcome
+    }
+
+    /// Forwards a paste to the session [`input_route`] names, wrapped in the paste
+    /// markers when that session's client enabled bracketed paste.
+    fn forward_paste(&mut self, text: Vec<u8>) {
+        let bracketed = match input_route(&self.model.state, &self.hosts) {
+            InputRoute::Selected(key) | InputRoute::Shown(key) => {
+                self.registry.input_modes(&key).bracketed_paste
+            }
+            InputRoute::Hold => false,
+        };
+        self.forward_input(crate::display::paste::for_client(&text, bracketed));
+    }
+
     /// Forwards terminal input to the session [`input_route`] names, behind any input
     /// still held for the same selection so the order typed is the order delivered.
     pub(super) fn forward_input(&mut self, bytes: Vec<u8>) {

@@ -183,6 +183,11 @@ against, naming no source file, function, or test.
   wait while its attachment starts and, for a mux whose client drops the keys it reads
   before its first frame, until that attachment draws. Keys still waiting after 5 s, or
   when the pick moves on, are dropped.
+- **FR-C6** - A paste reaches the focused session as one paste, wrapped in the bracketed
+  paste markers when the session's client enabled bracketed paste and as plain text
+  otherwise, and nothing in it acts as the prefix or an xmux key. A text field takes a
+  paste without its line breaks and other control characters, and a paste over the nav
+  or a screen without a field is dropped.
 
 ## D. App lifecycle
 
