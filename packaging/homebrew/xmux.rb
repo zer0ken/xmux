@@ -2,29 +2,29 @@ class Xmux < Formula
   desc "Cross-environment tmux/psmux session switcher"
   homepage "https://github.com/zer0ken/xmux"
   license "MIT"
-  version "0.17.2"
+  version "0.17.3"
 
   on_macos do
     on_arm do
-      url "https://github.com/zer0ken/xmux/releases/download/v0.17.2/xmux-v0.17.2-aarch64-apple-darwin.tar.gz"
-      sha256 "7b040dc381a11f9d75520c7a6d2f17dc09000f40a1141034423053d27ffdc909"
+      url "https://github.com/zer0ken/xmux/releases/download/v0.17.3/xmux-v0.17.3-aarch64-apple-darwin.tar.gz"
+      sha256 "e65ae8e8128b0c1495c3f1fbfe21448675c3a36e368c68a12942801b3056647e"
     end
 
     on_intel do
-      url "https://github.com/zer0ken/xmux/releases/download/v0.17.2/xmux-v0.17.2-x86_64-apple-darwin.tar.gz"
-      sha256 "a3c9e687ddaadf65be9848167391469d6c001bf6bdb057559921fef9f3e5e1f8"
+      url "https://github.com/zer0ken/xmux/releases/download/v0.17.3/xmux-v0.17.3-x86_64-apple-darwin.tar.gz"
+      sha256 "7b1ecefdf44edbc63b48fe124367e8153b9cfd55f84ecccebf329c1bbb1f9f90"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/zer0ken/xmux/releases/download/v0.17.2/xmux-v0.17.2-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "5baa194fc76fec06a49aa13470f22de6e0a263a7f17c25b881dd0b8f66171a6a"
+      url "https://github.com/zer0ken/xmux/releases/download/v0.17.3/xmux-v0.17.3-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "8395253e92e6d617886a9027eddc99d88f95b3805214729ee23e7ca7823ddf48"
     end
 
     on_intel do
-      url "https://github.com/zer0ken/xmux/releases/download/v0.17.2/xmux-v0.17.2-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "5a8f9c2f946dec950a2e86b7f88faee07d0603223161851ad4706c6e64d3a549"
+      url "https://github.com/zer0ken/xmux/releases/download/v0.17.3/xmux-v0.17.3-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "0e21ae148de398e604116ab9fec7ad0a293ca746f035051c0eb3d62653d36828"
     end
   end
 
