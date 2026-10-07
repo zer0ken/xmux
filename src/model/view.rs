@@ -83,13 +83,13 @@ pub fn choose_view_screen(
 
 /// Chooses a machine's screen from the state of the machine as a whole. `failure` is the
 /// failure every one of its hosts shares (a machine is down only when none of its hosts
-/// connected), and `scanning` says every host is still waiting on its first answer. A
-/// machine that is neither is reachable, whatever each host answered.
-pub fn choose_machine_screen(failure: Option<FailureKind>, scanning: bool) -> ViewScreen {
+/// connected). A machine without one shows its machine screen whatever each host
+/// answered, and a scan of it changes only the state word that screen writes, so its
+/// facts and links stay on screen while it is asked again.
+pub fn choose_machine_screen(failure: Option<FailureKind>) -> ViewScreen {
     match failure {
         Some(FailureKind::Blocked) => ViewScreen::Login,
         Some(FailureKind::Unreachable | FailureKind::ListFailed) => ViewScreen::Unreachable,
-        None if scanning => ViewScreen::Scanning,
         None => ViewScreen::Machine,
     }
 }
@@ -352,15 +352,14 @@ mod tests {
     #[test]
     fn a_machine_screen_follows_the_machine_as_a_whole() {
         assert_eq!(
-            choose_machine_screen(Some(FailureKind::Blocked), false),
+            choose_machine_screen(Some(FailureKind::Blocked)),
             ViewScreen::Login
         );
         assert_eq!(
-            choose_machine_screen(Some(FailureKind::Unreachable), true),
+            choose_machine_screen(Some(FailureKind::Unreachable)),
             ViewScreen::Unreachable
         );
-        assert_eq!(choose_machine_screen(None, true), ViewScreen::Scanning);
-        assert_eq!(choose_machine_screen(None, false), ViewScreen::Machine);
+        assert_eq!(choose_machine_screen(None), ViewScreen::Machine);
     }
 
     #[test]

@@ -1426,3 +1426,35 @@ fn a_filter_keeps_a_machine_by_its_name() {
         "gpu's session does not match"
     );
 }
+
+#[test]
+fn a_scanned_machine_keeps_its_screen_and_reads_scanning() {
+    let mut h = fleet();
+    h.sw.select_node(Node::Machine("web".into()));
+    h.draw();
+    let before = h.view();
+    h.sw.mark_machine_scanning("web", &mut h.state);
+    h.sw.select_node(Node::Machine("web".into()));
+    h.draw();
+    assert_eq!(
+        h.sw.current_view_screen(&h.state),
+        Some(crate::model::ViewScreen::Machine)
+    );
+    let during = h.view();
+    assert!(during.contains(" scanning"), "{during}");
+    assert!(!during.contains(" reachable"), "{during}");
+    for row in [
+        "address     web",
+        "port        22",
+        "ssh config  (no matching entry)",
+        "rescan this machine",
+        "log out of this machine",
+    ] {
+        assert!(before.contains(row), "{before}");
+        assert!(
+            during.contains(row),
+            "{row} stays through the scan:
+{during}"
+        );
+    }
+}
