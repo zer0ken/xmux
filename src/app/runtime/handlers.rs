@@ -832,6 +832,8 @@ impl Runtime {
             term_input,
             nav_decoder,
             paste: Default::default(),
+            window_focused: true,
+            child_focus: None,
             prefix,
             // The draw hot path's observability (per-key grid fingerprints + slow-step
             // probe), owned off the draw block so it does nothing but lock → render.

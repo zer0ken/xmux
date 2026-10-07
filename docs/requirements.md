@@ -188,6 +188,9 @@ against, naming no source file, function, or test.
   otherwise, and nothing in it acts as the prefix or an xmux key. A text field takes a
   paste without its line breaks and other control characters, and a paste over the nav
   or a screen without a field is dropped.
+- **FR-C7** - The session in the terminal view holds the focus while xmux's window does
+  and the terminal view holds xmux's focus with no popup open, and its client, when it
+  enabled focus reports, is told each time it gains or loses that focus.
 
 ## D. App lifecycle
 

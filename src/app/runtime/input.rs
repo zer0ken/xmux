@@ -564,6 +564,17 @@ impl Runtime {
         {
             let mut i = 0;
             while i < bytes.len() {
+                // A focus report says what happened to xmux's window, not what the user
+                // typed: it is taken out here like a mouse report, and the loop tells the
+                // session about it.
+                let rest = &bytes[i..];
+                if rest.starts_with(crate::display::term::FOCUS_IN)
+                    || rest.starts_with(crate::display::term::FOCUS_OUT)
+                {
+                    self.window_focused = rest.starts_with(crate::display::term::FOCUS_IN);
+                    i += crate::display::term::FOCUS_IN.len();
+                    continue;
+                }
                 if let Some((ev, len)) = crate::display::mouse::parse_sgr_mouse(&bytes[i..]) {
                     if self.handle_mouse_event(
                         &ev,
@@ -1023,6 +1034,41 @@ impl Runtime {
             InputRoute::Hold => false,
         };
         self.forward_input(crate::display::paste::for_client(&text, bracketed));
+    }
+
+    /// Tells the attachment in the terminal view when it gains or loses the focus, in
+    /// the form a terminal reports its own, and only when its client enabled focus
+    /// reports. It holds the focus while xmux's window does and the terminal view holds
+    /// xmux's focus with no popup and no machine or host screen over it, so moving to
+    /// the nav, opening a popup, and switching to another session each read as a focus
+    /// out for it. Runs on every loop pass, comparing with the attachment it last told,
+    /// so every path that moves the focus is reported the same way.
+    pub(super) fn sync_child_focus(&mut self) {
+        let focused = (self.window_focused
+            && self.model.state.focus.is_terminal_focused()
+            && !self.model.state.is_modal_popup_open()
+            && self
+                .model
+                .switcher
+                .current_view_screen(&self.model.state)
+                .is_none())
+        .then(|| display_key(&self.hosts, &self.model.state.displayed));
+        if focused == self.child_focus {
+            return;
+        }
+        if let Some(old) = self.child_focus.take() {
+            if self.registry.input_modes(&old).focus_events {
+                self.registry
+                    .input(&old, crate::display::term::FOCUS_OUT.to_vec());
+            }
+        }
+        if let Some(new) = &focused {
+            if self.registry.input_modes(new).focus_events {
+                self.registry
+                    .input(new, crate::display::term::FOCUS_IN.to_vec());
+            }
+        }
+        self.child_focus = focused;
     }
 
     /// Forwards terminal input to the session [`input_route`] names, behind any input

@@ -10,6 +10,9 @@
 pub struct InputModes {
     /// `?2004`: a paste arrives between `ESC[200~` and `ESC[201~`.
     pub bracketed_paste: bool,
+    /// `?1004`: the client is told with `ESC[I` and `ESC[O` when it gains and loses the
+    /// focus.
+    pub focus_events: bool,
 }
 
 /// Longest CSI parameter run kept; a longer one is not a mode change and is skipped.
@@ -84,8 +87,10 @@ impl ModeScanner {
             _ => return,
         };
         for param in params.split(|&b| b == b';') {
-            if param == b"2004" {
-                self.modes.bracketed_paste = set;
+            match param {
+                b"2004" => self.modes.bracketed_paste = set,
+                b"1004" => self.modes.focus_events = set,
+                _ => {}
             }
         }
     }
@@ -112,6 +117,13 @@ mod tests {
             modes_after(&[b"\x1b[?1049;2004h"]).bracketed_paste,
             "in a list"
         );
+    }
+
+    #[test]
+    fn focus_events_follow_their_own_mode() {
+        let modes = modes_after(&[b"\x1b[?1004h"]);
+        assert!(modes.focus_events && !modes.bracketed_paste);
+        assert!(!modes_after(&[b"\x1b[?1004h\x1b[?1004l"]).focus_events);
     }
 
     #[test]

@@ -1587,6 +1587,7 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
 
     loop {
         rt.flush_held_input();
+        rt.sync_child_focus();
         rt.prepare_and_draw(&mut term);
 
         // NOT biased: a biased select polls host_rx first every iteration, so a
@@ -1720,6 +1721,10 @@ struct Runtime {
     term_input: crate::display::input::TermInput,
     nav_decoder: crate::display::decode::KeyDecoder,
     paste: crate::display::paste::PasteSplitter,
+    /// Whether xmux's window holds the focus, as its terminal last reported.
+    window_focused: bool,
+    /// The attachment last told it holds the focus. See [`Runtime::sync_child_focus`].
+    child_focus: Option<String>,
     prefix: u8,
     draw_observer: DrawObserver,
     spinner_start: std::time::Instant,

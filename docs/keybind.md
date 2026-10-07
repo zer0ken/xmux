@@ -74,7 +74,9 @@ removes the collision.
 When the terminal view has focus, every key that is not a prefix chord reaches the
 session's active pane unchanged. A paste reaches it as one paste, bracketed only when the
 pane's program asked for bracketed paste. Pasted text never acts as the prefix or a key:
-a text field takes it without its line breaks, and over the nav it is dropped.
+a text field takes it without its line breaks, and over the nav it is dropped. A pane's
+program that asks for focus reports hears that it lost the focus when xmux's window, the
+nav, or a popup takes it, and that it gained the focus when the terminal view has it back.
 
 ## Nav Placement
 

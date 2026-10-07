@@ -2363,6 +2363,8 @@ fn test_rt(env: Env) -> Runtime {
         term_input: crate::display::input::TermInput::new(prefix),
         nav_decoder: crate::display::decode::KeyDecoder::new(),
         paste: Default::default(),
+        window_focused: true,
+        child_focus: None,
         prefix,
         draw_observer: DrawObserver::default(),
         spinner_start: std::time::Instant::now(),
@@ -7758,4 +7760,88 @@ fn a_paste_over_the_nav_moves_nothing_and_a_filter_takes_its_text() {
         _ => panic!("the filter stays open"),
     }
     assert!(logged(&log).is_empty(), "nothing reached the session");
+}
+
+#[test]
+fn a_focus_report_from_the_terminal_reaches_no_session_that_did_not_ask_for_one() {
+    // xmux's terminal reports its own focus; a session that did not enable `?1004`
+    // reads nothing of it, and a prefix waiting for its key still waits.
+    let (mut rt, log) = rt_terminal_focus_with_attachment();
+    rt.on_stdin(b"\x1b[O\x1b[I");
+    assert!(logged(&log).is_empty());
+    rt.on_stdin(b"\x07");
+    rt.on_stdin(b"\x1b[O");
+    assert!(rt.prefix_active(), "a focus report is not the prefix's key");
+}
+
+#[test]
+fn a_session_that_asked_for_focus_events_hears_every_focus_move() {
+    let (mut rt, log) = rt_terminal_focus_with_attachment();
+    let key = display_key(&rt.hosts, &rt.model.state.selection);
+    rt.registry
+        .grid(&key)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .feed(b"\x1b[?1004h");
+    rt.sync_child_focus();
+    assert_eq!(
+        logged(&log),
+        b"\x1b[I",
+        "it holds the focus once it can hear it"
+    );
+    let heard = |rt: &mut Runtime, keys: &[u8]| {
+        log.lock().unwrap().clear();
+        rt.on_stdin(keys);
+        rt.sync_child_focus();
+        logged(&log)
+    };
+    assert_eq!(
+        heard(&mut rt, b"\x07\x1b[D"),
+        b"\x1b[O",
+        "the nav takes the focus"
+    );
+    assert_eq!(
+        heard(&mut rt, b"\r"),
+        b"\x1b[I",
+        "the terminal view takes it back"
+    );
+    assert_eq!(
+        heard(&mut rt, b"\x1b[O"),
+        b"\x1b[O",
+        "xmux's window loses it"
+    );
+    assert_eq!(heard(&mut rt, b"\x1b[I"), b"\x1b[I", "and gets it back");
+    assert_eq!(heard(&mut rt, b"\x07?"), b"\x1b[O", "a popup takes it");
+    assert_eq!(
+        heard(&mut rt, b"\x1b"),
+        b"\x1b[I",
+        "closing the popup returns it"
+    );
+    assert_eq!(heard(&mut rt, b"ab"), b"ab", "typing is no focus move");
+}
+
+#[test]
+fn switching_the_terminal_view_to_another_session_moves_the_focus_between_them() {
+    let (mut rt, log) = rt_terminal_focus_with_attachment();
+    let key = display_key(&rt.hosts, &rt.model.state.selection);
+    rt.registry
+        .grid(&key)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .feed(b"\x1b[?1004h");
+    rt.sync_child_focus();
+    log.lock().unwrap().clear();
+    let other = Selection {
+        host: "jup".into(),
+        session: "web".into(),
+    };
+    let (att, other_log) = crate::display::attachment::fake_attachment_with_input_log(8);
+    att.grid.lock().unwrap().feed(b"\x1b[?1004h");
+    rt.registry.insert(&display_key(&rt.hosts, &other), att);
+    rt.model.state.displayed = other;
+    rt.sync_child_focus();
+    assert_eq!(logged(&log), b"\x1b[O");
+    assert_eq!(logged(&other_log), b"\x1b[I");
 }
