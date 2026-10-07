@@ -846,6 +846,7 @@ impl Runtime {
             display_probe: DisplayProbe::default(),
             held_input: None,
             passthrough: Vec::new(),
+            title: None,
             #[cfg(test)]
             discovery_runs: 0,
             #[cfg(test)]
@@ -1136,6 +1137,28 @@ impl Runtime {
         let _ = out.write_all(&self.passthrough);
         let _ = out.flush();
         self.passthrough.clear();
+    }
+
+    /// Queues the terminal's title for the session on screen: the OSC 0 or OSC 2 title
+    /// its client set, or `xmux` once a title xmux wrote is no longer backed by the
+    /// session on screen. Until a client sets a title, xmux leaves the terminal's own
+    /// title alone, and the terminal guard restores it on exit.
+    pub(super) fn sync_title(&mut self) {
+        let displayed = &self.model.state.displayed;
+        let title = (!displayed.is_empty())
+            .then(|| self.registry.grid(&display_key(&self.hosts, displayed)))
+            .flatten()
+            .and_then(|grid| grid.lock().ok()?.title().map(str::to_string));
+        if self.title.is_none() && title.is_none() {
+            return;
+        }
+        if self.title.as_ref() == Some(&title) {
+            return;
+        }
+        let shown = title.as_deref().unwrap_or(OWN_TITLE);
+        self.passthrough
+            .extend_from_slice(format!("]2;{shown}").as_bytes());
+        self.title = Some(title);
     }
 
     /// A bell or a notification from attachment `id`. Every one reaches the terminal

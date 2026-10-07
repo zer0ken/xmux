@@ -38,9 +38,11 @@ state: the focus and modal state machine lives in `app`.
   and reap. App and UI code never write to a PTY directly.
 - The renderer owns stdout, so raw stdout passthrough of child output is not an
   option. The one exception is what a child asks of the terminal around the screen,
-  which the loop re-emits between frames: a whole OSC 52 clipboard write, a bell, and an
-  OSC 9 or OSC 777 notification. The pump scans OSC 52 out of the raw stream; the grid's
-  parser keeps the bells and notifications it consumes until the pump takes them.
+  which the loop writes between frames: a whole OSC 52 clipboard write, a bell, an OSC 9
+  or OSC 777 notification, and the window title of the session on screen. The pump
+  scans OSC 52 out of the raw stream; the grid's parser keeps the bells and
+  notifications it consumes until the pump takes them, and the last title the child
+  set until the grid clears for another session.
 - The live child-environment read has two answers, a value or no signal; absence never
   stands in for a value, and a stale exec-time environment counts as no signal.
 

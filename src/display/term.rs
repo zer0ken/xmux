@@ -20,15 +20,21 @@ const SGR_MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 const INPUT_MODES_ON: &[u8] = b"\x1b[?2004h\x1b[?1004h";
 const INPUT_MODES_OFF: &[u8] = b"\x1b[?1004l\x1b[?2004l";
 
+// The title stack (XTWINOPS 22 and 23): the guard saves the terminal's window and icon
+// title on entry and restores them on exit, so a title the session on screen set does
+// not outlive xmux in a terminal that keeps the stack.
+const TITLE_SAVE: &[u8] = b"[22;0t";
+const TITLE_RESTORE: &[u8] = b"[23;0t";
+
 /// The focus report a terminal sends when its window gains the focus.
 pub const FOCUS_IN: &[u8] = b"\x1b[I";
 /// The focus report a terminal sends when its window loses the focus.
 pub const FOCUS_OUT: &[u8] = b"\x1b[O";
 
 /// RAII guard owning the terminal for the app's lifetime: enables raw mode,
-/// enters the alternate screen, and enables SGR mouse capture, bracketed paste, and
-/// focus reports on construction, then on drop disables them, leaves the alternate screen, and disables
-/// raw mode.
+/// enters the alternate screen, enables SGR mouse capture, bracketed paste, and
+/// focus reports, and saves the title on construction, then on drop disables them,
+/// restores the title, leaves the alternate screen, and disables raw mode.
 /// Restores the user's pre-launch screen on normal return AND on a panic (release
 /// builds unwind; see Cargo.toml `panic`).
 pub struct TermGuard;
@@ -53,6 +59,7 @@ impl TermGuard {
             use std::io::Write;
             let mut out = std::io::stdout();
             out.write_all(INPUT_MODES_ON)?;
+            out.write_all(TITLE_SAVE)?;
             out.flush()?;
         }
         Ok(TermGuard)
@@ -65,6 +72,7 @@ impl Drop for TermGuard {
             use std::io::Write;
             let mut out = std::io::stdout();
             let _ = out.write_all(INPUT_MODES_OFF);
+            let _ = out.write_all(TITLE_RESTORE);
             let _ = out.flush();
         }
         #[cfg(windows)]

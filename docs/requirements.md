@@ -171,6 +171,10 @@ against, naming no source file, function, or test.
   session's client sends reaches the terminal xmux runs in. A session whose grid is not
   on screen also marks its card with `!` until it is shown, and the history records the
   bell or the notification's words.
+- **FR-B46** - The terminal's window title is the OSC 0 or OSC 2 title the client of the
+  session on screen set. Once a title xmux wrote is no longer backed by the session on
+  screen, the title is `xmux`, and on exit xmux restores the title the terminal had at
+  launch where the terminal keeps a title stack.
 
 ## C. Switching (the keystone)
 
