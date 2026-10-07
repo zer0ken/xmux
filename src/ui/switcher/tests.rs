@@ -724,15 +724,13 @@ async fn a_scanning_host_card_is_one_line_with_a_trailing_spinner() {
     let h = Harness::from_hosts(&["local"]);
     let rows = non_empty(&h);
     assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
-    // The selected card, with the nav focused, ends in the Enter mark.
-    let enter = super::render::ENTER_MARK;
-    assert_eq!(rows[0], format!("1 local {sp} scanning {enter}"));
+    assert_eq!(rows[0], format!("1 local {sp} scanning"));
 
     // A qualified id already confirms its mux: same shape, the mux in the middle.
     let h = Harness::from_hosts(&["local:zellij"]);
     let rows = non_empty(&h);
     assert_eq!(rows.len(), 1, "one row, no blank second line:\n{rows:?}");
-    assert_eq!(rows[0], format!("1 local/zellij {sp} scanning {enter}"));
+    assert_eq!(rows[0], format!("1 local/zellij {sp} scanning"));
 }
 
 #[tokio::test]

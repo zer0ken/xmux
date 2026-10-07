@@ -156,8 +156,8 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **status row fill** - how much of its row the hint bar paints: the resting indicator
   its text, a floating bar the whole row.
 - **key list** - the box a live prefix opens, naming every key it unlocks.
-- **Enter mark** - the `⏎` after the selected nav card's text while the nav holds the
-  focus, where Enter runs that card.
+- **Enter mark** - the `⏎` after the selected session card's text while the nav holds
+  the focus, where Enter opens that session.
 - **scan indicator** - the `scanning hosts n/m…` progress in the hint bar, counting
   hosts and the machines that have no host yet.
 - **toast** - the result of an action the user took, whether it was done, refused, or
