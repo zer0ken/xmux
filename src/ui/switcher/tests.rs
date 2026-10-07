@@ -8453,6 +8453,30 @@ async fn moving_into_the_terminal_view_from_a_session_card_hides_the_host_band()
 }
 
 #[tokio::test]
+async fn an_armed_prefix_paints_the_hidden_host_band_until_the_chord_ends() {
+    let mut h = Harness::new(scan_with_a_host_band());
+    h.sw.sync_view_focus(true);
+    h.draw();
+    assert!(!h.nav_cards_text().contains("db-2"), "the band is hidden");
+    let selected = h.sw.selected_node();
+    h.sw.sync_prefix_armed(true);
+    h.draw();
+    let nav = h.nav_cards_text();
+    assert!(
+        nav.contains("db-2") && nav.contains("db-3"),
+        "the armed prefix paints the band:
+{nav}"
+    );
+    assert_eq!(h.sw.selected_node(), selected, "the selection stays");
+    h.sw.sync_prefix_armed(false);
+    h.draw();
+    assert!(
+        !h.nav_cards_text().contains("db-2"),
+        "the band hides again when the chord ends"
+    );
+}
+
+#[tokio::test]
 async fn moving_into_the_terminal_view_from_a_host_card_keeps_the_host_band() {
     let mut h = Harness::new(scan_with_a_host_band());
     h.key(KeyCode::Right).await; // local → jupiter00

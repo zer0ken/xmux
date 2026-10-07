@@ -111,6 +111,12 @@ draws in at all, hides the way auto-hide hides it whenever the terminal view hol
 focus, whatever auto-hide is set to. In a small window the view the user works in then
 has the whole window: focusing the nav or pressing the prefix brings the nav back.
 
+Moving the focus from a session card into the terminal view leaves the band of machine
+and host cards without sessions off the nav, so the nav lists only the sessions. The
+band shows again while the nav holds the focus, while a card of it is selected, and while
+the prefix is armed, so a `prefix <digit>` jump can see the numbers of those cards. The
+card numbers and the selection are the same whether the band shows.
+
 ## Walking the Nav
 
 The nav is a list of numbered cards in sections, not a tree. `←`/`→` step one section:
