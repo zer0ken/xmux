@@ -1978,9 +1978,9 @@ fn history_popup_width(area: Rect) -> u16 {
 /// cell just outside the rect takes the paint while it lies inside `bounds`. A neighbour
 /// that is text, such as the `/` between a section title's halves, stays unpainted.
 /// The glyph the hard-selected nav card writes after its text while the nav holds the
-/// focus: the return arrow, which the default fonts of every supported OS draw in one
-/// cell.
-pub(crate) const ENTER_MARK: &str = "\u{21b5}";
+/// focus: the return symbol, the outlined bent arrow a keyboard's Enter key carries, in
+/// one cell and without emoji presentation.
+pub(crate) const ENTER_MARK: &str = "\u{23ce}";
 
 /// Writes [`ENTER_MARK`] after the text on the first row of `rect` and returns `rect`
 /// grown to cover it, so the highlight takes the mark in. The mark stands one blank cell

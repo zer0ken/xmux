@@ -135,7 +135,7 @@ against, naming no source file, function, or test.
   paths and every key surface read.
 - **FR-B36** - Pressing the prefix opens the key list at once, naming every key the
   prefix unlocks by section and never dropping the jump, help, or quit keys.
-- **FR-B37** - While the nav holds the focus, the selected nav card ends in `↵`; a move of
+- **FR-B37** - While the nav holds the focus, the selected nav card ends in `⏎`; a move of
   the selection leaves the hint bar as it is.
 - **FR-B38** - The help lists every key by section and a legend of every glyph, with
   section tabs, scrolling, and case-insensitive search, closed by `Esc` or `prefix ?`.

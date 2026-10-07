@@ -220,7 +220,7 @@ no key-up.
 The hint bar shows one thing at a time, in this order: the prefix alone while the key
 list or an input is open, the scan progress, the active filter, and the resting prefix.
 What a key did, or why it did nothing, is a toast. Moving the selection leaves the bar
-as it is: while the nav holds the focus, the selected card ends in `↵`, the key that
+as it is: while the nav holds the focus, the selected card ends in `⏎`, the key that
 runs it. With the nav auto-hidden, a prefix
 interaction brings the nav back until it ends, and the key list and the bar open over
 the window's bottom left.
