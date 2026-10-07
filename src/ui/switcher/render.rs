@@ -333,7 +333,7 @@ impl Switcher {
                     resting_bar.height == 0,
                     list.size(),
                 );
-                (self.settle(rect, area), list)
+                (self.settle(rect, area, modal::PopupSurface::KeyList), list)
             })
         } else {
             None
@@ -551,15 +551,15 @@ impl Switcher {
         (count(&state.filter), count(""))
     }
 
-    /// A popup's final rect: moved by its drag offset, clamped inside the window, and with
-    /// a left edge that would leave a sliver of one or two cells of the row it covers
+    /// A popup's final rect: moved by `surface`'s drag offset, clamped inside the window, and
+    /// with a left edge that would leave a sliver of one or two cells of the row it covers
     /// snapped to the window's left edge.
-    fn settle(&self, rect: Rect, area: Rect) -> Rect {
+    fn settle(&self, rect: Rect, area: Rect, surface: modal::PopupSurface) -> Rect {
         let w = rect.width.min(area.width);
         let h = rect.height.min(area.height);
         let max_x = area.right().saturating_sub(w);
         let max_y = area.bottom().saturating_sub(h);
-        let (ox, oy) = self.popup_geo.offset;
+        let (ox, oy) = self.popup_geo.offset(surface);
         let mut x =
             (rect.x.min(max_x) as i32 + ox as i32).clamp(area.x as i32, max_x as i32) as u16;
         let y = (rect.y.min(max_y) as i32 + oy as i32).clamp(area.y as i32, max_y as i32) as u16;
@@ -581,7 +581,7 @@ impl Switcher {
     ) -> Rect {
         let room = crate::ui::keylist::room(indicator, regions.terminal, area, position);
         let rect = crate::ui::keylist::place(room, position, indicator.height == 0, size);
-        self.settle(rect, area)
+        self.settle(rect, area, modal::PopupSurface::Modal)
     }
 
     /// An open input's popup at `width` outer cells and at most `rows` inner rows: its
@@ -1978,9 +1978,9 @@ fn history_popup_width(area: Rect) -> u16 {
 /// cell just outside the rect takes the paint while it lies inside `bounds`. A neighbour
 /// that is text, such as the `/` between a section title's halves, stays unpainted.
 /// The glyph the hard-selected nav card writes after its text while the nav holds the
-/// focus: the return arrow, which the default fonts of every supported OS draw in one
-/// cell.
-pub(crate) const ENTER_MARK: &str = "\u{21b5}";
+/// focus: the return symbol, the outlined bent arrow a keyboard's Enter key carries, in
+/// one cell and without emoji presentation.
+pub(crate) const ENTER_MARK: &str = "\u{23ce}";
 
 /// Writes [`ENTER_MARK`] after the text on the first row of `rect` and returns `rect`
 /// grown to cover it, so the highlight takes the mark in. The mark stands one blank cell

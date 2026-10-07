@@ -13,76 +13,101 @@ pub(crate) use crate::state::{feed_reader, Input, InputMode, Modal};
 use crate::state::{is_popup_open, modal_kind};
 use crate::ui::palette;
 
-/// An active drag of a modal popup: the grabbed screen cell, the popup offset at grab
-/// time, so motion can compute the new offset, and whether the pointer has left the
-/// grabbed cell. A press released on the cell it grabbed is a click, not a move.
+/// A box that moves on its own when dragged: the prefix key list, or the open modal's
+/// popup. Both can be on screen at once (a prefix pressed over an open popup), so each
+/// keeps its own offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PopupSurface {
+    KeyList,
+    Modal,
+}
+
+/// An active drag of a popup: the box grabbed, the grabbed screen cell, the box's offset
+/// at grab time, so motion can compute the new offset, and whether the pointer has left
+/// the grabbed cell. A press released on the cell it grabbed is a click, not a move.
 #[derive(Clone, Copy)]
 struct PopupDrag {
+    surface: PopupSurface,
     grab: (u16, u16),
     origin: (i16, i16),
     moved: bool,
 }
 
-/// The transient geometry of the active modal popup, owned by the switcher: the
-/// drag `offset` from its anchored position, the `rect` it was last drawn at (for
-/// border hit-testing), and the in-flight border `drag`. The drag behavior is
-/// self-contained here so the switcher only forwards mouse events.
+/// The transient geometry of the key list and the modal popup, owned by the switcher:
+/// each box's drag offset from its anchored position and the in-flight drag. The drag
+/// behavior is self-contained here so the switcher only forwards mouse events.
 #[derive(Default)]
 pub(crate) struct PopupGeometry {
-    /// Drag offset (cells) applied to the anchored position of the key list and of a
-    /// modal popup. Kept while a prefix interaction goes from the key list to the popup
-    /// its key opens, reset once neither is on screen; updated while one is dragged.
-    pub(crate) offset: (i16, i16),
-    /// The drawn rect of the key list or the active modal popup, copied from the last
-    /// frame's render plan when a press starts, so the press can hit-test it.
-    /// `Rect::default()` means neither is on screen.
-    pub(crate) rect: Rect,
-    /// Active drag of the key list or a modal popup. `None` ⇒ not dragging.
+    /// Drag offset (cells) applied to the key list's anchored position, kept while the
+    /// key list is on screen.
+    key_list: (i16, i16),
+    /// Drag offset (cells) applied to the modal popup's anchored position, kept while
+    /// that popup is open. A popup opens at the key list's offset, so a prefix key opens
+    /// its popup where the key list was dragged to.
+    modal: (i16, i16),
+    /// Active drag of the key list or a modal popup. `None` means not dragging.
     drag: Option<PopupDrag>,
 }
 
 impl PopupGeometry {
+    /// The drag offset of `surface`.
+    pub(crate) fn offset(&self, surface: PopupSurface) -> (i16, i16) {
+        match surface {
+            PopupSurface::KeyList => self.key_list,
+            PopupSurface::Modal => self.modal,
+        }
+    }
+
     /// True while the key list or a modal popup is being dragged.
     pub(crate) fn drag_active(&self) -> bool {
         self.drag.is_some()
     }
 
-    /// A left press anywhere on the key list or the active modal popup begins a
-    /// move-drag, so the whole box is its handle. A press released without moving is a
-    /// click instead (see [`Self::end_drag`]). `open` is whether one is live: `rect` is only refreshed on render (frame-gated),
-    /// so a box closed by a keystroke can leave a stale rect - the caller gates on the
-    /// live state so a press can't grab a box that no longer exists. Returns true iff
-    /// it grabbed (so the app consumes the event).
-    pub(crate) fn begin_drag(&mut self, col: u16, row: u16, open: bool) -> bool {
-        if !open {
+    /// A left press anywhere on a box begins a move-drag of that box, so the whole box is
+    /// its handle. `boxes` are the live boxes with the rects they were last drawn at, the
+    /// topmost first; the press grabs the first one it lands in. A press released
+    /// without moving is a click instead (see [`Self::end_drag`]). Returns true iff it
+    /// grabbed (so the app consumes the event).
+    pub(crate) fn begin_drag(
+        &mut self,
+        col: u16,
+        row: u16,
+        boxes: &[(PopupSurface, Rect)],
+    ) -> bool {
+        let hit = boxes.iter().find(|(_, r)| {
+            r.width >= 2
+                && r.height >= 2
+                && col >= r.x
+                && col < r.x + r.width
+                && row >= r.y
+                && row < r.y + r.height
+        });
+        let Some(&(surface, _)) = hit else {
             return false;
-        }
-        let r = self.rect;
-        if r.width < 2 || r.height < 2 {
-            return false; // no modal popup drawn yet
-        }
-        let inside = col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height;
-        if !inside {
-            return false;
-        }
+        };
         self.drag = Some(PopupDrag {
+            surface,
             grab: (col, row),
-            origin: self.offset,
+            origin: self.offset(surface),
             moved: false,
         });
         true
     }
 
-    /// Updates `offset` from the pointer while a drag is active.
+    /// Updates the grabbed box's offset from the pointer while a drag is active.
     pub(crate) fn drag(&mut self, col: u16, row: u16) {
         if let Some(d) = &mut self.drag {
             d.moved |= (col, row) != d.grab;
             let dx = col as i32 - d.grab.0 as i32;
             let dy = row as i32 - d.grab.1 as i32;
-            self.offset = (
+            let offset = (
                 (d.origin.0 as i32 + dx) as i16,
                 (d.origin.1 as i32 + dy) as i16,
             );
+            match d.surface {
+                PopupSurface::KeyList => self.key_list = offset,
+                PopupSurface::Modal => self.modal = offset,
+            }
         }
     }
 
@@ -92,10 +117,21 @@ impl PopupGeometry {
         self.drag.take().filter(|d| !d.moved).map(|d| d.grab)
     }
 
-    /// Returns the key list and the popups to their anchored position.
-    pub(crate) fn reset(&mut self) {
-        self.offset = (0, 0);
-        self.drag = None;
+    /// Places a popup that is opening where the key list is.
+    pub(crate) fn open_modal(&mut self) {
+        self.modal = self.key_list;
+    }
+
+    /// Returns each box that is not on screen to its anchored position, unless a drag of
+    /// it is in flight.
+    pub(crate) fn settle(&mut self, key_list_open: bool, modal_open: bool) {
+        let dragging = self.drag.map(|d| d.surface);
+        if !key_list_open && dragging != Some(PopupSurface::KeyList) {
+            self.key_list = (0, 0);
+        }
+        if !modal_open && dragging != Some(PopupSurface::Modal) {
+            self.modal = (0, 0);
+        }
     }
 }
 

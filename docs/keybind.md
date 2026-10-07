@@ -220,14 +220,15 @@ no key-up.
 The hint bar shows one thing at a time, in this order: the prefix alone while the key
 list or an input is open, the scan progress, the active filter, and the resting prefix.
 What a key did, or why it did nothing, is a toast. Moving the selection leaves the bar
-as it is: while the nav holds the focus, the selected card ends in `↵`, the key that
+as it is: while the nav holds the focus, the selected card ends in `⏎`, the key that
 runs it. With the nav auto-hidden, a prefix
 interaction brings the nav back until it ends, and the key list and the bar open over
 the window's bottom left.
 
 ## Popups
 
-Every popup opens where the key list opens and is moved by dragging it. Its rows wrap
+Every popup opens where the key list opens, and a popup a prefix key opens takes the
+place the key list was dragged to. Dragging a popup moves only that popup. Its rows wrap
 to its width rather than being cut, and only a text field stays on one row. In a popup
 with items to pick, the arrows move its selection, the pointer marks an item without
 moving that selection, and a click executes the item as `Enter` would. A popup that
