@@ -492,8 +492,9 @@ fn a_screen_reads_headline_status_children_then_actions() {
     };
     let order = [
         at("host web/tmux"),
+        at("2 sessions"),
         at("updates"),
-        at("sessions"),
+        at("sessions  api"),
         at("deploy"),
         at("start a new session"),
         at("rescan this machine"),

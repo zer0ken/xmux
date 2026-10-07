@@ -290,6 +290,16 @@ pub(crate) fn host_state_word(
     }
 }
 
+/// The state word of a host that answered with its sessions: their count, and for none
+/// the empty host card's word, so the card and the host screen spell it one way.
+pub(crate) fn host_sessions_word(count: usize) -> String {
+    match count {
+        0 => host_state_word(false, false, false, false).into(),
+        1 => "1 session".into(),
+        n => format!("{n} sessions"),
+    }
+}
+
 /// The state word of a host or a machine the user logged out of. A logout is the user's
 /// choice, so it reads as a state of its own, never as the refusal a login answers.
 pub(crate) const LOGGED_OUT: &str = "logged out";

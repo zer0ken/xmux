@@ -4104,6 +4104,35 @@ async fn host_with_sessions_has_no_host_screen() {
     );
 }
 
+/// The line under a settled host screen's headline counts its sessions, and an empty
+/// host reads the word its card reads.
+#[tokio::test]
+async fn a_host_screen_counts_its_sessions_under_its_headline() {
+    for (count, word) in [(0, "no sessions"), (1, "1 session"), (2, "2 sessions")] {
+        let mut h = Harness::new(Scan {
+            groups: vec![Group {
+                host: "fresh".into(),
+                err: None,
+                sessions: (0..count)
+                    .map(|i| sess("fresh", &format!("s{i}"), 1, false))
+                    .collect(),
+            }],
+        });
+        if count > 0 {
+            h.key(KeyCode::Char('i')).await;
+        }
+        let screen = h.view_text();
+        let lines: Vec<&str> = screen.lines().map(str::trim).collect();
+        let headline = lines.iter().position(|l| l.starts_with("host ")).unwrap();
+        assert_eq!(lines[headline + 1], word, "{screen}");
+    }
+    assert_eq!(
+        crate::ui::tree::host_state_word(false, false, false, false),
+        "no sessions",
+        "the empty host card and screen read one word"
+    );
+}
+
 #[tokio::test]
 async fn a_section_opens_host_freshness_by_key_and_click_without_numbering_it() {
     let mut h = Harness::new(sample());
@@ -4120,8 +4149,8 @@ async fn a_section_opens_host_freshness_by_key_and_click_without_numbering_it() 
     let headline = lines.iter().position(|l| l.starts_with("host ")).unwrap();
     assert_eq!(
         lines[headline + 1],
-        "",
-        "a host screen with sessions has no state word: {screen}"
+        "2 sessions",
+        "a host screen states its session count: {screen}"
     );
     let updates = lines.iter().find(|l| l.starts_with("updates")).unwrap();
     assert!(updates.ends_with(" live"), "{screen}");

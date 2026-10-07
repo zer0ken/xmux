@@ -180,8 +180,8 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   reached and logged in to, its login pane, a link to each of its hosts whose mux is
   confirmed, and its actions as links. A machine with no confirmed mux links to no host.
   A machine being scanned keeps this screen, with the state `scanning`.
-- **host screen** - the view screen headed `host {machine}/{mux}`: how the host's
-  sessions stay current, a link to each session, its actions as links, and a link to its
+- **host screen** - the view screen headed `host {machine}/{mux}`: how many sessions the
+  host has, how they stay current, a link to each session, its actions as links, and a link to its
   machine in its headline.
 - **landing screen** - the view screen from launch until the first execution: the scan
   progress and every nav card as a link, sharing the one hard selection.
