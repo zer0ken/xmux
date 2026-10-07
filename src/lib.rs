@@ -1,6 +1,7 @@
-//! xmux is a stateless cross-environment session switcher: one terminal that sees
-//! and moves between every reachable supported mux session - local and over ssh -
-//! regardless of OS or mux kind.
+//! A cross-machine, cross-mux session switcher.
+//!
+//! One terminal that sees and moves between every reachable supported mux session
+//! across local machines, WSL, and SSH, regardless of OS or mux kind.
 //!
 //! This is a binary-internal crate. The layers below `cli` are crate-internal;
 //! `cli::run` is the sole public entry called by the binary shim in `main.rs`.

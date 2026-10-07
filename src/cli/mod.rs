@@ -26,8 +26,11 @@ use crate::provision::env::{self, ls_lines_one, Env};
 #[command(
     name = "xmux",
     version,
-    about = "cross-environment mux session switcher",
-    long_about = "xmux shows every reachable tmux/psmux/zellij/screen/abduco/tuios/herdr session (local + ssh) as one list and switches between them."
+    about = env!("CARGO_PKG_DESCRIPTION"),
+    long_about = concat!(
+        env!("CARGO_PKG_DESCRIPTION"),
+        "\n\nxmux shows every reachable supported mux session across local machines, WSL, and SSH as one list and switches between them."
+    )
 )]
 struct Cli {
     /// Name this instance (default: an auto-generated `<adjective>-<noun>`). Lowercase

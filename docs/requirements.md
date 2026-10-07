@@ -1,8 +1,8 @@
 # xmux: functional requirements & use cases
 
-xmux is a stateless cross-environment session switcher that brings tmux's `prefix + s`
+xmux is a cross-machine, cross-mux session switcher that brings tmux's `prefix + s`
 experience across machines: one terminal that sees and switches in place between every
-reachable tmux, psmux, zellij, screen, tuios, and herdr session, local and over ssh.
+reachable supported mux session across local machines, WSL, and SSH.
 Each requirement has a stable ID and states one behavior the implementation is checked
 against, naming no source file, function, or test.
 
