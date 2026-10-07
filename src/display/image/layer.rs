@@ -1,5 +1,5 @@
-//! The grid side: sixel strings taken out of a child's output and turned into marker
-//! cells at the cursor.
+//! The grid side: sixel strings and kitty graphics commands taken out of a child's
+//! output, and the marker cells that place an image at the cursor.
 //!
 //! A marker cell holds a private-use character `U+F0000 + (row << 8 | col)` naming the
 //! cell's place inside its image, a foreground naming the image, and a fixed background
@@ -10,22 +10,24 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+use super::kitty_grid::KittyStore;
 use super::sixel::{self, Bitmap};
+use super::Caps;
 
 /// The first private-use character a marker uses.
 const MARKER_BASE: u32 = 0xF0000;
 /// The background every marker cell carries.
 pub const MARKER_BG: (u8, u8, u8) = (0x58, 0x4D, 0x58);
 /// An image covers at most this many cells per side; the rest is clipped.
-const MAX_CELLS: usize = 255;
-/// The longest sixel string kept. A longer one is dropped whole.
-const MAX_DATA: usize = 32 << 20;
+pub(super) const MAX_CELLS: usize = 255;
+/// The longest sixel string or graphics command kept. A longer one is dropped whole.
+pub(super) const MAX_DATA: usize = 32 << 20;
 
 /// Image ids are unique across every grid, so a cell showing image 7 of one session
 /// is never taken for image 7 of another.
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
-fn next_id() -> u32 {
+pub(super) fn next_id() -> u32 {
     // Ids live in a 24-bit colour; 0 is never used.
     loop {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed) & 0xFF_FFFF;
@@ -81,14 +83,27 @@ enum Scan {
         data: Vec<u8>,
         esc: bool,
     },
+    /// Inside an APC string.
+    Apc { data: Vec<u8>, esc: bool },
 }
 
-/// The sixel images of one grid: the scanner that takes sixel strings out of the
-/// output, and the decoded images its marker cells name.
+/// Where the grid's answers to the child go, in stream order with the parser's own.
+pub trait Replies {
+    fn reply(&mut self, bytes: &[u8]);
+}
+
+impl Replies for () {
+    fn reply(&mut self, _: &[u8]) {}
+}
+
+/// The images of one grid: the scanner that takes sixel strings and graphics
+/// commands out of the output, the decoded sixel images its marker cells name, and
+/// the kitty images the child transmitted.
 #[derive(Default)]
 pub struct ImageLayer {
     scan: Scan,
     images: HashMap<u32, Arc<Bitmap>>,
+    pub(super) kitty: KittyStore,
 }
 
 impl ImageLayer {
@@ -102,25 +117,61 @@ impl ImageLayer {
         marker(cell).filter(|p| self.images.contains_key(&p.id))
     }
 
-    /// Drops every image, for a grid that starts over.
+    /// How the frame shows a cell of a kitty image; see [`KittyStore::cell`].
+    pub fn kitty_cell(
+        &self,
+        cell: &vt100::Cell,
+        left: Option<super::kitty_grid::KittyCell>,
+    ) -> Option<Option<super::kitty_grid::KittyCell>> {
+        self.kitty.cell(cell, left)
+    }
+
+    /// Every kitty image a cell of `screen` shows, by the id the outer terminal knows
+    /// it under, with the cells its placement covers.
+    pub fn kitty_in_use(&self, screen: &vt100::Screen) -> Vec<(u32, super::kitty_grid::Placed)> {
+        let (rows, cols) = screen.size();
+        let mut ids = std::collections::BTreeSet::new();
+        for r in 0..rows {
+            let mut left = None;
+            for c in 0..cols {
+                left = screen
+                    .cell(r, c)
+                    .and_then(|cell| self.kitty.cell(cell, left))
+                    .flatten();
+                if let Some(k) = left {
+                    ids.insert(k.id);
+                }
+            }
+        }
+        ids.into_iter()
+            .filter_map(|id| Some((id, self.kitty.placed(id)?.clone())))
+            .collect()
+    }
+
+    /// Drops the sixel images, for a grid that starts over. The kitty images stay: a
+    /// kitty terminal keeps transmitted images across a clear, and tmux, which
+    /// forwards an image once, draws its placeholder cells again on every redraw of
+    /// the pane, such as after a session switch.
     pub fn clear(&mut self) {
         self.images.clear();
         self.scan = Scan::Ground;
     }
 
-    /// Feeds `bytes` to `parser`, taking out each sixel string and placing its image
-    /// at the cursor where the string ended. With no `cell_px` the bytes pass through
-    /// untouched and the parser discards sixel strings as it does any DCS.
-    pub fn feed<C: vt100::Callbacks>(
+    /// Feeds `bytes` to `parser`, taking out each sixel string and graphics command
+    /// the outer terminal can show and placing its image at the cursor where it ended.
+    /// Whatever the outer terminal cannot show passes through untouched, and the parser
+    /// discards it as it does any DCS or APC string.
+    pub fn feed<C: vt100::Callbacks + Replies>(
         &mut self,
         bytes: &[u8],
-        cell_px: Option<(u16, u16)>,
+        caps: Caps,
         parser: &mut vt100::Parser<C>,
     ) {
-        let Some(cell_px) = cell_px else {
+        let sixel_px = caps.sixel_cell_px();
+        if sixel_px.is_none() && !caps.kitty {
             parser.process(bytes);
             return;
-        };
+        }
         let mut i = 0;
         let mut text_start = 0;
         while i < bytes.len() {
@@ -135,9 +186,16 @@ impl ImageLayer {
                     i += 1;
                 }
                 Scan::Esc => {
-                    if b == b'P' {
+                    if b == b'P' && sixel_px.is_some() {
                         self.scan = Scan::Params(Vec::new());
                         i += 1;
+                    } else if b == b'_' && caps.kitty {
+                        self.scan = Scan::Apc {
+                            data: Vec::new(),
+                            esc: false,
+                        };
+                        i += 1;
+                        text_start = i;
                     } else {
                         // Not a DCS: the ESC (perhaps held from the last read) goes to
                         // the parser with what follows it.
@@ -174,7 +232,9 @@ impl ImageLayer {
                     if *esc {
                         let params = std::mem::take(params);
                         let data = std::mem::take(data);
-                        self.place(&params, &data, cell_px, parser);
+                        if let Some(cell_px) = sixel_px {
+                            self.place(&params, &data, cell_px, parser);
+                        }
                         self.scan = Scan::Ground;
                         if b == b'\\' {
                             i += 1;
@@ -201,12 +261,60 @@ impl ImageLayer {
                     i += 1;
                     text_start = i;
                 }
+                Scan::Apc { data, esc } => {
+                    if *esc {
+                        let data = std::mem::take(data);
+                        self.apc(&data, caps, parser);
+                        self.scan = Scan::Ground;
+                        if b == b'\\' {
+                            i += 1;
+                        } else {
+                            self.scan = Scan::Esc;
+                        }
+                        text_start = i;
+                        continue;
+                    }
+                    match b {
+                        0x1b => *esc = true,
+                        0x18 | 0x1a => {
+                            self.scan = Scan::Ground;
+                            i += 1;
+                            text_start = i;
+                            continue;
+                        }
+                        _ if data.len() < MAX_DATA => data.push(b),
+                        _ => {}
+                    }
+                    i += 1;
+                    text_start = i;
+                }
             }
         }
         if matches!(self.scan, Scan::Ground) && text_start < bytes.len() {
             parser.process(&bytes[text_start..]);
         }
         // An ESC that ended the read stays held until the next one says what it is.
+    }
+
+    /// One complete APC string: a graphics command goes to the kitty store, anything
+    /// else to the parser, which discards it.
+    fn apc<C: vt100::Callbacks + Replies>(
+        &mut self,
+        data: &[u8],
+        caps: Caps,
+        parser: &mut vt100::Parser<C>,
+    ) {
+        match data.split_first() {
+            Some((b'G', body)) if data.len() < MAX_DATA => {
+                self.kitty.command(body, caps, parser);
+            }
+            _ => {
+                let mut whole = b"\x1b_".to_vec();
+                whole.extend_from_slice(data);
+                whole.extend_from_slice(b"\x1b\\");
+                parser.process(&whole);
+            }
+        }
     }
 
     /// Writes the marker cells for one decoded sixel string at the parser's cursor,
@@ -249,34 +357,20 @@ impl ImageLayer {
             .min(MAX_CELLS)
             .min(cols - cur_col);
         let id = next_id();
-
-        let mut out = Vec::new();
-        if scroll > 0 {
-            out.extend_from_slice(format!("\x1b[{scroll}S").as_bytes());
-        }
-        let (r, g, b) = MARKER_BG;
-        let sgr = format!(
-            "\x1b[0;38;2;{};{};{};48;2;{r};{g};{b}m",
-            id >> 16,
-            (id >> 8) & 0xFF,
-            id & 0xFF
-        );
-        for row in 0..img_rows {
-            if top + row >= rows {
-                break;
-            }
-            out.extend_from_slice(format!("\x1b[{};{}H", top + row + 1, cur_col + 1).as_bytes());
-            out.extend_from_slice(sgr.as_bytes());
-            for col in 0..img_cols {
-                let c =
-                    char::from_u32(MARKER_BASE + ((row as u32) << 8 | col as u32)).unwrap_or(' ');
-                let mut buf = [0u8; 4];
-                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-            }
-        }
         let end_row = (top + (banded - 6) / cell_h).min(rows - 1);
-        out.extend_from_slice(format!("\x1b[{};{}H", end_row + 1, cur_col + 1).as_bytes());
-        out.extend_from_slice(&restore);
+        let out = marker_bytes(
+            id,
+            Area {
+                scroll,
+                top,
+                left: cur_col,
+                rows: img_rows,
+                cols: img_cols,
+                screen_rows: rows,
+            },
+            (end_row, cur_col),
+            &restore,
+        );
         parser.process(&out);
 
         self.images.insert(id, Arc::new(bmp));
@@ -285,24 +379,76 @@ impl ImageLayer {
 
     /// Drops the images no cell of `screen` names any more.
     fn retain_shown(&mut self, screen: &vt100::Screen) {
-        let (rows, cols) = screen.size();
-        let mut shown = std::collections::HashSet::new();
-        for r in 0..rows {
-            for c in 0..cols {
-                if let Some(p) = screen.cell(r, c).and_then(marker) {
-                    shown.insert(p.id);
-                }
-            }
-        }
+        let shown = marker_ids(screen);
         self.images.retain(|id, _| shown.contains(id));
     }
+}
+
+/// The ids every marker cell of `screen` names.
+pub(super) fn marker_ids(screen: &vt100::Screen) -> std::collections::HashSet<u32> {
+    let (rows, cols) = screen.size();
+    let mut shown = std::collections::HashSet::new();
+    for r in 0..rows {
+        for c in 0..cols {
+            if let Some(p) = screen.cell(r, c).and_then(marker) {
+                shown.insert(p.id);
+            }
+        }
+    }
+    shown
+}
+
+/// Where marker cells go: the lines to scroll first, then the cells from `top`,
+/// `left`, clipped to the screen's rows.
+pub(super) struct Area {
+    pub scroll: usize,
+    pub top: usize,
+    pub left: usize,
+    pub rows: usize,
+    pub cols: usize,
+    pub screen_rows: usize,
+}
+
+/// The bytes that scroll, write image `id`'s marker cells over `area`, then put the
+/// cursor at `cursor` and the text attributes back to `restore`.
+pub(super) fn marker_bytes(id: u32, area: Area, cursor: (usize, usize), restore: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    if area.scroll > 0 {
+        out.extend_from_slice(format!("\x1b[{}S", area.scroll).as_bytes());
+    }
+    let (r, g, b) = MARKER_BG;
+    let sgr = format!(
+        "\x1b[0;38;2;{};{};{};48;2;{r};{g};{b}m",
+        id >> 16,
+        (id >> 8) & 0xFF,
+        id & 0xFF
+    );
+    for row in 0..area.rows.min(MAX_CELLS) {
+        if area.top + row >= area.screen_rows {
+            break;
+        }
+        out.extend_from_slice(format!("\x1b[{};{}H", area.top + row + 1, area.left + 1).as_bytes());
+        out.extend_from_slice(sgr.as_bytes());
+        for col in 0..area.cols.min(MAX_CELLS) {
+            let c = char::from_u32(MARKER_BASE + ((row as u32) << 8 | col as u32)).unwrap_or(' ');
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        }
+    }
+    out.extend_from_slice(format!("\x1b[{};{}H", cursor.0 + 1, cursor.1 + 1).as_bytes());
+    out.extend_from_slice(restore);
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const CELL: Option<(u16, u16)> = Some((20, 10));
+    const CELL: Caps = Caps {
+        cell_px: Some((20, 10)),
+        sixel: true,
+        kitty: false,
+    };
 
     /// A red sixel of `w` x `h` pixels.
     fn sixel(w: usize, h: usize) -> Vec<u8> {
@@ -445,7 +591,7 @@ mod tests {
         let mut l = ImageLayer::default();
         let mut bytes = b"a".to_vec();
         bytes.extend(sixel(20, 20));
-        l.feed(&bytes, None, &mut p);
+        l.feed(&bytes, Caps::default(), &mut p);
         assert!(pieces(&l, &p).is_empty());
         assert_eq!(p.screen().contents().trim(), "a");
     }

@@ -36,6 +36,48 @@ pub fn mark(cell: &mut Cell, piece: Piece) {
     cell.set_diff_option(CellDiffOption::Skip);
 }
 
+/// Turns `cell` into a kitty Unicode placeholder cell showing `shown`, or into a blank
+/// cell for a placeholder cell that names nothing the outer terminal has.
+pub fn placeholder(cell: &mut Cell, shown: Option<super::kitty_grid::KittyCell>) {
+    cell.reset();
+    if let Some(k) = shown {
+        cell.set_symbol(&super::kitty::placeholder(k.row, k.col));
+        cell.fg = Color::Rgb((k.id >> 16) as u8, (k.id >> 8) as u8, k.id as u8);
+    }
+}
+
+/// The kitty images the outer terminal holds, each under the id xmux gave it, with the
+/// cells of its virtual placement.
+#[derive(Default)]
+pub struct KittyOuter {
+    sent: HashMap<u32, (u16, u16)>,
+}
+
+impl KittyOuter {
+    /// The bytes that give the outer terminal every image in `need` it does not hold
+    /// yet, and free every image it holds that `need` leaves out. Written before the
+    /// frame whose placeholder cells name them.
+    pub fn sync(&mut self, need: &[(u32, super::kitty_grid::Placed)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let wanted: HashMap<u32, (u16, u16)> =
+            need.iter().map(|(id, p)| (*id, (p.cols, p.rows))).collect();
+        self.sent.retain(|id, size| {
+            let keep = wanted.get(id) == Some(size);
+            if !keep {
+                out.extend(super::kitty::delete(*id));
+            }
+            keep
+        });
+        for (id, p) in need {
+            if !self.sent.contains_key(id) {
+                out.extend(p.image.transmit(*id, p.cols, p.rows));
+                self.sent.insert(*id, (p.cols, p.rows));
+            }
+        }
+        out
+    }
+}
+
 /// The piece an untouched image cell shows.
 fn read(cell: &Cell) -> Option<Piece> {
     if cell.diff_option != CellDiffOption::Skip || cell.symbol() != SENTINEL {
