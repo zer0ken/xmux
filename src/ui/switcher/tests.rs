@@ -7143,6 +7143,44 @@ fn the_key_list_drags_and_the_popup_its_key_opens_keeps_the_place() {
 }
 
 #[test]
+fn a_dragged_popup_moves_alone() {
+    let mut state = crate::state::State::from_scan(sample());
+    let mut sw = Switcher::new(&mut state);
+    let area = Rect::new(0, 0, 140, 30);
+    let nav = NavSize::visible(NAV_WIDTH);
+    // Where each box opens on a switcher nothing was dragged on.
+    let undragged = |state: &mut crate::state::State| {
+        let fresh = Switcher::new(state);
+        fresh.layout(area, nav, state, &RenderPlan::default())
+    };
+    sw.show_help(&mut state);
+    let plan = sw.layout(area, nav, &state, &RenderPlan::default());
+    let help = plan.popup_rect;
+    assert!(sw.begin_popup_drag_in_plan(&plan, help.x + 3, help.y + 1, &state));
+    sw.drag_popup(help.x - 7, help.y + 1);
+    sw.end_popup_drag();
+    sw.settle_popup_position(&state);
+    let moved = sw.layout(area, nav, &state, &plan);
+    assert_eq!(moved.popup_rect.x + 10, help.x);
+    // The prefix opens the key list where it opens, not where the help was dragged to,
+    // and the help stays where it was dragged.
+    state.chrome.set_armed(true);
+    sw.settle_popup_position(&state);
+    let armed = sw.layout(area, nav, &state, &moved);
+    assert_eq!(
+        armed.key_list.as_ref().map(|(rect, _)| *rect),
+        undragged(&mut state).key_list.map(|(rect, _)| rect),
+    );
+    assert_eq!(armed.popup_rect, moved.popup_rect);
+    // A popup that key opens takes the key list's place, not the help's.
+    sw.toggle_history(&mut state);
+    state.chrome.set_armed(false);
+    sw.settle_popup_position(&state);
+    let history = sw.layout(area, nav, &state, &armed).popup_rect;
+    assert_eq!(history, undragged(&mut state).popup_rect);
+}
+
+#[test]
 fn popup_drag_clamps_within_screen() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);

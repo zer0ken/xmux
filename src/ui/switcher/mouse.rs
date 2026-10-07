@@ -14,14 +14,18 @@ impl Switcher {
         row: u16,
         state: &crate::state::State,
     ) -> bool {
-        let key_list = plan.key_list.as_ref().map(|(rect, _)| *rect);
-        self.popup_geo.rect = if plan.popup_rect.is_empty() {
-            key_list.unwrap_or_default()
-        } else {
-            plan.popup_rect
-        };
-        let open = state.is_modal_popup_open() || key_list.is_some();
-        self.begin_popup_drag(col, row, open)
+        // The plan is frame-gated, so a box a keystroke closed can still have a rect in
+        // it; only a box that is live can be grabbed. The modal popup paints above the
+        // key list, so it is hit first.
+        let modal = state
+            .is_modal_popup_open()
+            .then_some((modal::PopupSurface::Modal, plan.popup_rect));
+        let key_list = plan
+            .key_list
+            .as_ref()
+            .map(|(rect, _)| (modal::PopupSurface::KeyList, *rect));
+        let boxes: Vec<_> = modal.into_iter().chain(key_list).collect();
+        self.popup_geo.begin_drag(col, row, &boxes)
     }
 
     /// Ends a popup drag. A press released on the cell it grabbed is a click, and a click
