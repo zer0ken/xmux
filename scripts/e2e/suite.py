@@ -46,6 +46,8 @@ KNOWN = {
 # beyond the detach key `detach-inside` covers.
 NOT_APPLICABLE = {("in-client-switch", "screen"), ("in-client-switch", "abduco"),
                   ("native-keys", "abduco")}
+# Only herdr moves its client to a session on another host from inside it.
+NOT_APPLICABLE |= {("in-client-away", m) for m in MUXES if m != "herdr"}
 
 # The in-client keys that detach a mux's own client, and the input that moves the client
 # from <mux>1 to <mux>2 from inside it: tmux's next-session key, zellij's action, which
@@ -59,8 +61,8 @@ INSIDE_SWITCH = {"tmux": ["\x02", ")"], "zellij": ["zellij action switch-session
 # machine at localhost makes herdr2 a place the client can move to. Saving it needs a
 # herdr2 server that herdr started for saved machines, so the one the host started is
 # stopped first; removing the machine after the scenario returns later clients to Local.
-HERDR_SAVE = ("herdr session stop herdr2 >/dev/null 2>&1; "
-              "[ -f .ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f .ssh/id_ed25519; "
+HERDR_KEY = "[ -f .ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f .ssh/id_ed25519"
+HERDR_SAVE = ("herdr session stop herdr2 >/dev/null 2>&1; " + HERDR_KEY + "; "
               "cat .ssh/id_ed25519.pub >> .ssh/authorized_keys; "
               "ssh-keyscan -H localhost >> .ssh/known_hosts 2>/dev/null; "
               "herdr machine add localhost --remote-session herdr2 </dev/null")
@@ -603,6 +605,34 @@ def in_client_switch(c):
             c.hosts.sh(c.h2, HERDR_FORGET, check=False)
 
 
+def in_client_away(c):
+    """herdr moves xmux's client to a saved machine on the first host. That machine is
+    not the host xmux attached, so the selection stays on the session xmux opened and its
+    card names where the client went, while what is typed runs on the first host."""
+    m = c.mux
+    pub = c.hosts.sh(c.h2, HERDR_KEY + "; cat .ssh/id_ed25519.pub")
+    docker("exec", "-i", "-u", "dev", "-w", "/home/dev", PREFIX + c.h1, "sh", "-c",
+           "cat >> .ssh/authorized_keys", input=pub)
+    c.hosts.sh(c.h1, "herdr session stop herdr2 >/dev/null 2>&1", check=False)
+    c.hosts.sh(c.h2, f"ssh-keyscan -H {c.h1} >> .ssh/known_hosts 2>/dev/null; "
+                     f"herdr machine add {c.h1} --remote-session herdr2 </dev/null")
+    place = f"{c.h1}/herdr2"
+    try:
+        app = c.launch(c.h2)
+        app.open(f"{c.h2}/{m}", f"{m}1")
+        app.whereami(c.path(c.h2, f"{m}1"))
+        app.t.wait_text(place, 30)
+        time.sleep(2)
+        app.t.send(*INSIDE_SWITCH[m], gap=0.5)
+        note = f"{m}1 → {place}"
+        app.t.wait(lambda ls: any(note in l for l in driver.nav_lines(ls)),
+                   f"the card note {note!r}", 20)
+        app.selected(f"{c.h2}/{m}", f"{m}1", 5)
+        app.whereami(c.path(c.h1, "herdr2"))
+    finally:
+        c.hosts.sh(c.h2, HERDR_FORGET, check=False)
+
+
 def wait_regex(app, pattern, what, timeout=15):
     return app.t.wait(lambda ls: next((m for l in ls for m in [re.search(pattern, l)] if m), None),
                       what, timeout)
@@ -679,6 +709,7 @@ GROUPS = {
         "detach-inside": detach_inside,
         "shared-client": shared_client,
         "in-client-switch": in_client_switch,
+        "in-client-away": in_client_away,
     },
 }
 SCENARIOS = {name: run for group in GROUPS.values() for name, run in group.items()}

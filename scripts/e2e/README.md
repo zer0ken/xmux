@@ -75,10 +75,12 @@ The native workflow group, typed through xmux's terminal view:
 | `detach-inside` | the mux's own detach key leaves the session alive, and selecting it again attaches it |
 | `shared-client` | a client attached directly on the host stays attached while xmux attaches the same session, and shows what was typed through xmux |
 | `in-client-switch` | moving the client to another session with the mux's own input moves the nav selection with it |
+| `in-client-away` | moving the client to a session on another host with the mux's own input keeps the nav selection and names that place on the selected card |
 
 herdr moves its client between saved machines, so `in-client-switch` saves `localhost` with
 `herdr2` as a machine of the second host for its herdr cell, moves the client there with
-`C-b w`, `Down`, and `Enter`, and removes the machine afterwards.
+`C-b w`, `Down`, and `Enter`, and removes the machine afterwards. `in-client-away` saves the first host's
+`herdr2` as a machine of the second host the same way and moves the client there.
 
 `native-keys` runs on a session of its own, and checks each mux this way:
 
@@ -106,6 +108,7 @@ issue is fixed.
 | `switch`, zellij | `KNOWN #675` | zellij can drop a client that attaches right after another client of the session ended, and the reattach with it |
 | `in-client-switch`, tuios | `KNOWN #333` | tuios gives no signal that its client moved |
 | `in-client-switch`, screen and abduco | `n/a` | a client belongs to one session's server and cannot move |
+| `in-client-away`, every mux but herdr | `n/a` | no other mux moves its client to another host |
 | `native-keys`, abduco | `n/a` | abduco has no keys besides detach |
 | `first-launch`, tmux, Alpine, Windows client | `KNOWN #673` | the tail of a terminal reply reaches tmux 3.5a as typed text |
 | `switch`, Alpine, Windows client | `KNOWN #673` | each of these cells shows Alpine's tmux, for the same reason |
