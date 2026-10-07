@@ -1,5 +1,6 @@
 //! What the terminal xmux runs in says about itself: its colours, its colour scheme,
-//! its cell size in pixels, and whether it has the kitty keyboard protocol.
+//! its cell size in pixels, whether it has the kitty keyboard protocol, the image
+//! protocols it draws, and its name.
 //!
 //! A session's client asks these of its terminal, and its terminal is a grid xmux
 //! renders, so the grid answers with what the real terminal answered xmux. xmux asks
@@ -12,8 +13,9 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// The queries xmux sends its terminal: the foreground and background colours, the 16
-/// ANSI palette slots, the colour scheme, the cell size, and the kitty keyboard
-/// protocol's flags, which only a terminal with the protocol answers. The primary device
+/// ANSI palette slots, the colour scheme, the cell size, the kitty keyboard
+/// protocol's flags, which only a terminal with the protocol answers, kitty graphics
+/// support, and the name and version (XTVERSION). The primary device
 /// attributes query comes last because every terminal answers it and answers in order,
 /// so its reply marks the end of the other replies.
 pub const PROBE: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
