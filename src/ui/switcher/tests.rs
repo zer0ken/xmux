@@ -4290,7 +4290,11 @@ async fn card_text_has_a_fixed_attribute_hierarchy() {
         h.nav_mod_of("local").unwrap().contains(Modifier::BOLD),
         "the section title reads bold"
     );
-    assert!(h.nav_mod_of("2").unwrap().contains(Modifier::DIM));
+    assert!(
+        !h.nav_mod_of("2").unwrap().contains(Modifier::DIM),
+        "the card number reads at full strength"
+    );
+    assert_eq!(h.nav_fg_of("2"), Some(h.sw.palette().decoration));
 }
 
 /// A session stamped with its mux kind, for the context-line tests.

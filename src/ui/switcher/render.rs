@@ -1396,9 +1396,7 @@ impl Switcher {
         let row = &self.rows[i];
         let selected = self.hard_row() == Some(i);
         let accent = Style::default().fg(palette.accent);
-        let number = Style::default()
-            .fg(palette.decoration)
-            .add_modifier(Modifier::DIM);
+        let number = Style::default().fg(palette.decoration);
         // The address column every card writes on - the only line, now that a card has
         // none other. A section title never calls it: it carries no number.
         let address = move || -> Vec<Span<'static>> {
