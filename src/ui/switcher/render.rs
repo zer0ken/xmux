@@ -1367,8 +1367,8 @@ impl Switcher {
     /// still scanning, names none, so the card reads the machine alone or spins in the mux
     /// position. A machine's card reads the machine alone with its glyph or spinner.
     ///
-    /// The ADDRESS column carries the card's dim number - the thing `prefix <digit>`
-    /// types - on the same row as the session it names, selected or not: the highlight
+    /// The ADDRESS column carries the card's number in the decoration colour - the thing
+    /// `prefix <digit>` types - on the same row as the session it names, selected or not: the highlight
     /// alone marks the selection. Every card's name therefore starts at the same screen
     /// column whatever the selection is doing.
     /// A name that shifts as the cursor passes is what makes a list twitch. Focus
@@ -1557,7 +1557,7 @@ impl Switcher {
         // resolves. Its one state glyph is the alert mark of a session that asked for
         // attention while it was not on screen.
         // The `{machine}/{mux}` it used to restate now lives on the section title above it.
-        // The session name is normal weight between the bold title and dim number.
+        // The session name is normal weight between the bold title and the decoration-coloured number.
         //
         // The indent a session card hangs at under its title is NOT part of the card;
         // what a card holds is what a card holds at every position.
