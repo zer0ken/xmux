@@ -182,15 +182,11 @@ impl Runtime {
                     self.hosts.for_each_transport_of(&machine, |transport| {
                         transport.set_login(login.clone())
                     });
-                    self.login_probes += 1;
-                    let probe = self.login_probes;
                     let effects = update(
                         &mut self.model,
                         Msg::LoginSettled {
                             host,
                             credential_held: self.env.credentials().contains(&machine),
-                            machine_has_hosts: self.hosts.serves_any(&machine),
-                            probe,
                         },
                     );
                     debug_assert!(effects.is_empty());
@@ -200,7 +196,6 @@ impl Runtime {
                         self.mgr.events(),
                         &self.scan_pool,
                         false,
-                        probe,
                     );
                     self.dirty = true;
                 }
@@ -394,7 +389,6 @@ impl Runtime {
                             self.mgr.events(),
                             &self.scan_pool,
                             true,
-                            0,
                         );
                     }
                     Command::Logout(_) | Command::RemoveUnmarked(_) => {
@@ -1084,7 +1078,6 @@ fn spawn_machine_probe(
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
     gate: std::sync::Arc<tokio::sync::Semaphore>,
     rescan: bool,
-    probe: u64,
 ) {
     tokio::spawn(async move {
         let Ok(_permit) = gate.acquire().await else {
@@ -1151,7 +1144,6 @@ fn spawn_machine_probe(
             credential_generation,
             current_credential_generation: transport.credential_generation(),
             rescan,
-            probe,
         });
     });
 }
@@ -1226,14 +1218,13 @@ pub(super) fn spawn_shared_connection_check(
 
 /// Probes ONE machine's reachability. A local or WSL machine is on this box, so it is
 /// reachable without an ssh round trip and connects inline; a remote machine is probed
-/// off the loop under `gate`. `probe` is the number a login gave this probe, or zero.
+/// off the loop under `gate`.
 fn probe_machine(
     machine: &str,
     hosts: &crate::model::Hosts,
     tx: tokio::sync::mpsc::UnboundedSender<HostEvent>,
     gate: &std::sync::Arc<tokio::sync::Semaphore>,
     rescan: bool,
-    probe: u64,
 ) {
     let Some(transport) = hosts.machine_transport(machine) else {
         return;
@@ -1252,18 +1243,10 @@ fn probe_machine(
             credential_generation: 0,
             current_credential_generation: 0,
             rescan,
-            probe,
         });
         return;
     }
-    spawn_machine_probe(
-        machine,
-        transport.clone_box(),
-        tx,
-        gate.clone(),
-        rescan,
-        probe,
-    );
+    spawn_machine_probe(machine, transport.clone_box(), tx, gate.clone(), rescan);
 }
 
 /// Probes the reachability of every MACHINE the roster serves, once each (deduped by
@@ -1281,7 +1264,7 @@ fn probe_machines(
         if skip_machine == Some(machine.as_str()) {
             continue;
         }
-        probe_machine(&machine, hosts, tx.clone(), gate, rescan, 0);
+        probe_machine(&machine, hosts, tx.clone(), gate, rescan);
     }
 }
 
@@ -1788,8 +1771,6 @@ struct Runtime {
     /// The kitty images the outer terminal holds for the displayed grid.
     kitty_images: crate::display::image::paint::KittyOuter,
     spinner_start: std::time::Instant,
-    /// The last number given to a machine probe a login started.
-    login_probes: u64,
     dirty: bool,
     /// The next frame clears the screen first. The clear waits for the frame so both
     /// reach the terminal in one synchronized update and the blank screen never shows.

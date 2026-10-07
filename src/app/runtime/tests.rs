@@ -1988,8 +1988,6 @@ fn log_in_and_discover_two_hosts(rt: &mut Runtime) {
         Msg::LoginSettled {
             host: "win".into(),
             credential_held: true,
-            machine_has_hosts: false,
-            probe: 1,
         },
     );
     rt.execute_host_effect_for_test(crate::model::EventEffect::AddDiscoveredHosts {
@@ -2057,6 +2055,49 @@ fn assert_on_the_machine_screen_with_both_hosts(rt: &mut Runtime) {
             "the screen links the {mux} host:\n{out}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_working_login_opens_the_machine_screen_with_its_hosts_scanning() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut rt = hostless_machine_needing_login_rt();
+    assert!(rt.model.switcher.open_host("win", &mut rt.model.state));
+    assert_eq!(
+        rt.model.switcher.current_view_screen(&rt.model.state),
+        Some(crate::model::ViewScreen::Login)
+    );
+    update(
+        &mut rt.model,
+        Msg::LoginSettled {
+            host: "win".into(),
+            credential_held: true,
+        },
+    );
+    assert_eq!(
+        rt.model.switcher.current_view_screen(&rt.model.state),
+        Some(crate::model::ViewScreen::Machine),
+        "the login pane leaves as soon as the login worked"
+    );
+    rt.cols = 140;
+    rt.body_rows = 30;
+    rt.last_draw = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let mut term = Terminal::new(TestBackend::new(rt.cols, rt.body_rows + 1)).unwrap();
+    rt.prepare_and_draw(&mut term);
+    let out = drawn_text(&term);
+    let spin = crate::ui::spinner_glyph(rt.model.state.chrome.spinner_frame);
+    assert!(out.contains("machine win"), "{out}");
+    assert!(
+        out.lines()
+            .any(|l| l.contains("hosts") && l.contains(&format!("{spin} scanning"))),
+        "the hosts row states the scan with the spinner:
+{out}"
+    );
+    assert!(
+        !out.contains("authenticate"),
+        "no login step is left:
+{out}"
+    );
 }
 
 #[tokio::test]
@@ -2346,7 +2387,6 @@ fn test_rt(env: Env) -> Runtime {
         saved_logins: HashMap::new(),
     };
     let mut rt = Runtime {
-        login_probes: 0,
         instance_name: "test".into(),
         env,
         ops,
@@ -6356,7 +6396,6 @@ fn machine_probe_connected_forwards_the_connect_to_the_loop() {
             credential_generation: 0,
             current_credential_generation: 0,
             rescan: false,
-            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -6397,7 +6436,6 @@ fn machine_probe_auth_failure_marks_every_host_of_the_machine_locked() {
             credential_generation: 0,
             current_credential_generation: 0,
             rescan: false,
-            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -6441,7 +6479,6 @@ fn a_refusal_that_did_not_use_the_held_password_is_visible() {
             credential_generation: 1,
             current_credential_generation: 1,
             rescan: false,
-            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -6470,7 +6507,6 @@ fn an_auth_refusal_from_an_older_credential_generation_is_ignored() {
             credential_generation: 3,
             current_credential_generation: 4,
             rescan: false,
-            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -6497,7 +6533,6 @@ fn any_probe_result_from_an_older_credential_generation_is_ignored() {
             credential_generation: 3,
             current_credential_generation: 4,
             rescan: false,
-            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -6524,7 +6559,6 @@ fn successful_probe_from_an_older_credential_generation_is_ignored() {
             credential_generation: 3,
             current_credential_generation: 4,
             rescan: false,
-            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -6549,7 +6583,6 @@ fn probe_that_rejected_its_own_credential_is_not_discarded_as_stale() {
             credential_generation: 3,
             current_credential_generation: 4,
             rescan: false,
-            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -6578,7 +6611,6 @@ fn rejected_probe_from_before_a_newer_key_login_is_ignored() {
             credential_generation: 3,
             current_credential_generation: 5,
             rescan: false,
-            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -6607,7 +6639,6 @@ fn machine_probe_unreachable_marks_the_machine_unreachable_not_locked() {
             credential_generation: 1,
             current_credential_generation: 1,
             rescan: false,
-            probe: 0,
         },
         &mut sw,
         &mut connected,
@@ -6721,7 +6752,6 @@ fn a_stray_detection_failure_does_not_overwrite_a_settled_card() {
             credential_generation: 0,
             current_credential_generation: 0,
             rescan: false,
-            probe: 0,
         },
         &mut sw,
         &mut connected,

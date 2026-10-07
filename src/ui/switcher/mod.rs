@@ -1842,7 +1842,10 @@ impl Switcher {
                     }
                     let label = mux.to_string();
                     let value = if state.scanning.contains(&g.host) {
-                        "scanning".to_string()
+                        format!(
+                            "{} scanning",
+                            crate::ui::spinner_glyph(state.chrome.spinner_frame)
+                        )
                     } else if let Some(kind) = g.failure() {
                         tree::failure_word(kind, g.logged_out()).to_string()
                     } else {
@@ -2266,13 +2269,11 @@ impl Switcher {
                     .insert(host.clone(), std::time::SystemTime::now());
             }
         }
-        // The mux search a working login started ends with the first host answer after
-        // the login's own probe, whichever way that answer went.
-        let answer = match &err {
-            None => crate::model::MuxAnswer::Found,
-            Some(reason) => crate::model::MuxAnswer::Failed(reason.clone()),
-        };
-        state.login_mux_answered(crate::session::machine_of(&host), &answer);
+        // A mux that answers describes the machine in place of the login steps that
+        // settled before it.
+        if err.is_none() {
+            state.drop_settled_login(crate::session::machine_of(&host));
+        }
         let existing = state.groups.iter().position(|g| g.host == host);
         match existing {
             Some(i) => {
@@ -2410,7 +2411,7 @@ impl Switcher {
         state.machine_scanning.remove(machine);
         state.machine_scan_deadlines.remove(machine);
         // The failure run, counted under the machine's name the way a host counts its
-        // own and ended by a logout, and the end of the mux search a working login started.
+        // own and ended by a logout.
         match &err {
             Some(reason) => {
                 if reason == crate::model::LOGGED_OUT {
@@ -2418,7 +2419,6 @@ impl Switcher {
                 } else {
                     *state.failure_runs.entry(machine.to_string()).or_insert(0) += 1;
                 }
-                state.login_mux_answered(machine, &crate::model::MuxAnswer::Failed(reason.clone()));
             }
             None => {
                 state.failure_runs.remove(machine);

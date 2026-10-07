@@ -978,39 +978,12 @@ impl State {
         }
     }
 
-    /// Takes a machine probe's answer into the login steps on that machine. The probe a
-    /// working login started settles or advances its mux search. Any other probe is a
-    /// newer look at the machine, so steps that already settled describe an older state
-    /// and go.
-    pub(crate) fn login_probe_answered(&mut self, machine: &str, probe: u64, err: Option<&str>) {
+    /// Drops the settled login steps on `machine`: a newer answer from the machine, its
+    /// probe or one of its muxes, describes it in their place. A login still under way
+    /// keeps its steps.
+    pub(crate) fn drop_settled_login(&mut self, machine: &str) {
         self.login_progress.retain(|host, progress| {
-            if crate::session::machine_of(host) != machine {
-                return true;
-            }
-            if probe != 0 && progress.probe_answered(probe, err) {
-                return true;
-            }
-            progress.running()
-        });
-    }
-
-    /// Takes the first mux answer after a working login's probe into its mux search. A
-    /// search that found a mux has handed the pane to the sessions, so its steps go.
-    /// Steps that settled earlier go too when the machine now answers with a mux, since
-    /// they no longer describe it.
-    pub(crate) fn login_mux_answered(&mut self, machine: &str, answer: &crate::model::MuxAnswer) {
-        self.login_progress.retain(|host, progress| {
-            if crate::session::machine_of(host) != machine {
-                return true;
-            }
-            let was_running = progress.running();
-            progress.found_mux(answer);
-            if progress.state_of(crate::model::LoginStep::FindMux)
-                == Some(crate::model::StepState::Done)
-            {
-                return false;
-            }
-            was_running || *answer != crate::model::MuxAnswer::Found
+            crate::session::machine_of(host) != machine || progress.running()
         });
     }
 
