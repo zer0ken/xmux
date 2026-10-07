@@ -2237,6 +2237,7 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                 .chrome
                 .set_view_border_hovered(view_border_hovered);
             model.state.chrome.set_armed(prefix_active);
+            model.switcher.sync_prefix_armed(prefix_active);
             model.switcher.settle_popup_position(&model.state);
             // The session on screen is the one the user is looking at, so its mark goes.
             let displayed = &model.state.displayed;

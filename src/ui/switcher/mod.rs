@@ -433,6 +433,9 @@ pub struct Switcher {
     terminal_view: bool,
     /// Whether host cards are omitted after leaving nav from a session card.
     host_band_hidden: bool,
+    /// Whether the prefix is armed. An armed prefix paints the hidden host band, so the
+    /// cards a chord can reach are on screen while it is typed.
+    prefix_armed: bool,
 
     /// The session whose card a full re-scan turned into its host card, held until the
     /// selection moves. While it holds, the scanning host card keeps that session's
@@ -508,6 +511,7 @@ impl Switcher {
             numbers_held: false,
             terminal_view: false,
             host_band_hidden: false,
+            prefix_armed: false,
             rescan_collapse: None,
             create_host: None,
             popup_geo: PopupGeometry::default(),
@@ -663,6 +667,11 @@ impl Switcher {
         }
     }
 
+    /// Records whether the prefix is armed, which paints a hidden host band.
+    pub fn sync_prefix_armed(&mut self, armed: bool) {
+        self.prefix_armed = armed;
+    }
+
     /// Whether the card of `address` is a stopped session.
     fn is_stopped(&self, address: &Address) -> bool {
         self.row_of_session(address).is_some_and(
@@ -694,10 +703,12 @@ impl Switcher {
     }
 
     /// Whether the paint leaves the host band out: hidden by the move into the terminal
-    /// view from a session card. Prefix interactions preserve this decision, but a
-    /// selection on a host card paints the band, since a selected card is always painted.
+    /// view from a session card. An armed prefix paints the band without changing that
+    /// decision, so it hides again when the chord ends, and a selection on a host card
+    /// paints the band, since a selected card is always painted.
     fn band_unpainted(&self) -> bool {
         self.host_band_hidden
+            && !self.prefix_armed
             && !matches!(
                 self.current_ref(),
                 Some(RowRef::Host { .. } | RowRef::Machine { .. })
