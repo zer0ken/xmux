@@ -1841,7 +1841,9 @@ mod tests {
             random_token().unwrap()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("stalled.sock");
+        // A Windows endpoint is a named pipe named by the file stem alone, so the stem is
+        // unique to the run: a fixed one collides with any other test process.
+        let path = root.join(format!("stalled-{}.sock", random_token().unwrap()));
         let listener = create_listener(&path).unwrap();
         let stalled = tokio::spawn(async move {
             let _stream = listener.accept().await.unwrap();
