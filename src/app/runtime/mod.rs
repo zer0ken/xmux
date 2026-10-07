@@ -1744,6 +1744,8 @@ struct Runtime {
     draw_observer: DrawObserver,
     /// What the outer terminal shows of the displayed grid's sixel images.
     images: crate::display::image::paint::Painter,
+    /// The kitty images the outer terminal holds for the displayed grid.
+    kitty_images: crate::display::image::paint::KittyOuter,
     spinner_start: std::time::Instant,
     /// The last number given to a machine probe a login started.
     login_probes: u64,

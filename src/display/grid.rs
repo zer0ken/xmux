@@ -181,15 +181,21 @@ impl Grid {
         // grid shrink. Catch it so the PTY pump thread survives; reset the parser so
         // the next mux repaint refills the grid cleanly instead of re-panicking on the
         // same stale cursor.
-        let cell_px = crate::display::image::sixel_cell_px();
+        let caps = crate::display::image::Caps::current();
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.images.feed(bytes, cell_px, &mut self.parser);
+            self.images.feed(bytes, caps, &mut self.parser);
         }));
         if res.is_err() {
             let (rows, cols) = self.parser.screen().size();
             self.reset_parser(rows, cols);
             self.images.clear();
         }
+    }
+
+    /// Every kitty image this grid's cells show, by the id the outer terminal knows it
+    /// under, with the cells its placement covers.
+    pub fn kitty_in_use(&self) -> Vec<(u32, crate::display::image::kitty_grid::Placed)> {
+        self.images.kitty_in_use(self.parser.screen())
     }
 
     /// The bitmap of a sixel image this grid's cells show.
@@ -303,7 +309,9 @@ impl Grid {
         let (grid_rows, grid_cols) = screen.size();
         let rows = area.height.min(grid_rows);
         let cols = area.width.min(grid_cols);
+        let kitty = crate::display::image::Caps::current().kitty;
         for r in 0..rows {
+            let mut left = None;
             for c in 0..cols {
                 let Some(vcell) = screen.cell(r, c) else {
                     continue;
@@ -312,6 +320,14 @@ impl Grid {
                 if let Some(piece) = self.images.piece(vcell) {
                     crate::display::image::paint::mark(cell, piece);
                     continue;
+                }
+                if kitty {
+                    if let Some(shown) = self.images.kitty_cell(vcell, left) {
+                        crate::display::image::paint::placeholder(cell, shown);
+                        left = shown;
+                        continue;
+                    }
+                    left = None;
                 }
                 if vcell.is_wide() && c + 1 >= cols {
                     // A double-width char whose second half falls outside the
@@ -478,6 +494,130 @@ Connection to host closed.
         assert_eq!((size.pixel_width, size.pixel_height), (0, 0));
     }
 
+    /// Holds the terminal facts of kitty 0.41 with 10x20 px cells.
+    fn kitty_outer_terminal() -> std::sync::MutexGuard<'static, ()> {
+        use crate::display::outer::{set_outer_for_test, OuterTerminal, TEST_LOCK};
+        let lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_outer_for_test(OuterTerminal {
+            cell_px: Some((20, 10)),
+            kitty_graphics: true,
+            name: Some("kitty(0.41.1)".into()),
+            ..OuterTerminal::default()
+        });
+        lock
+    }
+
+    /// A 1x1 PNG, as base64.
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+    /// The symbols and foregrounds a rendered row holds from `x`, `n` cells long.
+    fn row_cells(buf: &Buffer, x: u16, y: u16, n: u16) -> Vec<(String, RColor)> {
+        (x..x + n)
+            .map(|x| (buf[(x, y)].symbol().to_string(), buf[(x, y)].fg))
+            .collect()
+    }
+
+    /// tmux forwards an image with a virtual placement and draws its placeholder cells
+    /// as text; the frame shows them under xmux's id for the image, and the outer
+    /// terminal receives the image under that id before the frame.
+    #[test]
+    fn a_tmux_placeholder_image_shows_under_xmuxs_id() {
+        use crate::display::image::kitty::placeholder;
+        let _lock = kitty_outer_terminal();
+        let mut g = Grid::new(5, 20);
+        g.feed(format!("\x1b_Ga=T,q=2,f=100,U=1,c=2,r=1,i=2171024858;{PNG}\x1b\\").as_bytes());
+        // id 2171024858 = 0x8167_35DA: the low 24 bits in the colour, the high byte in
+        // a third diacritic (0x81 = 129th entry).
+        let cell = |col: u16| format!("{}\u{0951}", placeholder(0, col));
+        g.feed(format!("\x1b[38;2;103;53;218m{}{}\x1b[39m", cell(0), cell(1)).as_bytes());
+        assert!(g.take_replies().is_empty(), "q=2 asks for no answer");
+        let used = g.kitty_in_use();
+        assert_eq!(used.len(), 1);
+        let (id, placed) = &used[0];
+        assert_eq!((placed.cols, placed.rows), (2, 1));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+        g.render_into(&mut buf, Rect::new(0, 0, 20, 5));
+        let fg = RColor::Rgb((id >> 16) as u8, (id >> 8) as u8, *id as u8);
+        assert_eq!(
+            row_cells(&buf, 0, 0, 2),
+            vec![(placeholder(0, 0), fg), (placeholder(0, 1), fg)]
+        );
+        let mut outer = crate::display::image::paint::KittyOuter::default();
+        let sent = String::from_utf8(outer.sync(&used)).unwrap();
+        assert!(sent.starts_with(&format!("\x1b_Ga=t,q=2,i={id},f=100,s=1,v=1,m=0;{PNG}")));
+        assert!(sent.ends_with(&format!("\x1b_Ga=p,U=1,q=2,i={id},c=2,r=1\x1b\\")));
+        assert!(outer.sync(&used).is_empty(), "sent once");
+        assert_eq!(
+            outer.sync(&[]),
+            format!("\x1b_Ga=d,d=I,q=2,i={id}\x1b\\").into_bytes()
+        );
+    }
+
+    /// A direct placement covers cells at the cursor from the image's pixel size,
+    /// answers the child, moves the cursor past the image, and leaves with a delete.
+    #[test]
+    fn a_direct_placement_covers_cells_and_answers() {
+        use crate::display::image::kitty::placeholder;
+        let _lock = kitty_outer_terminal();
+        let mut g = Grid::new(5, 20);
+        // 20x30 px RGB at 10x20 px cells: 2 columns, 2 rows.
+        let rgb = "A".repeat(800);
+        g.feed(format!("ab\x1b_Ga=T,f=24,s=20,v=30,i=3;{rgb}\x1b\\X").as_bytes());
+        assert_eq!(g.take_replies(), b"\x1b_Gi=3;OK\x1b\\");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+        g.render_into(&mut buf, Rect::new(0, 0, 20, 5));
+        let used = g.kitty_in_use();
+        let (id, placed) = &used[0];
+        assert_eq!((placed.cols, placed.rows), (2, 2));
+        let fg = RColor::Rgb((id >> 16) as u8, (id >> 8) as u8, *id as u8);
+        assert_eq!(
+            row_cells(&buf, 2, 0, 2),
+            vec![(placeholder(0, 0), fg), (placeholder(0, 1), fg)]
+        );
+        assert_eq!(buf[(2, 1)].symbol(), placeholder(1, 0));
+        // The cursor ends on the image's last row, one column past it.
+        assert_eq!(buf[(4, 1)].symbol(), "X");
+
+        g.feed(b"\x1b_Ga=d,d=I,i=3\x1b\\");
+        assert!(g.kitty_in_use().is_empty());
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+        g.render_into(&mut buf, Rect::new(0, 0, 20, 5));
+        assert_eq!(buf[(2, 0)].symbol(), " ");
+        assert_eq!(buf[(0, 0)].symbol(), "a");
+    }
+
+    /// The child's support query is answered OK, a file transmission with an error, and
+    /// a transmission split into chunks across reads arrives whole.
+    #[test]
+    fn queries_files_and_chunks() {
+        let _lock = kitty_outer_terminal();
+        let mut g = Grid::new(5, 20);
+        assert_eq!(
+            replies(&mut g, b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\"),
+            b"\x1b_Gi=31;OK\x1b\\"
+        );
+        let file = replies(&mut g, b"\x1b_Gi=4,t=f,f=100;L3RtcC94\x1b\\");
+        assert!(file.starts_with(b"\x1b_Gi=4;EBADF"), "{file:?}");
+        let (a, b) = PNG.split_at(40);
+        g.feed(format!("\x1b_Ga=t,f=100,i=5,m=1;{a}\x1b").as_bytes());
+        g.feed(format!("\\\x1b_Gm=0;{b}\x1b\\").as_bytes());
+        assert_eq!(g.take_replies(), b"\x1b_Gi=5;OK\x1b\\");
+        g.feed(b"\x1b_Ga=p,U=1,i=5,c=1,r=1,q=2\x1b\\");
+        g.feed("\x1b[38;5;5m\u{10EEEE}\u{0305}\u{0305}".as_bytes());
+        assert_eq!(g.kitty_in_use()[0].1.image.data, PNG.as_bytes());
+    }
+
+    /// With a terminal that draws no placeholders the grid discards graphics commands
+    /// as before and answers nothing.
+    #[test]
+    fn without_kitty_graphics_commands_are_discarded() {
+        let _lock = sixel_outer_terminal();
+        let mut g = Grid::new(5, 20);
+        assert!(replies(&mut g, b"a\x1b_Gi=31,a=q;AAAA\x1b\\b").is_empty());
+        assert!(g.kitty_in_use().is_empty());
+        assert_eq!(g.last_line().as_deref(), Some("ab"));
+    }
+
     fn replies(g: &mut Grid, bytes: &[u8]) -> Vec<u8> {
         g.feed(bytes);
         g.take_replies()
@@ -580,7 +720,7 @@ Connection to host closed.
             palette,
             scheme: None,
             cell_px: Some((18, 9)),
-            sixel: false,
+            ..OuterTerminal::default()
         });
         assert_eq!(
             replies(&mut g, b"\x1b]11;?\x07\x1b]10;?\x1b\\"),

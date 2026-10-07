@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 /// so its reply marks the end of the other replies.
 pub const PROBE: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
 \x1b]4;0;?;1;?;2;?;3;?;4;?;5;?;6;?;7;?;8;?;9;?;10;?;11;?;12;?;13;?;14;?;15;?\x1b\\\
-\x1b[?996n\x1b[16t\x1b[?u\x1b[c";
+\x1b[?996n\x1b[16t\x1b[?u\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[>q\x1b[c";
 
 /// How long the stdin reader keeps an incomplete reply waiting for the rest of it. The
 /// probe ends earlier, at the reply to the primary device attributes query.
@@ -37,6 +37,10 @@ pub struct OuterTerminal {
     pub cell_px: Option<(u16, u16)>,
     /// Whether the primary device attributes list sixel graphics (attribute 4).
     pub sixel: bool,
+    /// Whether the terminal answered the kitty graphics query with OK.
+    pub kitty_graphics: bool,
+    /// The terminal's name and version, as its XTVERSION reply gives them.
+    pub name: Option<String>,
 }
 
 impl OuterTerminal {
@@ -58,6 +62,8 @@ static OUTER: Mutex<OuterTerminal> = Mutex::new(OuterTerminal {
     scheme: None,
     cell_px: None,
     sixel: false,
+    kitty_graphics: false,
+    name: None,
 });
 
 fn outer_mut() -> MutexGuard<'static, OuterTerminal> {
@@ -152,6 +158,12 @@ impl ReplyFilter {
         }
         match s[1] {
             b']' => osc_reply(s),
+            b'_' => string_reply(s, b"G", |body| {
+                outer_mut().kitty_graphics = body.ends_with(b";OK");
+            }),
+            b'P' => string_reply(s, b">|", |body| {
+                outer_mut().name = Some(String::from_utf8_lossy(body).into_owned());
+            }),
             b'[' => match csi_reply(s) {
                 Some((len, body, final_byte)) => {
                     if record_csi(body, final_byte) {
@@ -267,6 +279,27 @@ fn keyboard_flags_reply(body: &[u8]) -> bool {
         .is_some_and(|flags| !flags.is_empty() && flags.iter().all(u8::is_ascii_digit))
 }
 
+/// A string reply `ESC <kind> <prefix> ... ESC \` (the kitty graphics answer, an APC, or
+/// the XTVERSION answer, a DCS), handing the bytes after `prefix` to `record`.
+fn string_reply(s: &[u8], prefix: &[u8], record: impl FnOnce(&[u8])) -> Reply {
+    let body = &s[2..];
+    let shared = body.len().min(prefix.len());
+    if body[..shared] != prefix[..shared] {
+        return Reply::No;
+    }
+    if body.len() < prefix.len() {
+        return Reply::Partial;
+    }
+    match body.windows(2).position(|w| w == b"\x1b\\") {
+        Some(end) => {
+            record(&body[prefix.len()..end]);
+            Reply::Whole(2 + end + 2)
+        }
+        None if body.iter().all(|&b| b != 0x1b) || body.last() == Some(&0x1b) => Reply::Partial,
+        None => Reply::No,
+    }
+}
+
 /// A complete CSI at the start of `s` as `(length, parameter bytes, final byte)`.
 fn csi_reply(s: &[u8]) -> Option<(usize, &[u8], u8)> {
     let j = s.iter().skip(2).position(|b| (0x40..=0x7e).contains(b))? + 2;
@@ -338,6 +371,20 @@ mod tests {
         // The probe ended at the device attributes reply: a later one is a key sequence
         // xmux did not ask for, and passes through.
         assert_eq!(f.filter(b"\x1b[?62c"), b"\x1b[?62c");
+    }
+
+    /// The kitty graphics answer and the XTVERSION answer are removed and recorded,
+    /// even split across reads.
+    #[test]
+    fn the_filter_records_kitty_graphics_and_the_name() {
+        let _g = lock();
+        set_outer_for_test(OuterTerminal::default());
+        let mut f = ReplyFilter::new();
+        assert_eq!(f.filter(b"\x1b_Gi=31;OK\x1b\\\x1bP>|kit"), b"");
+        assert_eq!(f.filter(b"ty(0.41.1)\x1b\\\x1b[?62;c"), b"");
+        let o = outer();
+        assert!(o.kitty_graphics);
+        assert_eq!(o.name.as_deref(), Some("kitty(0.41.1)"));
     }
 
     /// A device attributes reply listing attribute 4 records sixel support.
