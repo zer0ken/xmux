@@ -900,7 +900,7 @@ pub fn ls_lines_one(g: &Group) -> (Vec<String>, Option<String>) {
                 "{:<addr_w$}  {:<nw_w$}  attached={}",
                 path(s),
                 window_word(s.windows),
-                s.attached
+                s.clients > 0
             );
             if s.stopped {
                 format!("{line}  {}", crate::session::STOPPED)
@@ -3197,7 +3197,7 @@ mod tests {
             mux: "tmux".into(),
             id: String::new(),
             windows,
-            attached,
+            clients: u32::from(attached),
             stopped: false,
         }
     }

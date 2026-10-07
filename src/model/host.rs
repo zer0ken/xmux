@@ -124,6 +124,19 @@ pub enum ReadyOutcome {
 }
 
 impl HostDisplay {
+    /// The session each attachment of this host is on, with its key and whether it is a
+    /// fresh attachment parked under that key until it paints.
+    pub fn attachments(&self) -> impl Iterator<Item = (&str, &str, bool)> {
+        self.current
+            .iter()
+            .map(|(key, shown)| (key.as_str(), shown.as_str(), false))
+            .chain(
+                self.painting
+                    .iter()
+                    .map(|(key, paint)| (key.as_str(), paint.shown.as_str(), true)),
+            )
+    }
+
     /// The session `key`'s attachment currently shows, if any.
     pub fn shows(&self, key: &str) -> Option<&str> {
         self.current.get(key).map(String::as_str)
@@ -1015,7 +1028,7 @@ mod tests {
                     mux: String::new(),
                     id: String::new(),
                     windows: 1,
-                    attached: false,
+                    clients: 0,
                     stopped: false,
                 })
                 .collect();
@@ -1194,7 +1207,7 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["editor", "build"]);
         assert_eq!(h.inventory.sessions[0].windows, 3);
-        assert!(h.inventory.sessions[0].attached);
+        assert_eq!(h.inventory.sessions[0].clients, 1);
         assert_eq!(h.inventory.sessions[0].host, "local");
     }
 

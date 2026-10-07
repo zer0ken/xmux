@@ -369,7 +369,7 @@ fn sess(host: &str, name: &str, windows: i64, attached: bool) -> Session {
         mux: String::new(),
         id: String::new(),
         windows,
-        attached,
+        clients: u32::from(attached),
         stopped: false,
     }
 }
@@ -4365,7 +4365,7 @@ fn sess_mux(host: &str, name: &str, mux: &str) -> Session {
         mux: mux.into(),
         id: String::new(),
         windows: 1,
-        attached: false,
+        clients: 0,
         stopped: false,
     }
 }
@@ -7533,7 +7533,7 @@ fn select_address_moves_cursor_to_named_session() {
                     mux: String::new(),
                     id: String::new(),
                     windows: 1,
-                    attached: false,
+                    clients: 0,
                     stopped: false,
                 },
                 Session {
@@ -7542,7 +7542,7 @@ fn select_address_moves_cursor_to_named_session() {
                     mux: String::new(),
                     id: String::new(),
                     windows: 1,
-                    attached: false,
+                    clients: 0,
                     stopped: false,
                 },
             ],
@@ -9400,4 +9400,36 @@ async fn enter_on_a_stopped_sessions_screen_in_the_terminal_view_resumes_it() {
     assert_eq!(h.sw.terminal_view_target().target, "");
     assert!(h.sw.open_selected_link(&h.state));
     assert_eq!(h.sw.terminal_view_target().target, "parked");
+}
+
+#[tokio::test]
+async fn the_landing_list_says_attached_only_for_a_client_other_than_xmuxs_own() {
+    let mut h = Harness::from_hosts(&["jup"]);
+    h.sw.apply_host_result(
+        "jup".into(),
+        vec![sess("jup", "api", 1, true), sess("jup", "web", 1, true)],
+        None,
+        &mut h.state,
+    );
+    // xmux's display client is the one client the mux counts on `api`.
+    h.state
+        .display_clients
+        .insert(Address::new("jup", "api"), 1);
+    let facts: Vec<(String, String)> =
+        h.sw.landing_links(&h.state)
+            .into_iter()
+            .map(|l| (l.label, l.value))
+            .collect();
+    assert!(
+        facts
+            .iter()
+            .any(|(label, value)| label.ends_with("/api") && value == "1 window"),
+        "{facts:?}"
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|(label, value)| label.ends_with("/web") && value == "1 window, attached"),
+        "{facts:?}"
+    );
 }

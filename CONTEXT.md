@@ -109,6 +109,10 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **address column** - the leftmost cells of every card: its number.
 - **card number** - the number `prefix <digit>` jumps to; `[ui] renumbering` decides
   whether it follows list position or stays with the card.
+- **attached** - what a session's link and hint say while a client other than xmux's own
+  is on it. xmux's own are its live display attachments and tmux's metadata client; a mux
+  that reports only whether any client is on a session cannot show another beside one
+  of xmux's, so that session does not read attached.
 - **status** - a host-state card's one-cell glyph: `?` login needed, `▲` unreachable,
   `✗` listing failure, blank for an empty host, the spinner while scanning. Never a
   "hint".

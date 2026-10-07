@@ -128,7 +128,7 @@ pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
         let Ok(windows) = fields[0].parse::<i64>() else {
             continue;
         };
-        let Ok(attached_n) = fields[1].parse::<i64>() else {
+        let Ok(attached_n) = fields[1].parse::<u32>() else {
             continue;
         };
         let name = fields[3];
@@ -141,7 +141,7 @@ pub fn parse_sessions(host: &str, mux: &str, out: &str) -> Vec<Session> {
             mux: mux.to_string(),
             id: session_identity(fields[2]),
             windows,
-            attached: attached_n > 0,
+            clients: attached_n,
             stopped: false,
         });
     }
@@ -306,7 +306,7 @@ mod tests {
                     mux: "tmux".into(),
                     id: "4711$0".into(),
                     windows: 3,
-                    attached: true,
+                    clients: 1,
                     stopped: false,
                 },
                 Session {
@@ -315,7 +315,7 @@ mod tests {
                     mux: "tmux".into(),
                     id: "4711$1".into(),
                     windows: 2,
-                    attached: false,
+                    clients: 0,
                     stopped: false,
                 },
             ]
@@ -343,7 +343,7 @@ mod tests {
                 id: String::new(),
                 name: "proj/a\tb:c".into(),
                 windows: 4,
-                attached: true,
+                clients: 1,
                 stopped: false,
             }]
         );
@@ -369,7 +369,7 @@ mod tests {
                 mux: "tmux".into(),
                 id: String::new(),
                 windows: 2,
-                attached: true,
+                clients: 1,
                 stopped: false,
             }]
         );
@@ -402,7 +402,7 @@ mod tests {
                 mux: "tmux".into(),
                 id: String::new(),
                 windows: 1,
-                attached: true,
+                clients: 2,
                 stopped: false,
             }]
         );
@@ -414,7 +414,7 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].name, "my_work session_2");
         assert_eq!(got[0].windows, 3);
-        assert!(!got[0].attached);
+        assert_eq!(got[0].clients, 0);
     }
 
     /// The identity column is the server pid and the session id. A mux that prints only

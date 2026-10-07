@@ -998,6 +998,9 @@ impl Runtime {
             self.dirty = true;
         }
         self.drive_attach_beat(std::time::Instant::now());
+        if self.sync_display_clients() {
+            self.dirty = true;
+        }
 
         // Flush the debounced nav-width persist once the resize burst settles.
         let effects = update(
@@ -1259,6 +1262,38 @@ impl Runtime {
             // per selection. Repaint so the pane shows what it is now.
             self.dirty = true;
         }
+    }
+
+    /// Tells the model how many of xmux's display attachments are live on each session,
+    /// which the mux counts among that session's clients. An attachment counts while the
+    /// registry holds it, installed or parked until it paints, and stops counting once its
+    /// client ends. Returns whether the count changed.
+    pub(super) fn sync_display_clients(&mut self) -> bool {
+        let mut clients: std::collections::HashMap<crate::session::Address, u32> =
+            std::collections::HashMap::new();
+        for id in self.hosts.ids() {
+            let Some(host) = self.hosts.get(id) else {
+                continue;
+            };
+            for (key, session, parked) in host.display.attachments() {
+                let live = if parked {
+                    self.registry.contains_pending(key)
+                } else {
+                    self.registry.contains(key)
+                };
+                if live {
+                    *clients
+                        .entry(crate::session::Address::new(id, session))
+                        .or_default() += 1;
+                }
+            }
+        }
+        if clients == self.model.state.display_clients {
+            return false;
+        }
+        let effects = update(&mut self.model, Msg::DisplayClients(clients));
+        debug_assert!(effects.is_empty());
+        true
     }
 
     /// Applies one PTY event. Returns whether the displayed attachment exited.

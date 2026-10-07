@@ -172,7 +172,9 @@ pub struct Session {
     /// session without one is never read as renamed.
     pub id: String,
     pub windows: i64,
-    pub attached: bool,
+    /// How many clients the mux lists on the session, xmux's own among them. A mux that
+    /// reports only whether any client is on it lists one for yes.
+    pub clients: u32,
     /// The mux keeps a record of this session while nothing of it runs: a saved tuios
     /// session, a stopped herdr session, an exited zellij session. The mux's own attach
     /// resumes it, and no other command reaches it until then.

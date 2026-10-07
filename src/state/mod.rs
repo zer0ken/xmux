@@ -86,6 +86,11 @@ pub struct State {
     pub last_reached: HashMap<String, std::time::SystemTime>,
     /// Hosts whose metadata push channel currently answers.
     pub live_hosts: HashSet<String>,
+    /// The session each host's metadata channel is attached to, as the mux last named it.
+    /// It counts as a client there only while the channel answers.
+    pub control_sessions: HashMap<String, String>,
+    /// How many of xmux's display attachments are live on each session.
+    pub display_clients: HashMap<crate::session::Address, u32>,
     /// Hosts whose host-screen diagnostic rows are expanded.
     pub(crate) host_details: HashSet<String>,
     /// Active fuzzy-filter text (drives the visible tree + the hint_bar).
@@ -658,6 +663,23 @@ impl State {
 
     /// Formats a session as its `{machine}/{mux}/{session}` path, naming the mux its
     /// listing reported when the inventory lists it, else its host's mux.
+    /// How many of the clients on the session at `address` are xmux's own: its live
+    /// display attachments there, and its metadata channel while that answers attached to
+    /// it.
+    pub(crate) fn own_clients(&self, address: &crate::session::Address) -> u32 {
+        let display = self.display_clients.get(address).copied().unwrap_or(0);
+        let control = self.live_hosts.contains(&address.host)
+            && self.control_sessions.get(&address.host) == Some(&address.session);
+        display + u32::from(control)
+    }
+
+    /// Whether a client other than xmux's own is on `sess`. A mux that reports only
+    /// whether any client is on a session lists one for yes, so beside a client of xmux's
+    /// it cannot show another and this answers no.
+    pub(crate) fn attached_by_others(&self, sess: &crate::session::Session) -> bool {
+        sess.clients > self.own_clients(&sess.address())
+    }
+
     pub(crate) fn session_label(&self, address: &crate::session::Address) -> String {
         let host_mux = self.chrome.host_mux(&address.host);
         let mux = self
@@ -1257,7 +1279,7 @@ mod tests {
                     mux: "tmux".into(),
                     id: String::new(),
                     windows: 2,
-                    attached: false,
+                    clients: 0,
                     stopped: false,
                 }],
             }],
@@ -1854,5 +1876,42 @@ mod tests {
             matches!(follow, OpFollow::Failed(m) if m == "create failed: boom"),
             "a failure carries its message to the switcher's toast"
         );
+    }
+
+    fn listed(name: &str, clients: u32) -> crate::session::Session {
+        crate::session::Session {
+            host: "jup".into(),
+            name: name.into(),
+            clients,
+            ..Default::default()
+        }
+    }
+
+    /// tmux counts xmux's display client and its metadata client on a session like any
+    /// other client, so only a client beyond those two makes it attached.
+    #[test]
+    fn a_session_is_attached_only_by_a_client_other_than_xmuxs_own() {
+        let mut s = State::default();
+        s.display_clients
+            .insert(crate::session::Address::new("jup", "api"), 1);
+        s.control_sessions.insert("jup".into(), "api".into());
+        s.live_hosts.insert("jup".into());
+        assert!(!s.attached_by_others(&listed("api", 2)), "both are xmux's");
+        assert!(
+            s.attached_by_others(&listed("api", 3)),
+            "a third is someone's"
+        );
+        assert!(s.attached_by_others(&listed("web", 1)));
+        assert!(!s.attached_by_others(&listed("web", 0)));
+    }
+
+    /// The metadata client is on its session only while its channel answers.
+    #[test]
+    fn a_metadata_client_counts_only_while_its_channel_answers() {
+        let mut s = State::default();
+        s.control_sessions.insert("jup".into(), "api".into());
+        assert!(s.attached_by_others(&listed("api", 1)));
+        s.live_hosts.insert("jup".into());
+        assert!(!s.attached_by_others(&listed("api", 1)));
     }
 }

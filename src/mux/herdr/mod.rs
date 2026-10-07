@@ -164,7 +164,7 @@ fn parse_sessions(host: &str, mux: &str, out: &[u8]) -> Result<Vec<Session>, Run
             // The listing names a session only; herdr has no rename to tell apart.
             id: String::new(),
             windows: 0,
-            attached: false,
+            clients: 0,
             stopped: !session.running,
         })
         .collect())
@@ -268,7 +268,7 @@ mod tests {
         assert_eq!(sessions[0].mux, "herdr");
         assert_eq!(sessions[0].name, "live");
         assert_eq!(sessions[0].windows, 0);
-        assert!(!sessions[0].attached);
+        assert_eq!(sessions[0].clients, 0);
         assert!(!sessions[0].stopped);
         assert_eq!(sessions[1].name, "parked");
         assert!(sessions[1].stopped, "a stopped entry is a stopped session");

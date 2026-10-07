@@ -61,7 +61,7 @@ pub fn parse_sessions(host: &str, out: &str) -> Vec<Session> {
             id: String::new(),
             // The session listing carries no count; enumeration fills it from list-tabs.
             windows: 0,
-            attached: suffix.contains(CURRENT_MARKER),
+            clients: u32::from(suffix.contains(CURRENT_MARKER)),
             stopped: suffix.contains(EXITED_MARKER),
         });
     }
@@ -177,10 +177,10 @@ mod tests {
         // Only the session the command ran inside is reported as attached.
         let got = parse_sessions("jup", SESSIONS);
         assert!(got.iter().all(|s| s.windows == 0));
-        assert!(got.iter().all(|s| !s.attached));
+        assert!(got.iter().all(|s| s.clients == 0));
         let inside = parse_sessions("local", "hug [Created 1m ago] (current)\n");
         assert!(
-            inside[0].attached,
+            inside[0].clients == 1,
             "(current) is the one attachment reported"
         );
     }

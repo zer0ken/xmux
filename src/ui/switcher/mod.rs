@@ -1563,7 +1563,7 @@ impl Switcher {
                     .and_then(|g| g.sessions.iter().find(|s| s.name == address.session));
                 (
                     &[KeyCommand::FocusTerminal, KeyCommand::NewSession],
-                    sess.map(session_facts).unwrap_or_default(),
+                    sess.map(|s| session_facts(s, state)).unwrap_or_default(),
                 )
             }
             Node::Host(host) => {
@@ -1869,7 +1869,7 @@ impl Switcher {
                 .map(|sess| ScreenLink {
                     target: LinkTarget::Node(Node::Session(sess.address())),
                     label: sess.name.clone(),
-                    value: session_facts(sess),
+                    value: session_facts(sess, state),
                     number: None,
                 })
                 .collect(),
@@ -1889,7 +1889,10 @@ impl Switcher {
 
     /// The landing screen's links: every card of the nav, in its order and under its
     /// number, each written as its path in the hierarchy.
-    pub(crate) fn landing_links(&self) -> Vec<crate::ui::chrome::ScreenLink> {
+    pub(crate) fn landing_links(
+        &self,
+        state: &crate::state::State,
+    ) -> Vec<crate::ui::chrome::ScreenLink> {
         use crate::ui::chrome::ScreenLink;
         self.rows
             .iter()
@@ -1898,7 +1901,7 @@ impl Switcher {
             .map(|(i, row)| {
                 let label = card_path(row);
                 let value = match &row.reference {
-                    RowRef::Session { sess } => session_facts(sess),
+                    RowRef::Session { sess } => session_facts(sess, state),
                     reference => tree::card_state_word(reference)
                         .unwrap_or_default()
                         .to_string(),
@@ -1927,7 +1930,7 @@ impl Switcher {
         if kind == ViewScreen::Landing {
             // The landing list and the nav share the one hard selection, so the link it
             // marks is the card the nav marks, whichever view holds the focus.
-            let links = self.landing_links();
+            let links = self.landing_links(state);
             let selected = self.selected_node();
             let link = links.iter().position(|l| l.node() == selected.as_ref());
             return Some(ScreenParts {
@@ -1954,7 +1957,7 @@ impl Switcher {
         state: &crate::state::State,
     ) -> Vec<crate::ui::chrome::ScreenLink> {
         if self.landing_shown() {
-            return self.landing_links();
+            return self.landing_links(state);
         }
         match self.shown_node() {
             Some(node) if self.current_view_screen(state).is_some() => {
@@ -2755,14 +2758,15 @@ pub(crate) fn is_machine_scanning(state: &crate::state::State, machine: &str) ->
     hosts.peek().is_some() && hosts.all(|g| state.scanning.contains(&g.host))
 }
 
-/// What a session's link and hint say about it: its windows and whether a client is on it.
-fn session_facts(sess: &Session) -> String {
+/// What a session's link and hint say about it: its windows and whether a client other
+/// than xmux's own is on it.
+fn session_facts(sess: &Session, state: &crate::state::State) -> String {
     let mut facts = Vec::new();
     if sess.windows > 0 {
         let s = if sess.windows == 1 { "" } else { "s" };
         facts.push(format!("{} window{s}", sess.windows));
     }
-    if sess.attached {
+    if state.attached_by_others(sess) {
         facts.push("attached".to_string());
     }
     if sess.stopped {

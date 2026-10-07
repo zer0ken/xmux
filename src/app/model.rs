@@ -362,6 +362,8 @@ pub(crate) enum Msg {
     /// The display client of the session at the address went where the nav has no card,
     /// named by the mux's label, or `None` once it is back on a card.
     DisplayAway(Option<(crate::session::Address, String)>),
+    /// How many of xmux's display attachments are live on each session.
+    DisplayClients(HashMap<crate::session::Address, u32>),
     /// The session at the address rang its bell (`text` is `None`) or sent a desktop
     /// notification while its grid was not on screen.
     SessionAlert {
@@ -1137,6 +1139,10 @@ fn host_event_effects(model: &mut AppModel, event: crate::link::HostEvent) -> Ve
         }],
         HostEvent::DisplayTty { host, tty } => {
             vec![EventEffect::RecordDisplayTty { host, tty }]
+        }
+        HostEvent::ControlSession { host, session } => {
+            model.state.control_sessions.insert(host, session);
+            Vec::new()
         }
         HostEvent::MuxesFound { machine, .. } if model.state.invalid_auth.contains(&machine) => {
             Vec::new()
@@ -2326,6 +2332,10 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             model.switcher.set_away(away);
             Vec::new()
         }
+        Msg::DisplayClients(clients) => {
+            model.state.display_clients = clients;
+            Vec::new()
+        }
         // A background event, so the history only: nobody asked for it just now. A run of
         // bells is one record until the user shows the session; a notification carries
         // its own words, so each one is recorded.
@@ -2866,7 +2876,7 @@ mod tests {
                 mux: "tmux".to_owned(),
                 id: String::new(),
                 windows: 1,
-                attached: false,
+                clients: 0,
                 stopped: false,
             })
             .collect()
@@ -5374,6 +5384,25 @@ mod tests {
     }
 
     #[test]
+    fn the_metadata_clients_session_is_kept_for_the_client_count() {
+        let mut m = model_with_cards();
+        update(
+            &mut m,
+            Msg::HostEvent {
+                event: crate::link::HostEvent::ControlSession {
+                    host: "local".to_owned(),
+                    session: "build".to_owned(),
+                },
+                logged_in: HashSet::new(),
+            },
+        );
+        assert_eq!(
+            m.state.control_sessions.get("local").map(String::as_str),
+            Some("build")
+        );
+    }
+
+    #[test]
     fn the_landing_selection_attaches_nothing_until_it_is_executed() {
         let mut m = landed();
         update(&mut m, down());
@@ -5398,7 +5427,7 @@ mod tests {
         let mut m = landed();
         let i = m
             .switcher
-            .landing_links()
+            .landing_links(&m.state)
             .iter()
             .position(|l| {
                 l.node()

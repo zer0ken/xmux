@@ -69,7 +69,7 @@ pub(crate) fn merge_psmux_sessions(
                 // A registry file names a session only.
                 id: String::new(),
                 windows: 1,
-                attached: false,
+                clients: 0,
                 stopped: false,
             });
         }
@@ -148,7 +148,7 @@ mod tests {
             mux: "psmux".into(),
             id: String::new(),
             windows: 3,
-            attached: true,
+            clients: 1,
             stopped: false,
         }];
         let names = vec!["editor".to_string(), "build".to_string()];
@@ -156,7 +156,7 @@ mod tests {
         assert_eq!(got.len(), 2, "no duplicate for the session in both sources");
         let editor = got.iter().find(|s| s.name == "editor").unwrap();
         assert_eq!(editor.windows, 3, "detail row wins (full info)");
-        assert!(editor.attached);
+        assert_eq!(editor.clients, 1);
         let build = got.iter().find(|s| s.name == "build").unwrap();
         assert_eq!(build.host, "local");
         assert_eq!(
@@ -175,7 +175,7 @@ mod tests {
             mux: "psmux".into(),
             id: String::new(),
             windows: 1,
-            attached: false,
+            clients: 0,
             stopped: false,
         }];
         let got = merge_psmux_sessions("local", Vec::new(), detail);

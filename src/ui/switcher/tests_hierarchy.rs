@@ -1049,7 +1049,7 @@ pub(super) fn landed() -> H {
 /// Where the landing list painted the link for `node`.
 pub(super) fn landing_link(h: &H, node: Option<Node>) -> Rect {
     let i =
-        h.sw.landing_links()
+        h.sw.landing_links(&h.state)
             .iter()
             .position(|l| l.node() == node.as_ref())
             .expect("the landing lists the node");
@@ -1072,7 +1072,7 @@ fn the_landing_lists_every_card_in_nav_order_under_its_number() {
             )
         })
         .collect();
-    let links = h.sw.landing_links();
+    let links = h.sw.landing_links(&h.state);
     assert_eq!(
         links
             .iter()
@@ -1166,7 +1166,7 @@ fn a_landing_link_takes_the_pointer_from_the_navs_focus() {
 fn opening_a_landing_link_executes_it_and_the_landing_never_returns() {
     let mut h = landed();
     let i =
-        h.sw.landing_links()
+        h.sw.landing_links(&h.state)
             .iter()
             .position(|l| l.node() == Some(&Node::Session(Address::new("web", "deploy"))))
             .unwrap();
@@ -1189,7 +1189,7 @@ fn opening_a_landing_link_executes_it_and_the_landing_never_returns() {
 fn a_landing_link_to_a_machine_that_needs_a_login_opens_its_login_screen() {
     let mut h = landed();
     let i =
-        h.sw.landing_links()
+        h.sw.landing_links(&h.state)
             .iter()
             .position(|l| l.node() == Some(&Node::Machine("db".into())))
             .unwrap();
@@ -1313,7 +1313,7 @@ fn a_machine_still_answering_spins_on_its_own_card() {
     let row = h.card_row(
         |r| matches!(r, RowRef::Machine { machine, scanning: true, .. } if machine == "win"),
     );
-    let landing = h.sw.landing_links();
+    let landing = h.sw.landing_links(&h.state);
     let link = landing
         .iter()
         .find(|l| l.node() == Some(&Node::Machine("win".into())))
