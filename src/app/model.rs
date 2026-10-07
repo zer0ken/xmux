@@ -1635,7 +1635,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             }
         }
         Msg::Key(key) => {
-            let before = model.switcher.selected_node();
             let commands = model.switcher.handle_key(key, &mut model.state);
             // A logout confirm scrolls no further than the offset that shows its last fact
             // row in the popup as last painted, so a scroll back up moves the view at once.
@@ -1647,16 +1646,13 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                     popup.height.saturating_sub(2),
                 ));
             }
-            hint_selection_move(model, &before);
             commands
                 .into_iter()
                 .filter_map(|command| command_effect(model, command))
                 .collect()
         }
         Msg::MouseSelect { col, row, execute } => {
-            let before = model.switcher.selected_node();
             let hit = model.switcher.mouse_select(&model.render_plan, col, row);
-            hint_selection_move(model, &before);
             if hit && execute {
                 update(model, Msg::Focus(crate::model::FocusTarget::Terminal))
             } else {
@@ -1684,18 +1680,14 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
                     Msg::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
                 );
             }
-            let before = model.switcher.selected_node();
             match index {
                 Some(i) => model.switcher.open_link(i, &model.state),
                 None => model.switcher.open_selected_link(&model.state),
             };
-            hint_selection_move(model, &before);
             Vec::new()
         }
         Msg::MouseScroll { down } => {
-            let before = model.switcher.selected_node();
             model.switcher.mouse_scroll(down);
-            hint_selection_move(model, &before);
             Vec::new()
         }
         Msg::ToggleHelp => {
@@ -2470,29 +2462,6 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
     }
 }
 
-/// Raises the hint about the card the user just moved the selection to, replacing any
-/// earlier one. A selection that stayed on `before` raises nothing.
-fn hint_selection_move(model: &mut AppModel, before: &Option<crate::model::Node>) {
-    if model.state.chrome.first_key_notice {
-        return;
-    }
-    if !model.switcher.selection_moved_from(before) {
-        return;
-    }
-    // The hint names keys for the view that holds the focus once the move is done (the
-    // one behind a modal included), so it never offers a key the pane would receive.
-    let nav_focused = model.state.focus.view_is_nav();
-    match model.switcher.selection_hint(&model.state, nav_focused) {
-        Some((keys, fact)) => {
-            model
-                .state
-                .chrome
-                .show_selection_hint(keys, fact, std::time::Instant::now());
-        }
-        None => model.state.chrome.clear_selection_hint(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -2563,89 +2532,6 @@ mod tests {
         assert!(update(&mut m, Msg::KeysRead).is_empty());
         assert!(!m.state.chrome.first_key_notice);
         assert!(!hint_text(&m).contains("C-g ? help"));
-    }
-
-    #[test]
-    fn a_selection_move_raises_the_cards_keys_and_a_fact_for_three_seconds() {
-        let mut model = model_with_cards();
-        assert!(
-            model.state.chrome.selection_hint.is_none(),
-            "nothing moved yet"
-        );
-        let start = std::time::Instant::now();
-        update(&mut model, down());
-        let hint = model.state.chrome.selection_hint.clone().expect("a hint");
-        assert_eq!(
-            hint_text(&model),
-            " Enter focus terminal view · C-g n new session · 1 window",
-            "the session's keys, from the key table, and its windows"
-        );
-        assert!(hint.until >= start + std::time::Duration::from_secs(3));
-        assert!(hint.until <= std::time::Instant::now() + std::time::Duration::from_secs(3));
-        // Still up just before its three seconds, and gone at them.
-        let tick = |now| Msg::Tick {
-            now,
-            spinner: HashSet::new(),
-        };
-        update(
-            &mut model,
-            tick(hint.until - std::time::Duration::from_millis(1)),
-        );
-        assert!(model.state.chrome.selection_hint.is_some());
-        update(&mut model, tick(hint.until));
-        assert!(model.state.chrome.selection_hint.is_none());
-        assert_eq!(
-            hint_text(&model).trim(),
-            "C-g",
-            "back to the resting prefix"
-        );
-    }
-
-    #[test]
-    fn the_next_move_replaces_the_hint_and_any_key_ends_it() {
-        let mut model = model_with_cards();
-        model.state.chrome.first_key_seen = true;
-        update(&mut model, down());
-        assert!(hint_text(&model).contains("1 window"));
-        // The next move replaces it with the card it lands on: the unreachable host,
-        // with the reason behind its state.
-        update(&mut model, down());
-        assert_eq!(
-            hint_text(&model),
-            " Enter focus terminal view · C-g r rescan this machine · unreachable: ssh: connect to host prod port 22: Connection refused"
-        );
-        // Any key read ends it before the key is applied; a key that moves nothing
-        // raises nothing new.
-        update(&mut model, Msg::KeysRead);
-        assert!(model.state.chrome.selection_hint.is_none());
-        update(
-            &mut model,
-            Msg::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
-        );
-        assert!(model.state.chrome.selection_hint.is_none());
-    }
-
-    #[test]
-    fn a_move_that_leaves_the_terminal_focused_offers_no_key_for_the_pane() {
-        let mut model = model_with_cards();
-        update(&mut model, Msg::Focus(crate::model::FocusTarget::Terminal));
-        // prefix 3 from the terminal view opens the jump on the unreachable host card,
-        // and Enter closes it with the focus back on the terminal view.
-        update(
-            &mut model,
-            Msg::Key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE)),
-        );
-        update(
-            &mut model,
-            Msg::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        );
-        assert!(!model.state.focus.view_is_nav());
-        let text = hint_text(&model);
-        assert!(text.contains("C-g r"), "{text}");
-        assert!(
-            !text.contains("Enter"),
-            "Enter would reach the pane, so it is not offered: {text}"
-        );
     }
 
     #[test]

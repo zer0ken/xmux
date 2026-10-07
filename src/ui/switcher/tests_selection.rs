@@ -304,16 +304,24 @@ impl H {
 
 #[test]
 fn selecting_a_nav_card_or_a_title_half_moves_no_text() {
+    // The Enter mark rides on the selection, so it is read as a blank cell here: what
+    // must not move is the text of the cards.
+    let text = |h: &H, nav: Rect| -> Vec<String> {
+        h.symbols(nav)
+            .into_iter()
+            .map(|row| row.replace(super::render::ENTER_MARK, " "))
+            .collect()
+    };
     let mut h = fleet();
     h.select("web", "api");
     let nav = h.plan.nav_inner;
-    let on_api = h.symbols(nav);
+    let on_api = text(&h, nav);
     h.select("web", "deploy");
-    assert_eq!(h.symbols(nav), on_api, "a card selected");
+    assert_eq!(text(&h, nav), on_api, "a card selected");
     h.ctrl(KeyCode::Up);
-    assert_eq!(h.symbols(nav), on_api, "a title's host half selected");
+    assert_eq!(text(&h, nav), on_api, "a title's host half selected");
     h.ctrl(KeyCode::Up);
-    assert_eq!(h.symbols(nav), on_api, "a title's machine half selected");
+    assert_eq!(text(&h, nav), on_api, "a title's machine half selected");
 }
 
 #[test]

@@ -151,13 +151,13 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
   the function it started ends or is cancelled.
 - **key table** - the one table of every key xmux binds and the words naming it; every
   surface that names a key reads it.
-- **hint bar** - the prefix indicator and what takes its place: the selection hint, the
+- **hint bar** - the prefix indicator and what takes its place: the first-key notice, the
   scan indicator, the active filter. Advice for the current state, never a result.
 - **status row fill** - how much of its row the hint bar paints: the resting indicator
   its text, a floating bar the whole row.
 - **key list** - the box a live prefix opens, naming every key it unlocks.
-- **selection hint** - what the hint bar says for three seconds after the user moves the
-  selection: the card's next keys and one fact about it.
+- **Enter mark** - the `↵` after the selected nav card's text while the nav holds the
+  focus, where Enter runs that card.
 - **scan indicator** - the `scanning hosts n/m…` progress in the hint bar, counting
   hosts and the machines that have no host yet.
 - **toast** - the result of an action the user took, whether it was done, refused, or

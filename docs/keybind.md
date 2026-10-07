@@ -218,11 +218,10 @@ A held prefix sends one literal per repeat and blinks the box, because a termina
 no key-up.
 
 The hint bar shows one thing at a time, in this order: the prefix alone while the key
-list or an input is open, the hint after a selection move, the scan progress, the active
-filter, and the resting prefix. What a key did, or why it did nothing, is a toast. The
-hint after a selection move names the card's next keys and one fact about
-it for three seconds; when the terminal view holds focus it offers only prefix keys, and
-a selection xmux was told to make raises none. With the nav auto-hidden, a prefix
+list or an input is open, the scan progress, the active filter, and the resting prefix.
+What a key did, or why it did nothing, is a toast. Moving the selection leaves the bar
+as it is: while the nav holds the focus, the selected card ends in `↵`, the key that
+runs it. With the nav auto-hidden, a prefix
 interaction brings the nav back until it ends, and the key list and the bar open over
 the window's bottom left.
 

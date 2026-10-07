@@ -1176,6 +1176,7 @@ impl Switcher {
             );
             frame.render_widget(Paragraph::new(Line::from(Span::styled(text, dim))), rect);
         }
+        let mut selected = None;
         for &(idx, rect) in &plan.nav_cells {
             let lines = self.nav_row_lines(
                 idx,
@@ -1198,13 +1199,27 @@ impl Switcher {
                     .iter()
                     .find(|(i, part, _)| *i == idx && *part == self.part)
                     .map(|(_, _, r)| *r);
+                let target = half.unwrap_or(rect);
                 pad_selected_rect(
                     frame.buffer_mut(),
-                    half.unwrap_or(rect),
+                    target,
                     plan.nav_inner,
                     palette::selection_style(palette),
                 );
+                selected = Some(target);
             }
+        }
+        // While the nav holds the focus, Enter runs the selected card, so the card says so
+        // after its text; in the terminal view Enter reaches the pane. The mark waits for
+        // every card to be painted, so it sees the card that follows on the same row.
+        if let Some(target) = selected.filter(|_| !self.terminal_view) {
+            let marked = mark_enter(frame.buffer_mut(), target, plan.nav_inner);
+            pad_selected_rect(
+                frame.buffer_mut(),
+                marked,
+                plan.nav_inner,
+                palette::selection_style(palette),
+            );
         }
         // The soft selection: the target under the pointer, underlined, unless it is the
         // hard selection already drawn on the accent.
@@ -1962,6 +1977,46 @@ fn history_popup_width(area: Rect) -> u16 {
 /// its text: a side whose edge cell is blank is padded already, and otherwise the blank
 /// cell just outside the rect takes the paint while it lies inside `bounds`. A neighbour
 /// that is text, such as the `/` between a section title's halves, stays unpainted.
+/// The glyph the hard-selected nav card writes after its text while the nav holds the
+/// focus: the return arrow, which the default fonts of every supported OS draw in one
+/// cell.
+pub(crate) const ENTER_MARK: &str = "\u{21b5}";
+
+/// Writes [`ENTER_MARK`] after the text on the first row of `rect` and returns `rect`
+/// grown to cover it, so the highlight takes the mark in. The mark stands one blank cell
+/// after the text where a blank cell still parts it from whatever follows, and right
+/// after the text where only that much room is left, as between the cards of a band. A
+/// row with no blank cell after its text goes without, because the mark never covers a
+/// name or a state.
+fn mark_enter(buf: &mut ratatui::buffer::Buffer, rect: Rect, bounds: Rect) -> Rect {
+    if rect.is_empty() {
+        return rect;
+    }
+    let y = rect.y;
+    let Some(last) = (rect.x..rect.right())
+        .rev()
+        .find(|&x| buf[(x, y)].symbol() != " ")
+    else {
+        return rect;
+    };
+    // A cell is free when it is blank, and stays parted from what follows when the cell
+    // after it is blank or past the bounds.
+    let blank = |x: u16| x >= bounds.right() || buf[(x, y)].symbol() == " ";
+    let free = |x: u16| x < bounds.right() && blank(x) && blank(x + 1);
+    let at = if blank(last + 1) && free(last + 2) {
+        last + 2
+    } else if free(last + 1) {
+        last + 1
+    } else {
+        return rect;
+    };
+    buf[(at, y)].set_symbol(ENTER_MARK);
+    Rect {
+        width: rect.width.max(at + 1 - rect.x),
+        ..rect
+    }
+}
+
 fn pad_selected_rect(buf: &mut ratatui::buffer::Buffer, rect: Rect, bounds: Rect, style: Style) {
     buf.set_style(rect, style);
     if rect.is_empty() {

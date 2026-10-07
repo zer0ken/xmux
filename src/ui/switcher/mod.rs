@@ -70,7 +70,7 @@ pub(crate) fn prefix_chip_width(ui_prefix: &str) -> u16 {
 }
 
 /// Whether the hint bar floats over the whole window instead of resting at the nav's
-/// prefix indicator: for the hint after a selection move. A live prefix does not float
+/// prefix indicator: for the first-key notice. A live prefix does not float
 /// the bar: its keys open in the key list instead. An open input does not either: it says
 /// its keys on its popup's border.
 pub(crate) fn hint_bar_floats(state: &crate::state::State) -> bool {
@@ -1506,140 +1506,6 @@ impl Switcher {
     #[cfg(test)]
     pub(crate) fn selected_card(&self) -> Option<RowRef> {
         self.current_ref().cloned()
-    }
-
-    /// Whether the selection names a different node than `before`.
-    pub(crate) fn selection_moved_from(&self, before: &Option<Node>) -> bool {
-        self.selected_node() != *before
-    }
-
-    /// What the hint bar offers about the selected node after a selection move: its most
-    /// relevant keys, read from the key table, and one fact about it. A session offers its
-    /// terminal and a sibling session and states its windows; a host offers its screen
-    /// (or a new session when it is empty) and a re-scan of its machine, and states its
-    /// sessions or its state word with the reason behind it; a machine offers its screen and
-    /// a re-scan and states its state word; anything still scanning offers the filter and
-    /// says so. With `nav_focused` false the terminal view holds the focus, where a bare key
-    /// goes to the pane, so only the prefix keys are offered.
-    ///
-    /// The hint answers only a move the user made (a key, a click, a wheel), lasts three
-    /// seconds on the animation tick, and ends at the next key read. A selection xmux was
-    /// told to make raises none.
-    pub(crate) fn selection_hint(
-        &self,
-        state: &crate::state::State,
-        nav_focused: bool,
-    ) -> Option<(Vec<crate::state::chrome::HintKey>, String)> {
-        use crate::model::keys::{entry_for, KeyCommand};
-        let first_line = |host: &str| {
-            state
-                .groups
-                .iter()
-                .find(|g| g.host == host)
-                .and_then(|g| g.err.as_deref())
-                .or_else(|| {
-                    state
-                        .machine(host)
-                        .filter(|m| !state.has_hosts(&m.name))
-                        .and_then(|m| m.err.as_deref())
-                })
-                .and_then(|e| e.lines().map(str::trim).find(|l| !l.is_empty()))
-                .unwrap_or_default()
-                .to_string()
-        };
-        let with_reason = |word: &str, reason: String| {
-            if reason.is_empty() {
-                word.to_string()
-            } else {
-                format!("{word}: {reason}")
-            }
-        };
-        let (commands, fact): (&[KeyCommand], String) = match self.selected_node()? {
-            Node::Session(address) => {
-                let sess = state
-                    .groups
-                    .iter()
-                    .find(|g| g.host == address.host)
-                    .and_then(|g| g.sessions.iter().find(|s| s.name == address.session));
-                (
-                    &[KeyCommand::FocusTerminal, KeyCommand::NewSession],
-                    sess.map(|s| session_facts(s, state)).unwrap_or_default(),
-                )
-            }
-            Node::Host(host) => {
-                let group = state.groups.iter().find(|g| g.host == host);
-                if state.scanning.contains(&host) {
-                    (&[KeyCommand::Filter], "scanning".into())
-                } else if let Some(kind) = group.and_then(crate::model::Group::failure) {
-                    // A logout has no reason beyond itself, so its word stands alone.
-                    let fact = if state.logged_out(&host) {
-                        tree::LOGGED_OUT.to_string()
-                    } else {
-                        with_reason(tree::failure_word(kind, false), first_line(&host))
-                    };
-                    (
-                        &[KeyCommand::FocusTerminal, KeyCommand::RescanMachine],
-                        fact,
-                    )
-                } else {
-                    let count = group.map_or(0, |g| g.sessions.len());
-                    if count == 0 {
-                        (
-                            &[KeyCommand::NewSession, KeyCommand::RescanMachine],
-                            tree::host_state_word(false, false, false, false).into(),
-                        )
-                    } else {
-                        let method = state.refresh_words(&host);
-                        (
-                            &[KeyCommand::FocusTerminal, KeyCommand::RescanMachine],
-                            format!("{count} sessions, {method}"),
-                        )
-                    }
-                }
-            }
-            Node::Machine(machine) => {
-                let fact = match machine_failure(state, &machine) {
-                    Some(kind) => {
-                        let host = self.current_host().unwrap_or_default();
-                        if state.logged_out(&host) {
-                            tree::LOGGED_OUT.to_string()
-                        } else {
-                            with_reason(tree::failure_word(kind, false), first_line(&host))
-                        }
-                    }
-                    None if is_machine_scanning(state, &machine) => "scanning".into(),
-                    None => {
-                        let n = state
-                            .groups
-                            .iter()
-                            .filter(|g| crate::session::machine_of(&g.host) == machine)
-                            .count();
-                        format!(
-                            "{}, {n} {}",
-                            tree::MACHINE_REACHABLE,
-                            if n == 1 { "host" } else { "hosts" }
-                        )
-                    }
-                };
-                (
-                    &[KeyCommand::FocusTerminal, KeyCommand::RescanMachine],
-                    fact,
-                )
-            }
-        };
-        let keys = commands
-            .iter()
-            .filter_map(|c| entry_for(*c))
-            .filter(|e| nav_focused || e.prefixed())
-            .map(|e| {
-                (
-                    e.full_label(&state.chrome.ui_prefix, state.chrome.nav_position),
-                    e.long.to_string(),
-                    e.short.to_string(),
-                )
-            })
-            .collect();
-        Some((keys, fact))
     }
 
     /// The host the selection acts on. A session's and a host's own; for a machine, the

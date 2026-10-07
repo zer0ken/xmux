@@ -65,9 +65,8 @@ its body says in one line why it is empty and which key answers it.
 
 While the user acts, the question is what to do next, and a surface that answers it
 saves a trip to the help. So the selected card names its state, an open filter counts
-its matches, a live prefix names every key it unlocks, a selection move names the
-selected card's next keys for three seconds, and a machine screen keeps the failure
-reason whole. Every one of these reads the one key table, so a surface never names a key that
+its matches, a live prefix names every key it unlocks, the selected nav card ends in
+`↵` while Enter runs it, and a machine screen keeps the failure reason whole. Every one of these reads the one key table, so a surface never names a key that
 does something else.
 
 ## Action Names and Keys
@@ -108,7 +107,7 @@ terminal's background colour and a terminal is free to answer no colour query at
 
 Persistent UI symbols are conventional one-cell glyphs that OS-default terminal fonts
 render without emoji presentation: `✓`, `✗`, braille spinner frames led by `⠋`,
-box drawing led by `╭`, `▲`, `?`, `!`, and `…`.
+box drawing led by `╭`, `▲`, `?`, `!`, `↵`, and `…`.
 
 xmux runs in whatever terminal and font the user has, on every OS it supports. A glyph
 some font draws as a colour emoji, or as two cells, breaks the column a card is aligned
@@ -291,6 +290,8 @@ swapped. The padding cell keeps the first and last character off the highlight's
 so the highlight reads as a block around the item rather than as coloured letters. One
 look learned on the nav then reads on every popup and screen, while a surface that marks
 its selection with a colour, a weight, or a glyph of its own is one more thing to learn
-and, beside a highlighted surface, reads as a different state. A marker glyph beside a
-highlighted item says nothing the highlight does not, and takes a cell from the number
-or the name the item carries.
+and, beside a highlighted surface, reads as a different state. The one glyph a
+selection carries is the `↵` after the selected nav card's text while the nav holds the
+focus: the highlight says where the selection is, and the glyph says that Enter runs it
+there, which matters on the nav because the same Enter reaches the pane once the
+terminal view holds the focus.

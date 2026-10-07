@@ -453,8 +453,10 @@ fn pl7_a_one_row_band_runs_title_and_cards_on_one_line() {
         let tree = shot.plan.regions.tree;
         assert_eq!(tree.height, 1, "{position:?}");
         let line = shot.row(tree.y, 0, W);
+        // The selected card's Enter mark takes the first of the two cells between cards.
+        let enter = super::render::ENTER_MARK;
         assert!(
-            line.contains("local  1 build  2 editor"),
+            line.contains(&format!("local  1 build{enter} 2 editor")),
             "{position:?}: the title runs straight into its cards: {line:?}"
         );
     }
