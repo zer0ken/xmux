@@ -4518,10 +4518,10 @@ async fn a_split_sections_cards_read_at_one_offset_in_every_column() {
 }
 
 #[tokio::test]
-async fn the_selections_highlight_stops_at_the_card_and_spares_the_indent() {
-    // The indent is the title's, not the card's. The selection paints a card by
-    // highlighting its whole rect, so the rect starts past the indent and the indent
-    // stays blank on the selected card's row.
+async fn the_selections_highlight_pads_the_card_into_its_indent() {
+    // The indent stays blank text, so the highlight's left padding takes it: the card
+    // rect starts past the indent, and the indent cell beside it carries the accent
+    // without moving the card's number.
     let h = Harness::new_sized(sample(), 60, 70);
     assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
     let sel = h.sw.selected;
@@ -4542,7 +4542,7 @@ async fn the_selections_highlight_stops_at_the_card_and_spares_the_indent() {
     );
     let strip = &buf[(rect.x - CARD_INDENT, rect.y)];
     assert_eq!(strip.symbol(), " ", "the indent is blank");
-    assert!(!on_accent(strip), "and the highlight does not reach it");
+    assert!(on_accent(strip), "and it is the highlight's left padding");
 }
 
 #[tokio::test]
@@ -8989,11 +8989,11 @@ fn the_login_pane_field_puts_the_hardware_cursor_on_its_caret() {
         .set_view_focus(crate::state::ViewFocus::Terminal);
     h.draw_terminal_focused();
     let term = h.plan.regions.terminal;
-    let (x, y, m) = hardware_cursor(&mut h);
+    let (x, y, _) = hardware_cursor(&mut h);
     assert!(term.contains(ratatui::layout::Position { x, y }), "{x},{y}");
     assert!(
-        m.contains(Modifier::REVERSED),
-        "on the focused field's caret"
+        on_accent(&h.buf()[(x, y)]) && !on_accent(&h.buf()[(x + 1, y)]),
+        "on the focused field's caret, the highlight's last cell"
     );
     let row: String = (term.x..term.right())
         .map(|c| h.buf()[(c, y)].symbol().to_string())

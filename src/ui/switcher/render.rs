@@ -1181,9 +1181,12 @@ impl Switcher {
                     .iter()
                     .find(|(i, part, _)| *i == idx && *part == self.part)
                     .map(|(_, _, r)| *r);
-                frame
-                    .buffer_mut()
-                    .set_style(half.unwrap_or(rect), palette::selection_style(palette));
+                pad_selected_rect(
+                    frame.buffer_mut(),
+                    half.unwrap_or(rect),
+                    plan.nav_inner,
+                    palette::selection_style(palette),
+                );
             }
         }
         // The soft selection: the target under the pointer, underlined, unless it is the
@@ -1901,4 +1904,24 @@ fn history_popup_width(area: Rect) -> u16 {
         .saturating_sub(4)
         .clamp(24, 84)
         .min(area.width.max(1))
+}
+
+/// Paints `rect` in the hard selection's `style` with one cell of padding on each side of
+/// its text: a side whose edge cell is blank is padded already, and otherwise the blank
+/// cell just outside the rect takes the paint while it lies inside `bounds`. A neighbour
+/// that is text, such as the `/` between a section title's halves, stays unpainted.
+fn pad_selected_rect(buf: &mut ratatui::buffer::Buffer, rect: Rect, bounds: Rect, style: Style) {
+    buf.set_style(rect, style);
+    if rect.is_empty() {
+        return;
+    }
+    let y = rect.y;
+    let blank = |buf: &ratatui::buffer::Buffer, x: u16| buf[(x, y)].symbol() == " ";
+    let last = rect.right() - 1;
+    if !blank(buf, rect.x) && rect.x > bounds.x && blank(buf, rect.x - 1) {
+        buf.set_style(Rect::new(rect.x - 1, y, 1, 1), style);
+    }
+    if !blank(buf, last) && rect.right() < bounds.right() && blank(buf, rect.right()) {
+        buf.set_style(Rect::new(rect.right(), y, 1, 1), style);
+    }
 }
