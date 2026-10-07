@@ -117,6 +117,10 @@ fn a_selected_screen_link_is_highlighted_and_no_other_link_is() {
     h.ctrl(KeyCode::Up);
     h.terminal_focused = true;
     h.draw();
+    assert!(h.selected_look(h.link_rect(1)));
+    assert!(h.plain(h.link_rect(0)));
+    h.sw.step_link(-1, &h.state);
+    h.draw();
     assert!(h.selected_look(h.link_rect(0)));
     // The headline's machine link is followed by the `/` of its host, the headline's own
     // text, so only the cell before it takes the padding.
