@@ -831,6 +831,7 @@ impl Runtime {
             body_rows,
             term_input,
             nav_decoder,
+            paste: Default::default(),
             prefix,
             // The draw hot path's observability (per-key grid fingerprints + slow-step
             // probe), owned off the draw block so it does nothing but lock → render.
@@ -1493,10 +1494,25 @@ impl Runtime {
     /// whether the app should quit.
     pub(super) fn on_stdin(&mut self, bytes: &[u8]) -> bool {
         use std::time::Duration;
-        // Clone the selection so &mut state can be threaded alongside it (the ForwardToMux
-        // path reads the selection for display_key/registry input).
-        let selection = self.model.state.selection.clone();
-        let outcome = self.handle_stdin_bytes(bytes, &selection);
+        // A paste is routed apart from the keys around it, in the order read.
+        let mut outcome = crate::app::input::StdinOutcome::default();
+        for segment in self.paste.feed(bytes) {
+            let part = match segment {
+                crate::display::paste::Segment::Keys(keys) => {
+                    // Clone the selection so &mut state can be threaded alongside it (the
+                    // ForwardToMux path reads the selection for display_key/registry input).
+                    let selection = self.model.state.selection.clone();
+                    self.handle_stdin_bytes(&keys, &selection)
+                }
+                crate::display::paste::Segment::Paste(text) => self.handle_paste(text),
+            };
+            outcome.dirty |= part.dirty;
+            outcome.width_changed |= part.width_changed;
+            outcome.quit |= part.quit;
+            if outcome.quit {
+                break;
+            }
+        }
         if outcome.dirty {
             self.dirty = true;
         }

@@ -1719,6 +1719,7 @@ struct Runtime {
     body_rows: u16,
     term_input: crate::display::input::TermInput,
     nav_decoder: crate::display::decode::KeyDecoder,
+    paste: crate::display::paste::PasteSplitter,
     prefix: u8,
     draw_observer: DrawObserver,
     spinner_start: std::time::Instant,

@@ -22,10 +22,11 @@ state: the focus and modal state machine lives in `app`.
 - The registry maps display keys to live attachments, parks a fresh attachment while
   it paints, and serves a reaped attachment's last grid until a fresh one installs.
 - The grid owns the terminal-emulation cell state, a content fingerprint for detecting
-  a visible change, and its last written line for naming why a child stopped.
-- Input decoding, dispatch, and mouse parsing turn terminal bytes into routing
-  decisions or input actions; terminal setup holds prefix parsing, mouse capture, and
-  the terminal guard.
+  a visible change, its last written line for naming why a child stopped, and the input
+  modes the child set, which outlive a wipe of the cells.
+- Input decoding, dispatch, paste splitting, and mouse parsing turn terminal bytes into
+  routing decisions or input actions; terminal setup holds prefix parsing, mouse
+  capture, bracketed paste, and the terminal guard.
 - The live child-environment read answers one caller-named variable from a running
   attach child. It names no mux and no variable.
 

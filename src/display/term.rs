@@ -13,9 +13,15 @@ const SGR_MOUSE_ON: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
 #[cfg(windows)]
 const SGR_MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
+// Bracketed paste (2004h): the terminal wraps a paste in markers, so the input path
+// tells it apart from typing and never reads pasted bytes as the prefix or a key.
+const BRACKETED_PASTE_ON: &[u8] = b"\x1b[?2004h";
+const BRACKETED_PASTE_OFF: &[u8] = b"\x1b[?2004l";
+
 /// RAII guard owning the terminal for the app's lifetime: enables raw mode,
-/// enters the alternate screen, and enables SGR mouse capture on construction, then
-/// on drop disables mouse capture, leaves the alternate screen, and disables raw mode.
+/// enters the alternate screen, and enables SGR mouse capture and bracketed paste on
+/// construction, then on drop disables them, leaves the alternate screen, and disables
+/// raw mode.
 /// Restores the user's pre-launch screen on normal return AND on a panic (release
 /// builds unwind; see Cargo.toml `panic`).
 pub struct TermGuard;
@@ -36,12 +42,24 @@ impl TermGuard {
             out.write_all(b"\x1b[?1003h")?;
             out.flush()?;
         }
+        {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            out.write_all(BRACKETED_PASTE_ON)?;
+            out.flush()?;
+        }
         Ok(TermGuard)
     }
 }
 
 impl Drop for TermGuard {
     fn drop(&mut self) {
+        {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            let _ = out.write_all(BRACKETED_PASTE_OFF);
+            let _ = out.flush();
+        }
         #[cfg(windows)]
         {
             use std::io::Write;
@@ -177,8 +195,8 @@ pub fn ensure_mouse_capture() {
         ENABLE_MOUSE_INPUT, ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT,
     };
     // Observe CONIN mode transitions: mouse capture on Windows is fragile (a portable-pty
-    // child spawn can silently mutate the input bits), so tracing exactly which bit drifts —
-    // vt-input / mouse-input / quick-edit — the instant it changes turns an intermittent
+    // child spawn can silently mutate the input bits), so tracing exactly which bit drifts -
+    // vt-input / mouse-input / quick-edit - the instant it changes turns an intermittent
     // "mouse stopped working" / "text selected itself" report into a pinpointed cause.
     // Logged only on change (silent in steady state) AND at trace level: a ConPTY child
     // keeps mutating the parent's mouse bit, so this fires on (almost) every loop iteration
@@ -283,7 +301,7 @@ mod tests {
 
     /// Human visual gate: verifies that `TermGuard` enters the alternate screen
     /// and restores the user's pre-launch screen on drop.  Requires a real
-    /// console — raw-mode toggling is not available in the test harness.
+    /// console - raw-mode toggling is not available in the test harness.
     #[test]
     #[ignore]
     fn term_guard_enters_and_restores() {

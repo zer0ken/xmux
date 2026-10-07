@@ -1,6 +1,8 @@
 //! A one-pane vt100 grid the display layer tees child output into, used ONLY to repaint
 //! the live pane after a transient modal. Not a multiplexer: one grid, no
-//! layouts, no input routing.
+//! layouts, no input routing. It also reads the input modes the child sets, which the
+//! input path shapes forwarded input by. It also reads the input modes the child sets, which the
+//! input path shapes forwarded input by.
 use std::hash::{Hash, Hasher};
 
 use ratatui::buffer::Buffer;
@@ -14,6 +16,8 @@ pub struct Grid {
     /// repaint arrives (no blank window between the switch and the repaint) and the
     /// grid still clears the instant the new content lands (no residue either).
     clear_on_feed: bool,
+    /// The input modes the client has set, kept across a wipe of the cells.
+    modes: crate::display::modes::ModeScanner,
 }
 
 impl Grid {
@@ -21,10 +25,12 @@ impl Grid {
         Self {
             parser: vt100::Parser::new(rows, cols, 0),
             clear_on_feed: false,
+            modes: Default::default(),
         }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
+        self.modes.feed(bytes);
         if self.clear_on_feed {
             self.clear_on_feed = false;
             self.clear();
@@ -72,6 +78,11 @@ impl Grid {
             col.min(cols.saturating_sub(1)),
             row.min(rows.saturating_sub(1)),
         )
+    }
+
+    /// The input modes the child has set on its terminal.
+    pub fn input_modes(&self) -> crate::display::modes::InputModes {
+        self.modes.modes()
     }
 
     /// Whether the child has hidden its cursor.
@@ -238,6 +249,16 @@ Connection to host closed.
             vt_color_to_ratatui(vt100::Color::Rgb(10, 20, 30)),
             RColor::Rgb(10, 20, 30)
         );
+    }
+
+    #[test]
+    fn input_modes_outlive_a_wipe_of_the_cells() {
+        // A session switch wipes the cells, but the client keeps the modes it set.
+        let mut g = Grid::new(4, 10);
+        g.feed(b"\x1b[?2004h");
+        g.clear_on_next_feed();
+        g.feed(b"next session");
+        assert!(g.input_modes().bracketed_paste);
     }
 
     #[test]
