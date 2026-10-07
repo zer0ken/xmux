@@ -207,6 +207,13 @@ against, naming no source file, function, or test.
   mouse mode asks for, encoded in the form the client enabled, and a drag that starts in
   the terminal view reaches it until its release, with motion past the view at the
   view's nearest edge.
+- **FR-C10** - xmux's display client leaves the size of a session the user also has open
+  to the user's own clients. On tmux it stops sizing a session while another client that
+  sizes windows is attached to it (`refresh-client -f ignore-size`) and sizes the session
+  again once it is the session's only such client. On abduco it attaches with the lowest
+  priority (`abduco -l -a`), so it sizes the session only while no other client is
+  attached. A tmux window larger than the terminal view shows the part around the
+  cursor, and a smaller one shows its edge with the rest of the view filled with dots.
 
 ## D. App lifecycle
 
@@ -342,6 +349,29 @@ The seamless cross-host switch is bought with these costs, accepted by design:
   psmux session its own server does not answer for, is not followed through a rename made
   inside its mux: the rename reads as a lost session and a new one, and the selection
   moves up to the host.
+- A tmux session change made inside the terminal view, into a session the user also has
+  open in their own client, resizes that client to the terminal view until xmux hears of
+  the change on the control connection and gives the size back. Nothing prevents it.
+- tmux older than 3.2 has no `ignore-size` flag, so xmux's client sizes a session the user
+  also has open like any client: under tmux's default `window-size latest`, typing in the
+  terminal view shrinks the user's client of that session until the user types there.
+  Upgrading tmux prevents it.
+- screen does not resize a window that two displays show, so a window the terminal view
+  showed first keeps the view's size when the user's own display shows it too, and their
+  display shows it in its top-left corner. The user's `C-a F` (`fit`) gives it their size.
+- zellij sizes a session by its smallest client, so while the terminal view shows a
+  zellij session the user also has open, the user's client shows it at the view's size.
+  Nothing prevents it.
+- psmux sizes a window by the client that last had input (`window-size latest`), so typing
+  in the terminal view resizes a window the user's own client shows until the user types
+  there. `window-size largest` keeps the narrower view from shrinking it.
+- tuios sizes a session by its smallest client by default (`daemon.window_size
+  smallest`), so while the terminal view shows a tuios session the user also has open, the
+  user's client shows it at the view's size. `daemon.window_size largest` keeps the
+  narrower view from shrinking it.
+- herdr sizes a session by the client that last had input, so typing in the terminal view
+  resizes the panes the user's own client shows until the user types there. Nothing
+  prevents it.
 - A Windows client attached to tmux older than 3.6 can show the end of a terminal reply
   as typed text in the session: Windows OpenSSH passes the reply on in pieces, and tmux
   before 3.6 ends it at the gap. tmux 3.6 fixes this upstream (tmux/tmux#4411,

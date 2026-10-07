@@ -1355,25 +1355,28 @@ fn refetch_host(mgr: &HostManager, host: &str) {
     }
 }
 
-/// Records a pump-self-reported display tty on the host that owns the attach id.
-/// The attach key is `display_key`; for a Shared host that IS the host id. Provably
-/// xmux's own client (the marker is emitted only by our attach shell).
+/// Records a pump-self-reported display tty on the host that owns the attach id, and
+/// names that host. The attach key is `display_key`; for a Shared host that IS the host
+/// id. Provably xmux's own client (the marker is emitted only by our attach shell).
 fn record_display_tty(
     hosts: &mut crate::model::Hosts,
     registry: &AttachRegistry,
     id: u64,
     tty: String,
-) {
+) -> Option<String> {
     if let Some(addr) = registry.address_of_id(id) {
         let host_id = addr.split('/').next().unwrap_or(&addr).to_string();
         if let Some(h) = hosts.get_mut(&host_id) {
             tracing::info!(id, addr, tty, "tty_recorded");
             h.display_tty = crate::model::DisplayTty(Some(tty));
+            return Some(host_id);
         }
+        None
     } else {
         // The marker fired but no registry entry has this id yet - diagnostic for a
         // capture that arrives before the attach is recorded (would silently drop).
         tracing::info!(id, tty, "tty_record_missed_no_addr");
+        None
     }
 }
 

@@ -24,7 +24,9 @@ machine. A remote psmux host is enumerated and displayed the generic way.
 ## Invariants
 
 - A per-session attach uses `new-session -A -s <name>`, never a bare `attach -t` on the
-  default socket, which lands on a warm clone with the wrong content.
+  default socket, which lands on a warm clone with the wrong content. psmux has no
+  `ignore-size` for a client that is not a control client, so the display client sizes
+  windows like any client.
 - A session change ALWAYS reattaches, at any client tty on record and whatever the
   display bookkeeping says. The ONE thing that suspends it is the live client's own
   report that it is already on the selected session.

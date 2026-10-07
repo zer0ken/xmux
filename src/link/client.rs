@@ -208,6 +208,43 @@ impl HostClient {
             .is_ok()
     }
 
+    /// Asks which clients are attached to `session`, the one xmux's display client
+    /// (`display_tty`) shows, over THIS control connection. The reply resolves to a
+    /// [`HostEvent::DisplaySessionClients`] saying whether a client besides the display
+    /// client sizes that session. Returns whether the query reached the writer thread,
+    /// on the same terms as [`HostClient::switch_client_on`].
+    pub fn ask_display_session_clients(&self, display_tty: &str, session: &str) -> bool {
+        self.cmd_tx
+            .send(HostCmd::Query {
+                line: self.proto.session_clients_line(session),
+                reply: PendingReply::SessionClients {
+                    display_tty: display_tty.to_string(),
+                },
+            })
+            .is_ok()
+    }
+
+    /// Sets whether xmux's display client (`display_tty`) sizes the session it shows: it
+    /// does not while the session is `shared`. Returns whether every line reached the
+    /// writer thread, on the same terms as [`HostClient::switch_client_on`].
+    pub fn size_display_on(&self, display_tty: &str, shared: bool) -> bool {
+        self.proto
+            .display_size_lines(display_tty, shared)
+            .into_iter()
+            .all(|line| self.cmd_tx.send(HostCmd::Send(line)).is_ok())
+    }
+
+    /// Stop xmux's display client (`display_tty`) from sizing the session it moves to
+    /// next, sent before a `switch-client`. Returns whether the line reached the writer
+    /// thread, on the same terms as [`HostClient::switch_client_on`].
+    pub fn yield_display_size_on(&self, display_tty: &str) -> bool {
+        self.cmd_tx
+            .send(HostCmd::Send(
+                self.proto.display_size_yield_line(display_tty),
+            ))
+            .is_ok()
+    }
+
     /// Stop the host: signal the writer, kill the child, and reap the child and I/O
     /// threads on a detached thread. A PTY reader can remain in `read` until the mux
     /// server releases its side of the terminal, so joining it must not block the
@@ -339,6 +376,27 @@ pub(super) fn spawn_pty_child(
         stdin: writer,
         stderr_drain: None,
     })
+}
+
+#[cfg(test)]
+impl HostClient {
+    /// A client with no child whose queued commands land on the returned receiver, so a
+    /// test reads exactly what xmux would have written to the control connection.
+    pub(crate) fn recording(host: &str) -> (Self, std::sync::mpsc::Receiver<HostCmd>) {
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        let client = HostClient {
+            host: host.to_string(),
+            connecting: Arc::new(AtomicBool::new(false)),
+            proto: crate::link::test_control_proto(),
+            cmd_tx,
+            child: Box::new(crate::display::attachment::DummyChild::default()),
+            _auth: None,
+            reader: None,
+            writer: None,
+            stderr_drain: None,
+        };
+        (client, cmd_rx)
+    }
 }
 
 #[cfg(test)]

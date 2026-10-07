@@ -587,6 +587,19 @@ impl Runtime {
                 };
                 sync_host_terminals(&host_id, &sessions, &mut ctx);
             }
+            EventEffect::SettleDisplaySize { host } => settle_display_size(hosts, mgr, &host),
+            EventEffect::SizeDisplayClient { host, tty, shared } => {
+                // The answer is about the client that was asked about; a display that
+                // reattached since has a new client, and its own settle asks again.
+                if hosts
+                    .get(&host)
+                    .is_some_and(|h| h.matches_display_tty(&tty))
+                {
+                    if let Some(client) = mgr.get(&host) {
+                        client.size_display_on(&tty, shared);
+                    }
+                }
+            }
             EventEffect::RecordDisplayTty { host, tty } => {
                 // The -CC `list-clients` probe resolved xmux's display-client tty. Record it
                 // on the Host so a session switch is an in-place `switch-client -c <tty>`;
@@ -606,6 +619,26 @@ impl Runtime {
             }
         }
         (false, followups)
+    }
+}
+
+/// Asks `host`'s mux which clients are attached to the session xmux's display client
+/// shows, so the answer can set whether that client sizes the session. It needs the
+/// client's tty and the session it is on; without either there is nothing to name, and
+/// the client keeps the `ignore-size` its attach set, which never resizes a client the
+/// user has attached.
+fn settle_display_size(hosts: &crate::model::Hosts, mgr: &crate::link::HostManager, host: &str) {
+    let Some(h) = hosts.get(host) else {
+        return;
+    };
+    let Some(tty) = h.display_tty.0.as_deref().filter(|t| !t.is_empty()) else {
+        return;
+    };
+    let Some(session) = h.display.shows(&host_selection_key(h)) else {
+        return;
+    };
+    if let Some(client) = mgr.get(host) {
+        client.ask_display_session_clients(tty, session);
     }
 }
 
@@ -1356,7 +1389,9 @@ impl Runtime {
                 Some(id) == displayed_attach_id
             }
             PtyEvent::DisplayTty { id, tty } => {
-                record_display_tty(&mut self.hosts, &self.registry, id, tty);
+                if let Some(host) = record_display_tty(&mut self.hosts, &self.registry, id, tty) {
+                    settle_display_size(&self.hosts, &self.mgr, &host);
+                }
                 false
             }
             PtyEvent::AuthObserved { id, method } => {
@@ -1554,6 +1589,9 @@ impl Runtime {
                 }
             }
         }
+        // A tty read from the attachment's own PTY is known only now, after the mux
+        // already reported the client's arrival, so the size is settled here.
+        settle_display_size(&self.hosts, &self.mgr, &hid);
 
         if key == selected_key {
             let effects = update(

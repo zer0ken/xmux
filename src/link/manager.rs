@@ -201,6 +201,17 @@ impl HostManager {
         .expect("spawn");
         self.clients.insert(host.to_string(), client);
     }
+
+    /// Registers a control client for `host` whose commands land on the returned
+    /// receiver instead of a child (see [`HostClient::recording`]).
+    pub(crate) fn insert_recording(
+        &mut self,
+        host: &str,
+    ) -> std::sync::mpsc::Receiver<super::HostCmd> {
+        let (client, commands) = HostClient::recording(host);
+        self.clients.insert(host.to_string(), client);
+        commands
+    }
 }
 
 #[cfg(test)]

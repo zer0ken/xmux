@@ -21,6 +21,7 @@ stream, so inventory changes arrive only on an asked-for poll.
   and each saved record becomes a stopped session; a stdout that is no listing lists
   nothing.
 - Every display selection creates a fresh attachment; no in-place switch is claimed.
+- No attach flag keeps a client from sizing a session; `daemon.window_size` alone decides.
 - An attachment ending is not reported as a session ending.
 
 ## Common Pitfalls

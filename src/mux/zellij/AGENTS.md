@@ -24,7 +24,8 @@ process id, which an attach run through the machine's shell records before `exec
 ## Invariants
 
 - The attach is plain `attach <name>`, never `attach -c`: showing a session must not
-  create one.
+  create one. zellij sizes a session by its smallest client and offers no way to leave
+  one out.
 - A session listed as exited is a stopped session: it is asked for no tab count, and
   only an execution of its card attaches, which resurrects it.
 - An attachment already recorded as showing the selected session is left alone.

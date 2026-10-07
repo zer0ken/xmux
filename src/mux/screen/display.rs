@@ -75,7 +75,7 @@ impl MuxDriver for ScreenDriver {
                 .get_mut(&sel.host)
                 .expect("the selected host exists");
             host.display.clear(&key);
-            let mux_argv = host.mux.attach_plan(&sel.session);
+            let mux_argv = host.mux.display_attach_plan(&sel.session);
             host.transport.exec_argv(true, &mux_argv)
         };
         let id = ctx

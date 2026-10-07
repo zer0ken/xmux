@@ -39,7 +39,7 @@ impl MuxDriver for AbducoDriver {
             };
             let pre_mismatch = host.display.shows(&key) != Some(sel.session.as_str());
             host.display.clear(&key);
-            let mux_argv = host.mux.attach_plan(&sel.session);
+            let mux_argv = host.mux.display_attach_plan(&sel.session);
             let command = host.transport.exec_argv(true, &mux_argv);
             (pre_mismatch, command)
         };

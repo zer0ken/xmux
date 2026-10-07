@@ -19,7 +19,8 @@ reattaches with `abduco -a <name>` on every session change.
 ## Invariants
 
 - A per-session attach uses `abduco -a <name>`, which reaches that session's own
-  server.
+  server. The display attach adds `-l`, so it sizes the session only while no other
+  client is attached.
 - A session resolves as the session alone, one card per session, never with a
   per-session command that cannot exist.
 - abduco cannot move an attached client, so there is no session change to follow.

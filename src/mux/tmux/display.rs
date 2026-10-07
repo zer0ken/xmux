@@ -42,7 +42,7 @@ impl MuxDriver for TmuxDriver {
                     "display_show"
                 );
                 // Build the argv (immutable mux/transport reads) BEFORE taking &mut display.
-                let mux_argv = host.mux.attach_plan(&sel.session);
+                let mux_argv = host.mux.display_attach_plan(&sel.session);
                 let command = host.transport.exec_argv(true, &mux_argv);
                 // A remote shared attach records its own tty before exec (for a later
                 // in-place switch); the record snippet is a remote-shell mechanism, so a
@@ -112,9 +112,13 @@ impl MuxDriver for TmuxDriver {
                 // would then agree, which is the one condition that asks for a switch, so
                 // nothing would ever ask again and the terminal view would hold the old
                 // session for the rest of the run. A refusal falls through to the reattach
-                // below instead — the same answer this arm already gives when the recorded
+                // below instead - the same answer this arm already gives when the recorded
                 // tty plan cannot switch, and still one attempt answering one user action.
-                let sent = client.switch_client_on(tty.as_deref().unwrap(), &sel.session)
+                // The client stops sizing sessions before it moves, so landing on a session
+                // the user also has open cannot resize the user's client; the mux's
+                // session-changed notice then settles the size on the new session.
+                let sent = client.yield_display_size_on(tty.as_deref().unwrap())
+                    && client.switch_client_on(tty.as_deref().unwrap(), &sel.session)
                     && client.refresh_client_on(tty.as_deref().unwrap());
                 if !sent {
                     tracing::warn!(
@@ -168,7 +172,7 @@ impl MuxDriver for TmuxDriver {
                     session = %sel.session,
                     "display_show"
                 );
-                let mux_argv = host.mux.attach_plan(&sel.session);
+                let mux_argv = host.mux.display_attach_plan(&sel.session);
                 let command = host.transport.exec_argv(true, &mux_argv);
                 let runs_through_shell = host.transport.runs_through_shell();
                 let id = ctx
@@ -209,7 +213,7 @@ impl MuxDriver for TmuxDriver {
                 // `show()` uses. A remote shared attach records its own tty before exec
                 // (for a later in-place switch); local attaches and non-recording muxes
                 // stay bare. (Immutable host reads before the &mut host.display below.)
-                let mux_argv = host.mux.attach_plan(&first.name);
+                let mux_argv = host.mux.display_attach_plan(&first.name);
                 let command = host.transport.interactive_attach_argv(&mux_argv);
                 let runs_through_shell = host.transport.runs_through_shell();
                 let selection = Selection {

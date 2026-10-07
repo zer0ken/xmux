@@ -64,7 +64,7 @@ pub struct DriverCtx<'a> {
     pub mgr: &'a crate::link::HostManager,
     pub worker: &'a DisplayWorker,
     /// The off-loop event sink (a clone of the loop's `PtyEvent` channel). A driver may
-    /// spawn a read-only probe that feeds a `PtyEvent` back to the loop — e.g. the psmux
+    /// spawn a read-only probe that feeds a `PtyEvent` back to the loop - e.g. the psmux
     /// driver captures its display client's tty with an off-loop `list-clients` probe.
     pub pty_tx: &'a tokio::sync::mpsc::UnboundedSender<crate::display::attachment::PtyEvent>,
     pub attach_seq: &'a mut u64,
@@ -227,13 +227,13 @@ pub trait MuxDriver {
         ctx.registry.grid(&ctx.display_key(sel))
     }
     /// Reconcile the host's display terminal with its current `sessions` (an inventory
-    /// update — a remote `%`-event refresh or a local poll). Shared keeps ONE PTY per
+    /// update - a remote `%`-event refresh or a local poll). Shared keeps ONE PTY per
     /// host: warm it on the first session, reap it when the host has no sessions.
     /// PerSession is selected on demand: only reap the host PTY when no sessions remain.
     fn sync(&mut self, host: &str, sessions: &[crate::session::Session], ctx: &mut DriverCtx);
 }
 
-/// The host's mux driver — the DECISION is a Mux method (`host.mux.driver()`), not a
+/// The host's mux driver - the DECISION is a Mux method (`host.mux.driver()`), not a
 /// `match` at the call site. Each mux constructs its OWN driver, so mux selection
 /// lives in the mux implementation (`crate::mux::{tmux, psmux}`), never a central match here.
 /// Drivers are zero-sized, so a fresh value per call is free; the per-host state lives in
@@ -522,7 +522,7 @@ pub(crate) mod tests {
         // The whole point: a Box<dyn MuxDriver> must compile. If the trait gains a
         // non-dispatchable method this stops compiling. Obtained via the production
         // path (`Mux::driver()` through `driver_for`) so this seam names no
-        // concrete driver type — those live in `crate::mux::{tmux, psmux}`.
+        // concrete driver type - those live in `crate::mux::{tmux, psmux}`.
         let tmux_host = crate::model::Host::new(
             crate::transport::local(None),
             crate::mux::for_binary("tmux").unwrap(),
@@ -553,7 +553,7 @@ pub(crate) mod tests {
 
     /// The decision is a Mux method, not a `match` in the app: a Shared host is
     /// driven by the tmux driver, a PerSession host by its mux-specific driver. This is
-    /// `driver_for` delegating to `host.mux.driver()` — each mux builds its own.
+    /// `driver_for` delegating to `host.mux.driver()` - each mux builds its own.
     #[test]
     fn driver_for_picks_the_mux_specific_driver_by_backend() {
         let tmux_host = crate::model::Host::new(
@@ -648,5 +648,89 @@ pub(crate) mod tests {
                 "{bin}: the stale attachment remains until the fresh one is painted"
             );
         }
+    }
+
+    /// The argv of the one display attach `show` asks the worker for, on a host with no
+    /// display attachment yet. Headless: a fake spawner records it.
+    async fn display_attach_argv(host: crate::model::Host) -> Vec<String> {
+        let host_id = host.id().to_string();
+        let mut hosts = crate::model::Hosts::default();
+        hosts.insert(host);
+        let (ptx, _prx) = tokio::sync::mpsc::unbounded_channel();
+        let (argv_tx, argv_rx) = std::sync::mpsc::channel();
+        let worker = crate::display::DisplayWorker::with_spawner(
+            ptx,
+            Box::new(move |command, _cols, _rows, id, _events, _env_clear| {
+                argv_tx.send(command.argv().to_vec()).unwrap();
+                Ok(crate::display::attachment::fake_attachment(id))
+            }),
+        );
+        let mut registry = AttachRegistry::new();
+        let mut attach_seq = 0u64;
+        let (cap_tx, _cap_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sel = Selection {
+            host: host_id.clone(),
+            session: "target".into(),
+        };
+        let mut driver = driver_for(hosts.get(&host_id).unwrap());
+        let mgr = crate::link::HostManager::new(tokio::sync::mpsc::unbounded_channel().0);
+        let mut ctx = DriverCtx {
+            registry: &mut registry,
+            hosts: &mut hosts,
+            instance_name: "test",
+            mgr: &mgr,
+            worker: &worker,
+            pty_tx: &cap_tx,
+            attach_seq: &mut attach_seq,
+            viewport: (31, 25),
+        };
+        assert!(driver.show(&sel, &mut ctx));
+        argv_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the display worker receives the attach request")
+    }
+
+    /// xmux's display client joins whatever clients the user has attached to the same
+    /// session, so a mux that can keep one client from sizing a shared session attaches
+    /// xmux's client that way and the user's own client keeps its size: tmux sets
+    /// `ignore-size` on it, locally and over ssh, and abduco attaches it with the lowest
+    /// priority.
+    #[tokio::test(flavor = "current_thread")]
+    async fn seam_show_attaches_a_display_client_that_leaves_a_shared_session_its_size() {
+        for (bin, expected) in [
+            (
+                "tmux",
+                vec![
+                    "tmux",
+                    "attach",
+                    "-t",
+                    "target",
+                    ";",
+                    "if-shell",
+                    "-F",
+                    "1",
+                    "refresh-client -f ignore-size",
+                ],
+            ),
+            ("abduco", vec!["abduco", "-l", "-a", "target"]),
+        ] {
+            let host = crate::model::Host::new(
+                crate::transport::local(None),
+                crate::mux::for_binary(bin).unwrap(),
+            );
+            assert_eq!(display_attach_argv(host).await, expected, "{bin}");
+        }
+
+        let remote = crate::model::Host::new(
+            crate::transport::ssh("jup".into(), String::new(), "linux".into()),
+            crate::mux::for_binary("tmux").unwrap(),
+        );
+        let argv = display_attach_argv(remote).await;
+        let remote_command = argv.last().unwrap();
+        assert!(
+            remote_command.contains("if-shell -F 1")
+                && remote_command.contains("refresh-client -f ignore-size"),
+            "the remote attach sets ignore-size on its client: {argv:?}"
+        );
     }
 }

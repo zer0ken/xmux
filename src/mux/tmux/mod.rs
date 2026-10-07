@@ -174,6 +174,22 @@ impl Mux for Tmux {
         mux::attach(&self.bin, session)
     }
 
+    /// `ignore-size` leaves the display client out of window sizing while any client
+    /// without the flag is attached, so xmux's narrower view never resizes the user's own
+    /// client, and a session only xmux shows still takes xmux's size. The flag rides a
+    /// command queued behind the attach rather than `attach -f`, which tmux before 3.2
+    /// refuses along with the whole attach: `if-shell` parses its command only when it
+    /// runs, so an older server fails that one command and keeps the attach. The queued
+    /// command runs before the attach resizes anything, and the flag stays with the
+    /// client through every later `switch-client`.
+    fn display_attach_plan(&self, session: &str) -> Vec<String> {
+        let mut argv = mux::attach(&self.bin, session);
+        argv.extend(
+            [";", "if-shell", "-F", "1", "refresh-client -f ignore-size"].map(String::from),
+        );
+        argv
+    }
+
     fn switch_in_place(
         &self,
         host_key: &str,
@@ -184,11 +200,19 @@ impl Mux for Tmux {
         let s = mux::quote_target(session);
         // A client tty the caller already knows moves that client with a plain exec, so a
         // machine that runs no machine shell still switches in place. The follow-up
-        // `refresh-client` forces the new session to repaint the whole screen.
+        // `refresh-client` forces the new session to repaint the whole screen. The client
+        // stops sizing sessions first (`display_attach_plan` says why it rides
+        // `if-shell`), so landing on a session the user also has open cannot resize the
+        // user's client before the session-changed notice settles it.
         if let Some(tty) = display_tty.filter(|t| !t.is_empty()) {
             return Some(SwitchPlan::Exec(vec![
                 vec![
                     b.clone(),
+                    "if-shell".to_string(),
+                    "-F".to_string(),
+                    "1".to_string(),
+                    format!("refresh-client -t {tty} -f ignore-size"),
+                    ";".to_string(),
                     "switch-client".to_string(),
                     "-c".to_string(),
                     tty.to_string(),
@@ -210,7 +234,7 @@ impl Mux for Tmux {
         // and the driver reattaches.
         let path = display_tty_path(host_key);
         Some(SwitchPlan::Shell(format!(
-            "c=$(cat {path} 2>/dev/null); [ -n \"$c\" ] && {{ {b} switch-client -c \"$c\" -t {s}; {b} refresh-client -t \"$c\"; }}"
+            "c=$(cat {path} 2>/dev/null); [ -n \"$c\" ] && {{ {b} if-shell -F 1 \"refresh-client -t $c -f ignore-size\" \\; switch-client -c \"$c\" -t {s}; {b} refresh-client -t \"$c\"; }}"
         )))
     }
 
@@ -353,6 +377,50 @@ impl ControlProtocol for TmuxControl {
         format!("refresh-client -t {}\n", display_tty)
     }
 
+    fn session_clients_line(&self, session: &str) -> String {
+        format!(
+            "list-clients -t {} -F '#{{client_tty}} #{{client_control_mode}}'\n",
+            quote_target(&format!("={session}"))
+        )
+    }
+
+    fn session_shared(&self, body: &[String], display_tty: &str) -> bool {
+        body.iter().any(|line| {
+            let mut fields = line.split_whitespace();
+            matches!(
+                (fields.next(), fields.next()),
+                (Some(tty), Some("0")) if tty != display_tty
+            )
+        })
+    }
+
+    /// `ignore-size` leaves a client out of window sizing only while some client without
+    /// it is attached anywhere on the server, which is why the flag is cleared again
+    /// whenever xmux's client is alone on its session. tmux sizes windows only when
+    /// something asks it to and a flag change does not, so the flag is followed by
+    /// setting and unsetting a user option of xmux's own: an option change makes tmux
+    /// size every window again and redraw every client, and it notifies no control
+    /// client, so no xmux instance on the server answers it. Sizing again matters both
+    /// ways: a client moved inside xmux's view into a session the user also has open has
+    /// already resized it, and a client left alone still shows the size the departed
+    /// client gave.
+    fn display_size_lines(&self, display_tty: &str, shared: bool) -> Vec<String> {
+        let flag = if shared {
+            "ignore-size"
+        } else {
+            "!ignore-size"
+        };
+        vec![
+            format!("refresh-client -t {display_tty} -f {flag}\n"),
+            "set-option @xmux-size 1\n".to_string(),
+            "set-option -u @xmux-size\n".to_string(),
+        ]
+    }
+
+    fn display_size_yield_line(&self, display_tty: &str) -> String {
+        format!("refresh-client -t {display_tty} -f ignore-size\n")
+    }
+
     /// Reads back the file the display attach wrote its own controlling tty to before
     /// exec'ing (`record_prefix`). Only xmux's own attach writes that file, so the tty it
     /// answers with is xmux's own client by construction. A client listing would name the
@@ -383,6 +451,45 @@ impl ControlProtocol for TmuxControl {
 #[cfg(test)]
 mod control_tests {
     use super::*;
+
+    /// A session is shared when a client besides xmux's display client is attached to
+    /// it and sizes windows; a control client, xmux's own metadata client among them,
+    /// sizes none.
+    #[test]
+    fn a_session_is_shared_only_by_another_window_sizing_client() {
+        assert_eq!(
+            TmuxControl.session_clients_line("my build"),
+            "list-clients -t '=my build' -F '#{client_tty} #{client_control_mode}'\n"
+        );
+        let body = |lines: &[&str]| lines.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+        let tmux = TmuxControl;
+        assert!(!tmux.session_shared(&body(&["/dev/pts/3 0"]), "/dev/pts/3"));
+        assert!(!tmux.session_shared(&body(&["/dev/pts/3 0", "/dev/pts/2 1"]), "/dev/pts/3"));
+        assert!(tmux.session_shared(&body(&["/dev/pts/3 0", "/dev/pts/9 0"]), "/dev/pts/3"));
+        assert!(!tmux.session_shared(&body(&[]), "/dev/pts/3"));
+    }
+
+    /// Each line is one command, so each answers with exactly one reply block; the flag
+    /// is followed by an option change that makes tmux size its windows again.
+    #[test]
+    fn display_size_lines_set_the_flag_then_resize_the_windows() {
+        assert_eq!(
+            TmuxControl.display_size_lines("/dev/pts/3", true),
+            vec![
+                "refresh-client -t /dev/pts/3 -f ignore-size\n",
+                "set-option @xmux-size 1\n",
+                "set-option -u @xmux-size\n",
+            ]
+        );
+        assert_eq!(
+            TmuxControl.display_size_lines("/dev/pts/3", false)[0],
+            "refresh-client -t /dev/pts/3 -f !ignore-size\n"
+        );
+        assert_eq!(
+            TmuxControl.display_size_yield_line("/dev/pts/3"),
+            "refresh-client -t /dev/pts/3 -f ignore-size\n"
+        );
+    }
 
     #[test]
     fn connect_keeps_the_metadata_client_out_of_window_sizing() {
@@ -442,11 +549,16 @@ mod display_identity_tests {
             cmd.contains("[ -n"),
             "guarded so an empty file never runs switch-client -c \"\": {cmd}"
         );
+        assert!(
+            cmd.contains("if-shell -F 1 \"refresh-client -t $c -f ignore-size\" \\; switch-client"),
+            "the client stops sizing sessions before it moves: {cmd}"
+        );
     }
 
-    /// A caller that already KNOWS the client tty gets a plain exec plan instead: move
-    /// that client, then force the new session to repaint the whole screen. No machine shell
-    /// is involved, so a machine that runs none still switches in place.
+    /// A caller that already KNOWS the client tty gets a plain exec plan instead: stop
+    /// that client from sizing the session it lands on, move it, then force the new
+    /// session to repaint the whole screen. No machine shell is involved, so a machine
+    /// that runs none still switches in place.
     #[test]
     fn tmux_switch_in_place_takes_a_known_tty_without_a_machine_shell() {
         let SwitchPlan::Exec(argvs) = Tmux { bin: "tmux".into() }
@@ -462,10 +574,22 @@ mod display_identity_tests {
         assert_eq!(
             plan,
             vec![
-                vec!["tmux", "switch-client", "-c", "/dev/pts/3", "-t", "test2"],
+                vec![
+                    "tmux",
+                    "if-shell",
+                    "-F",
+                    "1",
+                    "refresh-client -t /dev/pts/3 -f ignore-size",
+                    ";",
+                    "switch-client",
+                    "-c",
+                    "/dev/pts/3",
+                    "-t",
+                    "test2"
+                ],
                 vec!["tmux", "refresh-client", "-t", "/dev/pts/3"],
             ],
-            "move ONLY that client, then repaint it"
+            "stop ONLY that client from sizing, move it, then repaint it"
         );
     }
 

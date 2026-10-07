@@ -111,6 +111,13 @@ pub enum HostEvent {
     /// `%session-changed $id <name>` - the session this -CC metadata connection is itself
     /// attached to, which the mux counts as a client on that session.
     ControlSession { host: String, session: String },
+    /// The clients attached to the session xmux's display client `display_tty` shows
+    /// resolved: `shared` when one besides the display client sizes that session.
+    DisplaySessionClients {
+        host: String,
+        display_tty: String,
+        shared: bool,
+    },
     /// A machine's MUX DISCOVERY resolved: `muxes` is every mux xmux supports that
     /// answered on `machine` (empty when none did), or the reason the machine could not
     /// be asked at all. Emitted once per machine by a
@@ -210,6 +217,12 @@ pub enum PendingReply {
     /// display-client tty (`ControlProtocol::parse_display_client_tty`), resolved into a
     /// [`HostEvent::DisplayTty`]. The reader names no wire format.
     DisplayClientTty,
+    /// A `list-clients` of the session xmux's display client shows: the mux protocol
+    /// reads whether a client besides `display_tty` sizes it, resolved into a
+    /// [`HostEvent::DisplaySessionClients`].
+    SessionClients {
+        display_tty: String,
+    },
     Ignore,
 }
 
