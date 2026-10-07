@@ -246,7 +246,7 @@ against, naming no source file, function, or test.
 - **FR-D10** - `xmux update` updates by the install method read from the executable's
   path (in-place verified replace, the install script, winget, or Homebrew), with
   `--check` and `--method`.
-- **FR-D11** - xmux asks the release feed at most once a day without delaying launch and
+- **FR-D11** - xmux asks the release feed at each launch without delaying launch and
   names a newer version on the landing screen, beside the version on the prefix key
   list's bottom border, and in `doctor`, on every launch while the running version is
   older, and one config key turns this off.

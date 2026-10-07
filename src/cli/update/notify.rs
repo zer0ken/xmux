@@ -1,23 +1,18 @@
 //! What xmux knows about the newest released version, and how it learns it.
 //!
-//! The app must not wait on GitHub to paint, and it must not ask GitHub on every
-//! launch either: xmux is a session switcher, so it starts many times a day, and one
-//! request per start would be a request nobody asked for. So the answer is CACHED and
-//! the cache is refreshed at most once a day, off the loop.
+//! Every launch asks the release feed once, off the loop, so a release is named on the
+//! first launch after it is published. The app must not wait on GitHub to paint, so the
+//! launch paints from the answer recorded by the previous ask, and the fresh answer
+//! replaces it when it arrives. `doctor` reads the same record and asks nothing.
 //!
 //! This is not the ssh path and the roster rule does not reach it. That rule is about
 //! the machines the roster names: xmux opens no channel to one unless something asked
 //! it to, because a machine that refuses a login refuses every retry identically. One
-//! request a day to a release feed authenticates nothing, retries nothing, and reaches
-//! no machine on the roster.
+//! request per launch to a release feed authenticates nothing, retries nothing, and
+//! reaches no machine on the roster.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-/// How long a recorded answer stands before a launch refreshes it. A day, because a
-/// release is not something a user needs to hear about within the hour, and because
-/// the request costs nothing only as long as it is rare.
-const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The recorded answer: which version the release feed named, and when it was asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,47 +78,25 @@ pub fn write(xmux_dir: &Path, c: &Cached) {
     let _ = std::fs::write(cache_path(xmux_dir), render(c));
 }
 
-/// Whether an answer recorded at `checked_at` is old enough to ask again. A clock
-/// that moved backwards leaves `checked_at` in the future, which reads as fresh
-/// rather than as an excuse to ask on every launch.
-pub fn is_stale(checked_at: u64, now: u64) -> bool {
-    now.saturating_sub(checked_at) >= MAX_AGE.as_secs()
+/// `latest` when it is newer than `current`, or `None` when it is not or is unknown.
+pub fn available(latest: Option<&str>, current: &str) -> Option<String> {
+    let latest = latest?;
+    super::release::is_newer(latest, current).then(|| latest.to_owned())
 }
 
-/// The recorded release when it is newer than `current`, or `None` when the recorded
-/// answer is not newer than what is running.
-pub fn available(cached: Option<&Cached>, current: &str) -> Option<String> {
-    let c = cached?;
-    super::release::is_newer(&c.latest, current).then(|| c.latest.clone())
-}
-
-/// Refreshes the cache if the recorded answer is older than a day. Runs the request
-/// on a blocking thread and returns at once, so nothing on the app's path waits for
-/// GitHub; a request that fails leaves the previous answer standing, because a
-/// release feed that did not answer is not news and must not become a retry.
-pub fn refresh_in_background(xmux_dir: &Path, enabled: bool) {
-    if !enabled {
-        return;
-    }
-    let now = now_secs();
-    if let Some(c) = read(xmux_dir) {
-        if !is_stale(c.checked_at, now) {
-            return;
-        }
-    }
-    let dir = xmux_dir.to_path_buf();
-    std::thread::spawn(move || {
-        let Ok(latest) = super::release::latest_version() else {
-            return;
-        };
-        write(
-            &dir,
-            &Cached {
-                latest,
-                checked_at: now_secs(),
-            },
-        );
-    });
+/// Asks the release feed for the newest version and records the answer. Blocks for
+/// the request, so the app calls it off the loop. `None` when the feed did not answer,
+/// which leaves the previous answer standing: a feed that did not answer is not news.
+pub fn refresh(xmux_dir: &Path) -> Option<String> {
+    let latest = super::release::latest_version().ok()?;
+    write(
+        xmux_dir,
+        &Cached {
+            latest: latest.clone(),
+            checked_at: now_secs(),
+        },
+    );
+    Some(latest)
 }
 
 #[cfg(test)]
@@ -148,32 +121,10 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_stands_for_a_day_and_is_asked_again_after() {
-        let day = MAX_AGE.as_secs();
-        assert!(!is_stale(1000, 1000), "just asked");
-        assert!(!is_stale(1000, 1000 + day - 1), "still inside the day");
-        assert!(is_stale(1000, 1000 + day), "a day on, ask again");
-    }
-
-    #[test]
-    fn a_clock_that_moved_backwards_does_not_ask_on_every_launch() {
-        // `checked_at` ahead of now would otherwise subtract to a huge age and make
-        // every launch a request, which is the one thing the cache exists to prevent.
-        assert!(!is_stale(9_000, 1_000));
-    }
-
-    #[test]
     fn a_release_is_available_only_when_newer_than_the_running_one() {
-        let at = |v: &str| Cached {
-            latest: v.into(),
-            checked_at: 0,
-        };
-        assert_eq!(
-            available(Some(&at("0.9.7")), "0.9.6"),
-            Some("0.9.7".to_owned())
-        );
-        assert_eq!(available(Some(&at("0.9.6")), "0.9.6"), None);
-        assert_eq!(available(Some(&at("0.9.5")), "0.9.6"), None);
+        assert_eq!(available(Some("0.9.7"), "0.9.6"), Some("0.9.7".to_owned()));
+        assert_eq!(available(Some("0.9.6"), "0.9.6"), None);
+        assert_eq!(available(Some("0.9.5"), "0.9.6"), None);
         assert_eq!(available(None, "0.9.6"), None);
     }
 }
