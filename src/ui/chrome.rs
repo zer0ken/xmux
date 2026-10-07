@@ -496,7 +496,7 @@ fn link_style(
         style = crate::ui::palette::selected(style, palette);
     }
     if view.1 == Some(index) {
-        style = style.patch(crate::ui::palette::soft_selection_style());
+        style = crate::ui::palette::soft_selected(style, view.0 == Some(index), palette);
     }
     style
 }

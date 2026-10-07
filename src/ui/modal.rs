@@ -576,7 +576,7 @@ fn help_tab_line(
         spans.push(Span::styled(
             middle_cut(&titles[t.section], t.width as usize),
             if hover == Some(t.section) {
-                style.patch(palette::soft_selection_style())
+                palette::soft_selected(style, t.section == active, palette)
             } else {
                 style
             },
@@ -1287,8 +1287,7 @@ pub(crate) fn palette_lines(
                 line = palette::selected_line(line, palette);
             }
             if hover == Some(i) {
-                let style = line.style.patch(palette::soft_selection_style());
-                line = line.style(style);
+                line = palette::soft_selected_line(line, chosen, palette);
             }
             body.push((Some(i), line));
         }
@@ -2380,15 +2379,15 @@ mod tests {
         assert_eq!(style(2), palette::selection_style(&p), "the hard selection");
         assert_eq!(
             style(3),
-            palette::soft_selection_style(),
+            palette::soft_selection_style(&p),
             "the soft selection"
         );
         assert_eq!(style(4), Style::default());
         let both = palette_lines("", &entries, 1, 1, Some(1), 10, 40, &p);
         assert_eq!(
             both[3].1.style,
-            palette::selection_style(&p).patch(palette::soft_selection_style()),
-            "one entry under both shows both"
+            palette::selection_style(&p).add_modifier(Modifier::UNDERLINED),
+            "one entry under both keeps the accent and underlines it"
         );
     }
 }

@@ -35,7 +35,7 @@ fn cause(kind: FailureKind, palette: &Palette) -> (&'static str, Style, &'static
 /// key-column grammar: the host bold, then its reason muted, wrapped under the reason
 /// column rather than cut. A host wider than its column takes rows of its own above its
 /// reason. The selected host's rows are highlighted across the whole width, and the rows of
-/// the `hover` host, the soft selection, are underlined. Each line comes with the host it
+/// the `hover` host, the soft selection, take the soft selection's background. Each line comes with the host it
 /// belongs to (none for a cause title), so a click is hit-tested against the rows the
 /// paint shows.
 pub(crate) fn check_lines(
@@ -105,24 +105,22 @@ pub(crate) fn check_lines(
             ]);
         }
         rows.extend(reason.map(|c| vec![Span::raw(" ".repeat(lead)), Span::styled(c, dim)]));
-        let soft = if hover == Some(i) {
-            palette::soft_selection_style()
-        } else {
-            Style::default()
-        };
+        let hovered = hover == Some(i);
         for (n, mut spans) in rows.into_iter().enumerate() {
-            if chosen {
+            let mut line = if chosen {
                 if n == 0 {
                     selected_line = lines.len();
                 }
                 let used: usize = spans.iter().map(|s| s.width()).sum();
                 spans.push(Span::raw(" ".repeat((width as usize).saturating_sub(used))));
-                let line = palette::selected_line(Line::from(spans), palette);
-                let style = line.style.patch(soft);
-                lines.push((Some(i), line.style(style)));
+                palette::selected_line(Line::from(spans), palette)
             } else {
-                lines.push((Some(i), Line::from(spans).style(soft)));
+                Line::from(spans)
+            };
+            if hovered {
+                line = palette::soft_selected_line(line, chosen, palette);
             }
+            lines.push((Some(i), line));
         }
     }
     if lines.len() > visible_rows && visible_rows > 0 {
@@ -255,6 +253,6 @@ mod tests {
             "a cause title names no host"
         );
         assert_eq!(lines[1].1.style, palette::selection_style(&p));
-        assert_eq!(lines[3].1.style, palette::soft_selection_style());
+        assert_eq!(lines[3].1.style, palette::soft_selection_style(&p));
     }
 }

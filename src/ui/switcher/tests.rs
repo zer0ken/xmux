@@ -7028,8 +7028,9 @@ fn hovering_a_help_tab_shows_its_section_until_the_pointer_leaves() {
         "the body shows its section"
     );
     let buf = h.term.backend().buffer();
-    assert!(
-        buf[(col, row)].modifier.contains(Modifier::UNDERLINED),
+    assert_eq!(
+        Some(buf[(col, row)].bg),
+        crate::ui::palette::soft_selection_style(&h.sw.palette).bg,
         "the hovered tab is drawn apart"
     );
     let (lit_col, _) = h.tab_cell(0, false);
