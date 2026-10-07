@@ -107,7 +107,7 @@ terminal's background colour and a terminal is free to answer no colour query at
 
 Persistent UI symbols are conventional one-cell glyphs that OS-default terminal fonts
 render without emoji presentation: `✓`, `✗`, braille spinner frames led by `⠋`,
-box drawing led by `╭`, `▲`, `?`, and `…`.
+box drawing led by `╭`, `▲`, `?`, `!`, and `…`.
 
 xmux runs in whatever terminal and font the user has, on every OS it supports. A glyph
 some font draws as a colour emoji, or as two cells, breaks the column a card is aligned

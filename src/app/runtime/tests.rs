@@ -2373,6 +2373,7 @@ fn test_rt(env: Env) -> Runtime {
         rescan_pending: false,
         display_probe: DisplayProbe::default(),
         held_input: None,
+        passthrough: Vec::new(),
         discovery_runs: 0,
         machine_rescans: Vec::new(),
     };
@@ -7844,4 +7845,104 @@ fn switching_the_terminal_view_to_another_session_moves_the_focus_between_them()
     rt.sync_child_focus();
     assert_eq!(logged(&log), b"\x1b[O");
     assert_eq!(logged(&other_log), b"\x1b[I");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn alerts_reach_the_terminal_and_mark_a_session_not_on_screen() {
+    use crate::display::grid::Alert;
+    let mut rt = test_rt(fake_env_with_machines(&[]));
+    rt.hosts = detach_test_hosts("jup");
+    rt.registry.insert_fake("jup", 7);
+    rt.hosts
+        .get_mut("jup")
+        .unwrap()
+        .display
+        .set_shows("jup", "work");
+    let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let records = |rt: &Runtime| rt.model.state.notify.history.len();
+    let before = records(&rt);
+
+    // Nothing is on screen: the bell reaches the terminal and marks the card.
+    rt.on_pty_event(
+        PtyEvent::Alert {
+            id: 7,
+            alert: Alert::Bell,
+        },
+        &mut rx,
+    );
+    rt.on_pty_event(
+        PtyEvent::Alert {
+            id: 7,
+            alert: Alert::Bell,
+        },
+        &mut rx,
+    );
+    assert_eq!(
+        rt.passthrough, b"\x07\x07",
+        "every bell reaches the terminal"
+    );
+    assert!(rt.model.switcher.alerted("jup", "work"));
+    assert_eq!(
+        records(&rt),
+        before + 1,
+        "a run of bells is one history record"
+    );
+    let notify = Alert::Notify {
+        text: "needs input".into(),
+        seq: b"\x1b]9;needs input\x07".to_vec(),
+    };
+    rt.on_pty_event(
+        PtyEvent::Alert {
+            id: 7,
+            alert: notify.clone(),
+        },
+        &mut rx,
+    );
+    assert!(rt.passthrough.ends_with(b"\x1b]9;needs input\x07"));
+    let last = rt.model.state.notify.history.back().unwrap();
+    assert!(
+        format!("{last:?}").contains("notification: needs input"),
+        "the history keeps the notification's words: {last:?}"
+    );
+
+    // Showing the session takes the mark off.
+    rt.model.state.displayed = Selection {
+        host: "jup".into(),
+        session: "work".into(),
+    };
+    let _ = update(
+        &mut rt.model,
+        Msg::SyncFrame {
+            spinner_frame: 0,
+            animation_ms: 0,
+            view_border_hovered: false,
+            prefix_active: false,
+        },
+    );
+    assert!(!rt.model.switcher.alerted("jup", "work"));
+
+    // The session on screen rings the terminal and leaves no mark or record.
+    rt.passthrough.clear();
+    let before = records(&rt);
+    rt.on_pty_event(
+        PtyEvent::Alert {
+            id: 7,
+            alert: notify,
+        },
+        &mut rx,
+    );
+    assert_eq!(rt.passthrough, b"\x1b]9;needs input\x07");
+    assert!(!rt.model.switcher.alerted("jup", "work"));
+    assert_eq!(records(&rt), before);
+
+    // An attachment that is no longer live still reaches the terminal, and marks nothing.
+    rt.passthrough.clear();
+    rt.on_pty_event(
+        PtyEvent::Alert {
+            id: 99,
+            alert: Alert::Bell,
+        },
+        &mut rx,
+    );
+    assert_eq!(rt.passthrough, b"\x07");
 }
