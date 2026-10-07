@@ -415,6 +415,10 @@ pub struct Switcher {
     /// resumes. It holds while that session stays selected and stopped; a stopped session
     /// that is only selected shows its screen and attaches nothing.
     resumed: Option<Address>,
+    /// The stopped session an execution just resumed, taken by the update step, which
+    /// attaches it afresh: a display that ended on that session would otherwise keep its
+    /// last frame.
+    resume_kick: Option<Address>,
     /// Whether the current sorted list receives contiguous numbers on each rebuild.
     renumbering: bool,
     /// Card numbers keyed by identity. The configured policy either deals them in the
@@ -495,6 +499,7 @@ impl Switcher {
             away: None,
             alerted: std::collections::HashSet::new(),
             resumed: None,
+            resume_kick: None,
             renumbering: true,
             numbers: std::collections::HashMap::new(),
             next_number: 1,
@@ -675,10 +680,16 @@ impl Switcher {
     pub(crate) fn execute_stopped(&mut self) {
         if let Some(Node::Session(address)) = self.selected_node() {
             if self.is_stopped(&address) {
-                self.resumed = Some(address);
+                self.resumed = Some(address.clone());
+                self.resume_kick = Some(address);
             }
         }
         self.on_focus_changed();
+    }
+
+    /// Takes the stopped session an execution resumed since the last call.
+    pub fn take_resume_kick(&mut self) -> Option<Address> {
+        self.resume_kick.take()
     }
 
     /// Whether the paint leaves the host band out: hidden by the move into the terminal
@@ -1976,10 +1987,16 @@ impl Switcher {
     }
 
     /// Opens the hard-selected link of the shown screen (Enter in the terminal view).
-    /// The login pane's screen has none: Enter there belongs to the form.
+    /// The login pane's screen has none: Enter there belongs to the form. A stopped
+    /// session's screen has none either, and Enter there executes the session, as it does
+    /// from the nav.
     pub(crate) fn open_selected_link(&mut self, state: &crate::state::State) -> bool {
         if self.login_pane_shown(state) {
             return false;
+        }
+        if self.current_view_screen(state) == Some(ViewScreen::Stopped) {
+            self.execute_stopped();
+            return true;
         }
         let n = self.shown_links(state).len();
         self.open_link(self.link.min(n.saturating_sub(1)), state)

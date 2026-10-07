@@ -9283,3 +9283,33 @@ async fn the_selection_hint_names_a_stopped_session_stopped() {
     let (_, fact) = h.sw.selection_hint(&h.state, true).unwrap();
     assert_eq!(fact, "1 window, stopped");
 }
+
+#[tokio::test]
+async fn enter_on_a_stopped_sessions_screen_in_the_terminal_view_resumes_it() {
+    // A session that stops while the terminal view shows it keeps the focus there, and
+    // its screen names Enter as the key that resumes it.
+    let mut h = host_with_a_stopped_session();
+    h.key(KeyCode::Down).await;
+    h.sw.sync_view_focus(true);
+    h.sw.apply_host_result(
+        "jup".into(),
+        vec![
+            sess_mux("jup", "live", "herdr"),
+            sess_mux("jup", "parked", "herdr"),
+        ],
+        None,
+        &mut h.state,
+    );
+    h.sw.apply_host_result(
+        "jup".into(),
+        vec![
+            sess_mux("jup", "live", "herdr"),
+            stopped_mux("jup", "parked", "herdr"),
+        ],
+        None,
+        &mut h.state,
+    );
+    assert_eq!(h.sw.terminal_view_target().target, "");
+    assert!(h.sw.open_selected_link(&h.state));
+    assert_eq!(h.sw.terminal_view_target().target, "parked");
+}

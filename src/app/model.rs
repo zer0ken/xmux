@@ -2260,6 +2260,22 @@ fn step(model: &mut AppModel, msg: Msg) -> Vec<Effect> {
             Vec::new()
         }
         Msg::ConsumeReattach { now } => {
+            // A resumed session attaches afresh even when the display last showed it: its
+            // client ended when the session stopped, and an ended display stays ended
+            // until the user asks, which the execution that resumed it is.
+            if let Some(address) = model.switcher.take_resume_kick() {
+                let selection = Selection {
+                    host: address.host,
+                    session: address.session,
+                };
+                if model.state.selection != selection {
+                    model.state.apply(Action::Select(selection.clone()));
+                }
+                model.state.attach_held = None;
+                model.state.apply(Action::ClearDisplay);
+                model.state.apply(Action::RearmAttachNow { now });
+                return vec![Effect::ReattachDisplay(selection)];
+            }
             if model.switcher.take_reattach_kick() && !model.state.selection.is_empty() {
                 let selection = model.state.selection.clone();
                 model.state.attach_held = None;
@@ -5285,6 +5301,64 @@ mod tests {
         sync_frame(&mut m);
         update(&mut m, Msg::SyncSelection);
         assert_eq!(m.state.selection.session, "editor");
+    }
+
+    /// A session whose client ended when it stopped is resumed from its screen in the
+    /// terminal view. The display still names it, so only a fresh attach brings it back.
+    #[test]
+    fn resuming_the_session_the_display_last_showed_attaches_it_afresh() {
+        let mut m = model_with_cards();
+        let sessions = |stopped: bool| Msg::HostEvent {
+            event: crate::link::HostEvent::Sessions {
+                host: "local".to_owned(),
+                sessions: vec![
+                    crate::session::Session {
+                        host: "local".to_owned(),
+                        name: "build".to_owned(),
+                        ..Default::default()
+                    },
+                    crate::session::Session {
+                        host: "local".to_owned(),
+                        name: "editor".to_owned(),
+                        stopped,
+                        ..Default::default()
+                    },
+                ],
+                err: None,
+            },
+            logged_in: HashSet::new(),
+        };
+        update(&mut m, sessions(false));
+        update(&mut m, down());
+        update(&mut m, Msg::Focus(crate::model::FocusTarget::Terminal));
+        sync_frame(&mut m);
+        update(&mut m, Msg::SyncSelection);
+        let editor = crate::model::Selection {
+            host: "local".to_owned(),
+            session: "editor".to_owned(),
+        };
+        assert_eq!(m.state.selection, editor);
+        m.state.displayed = editor.clone();
+        update(&mut m, sessions(true));
+        sync_frame(&mut m);
+        update(&mut m, Msg::SyncSelection);
+        assert!(m.state.selection.session.is_empty(), "its screen shows");
+        update(&mut m, Msg::OpenLink(None));
+        let effects = update(
+            &mut m,
+            Msg::ConsumeReattach {
+                now: std::time::Instant::now(),
+            },
+        );
+        assert!(
+            matches!(effects.as_slice(), [Effect::ReattachDisplay(s)] if *s == editor),
+            "{effects:?}"
+        );
+        assert_eq!(m.state.selection, editor);
+        assert!(
+            m.state.displayed.session.is_empty(),
+            "the ended display is cleared"
+        );
     }
 
     #[test]
