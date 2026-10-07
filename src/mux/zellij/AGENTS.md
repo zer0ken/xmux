@@ -24,9 +24,9 @@ process id, which an attach run through the machine's shell records before `exec
 ## Invariants
 
 - The attach is plain `attach <name>`, never `attach -c`: showing a session must not
-  create or resurrect one.
-- A session listed as exited is a resurrectable record, not a session, and is dropped
-  during enumeration.
+  create one.
+- A session listed as exited is a stopped session: it is asked for no tab count, and
+  only an execution of its card attaches, which resurrects it.
 - An attachment already recorded as showing the selected session is left alone.
 - A query answer counts only for the attachment it asked about, and never mid-reattach.
 
