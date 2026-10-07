@@ -132,7 +132,6 @@ fn seam_thumb(track: Rect, total: usize, offset: usize, visible: usize) -> Rect 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NavRule {
     Horizontal(Rect),
-    Vertical(Rect),
 }
 
 /// A band's count of the cards scrolled off one side, written on the seam: `‹ 5` at the
@@ -825,33 +824,15 @@ impl Switcher {
         let placed = columns::place(&cards, band.height, boundary);
         let continuations = columns::continuations(&cards, &placed);
         let widths = columns::widths(&cards, &placed, band.width);
-        let bcol = columns::boundary_col(&placed, boundary);
-        let parting = columns::parting(&widths, bcol, band.width, COL_GUTTER);
         let sel_col = placed.get(self.selected).map_or(0, |p| p.col);
-        plan.nav_col_offset = match parting {
-            Some(columns::Parting::Gap) => 0,
-            Some(columns::Parting::Rule) => {
-                let dw = columns::display_widths(&widths, bcol, columns::Parting::Rule);
-                let sel = columns::display_col(sel_col, bcol, parting);
-                columns::scroll_to(&dw, band.width, COL_GUTTER, plan.nav_col_offset, sel)
-            }
-            None => columns::scroll_to(
-                &widths,
-                band.width,
-                COL_GUTTER,
-                plan.nav_col_offset,
-                sel_col,
-            ),
-        };
-        let (cells, rule) = columns::cells(
-            &placed,
+        plan.nav_col_offset = columns::scroll_to(
             &widths,
-            bcol,
-            parting,
-            band,
-            plan.nav_col_offset,
+            band.width,
             COL_GUTTER,
+            plan.nav_col_offset,
+            sel_col,
         );
+        let cells = columns::cells(&placed, &widths, band, plan.nav_col_offset, COL_GUTTER);
         for cell in cells {
             let p = &placed[cell.idx];
             if p.y == 1 {
@@ -876,29 +857,14 @@ impl Switcher {
                 },
             ));
         }
-        plan.nav_rule = rule.map(NavRule::Vertical);
-        let (shown, n) = match parting {
-            Some(columns::Parting::Gap) => (widths.len(), widths.len()),
-            Some(columns::Parting::Rule) => {
-                let dw = columns::display_widths(&widths, bcol, columns::Parting::Rule);
-                (
-                    columns::visible_cols(&dw, band.width, plan.nav_col_offset, COL_GUTTER),
-                    dw.len(),
-                )
-            }
-            None => (
-                columns::visible_cols(&widths, band.width, plan.nav_col_offset, COL_GUTTER),
-                widths.len(),
-            ),
-        };
-        if shown >= n || track.is_empty() {
+        let shown = columns::visible_cols(&widths, band.width, plan.nav_col_offset, COL_GUTTER);
+        if shown >= widths.len() || track.is_empty() {
             return;
         }
         let first = plan.nav_col_offset;
         let selectable = |i: &usize| self.rows.get(*i).is_some_and(Row::selectable);
-        let (left, right) =
-            columns::hidden_counts(&placed, bcol, parting, first, shown, |i| selectable(&i));
-        let dcol = |i: usize| columns::display_col(placed[i].col, bcol, parting);
+        let (left, right) = columns::hidden_counts(&placed, first, shown, |i| selectable(&i));
+        let dcol = |i: usize| placed[i].col;
 
         // Each count sits a cell in from its end of the track, the right one clear of the
         // prefix, and is dropped rather than clipped when the track cannot hold it.
@@ -1264,7 +1230,6 @@ impl Switcher {
         }
         match plan.nav_rule {
             Some(NavRule::Horizontal(rect)) => Self::render_band_rule(frame, rect, palette),
-            Some(NavRule::Vertical(_)) => {}
             None => {}
         }
         if let Some((rect, text)) = &plan.nav_guidance {
@@ -1332,7 +1297,7 @@ impl Switcher {
         indent: u16,
         separates_group: bool,
     ) -> columns::Card {
-        let lines = self.nav_row_lines(
+        let mut lines = self.nav_row_lines(
             i,
             num_w,
             spinner_glyph,
@@ -1342,6 +1307,9 @@ impl Switcher {
                 palette,
             },
         );
+        for line in &mut lines {
+            trim_line_end(line);
+        }
         let w = |n: usize| lines.get(n).map_or(0, |l: &Line| l.width() as u16);
         let starts_run = self.starts_run(i);
         // A session card is indented under its title, so the column has to be wide

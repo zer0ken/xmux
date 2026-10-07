@@ -16,8 +16,8 @@
 //! runs titles and cards along its one line instead.
 //!
 //! The host-state cards are a band of their own, never sharing a column with session
-//! cards. Both bands start at the left; a blank column parts them. When the whole run
-//! needs more width, the band scrolls and keeps a blank boundary column.
+//! cards. Every group starts a fresh column, with one character of space between
+//! columns. The same spacing applies when the band scrolls.
 
 use ratatui::layout::Rect;
 
@@ -54,15 +54,6 @@ pub(super) struct Cell {
     pub(super) rect: Rect,
 }
 
-/// How the two bands part in the horizontal direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Parting {
-    /// Room to spare: a blank column parts adjacent session and host columns.
-    Gap,
-    /// The bands would touch: an additional blank column parts them, and the run scrolls.
-    Rule,
-}
-
 /// Assigns every card a column and a row offset. `boundary` is the index of the first
 /// host-state card; the host band it opens never shares a column with session cards.
 /// A section taller than a whole column splits: the continuation opens a column, keeps
@@ -82,9 +73,6 @@ pub(super) fn place(cards: &[Card], col_h: u16, boundary: usize) -> Vec<Placed> 
         if (i == boundary || cards[i].separates_group) && used > 0 {
             col += 1;
             used = 0;
-        }
-        if cards[i].separates_group && col > 0 {
-            col += 1;
         }
         // The run: this card and every session card hanging under it.
         let mut j = i + 1;
@@ -149,71 +137,6 @@ pub(super) fn widths(cards: &[Card], placed: &[Placed], max_w: u16) -> Vec<u16> 
     w
 }
 
-/// The column the host band begins at: the column of the first host-state card. When
-/// there is no host band (`boundary` past the cards) the value is the flow's own
-/// length, which reads as "past every session column".
-pub(super) fn boundary_col(placed: &[Placed], boundary: usize) -> usize {
-    if boundary == 0 || boundary >= placed.len() {
-        boundary
-    } else {
-        placed[boundary].col
-    }
-}
-
-/// How the two bands part, when both are present. The run is measured with the rule's
-/// column included, so a gap of one is the last thing before a rule: the bands go from
-/// a gap of one straight to a rule and never touch, at the price of scrolling one
-/// column earlier than the cards alone would need.
-pub(super) fn parting(
-    widths: &[u16],
-    boundary_col: usize,
-    band_w: u16,
-    gutter: u16,
-) -> Option<Parting> {
-    if boundary_col >= widths.len() {
-        return None; // no host band: sessions alone flow from the left
-    }
-    if boundary_col == 0 {
-        return None;
-    }
-    let sess = widths[..boundary_col].iter().sum::<u16>()
-        + (boundary_col.saturating_sub(1) as u16) * gutter;
-    let host = widths[boundary_col..].iter().sum::<u16>()
-        + (widths.len().saturating_sub(boundary_col + 1) as u16) * gutter;
-    if sess + host < band_w {
-        // The rule's own column fits (the `+ 1` is implicit in the strict `<`), so the
-        // bands part by a gap rather than a rule.
-        Some(Parting::Gap)
-    } else {
-        Some(Parting::Rule)
-    }
-}
-
-/// The display columns: the widths plus the band rule's own column when the bands are
-/// parted by a rule. The rule sits at `boundary_col`, so the host columns shift one
-/// right. In the gap parting the display is the widths as they are.
-pub(super) fn display_widths(widths: &[u16], boundary_col: usize, parting: Parting) -> Vec<u16> {
-    match parting {
-        Parting::Gap => widths.to_vec(),
-        Parting::Rule => {
-            let mut w = Vec::with_capacity(widths.len() + 1);
-            w.extend_from_slice(&widths[..boundary_col]);
-            w.push(1); // the rule's own column
-            w.extend_from_slice(&widths[boundary_col..]);
-            w
-        }
-    }
-}
-
-/// A placed card's column in the display space, where the band rule (when it parts the
-/// bands) has pushed the host columns one right.
-pub(super) fn display_col(col: usize, boundary_col: usize, parting: Option<Parting>) -> usize {
-    match parting {
-        Some(Parting::Rule) if col >= boundary_col => col + 1,
-        _ => col,
-    }
-}
-
 /// How many columns starting at `first` fit in `area_w`, counting a column only when it
 /// fits WHOLE (a half-drawn card reads as a shorter name). The first drawn column is
 /// always counted: something must show even when it alone is wider than the nav.
@@ -241,6 +164,9 @@ pub(super) fn scroll_to(
     offset: usize,
     sel_col: usize,
 ) -> usize {
+    if visible_cols(widths, area_w, 0, gutter) == widths.len() {
+        return 0;
+    }
     let mut first = offset.min(widths.len().saturating_sub(1));
     if sel_col < first {
         return sel_col;
@@ -258,8 +184,6 @@ pub(super) fn scroll_to(
 /// never counted.
 pub(super) fn hidden_counts(
     placed: &[Placed],
-    boundary_col: usize,
-    parting: Option<Parting>,
     first: usize,
     shown: usize,
     is_card: impl Fn(usize) -> bool,
@@ -269,28 +193,23 @@ pub(super) fn hidden_counts(
         placed
             .iter()
             .enumerate()
-            .filter(|(i, p)| hidden(display_col(p.col, boundary_col, parting)) && is_card(*i))
+            .filter(|(i, p)| hidden(p.col) && is_card(*i))
             .count()
     };
     (count(&|c| c < first), count(&|c| c >= last))
 }
 
-/// Turns placements into screen rects for the visible columns, and returns the rect of
-/// the blank boundary column when the bands need one. In the gap parting everything
-/// fits without scrolling; in the rule parting the whole run scrolls from the left like a plain
-/// flow. Cards in columns left of `first` or past the right edge get no cell, so they
-/// are neither painted nor clickable.
+/// Places visible columns with the same gutter at every group boundary.
+/// Offscreen cards have no painted or clickable rectangle.
 pub(super) fn cells(
     placed: &[Placed],
     widths: &[u16],
-    boundary_col: usize,
-    parting: Option<Parting>,
     area: Rect,
     first: usize,
     gutter: u16,
-) -> (Vec<Cell>, Option<Rect>) {
-    let dw = display_widths(widths, boundary_col, parting.unwrap_or(Parting::Gap));
-    let shown = visible_cols(&dw, area.width, first, gutter);
+) -> Vec<Cell> {
+    let dw = widths;
+    let shown = visible_cols(dw, area.width, first, gutter);
     let mut x = vec![0u16; dw.len()];
     let mut cur = 0u16;
     for i in first..(first + shown).min(dw.len()) {
@@ -300,19 +219,9 @@ pub(super) fn cells(
         x[i] = cur;
         cur += dw[i];
     }
-    // The rule column, when the bands part by one.
-    let rule = match parting {
-        Some(Parting::Rule) => Some(Rect {
-            x: area.x + x[boundary_col],
-            y: area.y,
-            width: 1,
-            height: area.height,
-        }),
-        _ => None,
-    };
     let mut out = Vec::new();
     for (idx, p) in placed.iter().enumerate() {
-        let dcol = display_col(p.col, boundary_col, parting);
+        let dcol = p.col;
         if dcol < first || dcol >= first + shown {
             continue;
         }
@@ -331,7 +240,7 @@ pub(super) fn cells(
             },
         });
     }
-    (out, rule)
+    out
 }
 
 #[cfg(test)]
@@ -486,70 +395,29 @@ mod tests {
     }
 
     #[test]
-    fn the_gap_parts_the_bands_left_and_right() {
-        // Sessions (one 10-wide column) plus a host card (10 wide) in a 30-wide band:
-        // a rule column would fit, so the parting is a GAP and the host sits at the
-        // right edge.
+    fn group_boundaries_keep_one_gutter_at_every_width() {
         let mut cards = run(2, 10);
         let boundary = cards.len();
         cards.extend(host(10, 1));
-        let p = place(&cards, 3, boundary);
-        let w = widths(&cards, &p, 100);
-        assert_eq!(
-            parting(&w, 1, 30, 1),
-            Some(Parting::Gap),
-            "sess 10 + host 10 + rule 1 fits in 30"
-        );
-        let (cells, rule) = cells(&p, &w, 1, Some(Parting::Gap), Rect::new(0, 0, 30, 3), 0, 1);
-        assert!(rule.is_none(), "a gap, not a rule, parts them");
-        let sess = cells.iter().find(|c| c.idx == 0).unwrap().rect;
-        let host = cells.iter().find(|c| c.idx == 2).unwrap().rect;
-        assert_eq!(sess.x, 0, "sessions at the left edge");
-        assert_eq!(
-            host.x,
-            sess.x + sess.width + 1,
-            "one blank column parts the bands"
-        );
-        assert!(host.x > sess.x + sess.width, "blank columns part the bands");
-    }
-
-    #[test]
-    fn when_the_bands_would_touch_a_rule_parts_them() {
-        // Sessions (10) + host (10) in a 20-wide band: a rule column would not fit, so
-        // the parting is a RULE that takes the boundary's column, and the run scrolls.
-        let mut cards = run(2, 10);
-        let boundary = cards.len();
-        cards.extend(host(10, 1));
-        let p = place(&cards, 3, boundary);
-        let w = widths(&cards, &p, 100);
-        assert_eq!(
-            parting(&w, 1, 20, 1),
-            Some(Parting::Rule),
-            "sess 10 + host 10 + rule 1 exceeds 20"
-        );
-        let dw = display_widths(&w, 1, Parting::Rule);
-        assert_eq!(dw, vec![10, 1, 10], "the rule takes the boundary's column");
-        let (cells, rule) = cells(&p, &w, 1, Some(Parting::Rule), Rect::new(0, 0, 20, 3), 0, 1);
-        let rule = rule.expect("a rule parts the touching bands");
-        assert_eq!(
-            rule.x, 11,
-            "the rule stands past the session column and its gutter"
-        );
-        let sess = cells.iter().find(|c| c.idx == 0).unwrap().rect;
-        assert_eq!(sess.x, 0, "the session column holds the left edge");
-        assert!(
-            !cells.iter().any(|c| c.idx == 2),
-            "the host band is off screen until the run scrolls"
-        );
-    }
-
-    #[test]
-    fn one_band_alone_parts_nothing() {
-        // Only sessions: no parting, and the flow is plain left-to-right.
-        let cards = run(3, 10);
-        let p = place(&cards, 2, cards.len());
-        let w = widths(&cards, &p, 100);
-        assert_eq!(parting(&w, boundary_col(&p, cards.len()), 30, 1), None);
+        let mut disconnected = host(10, 1);
+        disconnected[0].separates_group = true;
+        cards.extend(disconnected);
+        let placed = place(&cards, 3, boundary);
+        let widths = widths(&cards, &placed, 100);
+        assert_eq!(widths, vec![10, 10, 10]);
+        for width in [20, 21, 31, 32, 60] {
+            for selected in 0..3 {
+                let first = scroll_to(&widths, width, 1, 0, selected);
+                let visible = cells(&placed, &widths, Rect::new(0, 0, width, 3), first, 1);
+                let selected_card = [0, 2, 3][selected];
+                assert!(visible.iter().any(|cell| cell.idx == selected_card));
+                let mut columns: Vec<Rect> = visible.iter().map(|cell| cell.rect).collect();
+                columns.dedup_by_key(|rect| rect.x);
+                for pair in columns.windows(2) {
+                    assert_eq!(pair[1].x - pair[0].right(), 1);
+                }
+            }
+        }
     }
 
     #[test]
@@ -567,6 +435,11 @@ mod tests {
         assert_eq!(scroll_to(&w, 21, 1, 0, 2), 1, "column 2 needs offset 1");
         assert_eq!(scroll_to(&w, 21, 1, 0, 1), 0, "column 1 is already visible");
         assert_eq!(scroll_to(&w, 21, 1, 2, 0), 0, "scrolls back left");
+        assert_eq!(
+            scroll_to(&w, 32, 1, 2, 2),
+            0,
+            "all columns fit after widening"
+        );
     }
 
     #[test]
@@ -580,25 +453,17 @@ mod tests {
         let p = place(&all, 3, all.len()); // one section per column
         let card = |i: usize| !i.is_multiple_of(3);
         assert_eq!(
-            hidden_counts(&p, 0, None, 0, 1, card),
+            hidden_counts(&p, 0, 1, card),
             (0, 4),
             "two columns hide to the right"
         );
+        assert_eq!(hidden_counts(&p, 1, 1, card), (2, 2), "one either side");
         assert_eq!(
-            hidden_counts(&p, 0, None, 1, 1, card),
-            (2, 2),
-            "one either side"
-        );
-        assert_eq!(
-            hidden_counts(&p, 0, None, 2, 1, card),
+            hidden_counts(&p, 2, 1, card),
             (4, 0),
             "all of them to the left"
         );
-        assert_eq!(
-            hidden_counts(&p, 0, None, 0, 3, card),
-            (0, 0),
-            "nothing hidden"
-        );
+        assert_eq!(hidden_counts(&p, 0, 3, card), (0, 0), "nothing hidden");
     }
 
     #[test]
@@ -606,8 +471,7 @@ mod tests {
         let cards = run(2, 10);
         let p = place(&cards, 1, cards.len()); // one card per column
         let w = widths(&cards, &p, 100);
-        let (first_cells, rule) = cells(&p, &w, 0, None, Rect::new(5, 3, 21, 2), 0, 1);
-        assert!(rule.is_none());
+        let first_cells = cells(&p, &w, Rect::new(5, 3, 21, 2), 0, 1);
         assert_eq!(first_cells.len(), 2);
         assert_eq!((first_cells[0].rect.x, first_cells[0].rect.y), (5, 3));
         assert_eq!(
@@ -616,7 +480,7 @@ mod tests {
             "next column starts past the first plus the gutter"
         );
         // Scrolled one column right: the first column is neither painted nor clickable.
-        let (scrolled, _) = cells(&p, &w, 0, None, Rect::new(5, 3, 21, 2), 1, 1);
+        let scrolled = cells(&p, &w, Rect::new(5, 3, 21, 2), 1, 1);
         assert_eq!(scrolled.len(), 1);
         assert_eq!(scrolled[0].idx, 1);
         assert_eq!(
