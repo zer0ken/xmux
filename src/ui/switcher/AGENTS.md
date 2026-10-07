@@ -25,6 +25,9 @@ to the live terminal or to the headless backend behind the ctl `dump`.
 - A background event moves the selection only up its lineage, when the node it names
   is lost, and never down or sideways; with nothing of its machine left, the selection
   names nothing.
+- A screen's links are its children, then its actions, then its link up, and the arrows
+  cycle through them. An action link runs through the key its row writes, so a link and
+  its key cannot do two different things.
 - Every card, screen, screen link, and lineage step derives from the three levels: a
   machine with no host has a card and a screen of its own and links to no host, and the
   hosts found on it take over its card while the selection stays on the machine.

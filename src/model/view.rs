@@ -94,6 +94,85 @@ pub fn choose_machine_screen(failure: Option<FailureKind>, scanning: bool) -> Vi
     }
 }
 
+/// An action a screen offers as a link, run by the key the screen writes beside it, so a
+/// link and its key cannot do two different things.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenAction {
+    /// A command of the key table, run by its prefix key.
+    Command(crate::model::keys::KeyCommand),
+    /// Folds and unfolds the diagnostics of an unreachable screen.
+    Details,
+}
+
+impl ScreenAction {
+    /// The key that runs the action once the prefix or the screen has read it.
+    pub fn key(self) -> Option<char> {
+        use crate::model::keys::{entry_for, Chord};
+        match self {
+            ScreenAction::Command(command) => entry_for(command)?
+                .chords(crate::model::NavPosition::Left)
+                .into_iter()
+                .find_map(|chord| match chord {
+                    Chord::Char(c) => Some(c),
+                    _ => None,
+                }),
+            ScreenAction::Details => Some('d'),
+        }
+    }
+
+    /// The words the screen writes for the action; `unfolded` says the diagnostics are
+    /// shown.
+    pub fn words(self, unfolded: bool) -> &'static str {
+        use crate::model::keys::KeyCommand;
+        match self {
+            ScreenAction::Command(KeyCommand::NewSession) => "start a new session",
+            ScreenAction::Command(KeyCommand::RescanMachine) => "rescan this machine",
+            ScreenAction::Command(KeyCommand::Rescan) => "rescan all machines",
+            ScreenAction::Command(KeyCommand::Logout) => "log out of this machine",
+            ScreenAction::Command(_) => "",
+            ScreenAction::Details if unfolded => "hide diagnostics",
+            ScreenAction::Details => "show diagnostics",
+        }
+    }
+}
+
+/// The actions the screen of `kind` offers, in the order it lists them. `ssh` says the
+/// screen's machine is reached over ssh, the one transport xmux can log out of. A screen whose action could not run offers none:
+/// a scan under way is the re-scan, and nothing would make the own session showable.
+pub fn screen_actions(kind: ViewScreen, ssh: bool) -> Vec<ScreenAction> {
+    use crate::model::keys::KeyCommand;
+    let rescans = [
+        ScreenAction::Command(KeyCommand::RescanMachine),
+        ScreenAction::Command(KeyCommand::Rescan),
+    ];
+    match kind {
+        ViewScreen::Scanning
+        | ViewScreen::SelfSession
+        | ViewScreen::Stopped
+        | ViewScreen::Landing => Vec::new(),
+        // Creating under a host that failed is refused, so `n` is offered only where it
+        // can run.
+        ViewScreen::Host | ViewScreen::Empty => {
+            let mut actions = vec![ScreenAction::Command(KeyCommand::NewSession)];
+            actions.extend(rescans);
+            actions
+        }
+        ViewScreen::Unreachable => {
+            let mut actions = rescans.to_vec();
+            actions.push(ScreenAction::Details);
+            actions
+        }
+        ViewScreen::Login | ViewScreen::ListFailed => rescans.to_vec(),
+        ViewScreen::Machine => {
+            let mut actions = rescans.to_vec();
+            if ssh {
+                actions.push(ScreenAction::Command(KeyCommand::Logout));
+            }
+            actions
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

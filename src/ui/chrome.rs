@@ -246,7 +246,7 @@ pub(crate) struct ViewScreenRender<'a> {
     /// The screen is a machine's rather than a host's or a session's.
     pub(crate) machine_screen: bool,
     /// The links the screen offers, in the order the arrow keys walk them. A host's
-    /// first link is its machine, written as the machine half of the headline.
+    /// last link is its machine, written as the machine half of the headline.
     pub(crate) links: &'a [ScreenLink],
     /// The hard-selected link, drawn while the terminal view holds the focus.
     pub(crate) link: Option<usize>,
@@ -254,16 +254,34 @@ pub(crate) struct ViewScreenRender<'a> {
     pub(crate) link_hover: Option<usize>,
 }
 
-/// One link a screen offers: the node it opens, the name it is written as, what the
+/// One link a screen offers: what it opens or runs, the name it is written as, what the
 /// screen states beside it, and the card number it carries on the landing screen. In
 /// terminal focus a link is a selection target: the arrow keys move its hard selection,
 /// the pointer its soft one, and Enter or a click opens it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ScreenLink {
-    pub(crate) node: crate::model::Node,
+    pub(crate) target: LinkTarget,
     pub(crate) label: String,
     pub(crate) value: String,
     pub(crate) number: Option<usize>,
+}
+
+impl ScreenLink {
+    /// The node the link opens, `None` for an action.
+    pub(crate) fn node(&self) -> Option<&crate::model::Node> {
+        match &self.target {
+            LinkTarget::Node(node) => Some(node),
+            LinkTarget::Action(_) => None,
+        }
+    }
+}
+
+/// What a screen link stands for: a node whose screen it opens, or an action it runs by
+/// the key written beside it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LinkTarget {
+    Node(crate::model::Node),
+    Action(crate::model::ScreenAction),
 }
 
 /// Where a screen painted one of its links: the link, the line, the first column and the
@@ -440,12 +458,14 @@ enum ScreenCell {
     /// list's first row, no cell on the rows after it, or the card number on every row of
     /// the landing screen's list.
     Link(Option<String>, usize),
+    /// A row whose value is the action link `link`, with the key that runs it in the cell.
+    Action(String, usize),
 }
 
 impl ScreenCell {
     fn text(&self) -> &str {
         match self {
-            ScreenCell::Key(k) => k,
+            ScreenCell::Key(k) | ScreenCell::Action(k, _) => k,
             ScreenCell::Label(l) => l,
             ScreenCell::Link(Some(l), _) => l,
             ScreenCell::Continued | ScreenCell::Gap | ScreenCell::Link(None, _) => "",
@@ -454,7 +474,9 @@ impl ScreenCell {
 
     fn style(&self, palette: &crate::ui::palette::Palette) -> Style {
         match self {
-            ScreenCell::Key(_) => crate::ui::palette::interaction_key_style(),
+            ScreenCell::Key(_) | ScreenCell::Action(..) => {
+                crate::ui::palette::interaction_key_style()
+            }
             ScreenCell::Label(_) | ScreenCell::Link(..) => Style::default().fg(palette.decoration),
             ScreenCell::Continued | ScreenCell::Gap => Style::default(),
         }
@@ -813,8 +835,8 @@ impl Chrome {
         let mut focus_line = None;
         let p = &self.ui_prefix;
         let host = address.host.as_str();
-        // The rows in reading order: a reachable empty host offers actions before
-        // observation facts; failures explain the reason before their actions.
+        // The rows in reading order: the status, then the level below, then the actions.
+        // A failure explains its reason before its actions.
         let mut rows: Vec<(ScreenCell, String)> = Vec::new();
         // The rows before this index are the host facts; on the login pane they fold
         // under its details choice while it states a failure.
@@ -1033,11 +1055,6 @@ impl Chrome {
             if let Some(reached) = state.last_reached.get(host) {
                 rows.push((ScreenCell::Label("last listed"), reached_at(*reached)));
             }
-            rows.push((ScreenCell::Gap, String::new()));
-            rows.push((
-                ScreenCell::Key(format!("{p} n")),
-                "start a new session".into(),
-            ));
         } else if kind == ViewScreen::Landing {
             // The landing screen is its list of cards and nothing else.
         } else if kind == ViewScreen::Scanning {
@@ -1046,62 +1063,24 @@ impl Chrome {
             if let Some(reached) = state.last_reached.get(host) {
                 rows.push((ScreenCell::Label("last reached"), reached_at(*reached)));
             }
-        } else {
-            if kind == ViewScreen::Empty {
-                if self.host_reach.contains_key(host) {
-                    rows.push((
-                        ScreenCell::Label("updates"),
-                        state.refresh_words(host).into(),
-                    ));
-                }
-                if let Some(reached) = state.last_reached.get(host) {
-                    rows.push((ScreenCell::Label("last listed"), reached_at(*reached)));
-                }
-                rows.push((ScreenCell::Gap, String::new()));
+        } else if kind == ViewScreen::Empty {
+            if self.host_reach.contains_key(host) {
+                rows.push((
+                    ScreenCell::Label("updates"),
+                    state.refresh_words(host).into(),
+                ));
             }
-            // Creating under an unreachable host is refused, so `n` is offered only where
-            // it can actually run.
-            rows.push((
-                ScreenCell::Key(format!("{p} n")),
-                "start a new session".into(),
-            ));
-        }
-        if !matches!(
-            kind,
-            ViewScreen::SelfSession | ViewScreen::Scanning | ViewScreen::Landing
-        ) {
-            rows.push((
-                ScreenCell::Key(format!("{p} r")),
-                "rescan this machine".into(),
-            ));
-            rows.push((
-                ScreenCell::Key(format!("{p} R")),
-                "rescan all machines".into(),
-            ));
-        }
-        if kind == ViewScreen::Machine && self.host_reach.get(host).is_some_and(|reach| reach.ssh) {
-            rows.push((
-                ScreenCell::Key(format!("{p} L")),
-                "log out of this machine".into(),
-            ));
-        }
-
-        if kind == ViewScreen::Empty {
-            // A reachable empty host offers its next actions before its observation facts.
-            if let Some(gap) = rows
-                .iter()
-                .position(|(cell, _)| matches!(cell, ScreenCell::Gap))
-            {
-                let facts: Vec<_> = rows.drain(..gap).collect();
-                rows.remove(0);
-                rows.push((ScreenCell::Gap, String::new()));
-                rows.extend(facts);
+            if let Some(reached) = state.last_reached.get(host) {
+                rows.push((ScreenCell::Label("last listed"), reached_at(*reached)));
             }
         }
 
+        // The unreachable screen states its verdict and keeps the rest of its facts as
+        // diagnostics, shown after its actions while the user unfolds them.
+        let mut diagnostics = Vec::new();
         if kind == ViewScreen::Unreachable {
-            let diagnostics = std::mem::take(&mut rows);
-            let reason = diagnostics
+            let unfolded_diagnostics = std::mem::take(&mut rows);
+            let reason = unfolded_diagnostics
                 .iter()
                 .find_map(|(cell, value)| {
                     matches!(cell, ScreenCell::Label("reason")).then_some(value.as_str())
@@ -1118,28 +1097,8 @@ impl Chrome {
             ));
             let failures = state.failure_runs.get(host).copied().unwrap_or(1);
             rows.push((ScreenCell::Label("status"), failure_run_words(failures)));
-            rows.push((ScreenCell::Gap, String::new()));
-            rows.push((ScreenCell::Label("What to do"), String::new()));
-            rows.push((
-                ScreenCell::Key(format!("{p} r")),
-                "rescan this machine".into(),
-            ));
-            rows.push((
-                ScreenCell::Key(format!("{p} R")),
-                "rescan all machines".into(),
-            ));
-            rows.push((ScreenCell::Gap, String::new()));
-            rows.push((
-                ScreenCell::Label("d details"),
-                if state.host_details.contains(host) {
-                    "hide diagnostics".into()
-                } else {
-                    "show diagnostics".into()
-                },
-            ));
             if state.host_details.contains(host) {
-                rows.push((ScreenCell::Gap, String::new()));
-                rows.extend(diagnostics);
+                diagnostics = unfolded_diagnostics;
             }
         }
 
@@ -1173,11 +1132,28 @@ impl Chrome {
             None => {}
         }
 
-        // The level below, as links: a machine's hosts, a host's sessions, and on the
-        // landing screen every card under its number. A host's first link is its machine,
-        // which the headline carries.
+        // The headline's link up: a host's machine, which the headline carries as the
+        // machine half of its path.
         let landing = kind == ViewScreen::Landing;
-        let listed = if machine_screen || landing { 0 } else { 1 };
+        let up = view.links.iter().position(|l| {
+            !machine_screen
+                && !matches!(
+                    kind,
+                    ViewScreen::SelfSession | ViewScreen::Stopped | ViewScreen::Landing
+                )
+                && matches!(l.node(), Some(crate::model::Node::Machine(_)))
+        });
+        // A block of rows is parted from the block above by one blank line.
+        let part = |rows: &mut Vec<(ScreenCell, String)>| {
+            if rows
+                .last()
+                .is_some_and(|(cell, _)| !matches!(cell, ScreenCell::Gap))
+            {
+                rows.push((ScreenCell::Gap, String::new()));
+            }
+        };
+        // The level below, as links: a machine's hosts, a host's sessions, and on the
+        // landing screen every card under its number.
         let name = if machine_screen { "hosts" } else { "sessions" };
         // Card numbers line up by units place, as they do in the nav's address column.
         let number_w = view
@@ -1187,20 +1163,69 @@ impl Chrome {
             .map(|n| n.to_string().len())
             .max()
             .unwrap_or(0);
-        if view.links.len() > listed && kind != ViewScreen::SelfSession {
-            rows.push((ScreenCell::Gap, String::new()));
-            for (i, link) in view.links.iter().enumerate().skip(listed) {
-                let value = if link.value.is_empty() {
-                    link.label.clone()
-                } else {
-                    format!("{}  {}", link.label, link.value)
-                };
-                let cell = match link.number {
-                    Some(n) => Some(format!("{n:>number_w$}")),
-                    None => (i == listed && !landing).then(|| name.to_string()),
-                };
-                rows.push((ScreenCell::Link(cell, i), value));
+        let children: Vec<usize> = (0..view.links.len())
+            .filter(|&i| Some(i) != up && view.links[i].node().is_some())
+            .filter(|_| kind != ViewScreen::SelfSession)
+            .collect();
+        if !children.is_empty() {
+            part(&mut rows);
+        }
+        for (n, &i) in children.iter().enumerate() {
+            let link = &view.links[i];
+            let value = if link.value.is_empty() {
+                link.label.clone()
+            } else {
+                format!("{}  {}", link.label, link.value)
+            };
+            let cell = match link.number {
+                Some(number) => Some(format!("{number:>number_w$}")),
+                None => (n == 0 && !landing).then(|| name.to_string()),
+            };
+            rows.push((ScreenCell::Link(cell, i), value));
+        }
+        // What the user can do here, after what the screen states and lists. Each action
+        // is a link written with the key that runs it, so the key is learned from the row
+        // the cursor stands on.
+        let actions: Vec<(usize, crate::model::ScreenAction)> = view
+            .links
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| match l.target {
+                LinkTarget::Action(action) => Some((i, action)),
+                LinkTarget::Node(_) => None,
+            })
+            .collect();
+        if !actions.is_empty() {
+            part(&mut rows);
+            if kind == ViewScreen::Unreachable {
+                rows.push((ScreenCell::Label("What to do"), String::new()));
             }
+        }
+        for (i, action) in actions {
+            let key = match action {
+                crate::model::ScreenAction::Command(command) => {
+                    crate::model::keys::entry_for(command)
+                        .map(|entry| entry.full_label(p, self.nav_position))
+                        .unwrap_or_default()
+                }
+                crate::model::ScreenAction::Details => {
+                    // The diagnostics toggle is the screen's own key, parted from the
+                    // actions that reach a machine.
+                    part(&mut rows);
+                    action.key().map(String::from).unwrap_or_default()
+                }
+            };
+            rows.push((ScreenCell::Action(key, i), view.links[i].label.clone()));
+        }
+        if !diagnostics.is_empty() {
+            part(&mut rows);
+            rows.extend(diagnostics);
+        }
+        while rows
+            .last()
+            .is_some_and(|(cell, _)| matches!(cell, ScreenCell::Gap))
+        {
+            rows.pop();
         }
 
         // One column width for keys and labels alike keeps values aligned.
@@ -1276,18 +1301,9 @@ impl Chrome {
         let path_col = 1 + level.len() as u16;
         // A host's headline is its path, and the machine half of the path is the link up
         // to the machine's screen.
-        let label_len = match view.links.first() {
-            Some(up)
-                if !machine_screen
-                    && !matches!(
-                        kind,
-                        ViewScreen::SelfSession | ViewScreen::Stopped | ViewScreen::Landing
-                    )
-                    && headline.starts_with(&up.label) =>
-            {
-                up.label.chars().count()
-            }
-            _ => 0,
+        let (up, label_len) = match up.map(|i| (i, &view.links[i])) {
+            Some((i, link)) if headline.starts_with(&link.label) => (i, link.label.chars().count()),
+            _ => (0, 0),
         };
         // A path wider than the view continues on the next rows under its first
         // character. A path is one identifier, so it breaks between characters, and the
@@ -1316,14 +1332,14 @@ impl Chrome {
             let plain: String = chars[end.min(label_len).max(start)..end].iter().collect();
             if !linked.is_empty() {
                 links.push((
-                    0,
+                    up,
                     1 + headline_lines.len(),
                     path_col,
                     unicode_width::UnicodeWidthStr::width(linked.as_str()) as u16,
                 ));
                 spans.push(Span::styled(
                     linked,
-                    link_style(pal, 0, marks).add_modifier(Modifier::BOLD),
+                    link_style(pal, up, marks).add_modifier(Modifier::BOLD),
                 ));
             }
             spans.push(Span::styled(plain, bold));
@@ -1831,7 +1847,9 @@ impl Chrome {
                 rule.clone(),
             ];
             match &cell {
-                ScreenCell::Link(_, i) => link_left = Some((*i, view.links[*i].label.clone())),
+                ScreenCell::Link(_, i) | ScreenCell::Action(_, i) => {
+                    link_left = Some((*i, view.links[*i].label.clone()))
+                }
                 ScreenCell::Continued => {}
                 _ => link_left = None,
             }
@@ -1847,7 +1865,8 @@ impl Chrome {
                         .last()
                         .map_or(0, |((at, c), _)| at + c.len_utf8());
                     // A link row whose value does not open with its name is all link.
-                    let whole = shared == 0 && matches!(cell, ScreenCell::Link(..));
+                    let whole = shared == 0
+                        && matches!(cell, ScreenCell::Link(..) | ScreenCell::Action(..));
                     let (name, rest) = value.split_at(if whole { value.len() } else { shared });
                     if !name.is_empty() {
                         links.push((

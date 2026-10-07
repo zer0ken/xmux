@@ -130,17 +130,25 @@ card and `←`/`→` to the adjacent section. A bare `Ctrl-↑`/`Ctrl-↓` right
 `prefix Ctrl-↑`/`prefix Ctrl-↓` still resizes the band.
 
 The terminal view shows a machine screen for a machine and a host screen for one mux
-on it, each headed by its level and path, such as `machine db-01` or `host db-01/tmux`.
-A machine screen states how the machine is reached and logged in to; a host screen
-states the host's sessions and how they stay current. While the terminal view shows
-either screen, `↑`/`↓` (and `Tab`) step through its links and `Enter` opens the
-selected one. A machine screen links each of its hosts whose mux is confirmed, and
-none while no mux is; a host screen links its machine and each of its sessions, and
-starts on its first session (on its machine link while it has none). Opening a link one
-level up selects the link back to the screen just left. While
-a machine screen shows the login pane, the pane takes those keys and its links answer
-only a click. A screen too short for its selected link or the pane's focused stop scrolls
-just far enough to show it on its last row.
+on it. Each reads from the top as its level and path, such as `machine db-01` or
+`host db-01/tmux`, then its status, then the level below as links, then its actions. A
+machine screen states how the machine is reached and logged in to and links each of its
+hosts whose mux is confirmed, and none while no mux is; a host screen states how its
+sessions stay current and links each of its sessions, and the machine half of its path
+links to its machine. Every action a screen offers, such as `prefix n  start a new
+session`, is a link written beside the key that runs it, and a failure screen's actions
+are links too.
+
+While the terminal view shows either screen, `↑`/`↓` (and `Tab`) step through its links
+and `Enter` opens the selected link or runs the selected action exactly as its key does.
+The links are walked in one order: the level below, then the actions, then, on a host
+screen, the machine link as the last stop. The steps cycle: a step past the last link
+returns to the first, and a step before the first returns to the last. A host screen
+starts on its first session (on its machine link while it has none) and a machine screen
+on its first host. Opening a link one level up selects the link back to the screen just
+left. While a machine screen shows the login pane, the pane takes those keys and its
+links answer only a click. A screen too short for its selected link or the pane's
+focused stop scrolls just far enough to show it on its last row.
 
 At launch the terminal view shows the landing screen in place of a session: how many
 machines the scan has reached, and every nav card under its number as a
@@ -256,7 +264,7 @@ toasts off; the history still records every result.
 |---|---|
 | left-click a card or title part | open it: select it and focus the terminal view |
 | point at a card or title part | preview it in the terminal view without moving the selection |
-| left-click a screen link | open the screen it names |
+| left-click a screen link | open the screen it names, or run the action it names as its key does |
 | point at or left-click a landing card | underline it, or open it as `Enter` does, from either focus |
 | left-click a view | focus that view |
 | left-click a collapsed nav | expand the nav |

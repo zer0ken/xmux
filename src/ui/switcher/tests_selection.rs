@@ -117,17 +117,26 @@ fn a_selected_screen_link_is_highlighted_and_no_other_link_is() {
     h.ctrl(KeyCode::Up);
     h.terminal_focused = true;
     h.draw();
-    assert!(h.selected_look(h.link_rect(1)));
-    assert!(h.plain(h.link_rect(0)));
+    assert!(h.selected_look(h.link_rect(0)));
+    assert!(h.plain(h.link_rect(5)));
     h.sw.step_link(-1, &h.state);
     h.draw();
-    assert!(h.selected_look(h.link_rect(0)));
+    assert!(h.selected_look(h.link_rect(5)));
     // The headline's machine link is followed by the `/` of its host, the headline's own
     // text, so only the cell before it takes the padding.
-    let link = h.link_rect(0);
+    let link = h.link_rect(5);
     assert!(h.selected_look(Rect::new(link.x - 1, link.y, link.width + 1, 1)));
     assert!(h.plain(Rect::new(link.right(), link.y, 1, 1)));
-    assert!(h.plain(h.link_rect(1)));
+    assert!(h.plain(h.link_rect(0)));
+    // An action is a link like the others: the highlight and its padding cover its words
+    // and leave its key plain.
+    h.sw.step_link(-3, &h.state);
+    h.draw();
+    let action = h.link_rect(2);
+
+    assert!(h.selected_look(action));
+    assert!(h.padded(action));
+    assert!(h.plain(h.link_rect(5)));
 }
 
 #[test]
@@ -316,9 +325,13 @@ fn selecting_a_screen_link_moves_no_text() {
     h.draw();
     let term = h.plan.regions.terminal;
     let first = h.symbols(term);
-    h.sw.link = 1;
+    h.sw.step_link(1, &h.state);
     h.draw();
     assert!(h.selected_look(h.link_rect(1)));
+    assert_eq!(h.symbols(term), first);
+    h.sw.step_link(1, &h.state);
+    h.draw();
+    assert!(h.selected_look(h.link_rect(2)), "an action link");
     assert_eq!(h.symbols(term), first);
 }
 

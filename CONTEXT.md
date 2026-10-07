@@ -173,15 +173,17 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **view screen** - what the terminal view shows in place of a grid: a machine screen,
   a host screen, a scanning or settled state, the own session, or the landing screen.
 - **machine screen** - the view screen headed `machine {machine}`: how the machine is
-  reached and logged in to, its login pane, and a link to each of its hosts whose mux is
-  confirmed. A machine with no confirmed mux links nowhere.
-- **host screen** - the view screen headed `host {machine}/{mux}`: the host's sessions,
-  how they stay current, and a link to its machine and to each session.
+  reached and logged in to, its login pane, a link to each of its hosts whose mux is
+  confirmed, and its actions as links. A machine with no confirmed mux links to no host.
+- **host screen** - the view screen headed `host {machine}/{mux}`: how the host's
+  sessions stay current, a link to each session, its actions as links, and a link to its
+  machine in its headline.
 - **landing screen** - the view screen from launch until the first execution: the scan
   progress and every nav card as a link, sharing the one hard selection.
-- **screen link** - a selectable link on a machine or host screen that opens another
-  node's screen. While the login pane is open it owns the keyboard, so a link there
-  holds no selection and answers only the pointer.
+- **screen link** - a selectable link on a machine, host, or failure screen that opens
+  another node's screen or runs one of the screen's actions through the key written
+  beside it. While the login pane is open it owns the keyboard, so a link there holds no
+  selection and answers only the pointer.
 - **switcher screen** - the rendered split view as a whole. Never an "overlay".
 
 ## Login

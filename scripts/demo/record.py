@@ -254,9 +254,9 @@ def login(s):
     s.hold(0.4)
     s.key("Tab"); s.key("Tab"); s.key("Space", KEY, "Space"); s.key("Tab"); s.key("Enter")
     s.answered("✓ public key registered", 2.4)
-    # The machine screen stays; its host link opens the host screen, whose links are
-    # the machine and then each session.
-    s.key("Down"); s.key("Enter")
+    # The machine screen stays and starts on its host link, which opens the host screen,
+    # whose links start on its first session.
+    s.key("Enter")
     s.answered("host db-01/tmux", 1.4)
     s.key("Down"); s.key("Down"); s.key("Down"); s.key("Enter")
     s.answered("accepting connections", 2.0)
