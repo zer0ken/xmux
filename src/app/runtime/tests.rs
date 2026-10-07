@@ -2379,6 +2379,7 @@ fn test_rt(env: Env) -> Runtime {
         clear_pending: false,
         last_draw: std::time::Instant::now(),
         cursor_shape: 0,
+        display_sync_held: false,
         rescan_pending: false,
         display_probe: DisplayProbe::default(),
         held_input: None,
@@ -8571,4 +8572,19 @@ fn a_frame_reaches_the_terminal_inside_one_synchronized_update() {
     assert!(out.ends_with("\x1b[?2026l"), "{out:?}");
     assert!(cursor < out.len() - "\x1b[?2026l".len(), "{out:?}");
     assert_eq!(out.matches("\x1b[?2026h").count(), 1, "{out:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_held_synchronized_update_keeps_the_frame_cadence_drawing() {
+    // The session began an update and went quiet: the frame timer keeps redrawing so
+    // its live screen appears when the hold runs out, and stops once nothing is held.
+    let mut rt = a_settled_herdr_runtime();
+    let grid = rt.registry.grid("local").expect("the displayed grid");
+    grid.lock().unwrap().feed(b"\x1b[?2026h");
+    nav_text(&mut rt);
+    assert!(rt.display_sync_held);
+    grid.lock().unwrap().feed(b"\x1b[?2026l");
+    rt.dirty = true;
+    nav_text(&mut rt);
+    assert!(!rt.display_sync_held);
 }

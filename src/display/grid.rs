@@ -234,7 +234,7 @@ impl Grid {
 
     /// The vt100 cursor as ratatui `(x, y)` (col, row), clamped to the grid.
     pub fn cursor(&self) -> (u16, u16) {
-        let screen = self.parser.screen();
+        let screen = self.visible();
         let (rows, cols) = screen.size();
         let (row, col) = screen.cursor_position();
         (
@@ -256,7 +256,24 @@ impl Grid {
 
     /// Whether the child has hidden its cursor.
     pub fn hide_cursor(&self) -> bool {
-        self.parser.screen().hide_cursor()
+        self.visible().hide_cursor()
+    }
+
+    /// The screen on view: the one a synchronized update holds while the child redraws,
+    /// else the live one. Painting the live screen mid-update would show a frame the
+    /// child has half written.
+    fn visible(&self) -> &vt100::Screen {
+        self.parser
+            .callbacks()
+            .held_screen()
+            .unwrap_or(self.parser.screen())
+    }
+
+    /// Whether a synchronized update holds the screen on view. The view is redrawn
+    /// while one does, so the live screen appears once the hold runs out even if the
+    /// child never writes again.
+    pub fn sync_held(&self) -> bool {
+        self.parser.callbacks().held_screen().is_some()
     }
 
     /// Whether the grid has no visible content (all blank) - used to diagnose an
@@ -311,7 +328,7 @@ impl Grid {
     /// grid size or `area` are skipped (the terminal view in Focus::Nav is narrower
     /// than the grid, so it shows a top-left clip).
     pub fn render_into(&self, buf: &mut Buffer, area: Rect) {
-        let screen = self.parser.screen();
+        let screen = self.visible();
         let (grid_rows, grid_cols) = screen.size();
         let rows = area.height.min(grid_rows);
         let cols = area.width.min(grid_cols);
@@ -746,6 +763,49 @@ Connection to host closed.
         assert_eq!(replies(&mut g, b"\x1b[16t"), b"\x1b[6;18;9t");
         assert_eq!(replies(&mut g, b"\x1b[14t"), b"\x1b[4;432;720t");
         set_outer_for_test(OuterTerminal::default());
+    }
+
+    fn row_text(g: &Grid) -> String {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));
+        g.render_into(&mut buf, Rect::new(0, 0, 8, 1));
+        (0..8).map(|x| buf[(x, 0)].symbol()).collect::<String>()
+    }
+
+    /// While the child holds a synchronized update open, the view keeps the screen it
+    /// finished before the update, then shows the new one whole when the update ends.
+    #[test]
+    fn a_synchronized_update_shows_its_frame_whole() {
+        let mut g = Grid::new(1, 8);
+        g.feed(b"old");
+        g.feed(b"\x1b[?2026h\x1b[H\x1b[2Kne");
+        assert_eq!(
+            row_text(&g).trim_end(),
+            "old",
+            "the half-written frame stays off view"
+        );
+        assert!(g.sync_held());
+        assert_eq!(g.cursor(), (3, 0), "the cursor of the held screen");
+        assert_eq!(replies(&mut g, b"\x1b[?2026$p"), b"\x1b[?2026;1$y");
+        g.feed(b"w\x1b[?2026l");
+        assert_eq!(row_text(&g).trim_end(), "new");
+        assert!(!g.sync_held());
+        assert_eq!(replies(&mut g, b"\x1b[?2026$p"), b"\x1b[?2026;2$y");
+    }
+
+    /// An update the child never ends holds the view for a bounded time only.
+    #[test]
+    fn an_unended_synchronized_update_lets_go_after_its_hold() {
+        let mut g = Grid::new(1, 8);
+        g.feed(b"old\x1b[?2026h\x1b[Hnew");
+        assert_eq!(row_text(&g).trim_end(), "old");
+        g.parser
+            .callbacks_mut()
+            .age_sync(super::super::callbacks::SYNC_HOLD);
+        assert!(!g.sync_held());
+        assert_eq!(row_text(&g).trim_end(), "new");
+        // The next update takes a fresh hold.
+        g.feed(b"\x1b[?2026h\x1b[Hxyz");
+        assert_eq!(row_text(&g).trim_end(), "new");
     }
 
     /// The child's cursor shape is kept until it sets another or soft-resets.

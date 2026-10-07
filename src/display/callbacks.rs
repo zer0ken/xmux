@@ -1,6 +1,7 @@
 //! The terminal behaviour a session's client expects that the vt100 cell model does
-//! not keep: the answers to its terminal queries, the cursor shape it sets, and the
-//! bells, notifications, and window title it sends, which the grid keeps for the loop.
+//! not keep: the answers to its terminal queries, the cursor shape it sets, the screen
+//! it last finished while it holds a synchronized update open, and the bells,
+//! notifications, and window title it sends, which the grid keeps for the loop.
 //!
 //! The vt100 parser hands every sequence it does not model to these callbacks, at its
 //! place in the byte stream and whole however the reads split it, so each query the
@@ -23,6 +24,11 @@ impl crate::display::image::layer::Replies for GridCallbacks {
     }
 }
 
+/// How long a synchronized update may hold the screen. A client that begins an update
+/// and never ends it (it crashed, or its connection stalled mid-frame) gets its live
+/// screen shown after this long.
+pub const SYNC_HOLD: std::time::Duration = std::time::Duration::from_secs(1);
+
 #[derive(Default)]
 pub struct GridCallbacks {
     replies: Vec<u8>,
@@ -33,6 +39,9 @@ pub struct GridCallbacks {
     /// The last DECSCUSR shape, `CSI Ps SP q`: 0 the terminal's default, 1 to 6 a
     /// blinking or steady block, underline, or bar.
     cursor_shape: u8,
+    /// While mode 2026 is set: the screen as it stood when the client began the
+    /// update, and when that was.
+    sync: Option<(vt100::Screen, std::time::Instant)>,
 }
 
 impl GridCallbacks {
@@ -56,6 +65,40 @@ impl GridCallbacks {
 
     pub fn cursor_shape(&self) -> u8 {
         self.cursor_shape
+    }
+
+    /// The screen a synchronized update holds on view, until the client ends the
+    /// update or [`SYNC_HOLD`] passes.
+    pub fn held_screen(&self) -> Option<&vt100::Screen> {
+        self.sync
+            .as_ref()
+            .filter(|(_, since)| since.elapsed() < SYNC_HOLD)
+            .map(|(screen, _)| screen)
+    }
+
+    /// Moves the open update's start `by` into the past.
+    #[cfg(test)]
+    pub fn age_sync(&mut self, by: std::time::Duration) {
+        if let Some((_, since)) = &mut self.sync {
+            *since -= by;
+        }
+    }
+
+    /// Whether a synchronized update is open, held or past its hold.
+    pub fn in_sync(&self) -> bool {
+        self.sync.is_some()
+    }
+
+    /// Mode 2026 set (`h`) or reset (`l`) among a DECSET or DECRST's modes.
+    fn set_sync(&mut self, screen: &vt100::Screen, params: &[&[u16]], set: bool) {
+        if !params.iter().any(|p| p.first() == Some(&2026)) {
+            return;
+        }
+        if !set {
+            self.sync = None;
+        } else if self.held_screen().is_none() {
+            self.sync = Some((screen.clone(), std::time::Instant::now()));
+        }
     }
 
     /// The answers owed to the client since the last call, in the order it asked.
@@ -88,6 +131,7 @@ impl GridCallbacks {
             1006 => screen.mouse_protocol_encoding() == Enc::Sgr,
             1004 => self.input_modes.focus_events,
             2004 => self.input_modes.bracketed_paste,
+            2026 => self.in_sync(),
             _ => return 0,
         };
         if set {
@@ -209,6 +253,8 @@ impl vt100::Callbacks for GridCallbacks {
                 let value = self.private_mode(screen, mode);
                 self.reply_fmt(format_args!("\x1b[?{mode};{value}$y"));
             }
+            (Some(b'?'), None, 'h') => self.set_sync(screen, params, true),
+            (Some(b'?'), None, 'l') => self.set_sync(screen, params, false),
             (Some(b' '), None, 'q') => {
                 if let Ok(shape @ 0..=6) = u8::try_from(param(params, 0)) {
                     self.cursor_shape = shape;
