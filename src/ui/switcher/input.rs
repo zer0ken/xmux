@@ -153,8 +153,7 @@ impl Switcher {
 
     /// Closes any open modal. The single `popup` Option already makes the modals
     /// mutually exclusive (opening one drops the rest); this is the explicit close used
-    /// by every opener. The popup being opened takes the key list's place, so a popup a
-    /// prefix key opens is where the key list was dragged to, and no other popup's drag
+    /// by every opener. The popup being opened starts at its anchor, so no earlier drag
     /// carries over to it.
     fn dismiss_modals(&mut self, state: &mut crate::state::State) {
         state.modal = None;

@@ -7101,7 +7101,7 @@ async fn a_narrow_window_wraps_the_palette_descriptions() {
 }
 
 #[test]
-fn the_key_list_drags_and_the_popup_its_key_opens_keeps_the_place() {
+fn every_popup_opens_at_its_anchor_whatever_was_dragged() {
     let mut state = crate::state::State::from_scan(sample());
     let mut sw = Switcher::new(&mut state);
     let area = Rect::new(0, 0, 140, 30);
@@ -7118,19 +7118,24 @@ fn the_key_list_drags_and_the_popup_its_key_opens_keeps_the_place() {
     let moved = sw.layout(area, nav, &state, &plan);
     let (dragged, _) = moved.key_list.clone().unwrap();
     assert_eq!((dragged.x + 10, dragged.y + 5), (list.x, list.y));
-    // The popup a prefix key opens takes the place the key list was dragged to.
+    // The popup a prefix key opens is at its anchor, not where the key list was dragged.
     sw.show_help(&mut state);
     let undragged = {
         let mut fresh = Switcher::new(&mut state);
         fresh.show_help(&mut state);
         fresh.layout(area, nav, &state, &moved).popup_rect
     };
-    let help = sw.layout(area, nav, &state, &moved).popup_rect;
-    assert_eq!(
-        help.x + 10,
-        undragged.x,
-        "the help is as tall as the window, so only x moves"
-    );
+    let help = sw.layout(area, nav, &state, &moved);
+    assert_eq!(help.popup_rect, undragged);
+    // A dragged popup closed and opened again is back at its anchor.
+    let r = help.popup_rect;
+    assert!(sw.begin_popup_drag_in_plan(&help, r.x + 3, r.y + 1, &state));
+    sw.drag_popup(r.x - 7, r.y + 1);
+    sw.end_popup_drag();
+    assert_ne!(sw.layout(area, nav, &state, &help).popup_rect, undragged);
+    sw.toggle_help(&mut state);
+    sw.toggle_help(&mut state);
+    assert_eq!(sw.layout(area, nav, &state, &help).popup_rect, undragged);
     // Once neither is on screen, the next prefix starts where the key list opens.
     state.modal = None;
     state.chrome.set_armed(false);
@@ -7170,7 +7175,7 @@ fn a_dragged_popup_moves_alone() {
         undragged(&mut state).key_list.map(|(rect, _)| rect),
     );
     assert_eq!(armed.popup_rect, moved.popup_rect);
-    // A popup that key opens takes the key list's place, not the help's.
+    // A popup that key opens is at its anchor, not where the help was dragged.
     sw.toggle_history(&mut state);
     state.chrome.set_armed(false);
     sw.settle_popup_position(&state);
