@@ -952,6 +952,62 @@ struct EnvOps {
 }
 
 impl EnvOps {
+    async fn login_command_with_profile(
+        &self,
+        host: &str,
+        login: &crate::transport::Login,
+        mut password: String,
+        profile: impl std::future::Future<Output = Option<crate::transport::auth::SshProfile>>,
+    ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
+        // A login authenticates the MACHINE, which may serve no host yet: a machine whose
+        // muxes xmux asks for has none until it answers, and it cannot answer until the
+        // login lets xmux in.
+        let machine = crate::session::machine_of(host);
+        let mut transport = crate::transport::kind_for(
+            machine,
+            machine.to_string(),
+            current_os(),
+            &self.env.xmux_dir,
+            None,
+        )
+        .transport();
+        if !transport.is_remote() {
+            crate::transport::auth::zero_string(&mut password);
+            return Ok(None);
+        }
+        if !password.is_empty()
+            && current_os() == "windows"
+            && !self.env.credentials.force_askpass_supported()
+        {
+            crate::transport::auth::zero_string(&mut password);
+            return Err(anyhow::anyhow!(
+                "this OpenSSH version cannot take a password from xmux; update OpenSSH or register a key from a terminal"
+            ));
+        }
+        // The effective configuration binds a typed password to its exact target, so only
+        // a password login depends on it; a key login runs with the user's own policy.
+        match profile.await {
+            Some(profile) => self.env.credentials.set_profile(machine, profile),
+            None => {
+                self.env.credentials.forget_profile(machine);
+                if !password.is_empty() {
+                    crate::transport::auth::zero_string(&mut password);
+                    return Err(anyhow::anyhow!(
+                        "password login is unavailable because effective ssh configuration could not be resolved"
+                    ));
+                }
+                // An empty field can still hold erased characters in its allocation.
+                crate::transport::auth::zero_string(&mut password);
+            }
+        }
+        self.env
+            .credentials
+            .begin(machine, login.clone(), password)?;
+        transport.set_login(login.clone());
+        transport.set_credentials(self.env.credentials.clone());
+        Ok(transport.login_argv(crate::transport::vocab::MARKED_SHELL_PROBE))
+    }
+
     fn host(&self, alias: &str) -> anyhow::Result<HostDef> {
         self.hosts
             .get(alias)
@@ -1014,55 +1070,15 @@ impl Ops for EnvOps {
         &self,
         host: &str,
         login: &crate::transport::Login,
-        mut password: String,
+        password: String,
     ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
-        // A login authenticates the MACHINE, which may serve no host yet: a machine whose
-        // muxes xmux asks for has none until it answers, and it cannot answer until the
-        // login lets xmux in.
-        let machine = crate::session::machine_of(host);
-        let mut transport = crate::transport::kind_for(
-            machine,
-            machine.to_string(),
-            current_os(),
-            &self.env.xmux_dir,
-            None,
+        self.login_command_with_profile(
+            host,
+            login,
+            password,
+            resolve_ssh_profile(crate::session::machine_of(host), login),
         )
-        .transport();
-        if !transport.is_remote() {
-            crate::transport::auth::zero_string(&mut password);
-            return Ok(None);
-        }
-        if !password.is_empty()
-            && current_os() == "windows"
-            && !self.env.credentials.force_askpass_supported()
-        {
-            crate::transport::auth::zero_string(&mut password);
-            return Err(anyhow::anyhow!(
-                "this OpenSSH version cannot take a password from xmux; update OpenSSH or register a key from a terminal"
-            ));
-        }
-        // The effective configuration binds a typed password to its exact target, so only
-        // a password login depends on it; a key login runs with the user's own policy.
-        match resolve_ssh_profile(machine, login).await {
-            Some(profile) => self.env.credentials.set_profile(machine, profile),
-            None => {
-                self.env.credentials.forget_profile(machine);
-                if !password.is_empty() {
-                    crate::transport::auth::zero_string(&mut password);
-                    return Err(anyhow::anyhow!(
-                        "password login is unavailable because effective ssh configuration could not be resolved"
-                    ));
-                }
-                // An empty field can still hold erased characters in its allocation.
-                crate::transport::auth::zero_string(&mut password);
-            }
-        }
-        self.env
-            .credentials
-            .begin(machine, login.clone(), password)?;
-        transport.set_login(login.clone());
-        transport.set_credentials(self.env.credentials.clone());
-        Ok(transport.login_argv(crate::transport::vocab::MARKED_SHELL_PROBE))
+        .await
     }
 
     fn write_login_stanza(
@@ -2967,20 +2983,28 @@ mod tests {
         });
         let hosts = env.hosts();
         assert!(hosts.def("win").is_none(), "precondition");
-        let command = env
-            .ops(hosts.defs())
-            .login_command(
+        let ops = EnvOps {
+            env: env.clone(),
+            hosts: hosts.defs(),
+            sem: Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY)),
+        };
+        let profile = parse_ssh_profile("host win\nhostname win\nport 22\nuser dev\n");
+        let command = ops
+            .login_command_with_profile(
                 "win",
                 &crate::transport::Login {
                     user: Some("dev".into()),
                     ..Default::default()
                 },
                 "secret".into(),
+                std::future::ready(Some(profile.clone())),
             )
             .await
             .expect("credential accepted")
             .expect("an ssh machine has a login");
         assert!(command.iter().any(|a| a == "win"), "{command:?}");
+        assert_eq!(env.credentials.profile("win"), Some(profile));
+        assert!(command.iter().any(|a| a == "User=dev"), "{command:?}");
         assert_eq!(
             command.last().unwrap(),
             crate::transport::vocab::MARKED_SHELL_PROBE
@@ -2989,6 +3013,46 @@ mod tests {
         assert!(!env.credentials.contains("win"));
         command.discard_credential();
         assert!(env.credentials.pending_access("win").is_none());
+    }
+
+    #[tokio::test]
+    async fn password_login_requires_a_fresh_ssh_profile() {
+        let env = env_with(Roster {
+            ssh_aliases: vec!["win".to_string()],
+            ssh_profiles: [(
+                "win".into(),
+                parse_ssh_profile("hostname stale\nuser dev\n"),
+            )]
+            .into(),
+            ..Default::default()
+        });
+        let hosts = env.hosts();
+        assert!(hosts.def("win").is_none(), "precondition");
+        assert!(env.credentials.profile("win").is_some(), "precondition");
+        let ops = EnvOps {
+            env: env.clone(),
+            hosts: hosts.defs(),
+            sem: Arc::new(tokio::sync::Semaphore::new(SCAN_CONCURRENCY)),
+        };
+        let error = ops
+            .login_command_with_profile(
+                "win",
+                &crate::transport::Login {
+                    user: Some("dev".into()),
+                    ..Default::default()
+                },
+                "secret".into(),
+                std::future::ready(None),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "password login is unavailable because effective ssh configuration could not be resolved"
+        );
+        assert!(env.credentials.profile("win").is_none());
+        assert!(env.credentials.pending_access("win").is_none());
+        assert!(!env.credentials.contains("win"));
     }
 
     #[tokio::test]
