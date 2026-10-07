@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::app::input::{
-    leading_ctrl_arrow, resolve_mouse_chain, resolve_nav_key, to_grid_local,
+    clamp_to_grid, leading_ctrl_arrow, resolve_mouse_chain, resolve_nav_key, to_grid_local,
     view_border_drag_height, view_border_drag_width, ChainAction, MouseState, StdinOutcome,
 };
 use crate::app::model::{adjust_nav_width, update, AppModel, Effect, Msg};

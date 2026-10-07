@@ -95,6 +95,22 @@ pub(crate) fn to_grid_local(area: ratatui::layout::Rect, col: u16, row: u16) -> 
     }
 }
 
+/// The 1-based grid-local cell nearest to the 1-based SGR cell `(col, row)` inside
+/// `area`: the cell itself when it falls inside, else the nearest one on the area's edge.
+/// A drag the session started keeps reaching it at the edge the pointer left by.
+pub(crate) fn clamp_to_grid(area: ratatui::layout::Rect, col: u16, row: u16) -> (u16, u16) {
+    let clamp = |v: u16, start: u16, len: u16| {
+        v.saturating_sub(1)
+            .clamp(start, start + len.saturating_sub(1))
+            - start
+            + 1
+    };
+    (
+        clamp(col, area.x, area.width),
+        clamp(row, area.y, area.height),
+    )
+}
+
 /// The single key that moves focus from the nav into the terminal view.
 /// (Arrows navigate the nav; the prefix-Tab path returns focus - see TermInput.)
 fn is_focus_in(code: KeyCode) -> bool {
@@ -258,6 +274,9 @@ pub(crate) struct MouseState {
     /// The resize mode a prefix resize starts: bare Ctrl+arrows keep resizing until
     /// another key ends it.
     pub(crate) resizing: bool,
+    /// True while a drag that started in the terminal view and reached the session
+    /// lasts, from its press to its release.
+    pub(crate) view_drag: bool,
     /// True while a prefix has been pressed in nav focus, awaiting the command key.
     pub(crate) nav_armed: bool,
 }

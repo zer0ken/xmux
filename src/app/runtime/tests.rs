@@ -4978,6 +4978,7 @@ fn forward_to_mux_reasserts_capture_and_encodes_the_sgr_press() {
     };
     let nav_width = crate::ui::switcher::NAV_WIDTH;
     let (att, log) = crate::display::attachment::fake_attachment_with_input_log(42);
+    att.grid.lock().unwrap().feed(b"\x1b[?1000h\x1b[?1006h");
     let mut rt = test_rt(fake_env_with_machines(&["local"]));
     rt.model.state = state;
     rt.model.switcher = switcher;
@@ -8239,4 +8240,78 @@ fn bare_ctrl_arrows_resize_only_in_the_visible_resize_mode() {
         "outside the mode it is the session's"
     );
     assert_eq!(rt.model.nav_width_natural, width);
+}
+
+/// A runtime with the terminal view focused over a session whose client enabled
+/// `modes`, laid out as a frame paints it, and the input that session reads.
+fn rt_mouse_over_session(
+    modes: &[u8],
+) -> (
+    Runtime,
+    Selection,
+    std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+) {
+    use crate::ui::switcher::{Scan, Switcher};
+    let mut state = crate::state::State::from_scan(Scan { groups: vec![] });
+    let switcher = Switcher::new(&mut state);
+    let sel = Selection {
+        host: "local".into(),
+        session: "work".into(),
+    };
+    let (att, log) = crate::display::attachment::fake_attachment_with_input_log(42);
+    att.grid.lock().unwrap().feed(modes);
+    let mut rt = test_rt(fake_env_with_machines(&["local"]));
+    rt.model.state = state;
+    rt.model.switcher = switcher;
+    rt.model
+        .state
+        .focus
+        .set_view_focus(crate::app::focus::ViewFocus::Terminal);
+    sync_test_render_plan(&mut rt);
+    rt.registry.insert(&display_key(&rt.hosts, &sel), att);
+    (rt, sel, log)
+}
+
+fn send_mouse(rt: &mut Runtime, sel: &Selection, cb: u16, col: u16, row: u16, pressed: bool) {
+    let (mut ft, mut wheel) = (false, false);
+    let ev = mouse(cb, col, row, pressed);
+    rt.handle_mouse_event(&ev, sel, &mut ft, &mut wheel, &mut false, &mut false);
+}
+
+#[test]
+fn a_drag_that_leaves_the_terminal_view_still_reaches_the_session_and_ends_there() {
+    // A selection drag starts in the view and crosses into the nav: the session keeps
+    // getting the motion at the view's edge and always gets the release.
+    let (mut rt, sel, log) = rt_mouse_over_session(b"\x1b[?1002h\x1b[?1006h");
+    let x0 = rt.model.render_plan.regions.terminal.x;
+    send_mouse(&mut rt, &sel, 0, x0 + 6, 5, true);
+    send_mouse(&mut rt, &sel, 32, x0 - 3, 6, true);
+    send_mouse(&mut rt, &sel, 0, x0 - 3, 6, false);
+    assert_eq!(
+        logged(&log),
+        b"\x1b[<0;6;5M\x1b[<32;1;6M\x1b[<0;1;6m",
+        "press, then motion and release at the view's left edge"
+    );
+    assert!(!rt.model.mouse_state.view_drag, "the release ends the drag");
+}
+
+#[test]
+fn a_session_gets_only_the_mouse_reports_its_client_asked_for() {
+    let x0 = |rt: &Runtime| rt.model.render_plan.regions.terminal.x;
+    // No mouse mode: nothing, not even a click.
+    let (mut rt, sel, log) = rt_mouse_over_session(b"");
+    let x = x0(&rt);
+    send_mouse(&mut rt, &sel, 0, x + 2, 2, true);
+    send_mouse(&mut rt, &sel, 0, x + 2, 2, false);
+    assert!(logged(&log).is_empty());
+    // `?1000` in the legacy form: the click as the client reads it, and no hover.
+    let (mut rt, sel, log) = rt_mouse_over_session(b"\x1b[?1000h");
+    send_mouse(&mut rt, &sel, 35, x + 2, 2, true);
+    send_mouse(&mut rt, &sel, 0, x + 2, 2, true);
+    send_mouse(&mut rt, &sel, 0, x + 2, 2, false);
+    assert_eq!(logged(&log), b"\x1b[M\x20\x22\x22\x1b[M\x23\x22\x22");
+    // `?1003` with SGR: hover too.
+    let (mut rt, sel, log) = rt_mouse_over_session(b"\x1b[?1003h\x1b[?1006h");
+    send_mouse(&mut rt, &sel, 35, x + 2, 2, true);
+    assert_eq!(logged(&log), b"\x1b[<35;2;2M");
 }
