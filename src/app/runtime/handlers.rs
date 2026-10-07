@@ -878,6 +878,7 @@ impl Runtime {
             spinner_start: std::time::Instant::now(),
             login_probes: 0,
             dirty: true,
+            clear_pending: false,
             last_draw: std::time::Instant::now() - initial_frame_interval,
             rescan_pending: false,
             display_probe: DisplayProbe::default(),
@@ -917,7 +918,7 @@ impl Runtime {
 
     /// Generic over the backend so the headless tests drive the same loop-top reconcile
     /// against a `TestBackend` that the live loop drives against stdout.
-    pub(super) fn prepare_and_draw<B: ratatui::backend::Backend>(
+    pub(super) fn prepare_and_draw<B: ratatui::backend::Backend + FrameSync>(
         &mut self,
         term: &mut ratatui::Terminal<B>,
     ) {
@@ -1000,9 +1001,7 @@ impl Runtime {
             let (vc, vr) = terminal_view_size(self.cols, self.body_rows, self.nav_size());
             self.registry.resize_all(vc, vr);
             if crossed_hidden || crossed_position {
-                if let Err(e) = clear_screen(term) {
-                    tracing::warn!(error = %e, "term_clear_failed");
-                }
+                self.clear_pending = true;
                 self.images.forget();
             }
             self.dirty = true;
@@ -1073,6 +1072,12 @@ impl Runtime {
             let t_draw = std::time::Instant::now();
             let previous_plan = self.model.render_plan.clone();
             let mut next_plan = None;
+            term.backend_mut().begin_frame();
+            if std::mem::take(&mut self.clear_pending) {
+                if let Err(e) = clear_screen(term) {
+                    tracing::warn!(error = %e, "term_clear_failed");
+                }
+            }
             let draw_result = match &grid_arc {
                 Some(g) => {
                     let t_lock = std::time::Instant::now();
@@ -1125,6 +1130,7 @@ impl Runtime {
                     drawn.map(|frame| Self::paint_images(&mut self.images, frame.buffer, None))
                 }
             };
+            term.backend_mut().end_frame();
             if let Err(e) = draw_result {
                 tracing::warn!(error = %e, "term_draw_failed");
             }
@@ -2277,9 +2283,7 @@ impl Runtime {
                 self.registry.resize_all(vc, vr);
                 let _ = term.autoresize();
                 // A console resize reflows the existing cells; force a full repaint.
-                if let Err(e) = clear_screen(term) {
-                    tracing::warn!(error = %e, "term_clear_failed");
-                }
+                self.clear_pending = true;
                 self.images.forget();
                 self.dirty = true;
             }

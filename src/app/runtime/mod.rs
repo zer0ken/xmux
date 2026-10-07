@@ -60,6 +60,29 @@ type Term = ratatui::Terminal<
     ratatui::backend::CrosstermBackend<crate::display::term::FrameWriter<std::io::Stdout>>,
 >;
 
+/// A backend that can make the terminal present one frame at once.
+///
+/// A frame moves the visible cursor to every changed cell and reaches the terminal in
+/// several writes, so without this the terminal shows the cursor jumping across the
+/// screen while it paints. Synchronized output (DEC mode 2026) makes the terminal hold
+/// the screen until the frame ends; a terminal without the mode ignores both sequences.
+pub(super) trait FrameSync {
+    fn begin_frame(&mut self) {}
+    fn end_frame(&mut self) {}
+}
+
+impl FrameSync for ratatui::backend::TestBackend {}
+
+impl<W: std::io::Write> FrameSync for ratatui::backend::CrosstermBackend<W> {
+    fn begin_frame(&mut self) {
+        let _ = crossterm::queue!(self, crossterm::terminal::BeginSynchronizedUpdate);
+    }
+
+    fn end_frame(&mut self) {
+        let _ = crossterm::execute!(self, crossterm::terminal::EndSynchronizedUpdate);
+    }
+}
+
 /// Clears the physical screen and forces the next draw to repaint every cell.
 ///
 /// Not `Terminal::clear`: that preserves the cursor by querying the terminal for
@@ -1753,6 +1776,9 @@ struct Runtime {
     /// The last number given to a machine probe a login started.
     login_probes: u64,
     dirty: bool,
+    /// The next frame clears the screen first. The clear waits for the frame so both
+    /// reach the terminal in one synchronized update and the blank screen never shows.
+    clear_pending: bool,
     last_draw: std::time::Instant,
     rescan_pending: bool,
     display_probe: DisplayProbe,

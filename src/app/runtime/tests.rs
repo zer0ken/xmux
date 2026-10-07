@@ -2376,6 +2376,7 @@ fn test_rt(env: Env) -> Runtime {
         kitty_images: Default::default(),
         spinner_start: std::time::Instant::now(),
         dirty: true,
+        clear_pending: false,
         last_draw: std::time::Instant::now(),
         rescan_pending: false,
         display_probe: DisplayProbe::default(),
@@ -8469,4 +8470,44 @@ fn a_session_gets_only_the_mouse_reports_its_client_asked_for() {
     let (mut rt, sel, log) = rt_mouse_over_session(b"\x1b[?1003h\x1b[?1006h");
     send_mouse(&mut rt, &sel, 35, x + 2, 2, true);
     assert_eq!(logged(&log), b"\x1b[<35;2;2M");
+}
+
+#[test]
+fn a_frame_reaches_the_terminal_inside_one_synchronized_update() {
+    use ratatui::backend::CrosstermBackend;
+    use ratatui::layout::Rect;
+    use ratatui::{Terminal, TerminalOptions, Viewport};
+    /// Records what the backend writes, readable after the terminal took the writer.
+    #[derive(Clone, Default)]
+    struct Sink(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+    impl std::io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let sink = Sink::default();
+    let mut rt = login_pane_rt(40, 12);
+    let mut term = Terminal::with_options(
+        CrosstermBackend::new(sink.clone()),
+        TerminalOptions {
+            viewport: Viewport::Fixed(Rect::new(0, 0, 40, 12)),
+        },
+    )
+    .unwrap();
+    rt.prepare_and_draw(&mut term);
+    let out = String::from_utf8_lossy(&sink.0.borrow()).into_owned();
+    // The cursor lands at its final cell before the update ends, so the terminal never
+    // shows it on a cell the frame only passed through.
+    let cursor = out
+        .rfind("\x1b[?25h")
+        .or_else(|| out.rfind("\x1b[?25l"))
+        .expect("the frame sets the cursor");
+    assert!(out.starts_with("\x1b[?2026h"), "{out:?}");
+    assert!(out.ends_with("\x1b[?2026l"), "{out:?}");
+    assert!(cursor < out.len() - "\x1b[?2026l".len(), "{out:?}");
+    assert_eq!(out.matches("\x1b[?2026h").count(), 1, "{out:?}");
 }
