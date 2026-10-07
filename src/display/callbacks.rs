@@ -199,6 +199,13 @@ impl vt100::Callbacks for GridCallbacks {
             (Some(b'$'), None, 'p') => {
                 self.reply_fmt(format_args!("\x1b[{};0$y", param(params, 0)))
             }
+            // The kitty keyboard protocol's flags, answered only while xmux's own
+            // terminal has the protocol: a client told it is there expects its keys
+            // encoded that way, which only that terminal can do.
+            (Some(b'?'), None, 'u') if crate::display::keyboard::supported() => {
+                let flags = self.input_modes.keyboard_flags;
+                self.reply_fmt(format_args!("\x1b[?{flags}u"))
+            }
             _ => {}
         }
     }

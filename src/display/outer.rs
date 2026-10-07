@@ -1,5 +1,5 @@
 //! What the terminal xmux runs in says about itself: its colours, its colour scheme,
-//! and its cell size in pixels.
+//! its cell size in pixels, and whether it has the kitty keyboard protocol.
 //!
 //! A session's client asks these of its terminal, and its terminal is a grid xmux
 //! renders, so the grid answers with what the real terminal answered xmux. xmux asks
@@ -12,12 +12,13 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// The queries xmux sends its terminal: the foreground and background colours, the 16
-/// ANSI palette slots, the colour scheme, and the cell size. The primary device
+/// ANSI palette slots, the colour scheme, the cell size, and the kitty keyboard
+/// protocol's flags, which only a terminal with the protocol answers. The primary device
 /// attributes query comes last because every terminal answers it and answers in order,
 /// so its reply marks the end of the other replies.
 pub const PROBE: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\
 \x1b]4;0;?;1;?;2;?;3;?;4;?;5;?;6;?;7;?;8;?;9;?;10;?;11;?;12;?;13;?;14;?;15;?\x1b\\\
-\x1b[?996n\x1b[16t\x1b[c";
+\x1b[?996n\x1b[16t\x1b[?u\x1b[c";
 
 /// How long the stdin reader keeps an incomplete reply waiting for the rest of it. The
 /// probe ends earlier, at the reply to the primary device attributes query.
@@ -155,7 +156,13 @@ impl ReplyFilter {
                 Some((len, body, final_byte)) => {
                     if record_csi(body, final_byte) {
                         Reply::Whole(len)
+                    } else if probing && final_byte == b'u' && keyboard_flags_reply(body) {
+                        crate::display::keyboard::record_support(true);
+                        Reply::Whole(len)
                     } else if probing && final_byte == b'c' && body.first() == Some(&b'?') {
+                        // Every reply comes before this one, so a terminal that has not
+                        // answered the keyboard flags by now has no such protocol.
+                        crate::display::keyboard::record_support(false);
                         self.probing_until = None;
                         outer_mut().sixel = body[1..].split(|&b| b == b';').any(|a| a == b"4");
                         Reply::Whole(len)
@@ -254,6 +261,12 @@ fn osc_reply(s: &[u8]) -> Reply {
     Reply::Whole(len)
 }
 
+/// Whether a `u` reply's parameters are the kitty keyboard flags reply `? flags`.
+fn keyboard_flags_reply(body: &[u8]) -> bool {
+    body.strip_prefix(b"?")
+        .is_some_and(|flags| !flags.is_empty() && flags.iter().all(u8::is_ascii_digit))
+}
+
 /// A complete CSI at the start of `s` as `(length, parameter bytes, final byte)`.
 fn csi_reply(s: &[u8]) -> Option<(usize, &[u8], u8)> {
     let j = s.iter().skip(2).position(|b| (0x40..=0x7e).contains(b))? + 2;
@@ -337,6 +350,21 @@ mod tests {
         assert_eq!(f.filter(read), b"");
         assert!(outer().sixel);
         assert_eq!(outer().cell_px, Some((20, 10)));
+    }
+
+    /// A terminal with the kitty keyboard protocol answers its flags query before the
+    /// device attributes, and one without answers only the latter.
+    #[test]
+    fn the_filter_reads_whether_the_terminal_has_the_keyboard_protocol() {
+        let mut f = ReplyFilter::new();
+        assert_eq!(f.filter(b"\x1b[?0u\x1b[?62;22c"), b"");
+        assert!(crate::display::keyboard::supported());
+        let without = std::thread::spawn(|| {
+            let mut f = ReplyFilter::new();
+            let keys = f.filter(b"\x1b[?62;22cq");
+            (keys, crate::display::keyboard::supported())
+        });
+        assert_eq!(without.join().unwrap(), (b"q".to_vec(), false));
     }
 
     /// Sixteen palette replies outgrow one stdin read, so a reply arrives split: the

@@ -1044,15 +1044,7 @@ impl Runtime {
     /// out for it. Runs on every loop pass, comparing with the attachment it last told,
     /// so every path that moves the focus is reported the same way.
     pub(super) fn sync_child_focus(&mut self) {
-        let focused = (self.window_focused
-            && self.model.state.focus.is_terminal_focused()
-            && !self.model.state.is_modal_popup_open()
-            && self
-                .model
-                .switcher
-                .current_view_screen(&self.model.state)
-                .is_none())
-        .then(|| display_key(&self.hosts, &self.model.state.displayed));
+        let focused = self.keys_attachment().filter(|_| self.window_focused);
         if focused == self.child_focus {
             return;
         }
@@ -1069,6 +1061,46 @@ impl Runtime {
             }
         }
         self.child_focus = focused;
+    }
+
+    /// The attachment the keys typed now reach: the session in the terminal view while
+    /// the terminal view holds xmux's focus with no popup and no machine or host screen
+    /// over it.
+    fn keys_attachment(&self) -> Option<String> {
+        (self.model.state.focus.is_terminal_focused()
+            && !self.model.state.is_modal_popup_open()
+            && self
+                .model
+                .switcher
+                .current_view_screen(&self.model.state)
+                .is_none())
+        .then(|| display_key(&self.hosts, &self.model.state.displayed))
+    }
+
+    /// The bytes that bring xmux's terminal to the kitty keyboard protocol flags of the
+    /// session the keys reach, so the terminal encodes each key the way that session's
+    /// client asked and xmux forwards it unchanged; flags 0, the legacy keys, while the
+    /// keys reach xmux itself. Empty when the flags are already in force or the terminal
+    /// has no protocol. The first update pushes an entry of xmux's own on the
+    /// terminal's flag stack, which the terminal guard pops on exit.
+    pub(super) fn keyboard_update(&mut self) -> Vec<u8> {
+        use crate::display::keyboard;
+        if !keyboard::supported() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if !self.keyboard_pushed {
+            out.extend_from_slice(keyboard::PUSH);
+            self.keyboard_pushed = true;
+        }
+        let flags = self
+            .keys_attachment()
+            .map_or(0, |key| self.registry.input_modes(&key).keyboard_flags);
+        if flags != self.keyboard_flags {
+            out.extend(keyboard::set_flags(flags));
+            self.keyboard_flags = flags;
+        }
+        out
     }
 
     /// Forwards terminal input to the session [`input_route`] names, behind any input

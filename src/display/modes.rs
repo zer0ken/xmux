@@ -13,10 +13,16 @@ pub struct InputModes {
     /// `?1004`: the client is told with `ESC[I` and `ESC[O` when it gains and loses the
     /// focus.
     pub focus_events: bool,
+    /// The kitty keyboard protocol flags in force: the top of the flag stack the client
+    /// pushed for the screen it is on, 0 when it pushed none.
+    pub keyboard_flags: u8,
 }
 
 /// Longest CSI parameter run kept; a longer one is not a mode change and is skipped.
 const MAX_CSI: usize = 64;
+/// Deepest keyboard flag stack kept; a push onto a full stack drops its oldest entry, as
+/// the protocol asks of a terminal.
+const MAX_KEYBOARD_STACK: usize = 16;
 
 #[derive(Debug, Default)]
 enum State {
@@ -33,6 +39,10 @@ pub struct ModeScanner {
     modes: InputModes,
     state: State,
     csi: Vec<u8>,
+    /// The keyboard flag stacks of the main and the alternate screen, which the protocol
+    /// keeps apart.
+    keyboard: [Vec<u8>; 2],
+    alternate: bool,
 }
 
 impl ModeScanner {
@@ -56,6 +66,8 @@ impl ModeScanner {
                     // RIS: a full reset clears every mode.
                     b'c' => {
                         self.modes = InputModes::default();
+                        self.keyboard = Default::default();
+                        self.alternate = false;
                         self.state = State::Ground;
                     }
                     0x1b => {}
@@ -78,21 +90,62 @@ impl ModeScanner {
     }
 
     fn dispatch(&mut self, final_byte: u8) {
-        let Some(params) = self.csi.strip_prefix(b"?") else {
+        let Some((&marker, params)) = self.csi.split_first() else {
             return;
         };
-        let set = match final_byte {
-            b'h' => true,
-            b'l' => false,
-            _ => return,
-        };
-        for param in params.split(|&b| b == b';') {
-            match param {
-                b"2004" => self.modes.bracketed_paste = set,
-                b"1004" => self.modes.focus_events = set,
-                _ => {}
+        let mut numbers = params.split(|&b| b == b';').map(|p| {
+            std::str::from_utf8(p)
+                .ok()
+                .and_then(|p| p.parse::<u32>().ok())
+        });
+        let mut number = |default: u32| numbers.next().flatten().unwrap_or(default);
+        let screen = usize::from(self.alternate);
+        match (marker, final_byte) {
+            (b'?', b'h' | b'l') => {
+                let set = final_byte == b'h';
+                for param in params.split(|&b| b == b';') {
+                    match param {
+                        b"2004" => self.modes.bracketed_paste = set,
+                        b"1004" => self.modes.focus_events = set,
+                        b"1049" | b"1047" | b"47" => self.alternate = set,
+                        _ => {}
+                    }
+                }
             }
+            (b'>', b'u') => {
+                let flags = number(0) as u8;
+                let stack = &mut self.keyboard[screen];
+                if stack.len() == MAX_KEYBOARD_STACK {
+                    stack.remove(0);
+                }
+                stack.push(flags);
+            }
+            (b'<', b'u') => {
+                let stack = &mut self.keyboard[screen];
+                let n = (number(1).max(1) as usize).min(stack.len());
+                stack.truncate(stack.len() - n);
+            }
+            (b'=', b'u') => {
+                let flags = number(0) as u8;
+                let how = number(1);
+                let stack = &mut self.keyboard[screen];
+                if stack.is_empty() {
+                    stack.push(0);
+                }
+                let top = stack.last_mut().expect("a pushed entry");
+                match how {
+                    1 => *top = flags,
+                    2 => *top |= flags,
+                    3 => *top &= !flags,
+                    _ => {}
+                }
+            }
+            _ => return,
         }
+        self.modes.keyboard_flags = self.keyboard[usize::from(self.alternate)]
+            .last()
+            .copied()
+            .unwrap_or(0);
     }
 }
 
@@ -124,6 +177,40 @@ mod tests {
         let modes = modes_after(&[b"\x1b[?1004h"]);
         assert!(modes.focus_events && !modes.bracketed_paste);
         assert!(!modes_after(&[b"\x1b[?1004h\x1b[?1004l"]).focus_events);
+    }
+
+    #[test]
+    fn keyboard_flags_follow_the_stack_of_the_screen_in_use() {
+        assert_eq!(modes_after(&[b"\x1b[>1u"]).keyboard_flags, 1);
+        assert_eq!(modes_after(&[b"\x1b[>1u\x1b[>3u"]).keyboard_flags, 3);
+        assert_eq!(modes_after(&[b"\x1b[>1u\x1b[>3u\x1b[<u"]).keyboard_flags, 1);
+        assert_eq!(modes_after(&[b"\x1b[>1u\x1b[<5u"]).keyboard_flags, 0);
+        assert_eq!(
+            modes_after(&[b"\x1b[=5u"]).keyboard_flags,
+            5,
+            "set on no entry"
+        );
+        assert_eq!(
+            modes_after(&[b"\x1b[>1u\x1b[=8;2u"]).keyboard_flags,
+            9,
+            "or"
+        );
+        assert_eq!(
+            modes_after(&[b"\x1b[>9u\x1b[=1;3u"]).keyboard_flags,
+            8,
+            "and not"
+        );
+        // The alternate screen keeps a stack of its own.
+        let alternate = modes_after(&[b"\x1b[>1u\x1b[?1049h"]);
+        assert_eq!(alternate.keyboard_flags, 0);
+        let back = modes_after(&[b"\x1b[>1u\x1b[?1049h\x1b[>3u\x1b[?1049l"]);
+        assert_eq!(back.keyboard_flags, 1);
+        assert_eq!(modes_after(&[b"\x1b[>1u\x1bc"]).keyboard_flags, 0, "RIS");
+        assert_eq!(
+            modes_after(&[b"\x1b[>4;2m"]).keyboard_flags,
+            0,
+            "not this protocol"
+        );
     }
 
     #[test]

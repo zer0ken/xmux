@@ -199,6 +199,10 @@ against, naming no source file, function, or test.
 - **FR-C7** - The session in the terminal view holds the focus while xmux's window does
   and the terminal view holds xmux's focus with no popup open, and its client, when it
   enabled focus reports, is told each time it gains or loses that focus.
+- **FR-C8** - When xmux's terminal has the kitty keyboard protocol, keys reach the
+  session in the terminal view encoded with the protocol flags its client pushed, and
+  the client's query for its flags is answered; without the protocol the client is told
+  nothing and reads legacy keys. The prefix and every xmux key work in either encoding.
 
 ## D. App lifecycle
 

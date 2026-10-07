@@ -834,6 +834,8 @@ impl Runtime {
             paste: Default::default(),
             window_focused: true,
             child_focus: None,
+            keyboard_pushed: false,
+            keyboard_flags: 0,
             prefix,
             // The draw hot path's observability (per-key grid fingerprints + slow-step
             // probe), owned off the draw block so it does nothing but lock → render.

@@ -77,6 +77,8 @@ pane's program asked for bracketed paste. Pasted text never acts as the prefix o
 a text field takes it without its line breaks, and over the nav it is dropped. A pane's
 program that asks for focus reports hears that it lost the focus when xmux's window, the
 nav, or a popup takes it, and that it gained the focus when the terminal view has it back.
+A program using the kitty keyboard protocol gets the keys it tells apart, such as
+Shift+Enter, when the terminal running xmux has the protocol too.
 
 ## Nav Placement
 

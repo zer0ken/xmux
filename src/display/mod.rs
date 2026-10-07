@@ -7,6 +7,7 @@ pub mod dispatch;
 pub mod grid;
 pub mod image;
 pub mod input;
+pub mod keyboard;
 pub mod modes;
 pub mod mouse;
 pub mod outer;

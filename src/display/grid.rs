@@ -511,6 +511,22 @@ Connection to host closed.
     /// A query split across two reads is answered once, when it completes, and a
     /// query that ends a read is not answered again by the next one.
     #[test]
+    fn the_keyboard_flags_query_is_answered_before_the_attributes_over_the_protocol() {
+        let mut g = Grid::new(4, 10);
+        assert_eq!(
+            replies(&mut g, b"\x1b[>1u\x1b[?u"),
+            b"",
+            "no protocol outside"
+        );
+        crate::display::keyboard::record_support(true);
+        assert_eq!(
+            replies(&mut g, b"\x1b[?u\x1b[c"),
+            b"\x1b[?1u\x1b[?62;22c",
+            "the pushed flags, then the attributes"
+        );
+    }
+
+    #[test]
     fn a_split_query_is_answered_exactly_once() {
         let _lock = plain_outer_terminal();
         let mut g = Grid::new(24, 80);
