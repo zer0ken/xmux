@@ -227,8 +227,8 @@ the window's bottom left.
 
 ## Popups
 
-Every popup opens where the key list opens, and a popup a prefix key opens takes the
-place the key list was dragged to. Dragging a popup moves only that popup. Its rows wrap
+Every popup opens where the key list opens, at the same place each time. Dragging a popup
+moves only that popup, and only until it closes. Its rows wrap
 to its width rather than being cut, and only a text field stays on one row. In a popup
 with items to pick, the arrows move its selection, the pointer marks an item without
 moving that selection, and a click executes the item as `Enter` would. A popup that

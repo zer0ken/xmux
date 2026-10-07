@@ -42,8 +42,7 @@ pub(crate) struct PopupGeometry {
     /// key list is on screen.
     key_list: (i16, i16),
     /// Drag offset (cells) applied to the modal popup's anchored position, kept while
-    /// that popup is open. A popup opens at the key list's offset, so a prefix key opens
-    /// its popup where the key list was dragged to.
+    /// that popup is open.
     modal: (i16, i16),
     /// Active drag of the key list or a modal popup. `None` means not dragging.
     drag: Option<PopupDrag>,
@@ -117,9 +116,10 @@ impl PopupGeometry {
         self.drag.take().filter(|d| !d.moved).map(|d| d.grab)
     }
 
-    /// Places a popup that is opening where the key list is.
+    /// Places a popup that is opening at its anchor. A popup can replace another one
+    /// before the next settle, so the drag of the one it replaces is dropped here.
     pub(crate) fn open_modal(&mut self) {
-        self.modal = self.key_list;
+        self.modal = (0, 0);
     }
 
     /// Returns each box that is not on screen to its anchored position, unless a drag of
