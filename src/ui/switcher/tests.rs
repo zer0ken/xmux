@@ -4606,12 +4606,9 @@ async fn a_split_sections_cards_read_at_one_offset_in_every_column() {
     let (s0, _) = locate(h.buf(), "s0", w).expect("s0");
     let (s5, _) = locate(h.buf(), "s5", w).expect("s5");
     let title_x = locate(h.buf(), "local", w).expect("the title").0;
-    let repeat_x = locate(h.buf(), "local …", w).expect("the repeated title").0;
-    assert_eq!(
-        s0 - title_x,
-        s5 - repeat_x,
-        "a continuation's card reads at the same offset under its repeated title"
-    );
+    let cells = cells_of(&h.plan);
+    assert_eq!(s0 - cells[&1].x, s5 - cells[&6].x);
+    assert_eq!(cells[&1].x - title_x, CARD_INDENT);
 }
 
 #[tokio::test]
@@ -4642,10 +4639,7 @@ async fn the_selections_padding_stays_inside_the_card() {
 }
 
 #[tokio::test]
-async fn a_split_sections_continuation_columns_repeat_the_title() {
-    // Only a section taller than a whole column splits. The continuation keeps its
-    // column's top row for the title, dim and followed by `…`, so a column read alone
-    // still says whose cards it holds; its cards start on the row under it.
+async fn a_split_sections_continuation_columns_start_with_cards() {
     let h = Harness::new_sized(scan_with_sessions(10), 60, 12);
     assert_eq!(h.plan.layout, ViewLayout::Band, "portrait → Top");
     let band = h.plan.nav_inner;
@@ -4656,17 +4650,16 @@ async fn a_split_sections_continuation_columns_repeat_the_title() {
     let first_row = band_line(&h, band.y);
     assert_eq!(
         first_row.matches("local").count(),
-        first_row.matches("local …").count() + 1,
-        "the title once, then a repeat over every continuation:\n{painted}"
+        1,
+        "the title appears only once:\n{painted}"
     );
     let cells = cells_of(&h.plan);
-    let split = (1..cells.len())
+    let split = (2..cells.len())
         .find(|i| cells[i].x > cells[&(i - 1)].x)
         .expect("the section really did split");
     assert_eq!(
-        cells[&split].y,
-        band.y + 1,
-        "the continuation's first card hangs under the repeated title"
+        cells[&split].y, band.y,
+        "the continuation starts with a card on its top row"
     );
 }
 #[tokio::test]

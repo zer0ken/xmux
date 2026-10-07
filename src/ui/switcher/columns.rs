@@ -10,10 +10,9 @@
 //! them. Reading order is the fill order: down a column, then right.
 //!
 //! The one exception is a section taller than the whole column, which has nowhere else
-//! to go: it splits, and the continuation picks the section up in the next column under
-//! its title repeated on the top row, dim and followed by `…`, so a column read alone
-//! still says whose cards it holds. A band one row tall has no row to spare for that and
-//! runs titles and cards along its one line instead.
+//! to go: it splits, and the continuation starts at the top of the next column.
+//! The title appears only where the section starts. Reading order connects the
+//! remaining cards to that section.
 //!
 //! The host-state cards are a band of their own, never sharing a column with session
 //! cards. Every group starts a fresh column, with one character of space between
@@ -56,9 +55,8 @@ pub(super) struct Cell {
 
 /// Assigns every card a column and a row offset. `boundary` is the index of the first
 /// host-state card; the host band it opens never shares a column with session cards.
-/// A section taller than a whole column splits: the continuation opens a column, keeps
-/// that column's top row for the repeated title (see [`continuations`]), and picks the
-/// section up on the row under it. A column one row tall keeps no such row.
+/// A section taller than a whole column splits, with its remaining cards starting
+/// at the top of each following column. The section title appears only once.
 pub(super) fn place(cards: &[Card], col_h: u16, boundary: usize) -> Vec<Placed> {
     let mut out: Vec<Placed> = Vec::with_capacity(cards.len());
     if cards.is_empty() || col_h == 0 {
@@ -93,9 +91,9 @@ pub(super) fn place(cards: &[Card], col_h: u16, boundary: usize) -> Vec<Placed> 
             }
             if used > 0 && used + h > col_h {
                 // Only reachable for a run taller than a whole column: it splits, and
-                // the continuation opens a column under the repeated title's row.
+                // the continuation opens at the top of the next column.
                 col += 1;
-                used = u16::from(col_h > 1);
+                used = 0;
             }
             out.push(Placed { col, y: used, h });
             used += h;
@@ -105,34 +103,12 @@ pub(super) fn place(cards: &[Card], col_h: u16, boundary: usize) -> Vec<Placed> 
     out
 }
 
-/// The columns that continue a split section, each paired with the index of the title
-/// they repeat on their top row. A continuation is the one kind of column whose first card
-/// sits on its second row; its title is the run start the card hangs under.
-pub(super) fn continuations(cards: &[Card], placed: &[Placed]) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    for (i, p) in placed.iter().enumerate() {
-        let opens_col = i == 0 || placed[i - 1].col != p.col;
-        if opens_col && p.y == 1 {
-            if let Some(title) = cards[..i].iter().rposition(|c| c.starts_run) {
-                out.push((p.col, title));
-            }
-        }
-    }
-    out
-}
-
-/// Each column's width: the widest card it holds, or the repeated title of a continuation
-/// when that is wider, capped at the area width so one long name cannot push a column past
-/// the nav.
+/// Each column's width is its widest card, capped at the nav width.
 pub(super) fn widths(cards: &[Card], placed: &[Placed], max_w: u16) -> Vec<u16> {
     let cols = placed.iter().map(|p| p.col).max().map_or(0, |c| c + 1);
     let mut w = vec![0u16; cols];
     for (c, p) in cards.iter().zip(placed) {
         w[p.col] = w[p.col].max(c.width.min(max_w));
-    }
-    let repeat_w = super::CONTINUED.chars().count() as u16;
-    for (col, title) in continuations(cards, placed) {
-        w[col] = w[col].max(cards[title].width.saturating_add(repeat_w).min(max_w));
     }
     w
 }
@@ -309,52 +285,43 @@ mod tests {
     }
 
     #[test]
-    fn a_section_taller_than_the_column_splits_under_a_repeated_title() {
-        // A 6-card section needs 6 rows; the column has 4. It has nowhere to go but
-        // across, and the continuation keeps its top row for the repeated title.
-        let cards = run(6, 10);
+    fn a_section_taller_than_the_column_starts_continuations_at_the_top() {
+        let mut cards = run(10, 6);
+        cards[0].width = 20;
         let p = place(&cards, 4, cards.len());
         assert_eq!(
-            p.iter().map(|c| c.col).collect::<Vec<_>>(),
-            vec![0, 0, 0, 0, 1, 1],
-            "the section splits at the column edge: {p:?}"
+            ys(&p),
+            vec![
+                (0, 0, 1),
+                (0, 1, 1),
+                (0, 2, 1),
+                (0, 3, 1),
+                (1, 0, 1),
+                (1, 1, 1),
+                (1, 2, 1),
+                (1, 3, 1),
+                (2, 0, 1),
+                (2, 1, 1),
+            ]
         );
-        assert_eq!(p[4].y, 1, "the continuation starts under the title's row");
-        assert_eq!(p[5].y, 2, "the next card follows it");
-        assert_eq!(
-            continuations(&cards, &p),
-            vec![(1, 0)],
-            "column 1 repeats the title of card 0"
-        );
-        assert_eq!(
-            widths(&cards, &p, 100),
-            vec![10, 12],
-            "the continuation is as wide as its repeated title"
-        );
+        assert_eq!(widths(&cards, &p, 100), vec![20, 6, 6]);
     }
 
     #[test]
-    fn a_two_row_band_splits_a_taller_section() {
-        // A 3-card section needs 3 rows; the column has 2. Each continuation holds the
-        // repeated title and one card.
-        let cards = run(3, 10);
+    fn a_two_row_band_fills_continuations_with_cards() {
+        let cards = run(5, 10);
         let p = place(&cards, 2, cards.len());
         assert_eq!(
-            p.iter().map(|c| c.col).collect::<Vec<_>>(),
-            vec![0, 0, 1],
-            "the title and one session share the first column"
+            ys(&p),
+            vec![(0, 0, 1), (0, 1, 1), (1, 0, 1), (1, 1, 1), (2, 0, 1)]
         );
-        assert_eq!(p[2].y, 1);
     }
 
     #[test]
     fn a_one_row_band_runs_every_card_along_its_row() {
-        // One row has no room for a repeated title: every card takes a column of its own
-        // on row 0, titles included, and nothing counts as a continuation.
         let cards = run(3, 10);
         let p = place(&cards, 1, cards.len());
         assert_eq!(ys(&p), vec![(0, 0, 1), (1, 0, 1), (2, 0, 1)]);
-        assert!(continuations(&cards, &p).is_empty());
     }
 
     #[test]

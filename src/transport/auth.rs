@@ -1239,7 +1239,8 @@ fn random_token() -> io::Result<String> {
 
 #[cfg(test)]
 pub(crate) fn request_test_token() -> String {
-    random_token().expect("test token")
+    // Test directory names must leave room for the Unix socket filename.
+    random_token().expect("test token")[..16].to_owned()
 }
 
 fn endpoint_name(path: &Path) -> io::Result<interprocess::local_socket::Name<'static>> {
@@ -1397,7 +1398,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-test-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         std::fs::create_dir_all(&root).unwrap();
         let credentials = Credentials::new(root.clone());
@@ -1452,7 +1453,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-attempt-test-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         let credentials = Credentials::new(root.clone());
         let access = credentials
@@ -1486,7 +1487,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-replace-test-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         let credentials = Credentials::new(root.clone());
         let first = credentials
@@ -1516,7 +1517,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-child-lifetime-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         let credentials = Credentials::new(root.clone());
         let access = credentials
@@ -1557,7 +1558,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-once-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         let credentials = Credentials::new(root.clone());
         let access = credentials
@@ -1594,7 +1595,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-proxy-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         let credentials = Credentials::new(root.clone());
         let access = credentials
@@ -1638,7 +1639,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-revoke-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         let credentials = Credentials::new(root.clone());
         let access = credentials
@@ -1672,7 +1673,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-in-flight-revoke-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         let credentials = Credentials::new(root.clone());
         let access = credentials
@@ -1707,7 +1708,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-refused-prompt-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         let credentials = Credentials::new(root.clone());
         let access = credentials
@@ -1741,7 +1742,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-key-login-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         let credentials = Credentials::new(root.clone());
         let access = credentials
@@ -1762,7 +1763,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-fatal-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         let credentials = Credentials::new(root.clone());
         let access = credentials
@@ -1789,7 +1790,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-recreate-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         let credentials = Credentials::new(root.clone());
         let access = credentials
@@ -1838,12 +1839,12 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-timeout-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         std::fs::create_dir_all(&root).unwrap();
         // A Windows endpoint is a named pipe named by the file stem alone, so the stem is
         // unique to the run: a fixed one collides with any other test process.
-        let path = root.join(format!("stalled-{}.sock", random_token().unwrap()));
+        let path = root.join(format!("stalled-{}.sock", request_test_token()));
         let listener = create_listener(&path).unwrap();
         let stalled = tokio::spawn(async move {
             let _stream = listener.accept().await.unwrap();
@@ -1889,7 +1890,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "xmux-auth-mode-{}-{}",
             std::process::id(),
-            random_token().unwrap()
+            request_test_token()
         ));
         let credentials = Credentials::new(root.clone());
         let access = credentials

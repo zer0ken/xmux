@@ -24,7 +24,7 @@ pub(super) fn query(bin: &str, client: &DisplayClient) -> Vec<String> {
         "sh".to_string(),
         "-c".to_string(),
         format!(
-            "{}[ -r /proc/\"$p\"/cmdline ] || exit 0; u=$(id -u); s=$(printf '\\037'); \
+            "{}[ -n \"$p\" ] && [ -r /proc/\"$p\"/cmdline ] || exit 0; u=$(id -u); s=$(printf '\\037'); \
              for d in /proc/[0-9]*; do \
              [ \"$(stat -c %u \"$d\" 2>/dev/null)\" = \"$u\" ] || continue; \
              c=$(tr '\\0' '\\037' <\"$d\"/cmdline 2>/dev/null) || continue; \

@@ -46,10 +46,6 @@ pub(super) const BAND_RULE: &str = "\u{2500}";
 /// indents nothing.
 pub(super) const CARD_INDENT: u16 = 1;
 
-/// What a band column that continues a section writes after the repeated title on its
-/// top row, saying the cards under it belong to a section begun in an earlier column.
-pub(super) const CONTINUED: &str = " \u{2026}";
-
 pub use crate::ui::chrome::ViewBorderColors;
 
 pub use crate::model::{NavSize, ViewLayout};
