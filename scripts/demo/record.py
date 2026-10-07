@@ -38,11 +38,19 @@ PASSWORD = "demo-pass"
 QUERIES = re.compile(rb"\x1b\[6n|\x1b\[0?c|\x1b\[\?u|\x1b\](1[01]);\?(?:\x07|\x1b\\)")
 
 
+class Screen(pyte.Screen):
+    """Accepts private status queries without advertising unsupported reports."""
+
+    def report_device_status(self, mode, private=False, **kwargs):
+        if not private:
+            super().report_device_status(mode)
+
+
 class Term:
     """A shell on a pseudo terminal, with a screen model and an output log."""
 
     def __init__(self, cols, rows):
-        self.screen = pyte.Screen(cols, rows)
+        self.screen = Screen(cols, rows)
         self.stream = pyte.ByteStream(self.screen)
         self.lock = threading.Lock()
         self.events, self.keys, self.captions = [], [], []
@@ -258,7 +266,7 @@ def login(s):
     # whose links start on its first session.
     s.key("Enter")
     s.answered("host db-01/tmux", 1.4)
-    s.key("Down"); s.key("Down"); s.key("Down"); s.key("Enter")
+    s.key("Down"); s.key("Enter")
     s.answered("accepting connections", 2.0)
     s._at_due()
     return s.term.now()

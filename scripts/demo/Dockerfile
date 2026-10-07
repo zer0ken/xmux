@@ -32,7 +32,8 @@ RUN test -n "$XMUX_VERSION" \
 ENV LANG=en_US.UTF-8
 COPY ssh_config /home/dev/.ssh/config
 COPY xmux.toml /home/dev/.config/xmux/config.toml
-COPY sessions.sh record.py encode.py /opt/demo/
+COPY sessions.sh record.py encode.py test_record.py /opt/demo/
+RUN cd /opt/demo && python3 -m unittest test_record
 RUN echo 'PS1='"'"'\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '"'" >> /home/dev/.bashrc \
  && chown -R dev:dev /home/dev && chmod 700 /home/dev/.ssh \
  && chmod 600 /home/dev/.ssh/id_ed25519 /home/dev/.ssh/authorized_keys /home/dev/.ssh/config
