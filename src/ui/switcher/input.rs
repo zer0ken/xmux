@@ -153,18 +153,19 @@ impl Switcher {
 
     /// Closes any open modal. The single `popup` Option already makes the modals
     /// mutually exclusive (opening one drops the rest); this is the explicit close used
-    /// by every opener and on dismissal. The drag position stays: a popup a prefix key
-    /// opens takes the place the key list was dragged to.
+    /// by every opener. The popup being opened takes the key list's place, so a popup a
+    /// prefix key opens is where the key list was dragged to, and no other popup's drag
+    /// carries over to it.
     fn dismiss_modals(&mut self, state: &mut crate::state::State) {
         state.modal = None;
+        self.popup_geo.open_modal();
     }
 
-    /// Returns the key list and the popups to their anchored position once neither is
-    /// on screen, so the next prefix interaction starts where the key list opens.
+    /// Returns the key list or the popup to its anchored position once it is off screen,
+    /// so the next one opens where the key list opens.
     pub fn settle_popup_position(&mut self, state: &crate::state::State) {
-        if !state.chrome.armed && state.modal.is_none() && !self.popup_geo.drag_active() {
-            self.popup_geo.reset();
-        }
+        self.popup_geo
+            .settle(key_list_open(state), state.is_modal_popup_open());
     }
 
     /// True while the key list or a modal popup is being dragged; the app routes every
@@ -173,14 +174,7 @@ impl Switcher {
         self.popup_geo.drag_active()
     }
 
-    /// A left press anywhere on the key list or the active modal popup begins a
-    /// move-drag. `open` is whether one of them is on screen. Returns true iff it
-    /// grabbed (so the app consumes the event).
-    pub fn begin_popup_drag(&mut self, col: u16, row: u16, open: bool) -> bool {
-        self.popup_geo.begin_drag(col, row, open)
-    }
-
-    /// Updates the popup offset from the selection while a drag is active.
+    /// Updates the grabbed box's offset from the pointer while a drag is active.
     pub fn drag_popup(&mut self, col: u16, row: u16) {
         self.popup_geo.drag(col, row);
     }
