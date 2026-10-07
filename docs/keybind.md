@@ -211,8 +211,9 @@ lends the box the window's whole width. When the keys do not fit, the box shorte
 description, then gives up the keys needed least behind `+N more`, never the jump, help,
 or quit keys. The box closes when the function the prefix started ends: at once for most
 keys, when Enter or Esc closes an input, or when a key other than a resize key ends a
-resize, which then acts as it would have. While a resize lasts, the box names only the
-resize keys and that any other key ends it. A focus switch or any mouse action outside
+resize, which then acts as it would have. While a resize lasts, the box is titled
+`resize`, lists only the resize keys, and names on its bottom border that any other key
+ends it. A focus switch or any mouse action outside
 the box cancels the prefix; dragging the box moves it.
 A held prefix sends one literal per repeat and blinks the box, because a terminal sends
 no key-up.

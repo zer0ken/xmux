@@ -1501,3 +1501,39 @@ fn the_selected_card_ends_in_the_enter_mark_while_the_nav_holds_the_focus() {
         "Enter reaches the pane, so no card carries the mark"
     );
 }
+
+#[test]
+fn a_resize_box_is_framed_as_a_popup_and_carries_no_version() {
+    let rows = |h: &H| {
+        let buf = h.term.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut h = fleet();
+    h.state.chrome.armed = true;
+    h.state.chrome.resizing = true;
+    h.state.chrome.update_available = Some("99.0.0".into());
+    h.draw();
+    let screen = rows(&h);
+    let top = screen
+        .iter()
+        .find(|r| r.contains("╭"))
+        .expect("the resize box opens");
+    let bottom = screen
+        .iter()
+        .find(|r| r.contains("╰"))
+        .expect("the resize box closes");
+    assert!(top.contains("╭ resize ─"), "{top}");
+    assert!(bottom.contains(" any other key end ╯"), "{bottom}");
+    assert!(
+        !screen
+            .iter()
+            .any(|r| r.contains("xmux v") || r.contains("99.0.0")),
+        "the resize box names no version"
+    );
+}
