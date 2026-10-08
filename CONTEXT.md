@@ -74,7 +74,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **seam thumb** - the heavy stretch of a side column's view border beside the cards on
   screen when the list overflows.
 - **offscreen counts** - the `‹ 5` and `7 ›` a band writes on its view border row,
-  counting the cards scrolled off each side.
+  counting the cards scrolled off each side in the active view border colour.
 - **chrome** - the furniture around the two views: the view border, the hint bar, and
   the view screens. Never a "status surface".
 - **nav size** - the nav's live geometry as one value: the set width, the on-screen

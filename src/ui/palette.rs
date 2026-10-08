@@ -76,9 +76,8 @@ pub(crate) struct Palette {
     /// from.
     pub on_accent: Color,
     /// Content furniture: the card number, the `/` separator, the section title, the
-    /// band/column rules, the popup borders, and a band's overflow counts (`‹ n` /
-    /// `n ›`). All the quiet marks a card needs to read apart without being part of any
-    /// level.
+    /// band/column rules, and the popup borders. All the quiet marks a card needs to
+    /// read apart without being part of any level.
     pub decoration: Color,
     /// In-flight and actionable-state marks: the scanning spinner and login-needed
     /// glyph.

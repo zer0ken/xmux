@@ -21,6 +21,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --check
+      - name: Release version tests
+        if: runner.os == 'Linux'
+        run: python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: test
