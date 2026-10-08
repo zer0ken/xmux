@@ -1,6 +1,6 @@
 use super::*;
 
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier};
 use ratatui::widgets::Paragraph;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -1016,7 +1016,7 @@ impl Switcher {
         // bar spans the whole width in a side layout. In a band, a selection hint shares
         // the seam with the prefix. The layout never reflows. A band's overflow counts share the seam with the indicator at rest.
         for mark in &plan.overflow_marks {
-            Self::render_overflow_mark(frame, *mark, &palette);
+            Self::render_overflow_mark(frame, *mark, state.chrome.colors.active);
         }
         if plan.floating_hint_bar {
             state.chrome.render_hint_bar(
@@ -1229,8 +1229,8 @@ impl Switcher {
 
     /// Writes one overflow count on the band's seam: `‹ 5` or `7 ›`, the angle pointing
     /// the way the cards went and the count, the thing a user reaches for, bold.
-    fn render_overflow_mark(frame: &mut Frame, mark: OverflowMark, palette: &palette::Palette) {
-        let style = Style::default().fg(palette.decoration);
+    fn render_overflow_mark(frame: &mut Frame, mark: OverflowMark, color: Color) {
+        let style = Style::default().fg(color);
         let bold = style.add_modifier(Modifier::BOLD);
         let n = mark.count.to_string();
         let spans = if mark.left {
