@@ -159,7 +159,7 @@ pub(crate) fn render_toast(
         .collect();
     let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette.decoration))
+        .border_style(Style::default().fg(palette.primary))
         .style(Style::reset());
     if !toast.title.is_empty() {
         block = block.title(Span::styled(
@@ -205,7 +205,7 @@ pub(crate) fn render_toast(
                 );
             } else {
                 cell.set_symbol("─");
-                cell.set_style(Style::default().fg(palette.decoration));
+                cell.set_style(Style::default().fg(palette.primary));
             }
         }
     }
