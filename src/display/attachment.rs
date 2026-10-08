@@ -667,11 +667,8 @@ pub fn spawn_attachment(
                     // parser would eat them, so the pump scans the raw stream and carries
                     // each whole sequence to the loop, which re-emits it on xmux's stdout
                     // between frames (the terminal above sets the clipboard).
-                    osc52.feed(&buf[..n], &mut osc);
-                    for seq in osc.drain(..) {
-                        if events.send(PtyEvent::Osc52 { seq }).is_err() {
-                            break 'pump; // the app is gone - stop pumping
-                        }
+                    if !forward_osc52(&mut osc52, &buf[..n], &mut osc, &events) {
+                        break 'pump; // the app is gone - stop pumping
                     }
                     for alert in alerts {
                         if events.send(PtyEvent::Alert { id, alert }).is_err() {
@@ -709,6 +706,22 @@ pub fn spawn_attachment(
         #[cfg(test)]
         env_answer: None,
     })
+}
+
+/// Forward complete clipboard sequences from one raw output chunk to the app.
+fn forward_osc52(
+    scanner: &mut Osc52Scanner,
+    chunk: &[u8],
+    sequences: &mut Vec<Vec<u8>>,
+    events: &tokio::sync::mpsc::UnboundedSender<PtyEvent>,
+) -> bool {
+    scanner.feed(chunk, sequences);
+    for seq in sequences.drain(..) {
+        if events.send(PtyEvent::Osc52 { seq }).is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -1419,49 +1432,38 @@ sleep 2
         );
     }
 
-    // The virtual terminal must forward a complete OSC 52 sequence from its child.
     #[test]
-    fn spawn_attachment_forwards_osc52_smoke() {
-        use std::time::{Duration, Instant};
-        let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel::<PtyEvent>();
-        // A NON-interactive child that writes `ESC ] 52;c;aGVsbG8= BEL` to its tty,
-        // then idles briefly (sleep keeps the pty open so the pump reads the output
-        // before EOF).
-        #[cfg(windows)]
-        let argv: Vec<String> = vec![
-            "powershell.exe".into(),
-            "-NoProfile".into(),
-            "-Command".into(),
-            "$s = [char]27 + ']52;c;aGVsbG8=' + [char]7; [Console]::Out.Write($s); Start-Sleep -Milliseconds 500"
-                .into(),
-        ];
-        #[cfg(not(windows))]
-        let argv = vec![
-            "sh".into(),
-            "-c".into(),
-            "printf '\\033]52;c;aGVsbG8=\\007'; sleep 1".into(),
-        ];
-        let env_clear = crate::mux::vocab::mux_env_keys_to_clear(std::env::vars().map(|(k, _)| k));
-        let command = crate::transport::CommandSpec::from_argv(argv);
-        let att = spawn_attachment(&command, 80, 24, 1, ev_tx, &env_clear).expect("spawn");
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut forwarded = None;
-        while Instant::now() < deadline {
-            match ev_rx.try_recv() {
-                Ok(PtyEvent::Osc52 { seq }) => {
-                    forwarded = Some(seq);
-                    break;
-                }
-                Ok(_) => {}
-                Err(_) => std::thread::sleep(Duration::from_millis(25)),
+    fn output_chunks_forward_complete_clipboard_events_in_order() {
+        let first = b"\x1b]52;c;aGVsbG8=\x07";
+        let second = b"\x1b]52;p;d29ybGQ=\x1b\\";
+        let input = [b"text\x1b]0;title\x07".as_slice(), first, second].concat();
+        for split in 0..=input.len() {
+            let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+            let mut scanner = Osc52Scanner::default();
+            let mut sequences = Vec::new();
+            for chunk in [&input[..split], &input[split..]] {
+                assert!(forward_osc52(&mut scanner, chunk, &mut sequences, &events));
+                assert!(sequences.is_empty());
             }
+            for expected in [first.as_slice(), second.as_slice()] {
+                match received.try_recv().unwrap() {
+                    PtyEvent::Osc52 { seq } => assert_eq!(seq, expected, "split {split}"),
+                    _ => panic!("expected a clipboard event"),
+                }
+            }
+            assert!(received.try_recv().is_err());
         }
-        att.teardown();
-        assert_eq!(
-            forwarded.as_deref(),
-            Some(b"\x1b]52;c;aGVsbG8=\x07".as_slice()),
-            "the child's OSC 52 must reach the loop as a whole sequence"
-        );
+    }
+
+    #[test]
+    fn clipboard_forwarding_stops_when_the_app_is_gone() {
+        let (events, received) = tokio::sync::mpsc::unbounded_channel();
+        drop(received);
+        assert!(!forward_osc52(
+            &mut Osc52Scanner::default(),
+            b"\x1b]52;c;aGVsbG8=\x07",
+            &mut Vec::new(),
+            &events,
+        ));
     }
 }
