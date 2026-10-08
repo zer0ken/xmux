@@ -16,6 +16,7 @@
 
 pub mod notify;
 pub mod release;
+pub(crate) mod startup;
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -554,6 +555,19 @@ fn run_script(args: &Args, platform: Platform) -> Result<(), String> {
 /// Runs a prepared command with the terminal attached, so the install script's own
 /// output is what the user reads.
 fn run_command(mut cmd: std::process::Command, name: &str) -> Result<(), String> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(root) = script_root(&exe) {
+            cmd.env("XMUX_INSTALL_ROOT", &root);
+            if let Some(launcher) = startup::launcher_path(&exe) {
+                if let Some(bin_dir) = launcher
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty() && !p.starts_with(root.join("versions")))
+                {
+                    cmd.env("XMUX_BIN_DIR", bin_dir);
+                }
+            }
+        }
+    }
     let status = cmd
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())

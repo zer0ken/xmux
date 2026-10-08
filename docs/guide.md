@@ -188,7 +188,7 @@ accent = "brightgreen"                # accent, decoration, warning, error, disa
 bar-bg = "colour235"                  # and the hint bar's bar-bg / bar-fg / bar-accent
 
 [update]
-check = true                          # ask at each launch whether a newer release exists
+check = true                          # allow startup checks and automatic updates
 
 [[hosts]]
 ssh = "prod"          # an ssh-config alias

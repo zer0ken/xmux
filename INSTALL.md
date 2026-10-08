@@ -40,8 +40,8 @@ The install script:
 
 A terminal opened after the install picks up the new `PATH`.
 
-> `xmux update` upgrades a native install. xmux reports a newer release on
-> startup but never installs one on its own.
+> Startup offers an update when a newer release is available; `xmux update`
+> also updates on demand.
 
 **Homebrew** (macOS)
 
@@ -49,7 +49,7 @@ A terminal opened after the install picks up the new `PATH`.
 brew install zer0ken/xmux/xmux
 ```
 
-> A Homebrew install does not update itself. `xmux update` or
+> Startup updates use Homebrew. `xmux update` or
 > `brew upgrade zer0ken/xmux/xmux` installs a new release.
 
 **WinGet** (Windows)
@@ -58,7 +58,7 @@ brew install zer0ken/xmux/xmux
 winget install --id zer0ken.xmux
 ```
 
-> A WinGet install does not update itself. `xmux update` or
+> Startup updates use WinGet. `xmux update` or
 > `winget upgrade --id zer0ken.xmux` installs a new release. The winget catalog
 > is updated through a review in the community repository, so it can trail the
 > newest release; the native install always gets the newest one.
@@ -265,9 +265,21 @@ unaffected, because the new build goes into a directory of its own; the other pa
 either rename the running binary aside or finish in the background once every xmux
 instance has exited.
 
-xmux asks GitHub once a day which version is newest and records the answer in
-`~/.xmux/version.json`. The request runs off the app's own path, so a launch never
-waits on it. `[update] check = false` in `config.toml` turns it off.
+Before starting the app, xmux checks GitHub for a newer release and offers:
+
+1. Update and enable automatic updates (the default when Enter is pressed).
+2. Update once.
+3. Run without updating.
+
+The first choice saves consent in `~/.xmux/auto-update`. Subsequent app launches
+check and install a newer release automatically, then start the new build with the
+original arguments. Delete that preference file or set its contents to `false` to
+restore the prompt. `[update] check = false` disables startup checks and automatic
+updates. Subcommands skip this flow, and noninteractive launches never prompt.
+
+The release check has a five-second network timeout. A failed check or install
+reports the error and starts the current build without retrying. Checks record the
+latest version in `~/.xmux/version.json`, which the app and `doctor` also read.
 
 ## Uninstalling
 

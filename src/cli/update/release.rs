@@ -103,7 +103,8 @@ fn curl(args: &[&str]) -> Result<Vec<u8>, String> {
 
 pub(crate) fn latest_version() -> Result<String, String> {
     let text = String::from_utf8(
-        curl(&[LATEST_API]).map_err(|e| format!("cannot query the latest release: {e}"))?,
+        curl(&["--connect-timeout", "3", "--max-time", "5", LATEST_API])
+            .map_err(|e| format!("cannot query the latest release: {e}"))?,
     )
     .map_err(|e| format!("cannot read the latest release: {e}"))?;
     let json: serde_json::Value =
@@ -180,6 +181,14 @@ fn extract_tar(archive: &Path, dest_dir: &Path) -> Result<(), String> {
 /// The `xmux update` release path: report (`--check`) or perform a checksum-verified
 /// upgrade of the running binary.
 pub fn update(args: &super::Args, platform: Platform) -> Result<(), String> {
+    update_inner(args, platform, false)
+}
+
+pub(super) fn update_at_startup(args: &super::Args, platform: Platform) -> Result<(), String> {
+    update_inner(args, platform, true)
+}
+
+fn update_inner(args: &super::Args, platform: Platform, startup: bool) -> Result<(), String> {
     let current = env!("CARGO_PKG_VERSION");
     // A pinned version is the version to install; only an unpinned update asks the
     // release feed which one that is.
@@ -246,14 +255,38 @@ pub fn update(args: &super::Args, platform: Platform) -> Result<(), String> {
 
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate own binary: {e}"))?;
     println!("installing {target} → {}", exe.display());
-    replace_binary(&staged_bin, &exe, platform)?;
+    if startup {
+        replace_at_startup(&staged_bin, &exe, platform)?;
+    } else {
+        replace_binary(&staged_bin, &exe, platform)?;
+    }
 
-    if platform == Platform::Windows {
+    if platform == Platform::Windows && !startup {
         println!("xmux will swap in the new build once all xmux instances exit");
     } else {
         println!("updated xmux to {target}");
     }
     Ok(())
+}
+
+/// Stage beside the target so the final rename stays on its filesystem.
+fn replace_at_startup(staged: &Path, target: &Path, platform: Platform) -> Result<(), String> {
+    let pending = target.with_extension(format!("new-{}", std::process::id()));
+    std::fs::copy(staged, &pending)
+        .map_err(|e| format!("cannot stage {}: {e}", target.display()))?;
+    let install = || {
+        std::fs::rename(&pending, target)
+            .map_err(|e| format!("cannot replace {}: {e}", target.display()))
+    };
+    let result = match platform {
+        Platform::Unix => install(),
+        Platform::Windows => {
+            super::clean_stale_sidecars(target);
+            super::delegate_with_binary_aside(target, std::process::id(), install)
+        }
+    };
+    let _ = std::fs::remove_file(&pending);
+    result
 }
 
 fn fetch_checksums(version: &str) -> Result<HashMap<String, String>, String> {
@@ -267,6 +300,26 @@ fn fetch_checksums(version: &str) -> Result<HashMap<String, String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_replacement_is_complete_before_returning() {
+        for platform in [Platform::Unix, Platform::Windows] {
+            let dir = std::env::temp_dir().join(format!(
+                "xmux-startup-swap-{}-{platform:?}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let target = dir.join("xmux");
+            let staged = dir.join("download");
+            std::fs::write(&target, "old").unwrap();
+            std::fs::write(&staged, "new").unwrap();
+            replace_at_startup(&staged, &target, platform).unwrap();
+            assert_eq!(std::fs::read(&target).unwrap(), b"new");
+            assert!(replace_at_startup(&dir.join("missing"), &target, platform).is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"new");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 
     #[test]
     fn asset_names_match_release_workflow() {

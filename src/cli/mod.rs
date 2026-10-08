@@ -113,13 +113,20 @@ pub async fn run() -> i32 {
 
     let cli = Cli::parse();
     match cli.command {
-        None => match interactive_app_env() {
-            Ok(env) => match resolve_requested_name(cli.name.as_deref()) {
-                Ok(requested) => runtime::run_app(Arc::new(env), requested).await,
-                Err(code) => code,
-            },
-            Err(code) => code,
-        },
+        None => {
+            let requested = match resolve_requested_name(cli.name.as_deref()) {
+                Ok(requested) => requested,
+                Err(code) => return code,
+            };
+            let env = match interactive_app_env() {
+                Ok(env) => env,
+                Err(code) => return code,
+            };
+            if let Some(code) = update::startup::run(&xmux_dir).await {
+                return code;
+            }
+            runtime::run_app(Arc::new(env), requested).await
+        }
         Some(Command::Ls) => match interactive_env().await {
             Ok(env) => run_ls(&env).await,
             Err(code) => code,

@@ -251,10 +251,11 @@ against, naming no source file, function, or test.
 - **FR-D10** - `xmux update` updates by the install method read from the executable's
   path (in-place verified replace, the install script, winget, or Homebrew), with
   `--check` and `--method`.
-- **FR-D11** - xmux asks the release feed at each launch without delaying launch and
-  names a newer version on the landing screen, beside the version on the prefix key
-  list's bottom border, and in `doctor`, on every launch while the running version is
-  older, and one config key turns this off.
+- **FR-D11** - Before interactive launch, xmux checks for a newer release and offers
+  update and enable automatic updates on this device (the default), update once, or skip;
+  saved consent enables automatic checking and updating on each launch, successful
+  updates run the new build, failures continue with the current build, subcommands
+  never prompt, and `[update] check = false` disables startup updates.
 - **FR-D12** - `doctor` opens with the running version, its binary path, the install
   method, and any recorded newer version, without network access.
 - **FR-D13** - `xmux uninstall` removes xmux by its install method after a `y` or `yes`
