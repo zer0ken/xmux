@@ -5,9 +5,9 @@
 *여러 머신과 여러 mux의 세션을 한 화면에서 전환하는 도구.*
 
 ![이 GIF는 같은 키 입력 속도로 나란히 녹화한 두 터미널을 보여준다. 왼쪽 터미널에서는
-ssh로 gpu-01에 접속해 tmux 세션 목록을 확인하고 attach하기까지 7.1초가 걸린다.
+ssh로 gpu-01에 접속해 tmux 세션 목록을 확인하고 attach하기까지 7.3초가 걸린다.
 오른쪽 터미널에서는 xmux가 landing 화면에서 화살표 키 두 번과 Enter로 같은 세션을
-열기까지 2.3초가 걸린다.](docs/assets/xmux-demo.gif)
+열기까지 2.6초가 걸린다.](docs/assets/xmux-demo.gif)
 
 **landing 화면에서 세션 열기**
 
