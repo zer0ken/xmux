@@ -9026,6 +9026,62 @@ async fn after_login_choices_persist_connection_for_restart() {
     }
 }
 
+#[tokio::test]
+async fn login_after_failed_rescan_refreshes_finished_poll() {
+    let mut rt = test_rt(fake_env_with_machines(&["prod"]));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    rt.mgr = HostManager::new(tx);
+    let mut host = crate::model::Host::new(
+        crate::transport::local_as("prod".into(), None),
+        crate::mux::for_kind("zellij", "xmux-missing-poll-test-binary").unwrap(),
+    );
+    host.detected = true;
+    rt.hosts.insert(host);
+    rt.mgr
+        .ensure("prod", rt.hosts.get("prod").unwrap(), 80, 24)
+        .unwrap();
+    let first = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(&first, HostEvent::Sessions { err: Some(_), .. }));
+    rt.handle_host_event(first);
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while rt.mgr.is_live("prod") {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    rt.handle_host_event(HostEvent::MachineProbed {
+        machine: "prod".into(),
+        err: Some("Permission denied (publickey,password).".into()),
+        shell: None,
+        rescan: true,
+        password_supplied: false,
+        credential_rejection_generation: None,
+        credential_held: false,
+        credential_generation: 0,
+        current_credential_generation: 0,
+    });
+    rt.execute_effects(vec![Effect::LoginApplied {
+        host: "prod".into(),
+        login: Default::default(),
+    }]);
+    let probe = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    rt.handle_host_event(probe);
+    let refreshed = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv()).await;
+    let event = refreshed
+        .expect("a successful login must enumerate the stopped poll host")
+        .unwrap();
+    assert!(matches!(&event, HostEvent::Sessions { host, .. } if host == "prod"));
+    rt.handle_host_event(event);
+    assert!(!rt.model.state.scanning.contains("prod"));
+}
+
 #[test]
 fn newly_created_config_is_applied_without_a_second_edit() {
     let env = fake_env_with_machines(&[]);
