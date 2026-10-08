@@ -676,7 +676,7 @@ fn command_effect(model: &mut AppModel, command: Command) -> Option<Effect> {
                     attempt,
                     &login,
                     !password.is_empty(),
-                    after_login == crate::model::AfterLogin::SshConfig,
+                    after_login.saves_config(),
                     after_login == crate::model::AfterLogin::RegisterKey,
                 ),
             );

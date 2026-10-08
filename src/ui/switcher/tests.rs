@@ -1676,7 +1676,7 @@ async fn login_pane_shows_one_selected_after_login_choice() {
     );
     assert!(screen.contains("( ) register my public key"), "{screen}");
     assert!(screen.contains("save connection to ssh config"), "{screen}");
-    assert!(screen.contains("register my public key"), "{screen}");
+    assert!(screen.contains("and save connection"), "{screen}");
 }
 
 #[tokio::test]

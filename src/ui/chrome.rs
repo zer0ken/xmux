@@ -1713,7 +1713,7 @@ impl Chrome {
                 } else {
                     "( )"
                 },
-                "register my public key",
+                "register my public key and save connection",
                 d.focus == LoginFocus::AfterPublicKey,
             ));
             stops.push((LoginFocus::AfterPublicKey, out.len() - 1));

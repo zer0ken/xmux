@@ -1,12 +1,19 @@
 //! Login input values shared by domain commands and runtime state.
 
-/// The one follow-up the login pane performs after a successful connection.
+/// The follow-up choice the login pane performs after a successful connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AfterLogin {
     #[default]
     Nothing,
     SshConfig,
+    /// Register the public key and save the working connection values.
     RegisterKey,
+}
+
+impl AfterLogin {
+    pub fn saves_config(self) -> bool {
+        matches!(self, Self::SshConfig | Self::RegisterKey)
+    }
 }
 
 /// Authentication method reported by OpenSSH for a completed connection.

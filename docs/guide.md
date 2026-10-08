@@ -59,8 +59,8 @@ radio choice decides what a working login leaves behind:
 
 - nothing
 - the values, recorded as an `~/.ssh/config` stanza
-- the user's public key, registered on the machine so it stops asking for a
-  password
+- the user's public key, registered on the machine, and the working address, port,
+  and username saved in `~/.ssh/config` for later runs
 
 The line xmux appends ends its comment with `xmux-registered`, which sshd ignores and
 which tells xmux's lines from the user's own. A machine that already holds the same key,

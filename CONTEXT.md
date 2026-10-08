@@ -206,7 +206,8 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **recording a login** - writing an xmux-marked stanza with the working values at the
   top of `~/.ssh/config`.
 - **registering a key** - appending this PC's public key, marked `xmux-registered`, to
-  the machine's key files, then proving a key-only login works.
+  the machine's key files, then proving a key-only login works. This choice also records
+  the working login in `~/.ssh/config` for later runs.
 - **logging out** - `prefix L`: removing this PC's key from the machine and the
   stanza a login recorded, then forgetting the held password and closing the machine's
   connections.
