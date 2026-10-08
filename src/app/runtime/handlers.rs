@@ -659,13 +659,10 @@ pub(super) fn poll_ui_config(
     if mtime == *last {
         return None;
     }
-    let prev = *last;
     *last = mtime;
-    // First sight = baseline (the startup apply already ran); a missing file = an
-    // editor mid-save or a deletion. Record the state and wait for a real change.
-    if prev.is_none() || mtime.is_none() {
-        return None;
-    }
+    // Keep the current settings while an editor replaces or removes the file.
+    // A file that appears is loaded immediately, including its first creation.
+    mtime?;
     match crate::provision::config::load(path) {
         Ok(config) => Some(Ok(config.ui)),
         Err(error) => {
@@ -833,7 +830,9 @@ impl Runtime {
             mouse_state: MouseState::default(),
             connected: HashSet::new(),
             detecting: HashSet::new(),
-            config_last_mtime: None,
+            config_last_mtime: std::fs::metadata(crate::provision::env::config_path())
+                .and_then(|metadata| metadata.modified())
+                .ok(),
             width_dirty: false,
             width_flush_at: None,
             rescan: None,

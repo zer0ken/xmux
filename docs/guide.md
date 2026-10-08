@@ -166,6 +166,12 @@ Configuration is optional. xmux reads `~/.config/xmux/config.toml`:
 ```toml
 exclude = ["bastion", "wsl.docker-desktop"]   # hide these machines
 
+[discovery]
+ssh-config = true
+neighbors = true
+wsl = true
+scan-concurrency = 6                  # startup limit, clamped to 1 through 8
+
 [local]
 mux = "auto"          # "auto" (default): every mux installed here,
                       # or a list: ["psmux", "zellij", "abduco", "tuios", "herdr"]
@@ -193,22 +199,47 @@ check = true                          # ask at each launch whether a newer relea
 [[hosts]]
 ssh = "prod"          # an ssh-config alias
 mux = "tmux"          # omitted or "auto": every mux the machine answers it has
+
+[[wsl]]
+distro = "Ubuntu-24.04"               # bare distribution name
+mux = "auto"
 ```
 
-- **Live reload.** When `config.toml` changes, xmux re-applies the `[ui]`
-  presentation settings without a restart:
-  - theme
-  - the per-role colour overrides
-  - selection-style
-  - hint-bar-style
-  - view-border styles
-  - max-fps
-  - notifications
-  - renumbering
-  - braille-animation
-  - nav-position
+The supported settings and their application times are:
 
-  Machine and roster edits take effect on a `prefix R` rescan.
+| Table | Keys | Default and application |
+| --- | --- | --- |
+| Root | `exclude` | Empty list; exact SSH machine names or `wsl.<distro>` names, applied on a full rescan. |
+| `[local]` | `mux` | `"auto"`; a mux name or list, applied on a full rescan. |
+| `[[hosts]]` | `ssh`, `mux` | SSH alias and an optional mux name or list; omitted mux or `"auto"` discovers muxes. Applied on a full rescan. |
+| `[[wsl]]` | `distro`, `mux` | Bare distribution name and the same mux choices; applied on a full rescan. |
+| `[discovery]` | `ssh-config`, `neighbors`, `wsl` | All `true`; applied on a full rescan. Explicit machine entries still apply when their discovery provider is off. |
+| `[discovery]` | `scan-concurrency` | `6`, clamped to 1 through 8; restart required. |
+| `[update]` | `check` | `true`; controls the background release check at launch, so restart required. |
+| `[ui]` | `prefix` | `"C-g"`; restart required. |
+| `[ui]` | `auto-hide-nav` | `false`; startup default, overridden by the saved `prefix t` toggle. |
+| `[ui]` | `nav-position` | `"left"`; applied live unless a saved position is pinned. |
+| `[ui]` | `theme`, `max-fps` | `"auto-dark"` and `30`; applied live. Themes are `"auto-dark"` or `"auto-light"`; frame rate is 10 through 120. |
+| `[ui]` | `renumbering`, `notifications`, `braille-animation` | All `true`; applied live. |
+| `[ui]` | `view-active-border-style`, `view-border-style`, `view-border-hover-style`, `hint-bar-style`, `selection-style` | Empty strings use theme defaults; applied live. |
+| `[ui]` | `primary`, `secondary`, `accent`, `decoration`, `warning`, `error`, `disabled`, `bar-bg`, `bar-fg`, `bar-accent` | Empty strings use theme defaults; applied live. |
+
+Run `xmux doctor` to report unknown keys and unsupported mux names. A mixed mux
+list such as `["auto", "tmux"]` is an explicit list: `auto` is not a mux name.
+Colour values accept ANSI colour names, `bright*` names, `colour0` through
+`colour255`, `#RRGGBB`, and `default`. Border styles accept a bare colour or
+`fg=<colour>`, the hint bar accepts `bg=<colour>,fg=<colour>`, and selection
+style accepts a bare background colour or `bg=<colour>`. Invalid colours use
+the terminal default; an unknown theme uses `auto-dark`, and an unknown nav
+position uses `left`.
+
+Settings marked live apply when the file is created or replaced as well as when
+it is edited. A missing or malformed file keeps the last valid UI settings.
+Machine and roster edits take effect on a `prefix R` rescan. Changing an explicit
+mux list removes muxes it no longer names while preserving the machine's working
+login. Turning off neighbour discovery removes machines offered only by that
+provider; explicit entries and other enabled providers still apply.
+
 - **Nav position.** The nav rides on one of the four sides of the terminal view
   (a left or right column, a top or bottom band). `[ui] nav-position` picks the
   default, and the nav never moves on its own. `prefix p` places it one side

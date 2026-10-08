@@ -29,6 +29,8 @@ pub struct Hosts {
     order: Vec<String>,
     map: HashMap<String, Host>,
     auto: Vec<(String, Box<dyn Transport>)>,
+    /// Explicit mux choices, used to distinguish config edits from missed probes.
+    written_muxes: HashMap<String, Vec<String>>,
     hosts: HostDefs,
     credentials: crate::transport::auth::Credentials,
     remote_shells: crate::model::host_def::RemoteShells,
@@ -199,6 +201,23 @@ impl Hosts {
             let kind = crate::transport::kind_for(&machine, machine.clone(), os, xmux_dir, None);
             hosts.auto.push((machine, kind.transport()));
         }
+        for machine in hosts
+            .machines()
+            .into_iter()
+            .chain([LOCAL_MACHINE.to_owned()])
+        {
+            if !cfg.mux_is_auto(&machine) {
+                hosts.written_muxes.insert(
+                    machine.clone(),
+                    hosts
+                        .order
+                        .iter()
+                        .filter(|id| crate::session::machine_of(id) == machine)
+                        .map(|id| hosts.map[id].mux.bin().to_owned())
+                        .collect(),
+                );
+            }
+        }
         hosts.publish();
         hosts
     }
@@ -210,7 +229,8 @@ impl Hosts {
     /// tty, and the connection the loop drives all live on it, and replacing it would
     /// tear down a channel that has nothing wrong with it.
     ///
-    /// Removal is decided by MACHINE, never by id. Which muxes a machine serves is
+    /// A changed explicit mux list removes hosts it no longer names. Otherwise,
+    /// removal is decided by machine: which muxes an automatic machine serves is
     /// answered by PROBING the machine, and building a registry probes nothing, so a
     /// host that async mux discovery added is absent from `fresh` while its machine is
     /// perfectly well named. Dropping by id would tear those cards down on every re-scan
@@ -230,6 +250,14 @@ impl Hosts {
     /// transport it had, which holds what its probe and login established.
     pub fn reconcile(&mut self, mut fresh: Hosts) -> RosterDelta {
         let before = self.machines();
+        let transports: HashMap<_, _> = before
+            .iter()
+            .filter_map(|machine| {
+                self.machine_transport(machine)
+                    .filter(|transport| transport.is_remote())
+                    .map(|transport| (machine.clone(), transport.clone_box()))
+            })
+            .collect();
         let mut machines: HashSet<&str> = fresh
             .order
             .iter()
@@ -244,7 +272,14 @@ impl Hosts {
         let removed: Vec<String> = self
             .order
             .iter()
-            .filter(|id| !machines.contains(crate::session::machine_of(id)))
+            .filter(|id| {
+                let machine = crate::session::machine_of(id);
+                !machines.contains(machine)
+                    || fresh.written_muxes.get(machine).is_some_and(|bins| {
+                        self.written_muxes.get(machine) != Some(bins)
+                            && !bins.iter().any(|bin| bin == self.map[*id].mux.bin())
+                    })
+            })
             .cloned()
             .collect();
         let gone_auto: Vec<String> = self
@@ -254,6 +289,7 @@ impl Hosts {
             .filter(|machine| !fresh.auto.iter().any(|(m, _)| m == machine))
             .collect();
         drop(machines);
+        self.written_muxes = std::mem::take(&mut fresh.written_muxes);
         self.auto
             .retain(|(machine, _)| !gone_auto.contains(machine));
         self.order.retain(|id| !removed.contains(id));
@@ -271,13 +307,16 @@ impl Hosts {
             if self.map.contains_key(&id) {
                 continue;
             }
-            if let Some(host) = fresh.map.remove(&id) {
+            if let Some(mut host) = fresh.map.remove(&id) {
                 // A (machine, mux) pair is served by at most one id. Local ids are
                 // qualified from how many muxes the probe reported, so a bare `local`
                 // and a `local:psmux` can name the same pair across resolutions;
                 // adding the second spelling would paint a duplicate card.
                 if self.machine_serves(crate::session::machine_of(&id), host.mux.bin()) {
                     continue;
+                }
+                if let Some(transport) = transports.get(crate::session::machine_of(&id)) {
+                    host.transport = transport.clone_as(&id);
                 }
                 self.insert_unpublished(host);
                 added.push(id);
@@ -1105,5 +1144,84 @@ mod tests {
         assert_eq!(z.kind.local_socket(), None, "no socket reaches zellij");
         let p = hosts.def("local:psmux").expect("the psmux host");
         assert_eq!(p.kind.local_socket(), sock, "psmux targets its server");
+    }
+    #[test]
+    fn changed_mux_config_replaces_the_old_host() {
+        let mut hosts = built(&["prod"]);
+        hosts.for_each_transport_of("prod", |transport| {
+            transport.set_login(crate::transport::Login {
+                address: Some("192.0.2.10".into()),
+                port: Some(2222),
+                user: Some("alice".into()),
+            })
+        });
+        let mut cfg = tmux_on(&["prod"]);
+        cfg.machines[0].mux = "zellij".into();
+        let fresh = Hosts::build(
+            &cfg,
+            &["prod".into()],
+            &[],
+            "linux",
+            &local(),
+            std::path::Path::new("/x"),
+            None,
+        );
+        let delta = hosts.reconcile(fresh);
+        assert_eq!(hosts.get("prod").unwrap().mux.bin(), "zellij");
+        assert_eq!(delta.removed, ["prod"]);
+        assert_eq!(delta.added, ["prod"]);
+        let argv = hosts
+            .get("prod")
+            .unwrap()
+            .transport
+            .raw_shell_argv("true")
+            .unwrap();
+        for option in ["HostName=192.0.2.10", "Port=2222", "User=alice"] {
+            assert!(argv.iter().any(|arg| arg == option), "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn shortened_mux_config_keeps_only_the_requested_pair() {
+        let build = |mux| {
+            let mut cfg = tmux_on(&["prod"]);
+            cfg.machines[0].mux = mux;
+            Hosts::build(
+                &cfg,
+                &["prod".into()],
+                &[],
+                "linux",
+                &local(),
+                std::path::Path::new("/x"),
+                None,
+            )
+        };
+        let mut hosts = build(vec!["tmux", "zellij"].into());
+        let delta = hosts.reconcile(build("zellij".into()));
+        assert_eq!(delta.removed, ["prod:tmux"]);
+        assert!(hosts.machine_serves("prod", "zellij"));
+        assert!(!hosts.machine_serves("prod", "tmux"));
+        assert!(delta.added.is_empty());
+    }
+    #[test]
+    fn changed_local_mux_config_uses_its_own_socket_policy() {
+        let build = |bin: &str| {
+            let mut cfg = Config::default();
+            cfg.local.mux = bin.into();
+            Hosts::build(
+                &cfg,
+                &[],
+                &[],
+                "linux",
+                &[bin.into()],
+                std::path::Path::new("/x"),
+                Some("/tmp/tmux.sock".into()),
+            )
+        };
+        let mut hosts = build("tmux");
+        hosts.reconcile(build("zellij"));
+        let host = hosts.get("local").unwrap();
+        assert_eq!(host.mux.bin(), "zellij");
+        assert_eq!(host.transport.machine_kind().local_socket(), None);
     }
 }
