@@ -8906,3 +8906,123 @@ fn resized_frame_clears_stale_hover_before_painting() {
         .unwrap();
     assert_eq!(rt.model.switcher.hover_targets(), (None, None));
 }
+
+struct SavingLoginOps {
+    config: std::path::PathBuf,
+}
+
+#[async_trait::async_trait]
+impl crate::model::Ops for SavingLoginOps {
+    fn hosts(&self) -> Vec<String> {
+        vec![]
+    }
+    async fn list_sessions(&self, _: &str) -> anyhow::Result<Vec<crate::session::Session>> {
+        Ok(vec![])
+    }
+    async fn new_session(&self, _: &str, _: &str) -> anyhow::Result<crate::session::Session> {
+        unreachable!()
+    }
+    async fn login_command(
+        &self,
+        host: &str,
+        _: &crate::transport::Login,
+        _: String,
+    ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
+        Ok(Some(crate::transport::Transport::exec_argv(
+            &TestRemote(host.into()),
+            false,
+            &[],
+        )))
+    }
+    fn write_login_stanza(
+        &self,
+        host: &str,
+        login: &crate::transport::Login,
+    ) -> Result<(), String> {
+        let text = std::fs::read_to_string(&self.config).unwrap_or_default();
+        std::fs::write(
+            &self.config,
+            crate::provision::config::upsert_managed_stanza(&text, host, login),
+        )
+        .map_err(|e| e.to_string())
+    }
+    async fn register_login_key(
+        &self,
+        _: &str,
+        _: &crate::transport::Login,
+        _: crate::model::KeyRegistration,
+    ) -> crate::model::RegistrationOutcome {
+        crate::model::RegistrationOutcome::Registered
+    }
+}
+
+#[tokio::test]
+async fn after_login_choices_persist_connection_for_restart() {
+    use crate::model::{AfterLogin, RegistrationOutcome};
+    for (choice, saves, registers) in [
+        (AfterLogin::Nothing, false, false),
+        (AfterLogin::SshConfig, true, false),
+        (AfterLogin::RegisterKey, true, true),
+    ] {
+        let env = fake_env_with_machines(&["prod"]);
+        let config = env.xmux_dir.join("ssh_config");
+        let mut rt = test_rt(env);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        rt.op_tx = tx;
+        rt.ops = Arc::new(SavingLoginOps {
+            config: config.clone(),
+        });
+        let login = crate::transport::Login {
+            address: Some("192.0.2.10".into()),
+            port: Some(2222),
+            user: Some("remoteuser".into()),
+        };
+        rt.execute_commands(vec![crate::model::Command::RunLogin {
+            host: "prod".into(),
+            login: login.clone(),
+            password: "test-only-secret".into(),
+            after_login: choice,
+        }]);
+        let progress = &rt.model.state.login_progress["prod"];
+        assert_eq!(
+            progress
+                .steps
+                .iter()
+                .any(|row| row.step == crate::model::LoginStep::Save),
+            saves,
+        );
+        assert_eq!(
+            progress
+                .steps
+                .iter()
+                .any(|row| row.step == crate::model::LoginStep::RegisterKey),
+            registers,
+        );
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let crate::model::OpResult::Login { outcome, .. } = rx.recv().await.unwrap() {
+                    break outcome;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(result.connect.is_ok(), "{result:?}");
+        assert_eq!(result.saved, saves.then_some(Ok(())), "{choice:?}");
+        assert_eq!(
+            result.registration,
+            if registers {
+                RegistrationOutcome::Registered
+            } else {
+                RegistrationOutcome::NotRequested
+            }
+        );
+        assert_eq!(config.exists(), saves);
+        if saves {
+            let text = std::fs::read_to_string(&config).unwrap();
+            let defaults = crate::provision::config::login_defaults("prod", None, None, &text);
+            assert_eq!(defaults.ssh_effective, Some(login));
+            assert!(!text.contains("test-only-secret"));
+        }
+    }
+}

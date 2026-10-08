@@ -213,7 +213,7 @@ impl Runtime {
                             host,
                             login,
                             attempt,
-                            write_config: after_login == crate::model::AfterLogin::SshConfig,
+                            write_config: after_login.saves_config(),
                             register_key: after_login == crate::model::AfterLogin::RegisterKey,
                         },
                         password,

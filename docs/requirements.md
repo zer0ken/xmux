@@ -120,7 +120,8 @@ against, naming no source file, function, or test.
   `~/.ssh/config`, replacing an earlier xmux stanza and never storing the password.
 - **FR-B30** - After a working login, registering adds this PC's public key to the
   machine's authorized keys file with the `xmux-registered` mark and reports registered
-  only when a key-only login then succeeds.
+  only when a key-only login then succeeds. This choice also saves the working address,
+  port, and username in an xmux-marked `~/.ssh/config` stanza, never the password.
 - **FR-B31** - Persistent UI symbols use only one-cell glyphs that OS default terminal
   fonts render, and a terminal smaller than 24 columns by 4 rows shows only a size
   screen.
