@@ -4,13 +4,77 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable version to release, for example 0.18.0'
+        required: true
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Prepare and verify release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Require main for manual releases
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REF: ${{ github.ref }}
+        run: test "$REF" = refs/heads/main
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-prepare
+      - name: Prepare package version
+        id: version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_MODE: ${{ github.event_name == 'workflow_dispatch' && 'prepare' || 'check' }}
+        run: python3 .github/scripts/release-version.py
+      - name: Verify source
+        run: |
+          python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+          cargo metadata --locked --no-deps --format-version 1 > /dev/null
+      - name: Commit and tag verified source
+        id: commit
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_dispatch ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Cargo.toml Cargo.lock
+            git commit -m "chore: prepare $TAG release"
+            git tag -a "$TAG" -m "$TAG"
+            # Refuse a moved main or an existing tag without publishing either ref.
+            git push --atomic origin HEAD:refs/heads/main "refs/tags/$TAG"
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: prepare
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -41,6 +105,8 @@ jobs:
             ext: .tar.gz
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -66,9 +132,11 @@ jobs:
             exit 1
           }
       - name: Stage artifacts
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           mkdir -p dist
           if [ "${{ matrix.ext }}" = ".exe" ]; then
             cp "target/${{ matrix.target }}/release/xmux.exe" \
@@ -85,10 +153,12 @@ jobs:
 
   release:
     name: Publish release
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
@@ -107,15 +177,19 @@ jobs:
           sha256sum * > SHA256SUMS
       - uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
           files: artifacts/*
           generate_release_notes: true
 
   publish-crates:
     name: Publish to crates.io
+    needs: prepare
     runs-on: ubuntu-latest
     environment: crates-io
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -141,7 +215,7 @@ jobs:
   # configured) open the winget-pkgs submission PR.
   update-packaging:
     name: Update packaging manifests
-    needs: [build, release]
+    needs: [prepare, build, release]
     runs-on: ubuntu-latest
     # The distribution channels below publish from exactly the commit this job
     # pushed, not whatever main is by the time they run.
@@ -159,12 +233,14 @@ jobs:
 
       - name: Resolve version and checksums
         id: checksums
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
           # Assigned before echoing: `set -e` does not abort on a failing
           # command substitution inside an argument, and a missing artifact
           # must fail this step instead of rendering an empty sha256.
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${RELEASE_TAG#v}
           WIN_SHA=$(sha256sum artifacts/*windows-msvc.exe | cut -d' ' -f1)
           ARM_SHA=$(sha256sum artifacts/*aarch64-apple-darwin.tar.gz | cut -d' ' -f1)
           INTEL_SHA=$(sha256sum artifacts/*x86_64-apple-darwin.tar.gz | cut -d' ' -f1)
