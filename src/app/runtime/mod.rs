@@ -1568,30 +1568,13 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
         tokio::spawn(async move { crate::link::control::prune_stale(&dir, &keep).await });
     }
 
-    // What the newest release is. The landing screen and the prefix key list name it
-    // while the running build is behind, rather than a toast that leaves after five
-    // seconds.
-    //
-    // Nothing here waits on the network: the launch paints from the answer the previous
-    // ask recorded, and this launch's ask runs on its own thread and answers through
-    // `release_rx`. A plain thread rather than a blocking task, so quitting never waits
-    // for a slow feed. A launch with no network paints exactly as fast as one with it,
-    // and a release published since the last launch is named once its answer lands.
-    let (release_tx, mut release_rx) = tokio::sync::mpsc::channel::<String>(1);
+    // The startup check records the version before the app takes the terminal.
     {
         let recorded = crate::cli::update::notify::read(&rt.env.xmux_dir);
         rt.model.state.chrome.update_available = crate::cli::update::notify::available(
             recorded.as_ref().map(|c| c.latest.as_str()),
             env!("CARGO_PKG_VERSION"),
         );
-        if rt.env.with_roster(|r| r.cfg.update.check) {
-            let dir = rt.env.xmux_dir.clone();
-            std::thread::spawn(move || {
-                if let Some(latest) = crate::cli::update::notify::refresh(&dir) {
-                    let _ = release_tx.blocking_send(latest);
-                }
-            });
-        }
     }
 
     let mut tick = tokio::time::interval(Duration::from_millis(SPINNER_FRAME_MS));
@@ -1637,13 +1620,6 @@ pub async fn run_app(env: Arc<Env>, requested_name: Option<String>) -> i32 {
                 }
             }
             Some(result) = io.op_rx.recv() => rt.on_op_result(result),
-            Some(latest) = release_rx.recv() => {
-                rt.model.state.chrome.update_available = crate::cli::update::notify::available(
-                    Some(&latest),
-                    env!("CARGO_PKG_VERSION"),
-                );
-                rt.dirty = true;
-            }
             _ = tick.tick() => rt.on_tick(&mut term),
             _ = frame.tick() => {
                 from_frame = true;

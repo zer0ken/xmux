@@ -33,9 +33,7 @@ pub struct Config {
 /// for a machine that must reach nothing but the machines it was told about.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateConfig {
-    /// Whether xmux may ask GitHub for the newest released version. The answer is
-    /// recorded between runs and refreshed off the app's own path at launch,
-    /// so checking never delays the first frame.
+    /// Whether startup may check GitHub and offer or perform an update.
     #[serde(rename = "check", default = "default_update_check")]
     pub check: bool,
 }

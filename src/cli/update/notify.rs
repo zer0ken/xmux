@@ -1,15 +1,6 @@
 //! What xmux knows about the newest released version, and how it learns it.
 //!
-//! Every launch asks the release feed once, off the loop, so a release is named on the
-//! first launch after it is published. The app must not wait on GitHub to paint, so the
-//! launch paints from the answer recorded by the previous ask, and the fresh answer
-//! replaces it when it arrives. `doctor` reads the same record and asks nothing.
-//!
-//! This is not the ssh path and the roster rule does not reach it. That rule is about
-//! the machines the roster names: xmux opens no channel to one unless something asked
-//! it to, because a machine that refuses a login refuses every retry identically. One
-//! request per launch to a release feed authenticates nothing, retries nothing, and
-//! reaches no machine on the roster.
+//! Startup records release checks here; diagnostics only read the recorded answer.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -84,11 +75,9 @@ pub fn available(latest: Option<&str>, current: &str) -> Option<String> {
     super::release::is_newer(latest, current).then(|| latest.to_owned())
 }
 
-/// Asks the release feed for the newest version and records the answer. Blocks for
-/// the request, so the app calls it off the loop. `None` when the feed did not answer,
-/// which leaves the previous answer standing: a feed that did not answer is not news.
-pub fn refresh(xmux_dir: &Path) -> Option<String> {
-    let latest = super::release::latest_version().ok()?;
+/// Checks before startup, off the async runtime, and preserves the record on failure.
+pub fn refresh(xmux_dir: &Path) -> Result<String, String> {
+    let latest = super::release::latest_version()?;
     write(
         xmux_dir,
         &Cached {
@@ -96,7 +85,7 @@ pub fn refresh(xmux_dir: &Path) -> Option<String> {
             checked_at: now_secs(),
         },
     );
-    Some(latest)
+    Ok(latest)
 }
 
 #[cfg(test)]

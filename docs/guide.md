@@ -194,7 +194,7 @@ accent = "brightgreen"                # accent, decoration, warning, error, disa
 bar-bg = "colour235"                  # and the hint bar's bar-bg / bar-fg / bar-accent
 
 [update]
-check = true                          # ask at each launch whether a newer release exists
+check = true                          # allow startup checks and automatic updates
 
 [[hosts]]
 ssh = "prod"          # an ssh-config alias
@@ -215,7 +215,7 @@ The supported settings and their application times are:
 | `[[wsl]]` | `distro`, `mux` | Bare distribution name and the same mux choices; applied on a full rescan. |
 | `[discovery]` | `ssh-config`, `neighbors`, `wsl` | All `true`; applied on a full rescan. Explicit machine entries still apply when their discovery provider is off. |
 | `[discovery]` | `scan-concurrency` | `6`, clamped to 1 through 8; restart required. |
-| `[update]` | `check` | `true`; controls the background release check at launch, so restart required. |
+| `[update]` | `check` | `true`; controls release checks and updates before the app starts; restart required. |
 | `[ui]` | `prefix` | `"C-g"`; restart required. |
 | `[ui]` | `auto-hide-nav` | `false`; startup default, overridden by the saved `prefix t` toggle. |
 | `[ui]` | `nav-position` | `"left"`; applied live unless a saved position is pinned. |
