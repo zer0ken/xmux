@@ -5,9 +5,9 @@ English · [한국어](README.ko.md)
 *A cross-machine, cross-mux session switcher.*
 
 ![Two terminals recorded side by side at the same typing speed. On the left,
-ssh gpu-01, tmux ls and tmux attach reach a remote tmux session in 7.1
+ssh gpu-01, tmux ls and tmux attach reach a remote tmux session in 7.3
 seconds; on the right, xmux opens the same session from its landing screen with
-two arrow keys and Enter in 2.3 seconds.](docs/assets/xmux-demo.gif)
+two arrow keys and Enter in 2.6 seconds.](docs/assets/xmux-demo.gif)
 
 **Open a session from the landing screen**
 
