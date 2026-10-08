@@ -57,9 +57,9 @@ pub(crate) fn interaction_key_style() -> Style {
 /// override any role (see [`Overrides`]).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Palette {
-    /// The whole view border while the nav holds focus. Its own role, apart from the
-    /// card accent, so the divider is tuned independently of the screen links and
-    /// session name. Also the list-failed glyph `✗` on a host-state card.
+    /// The whole view border while the nav holds focus, popup borders and separators,
+    /// and the list-failed glyph `✗` on a host-state card. Independent of the card
+    /// accent, so these rules can be tuned apart from screen links and session names.
     pub primary: Color,
     /// The host/mux text of a host-state card and the state word beside it. A section
     /// title over a group of session cards uses `decoration`, so the
@@ -76,9 +76,8 @@ pub(crate) struct Palette {
     /// from.
     pub on_accent: Color,
     /// Content furniture: the card number, the `/` separator, the section title, the
-    /// band/column rules, the popup borders, and a band's overflow counts (`‹ n` /
-    /// `n ›`). All the quiet marks a card needs to read apart without being part of any
-    /// level.
+    /// band/column rules. All the quiet marks a card needs to read apart without
+    /// being part of any level.
     pub decoration: Color,
     /// In-flight and actionable-state marks: the scanning spinner and login-needed
     /// glyph.

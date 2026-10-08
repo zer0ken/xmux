@@ -5649,15 +5649,14 @@ fn a_hosts_reach_names_its_mux_and_the_machine_it_is_asked_over() {
 
 #[test]
 fn config_poll_records_baseline_then_reloads_on_change() {
-    // The live config watch is driven by mtime: the first sight is a baseline (the
-    // startup apply already ran), and only a real change reloads the [ui] section. A
+    // The live config watch starts with the mtime read at startup. A
     // malformed edit keeps the last good config rather than blanking the UI.
     let dir = std::env::temp_dir().join(format!("xmux-poll-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.toml");
     std::fs::write(&path, "[ui]\ntheme = \"auto-dark\"\n").unwrap();
-    let mut last = None;
-    // First sight = baseline; the same file again = no change.
+    let mut last = std::fs::metadata(&path).unwrap().modified().ok();
+    // The same file again is not a change.
     assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
     assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
     // A real edit reloads the [ui] section.
@@ -5695,13 +5694,13 @@ fn frame_interval_never_rounds_below_the_fps_limit() {
 #[test]
 fn config_poll_ignores_a_missing_file() {
     // A deletion (or an editor's atomic-rename mid-save) is not a reload: record the
-    // absence and wait. Only a file that comes back AND changes again reloads.
+    // absence and wait for the file to return.
     let dir = std::env::temp_dir().join(format!("xmux-poll-missing-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.toml");
     std::fs::write(&path, "[ui]\ntheme = \"auto-dark\"\n").unwrap();
-    let mut last = None;
-    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none()); // baseline
+    let mut last = std::fs::metadata(&path).unwrap().modified().ok();
+    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none()); // unchanged
     std::fs::remove_file(&path).unwrap();
     assert!(super::handlers::poll_ui_config(&mut last, &path).is_none()); // gone: no reload
     std::fs::remove_dir_all(&dir).ok();
@@ -9025,4 +9024,28 @@ async fn after_login_choices_persist_connection_for_restart() {
             assert!(!text.contains("test-only-secret"));
         }
     }
+}
+
+#[test]
+fn newly_created_config_is_applied_without_a_second_edit() {
+    let env = fake_env_with_machines(&[]);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = env.xmux_dir.join(format!("created-config-{stamp}.toml"));
+    let mut last = None;
+    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
+    std::fs::write(&path, "[ui]\nmax-fps = 60").unwrap();
+    let ui = super::handlers::poll_ui_config(&mut last, &path)
+        .expect("file creation reloads")
+        .unwrap();
+    assert_eq!(ui.max_fps, 60);
+    std::fs::remove_file(&path).unwrap();
+    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
+    std::fs::write(&path, "[ui]\nmax-fps = 90").unwrap();
+    let ui = super::handlers::poll_ui_config(&mut last, &path)
+        .expect("file replacement reloads")
+        .unwrap();
+    assert_eq!(ui.max_fps, 90);
 }
