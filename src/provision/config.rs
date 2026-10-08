@@ -34,8 +34,8 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateConfig {
     /// Whether xmux may ask GitHub for the newest released version. The answer is
-    /// cached for a day and the request runs off the app's own path, so this is at
-    /// most one request a day and never a wait.
+    /// recorded between runs and refreshed off the app's own path at launch,
+    /// so checking never delays the first frame.
     #[serde(rename = "check", default = "default_update_check")]
     pub check: bool,
 }
@@ -452,7 +452,7 @@ impl Config {
     pub fn value_warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         for name in self.local.mux.names() {
-            if name != "auto" && !crate::mux::is_recognized(&name) {
+            if !self.local.mux.is_auto() && !crate::mux::is_recognized(&name) {
                 warnings.push(format!(
                     "local mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen/tuios/herdr); no host is created for it"
                 ));
@@ -460,7 +460,7 @@ impl Config {
         }
         for h in &self.machines {
             for name in h.mux.names() {
-                if !crate::mux::is_recognized(&name) {
+                if !h.mux.is_auto() && !crate::mux::is_recognized(&name) {
                     warnings.push(format!(
                         "machine {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen/tuios/herdr); no host is created for it",
                         h.ssh
@@ -470,7 +470,7 @@ impl Config {
         }
         for w in &self.wsl {
             for name in w.mux.names() {
-                if !crate::mux::is_recognized(&name) {
+                if !w.mux.is_auto() && !crate::mux::is_recognized(&name) {
                     warnings.push(format!(
                         "wsl {:?} mux {name:?} is not a recognized mux (tmux/psmux/zellij/abduco/screen/tuios/herdr); no host is created for it",
                         w.distro
@@ -2646,5 +2646,28 @@ Host gamma
         let mut got = ssh_host_aliases(&a_path);
         got.sort();
         assert_eq!(got, vec!["a-host", "b-host"]);
+    }
+    #[test]
+    fn auto_mux_config_warnings_match_resolution() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [local]
+            mux = "auto"
+            [[hosts]]
+            ssh = "prod"
+            mux = "auto"
+            [[wsl]]
+            distro = "Ubuntu"
+            mux = "auto"
+        "#,
+        )
+        .unwrap();
+        assert!(
+            cfg.value_warnings().is_empty(),
+            "{:?}",
+            cfg.value_warnings()
+        );
+        let cfg: Config = toml::from_str("[local]\nmux = ['auto', 'tmux']").unwrap();
+        assert_eq!(cfg.value_warnings().len(), 1);
     }
 }

@@ -25,7 +25,7 @@ pub fn map_color(s: &str) -> Color {
     let s = s.trim();
     let s = s.strip_prefix("fg=").unwrap_or(s).trim();
     if let Some(hex) = s.strip_prefix('#') {
-        if hex.len() == 6 {
+        if hex.len() == 6 && hex.is_ascii() {
             if let (Ok(r), Ok(g), Ok(b)) = (
                 u8::from_str_radix(&hex[0..2], 16),
                 u8::from_str_radix(&hex[2..4], 16),
@@ -2385,5 +2385,9 @@ mod tests {
             "trimmed and case-insensitive"
         );
         assert_eq!(map_color("fg=#EEE8D5"), Color::Rgb(0xee, 0xe8, 0xd5));
+    }
+    #[test]
+    fn non_ascii_hex_config_color_does_not_panic() {
+        assert_eq!(map_color("#€abc"), Color::Reset);
     }
 }
