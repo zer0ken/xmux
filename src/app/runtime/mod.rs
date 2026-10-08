@@ -195,7 +195,8 @@ impl Runtime {
                         &self.hosts,
                         self.mgr.events(),
                         &self.scan_pool,
-                        false,
+                        // A successful login explicitly refreshes even a finished poll.
+                        true,
                     );
                     self.dirty = true;
                 }
