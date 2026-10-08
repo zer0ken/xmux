@@ -1326,13 +1326,13 @@ pub(crate) struct PopupFrame {
 pub(crate) fn popup_rule(inner: u16, palette: &palette::Palette) -> Line<'static> {
     Line::from(Span::styled(
         "─".repeat(inner as usize),
-        Style::default().fg(palette.decoration),
+        Style::default().fg(palette.primary),
     ))
 }
 
-/// The rounded, opaque box every popup and the key list share: muted rule, the accent bold
-/// title in the top border's left end, and the muted `meta` at its right end where both fit
-/// with a corner's worth of rule between them.
+/// The rounded, opaque box every popup and the key list share: the nav-focused
+/// border colour, the accent bold title at the top left, and muted `meta` at the
+/// top right, with a corner's worth of rule between them.
 pub(crate) fn popup_block(
     title: &str,
     meta: &str,
@@ -1341,7 +1341,7 @@ pub(crate) fn popup_block(
 ) -> Block<'static> {
     let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette.decoration))
+        .border_style(Style::default().fg(palette.primary))
         .title(Span::styled(
             format!(" {title} "),
             Style::default()

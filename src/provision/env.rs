@@ -694,7 +694,10 @@ impl Env {
             .roster_providers
             .iter()
             .filter(|(machine, provider)| {
-                **provider == Provider::Neighbor && !fresh.roster_providers.contains_key(*machine)
+                **provider == Provider::Neighbor
+                    && fresh.cfg.discovery.neighbors
+                    && !fresh.cfg.exclude.contains(machine)
+                    && !fresh.roster_providers.contains_key(*machine)
             })
             .map(|(machine, _)| machine.clone())
             .collect();
@@ -3517,5 +3520,25 @@ mod tests {
         let groups = to_groups(results);
         assert_eq!(groups[0].sessions[0].name, "new");
         assert_eq!(groups[0].sessions[1].name, "old");
+    }
+    #[test]
+    fn disabled_neighbor_config_does_not_carry_probed_machines() {
+        use crate::provision::roster::Provider;
+        let env = env_with(Roster {
+            ssh_aliases: vec!["prod".into()],
+            roster_providers: [("prod".to_owned(), Provider::Neighbor)].into(),
+            ..Default::default()
+        });
+        for exclude in [false, true] {
+            let mut fresh = Roster::default();
+            if exclude {
+                fresh.cfg.exclude.push("prod".into());
+            } else {
+                fresh.cfg.discovery.neighbors = false;
+            }
+            env.carry_probed(&mut fresh);
+            assert!(!fresh.roster_providers.contains_key("prod"));
+            assert!(!fresh.ssh_aliases.iter().any(|name| name == "prod"));
+        }
     }
 }

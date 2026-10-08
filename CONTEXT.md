@@ -74,7 +74,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **seam thumb** - the heavy stretch of a side column's view border beside the cards on
   screen when the list overflows.
 - **offscreen counts** - the `‹ 5` and `7 ›` a band writes on its view border row,
-  counting the cards scrolled off each side.
+  counting the cards scrolled off each side in the active view border colour.
 - **chrome** - the furniture around the two views: the view border, the hint bar, and
   the view screens. Never a "status surface".
 - **nav size** - the nav's live geometry as one value: the set width, the on-screen
@@ -206,7 +206,8 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **recording a login** - writing an xmux-marked stanza with the working values at the
   top of `~/.ssh/config`.
 - **registering a key** - appending this PC's public key, marked `xmux-registered`, to
-  the machine's key files, then proving a key-only login works.
+  the machine's key files, then proving a key-only login works. This choice also records
+  the working login in `~/.ssh/config` for later runs.
 - **logging out** - `prefix L`: removing this PC's key from the machine and the
   stanza a login recorded, then forgetting the held password and closing the machine's
   connections.

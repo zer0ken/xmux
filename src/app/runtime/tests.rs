@@ -5649,15 +5649,14 @@ fn a_hosts_reach_names_its_mux_and_the_machine_it_is_asked_over() {
 
 #[test]
 fn config_poll_records_baseline_then_reloads_on_change() {
-    // The live config watch is driven by mtime: the first sight is a baseline (the
-    // startup apply already ran), and only a real change reloads the [ui] section. A
+    // The live config watch starts with the mtime read at startup. A
     // malformed edit keeps the last good config rather than blanking the UI.
     let dir = std::env::temp_dir().join(format!("xmux-poll-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.toml");
     std::fs::write(&path, "[ui]\ntheme = \"auto-dark\"\n").unwrap();
-    let mut last = None;
-    // First sight = baseline; the same file again = no change.
+    let mut last = std::fs::metadata(&path).unwrap().modified().ok();
+    // The same file again is not a change.
     assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
     assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
     // A real edit reloads the [ui] section.
@@ -5695,13 +5694,13 @@ fn frame_interval_never_rounds_below_the_fps_limit() {
 #[test]
 fn config_poll_ignores_a_missing_file() {
     // A deletion (or an editor's atomic-rename mid-save) is not a reload: record the
-    // absence and wait. Only a file that comes back AND changes again reloads.
+    // absence and wait for the file to return.
     let dir = std::env::temp_dir().join(format!("xmux-poll-missing-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.toml");
     std::fs::write(&path, "[ui]\ntheme = \"auto-dark\"\n").unwrap();
-    let mut last = None;
-    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none()); // baseline
+    let mut last = std::fs::metadata(&path).unwrap().modified().ok();
+    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none()); // unchanged
     std::fs::remove_file(&path).unwrap();
     assert!(super::handlers::poll_ui_config(&mut last, &path).is_none()); // gone: no reload
     std::fs::remove_dir_all(&dir).ok();
@@ -8905,4 +8904,148 @@ fn resized_frame_clears_stale_hover_before_painting() {
         })
         .unwrap();
     assert_eq!(rt.model.switcher.hover_targets(), (None, None));
+}
+
+struct SavingLoginOps {
+    config: std::path::PathBuf,
+}
+
+#[async_trait::async_trait]
+impl crate::model::Ops for SavingLoginOps {
+    fn hosts(&self) -> Vec<String> {
+        vec![]
+    }
+    async fn list_sessions(&self, _: &str) -> anyhow::Result<Vec<crate::session::Session>> {
+        Ok(vec![])
+    }
+    async fn new_session(&self, _: &str, _: &str) -> anyhow::Result<crate::session::Session> {
+        unreachable!()
+    }
+    async fn login_command(
+        &self,
+        host: &str,
+        _: &crate::transport::Login,
+        _: String,
+    ) -> anyhow::Result<Option<crate::transport::CommandSpec>> {
+        Ok(Some(crate::transport::Transport::exec_argv(
+            &TestRemote(host.into()),
+            false,
+            &[],
+        )))
+    }
+    fn write_login_stanza(
+        &self,
+        host: &str,
+        login: &crate::transport::Login,
+    ) -> Result<(), String> {
+        let text = std::fs::read_to_string(&self.config).unwrap_or_default();
+        std::fs::write(
+            &self.config,
+            crate::provision::config::upsert_managed_stanza(&text, host, login),
+        )
+        .map_err(|e| e.to_string())
+    }
+    async fn register_login_key(
+        &self,
+        _: &str,
+        _: &crate::transport::Login,
+        _: crate::model::KeyRegistration,
+    ) -> crate::model::RegistrationOutcome {
+        crate::model::RegistrationOutcome::Registered
+    }
+}
+
+#[tokio::test]
+async fn after_login_choices_persist_connection_for_restart() {
+    use crate::model::{AfterLogin, RegistrationOutcome};
+    for (choice, saves, registers) in [
+        (AfterLogin::Nothing, false, false),
+        (AfterLogin::SshConfig, true, false),
+        (AfterLogin::RegisterKey, true, true),
+    ] {
+        let env = fake_env_with_machines(&["prod"]);
+        let config = env.xmux_dir.join("ssh_config");
+        let mut rt = test_rt(env);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        rt.op_tx = tx;
+        rt.ops = Arc::new(SavingLoginOps {
+            config: config.clone(),
+        });
+        let login = crate::transport::Login {
+            address: Some("192.0.2.10".into()),
+            port: Some(2222),
+            user: Some("remoteuser".into()),
+        };
+        rt.execute_commands(vec![crate::model::Command::RunLogin {
+            host: "prod".into(),
+            login: login.clone(),
+            password: "test-only-secret".into(),
+            after_login: choice,
+        }]);
+        let progress = &rt.model.state.login_progress["prod"];
+        assert_eq!(
+            progress
+                .steps
+                .iter()
+                .any(|row| row.step == crate::model::LoginStep::Save),
+            saves,
+        );
+        assert_eq!(
+            progress
+                .steps
+                .iter()
+                .any(|row| row.step == crate::model::LoginStep::RegisterKey),
+            registers,
+        );
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let crate::model::OpResult::Login { outcome, .. } = rx.recv().await.unwrap() {
+                    break outcome;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(result.connect.is_ok(), "{result:?}");
+        assert_eq!(result.saved, saves.then_some(Ok(())), "{choice:?}");
+        assert_eq!(
+            result.registration,
+            if registers {
+                RegistrationOutcome::Registered
+            } else {
+                RegistrationOutcome::NotRequested
+            }
+        );
+        assert_eq!(config.exists(), saves);
+        if saves {
+            let text = std::fs::read_to_string(&config).unwrap();
+            let defaults = crate::provision::config::login_defaults("prod", None, None, &text);
+            assert_eq!(defaults.ssh_effective, Some(login));
+            assert!(!text.contains("test-only-secret"));
+        }
+    }
+}
+
+#[test]
+fn newly_created_config_is_applied_without_a_second_edit() {
+    let env = fake_env_with_machines(&[]);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = env.xmux_dir.join(format!("created-config-{stamp}.toml"));
+    let mut last = None;
+    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
+    std::fs::write(&path, "[ui]\nmax-fps = 60").unwrap();
+    let ui = super::handlers::poll_ui_config(&mut last, &path)
+        .expect("file creation reloads")
+        .unwrap();
+    assert_eq!(ui.max_fps, 60);
+    std::fs::remove_file(&path).unwrap();
+    assert!(super::handlers::poll_ui_config(&mut last, &path).is_none());
+    std::fs::write(&path, "[ui]\nmax-fps = 90").unwrap();
+    let ui = super::handlers::poll_ui_config(&mut last, &path)
+        .expect("file replacement reloads")
+        .unwrap();
+    assert_eq!(ui.max_fps, 90);
 }

@@ -1676,7 +1676,7 @@ async fn login_pane_shows_one_selected_after_login_choice() {
     );
     assert!(screen.contains("( ) register my public key"), "{screen}");
     assert!(screen.contains("save connection to ssh config"), "{screen}");
-    assert!(screen.contains("register my public key"), "{screen}");
+    assert!(screen.contains("and save connection"), "{screen}");
 }
 
 #[tokio::test]
@@ -7897,6 +7897,42 @@ fn unreachable_card_keeps_its_name_in_a_narrow_band() {
     assert!(row.contains('▲'), "{row}");
     assert!(!row.contains("unreachable"), "{row}");
     assert!((card.x..card.right()).all(|x| on_accent(&term.backend().buffer()[(x, card.y)])));
+}
+
+#[test]
+fn hidden_card_counts_use_the_focused_nav_border_color() {
+    for position in [NavPosition::Top, NavPosition::Bottom] {
+        let mut state = crate::state::State::from_scan(column_flow_scan_sized(
+            &[("aa", 2), ("bb", 3), ("cc", 2)],
+            26,
+        ));
+        state.chrome.set_view_border_colors(ViewBorderColors {
+            active: Color::Blue,
+            inactive: Color::Gray,
+            hover: Color::Red,
+        });
+        let mut sw = Switcher::new(&mut state);
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let nav = NavSize::visible(NAV_WIDTH).with_position(position);
+        for last in [false, true] {
+            if last {
+                sw.move_to(-1);
+            }
+            let plan = sw.layout(Rect::new(0, 0, 60, 20), nav, &state, &RenderPlan::default());
+            term.draw(|f| sw.render(f, None, false, &state, &plan))
+                .unwrap();
+            let buf = term.backend().buffer();
+            let y = plan.regions.view_border.y;
+            let arrow = if last { "‹" } else { "›" };
+            let x = (0..buf.area.width)
+                .find(|x| buf[(*x, y)].symbol() == arrow)
+                .expect("hidden card count is visible");
+            let number_x = if last { x + 2 } else { x - 2 };
+            assert_eq!(buf[(x, y)].fg, Color::Blue);
+            assert_eq!(buf[(number_x, y)].fg, Color::Blue);
+            assert!(buf[(number_x, y)].modifier.contains(Modifier::BOLD));
+        }
+    }
 }
 
 #[test]
