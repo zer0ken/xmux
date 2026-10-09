@@ -245,8 +245,9 @@ provider; explicit entries and other enabled providers still apply.
   clockwise (left → top → right → bottom → default) and remembers the choice in
   `~/.xmux/nav_position`, which wins over the setting until the key cycles back
   to the default.
-- **Machines.** Machines come from `~/.ssh/config` first; the config file adds to
-  that discovery and never replaces it.
+- **Machines.** Machines you write down scan first: `[[hosts]]` and `[[wsl]]` entries
+  lead, then discovery adds `~/.ssh/config` aliases and neighbors. The config file
+  augments discovery and never replaces it.
 - **State.** The state kept between runs lives under `~/.xmux/`:
   - the last selected session
   - the live auto-hide-nav toggle

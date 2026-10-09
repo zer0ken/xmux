@@ -148,9 +148,9 @@ impl Hosts {
     }
 
     /// Assembles the hosts for a config: this machine's hosts first (one per entry of the
-    /// RESOLVED `local_muxes`, its socket from `$TMUX`), then each ssh machine in order,
-    /// then each WSL distribution. WSL comes last so adding the implementation leaves every
-    /// id an existing install already had in the position it had.
+    /// RESOLVED `local_muxes`, its socket from `$TMUX`), then each WSL distribution, then
+    /// each ssh machine in order. Explicit remotes (WSL and config machines) scan before
+    /// discovered aliases, so WSL leads the remote hosts.
     /// A machine whose muxes are xmux's to decide is held by name and transport, with no
     /// host until it answers.
     /// `xmux_dir` seeds each ssh transport's ControlMaster socket path. OpenSSH expands
@@ -181,9 +181,9 @@ impl Hosts {
         }
 
         for spec in cfg
-            .host_specs(ssh_aliases)
+            .wsl_specs(wsl_distros)
             .into_iter()
-            .chain(cfg.wsl_specs(wsl_distros))
+            .chain(cfg.host_specs(ssh_aliases))
         {
             if spec.alias == LOCAL_MACHINE {
                 continue; // "local" is reserved for this machine's hosts.
@@ -953,10 +953,10 @@ mod tests {
     }
 
     #[test]
-    fn build_orders_local_then_ssh_aliases_then_config_only_machines() {
-        // Local first, then ssh specs in config order (ssh-config aliases, then
-        // config-only machines). The cards `State` is seeded with lead with these ids, and
-        // the published hosts list them in the same order.
+    fn build_orders_local_then_config_machines_in_order() {
+        // Local first, then the ssh machines in config order (`[[hosts]]` entries, each
+        // deduped against the discovered aliases). The cards `State` is seeded with lead
+        // with these ids, and the published hosts list them in the same order.
         // A config-only machine (declared in config.toml, not ssh-config) with a mux override.
         let mut cfg = tmux_on(&["prod", "db"]);
         cfg.machines.push(crate::provision::config::MachineConfig {
@@ -981,14 +981,14 @@ mod tests {
                 "db".to_string(),
                 "cfgonly".to_string(),
             ],
-            "local first, ssh-config aliases in order, then config-only machines"
+            "local first, then the config machines in config order"
         );
     }
 
     #[test]
-    fn build_appends_wsl_distributions_after_the_ssh_hosts() {
-        // The WSL implementation has to survive as a transport: the ids an existing install
-        // had keep their positions, and the new ones follow.
+    fn build_orders_wsl_distributions_before_the_ssh_hosts() {
+        // WSL is an explicit remote, so it scans before the discovered ssh aliases; the
+        // distribution's transport still reaches it through `wsl.exe`.
         let mut cfg = tmux_on(&["prod"]);
         cfg.wsl.push(crate::provision::config::WslConfig {
             distro: "Ubuntu-24.04".into(),
@@ -1003,8 +1003,8 @@ mod tests {
             src_order,
             vec![
                 "local".to_string(),
-                "prod".to_string(),
                 "wsl.Ubuntu-24.04".to_string(),
+                "prod".to_string(),
             ]
         );
         assert_eq!(hosts.ids(), src_order.as_slice());

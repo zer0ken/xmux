@@ -514,9 +514,10 @@ impl Config {
     }
 
     /// The hosts of the ssh machines whose muxes are WRITTEN: a matching `hosts` entry
-    /// names them. Discovered aliases come first in their original order (each deduped
-    /// and skipping any in `exclude`), then the config-only machines. A machine that names
-    /// no mux yields no host here: which muxes it serves is asked of the machine itself
+    /// names them. The `[[hosts]]` machines come first in config order, then the
+    /// discovered aliases (ssh-config, then neighbors) in the order their provider gave
+    /// them, each deduped and skipping any in `exclude`. A machine that names no mux
+    /// yields no host here: which muxes it serves is asked of the machine itself
     /// ([`auto_hosts`](Self::auto_hosts)), never assumed.
     ///
     /// A machine configured with SEVERAL muxes yields one spec per mux, all sharing the
@@ -526,14 +527,15 @@ impl Config {
         written_specs(self.merged_ssh_machines(ssh_aliases))
     }
 
-    /// The ssh machines and WSL distributions on the roster whose mux list is xmux's to
-    /// decide, in roster order: every one [`host_specs`](Self::host_specs) and
-    /// [`wsl_specs`](Self::wsl_specs) build no host for. The local machine is not one
-    /// of them; its muxes are resolved before the roster is.
+    /// The WSL distributions and ssh machines on the roster whose mux list is xmux's to
+    /// decide, in scan order (WSL before ssh, explicit before discovered): every one
+    /// [`host_specs`](Self::host_specs) and [`wsl_specs`](Self::wsl_specs) build no host
+    /// for. The local machine is not one of them; its muxes are resolved before the
+    /// roster is.
     pub fn auto_machines(&self, ssh_aliases: &[String], distro_machines: &[String]) -> Vec<String> {
-        self.merged_ssh_machines(ssh_aliases)
+        self.merged_wsl_machines(distro_machines)
             .into_iter()
-            .chain(self.merged_wsl_machines(distro_machines))
+            .chain(self.merged_ssh_machines(ssh_aliases))
             .filter(|(_, written)| written.is_none())
             .map(|(machine, _)| machine)
             .collect()
@@ -602,9 +604,10 @@ fn is_reserved_alias(machine: &str) -> bool {
     machine == crate::session::LOCAL_MACHINE || crate::session::wsl_distro_of(machine).is_some()
 }
 
-/// The merge every machine kind's roster follows: `discovered` names first, in the
-/// order their provider gave them, then the `configured` entries that were not
-/// discovered. Config augments discovery; it never replaces it.
+/// The merge every machine kind's roster follows: the `configured` entries first, in
+/// config order, then the `discovered` names in the order their provider gave them.
+/// Explicit machines (the ones the user wrote down) scan before discovered aliases.
+/// Config augments discovery; it never replaces it.
 ///
 /// A name that is excluded, reserved, or already taken is skipped. Each machine carries
 /// the mux list its config WROTE, or `None` when it wrote none (unset or `"auto"`): the
@@ -629,10 +632,10 @@ fn merge_machines(
 
     let mut out = Vec::new();
     let mut seen: HashSet<&str> = HashSet::new();
-    let names = discovered
+    let names = configured
         .iter()
-        .map(String::as_str)
-        .chain(configured.iter().map(|(machine, _)| *machine));
+        .map(|(machine, _)| *machine)
+        .chain(discovered.iter().map(String::as_str));
     for machine in names {
         if machine.is_empty()
             || is_reserved(machine)
@@ -1849,9 +1852,10 @@ bogus = "nope"
         assert_eq!(got, want);
         // A machine that writes no mux has no host until it answers which it serves:
         // nothing is assumed for it, and it is on the roster as a machine xmux asks.
+        // The config-only machine scans before the discovered alias.
         assert_eq!(
             cfg.auto_machines(&ssh_aliases, &[]),
-            vec!["stage".to_string(), "noMuxOnly".to_string()]
+            vec!["noMuxOnly".to_string(), "stage".to_string()]
         );
     }
 
@@ -2185,9 +2189,9 @@ mux = "tmux"
 
     #[test]
     fn wsl_specs_merge_listed_distributions_with_config_entries() {
-        // The same merge as `host_specs`: listed machines first in the order `wsl.exe`
-        // gave them, then a `[[wsl]]` entry that was not listed. A distribution that
-        // writes no mux has no host until it answers which it serves.
+        // The same merge as `host_specs`: the `[[wsl]]` entries first, then a listed
+        // distribution discovery found that no entry names. A distribution that writes
+        // no mux has no host until it answers which it serves.
         let cfg = Config {
             wsl: vec![
                 WslConfig {
@@ -2226,11 +2230,11 @@ mux = "tmux"
                 ),
             ]
         );
-        // Listed but not configured, then configured but not listed: appended, so one
-        // distribution is asked without listing every one of them.
+        // The configured entry that writes no mux scans before the listed distribution
+        // discovery found, so one distribution is asked without listing every one of them.
         assert_eq!(
             cfg.auto_machines(&[], &listed),
-            vec!["wsl.docker-desktop".to_string(), "wsl.Alpine".to_string()]
+            vec!["wsl.Alpine".to_string(), "wsl.docker-desktop".to_string()]
         );
     }
 
