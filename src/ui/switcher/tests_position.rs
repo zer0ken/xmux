@@ -497,6 +497,36 @@ fn selecting_a_session_card_keeps_its_section_title_on_screen() {
 }
 
 #[test]
+fn selecting_a_card_of_a_split_section_pulls_its_title_back() {
+    // A section taller than a column splits, and its title stays where the section
+    // starts. A card in the continuation hangs under a title left of the window: when
+    // the columns from the title through the card fit together, the scroll shows the
+    // title instead of leaving it off screen.
+    let mut scan = Scan::default();
+    scan.groups.push(Group {
+        host: "alpha".into(),
+        err: None,
+        sessions: (0..9).map(|i| sess("alpha", &format!("s{i:02}"))).collect(),
+    });
+    scan.groups.push(Group {
+        host: "jupiter00".into(),
+        err: None,
+        sessions: (0..20)
+            .map(|i| sess("jupiter00", &format!("w{i:018}")))
+            .collect(),
+    });
+    let mut shot = Shot::new(scan, nav_at(NavPosition::Top), false);
+    shot.sw.move_to(28);
+    shot.draw(false);
+    shot.sw.move_to(6);
+    shot.draw(false);
+    assert!(
+        shot.find_in(shot.nav_area(), "alpha").is_some(),
+        "the split section's title shares the screen with its card"
+    );
+}
+
+#[test]
 fn pl7_a_one_row_band_scrolls_to_the_selection() {
     for position in [NavPosition::Top, NavPosition::Bottom] {
         let mut shot = Shot::new(many_sessions(30, 6), nav_at(position).with_height(1), false);

@@ -801,12 +801,16 @@ impl Switcher {
         let placed = columns::place(&cards, band.height, boundary);
         let widths = columns::widths(&cards, &placed, band.width);
         let sel_col = placed.get(self.selected).map_or(0, |p| p.col);
+        let title_col = self
+            .selected_section_title()
+            .and_then(|t| placed.get(t).map(|p| p.col));
         plan.nav_col_offset = columns::scroll_to(
             &widths,
             band.width,
             COL_GUTTER,
             plan.nav_col_offset,
             sel_col,
+            title_col,
         );
         let cells = columns::cells(&placed, &widths, band, plan.nav_col_offset, COL_GUTTER);
         for cell in cells {

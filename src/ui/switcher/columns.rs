@@ -133,24 +133,46 @@ pub(super) fn visible_cols(widths: &[u16], area_w: u16, first: usize, gutter: u1
 /// The first column to draw so the column holding `sel_col` is visible, given the
 /// current `offset`. Scrolls the minimum distance: left to the selected column when it
 /// is left of the window, right one column at a time until it is inside.
+///
+/// `title_col` is the column the selected card's section starts in, `None` when the
+/// card hangs under no section. A section taller than a column splits, and its title
+/// stays where the section starts: when the columns from the title through the card
+/// fit together, the window shows the title instead of leaving it left of the edge.
 pub(super) fn scroll_to(
     widths: &[u16],
     area_w: u16,
     gutter: u16,
     offset: usize,
     sel_col: usize,
+    title_col: Option<usize>,
 ) -> usize {
     if visible_cols(widths, area_w, 0, gutter) == widths.len() {
         return 0;
     }
     let mut first = offset.min(widths.len().saturating_sub(1));
     if sel_col < first {
-        return sel_col;
+        first = sel_col;
     }
     while sel_col >= first + visible_cols(widths, area_w, first, gutter).max(1) {
         first += 1;
     }
+    if let Some(t) = title_col {
+        if t < first && span_cols(widths, gutter, t, sel_col) <= area_w {
+            first = t;
+        }
+    }
     first
+}
+
+/// The width from column `from` through column `to`, counting the gutter between
+/// columns: what the window has to hold to show both columns at once.
+fn span_cols(widths: &[u16], gutter: u16, from: usize, to: usize) -> u16 {
+    let mut x = 0u16;
+    for (i, w) in widths.iter().enumerate().take(to + 1).skip(from) {
+        let gap = if i == from { 0 } else { gutter };
+        x += gap + w;
+    }
+    x
 }
 
 /// How many cards sit in the columns OFF SCREEN either side of the window that starts at
@@ -374,7 +396,7 @@ mod tests {
         assert_eq!(widths, vec![10, 10, 10]);
         for width in [20, 21, 31, 32, 60] {
             for selected in 0..3 {
-                let first = scroll_to(&widths, width, 1, 0, selected);
+                let first = scroll_to(&widths, width, 1, 0, selected, None);
                 let visible = cells(&placed, &widths, Rect::new(0, 0, width, 3), first, 1);
                 let selected_card = [0, 2, 3][selected];
                 assert!(visible.iter().any(|cell| cell.idx == selected_card));
@@ -399,13 +421,34 @@ mod tests {
             "the first drawn column always shows, clipped"
         );
         // Selecting a card in a column right of the window scrolls just far enough.
-        assert_eq!(scroll_to(&w, 21, 1, 0, 2), 1, "column 2 needs offset 1");
-        assert_eq!(scroll_to(&w, 21, 1, 0, 1), 0, "column 1 is already visible");
-        assert_eq!(scroll_to(&w, 21, 1, 2, 0), 0, "scrolls back left");
         assert_eq!(
-            scroll_to(&w, 32, 1, 2, 2),
+            scroll_to(&w, 21, 1, 0, 2, None),
+            1,
+            "column 2 needs offset 1"
+        );
+        assert_eq!(
+            scroll_to(&w, 21, 1, 0, 1, None),
+            0,
+            "column 1 is already visible"
+        );
+        assert_eq!(scroll_to(&w, 21, 1, 2, 0, None), 0, "scrolls back left");
+        assert_eq!(
+            scroll_to(&w, 32, 1, 2, 2, None),
             0,
             "all columns fit after widening"
+        );
+        // The selected card's section title pulls the window left to it when the
+        // columns from the title through the card fit together; a span wider than the
+        // band leaves the card where it is, since the title would hide it.
+        assert_eq!(
+            scroll_to(&[10, 10, 10, 10], 45, 1, 3, 3, Some(0)),
+            0,
+            "the title through the card fits, the window shows the title"
+        );
+        assert_eq!(
+            scroll_to(&[30, 30, 10], 45, 1, 2, 2, Some(0)),
+            2,
+            "the span does not fit, the card keeps the position that shows it"
         );
     }
 
