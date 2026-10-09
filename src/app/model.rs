@@ -2886,8 +2886,8 @@ mod tests {
             "the summary names what changed"
         );
         assert!(
-            m.state.notify.toasts[0].until.is_none(),
-            "a host that stopped answering keeps the summary up"
+            m.state.notify.toasts[0].until.is_some(),
+            "a host that stopped answering leaves the summary after its life"
         );
         assert!(
             !m.state
@@ -2980,7 +2980,7 @@ mod tests {
             ["a login needed"],
             "the sessions did not end; the login was refused"
         );
-        assert!(m.state.notify.toasts[0].until.is_none());
+        assert!(m.state.notify.toasts[0].until.is_some());
     }
 
     #[test]
@@ -3313,7 +3313,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_dismisses_one_toast_and_the_tick_expires_a_timed_one() {
+    fn a_click_dismisses_one_toast_and_the_tick_expires_the_rest() {
         let mut m = model();
         let t0 = std::time::Instant::now();
         m.state.notify.toast_at(
@@ -3332,7 +3332,10 @@ mod tests {
                 "done",
             )],
         );
-        let sticky = m.state.notify.toasts[0].id;
+        assert_eq!(m.state.notify.toasts.len(), 2);
+        let first = m.state.notify.toasts[0].id;
+        update(&mut m, Msg::DismissToast(first));
+        assert_eq!(m.state.notify.toasts.len(), 1, "the click took one down");
         update(
             &mut m,
             Msg::Tick {
@@ -3340,11 +3343,9 @@ mod tests {
                 spinner: HashSet::new(),
             },
         );
-        assert_eq!(m.state.notify.toasts.len(), 1, "the timed toast left");
-        update(&mut m, Msg::DismissToast(sticky));
         assert!(
             m.state.notify.toasts.is_empty(),
-            "the click took the error down"
+            "the tick expired the rest"
         );
     }
 
@@ -3373,7 +3374,7 @@ mod tests {
         );
         let failed = &m.state.notify.toasts[1];
         assert_eq!(failed.notes[0].text, "create failed: boom");
-        assert!(failed.until.is_none(), "a failure waits to be dismissed");
+        assert!(failed.until.is_some(), "a failure leaves by itself");
     }
 
     fn sync_frame(m: &mut AppModel) -> Vec<Effect> {

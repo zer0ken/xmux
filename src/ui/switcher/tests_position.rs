@@ -644,7 +644,7 @@ fn pl9_the_key_list_and_the_help_name_prefix_z() {
 }
 
 #[test]
-fn a_toast_floats_in_the_terminal_corner_nearest_the_hint_at_every_position() {
+fn a_toast_floats_in_the_top_right_corner_at_every_position() {
     for position in ALL {
         let mut shot = Shot::new(two_groups(), nav_at(position), true);
         shot.state.notify.toast(
@@ -657,19 +657,9 @@ fn a_toast_floats_in_the_terminal_corner_nearest_the_hint_at_every_position() {
         shot.draw(true);
         let terminal = shot.plan.regions.terminal;
         let (id, rect) = shot.plan.toasts[0];
-        let expected_x = if position == NavPosition::Left {
-            terminal.x
-        } else {
-            terminal.right() - rect.width
-        };
-        let expected_y = if position == NavPosition::Top {
-            terminal.y
-        } else {
-            terminal.bottom() - rect.height
-        };
         assert_eq!(
-            (rect.x, rect.y),
-            (expected_x, expected_y),
+            (rect.right(), rect.y),
+            (terminal.right(), terminal.y),
             "{position:?}: {rect:?} in {terminal:?}"
         );
         assert!(rect.width <= W * 2 / 5, "{position:?}: {rect:?}");

@@ -167,7 +167,7 @@ each surface is in `docs/keybind.md` and `docs/requirements.md`.
 - **rescan box** - the box a `prefix r` or `prefix R` opens while its rescan runs,
   stating the `scanning hosts n/m…` progress. Launch's own scan opens no box.
 - **toast** - the result of an action the user took, whether it was done, refused, or
-  failed, in a box in the terminal view's corner. Never a "notice", and never feedback on
+  failed, in a box in the terminal view's top-right corner. Never a "notice", and never feedback on
   a value typed into a popup, which that popup states beside its field.
 - **history** - the bounded record of every toast and background event (`prefix m`).
 - **`Modal`** - the one focus-grabbing UI a prefix key opens: an input, the command
